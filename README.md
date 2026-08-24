@@ -2761,9 +2761,10 @@ per view.
 
 The **Events** view (command palette → *Show events*) is the browsing
 home: the whole event timeline, filtered by kind and by the
-user-defined **tag**. Each row opens to disclose its **tag** and
-**description**, both editable in place on your own events; a
-host-derived event shows what it computed and takes no edits. The tag
+user-defined **tag**. Each row opens to disclose what it is **about**,
+its **tag** and its **description** — the last two editable in place on
+your own events; a host-derived event shows what it computed and takes
+no edits. The tag
 and description ride the saved file too — inside the BLF marker, no
 sidecar, and as `cannet.tag` / `cannet.description` properties on an
 MDF `##EV`.
@@ -2779,6 +2780,39 @@ it is that `⇥` jump, and **F2** starts the rename — on the rows that
 can be renamed at all, so a host-derived event stays read-only to the
 keyboard exactly as it is to the mouse. **→** / **←** open and shut the
 tag-and-description body.
+
+**What an event is about.** An event can point at the things it
+concerns — a **signal**, a **message**, or **another event**
+([ADR 0056](docs/adr/0056-an-event-subject-is-a-structural-reference.md))
+— and the row draws them as chips after the label. What is stored is
+*structural*: a message's arbitration id, plus the field name for a
+signal. No bus and no database is recorded, so the name on a chip is
+resolved against whatever databases are assigned **right now**. Assign a
+different DBC and the chips read that DBC's names; assign none and the
+chip goes muted and italic, still saying what it points at. An
+unresolved reference is a state, not a fault — nothing drops it, and it
+resolves again the moment a database that defines it is loaded.
+
+An event→event reference is an untyped **link**, which is how a span
+(two events) and a chain (more) are expressed without a second kind of
+thing. It is stored once, on one of the pair, and **both ends show it** —
+so a link chip appears on the event that was named as well as on the one
+that names it. Deleting an event takes the references to it with it;
+signal and message references are never swept.
+
+**The row never grows with the subject count.** The chips give way the
+way every bar in the app gives way: the ones that do not fit collapse
+into a **… +N** control, and pressing it opens the row's body, where the
+whole list is drawn under **about**. Nothing is ever more than one click
+away, and a row with a dozen subjects is exactly as tall as a row with
+one.
+
+**Linking is multi-select plus one control.** In the Events view — and
+only there, since it is the only surface where an event row is a thing
+you select rather than a marker beside the frames — click an event to
+select it and Ctrl/Cmd+click a second. The toolbar's **Link Events**
+chip then joins them; with two already-linked events selected the same
+chip reads **Unlink Events** and takes the link away.
 
 **Both BLF annotation records.** BLF carries annotations two ways, and
 cannet now reads and writes both. A note is a `GLOBAL_MARKER`

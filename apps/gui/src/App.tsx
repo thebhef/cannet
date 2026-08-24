@@ -2892,6 +2892,12 @@ export function App() {
   const removeNoteRemote = useCallback((id: string) => {
     void invoke("remove_note", { id }).catch(() => { /* best effort */ });
   }, []);
+  const linkEventsRemote = useCallback((a: string, b: string) => {
+    void invoke("link_events", { a, b }).catch(() => { /* best effort */ });
+  }, []);
+  const unlinkEventsRemote = useCallback((a: string, b: string) => {
+    void invoke("unlink_events", { a, b }).catch(() => { /* best effort */ });
+  }, []);
   const notesValue: NotesContextValue = useMemo(
     () => ({
       notes,
@@ -2901,6 +2907,8 @@ export function App() {
       describeNote: describeNoteRemote,
       retagNote: retagNoteRemote,
       removeNote: removeNoteRemote,
+      linkEvents: linkEventsRemote,
+      unlinkEvents: unlinkEventsRemote,
     }),
     [
       notes,
@@ -2910,6 +2918,8 @@ export function App() {
       describeNoteRemote,
       retagNoteRemote,
       removeNoteRemote,
+      linkEventsRemote,
+      unlinkEventsRemote,
     ],
   );
 

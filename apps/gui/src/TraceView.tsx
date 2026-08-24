@@ -18,6 +18,14 @@ import { formatTimestamp, type CanIdFormat } from "./format";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import { ColorChip } from "./ColorChip";
+import { EventSubjectChips } from "./EventSubjectChips";
+import {
+  subjectChips,
+  subjectIndexFor,
+  type SubjectChip,
+  type SubjectIndex,
+} from "./eventSubjects";
+import { useSignalCatalog } from "./signalCatalogContext";
 import { Icon } from "./Icon";
 import {
   ROW_HEIGHT,
@@ -106,6 +114,20 @@ interface TraceViewProps {
   /// Show the frame column header. Default `true`; the dedicated events
   /// panel (ADR 0035) passes `false` since its rows carry no frame columns.
   showHeader?: boolean;
+  /// Every timeline event this view's parent holds, unfiltered — what an
+  /// event→event reference resolves against (ADR 0056). A link is stored
+  /// once and read from both ends, so a row cannot answer "what am I
+  /// linked to" from its own event alone. Must be referentially stable
+  /// (the rows are memoised).
+  events?: readonly TimelineEvent[];
+  /// Let event rows join the grid's selection. Off by default — an event
+  /// row is not a message and carries nothing a drop target could take
+  /// (ADR 0044) — and on in the events view, whose Link Events control
+  /// acts on exactly two selected events (ADR 0056).
+  selectableEvents?: boolean;
+  /// The selected event ids, whenever they change. Only meaningful with
+  /// {@link TraceViewProps.selectableEvents}.
+  onEventSelectionChange?: (ids: readonly string[]) => void;
 }
 
 /// Inline mutators for an editable timeline event (ADR 0035), wired by the
@@ -147,24 +169,36 @@ function signalsOf(r: TraceRow | null): readonly SignalRecord[] {
 /// ids are stable across a re-render, like a signal's name.
 const EVENT_BODY_ROWS = ["tag", "description"] as const;
 
-/// Does this event disclose a body at all? One that carries a tag or a
-/// description does; so does an editable one, which is how an empty note
-/// gets given either. A read-only event with neither has nothing to open.
+/// The same, for an event that is about something (ADR 0056): the full
+/// subject list leads, which is where the chips the row could not fit go.
+const EVENT_BODY_ROWS_WITH_SUBJECTS = ["subjects", ...EVENT_BODY_ROWS] as const;
+
+/// The body rows this event discloses. Keyed off the stored subject list
+/// rather than off what resolves, so the row geometry does not move when a
+/// database is assigned or dropped.
+function eventBodyRows(e: TimelineEvent): readonly string[] {
+  return e.subjects.length > 0 ? EVENT_BODY_ROWS_WITH_SUBJECTS : EVENT_BODY_ROWS;
+}
+
+/// Does this event disclose a body at all? One that carries a tag, a
+/// description or a subject does; so does an editable one, which is how an
+/// empty note gets given either. A read-only event with none has nothing to
+/// open.
 function eventDiscloses(e: TimelineEvent): boolean {
-  return e.editable || e.description != null || e.tag != null;
+  return e.editable || e.description != null || e.tag != null || e.subjects.length > 0;
 }
 
 /// How many rows a row discloses when opened — a frame's decoded signals,
 /// or an event's body. One notion, because the row heights, the scroll
 /// space and the keyboard cursor all have to agree on it.
 function contentCountOf(r: TraceRow | null): number {
-  if (r?.row === "event") return eventDiscloses(r.event) ? EVENT_BODY_ROWS.length : 0;
+  if (r?.row === "event") return eventDiscloses(r.event) ? eventBodyRows(r.event).length : 0;
   return signalsOf(r).length;
 }
 
 /// The name of the `i`th disclosed row, for its stable content-row id.
 function contentNameAt(r: TraceRow | null, i: number): string | null {
-  if (r?.row === "event") return EVENT_BODY_ROWS[i] ?? null;
+  if (r?.row === "event") return eventBodyRows(r.event)[i] ?? null;
   return signalsOf(r)[i]?.name ?? null;
 }
 
@@ -178,6 +212,9 @@ function rowIdOf(r: TraceRow | null): string | null {
 const EMPTY_EXPANDED: ReadonlyMap<string, number> = new Map();
 const EMPTY_POSITIONS: ReadonlySet<number> = new Set();
 const EMPTY_RUNS: readonly OpenContentRun[] = [];
+/// A view whose parent holds no event list — the by-id and frame-only
+/// callers. Shared so the memoised rows get the same object each render.
+const EMPTY_EVENTS: readonly TimelineEvent[] = [];
 
 /// Re-pin scrollTop only when it drifts from the target by more than
 /// this. The target derived from a user-scrolled row is a pixel or two
@@ -202,6 +239,9 @@ export function TraceView({
   eventActions,
   scrollTarget,
   showHeader = true,
+  events: allEvents = EMPTY_EVENTS,
+  selectableEvents = false,
+  onEventSelectionChange,
 }: TraceViewProps) {
   diagCount("render.TraceView"); // DIAG
 
@@ -210,6 +250,13 @@ export function TraceView({
   // a change has to arrive as a *changed prop* or the visible window
   // keeps painting the old format until something else moves.
   const idFormat = useSetting("can_id_format") as CanIdFormat;
+
+  // What the assigned databases can name right now — the one input a
+  // subject reference resolves against (ADR 0056). Read once for the
+  // whole view and handed to the rows as a prop, so a database being
+  // assigned or dropped repaints every chip and nothing else does.
+  const { catalog } = useSignalCatalog();
+  const subjectIndex = subjectIndexFor(catalog);
 
   // The open rows, by stable id, each carrying how many decoded signals
   // it discloses. Keyed by id rather than by row position because a
@@ -571,10 +618,15 @@ export function TraceView({
       scrollToRow,
       setExpanded: setRowExpanded,
       // An event row is not a message: it carries nothing a drop target
-      // could take, so it takes part in the cursor but not the
-      // selection. A message's disclosed rows are named after it, so
-      // they are selectable with it.
-      isSelectable: (row) => row.id.startsWith(FRAME_ROW_PREFIX),
+      // could take, so by default it takes part in the cursor but not
+      // the selection. A message's disclosed rows are named after it, so
+      // they are selectable with it. Which rows are selectable is the
+      // adapter's declaration (ADR 0044), and the events view declares
+      // its event rows selectable — there the selection is what the
+      // Link Events control acts on (ADR 0056).
+      isSelectable: (row) =>
+        row.id.startsWith(FRAME_ROW_PREFIX) ||
+        (selectableEvents && row.id.startsWith(EVENT_ROW_PREFIX)),
       // The space is the whole capture; the page this view holds is the
       // honest answer, and the only affordable one (the default walk is
       // O(count) per click).
@@ -585,7 +637,12 @@ export function TraceView({
           if (abs >= count) break;
           const r = getRow(abs);
           const id = rowIdOf(r);
-          if (id == null || !id.startsWith(FRAME_ROW_PREFIX)) continue;
+          if (id == null) continue;
+          if (id.startsWith(EVENT_ROW_PREFIX)) {
+            if (selectableEvents) out.push(id);
+            continue;
+          }
+          if (!id.startsWith(FRAME_ROW_PREFIX)) continue;
           out.push(id);
           if (!expanded.has(id)) continue;
           for (const sig of signalsOf(r)) out.push(contentRowId(id, sig.name));
@@ -602,6 +659,7 @@ export function TraceView({
       rowModelAt,
       expanded,
       scrollToRow,
+      selectableEvents,
       setRowExpanded,
       windowIndexOf,
     ],
@@ -656,6 +714,21 @@ export function TraceView({
     onPrimaryAction,
     onRenameAction,
   });
+  // The events view's Link Events control acts on the grid's selection
+  // (ADR 0056); the selection model stays where ADR 0044 put it and this
+  // reports it up, rather than the panel keeping a second one. Read
+  // through a ref so a parent that rebuilds the callback each render does
+  // not re-run the effect.
+  const reportSelection = useRef(onEventSelectionChange);
+  reportSelection.current = onEventSelectionChange;
+  useEffect(() => {
+    if (!selectableEvents) return;
+    const ids: string[] = [];
+    for (const id of grid.selection) {
+      if (id.startsWith(EVENT_ROW_PREFIX)) ids.push(id.slice(EVENT_ROW_PREFIX.length));
+    }
+    reportSelection.current?.(ids);
+  }, [grid.selection, selectableEvents]);
   // Ending an inline rename unmounts the field, and focus with nowhere
   // to go lands on the document body — where the grid's keys are dead
   // and the next Tab restarts from the top of the page (ADR 0044). The
@@ -825,6 +898,9 @@ export function TraceView({
                     }
                     eventEditing={r?.row === "event" && r.event.id === editingEvent}
                     onEventEditing={setEventEditing}
+                    events={allEvents}
+                    subjectIndex={subjectIndex}
+                    selectableEvents={selectableEvents}
                     rowDomId={grid.rowDomId}
                     // Deriving the id costs a string per row, so the
                     // common case — nothing selected — never asks.
@@ -835,6 +911,7 @@ export function TraceView({
                   {isExpanded && r?.row === "event" && (
                     <EventBody
                       event={r.event}
+                      chips={subjectChips(r.event, allEvents, subjectIndex, idFormat)}
                       top={top + ROW_HEIGHT}
                       actions={eventActions}
                       rowDomId={grid.rowDomId}
@@ -899,6 +976,13 @@ interface RowProps {
   eventEditing: boolean;
   /// Start or end that rename, by event id.
   onEventEditing: (id: string, on: boolean) => void;
+  /// Every event the parent holds — what an event row's link chips
+  /// resolve against (ADR 0056).
+  events: readonly TimelineEvent[];
+  /// What the assigned databases can name, for the subject chips.
+  subjectIndex: SubjectIndex;
+  /// Event rows take part in the selection in this view.
+  selectableEvents: boolean;
   /// The DOM id `aria-activedescendant` names this row by (ADR 0044).
   /// Taken as the layer's stable mapper rather than the finished string
   /// so the memo still skips a row whose id hasn't moved.
@@ -927,6 +1011,9 @@ const Row = memo(function Row({
   eventFocused,
   eventEditing,
   onEventEditing,
+  events,
+  subjectIndex,
+  selectableEvents,
   rowDomId,
   selected,
   onSelect,
@@ -939,12 +1026,15 @@ const Row = memo(function Row({
       <EventRow
         top={top}
         event={event}
+        chips={subjectChips(event, events, subjectIndex, idFormat)}
         baseTimestamp={baseTimestamp}
         actions={eventActions}
         focused={eventFocused}
         editing={eventEditing}
         onEditing={onEventEditing}
         domId={rowDomId(`${EVENT_ROW_PREFIX}${event.id}`)}
+        selectable={selectableEvents}
+        selected={selected}
         onSelect={onSelect}
         isExpanded={isExpanded}
         onToggle={onToggle}
@@ -1035,18 +1125,24 @@ const EVENT_KIND_COLOR: Record<string, () => string> = {
 function EventRow({
   top,
   event,
+  chips,
   baseTimestamp,
   actions,
   focused,
   editing,
   onEditing,
   domId,
+  selectable,
+  selected,
   onSelect,
   isExpanded,
   onToggle,
 }: {
   top: number;
   event: TimelineEvent;
+  /// What the event is about, already resolved against the databases
+  /// assigned right now (ADR 0056).
+  chips: readonly SubjectChip[];
   baseTimestamp: number | null;
   actions?: EventActions;
   /// The grid's cursor is on this row.
@@ -1058,8 +1154,13 @@ function EventRow({
   onEditing: (id: string, on: boolean) => void;
   /// The DOM id `aria-activedescendant` names this row by. An event row
   /// takes part in the grid's cursor, but not in its selection — it is
-  /// not a message (ADR 0044).
+  /// not a message (ADR 0044) — except in the events view, which
+  /// declares them selectable so the Link Events control has something
+  /// to act on.
   domId: string;
+  /// Event rows take part in this view's selection.
+  selectable: boolean;
+  selected: boolean;
   onSelect: (rowId: string, e: React.MouseEvent) => void;
   /// This row's body is disclosed. The body itself is drawn by the view,
   /// under this row, like a message's decoded signals.
@@ -1074,6 +1175,7 @@ function EventRow({
   const color = event.color ?? (EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note)();
   const editable = event.editable && actions != null;
   const discloses = eventDiscloses(event);
+  const bodyRows = eventBodyRows(event).length;
   const onGoto = actions?.onGoto;
   const [draft, setDraft] = useState(event.label);
 
@@ -1095,7 +1197,7 @@ function EventRow({
     <div
       className={`trace-row trace-event-row trace-event-${event.kind}${
         editable ? " trace-event-editable" : ""
-      }${focused ? " trace-event-focused" : ""}`}
+      }${focused ? " trace-event-focused" : ""}${selectable && selected ? " selected" : ""}`}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
       title={event.label}
       id={domId}
@@ -1104,8 +1206,10 @@ function EventRow({
       // carries its own, but a cursor on the row never reaches it. Same
       // shape as every other gridview row (ADR 0044): absent, not
       // `false`, where there is nothing to open. `aria-selected` is
-      // deliberately absent too — an event row is not selectable.
+      // absent unless this view declares event rows selectable — saying
+      // "not selected" about a row that cannot be selected is a lie.
       aria-expanded={discloses ? isExpanded : undefined}
+      aria-selected={selectable ? selected : undefined}
       tabIndex={0}
       onClick={(e) => onSelect(`${EVENT_ROW_PREFIX}${event.id}`, e)}
     >
@@ -1122,7 +1226,7 @@ function EventRow({
           title={isExpanded ? "hide the tag and description" : "show the tag and description"}
           onClick={(e) => {
             e.stopPropagation();
-            onToggle(`${EVENT_ROW_PREFIX}${event.id}`, isExpanded ? 0 : EVENT_BODY_ROWS.length);
+            onToggle(`${EVENT_ROW_PREFIX}${event.id}`, isExpanded ? 0 : bodyRows);
           }}
         >
           {isExpanded ? "\u25be" : "\u25b8"}
@@ -1187,6 +1291,15 @@ function EventRow({
           {event.label}
         </span>
       )}
+      {chips.length > 0 && (
+        <EventSubjectChips
+          chips={chips}
+          expanded={isExpanded}
+          onExpand={() =>
+            onToggle(`${EVENT_ROW_PREFIX}${event.id}`, isExpanded ? 0 : bodyRows)
+          }
+        />
+      )}
       {editable && !editing && (
         <button
           type="button"
@@ -1220,20 +1333,50 @@ function EventRow({
 /// host-derived one shows what it computed and takes no edits.
 function EventBody({
   event,
+  chips,
   top,
   actions,
   rowDomId,
 }: {
   event: TimelineEvent;
+  /// The event's subject chips, already resolved — the same list the row
+  /// draws, in full here (ADR 0056). Empty when it is about nothing.
+  chips: readonly SubjectChip[];
   top: number;
   actions?: EventActions;
   rowDomId: (id: string) => string;
 }) {
   const rowId = `${EVENT_ROW_PREFIX}${event.id}`;
+  // The subject line leads the body when the event has one, so the `…`
+  // control on the row lands the reader on the chips it could not fit.
+  const lead = event.subjects.length > 0 ? 1 : 0;
   return (
     <>
+      {lead === 1 && (
+        <div
+          className="trace-event-body-row"
+          id={rowDomId(contentRowId(rowId, "subjects"))}
+          style={{ position: "absolute", top, left: 0, right: 0, height: SIGNAL_LINE_HEIGHT }}
+        >
+          <span className="trace-event-body-name">about</span>
+          <span className="trace-event-body-subjects">
+            {chips.map((chip) => (
+              <span
+                key={chip.key}
+                className={`event-subject-chip event-subject-chip--${chip.kind}${
+                  chip.resolved ? "" : " event-subject-chip--unresolved"
+                }`}
+                title={chip.title}
+              >
+                {chip.kind === "event" && <Icon name="link" />}
+                <span className="event-subject-chip-label">{chip.label}</span>
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
       <EventBodyField
-        top={top}
+        top={top + lead * SIGNAL_LINE_HEIGHT}
         domId={rowDomId(contentRowId(rowId, "tag"))}
         name="tag"
         value={event.tag ?? ""}
@@ -1246,7 +1389,7 @@ function EventBody({
         }
       />
       <EventBodyField
-        top={top + SIGNAL_LINE_HEIGHT}
+        top={top + (lead + 1) * SIGNAL_LINE_HEIGHT}
         domId={rowDomId(contentRowId(rowId, "description"))}
         name="description"
         value={event.description ?? ""}

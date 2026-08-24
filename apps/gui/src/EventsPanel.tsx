@@ -2,11 +2,18 @@ import { useCallback, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { emit } from "@tauri-apps/api/event";
 
+import { ChipButton } from "./ChipButton";
 import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT } from "./gotoEvent";
 import { useTraceModel } from "./traceData";
 import { useNotes } from "./notesContext";
-import { matchesTagQuery, tagsInUse, timelineEvents, visibleEvents } from "./notes";
+import {
+  linkedEventIds,
+  matchesTagQuery,
+  tagsInUse,
+  timelineEvents,
+  visibleEvents,
+} from "./notes";
 import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import type { TraceRow } from "./trace";
 import { busLookup, type ColumnState } from "./traceColumns";
@@ -36,7 +43,16 @@ const NO_COLUMNS: readonly ColumnState[] = [];
 export function EventsPanel(_props: IDockviewPanelProps) {
   diagCount("render.EventsPanel"); // DIAG
   const model = useTraceModel();
-  const { notes, renameNote, recolorNote, describeNote, retagNote, removeNote } = useNotes();
+  const {
+    notes,
+    renameNote,
+    recolorNote,
+    describeNote,
+    retagNote,
+    removeNote,
+    linkEvents,
+    unlinkEvents,
+  } = useNotes();
   const allEvents = useMemo(
     () => timelineEvents(notes, model.truncationTsNs),
     [notes, model.truncationTsNs],
@@ -55,6 +71,22 @@ export function EventsPanel(_props: IDockviewPanelProps) {
   );
   const counts = useMemo(() => countByKind(allEvents), [allEvents]);
   const tags = useMemo(() => tagsInUse(allEvents), [allEvents]);
+
+  // The linking gesture is multi-select plus one control (owner ruling):
+  // the selection lives in the gridview, which this view declares its
+  // event rows selectable in, and the view keeps only the ids it reports.
+  const [selected, setSelected] = useState<readonly string[]>([]);
+  const pair = useMemo(() => {
+    if (selected.length !== 2) return null;
+    const two = allEvents.filter((e) => selected.includes(e.id));
+    if (two.length !== 2) return null;
+    // Chronological, so the reference is stored on the later event and
+    // points back — the way a reader describes a pair ("this fault, after
+    // this contactor open"). Link direction is invisible to every reader
+    // (ADR 0056 § 4); this only makes the stored form predictable.
+    const [first, second] = [...two].sort((a, b) => a.timestampNs - b.timestampNs);
+    return { first, second, linked: linkedEventIds(allEvents, first.id).includes(second.id) };
+  }, [allEvents, selected]);
 
   const getRow = useCallback(
     (i: number): TraceRow | null => {
@@ -101,6 +133,28 @@ export function EventsPanel(_props: IDockviewPanelProps) {
             ))}
           </datalist>
         </label>
+        <span className="events-panel-toolbar-spacer" />
+        {/* One control, two faces: with two events selected it links
+            them, and with two already-linked events selected it takes
+            the link away — otherwise a link could be made and never
+            unmade. A link is untyped, so there is nothing else to say
+            about it (ADR 0056). */}
+        <ChipButton
+          icon="link"
+          label={pair?.linked ? "Unlink Events" : "Link Events"}
+          title={
+            pair?.linked
+              ? "drop the link between the two selected events"
+              : "link the two selected events — a linked pair draws its extent while either is selected"
+          }
+          disabled={pair === null}
+          onPress={() => {
+            if (pair === null) return;
+            const { first, second, linked } = pair;
+            if (linked) unlinkEvents(second.id, first.id);
+            else linkEvents(second.id, first.id);
+          }}
+        />
       </div>
       <TraceView
         count={events.length}
@@ -118,6 +172,9 @@ export function EventsPanel(_props: IDockviewPanelProps) {
         onAutoScrollDisabled={noop}
         eventActions={eventActions}
         showHeader={false}
+        events={allEvents}
+        selectableEvents
+        onEventSelectionChange={setSelected}
       />
     </div>
   );

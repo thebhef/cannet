@@ -27,6 +27,12 @@ export interface NotesContextValue {
   retagNote: (id: string, tag: string | null) => void;
   /// Remove a note by id.
   removeNote: (id: string) => void;
+  /// Link two events (ADR 0056). The host stores the reference **once**,
+  /// on `a`, and every reader answers over both directions; a pair that
+  /// is already linked is a no-op.
+  linkEvents: (a: string, b: string) => void;
+  /// Drop the link between two events, from whichever side stored it.
+  unlinkEvents: (a: string, b: string) => void;
 }
 
 const fallback: NotesContextValue = {
@@ -37,6 +43,8 @@ const fallback: NotesContextValue = {
   describeNote: () => {},
   retagNote: () => {},
   removeNote: () => {},
+  linkEvents: () => {},
+  unlinkEvents: () => {},
 };
 
 export const NotesContext = createContext<NotesContextValue>(fallback);
