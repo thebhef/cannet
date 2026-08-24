@@ -38,8 +38,8 @@ const TOKEN_FILE: &str = "access-token";
 /// The embedded EFF large wordlist: 7776 tab-separated
 /// `dice-index<TAB>word` lines, committed verbatim from EFF's own
 /// distribution. See `assets/eff_large_wordlist.LICENSE` for
-/// provenance (CC BY 3.0, Electronic Frontier Foundation) and
-/// `plans/technology-inventory.md` for the adoption record.
+/// provenance (CC BY 3.0, Electronic Frontier Foundation). Public
+/// data, not a crate dependency — no new dependency to pull in.
 const WORDLIST_RAW: &str = include_str!("../assets/eff_large_wordlist.txt");
 
 /// Words per generated passphrase. `PASSPHRASE_WORDS *

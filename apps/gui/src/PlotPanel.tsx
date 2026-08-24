@@ -509,9 +509,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const [areas, setAreas] = useState<PlotAreaConfig[]>(() => areasFromParams(savedConfig?.areas));
   // Push this panel's referenced signals to the host's view-signal
-  // panel model (task 89) — every area's manual picks, recomputed
-  // whenever `areas` changes. The hook itself de-dupes a no-op re-push
-  // and un-pushes on unmount (`viewSignalsPush.ts`).
+  // panel model — every area's manual picks, recomputed whenever
+  // `areas` changes. The hook itself de-dupes a no-op re-push and
+  // un-pushes on unmount (`viewSignalsPush.ts`).
   const viewSignalRefs = useMemo(() => plotViewSignalRefs(areas), [areas]);
   usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
   const [followLive, setFollowLive] = useState(() => boolFromRaw(savedConfig?.followLive, true));

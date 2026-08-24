@@ -116,7 +116,7 @@ function rowId(r: ViewSignalRow): string {
 const PAGE_ROWS = 20;
 
 /**
- * The view-signals panel (task 89): every signal the open views
+ * The view-signals panel: every signal the open views
  * reference, live, and what currently decodes it — the one place the
  * mapping between a view's signal picks and the databases assigned to
  * its bus is surfaced and (in later phases) repaired.
@@ -211,8 +211,8 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
     };
   }, [sort, busNames]);
   // The other half of the model's inputs: a database
-  // assigned/unassigned/edited (ADR 0053 §2, which already covers
-  // assignment changes since task 88). One effect, not two — `refresh`
+  // assigned/unassigned/edited (ADR 0053 §2, which also covers
+  // assignment changes). One effect, not two — `refresh`
   // already runs on mount and on every `sort` / `busNames` change; this
   // just adds the DBC generation to that same dependency list rather
   // than firing a second fetch alongside it on every render.
@@ -295,8 +295,10 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
     [],
   );
   // Sort execution stays with the host (`gridviewColumns.tsx`'s own
-  // header comment, and task 89's own resolution on the point): this
-  // just cycles the affordance and re-fetches. `source` / `detail`
+  // header comment: the gridview owns the sort affordance, not sort
+  // execution — matching `CLAUDE.md`'s paging rule that the host sorts
+  // and the frontend renders): this just cycles the affordance and
+  // re-fetches. `source` / `detail`
   // carry no host sort, so a click on them is a no-op — the same shape
   // the signals view's `section` column uses.
   const onSortColumn = useCallback((key: ViewSignalColumnKey) => {

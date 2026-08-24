@@ -449,11 +449,11 @@ export function App() {
   // persisted host-side per ADR 0032). Offered in the Import-trace
   // flow; format routing at open time is by extension (`importFormat.ts`).
   const [recentCaptures, setRecentCaptures] = useState<string[]>(() => hostState().recent_blfs);
-  // The Recent-captures dropdown's own open/closed state (task 75 item
-  // 4): it must dismiss on outside click / Escape like every other
-  // transient popup, so — unlike its old native `<details>` markup —
-  // it now needs state, driven through the shared dismissal hook every
-  // other floating menu in the app uses.
+  // The Recent-captures dropdown's own open/closed state: it must
+  // dismiss on outside click / Escape like every other transient
+  // popup, so — unlike its old native `<details>` markup — it now
+  // needs state, driven through the shared dismissal hook every other
+  // floating menu in the app uses.
   const [recentCapturesOpen, setRecentCapturesOpen] = useState(false);
   const recentCapturesRef = useDismissableMenu<HTMLDivElement>(recentCapturesOpen, () =>
     setRecentCapturesOpen(false),
@@ -855,10 +855,9 @@ export function App() {
         setRegistry((prev) => prev.filter((e) => e.element.id !== id));
         const api = dockApiRef.current;
         // An RBS element can carry a second panel over the same
-        // elementId (its signals grid, task 89 phase 6) —
-        // `panelsForElementId`, not a single `.find`, so removing the
-        // element closes every panel referencing it rather than
-        // leaking the second one.
+        // elementId (its signals grid) — `panelsForElementId`, not a
+        // single `.find`, so removing the element closes every panel
+        // referencing it rather than leaking the second one.
         const panels = panelsForElementId(api?.panels ?? [], id);
         if (api) for (const panel of panels) api.removePanel(panel);
       } finally {
@@ -1002,9 +1001,9 @@ export function App() {
     invalidateCache();
   }, [dbcGeneration, invalidateCache]);
 
-  // The view-signals launcher badge's live count (task 89 phase 3): read
-  // here, independently of whether the view-signals panel is mounted,
-  // so the toolbar button stays live with the panel closed.
+  // The view-signals launcher badge's live count: read here,
+  // independently of whether the view-signals panel is mounted, so the
+  // toolbar button stays live with the panel closed.
   const viewSignalsAttentionCount = useViewSignalsAttentionCount();
 
   // The unfiltered `RowPage` read: raw chronological rows for an
@@ -1237,10 +1236,10 @@ export function App() {
   const handleImportTrace = useCallback(
     async (presetPath?: string) => {
       // The launcher doubles as Cancel once the pump is actually
-      // running (`state.kind === "loading"`, task 75 item 2(b)) rather
-      // than merely censusing — the census phase stays plain-disabled,
-      // unchanged, since there's no cooperative checkpoint to cancel it
-      // at (a single opaque file walk, not a per-frame loop).
+      // running (`state.kind === "loading"`) rather than merely
+      // censusing — the census phase stays plain-disabled, unchanged,
+      // since there's no cooperative checkpoint to cancel it at (a
+      // single opaque file walk, not a per-frame loop).
       if (state.kind === "loading") {
         importCancelledRef.current = true;
         try {
@@ -3333,10 +3332,10 @@ export function App() {
   const scanningTracePath = scanningBlfPath ?? scanningMdfPath;
   // The capture actually loading right now — past the census, past the
   // mapping dialog, the pump running until its own `log-finished`. This
-  // is `state.kind === "loading"`'s whole lifetime (task 75 item 2(a)):
-  // it must not end when data starts reaching the plot panel, only when
-  // the import genuinely finishes. Unlike the census, this phase is
-  // click-to-cancel (item 2(b)) rather than merely disabled.
+  // is `state.kind === "loading"`'s whole lifetime: it must not end
+  // when data starts reaching the plot panel, only when the import
+  // genuinely finishes. Unlike the census, this phase is click-to-cancel
+  // rather than merely disabled.
   const importingTracePath = state.kind === "loading" ? capturePath(state.result) : null;
   const toolbarItems: ToolbarItem[] = [
     { id: "project.open", label: "Open project…" },
@@ -3452,10 +3451,9 @@ export function App() {
       );
     }
     if (item === "viewSignals") {
-      // The launcher badge (task 89 phase 3): the same needing-attention
-      // count `list_view_signals` gives the panel, live whether or not
-      // the panel is open (`useViewSignalsAttentionCount`), quiet at
-      // zero.
+      // The launcher badge: the same needing-attention count
+      // `list_view_signals` gives the panel, live whether or not the
+      // panel is open (`useViewSignalsAttentionCount`), quiet at zero.
       return (
         <button
           key="view-signals"

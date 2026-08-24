@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 //
-// Task 75 item 2, refinements (a) + (b): the trace-open busy launcher
-// must stay busy until the import is actually done — not until the
-// plot starts getting data — and clicking it while busy with an import
-// in flight cancels that import.
+// The trace-open busy launcher must stay busy until the import is
+// actually done — not until the plot starts getting data — and
+// clicking it while busy with an import in flight cancels that import.
 //
 // `open_log`/`import_mdf` themselves resolve as soon as the host's pump
 // thread is spawned (`Ok(result)` right after `.spawn(...)` — see

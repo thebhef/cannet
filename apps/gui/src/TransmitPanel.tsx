@@ -112,9 +112,8 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   framesRef.current = frames;
 
   // Push this panel's calculated-field signal references to the host's
-  // view-signal panel model (task 89) — identity only, the only
-  // persisted per-signal picks a transmit frame carries
-  // (`viewSignalsPush.ts`).
+  // view-signal panel model — identity only, the only persisted
+  // per-signal picks a transmit frame carries (`viewSignalsPush.ts`).
   const viewSignalRefs = useMemo(() => transmitViewSignalRefs(frames), [frames]);
   usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
 
