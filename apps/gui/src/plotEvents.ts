@@ -100,3 +100,100 @@ export function plotEventExtents(
     color: e.color ?? kindColor(e.kind),
   }));
 }
+
+/// Lay a marker's label out as at most `maxLines` lines, none wider
+/// than `maxWidth`, ellipsising the last one when the label does not
+/// fit. `measure` reports the rendered width of a string in the
+/// caller's font.
+///
+/// An event label is free text, and a long one drawn as a single chip
+/// runs off the plot and over its neighbours' markers. Wrapping keeps
+/// it inside the area; the line cap keeps a paragraph-length note from
+/// covering the series it annotates.
+///
+/// Returns `[]` for a blank label — a chip with nothing in it is worse
+/// than no chip.
+export function wrapMarkerLabel(
+  label: string,
+  measure: (text: string) => number,
+  maxWidth: number,
+  maxLines: number,
+): string[] {
+  const words = label.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0 || maxLines < 1) return [];
+
+  /// Longest prefix of `word` that fits, never empty — a width too
+  /// small for even one character still has to yield a chip, or a
+  /// degenerate plot size silently erases the marker's name.
+  const fitPrefix = (word: string): string => {
+    let cut = word.length;
+    while (cut > 1 && measure(word.slice(0, cut)) > maxWidth) cut--;
+    return word.slice(0, cut);
+  };
+
+  const lines: string[] = [];
+  let line = "";
+  // Words still to place. A word wider than a line is split here and
+  // its tail pushed back on, so wrapping and hard-breaking share one
+  // loop.
+  const pending = [...words];
+  let truncated = false;
+  while (pending.length > 0) {
+    const word = pending[0];
+    const candidate = line.length === 0 ? word : `${line} ${word}`;
+    if (measure(candidate) <= maxWidth) {
+      line = candidate;
+      pending.shift();
+      continue;
+    }
+    if (line.length > 0) {
+      // Wrap at the space before this word.
+      lines.push(line);
+      line = "";
+    } else {
+      // No space to wrap at: break the word itself.
+      const head = fitPrefix(word);
+      pending[0] = word.slice(head.length);
+      if (pending[0].length === 0) pending.shift();
+      lines.push(head);
+    }
+    if (lines.length >= maxLines) {
+      truncated = line.length > 0 || pending.length > 0;
+      break;
+    }
+  }
+  if (lines.length < maxLines && line.length > 0) lines.push(line);
+
+  if (truncated) {
+    // Mark the last line as continuing, trimming it back until the
+    // ellipsis itself fits.
+    const idx = lines.length - 1;
+    let last = `${lines[idx]}…`;
+    while (measure(last) > maxWidth && last.length > 1) last = `${last.slice(0, -2)}…`;
+    lines[idx] = last;
+  }
+  return lines;
+}
+
+/// `events`, reordered so the ones being acted on draw last.
+///
+/// Marker lines and their label chips are painted in list order, so
+/// whichever comes later covers what came before. The event a reader is
+/// pointing at is the one they need to read, and it was as likely as not
+/// to be buried under a neighbour's chip. Lighting it and then drawing
+/// something else over it says two different things at once.
+///
+/// Stable within each group: the relative order of the quiet markers,
+/// and of a lit pair, is the one the list already had. Returns the same
+/// order at rest, when nothing is lit.
+export function litLast<T extends { id: string }>(
+  events: readonly T[],
+  litIds: ReadonlySet<string>,
+): readonly T[] {
+  if (litIds.size === 0) return events;
+  const quiet: T[] = [];
+  const lit: T[] = [];
+  for (const e of events) (litIds.has(e.id) ? lit : quiet).push(e);
+  if (lit.length === 0) return events;
+  return [...quiet, ...lit];
+}

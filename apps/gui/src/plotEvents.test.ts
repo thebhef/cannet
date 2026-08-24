@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultVisibleKinds, type EventKind, type Note } from "./notes";
-import { plotEventExtents, plotTimelineEvents, subjectsForSelection } from "./plotEvents";
+import {
+  plotEventExtents,
+  plotTimelineEvents,
+  litLast,
+  subjectsForSelection,
+  wrapMarkerLabel,
+} from "./plotEvents";
 import { signalRefKey, type SignalRef } from "./plotPanelConfig";
 
 const KIND_COLOR = (k: EventKind) =>
@@ -128,5 +134,91 @@ describe("plotEventExtents", () => {
 
   it("draws nothing when nothing is being acted on", () => {
     expect(plotEventExtents([], 1, KIND_COLOR)).toEqual([]);
+  });
+});
+
+describe("wrapMarkerLabel", () => {
+  // One "px" per character keeps the arithmetic readable: a width of 10
+  // holds ten characters.
+  const measure = (t: string) => t.length;
+
+  it("leaves a label that already fits on one line", () => {
+    expect(wrapMarkerLabel("brake on", measure, 20, 2)).toEqual(["brake on"]);
+  });
+
+  it("wraps at a space rather than mid-word", () => {
+    expect(wrapMarkerLabel("brake pedal pressed", measure, 12, 2)).toEqual([
+      "brake pedal",
+      "pressed",
+    ]);
+  });
+
+  it("ellipsises the last line once it runs out of lines", () => {
+    // Three words that need three lines, capped at two: the second line
+    // carries the ellipsis, so the label reads as continuing.
+    const out = wrapMarkerLabel("brake pedal pressed hard again", measure, 12, 2);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toBe("brake pedal");
+    expect(out[1].endsWith("…")).toBe(true);
+    expect(measure(out[1])).toBeLessThanOrEqual(12);
+  });
+
+  it("breaks a single word too long for a line", () => {
+    // No space to wrap at — a long DBC-ish identifier still has to fit.
+    const out = wrapMarkerLabel("HighVoltageBatteryOverTemperature", measure, 10, 2);
+    expect(out).toHaveLength(2);
+    expect(out.every((l) => measure(l) <= 10)).toBe(true);
+    expect(out[1].endsWith("…")).toBe(true);
+  });
+
+  it("keeps one line when asked for one", () => {
+    const out = wrapMarkerLabel("brake pedal pressed", measure, 12, 1);
+    expect(out).toHaveLength(1);
+    expect(out[0].endsWith("…")).toBe(true);
+  });
+
+  it("returns nothing for an empty label", () => {
+    expect(wrapMarkerLabel("", measure, 12, 2)).toEqual([]);
+    expect(wrapMarkerLabel("   ", measure, 12, 2)).toEqual([]);
+  });
+
+  it("still emits something when the width cannot hold one character", () => {
+    // A degenerate plot width must not produce an empty chip that looks
+    // like a marker with no name.
+    const out = wrapMarkerLabel("brake", measure, 0, 2);
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.length).toBeLessThanOrEqual(2);
+    expect(out[0].length).toBeGreaterThan(0);
+  });
+});
+
+describe("litLast", () => {
+  const evs = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
+
+  it("leaves the order alone when nothing is being acted on", () => {
+    // At rest every marker is equally lit, so nothing may move — the
+    // stacking a reader has learned is the one they keep.
+    expect(litLast(evs, new Set()).map((e) => e.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("puts the lit marker last, so it draws over the quiet ones", () => {
+    expect(litLast(evs, new Set(["b"])).map((e) => e.id)).toEqual(["a", "c", "d", "b"]);
+  });
+
+  it("keeps a lit pair in its own order", () => {
+    expect(litLast(evs, new Set(["c", "a"])).map((e) => e.id)).toEqual(["b", "d", "a", "c"]);
+  });
+
+  it("changes nothing when everything is lit", () => {
+    expect(litLast(evs, new Set(["a", "b", "c", "d"])).map((e) => e.id)).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+    ]);
+  });
+
+  it("ignores a lit id the plot does not hold", () => {
+    expect(litLast(evs, new Set(["zz"])).map((e) => e.id)).toEqual(["a", "b", "c", "d"]);
   });
 });
