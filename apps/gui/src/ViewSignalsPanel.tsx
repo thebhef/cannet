@@ -316,9 +316,13 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
 
   // --- the gridview (ADR 0044) ---
   // A flat leaf list — every row the host already sorted, with no
-  // expansion or disclosure content. The row count is bounded (the
-  // signals the open views reference), so there is no virtualization
-  // here, unlike the paged trace/by-id/signal views.
+  // expansion or disclosure content. There is no virtualization here,
+  // unlike the paged trace/by-id/signal views: the row count is the
+  // signals the open views reference, which is bounded by the loaded
+  // databases rather than by the capture. It is not small, though — a
+  // view selecting by pattern contributes every signal its pattern
+  // matches, so a broad pattern over a large database set puts a
+  // thousand rows or more here.
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gridRows = useMemo<GridviewRowModel[]>(
     () => filteredRows.map((r) => ({ id: rowId(r), kind: "leaf", expandable: false, depth: 0 })),

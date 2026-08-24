@@ -38,6 +38,8 @@ import {
   reorderSectionNames,
   resolvePatterns,
   scopeCatalog,
+  selectedPatterns,
+  signalsFromPatterns,
 } from "./signalSelection";
 import { ColorChip } from "./ColorChip";
 import { DisclosureToggle } from "./DisclosureToggle";
@@ -238,14 +240,6 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   // The selection (manual keys + patterns) is this view's model input;
   // persisted with the element like other panel config.
   const [selection, setSelection] = useState(() => selectionFromParams(savedConfig?.selection));
-  // Push this view's manual selection to the host's view-signal panel
-  // model — the selection *patterns* are excluded, for the same reason
-  // a plot area's patterns are (`viewSignalsPush.ts`).
-  const viewSignalRefs = useMemo(
-    () => signalsViewSignalRefs(selection.keys),
-    [selection.keys],
-  );
-  usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
   const [columns, setColumns] = useState<SignalColumnState[]>(() =>
     signalColumnsFromParams(savedConfig?.columns),
   );
@@ -441,6 +435,30 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     () => scopeCatalog(catalog, sourceBusSet),
     [catalog, sourceBusSet],
   );
+
+  // Push this view's referenced signals to the host's view-signal panel
+  // model: its manual keys with the fields they were recorded under,
+  // plus whatever its patterns — view-level and per-section alike —
+  // match right now, pushed identity-only (`viewSignalsPush.ts`). The
+  // host resolves the same patterns for the rows themselves; this
+  // resolution is the panel's own, because the registry takes
+  // references rather than a selection. The hook de-dupes a re-push
+  // that is equal by value, so a catalog change that moves no match
+  // costs nothing.
+  const patternMatches = useMemo(
+    () =>
+      signalsFromPatterns(
+        selectedPatterns(selection.patterns, sections.names, sections.patterns),
+        scopedCatalog,
+        lookup,
+      ),
+    [selection.patterns, sections, scopedCatalog, lookup],
+  );
+  const viewSignalRefs = useMemo(
+    () => signalsViewSignalRefs(selection.keys, patternMatches),
+    [selection.keys, patternMatches],
+  );
+  usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
 
   // Selection edits.
   const addKeys = useCallback((refs: readonly DraggableSignalRef[]) => {

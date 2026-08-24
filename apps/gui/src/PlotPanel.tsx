@@ -530,12 +530,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const winEnd = trace.offset + trace.frameCount;
 
   const [areas, setAreas] = useState<PlotAreaConfig[]>(() => areasFromParams(savedConfig?.areas));
-  // Push this panel's referenced signals to the host's view-signal
-  // panel model — every area's manual picks, recomputed whenever
-  // `areas` changes. The hook itself de-dupes a no-op re-push and
-  // un-pushes on unmount (`viewSignalsPush.ts`).
-  const viewSignalRefs = useMemo(() => plotViewSignalRefs(areas), [areas]);
-  usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
   const [followLive, setFollowLive] = useState(() => boolFromRaw(savedConfig?.followLive, true));
   const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(savedConfig?.cursorMode));
   const [measEnabled, setMeasEnabled] = useState(() => boolFromRaw(savedConfig?.measEnabled, false));
@@ -1564,6 +1558,19 @@ export function PlotPanel(props: IDockviewPanelProps) {
     effectiveAreaMemo.commit();
     return out;
   }, [areas, scopedCatalog, busNameLookup, effectiveAreaMemo]);
+
+  // Push this panel's referenced signals to the host's view-signal
+  // panel model: every area's manual picks with the fields they were
+  // recorded under, plus whatever its patterns match right now, pushed
+  // identity-only (`viewSignalsPush.ts`). Recomputed whenever the
+  // stored areas or the resolved ones move — so a DBC load that changes
+  // what the patterns match re-pushes. The hook de-dupes a re-push that
+  // is equal by value, and un-pushes on unmount.
+  const viewSignalRefs = useMemo(
+    () => plotViewSignalRefs(areas, effectiveAreas),
+    [areas, effectiveAreas],
+  );
+  usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
 
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 

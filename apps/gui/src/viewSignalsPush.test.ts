@@ -33,10 +33,11 @@ function area(signals: SignalRef[], patterns: string[] = []): PlotAreaConfig {
 
 describe("plotViewSignalRefs", () => {
   it("flattens every area's manual signals, carrying messageName and unit", () => {
-    const refs = plotViewSignalRefs([
+    const areas = [
       area([signal()]),
       area([signal({ signalName: "BrakePressure", unit: "bar" })]),
-    ]);
+    ];
+    const refs = plotViewSignalRefs(areas, areas);
     expect(refs).toEqual([
       {
         busId: "power",
@@ -59,19 +60,66 @@ describe("plotViewSignalRefs", () => {
     ]);
   });
 
-  it("carries fileBacked through, and never emits anything for a pattern alone", () => {
-    const refs = plotViewSignalRefs([
-      area([signal({ fileBacked: true })], ["Cell.*"]),
-    ]);
-    // Exactly one ref — the manual pick. The pattern contributes
-    // nothing: it has no recorded configuration to compare against.
+  it("carries fileBacked through", () => {
+    const areas = [area([signal({ fileBacked: true })], ["Cell.*"])];
+    const refs = plotViewSignalRefs(areas, areas);
     expect(refs).toHaveLength(1);
     expect(refs[0].fileBacked).toBe(true);
   });
 
-  it("is empty for an area with only patterns, and for no areas at all", () => {
-    expect(plotViewSignalRefs([area([], ["Cell.*"])])).toEqual([]);
-    expect(plotViewSignalRefs([])).toEqual([]);
+  it("emits a pattern match identity-only, dropping the resolved messageName and unit", () => {
+    const areas = [area([], ["Cell.*"])];
+    const resolved = [
+      area([signal({ signalName: "Cell1", messageName: "Bms", unit: "V" })], ["Cell.*"]),
+    ];
+    expect(plotViewSignalRefs(areas, resolved)).toEqual([
+      { busId: "power", messageId: 0x100, extended: false, signalName: "Cell1" },
+    ]);
+  });
+
+  it("keeps the manual pick's recorded fields when a pattern also matches it", () => {
+    const picked = signal({ signalName: "Cell1" });
+    const areas = [area([picked], ["Cell.*"])];
+    // `applyAreaSelection` excludes a manual pick from its own area's
+    // matches, but another area's pattern can still reach it.
+    const resolved = [area([picked], ["Cell.*"]), area([signal({ signalName: "Cell1" })], ["Cell.*"])];
+    const refs = plotViewSignalRefs([...areas, area([], ["Cell.*"])], resolved);
+    expect(refs).toEqual([
+      {
+        busId: "power",
+        messageId: 0x100,
+        extended: false,
+        signalName: "Cell1",
+        fileBacked: undefined,
+        messageName: "Chassis",
+        unit: "km/h",
+      },
+    ]);
+  });
+
+  it("emits a pattern-derived row that carries overrides identity-only", () => {
+    // A recolored pattern row persists as a `viaPattern` entry — it is
+    // not a pick, so it has no recorded mapping to compare against.
+    const over = signal({ signalName: "Cell2", viaPattern: true, colorPick: "#f00" });
+    const areas = [area([over], ["Cell.*"])];
+    expect(plotViewSignalRefs(areas, areas)).toEqual([
+      { busId: "power", messageId: 0x100, extended: false, signalName: "Cell2" },
+    ]);
+  });
+
+  it("emits one ref per identity when several areas match the same signal", () => {
+    const areas = [area([], ["Cell.*"]), area([], ["Cell.*"])];
+    const resolved = [
+      area([signal({ signalName: "Cell1" })], ["Cell.*"]),
+      area([signal({ signalName: "Cell1" })], ["Cell.*"]),
+    ];
+    expect(plotViewSignalRefs(areas, resolved)).toHaveLength(1);
+  });
+
+  it("is empty for an area whose patterns match nothing, and for no areas at all", () => {
+    const areas = [area([], ["Cell.*"])];
+    expect(plotViewSignalRefs(areas, areas)).toEqual([]);
+    expect(plotViewSignalRefs([], [])).toEqual([]);
   });
 });
 
@@ -89,7 +137,7 @@ describe("signalsViewSignalRefs", () => {
   }
 
   it("maps every manual selection key, carrying messageName and unit", () => {
-    const refs = signalsViewSignalRefs([key(), key({ signalName: "CoolantTemp" })]);
+    const refs = signalsViewSignalRefs([key(), key({ signalName: "CoolantTemp" })], []);
     expect(refs).toEqual([
       {
         busId: "body",
@@ -112,8 +160,40 @@ describe("signalsViewSignalRefs", () => {
     ]);
   });
 
+  it("emits a pattern match identity-only, and dedupes it against the manual keys", () => {
+    const refs = signalsViewSignalRefs(
+      [key()],
+      [
+        { busId: "body", messageId: 0x310, extended: false, signalName: "AmbientTemp" },
+        { busId: "body", messageId: 0x310, extended: false, signalName: "CabinSetpoint" },
+      ],
+    );
+    expect(refs).toEqual([
+      {
+        busId: "body",
+        messageId: 0x310,
+        extended: false,
+        signalName: "AmbientTemp",
+        fileBacked: undefined,
+        messageName: "Climate",
+        unit: "C",
+      },
+      { busId: "body", messageId: 0x310, extended: false, signalName: "CabinSetpoint" },
+    ]);
+  });
+
+  it("emits a matched file-backed signal with its flag", () => {
+    const refs = signalsViewSignalRefs(
+      [],
+      [{ busId: null, messageId: 3, extended: false, signalName: "Torque", fileBacked: true }],
+    );
+    expect(refs).toEqual([
+      { busId: null, messageId: 3, extended: false, signalName: "Torque", fileBacked: true },
+    ]);
+  });
+
   it("is empty for an empty selection", () => {
-    expect(signalsViewSignalRefs([])).toEqual([]);
+    expect(signalsViewSignalRefs([], [])).toEqual([]);
   });
 });
 

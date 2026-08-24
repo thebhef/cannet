@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { ViewSignalCandidate, ViewSignalRow } from "./types";
+import type { ViewSignalCandidate, ViewSignalRef, ViewSignalRow } from "./types";
 
 import {
   LONG_MESSAGE_NAME,
@@ -88,11 +88,67 @@ let ATTENTION_COUNT = 2;
 let POOL: unknown[] = [];
 const calls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 
+/// A stand-in for the host's `ViewSignalRegistry`: the pushes the views
+/// make, held in app state and read back whole on every list. Null for
+/// every test that just wants fixed `ROWS`; a test that cares about
+/// *when* a push happened relative to the panel sets it to a map and
+/// gets a host that remembers.
+let REGISTRY: Map<string, { viewName: string; signals: ViewSignalRefWire[] }> | null = null;
+interface ViewSignalRefWire {
+  busId: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  messageName?: string;
+  unit?: string;
+}
+/// The rows `REGISTRY` implies. Only the plumbing is under test here,
+/// so every reference resolves to a Decoded row — the taxonomy itself
+/// is `view_signals.rs`'s own tests.
+function registryRows(): ViewSignalRow[] {
+  const out: ViewSignalRow[] = [];
+  for (const view of REGISTRY?.values() ?? []) {
+    for (const s of view.signals) {
+      out.push(
+        row({
+          id: `${s.busId}|${s.messageId}:${s.signalName}`,
+          busId: s.busId,
+          busName: s.busId === "power" ? "Powertrain" : "Body",
+          messageId: s.messageId,
+          extended: s.extended,
+          signalName: s.signalName,
+          messageName: s.messageName ?? "",
+          unit: s.unit ?? "",
+          usedBy: [view.viewName],
+        }),
+      );
+    }
+  }
+  return out;
+}
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     calls.push({ cmd, args });
     if (cmd === "list_view_signals") {
+      if (REGISTRY) {
+        const rows = registryRows();
+        return { rows, attentionCount: 0, total: rows.length };
+      }
       return { rows: ROWS, attentionCount: ATTENTION_COUNT, total: ROWS.length };
+    }
+    if (cmd === "set_view_signals" && REGISTRY) {
+      REGISTRY.set(args?.viewId as string, {
+        viewName: args?.viewName as string,
+        signals: args?.signals as ViewSignalRefWire[],
+      });
+      emitHostEvent("view-signals-changed");
+      return undefined;
+    }
+    if (cmd === "remove_view_signals" && REGISTRY) {
+      REGISTRY.delete(args?.viewId as string);
+      emitHostEvent("view-signals-changed");
+      return undefined;
     }
     if (cmd === "list_transmit_frames") return POOL;
     return undefined;
@@ -112,6 +168,7 @@ function emitHostEvent(event: string) {
 }
 
 import { ViewSignalsPanel } from "./ViewSignalsPanel";
+import { usePushViewSignals } from "./viewSignalsPush";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { makeLiveRegistry } from "./registryTestKit";
 import type { ProjectElement } from "./types";
@@ -151,6 +208,7 @@ function lastListCall() {
 beforeEach(() => {
   ROWS = DEFAULT_ROWS;
   ATTENTION_COUNT = 2;
+  REGISTRY = null;
   POOL = [];
   calls.length = 0;
   setSignalColor.mockClear();
@@ -617,5 +675,43 @@ describe("ViewSignalsPanel with long names", () => {
     expectMiddleEllipsis(rows[0].querySelector(".col-vs-signal"), LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
     expectMiddleEllipsis(rows[0].querySelector(".col-vs-msg"), LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL);
     expect(rows[1].querySelector(".name-text")).toBeNull();
+  });
+});
+
+// The owner asked whether a view has to have existed when the panel
+// was created for its signals to show up. It does not, and this is the
+// falsification: the view mounts and pushes while no panel is on
+// screen, and the panel — mounted afterwards, against a host that
+// simply remembers the push — lists the signal from its own first
+// fetch. The registry is app state, not a subscription.
+describe("ViewSignalsPanel mounted after the views that push", () => {
+  function Probe({ viewId, viewName, refs }: { viewId: string; viewName: string; refs: ViewSignalRef[] }) {
+    usePushViewSignals(viewId, viewName, refs);
+    return null;
+  }
+
+  it("lists a signal pushed before the panel existed", async () => {
+    REGISTRY = new Map();
+    const refs: ViewSignalRef[] = [
+      {
+        busId: "power",
+        messageId: 0x100,
+        extended: false,
+        signalName: "PackVolts",
+        messageName: "PackStatus",
+        unit: "V",
+      },
+    ];
+    // The view mounts first, with nothing listening.
+    render(<Probe viewId="v-early" viewName="Plot 1" refs={refs} />);
+    await waitFor(() => expect(REGISTRY?.size).toBe(1));
+    expect(calls.some((c) => c.cmd === "list_view_signals")).toBe(false);
+
+    // …and the panel, mounted afterwards, sees it.
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Plot 1")).toBeInTheDocument();
   });
 });

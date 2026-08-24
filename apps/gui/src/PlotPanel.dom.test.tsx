@@ -7404,6 +7404,37 @@ describe("PlotPanel when the database behind a signal is unassigned", () => {
       cleanup();
       expect(invoke).toHaveBeenCalledWith("remove_view_signals", { viewId: "el-view-signals" });
     });
+
+    it("pushes what an area's pattern matches, identity-only", async () => {
+      // A pattern-matched signal is one the view is using, so it
+      // belongs in the panel that lists them. It pushes no messageName
+      // or unit: those resolve live from the catalog, so there is
+      // nothing recorded for a database change to have drifted from.
+      const registry = makeRegistry({
+        id: "el-pattern-push",
+        config: { areas: [{ id: "a1", signals: [], patterns: ["EngineSpeed"] }] },
+      });
+      await withSizedCanvas(async () => {
+        renderPanel({ params: { elementId: "el-pattern-push" }, registry });
+        await waitFor(() =>
+          expect(
+            [...vi.mocked(invoke).mock.calls]
+              .reverse()
+              .find(
+                (c) =>
+                  c[0] === "set_view_signals" &&
+                  (c[1] as { viewId?: string } | undefined)?.viewId === "el-pattern-push",
+              )?.[1],
+          ).toEqual(
+            expect.objectContaining({
+              signals: [
+                { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed" },
+              ],
+            }),
+          ),
+        );
+      });
+    });
   });
 });
 

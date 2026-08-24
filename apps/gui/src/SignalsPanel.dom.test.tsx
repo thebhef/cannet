@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { SignalSnapshotRecord } from "./types";
+import type { SignalDescriptorRecord, SignalSnapshotRecord } from "./types";
 
 import {
   LONG_MESSAGE_NAME,
@@ -78,11 +78,15 @@ const RAW_FIELD_ROW: SignalSnapshotRecord = {
 // viewport fits two).
 let ROWS: SignalSnapshotRecord[] = DEFAULT_ROWS;
 
+// The signal catalog the mocked host serves. Empty by default — only
+// the surfaces that resolve patterns against it need one.
+let CATALOG: SignalDescriptorRecord[] = [];
+
 const invokeCalls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     invokeCalls.push({ cmd, args });
-    if (cmd === "list_signals") return [];
+    if (cmd === "list_signals") return CATALOG;
     if (cmd === "fetch_signal_page") return { count: ROWS.length, start: 0, rows: ROWS };
     return undefined;
   }),
@@ -96,7 +100,7 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { freshTrace } from "./trace";
-import { SIGNAL_DND_MIME } from "./dragSignals";
+import { DRAG_PATTERNS_MIME, SIGNAL_DND_MIME } from "./dragSignals";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { signalKey } from "./plotData";
 import { stableSignalColor } from "./palette";
@@ -211,6 +215,7 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   invokeCalls.length = 0;
   ROWS = DEFAULT_ROWS;
+  CATALOG = [];
 });
 afterEach(() => {
   cleanup();
@@ -435,6 +440,53 @@ describe("SignalsPanel", () => {
           (c) => c.cmd === "remove_view_signals" && c.args?.viewId === "el-view-signals",
         ),
       ).toBe(true);
+    });
+
+    it("pushes what a dropped pattern matches, identity-only", async () => {
+      // A pattern is part of what the view selects — a section's own as
+      // much as a view-level one — so its matches belong in the panel
+      // that lists the signals this view uses. They push no messageName
+      // or unit: those resolve live from the catalog, so there is
+      // nothing recorded for a database change to have drifted from.
+      CATALOG = [
+        {
+          bus_id: "p",
+          message_id: 256,
+          extended: false,
+          transmitter: "EngineEcu",
+          message_name: "EngineData",
+          signal_name: "EngineSpeed",
+          unit: "rpm",
+          is_enum: false,
+        },
+        {
+          bus_id: "p",
+          message_id: 512,
+          extended: false,
+          transmitter: "DeadEcu",
+          message_name: "DeadMsg",
+          signal_name: "DeadSignal",
+          unit: "",
+          is_enum: false,
+        },
+      ];
+      renderPanel({ params: { elementId: "el-pattern-push" } });
+      const payload = JSON.stringify({ signals: [], patterns: ["/EngineData/"] });
+      const panel = document.querySelector(".signals-panel")!;
+      fireEvent.drop(panel, {
+        dataTransfer: {
+          types: [SIGNAL_DND_MIME, DRAG_PATTERNS_MIME],
+          getData: (mime: string) => (mime === SIGNAL_DND_MIME ? payload : ""),
+        },
+      });
+      await waitFor(() => {
+        const last = [...invokeCalls]
+          .reverse()
+          .find((c) => c.cmd === "set_view_signals" && c.args?.viewId === "el-pattern-push");
+        expect(last?.args?.signals).toEqual([
+          { busId: "p", messageId: 256, extended: false, signalName: "EngineSpeed" },
+        ]);
+      });
     });
   });
 });

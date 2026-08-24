@@ -12,26 +12,43 @@
 /// shape into the wire shape, so the mapping is unit-testable without
 /// mounting a panel.
 ///
-/// **Which views push, and what.** Not every view that touches a
-/// signal has a *recorded reference* to push. A manual pick — a plot
-/// area's `signals`, the signals view's `selection.keys`, a colormap
-/// element's target, a transmit frame's calculated-field signal — is a
-/// stored identity (plus, where the view records it, the fields a
-/// drift is measured against) that can go stale when the databases
-/// change. A **pattern** (a plot area's `patterns`, the signals view's
-/// selection patterns, a signal-generator rule) is re-evaluated against
-/// the *live* catalog on every render — it has no recorded
-/// configuration for the database to have drifted from, and it cannot
-/// go stale the way a manual pick can, so it is never pushed. The same
-/// reasoning excludes a transmit frame's byte-level signal edits: they
-/// are resolved against whichever DBC is assigned at edit time and
-/// immediately flattened to bytes, with no persisted per-signal pick
-/// left behind.
+/// **Which views push, and what.** A view pushes every signal it is
+/// actually using, whether it named that signal or matched it. The two
+/// differ only in what they can say about it:
+///
+/// - A **manual pick** — a plot area's `signals`, the signals view's
+///   `selection.keys`, a colormap element's target, a transmit frame's
+///   calculated-field signal — is a stored identity, and where the view
+///   also recorded the message name and unit, those are what a drift is
+///   measured against. Such a row can read any status, Scale and Stale
+///   included.
+/// - A **pattern match** — a plot area's `patterns`, the signals view's
+///   selection and section patterns — is re-evaluated against the live
+///   catalog, so the message name and unit it resolves to are whatever
+///   the catalog says right now, not something the view recorded
+///   earlier; pushing them would compare the catalog against itself. So
+///   a matched signal pushes **identity only**, which the wire already
+///   allows (`ViewSignalRef`'s optional fields), and its row can read
+///   Decoded, Not Decoded or Ambiguous but never Scale or Stale —
+///   there is no recorded comparand for it to have drifted from.
+///
+/// The builders below therefore take each view's resolved matches
+/// alongside its persisted picks, and a signal that is both keeps the
+/// pick, which says more.
+///
+/// Two cases still push nothing. A transmit frame's byte-level signal
+/// edits are resolved against whichever DBC is assigned at edit time
+/// and immediately flattened to bytes, leaving no per-signal pick
+/// behind. A **signal-generator rule** (ADR 0026) matches signal
+/// *names* across the whole catalog to assign a color-wheel slot: it
+/// puts nothing on screen, and wherever a matched signal is displayed
+/// the view displaying it already pushes it.
 
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ViewSignalRef } from "./types";
+import { signalKey } from "./plotData";
 import type { PlotAreaConfig } from "./plotPanelConfig";
 import type { DraggableSignalRef } from "./dragSignals";
 import type { TransmitFrameConfig } from "./transmitFrameConfig";
@@ -68,14 +85,50 @@ export function usePushViewSignals(
   );
 }
 
-/// The plot panel's references: every area's manual `signals`,
-/// flattened, carrying the `messageName` / `unit` the area recorded
-/// them under (what Scale/Stale drift is measured against). Pattern-
-/// matched rows are excluded — see the module doc.
-export function plotViewSignalRefs(areas: readonly PlotAreaConfig[]): ViewSignalRef[] {
+/// The identity of a signal a view's patterns currently match — every
+/// field such a row pushes, and the least the wire accepts. See the
+/// module doc for why it pushes no more than this.
+export interface MatchedSignalRef {
+  busId: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  fileBacked?: boolean;
+}
+
+const identityKey = (s: MatchedSignalRef): string =>
+  signalKey(s.busId, s.messageId, s.extended, s.signalName, s.fileBacked ?? false);
+
+const identityRef = (s: MatchedSignalRef): ViewSignalRef => ({
+  busId: s.busId ?? null,
+  messageId: s.messageId,
+  extended: s.extended,
+  signalName: s.signalName,
+  ...(s.fileBacked ? { fileBacked: true as const } : {}),
+});
+
+/// The plot panel's references. `areas` is the persisted state, whose
+/// manual picks carry the `messageName` / `unit` the area recorded them
+/// under — what Scale/Stale drift is measured against.
+/// `effectiveAreas` is that same list with every area's `patterns`
+/// resolved against the live catalog (`signalSelection.ts`'s
+/// `applyAreaSelection`): everything in it that is not a manual pick is
+/// a pattern-derived row, and pushes identity-only, deduped across
+/// areas.
+///
+/// A `viaPattern` entry is not a pick — it exists only to carry a
+/// pattern row's color / hidden override — so it takes the
+/// identity-only path like any other match.
+export function plotViewSignalRefs(
+  areas: readonly PlotAreaConfig[],
+  effectiveAreas: readonly PlotAreaConfig[],
+): ViewSignalRef[] {
   const out: ViewSignalRef[] = [];
+  const seen = new Set<string>();
   for (const area of areas) {
     for (const s of area.signals) {
+      if (s.viaPattern) continue;
+      seen.add(identityKey(s));
       out.push({
         busId: s.busId,
         messageId: s.messageId,
@@ -87,18 +140,28 @@ export function plotViewSignalRefs(areas: readonly PlotAreaConfig[]): ViewSignal
       });
     }
   }
+  for (const area of effectiveAreas) {
+    for (const s of area.signals) {
+      const key = identityKey(s);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(identityRef(s));
+    }
+  }
   return out;
 }
 
 /// The signals ("Trace") view's references: its manual selection keys,
 /// which — like the plot's manual picks — carry a recorded
-/// `messageName` / `unit`. Its selection *patterns* are the same live,
-/// unrecordable case as the plot's and are excluded for the same
-/// reason (see the module doc).
+/// `messageName` / `unit`, plus `matches`, what its selection patterns
+/// and its sections' own patterns resolve to against the live catalog.
+/// A match that is already a manual key is left to the key, which says
+/// more.
 export function signalsViewSignalRefs(
   keys: readonly DraggableSignalRef[],
+  matches: readonly MatchedSignalRef[],
 ): ViewSignalRef[] {
-  return keys.map((k) => ({
+  const out: ViewSignalRef[] = keys.map((k) => ({
     busId: k.busId,
     messageId: k.messageId,
     extended: k.extended,
@@ -107,6 +170,14 @@ export function signalsViewSignalRefs(
     messageName: k.messageName,
     unit: k.unit,
   }));
+  const seen = new Set(keys.map(identityKey));
+  for (const m of matches) {
+    const key = identityKey(m);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(identityRef(m));
+  }
+  return out;
 }
 
 /// The color-map element's one target signal, or nothing before a
