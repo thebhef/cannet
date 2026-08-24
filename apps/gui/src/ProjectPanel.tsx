@@ -514,14 +514,15 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             onRefresh={() => void discovery.refresh(server.address)}
           />
         ))}
-        {p.interfaceBindings.length === 0 ? (
+        {p.interfaceBindings.length === 0 && (
           <div className="project-empty">
             No interfaces selected. Pick one on a logical bus above to enable
             Connect.
           </div>
-        ) : (
-          <div className="project-buttons">
-            {p.remoteConnected ? (
+        )}
+        <div className="project-buttons">
+          {p.interfaceBindings.length > 0 &&
+            (p.remoteConnected ? (
               <button type="button" onClick={p.onDisconnect}>
                 Disconnect all
               </button>
@@ -529,9 +530,19 @@ export function ProjectPanel(props: IDockviewPanelProps) {
               <button type="button" onClick={p.onConnect}>
                 Connect all
               </button>
-            )}
-          </div>
-        )}
+            ))}
+          {/* Unconditional, unlike the bus rows' copies of this
+              launcher: a project with no buses yet is exactly when a
+              user needs to add the server their interfaces live on. */}
+          <button
+            type="button"
+            data-testid="manage-servers"
+            onClick={() => showServersPanel(containerApi)}
+            title="Add, trust and forget the servers this machine talks to."
+          >
+            Manage servers…
+          </button>
+        </div>
       </CollapsibleSection>
 
       <CollapsibleSection title="DBC" {...fold(SECTION_DBC)}>
