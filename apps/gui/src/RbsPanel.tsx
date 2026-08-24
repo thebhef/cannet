@@ -56,16 +56,15 @@ import { RbsValueCell } from "./rbsValueCell";
 import { GridviewFilterBox, useGridviewFilter } from "./gridviewFilter";
 import { ChipButton } from "./ChipButton";
 import { Icon } from "./Icon";
-import { useGridview, type Gridview } from "./useGridview";
+import { makeRowGridPropsCache, useGridview, type Gridview, type RowGridProps } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
 import {
   buildRbsFilterEntries,
   buildVisibleTree,
+  findRbsEnableToggle,
   makeRbsRowSpace,
   makeRbsRowIds,
-  makeRowGridPropsCache,
   type RbsRowIds,
-  type RowGridProps,
   type VisibleBus,
 } from "./rbsRowIdentity";
 import { NameText } from "./NameText";
@@ -298,7 +297,27 @@ export function RbsPanel(props: IDockviewPanelProps) {
       isSelectable: (row) => row.kind === "leaf",
     };
   }, [gridRows, effectiveExpanded, setRowExpanded]);
-  const grid = useGridview({ adapter, pageRows: PAGE_ROWS, idPrefix: `rbs-${elementId}` });
+  /// Space is the layer's primary action on the cursor's row
+  /// (ADR 0044), and in this tree that action is the row's own enable —
+  /// the checkbox the mouse presses. Read through a ref so the callback
+  /// keeps one identity across the 500 ms value poll that rebuilds the
+  /// tree.
+  const treeDataRef = useRef(tree);
+  treeDataRef.current = tree;
+  const onPrimaryAction = useCallback(
+    (id: string) => {
+      const toggle = findRbsEnableToggle(treeDataRef.current, rowIds, id);
+      if (toggle == null) return;
+      void invoke("rbs_set_enabled", { elementId, ...toggle }).catch(() => {});
+    },
+    [elementId, rowIds],
+  );
+  const grid = useGridview({
+    adapter,
+    pageRows: PAGE_ROWS,
+    idPrefix: `rbs-${elementId}`,
+    onPrimaryAction,
+  });
   /// `scrollToRow` is built inside a memo that must not move with the
   /// hook's per-render identity, so it reads the mapping through a ref.
   const rowDomIdRef = useRef(grid.rowDomId);

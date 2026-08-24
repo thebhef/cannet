@@ -18,7 +18,7 @@ import {
   type KeyStroke,
 } from "./keybindings";
 import { arrayRowSpace, type GridviewRow } from "./gridviewRows";
-import { useGridview } from "./useGridview";
+import { makeRowGridPropsCache, useGridview } from "./useGridview";
 
 afterEach(cleanup);
 
@@ -668,5 +668,48 @@ describe("global dispatcher suppression", () => {
     } finally {
       dispatcher.dispose();
     }
+  });
+});
+
+describe("makeRowGridPropsCache", () => {
+  it("hands back the same props object for the same row", () => {
+    const grid = {
+      rowDomId: (id: string) => `p-${id}`,
+      onRowClick: vi.fn(),
+    };
+    const rowProps = makeRowGridPropsCache({ current: grid } as never, { current: null });
+    expect(rowProps("m:pack/0x100")).toBe(rowProps("m:pack/0x100"));
+    expect(rowProps("m:pack/0x100").id).toBe("p-m:pack/0x100");
+  });
+
+  it("routes the click to the live gridview, not the one it was built with", () => {
+    const first = { rowDomId: (id: string) => id, onRowClick: vi.fn() };
+    const ref = { current: first };
+    const rowProps = makeRowGridPropsCache(ref as never, { current: null });
+    const props = rowProps("m:pack/0x100");
+    const later = { rowDomId: (id: string) => id, onRowClick: vi.fn() };
+    ref.current = later;
+    props.onClick({ ctrlKey: true, metaKey: false, shiftKey: false } as never);
+    expect(first.onRowClick).not.toHaveBeenCalled();
+    expect(later.onRowClick).toHaveBeenCalledWith("m:pack/0x100", { mod: true, shift: false });
+  });
+
+  it("hands the container the keyboard, unless the click was aimed at a control", () => {
+    const grid = { rowDomId: (id: string) => id, onRowClick: vi.fn() };
+    const container = { focus: vi.fn() };
+    const rowProps = makeRowGridPropsCache({ current: grid } as never, {
+      current: container as never,
+    });
+    const click = (target: unknown) =>
+      rowProps("m:pack/0x100").onClick({
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey: false,
+        target,
+      } as never);
+    click({ closest: () => null });
+    expect(container.focus).toHaveBeenCalledTimes(1);
+    click({ closest: () => ({}) });
+    expect(container.focus).toHaveBeenCalledTimes(1);
   });
 });

@@ -568,6 +568,89 @@ itself.
 - `cannet-client` +1, the `cannet-wire` round-trip extended to the new
   value, `busHealth` +2.
 
+**2026-08-22 — Phase 3 (The RBS panels become grid rows), items 7 and
+10.** Branch `task-109-phase-3-rbs-grid-rows` off
+`task-109-phase-2-dead-interface`. Frontend only; no host change.
+
+**Item 7's premise is confirmed false, and now has the test task 99
+never wrote.** `RbsPanel` instantiated the gridview without passing
+`onPrimaryAction`, so `useGridview`'s Space branch returned at
+`if (!onPrimaryAction …)` and the press reached the scroll container.
+Space now toggles the cursor row's own enable at whichever level the row
+is — bus, ECU or message — through the same `rbs_set_enabled` call the
+row's checkbox makes. The resolution is a pure function
+(`findRbsEnableToggle`, `rbsRowIdentity.ts`): a message row id carries
+its bus and message key but *not* the ECU the command needs, so the
+walk reads it off the visible tree rather than parsing the id. It is
+walked on the press rather than indexed per render — the tree is rebuilt
+on every 500 ms value poll and a keystroke is rare.
+
+Two controls, both green before and after: a row whose checkbox is
+disabled for the mouse (an unresolved bus, a message no database
+defines) does nothing on Space, and a **focused** enable checkbox keeps
+the press. The second needed no layer change — `isEditableTarget`
+already answers true for every `HTMLInputElement`, checkboxes included,
+and the hook's editable exemption runs before its Space branch, so the
+grid was never going to double-fire a checkbox the user is standing on.
+
+**Item 10: what was actually missing was the cursor, not the layer.**
+`RbsSignalsPanel` already instantiated `useGridview` with
+`arrayRowSpace` and already carried the selection — but it rendered
+nothing of the cursor, so keyboard navigation moved an invisible thing;
+and its row click never handed focus to the container, so a
+mouse-then-keyboard session left focus on `<body>` with the arrows dead.
+That is the "kinda awkward". Three changes, no fork of the layer:
+
+- `makeRowGridPropsCache` **moved from `rbsRowIdentity.ts` into
+  `useGridview.ts`** and both RBS panels now use it. It was already the
+  one implementation of ADR 0044's "a click hands the container the
+  keyboard, unless it was aimed at a control that wants focus itself";
+  it was simply filed under the RBS tree. Its three tests moved with it,
+  to `useGridview.dom.test.tsx`.
+- The rows carry `data-active` for the cursor, and `.rbs-signals-row
+  [data-active]` gets the same inset outline the RBS tree's rows and
+  the transmit list's already use.
+- Space is bound, per the idiom below.
+
+**One idiom, and the judgment call in it.** Space activates or
+deactivates *a message* in both panels. In the signals grid the row is a
+field of one, so the press toggles the message that carries it — the
+state the row already reports, since Muted means precisely "this message
+will not play". The value sent is derived from that displayed status
+rather than from the message's own enable flag, deliberately: where the
+mute comes from the bus or the ECU, deriving makes the press inert,
+while reading the message flag would flip it under a mute with nothing
+on screen to show the change. Inert-and-honest beats invisible-and-
+effective. Filed for a ruling as owner-review-queue 1.26 — grooming
+named the key, not its subject.
+
+**Tests.** `RbsPanel.gridview.dom.test.tsx` +4 (the three-level toggle,
+re-enabling a disabled message, the inert row, the focused checkbox);
+new `RbsSignalsPanel.gridview.dom.test.tsx`, 5 cases (the visible
+cursor and `aria-activedescendant`, click-hands-the-keyboard, Space
+down and Space up, and the value editor keeping its own Space);
+`rbsRowIdentity.test.ts` +4 for `findRbsEnableToggle`. Falsified before
+being trusted: with the two `onPrimaryAction` bindings and the
+`data-active` attribute removed, 6 of the 9 new panel cases fail; the
+other 3 are the no-op controls, which pass either way by design.
+
+**Perf skipped by owner instruction** (mid-phase, 2026-08-22). No
+ADR-0031 capture was filed for this phase and nothing was written to
+`docs/performance-measurements/frontend/`.
+
+**An observation for phase 5, not chased.** Every gridview container is
+`tabIndex: 0` (`useGridview`'s `containerProps`) and `index.css`
+suppresses no focus ring on any of them — `.trace-rows`,
+`.rbs-signals-rows` and the RBS tree all inherit the UA ring, and the
+only `:focus-visible` rules in the stylesheet are on `.trace-row`,
+`.chip-button` and two plot menus. So a keyboard press that leaves the
+cursor where it is would show nothing *but* a ring around the whole
+container box — and `cursorAction` returns `none` for ArrowLeft on a
+depth-0 row while `useGridview` still calls `preventDefault` on it.
+That is a candidate for "the entire box gets highlighted on leftarrow",
+offered as a place to point the reproduction; it is not a conclusion,
+and no experiment here tested it.
+
 ## Blockers / side effects
 
 **Phase 2 - the closing confirmation is owner-run.** Everything in

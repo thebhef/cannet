@@ -287,6 +287,19 @@ third event, and the band goes until the pointer leaves.
 
 **Needed: confirm hover-wins, or make the two union.** One line.
 
+### 1.26 Space in the RBS signals grid toggles the whole message
+[task 109](tasks/0109-usage-feedback-chip-era.md) phase 3
+
+Grooming asked for Space as the row's primary action in both RBS panels
+but did not say what the action is where the row is a *field* rather
+than a message. The reading taken is the one that keeps a single idiom:
+Space activates / deactivates the message the field belongs to, which is
+exactly what the row's Muted status reports. Two consequences: one press
+moves every sibling field of that message, and where the mute comes from
+the bus or the ECU the press is deliberately inert.
+
+**Needed: confirm the message is the right subject, or name another.**
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost
