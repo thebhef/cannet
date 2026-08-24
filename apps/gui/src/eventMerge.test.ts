@@ -13,6 +13,7 @@ function ev(id: string): TimelineEvent {
     description: null,
     tag: null,
     editable: true,
+    subjects: [],
   };
 }
 

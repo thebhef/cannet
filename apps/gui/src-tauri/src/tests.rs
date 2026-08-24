@@ -1815,6 +1815,7 @@ fn notes_via_import_walk(blf_path: &str) -> Vec<crate::notes::Note> {
 /// sink riding the same pass. The frame ids and the marker count must
 /// match the input.
 #[test]
+#[allow(clippy::too_many_lines)] // one round-trip, asserted end to end
 fn write_blf_capture_round_trips_frames_and_notes() {
     use cannet_blf::BlfCanFrameSource;
     let dir = tempfile::tempdir().unwrap();
@@ -1869,6 +1870,7 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             description: None,
             tag: None,
             commented_event_type: None,
+            subjects: Vec::new(),
         },
         notes::Note {
             id: "b".into(),
@@ -1879,6 +1881,7 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             description: None,
             tag: None,
             commented_event_type: None,
+            subjects: Vec::new(),
         },
     ];
 
@@ -2253,6 +2256,7 @@ fn a_marker_outside_the_import_range_is_dropped_and_does_not_move_the_origin() {
         description: None,
         tag: None,
         commented_event_type: None,
+        subjects: Vec::new(),
     };
     crate::session::anchor_replay_session(&state, &mut anchor, 2_000_000_000);
 
@@ -3112,6 +3116,7 @@ fn both_blf_annotation_records_round_trip() {
             description: None,
             tag: None,
             commented_event_type: None,
+            subjects: Vec::new(),
         },
         notes::Note {
             id: "c1".into(),
@@ -3123,6 +3128,7 @@ fn both_blf_annotation_records_round_trip() {
             tag: Some("contactor".into()),
             // CAN_MESSAGE2 — the comment is on a classic CAN frame.
             commented_event_type: Some(86),
+            subjects: Vec::new(),
         },
     ];
 
@@ -3181,6 +3187,7 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
         description: "opened under load\nsecond line".to_string().into(),
         tag: Some("fault".into()),
         commented_event_type: None,
+        subjects: Vec::new(),
     };
     let plain = notes::Note {
         id: "n-plain".into(),
@@ -3191,6 +3198,7 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
         description: None,
         tag: None,
         commented_event_type: None,
+        subjects: Vec::new(),
     };
 
     let dest = dir.path().join("marked.blf");
@@ -3275,6 +3283,7 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
             description: None,
             tag: None,
             commented_event_type: None,
+            subjects: Vec::new(),
         })
         .unwrap();
     store.replace_derived(vec![notes::Note {
@@ -3286,6 +3295,7 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
         description: None,
         tag: None,
         commented_event_type: None,
+        subjects: Vec::new(),
     }]);
     // Both are on the timeline the views render...
     assert_eq!(store.events().len(), 2);
@@ -3483,6 +3493,7 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             description: Some("what it looked like".into()),
             tag: Some("fault".into()),
             commented_event_type: None,
+            subjects: Vec::new(),
         },
         notes::Note {
             id: "note-b".into(),
@@ -3493,6 +3504,7 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             description: None,
             tag: None,
             commented_event_type: None,
+            subjects: Vec::new(),
         },
     ];
 
@@ -4488,6 +4500,7 @@ fn write_blf_capture_preserves_every_timestamp_of_an_out_of_order_capture() {
         description: None,
         tag: None,
         commented_event_type: None,
+        subjects: Vec::new(),
     }];
 
     let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();

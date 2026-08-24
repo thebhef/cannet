@@ -26,6 +26,15 @@
 //! frontend-derived events (the truncation marker) never reach the host at
 //! all. [`NotesStore::events`] is the merged view every surface reads.
 //!
+//! **An event may also say what it is about** ([`EventSubject`], ADR 0056):
+//! a list of structural references to messages, signals and other events.
+//! Event references are the whole of the link mechanism — a span and a
+//! chain are both links, stored once and read from either end
+//! ([`linked_event_ids`]) — and deleting an event sweeps the references to
+//! it. Message and signal references are never swept: they resolve against
+//! whatever databases are assigned at render time, and an unresolved one is
+//! a state the views render.
+//!
 //! Notes also ride the disk-spill scratch (ADR 0002 DS-7): a store built
 //! with [`NotesStore::with_scratch`] writes `notes.json` into the scratch
 //! dir on **every
@@ -48,6 +57,63 @@ use crate::trace_store::{read_json, write_json};
 /// Clear / new capture — the scratch's own copy of the durable-kind
 /// events; the BLF is the export/import home.
 pub const SCRATCH_NOTES_FILE: &str = "notes.json";
+
+/// What an event is about — a **structural reference**, never a rendered
+/// name (ADR 0056). A message reference is the arbitration id; a signal
+/// reference adds the field name; an event reference is another event's id.
+/// Message identity in this app is `(message_id, extended)`, so both
+/// message-bearing kinds carry the extended flag.
+///
+/// Nothing here names a bus or a database: a reference resolves against
+/// whatever databases are assigned at render time, and it **remains** when
+/// it resolves to nothing.
+///
+/// An [`EventSubject::Event`] reference is the whole of the link mechanism
+/// — a span and a chain are both just links, stored once and read from
+/// either end (ADR 0056). Span-ness is a property of the *pair*; no event
+/// carries a field saying it is the end of one.
+///
+/// Internally tagged and camelCased because this crosses the Tauri wire
+/// alongside [`Note`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EventSubject {
+    /// A message, by arbitration id.
+    #[serde(rename_all = "camelCase")]
+    Message {
+        /// Arbitration id.
+        message_id: u32,
+        /// `true` for a 29-bit id.
+        extended: bool,
+    },
+    /// One signal of a message, by the message's id and the signal's field
+    /// name — the name a database gives it, not a decoded value.
+    #[serde(rename_all = "camelCase")]
+    Signal {
+        /// Arbitration id of the message carrying the signal.
+        message_id: u32,
+        /// `true` for a 29-bit id.
+        extended: bool,
+        /// The signal's name in whatever database defines the message.
+        signal_name: String,
+    },
+    /// Another timeline event, by [`Note::id`].
+    Event {
+        /// The referenced event's id.
+        id: String,
+    },
+}
+
+impl EventSubject {
+    /// The event this reference names, or `None` for a message / signal
+    /// reference.
+    pub fn referenced_event(&self) -> Option<&str> {
+        match self {
+            Self::Event { id } => Some(id.as_str()),
+            Self::Message { .. } | Self::Signal { .. } => None,
+        }
+    }
+}
 
 /// One note: a stable id, the absolute timestamp on the trace
 /// timeline (nanoseconds — the same `RawTraceFrame::timestamp_ns`
@@ -102,6 +168,59 @@ pub struct Note {
     /// `None` on every other kind. `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub commented_event_type: Option<u32>,
+    /// What this event is about (ADR 0056): messages, signals, and other
+    /// events, in the order the author put them. Empty for an event with no
+    /// subject. Any kind may carry them — the export boundary
+    /// ([`NotesStore::exportable`]) is what decides which ones reach a file.
+    /// `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub subjects: Vec<EventSubject>,
+}
+
+impl Note {
+    /// Does this event's subject list name `id`?
+    pub fn references_event(&self, id: &str) -> bool {
+        self.subjects
+            .iter()
+            .any(|s| s.referenced_event() == Some(id))
+    }
+}
+
+/// Every event `id` is linked to, over `events`, read in **both**
+/// directions (ADR 0056): a link is stored once, on whichever event the
+/// authoring gesture touched, and both ends see it. Ids come out in
+/// `events` order — the event's own subjects first, then the events that
+/// name it — with duplicates collapsed.
+///
+/// An id that names no event in `events` is unresolved, not broken: it is
+/// simply absent from the result and stays in the subject list.
+// No host-side caller yet — exercised by tests. The symmetric read is the
+// model's own contract (ADR 0056), so it lives beside the model rather than
+// being re-derived by each consumer that comes to need it.
+#[allow(dead_code)]
+pub fn linked_event_ids(events: &[Note], id: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |candidate: &str| {
+        if candidate != id
+            && events.iter().any(|n| n.id == candidate)
+            && !out.iter().any(|o| o == candidate)
+        {
+            out.push(candidate.to_string());
+        }
+    };
+    if let Some(own) = events.iter().find(|n| n.id == id) {
+        for s in &own.subjects {
+            if let Some(target) = s.referenced_event() {
+                push(target);
+            }
+        }
+    }
+    for n in events {
+        if n.references_event(id) {
+            push(&n.id);
+        }
+    }
+    out
 }
 
 /// Where a timeline event came from (ADR 0035). The category, not the
@@ -437,7 +556,98 @@ impl NotesStore {
         })
     }
 
-    /// Remove a note. `None` if `id` is unknown.
+    /// Replace a note's subject list (ADR 0056) — what the event is about.
+    /// The list is authored as a whole, so this sets it rather than
+    /// appending. `None` return if `id` is unknown.
+    pub fn set_subjects(&self, id: &str, subjects: Vec<EventSubject>) -> Option<Applied> {
+        {
+            let mut guard = self.inner.lock().expect("notes mutex poisoned");
+            let slot = guard.iter_mut().find(|n| n.id == id)?;
+            slot.subjects = subjects;
+        }
+        self.persist();
+        Some(Applied {
+            notes: self.events(),
+        })
+    }
+
+    /// Link two events (ADR 0056). The link is **stored once**, as an
+    /// [`EventSubject::Event`] on `a`, and read from either end by
+    /// [`Self::linked_events`]; storing both sides would be a two-place
+    /// invariant with no user-visible gain.
+    ///
+    /// `None` — a no-op — when either id is unknown, when they are the same
+    /// event, or when the two are already linked in either direction.
+    pub fn link_events(&self, a: &str, b: &str) -> Option<Applied> {
+        if a == b {
+            return None;
+        }
+        {
+            let mut guard = self.inner.lock().expect("notes mutex poisoned");
+            if !guard.iter().any(|n| n.id == b) {
+                return None;
+            }
+            if guard.iter().any(|n| {
+                (n.id == a && n.references_event(b)) || (n.id == b && n.references_event(a))
+            }) {
+                return None;
+            }
+            let slot = guard.iter_mut().find(|n| n.id == a)?;
+            slot.subjects
+                .push(EventSubject::Event { id: b.to_string() });
+        }
+        self.persist();
+        Some(Applied {
+            notes: self.events(),
+        })
+    }
+
+    /// Drop the link between two events, from whichever side stored it
+    /// (ADR 0056). `None` when they are not linked.
+    pub fn unlink_events(&self, a: &str, b: &str) -> Option<Applied> {
+        {
+            let mut guard = self.inner.lock().expect("notes mutex poisoned");
+            let mut hit = false;
+            for n in guard.iter_mut() {
+                let other = if n.id == a {
+                    b
+                } else if n.id == b {
+                    a
+                } else {
+                    continue;
+                };
+                let before = n.subjects.len();
+                n.subjects.retain(|s| s.referenced_event() != Some(other));
+                hit |= n.subjects.len() != before;
+            }
+            if !hit {
+                return None;
+            }
+        }
+        self.persist();
+        Some(Applied {
+            notes: self.events(),
+        })
+    }
+
+    /// Every event linked to `id`, read in both directions over the merged
+    /// event set (ADR 0056) — see [`linked_event_ids`].
+    // As above: no host-side caller yet.
+    #[allow(dead_code)]
+    pub fn linked_events(&self, id: &str) -> Vec<String> {
+        linked_event_ids(&self.events(), id)
+    }
+
+    /// Remove a note, and sweep every remaining note's subject list for
+    /// references to it — in the same [`Applied`], so no observer ever sees
+    /// a reference to an event that is gone (ADR 0056). Message and signal
+    /// references are never swept: they are structural, and an unresolved
+    /// one is a state the views render.
+    ///
+    /// The host-derived list is not swept — it is recomputed wholesale by
+    /// whatever produces it, so an edit there would be discarded.
+    ///
+    /// `None` if `id` is unknown.
     pub fn remove(&self, id: &str) -> Option<Applied> {
         {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
@@ -445,6 +655,9 @@ impl NotesStore {
             guard.retain(|n| n.id != id);
             if guard.len() == before {
                 return None;
+            }
+            for n in guard.iter_mut() {
+                n.subjects.retain(|s| s.referenced_event() != Some(id));
             }
         }
         self.persist();
@@ -582,7 +795,40 @@ pub(crate) fn retag_note(app: AppHandle, id: String, tag: Option<String>) {
     }
 }
 
-/// Remove a note from the session buffer.
+/// Replace an event's subject list (ADR 0056) — the messages, signals and
+/// events it is about.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn set_note_subjects(app: AppHandle, id: String, subjects: Vec<EventSubject>) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.set_subjects(&id, subjects) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Link two events (ADR 0056). Stored once, read from either end; a pair
+/// that is already linked is a no-op.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn link_events(app: AppHandle, a: String, b: String) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.link_events(&a, &b) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Drop the link between two events, from whichever side stored it.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn unlink_events(app: AppHandle, a: String, b: String) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.unlink_events(&a, &b) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Remove a note from the session buffer. References to it in other
+/// events' subject lists go with it (ADR 0056).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn remove_note(app: AppHandle, id: String) {
@@ -617,6 +863,7 @@ mod tests {
             description: None,
             tag: None,
             commented_event_type: None,
+            subjects: Vec::new(),
         }
     }
 
@@ -884,6 +1131,7 @@ mod category_tests {
             description: None,
             tag: None,
             commented_event_type: None,
+            subjects: Vec::new(),
         }
     }
 
@@ -897,6 +1145,7 @@ mod category_tests {
             description: None,
             tag: None,
             commented_event_type: None,
+            subjects: Vec::new(),
         }
     }
 
@@ -976,5 +1225,315 @@ mod category_tests {
     fn the_bus_error_kind_crosses_the_wire_camel_cased() {
         let v = serde_json::to_value(bus_error("e1", 1)).unwrap();
         assert_eq!(v["kind"], "busError");
+    }
+}
+
+#[cfg(test)]
+mod subject_tests {
+    use super::*;
+
+    fn note(id: &str, ts: u64) -> Note {
+        Note {
+            id: id.into(),
+            timestamp_ns: ts,
+            label: id.into(),
+            kind: EventKind::Note,
+            color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
+            subjects: Vec::new(),
+        }
+    }
+
+    fn ids(v: &[String]) -> Vec<&str> {
+        v.iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn each_reference_kind_round_trips_through_serialization() {
+        let subjects = vec![
+            EventSubject::Message {
+                message_id: 0x2A1,
+                extended: false,
+            },
+            EventSubject::Signal {
+                message_id: 0x18DA_00F1,
+                extended: true,
+                signal_name: "Pack Current".into(),
+            },
+            EventSubject::Event {
+                id: "91c2de".into(),
+            },
+        ];
+        let mut n = note("a", 1_000);
+        n.subjects = subjects.clone();
+
+        let v = serde_json::to_value(&n).unwrap();
+        assert_eq!(v["subjects"][0]["kind"], "message");
+        assert_eq!(v["subjects"][0]["messageId"], 0x2A1);
+        assert_eq!(v["subjects"][0]["extended"], false);
+        assert_eq!(v["subjects"][1]["kind"], "signal");
+        assert_eq!(v["subjects"][1]["signalName"], "Pack Current");
+        assert_eq!(v["subjects"][1]["extended"], true);
+        assert_eq!(v["subjects"][2]["kind"], "event");
+        assert_eq!(v["subjects"][2]["id"], "91c2de");
+        assert!(
+            v["subjects"][1].get("signal_name").is_none(),
+            "snake_case must not leak: {v}"
+        );
+
+        let back: Note = serde_json::from_value(v).unwrap();
+        assert_eq!(back.subjects, subjects);
+        assert_eq!(back, n);
+    }
+
+    #[test]
+    fn a_pre_subject_note_still_deserializes() {
+        let legacy: Note = serde_json::from_str(r#"{"id":"x","timestampNs":5,"label":"old"}"#)
+            .expect("a note written before subjects existed");
+        assert!(legacy.subjects.is_empty());
+    }
+
+    #[test]
+    fn subjects_survive_a_scratch_round_trip_including_unresolvable_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = NotesStore::with_scratch(dir.path().to_path_buf());
+        s.add(note("a", 1_000)).unwrap();
+        // A signal on a message no assigned database defines, and a link to
+        // an event that is not in this store: both are structural, so both
+        // must survive a load rather than being dropped.
+        let subjects = vec![
+            EventSubject::Signal {
+                message_id: 0x180,
+                extended: false,
+                signal_name: "PackCurrent".into(),
+            },
+            EventSubject::Event {
+                id: "not-here".into(),
+            },
+        ];
+        s.set_subjects("a", subjects.clone()).unwrap();
+
+        let reopened = NotesStore::with_scratch(dir.path().to_path_buf());
+        let back = reopened.restore().expect("notes.json present");
+        assert_eq!(back[0].subjects, subjects);
+    }
+
+    #[test]
+    fn set_subjects_replaces_the_list_and_touches_nothing_else() {
+        let s = NotesStore::new();
+        s.add(note("a", 1_000)).unwrap();
+        let applied = s
+            .set_subjects(
+                "a",
+                vec![EventSubject::Message {
+                    message_id: 0x2A1,
+                    extended: false,
+                }],
+            )
+            .unwrap();
+        assert_eq!(applied.notes[0].subjects.len(), 1);
+        assert_eq!(applied.notes[0].label, "a", "label untouched");
+
+        let applied = s.set_subjects("a", Vec::new()).unwrap();
+        assert!(applied.notes[0].subjects.is_empty());
+        assert!(s.set_subjects("missing", Vec::new()).is_none());
+    }
+
+    #[test]
+    fn a_link_is_stored_once_and_read_from_either_end() {
+        let s = NotesStore::new();
+        s.add(note("a", 1_000)).unwrap();
+        s.add(note("b", 2_000)).unwrap();
+        s.link_events("a", "b").unwrap();
+
+        let held: Vec<usize> = s.snapshot().iter().map(|n| n.subjects.len()).collect();
+        assert_eq!(held, vec![1, 0], "the link is stored on one side only");
+
+        assert_eq!(ids(&s.linked_events("a")), vec!["b"]);
+        assert_eq!(ids(&s.linked_events("b")), vec!["a"], "read symmetrically");
+
+        // Linking again, from either direction, is a no-op.
+        assert!(s.link_events("a", "b").is_none());
+        assert!(s.link_events("b", "a").is_none());
+        // As is linking an event to itself, or to something unknown.
+        assert!(s.link_events("a", "a").is_none());
+        assert!(s.link_events("a", "missing").is_none());
+    }
+
+    #[test]
+    fn unlink_finds_the_link_whichever_side_holds_it() {
+        let s = NotesStore::new();
+        s.add(note("a", 1_000)).unwrap();
+        s.add(note("b", 2_000)).unwrap();
+        s.link_events("a", "b").unwrap();
+        // Asked from the side that does *not* hold the entry.
+        let applied = s.unlink_events("b", "a").unwrap();
+        assert!(applied.notes.iter().all(|n| n.subjects.is_empty()));
+        assert!(s.linked_events("a").is_empty());
+        assert!(s.unlink_events("a", "b").is_none());
+    }
+
+    #[test]
+    fn a_chain_reads_as_the_links_at_each_end() {
+        // A links B links C: the middle event names both, whichever side
+        // stored each link.
+        let s = NotesStore::new();
+        s.add(note("a", 1_000)).unwrap();
+        s.add(note("b", 2_000)).unwrap();
+        s.add(note("c", 3_000)).unwrap();
+        s.link_events("b", "a").unwrap();
+        s.link_events("c", "b").unwrap();
+
+        assert_eq!(ids(&s.linked_events("a")), vec!["b"]);
+        assert_eq!(ids(&s.linked_events("b")), vec!["a", "c"]);
+        assert_eq!(ids(&s.linked_events("c")), vec!["b"]);
+    }
+
+    #[test]
+    fn removing_an_event_sweeps_the_references_to_it_and_leaves_the_rest() {
+        let s = NotesStore::new();
+        s.add(note("a", 1_000)).unwrap();
+        s.add(note("b", 2_000)).unwrap();
+        s.add(note("c", 3_000)).unwrap();
+        s.set_subjects(
+            "a",
+            vec![
+                EventSubject::Signal {
+                    message_id: 0x180,
+                    extended: false,
+                    signal_name: "PackCurrent".into(),
+                },
+                EventSubject::Event { id: "b".into() },
+                EventSubject::Message {
+                    message_id: 0x2A1,
+                    extended: true,
+                },
+            ],
+        )
+        .unwrap();
+        s.set_subjects("c", vec![EventSubject::Event { id: "b".into() }])
+            .unwrap();
+
+        let applied = s.remove("b").unwrap();
+        assert_eq!(
+            applied
+                .notes
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "c"],
+        );
+        // The event reference died with the event; the structural ones live.
+        assert_eq!(
+            applied.notes[0].subjects,
+            vec![
+                EventSubject::Signal {
+                    message_id: 0x180,
+                    extended: false,
+                    signal_name: "PackCurrent".into(),
+                },
+                EventSubject::Message {
+                    message_id: 0x2A1,
+                    extended: true,
+                },
+            ],
+        );
+        assert!(applied.notes[1].subjects.is_empty());
+    }
+
+    #[test]
+    fn the_sweep_rides_the_same_applied_and_the_same_scratch_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = NotesStore::with_scratch(dir.path().to_path_buf());
+        s.add(note("a", 1_000)).unwrap();
+        s.add(note("b", 2_000)).unwrap();
+        s.link_events("a", "b").unwrap();
+        s.remove("b").unwrap();
+
+        let reopened = NotesStore::with_scratch(dir.path().to_path_buf());
+        let back = reopened.restore().expect("notes.json present");
+        assert_eq!(back.len(), 1);
+        assert!(
+            back[0].subjects.is_empty(),
+            "the swept list is what reached the scratch"
+        );
+    }
+
+    #[test]
+    fn removing_an_event_nothing_points_at_still_reports_the_removal() {
+        let s = NotesStore::new();
+        s.add(note("a", 1_000)).unwrap();
+        assert!(s.remove("a").is_some());
+        assert!(s.remove("a").is_none());
+    }
+
+    #[test]
+    fn clear_takes_the_references_with_the_events() {
+        let s = NotesStore::new();
+        s.add(note("a", 1_000)).unwrap();
+        s.add(note("b", 2_000)).unwrap();
+        s.link_events("a", "b").unwrap();
+        s.clear().unwrap();
+        assert!(s.events().is_empty());
+        assert!(s.linked_events("a").is_empty());
+    }
+
+    #[test]
+    fn an_unresolvable_event_reference_survives_a_load() {
+        // Open Capture / project migration must not sweep: a reference to an
+        // event this store does not hold is unresolved, not broken.
+        let s = NotesStore::new();
+        let mut a = note("a", 1_000);
+        a.subjects = vec![EventSubject::Event {
+            id: "elsewhere".into(),
+        }];
+        let applied = s.replace(vec![a]);
+        assert_eq!(
+            applied.notes[0].subjects,
+            vec![EventSubject::Event {
+                id: "elsewhere".into()
+            }],
+        );
+        assert!(
+            s.linked_events("a").is_empty(),
+            "an unresolved reference names no event in this store"
+        );
+    }
+
+    #[test]
+    fn a_host_derived_event_may_carry_subjects_and_still_never_be_exported() {
+        // Any category may carry subjects; the export boundary is unchanged.
+        let s = NotesStore::new();
+        let mut e = note("e1", 500);
+        e.kind = EventKind::BusError;
+        e.subjects = vec![EventSubject::Message {
+            message_id: 0x123,
+            extended: false,
+        }];
+        s.add(note("n1", 1_000)).unwrap();
+        let applied = s.replace_derived(vec![e]);
+        assert_eq!(applied.notes[0].subjects.len(), 1);
+        assert_eq!(
+            s.exportable()
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["n1"],
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_host_derived_event_reads_symmetrically_too() {
+        let s = NotesStore::new();
+        let mut e = note("e1", 500);
+        e.kind = EventKind::BusError;
+        s.replace_derived(vec![e]);
+        s.add(note("a", 1_000)).unwrap();
+        s.set_subjects("a", vec![EventSubject::Event { id: "e1".into() }])
+            .unwrap();
+        assert_eq!(ids(&s.linked_events("e1")), vec!["a"]);
+        assert_eq!(ids(&s.linked_events("a")), vec!["e1"]);
     }
 }

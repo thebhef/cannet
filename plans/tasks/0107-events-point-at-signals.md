@@ -533,3 +533,98 @@ ignores object type 96 entirely — it writes global markers and never
 parses them back. Ours reads them. So a tool built on python-can will
 not show cannet's events at all, and that is the reader's limitation,
 not our encoding's.
+
+## Status log
+
+### Phase 1 — the subject model (2026-08-22)
+
+Landed on `task-107-phase-1-subject-model`, off `task-108-phase-6-panel-icons`.
+
+- **`EventSubject`** in `notes.rs`: an internally-tagged, camelCased enum
+  with the three groomed kinds — `message {message_id, extended}`,
+  `signal {message_id, extended, signal_name}`, `event {id}`. No bus, no
+  database identity.
+- **`Note.subjects: Vec<EventSubject>`**, `#[serde(default)]`, so a
+  pre-subject `notes.json` / BLF-derived note still reads. One field on
+  the existing struct, no side table; every category may carry it and
+  `exportable()` is untouched.
+- **Store operations**: `set_subjects`, `link_events`, `unlink_events`,
+  `linked_events`, plus the free `linked_event_ids(&[Note], id)`.
+  `link_events` stores **one** entry, on the event named first, and is a
+  no-op when the pair is already linked in either direction, when the two
+  are the same event, or when either id is unknown. `unlink_events` finds
+  the entry from whichever side holds it.
+- **Deletion sweep** in `remove`: the removed id is stripped from every
+  remaining durable note's subject list inside the same `Applied` and the
+  same scratch write. Signal and message references are never swept, and
+  neither `replace` nor `restore` sweeps — an unresolved reference is a
+  state, not a fault. The host-derived list is not swept either: it is
+  recomputed wholesale, so an edit there would be discarded.
+- **IPC**: `set_note_subjects`, `link_events`, `unlink_events`, registered
+  in `lib.rs`, each emitting the existing `notes-changed`.
+- **Frontend types** (no UI): `EventSubject`, `Note.subjects?`,
+  `TimelineEvent.subjects`, carried through `noteToEvent` /
+  `truncationEvent`, and `linkedEventIds` — the symmetric read the row and
+  plot renderers will do at render time over the list they already hold,
+  the way `timelineEvents` / `tagsInUse` already work.
+- **[ADR 0056](../../docs/adr/0056-an-event-subject-is-a-structural-reference.md)**
+  records the model: a subject is a structural reference (§ 1), any
+  category may carry one (§ 2), **span-ness is a relationship, never an
+  event field** (§ 3), a link is stored once and read from both ends
+  (§ 4), and only event references are swept (§ 5). Its consequences
+  section states the rule phase 2 needs: a carrier's narrower native link
+  fields may be populated as interop, never as the storage form.
+
+**Judgement calls, for the record.**
+
+- `linked_event_ids` / `NotesStore::linked_events` carry
+  `#[allow(dead_code)]`. Nothing in the host calls them yet — the carrier
+  and the host-side consumers arrive later — but the symmetric read is the
+  model's own contract, so it belongs beside the model rather than being
+  re-derived by each caller. Same idiom as `bus_health.rs`.
+- No README change. This phase ships nothing a user can see; the README
+  gains its paragraph when the chips do.
+- No perf reading taken: a host-side model with no UI, no render path and
+  no live data path.
+
+**Tests** — written first, watched fail, then made pass.
+
+- Rust, 14 new (`notes::subject_tests`): each reference kind round-trips
+  through serialization with camelCase keys; a pre-subject note still
+  deserializes; subjects survive a scratch round-trip including an
+  unresolvable signal and an unresolvable link; `set_subjects` replaces the
+  list and touches nothing else; a link is stored once and read from either
+  end; unlink works from the side that does not hold it; a chain reads as
+  the links at each end; `remove` sweeps event references and leaves signal
+  and message references; the sweep rides the same `Applied` and the same
+  scratch write; `clear` takes the references with the events; an
+  unresolvable reference survives a `replace`; a host-derived event may
+  carry subjects and still never be exported; a link to a host-derived
+  event reads symmetrically.
+- TS, 5 new (`notes.test.ts`): the subject list reaches the rendered event;
+  an event with none gets `[]`, never `undefined`; the link reads from
+  either end; a chain names both ends from its middle; an unresolved
+  reference is absent from the link list without being dropped.
+- `cargo test -p cannet-gui` 907 passed; `cargo test --workspace` green
+  except the pre-existing failure below; `pnpm --dir apps/gui test` 2762
+  passed across 207 files; `cargo clippy --workspace --all-targets` clean
+  except the pre-existing warning below.
+
+## Blockers / side effects
+
+Both of these are **inherited from the base branch**
+(`task-108-phase-6-panel-icons`, `d846c48d`), reproduce with this phase's
+changes reverted, and are in files this phase does not touch. Recorded
+here because they block the commit gate for everything on this stack.
+
+- **`cannet-perf-measurement` unit test fails.**
+  `screenshot::tests::the_scenarios_drive_labels_the_frontend_still_defines`
+  panics with *"a scenario clicks 'Add transmit panel', which App.tsx no
+  longer defines"*. The label is absent from `App.tsx` at the base commit
+  too, so the icon sweep renamed the command without updating the
+  screenshot scenarios. `cargo test --workspace` is red until it is fixed,
+  and the fix is a choice of label that belongs to whoever renamed it.
+- **`cannet-dbc` clippy pedantic warning.** `crates/cannet-dbc/src/tests.rs:615`
+  — `redundant_closure_for_method_calls` on `.is_some_and(|c| c.is_empty())`.
+  Byte-identical at the base commit. `cargo clippy --workspace --all-targets
+  -- -D warnings` — the pre-commit hook and the CI job — fails on it.

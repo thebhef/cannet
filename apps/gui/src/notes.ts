@@ -93,6 +93,20 @@ export function visibleEvents(
   return events.filter((e) => visible.has(e.kind));
 }
 
+/// What an event is about — a structural reference, never a rendered name
+/// (ADR 0056). A message reference is the arbitration id; a signal
+/// reference adds the field name; an event reference is another event's id.
+/// Message identity in this app is `(messageId, extended)`, so both
+/// message-bearing kinds carry the flag.
+///
+/// Nothing here names a bus or a database: a reference resolves against
+/// whatever databases are assigned at render time, and it remains when it
+/// resolves to nothing.
+export type EventSubject =
+  | { kind: "message"; messageId: number; extended: boolean }
+  | { kind: "signal"; messageId: number; extended: boolean; signalName: string }
+  | { kind: "event"; id: string };
+
 /// One note as the host serialises it. `timestampNs` is the
 /// absolute trace timestamp (`RawTraceFrame::timestamp_ns`); the
 /// plot panel converts to/from display-relative seconds against
@@ -112,6 +126,8 @@ export interface Note {
   description?: string | null;
   /** User-defined tag, the event view's second filter axis. */
   tag?: string | null;
+  /** What the event is about (ADR 0056); absent on an event with none. */
+  subjects?: EventSubject[];
 }
 
 /// A rendered timeline event (ADR 0035): the common shape every view —
@@ -130,6 +146,8 @@ export interface TimelineEvent {
   tag: string | null;
   /** Whether the user may edit it — a property of the kind, not the caller. */
   editable: boolean;
+  /** What the event is about (ADR 0056) — empty when it names nothing. */
+  subjects: EventSubject[];
 }
 
 /// Synthetic id of the derived truncation marker — stable so the views
@@ -151,6 +169,7 @@ export function noteToEvent(n: Note): TimelineEvent {
     description: n.description ?? null,
     tag: n.tag ?? null,
     editable: EVENT_KIND_META[kind]?.editable ?? false,
+    subjects: n.subjects ?? [],
   };
 }
 
@@ -166,6 +185,7 @@ export function truncationEvent(timestampNs: number): TimelineEvent {
     description: null,
     tag: null,
     editable: false,
+    subjects: [],
   };
 }
 
@@ -180,6 +200,28 @@ export function timelineEvents(
   const events = notes.map(noteToEvent);
   if (truncationTsNs != null) events.push(truncationEvent(truncationTsNs));
   return events.sort((a, b) => a.timestampNs - b.timestampNs);
+}
+
+/// Every event `id` is linked to, read in **both** directions (ADR 0056):
+/// a link is stored once, on whichever event the authoring gesture touched,
+/// and both ends see it. Ids come out in list order — the event's own
+/// subjects first, then the events that name it — with duplicates
+/// collapsed.
+///
+/// A reference to an event this list does not hold is unresolved, not
+/// broken: it is absent from the result and stays in the subject list.
+export function linkedEventIds(events: readonly TimelineEvent[], id: string): string[] {
+  const out: string[] = [];
+  const push = (candidate: string) => {
+    if (candidate === id || out.includes(candidate)) return;
+    if (events.some((e) => e.id === candidate)) out.push(candidate);
+  };
+  const own = events.find((e) => e.id === id);
+  for (const s of own?.subjects ?? []) if (s.kind === "event") push(s.id);
+  for (const e of events) {
+    if (e.subjects.some((s) => s.kind === "event" && s.id === id)) push(e.id);
+  }
+  return out;
 }
 
 /// Does this event match a free-text tag query? An empty query matches

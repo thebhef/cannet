@@ -721,6 +721,7 @@ pub(crate) fn note_from_marker(
         description,
         tag,
         commented_event_type: None,
+        subjects: Vec::new(),
     }
 }
 
@@ -779,6 +780,7 @@ pub(crate) fn note_from_comment(
         description,
         tag,
         commented_event_type: Some(scanned.comment.commented_event_type),
+        subjects: Vec::new(),
     }
 }
 
@@ -855,6 +857,7 @@ pub(crate) fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut 
         // MDF has no `EVENT_COMMENT` analogue, so a message-bound event
         // exported to MDF and re-imported comes back freestanding.
         commented_event_type: None,
+        subjects: Vec::new(),
     }
 }
 
