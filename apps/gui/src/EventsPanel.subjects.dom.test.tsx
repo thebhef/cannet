@@ -274,3 +274,67 @@ describe("linking two events", () => {
   });
 });
 
+describe("reading a note's full text", () => {
+  const LONG =
+    "brake pedal pressed hard while the pack was still warm and the contactor had not yet opened again";
+
+  /// The disclosed body row whose name cell reads `name`.
+  function bodyRow(name: string): HTMLElement | null {
+    return (
+      Array.from(document.querySelectorAll<HTMLElement>(".trace-event-body-row")).find(
+        (r) => r.querySelector(".trace-event-body-name")?.textContent === name,
+      ) ?? null
+    );
+  }
+
+  it("shows the whole label under the expanded note", () => {
+    // The plot marker caps its label at 50 characters and the row
+    // ellipsises at whatever width it has, so without this the text is
+    // readable nowhere.
+    renderPanel([{ id: "n1", timestampNs: 1_000, label: LONG, kind: "note" }]);
+    fireEvent.click(screen.getByLabelText("show event details"));
+    const row = bodyRow("label");
+    expect(row).not.toBeNull();
+    expect(row!.querySelector(".trace-event-body-value")?.textContent).toBe(LONG);
+  });
+
+  it("gives a long label enough rows to wrap into", () => {
+    renderPanel([{ id: "n1", timestampNs: 1_000, label: LONG, kind: "note" }]);
+    fireEvent.click(screen.getByLabelText("show event details"));
+    const value = bodyRow("label")!.querySelector<HTMLElement>(".trace-event-body-value")!;
+    // 98 characters at 60 a line is two rows of the 18 px row space.
+    expect(bodyRow("label")!.style.height).toBe("36px");
+    expect(value.classList.contains("trace-event-body-wrap")).toBe(true);
+  });
+
+  it("keeps a short label to one row", () => {
+    renderPanel([{ id: "n1", timestampNs: 1_000, label: "brake on", kind: "note" }]);
+    fireEvent.click(screen.getByLabelText("show event details"));
+    expect(bodyRow("label")!.style.height).toBe("18px");
+  });
+
+  it("still shows the tag and description below it", () => {
+    renderPanel([
+      { id: "n1", timestampNs: 1_000, label: LONG, kind: "note", tag: "brakes", description: "why" },
+    ]);
+    fireEvent.click(screen.getByLabelText("show event details"));
+    expect(bodyRow("tag")?.querySelector(".trace-event-body-value")?.textContent).toBe("brakes");
+    expect(bodyRow("description")?.querySelector(".trace-event-body-value")?.textContent).toBe(
+      "why",
+    );
+    // Stacked below the two-row label, not on top of it.
+    const topOf = (name: string) => parseInt(bodyRow(name)!.style.top, 10);
+    expect(topOf("tag") - topOf("label")).toBe(36);
+    expect(topOf("description") - topOf("tag")).toBe(18);
+  });
+
+  it("opens a read-only event whose label is too long to read on the row", () => {
+    // A bus-error event takes no edits and may carry no tag or
+    // description, so before this it had no body at all — and its label
+    // is exactly the kind that overruns.
+    renderPanel([{ id: "e1", timestampNs: 1_000, label: LONG, kind: "busError" }]);
+    fireEvent.click(screen.getByLabelText("Bus Errors"));
+    fireEvent.click(screen.getByLabelText("show event details"));
+    expect(bodyRow("label")?.querySelector(".trace-event-body-value")?.textContent).toBe(LONG);
+  });
+});

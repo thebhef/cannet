@@ -185,28 +185,61 @@ const frameRowId = (frame: TraceFrameRecord) => `${FRAME_ROW_PREFIX}${frame.inde
 function signalsOf(r: TraceRow | null): readonly SignalRecord[] {
   return r?.row === "frame" ? r.frame.decoded?.signals ?? [] : [];
 }
-/// The rows an event discloses when opened (ADR 0035): its user tag and
-/// its description body, each editable in place. Named so their content-row
-/// ids are stable across a re-render, like a signal's name.
+/// The rows an event discloses when opened (ADR 0035): its label in
+/// full, then its user tag and its description body, each editable in
+/// place. Named so their content-row ids are stable across a re-render,
+/// like a signal's name.
 const EVENT_BODY_ROWS = ["tag", "description"] as const;
 
-/// The same, for an event that is about something (ADR 0056): the full
-/// subject list leads, which is where the chips the row could not fit go.
-const EVENT_BODY_ROWS_WITH_SUBJECTS = ["subjects", ...EVENT_BODY_ROWS] as const;
+/// Characters a body row's value holds before the label needs another
+/// row to wrap into. Conservative — a panel narrower than this
+/// ellipsises the last line rather than dropping it, and one wider just
+/// leaves the reserved space unused.
+const LABEL_ROW_CHARS = 60;
+/// Rows the label may claim. A label is a one-line name; past four rows
+/// of it the body has become the note, and the description field is
+/// where prose belongs.
+const LABEL_ROW_MAX = 4;
 
-/// The body rows this event discloses. Keyed off the stored subject list
-/// rather than off what resolves, so the row geometry does not move when a
-/// database is assigned or dropped.
+/// How many rows of the body space this event's label needs.
+///
+/// The label is truncated everywhere it is drawn — the plot marker caps
+/// it, the row ellipsises it at whatever width it has — so the body is
+/// the one place it is read in full, and it has to be given the height
+/// to show it.
+export function labelRowCount(label: string): number {
+  const wanted = Math.ceil(label.length / LABEL_ROW_CHARS);
+  return Math.max(1, Math.min(LABEL_ROW_MAX, wanted));
+}
+
+/// The body rows this event discloses. The label's rows lead; a
+/// continuation row carries no content of its own, only the id the
+/// keyboard cursor names it by, so the wrapped label reads as one field.
+/// Keyed off the *stored* subject list rather than off what resolves, so
+/// the row geometry does not move when a database is assigned or
+/// dropped.
 function eventBodyRows(e: TimelineEvent): readonly string[] {
-  return e.subjects.length > 0 ? EVENT_BODY_ROWS_WITH_SUBJECTS : EVENT_BODY_ROWS;
+  const label = Array.from({ length: labelRowCount(e.label) }, (_, i) =>
+    i === 0 ? "label" : `label:${i + 1}`,
+  );
+  return e.subjects.length > 0
+    ? [...label, "subjects", ...EVENT_BODY_ROWS]
+    : [...label, ...EVENT_BODY_ROWS];
 }
 
 /// Does this event disclose a body at all? One that carries a tag, a
-/// description or a subject does; so does an editable one, which is how an
-/// empty note gets given either. A read-only event with none has nothing to
-/// open.
+/// description or a subject does; so does an editable one, which is how
+/// an empty note gets given either — and so does one whose label is too
+/// long to read on the row, which is the only place a host-derived
+/// event's full text can be shown.
 function eventDiscloses(e: TimelineEvent): boolean {
-  return e.editable || e.description != null || e.tag != null || e.subjects.length > 0;
+  return (
+    e.editable ||
+    e.description != null ||
+    e.tag != null ||
+    e.subjects.length > 0 ||
+    labelRowCount(e.label) > 1
+  );
 }
 
 /// How many rows a row discloses when opened — a frame's decoded signals,
@@ -1428,11 +1461,16 @@ function EventRow({
   );
 }
 
-/// The body an open event row discloses (ADR 0035): the user-defined tag
-/// the event view filters on, and the description. Two rows of the row space
-/// in their own right, like a message's decoded signals, so the keyboard
-/// cursor walks into them. Editable in place on a user-authored event; a
-/// host-derived one shows what it computed and takes no edits.
+/// The body an open event row discloses (ADR 0035): the label in full,
+/// then the user-defined tag the event view filters on, and the
+/// description. Rows of the row space in their own right, like a
+/// message's decoded signals, so the keyboard cursor walks into them.
+/// Editable in place on a user-authored event; a host-derived one shows
+/// what it computed and takes no edits.
+///
+/// The label leads because it is the one thing the row above cannot
+/// show: it is capped on the plot marker and ellipsised on the row, so
+/// this is where it is read.
 function EventBody({
   event,
   chips,
@@ -1449,16 +1487,57 @@ function EventBody({
   rowDomId: (id: string) => string;
 }) {
   const rowId = `${EVENT_ROW_PREFIX}${event.id}`;
-  // The subject line leads the body when the event has one, so the `…`
-  // control on the row lands the reader on the chips it could not fit.
-  const lead = event.subjects.length > 0 ? 1 : 0;
+  // The label's rows lead, then the subject line when the event has one,
+  // so the `…` control on the row lands the reader on the chips it could
+  // not fit.
+  const labelRows = labelRowCount(event.label);
+  const labelHeight = labelRows * SIGNAL_LINE_HEIGHT;
+  const lead = labelRows + (event.subjects.length > 0 ? 1 : 0);
   return (
     <>
-      {lead === 1 && (
+      <div
+        className="trace-event-body-row"
+        id={rowDomId(contentRowId(rowId, "label"))}
+        style={{ position: "absolute", top, left: 0, right: 0, height: labelHeight }}
+      >
+        <span className="trace-event-body-name">label</span>
+        <span
+          className="trace-event-body-value trace-event-body-wrap"
+          style={{ WebkitLineClamp: labelRows }}
+          title={event.label}
+        >
+          {event.label}
+        </span>
+      </div>
+      {/* The continuation rows carry only the ids the keyboard cursor
+          names them by — the label above already spans their height, so
+          a wrapped label is one field to read and one field to walk. */}
+      {Array.from({ length: labelRows - 1 }, (_, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          id={rowDomId(contentRowId(rowId, `label:${i + 2}`))}
+          style={{
+            position: "absolute",
+            top: top + (i + 1) * SIGNAL_LINE_HEIGHT,
+            left: 0,
+            right: 0,
+            height: SIGNAL_LINE_HEIGHT,
+            pointerEvents: "none",
+          }}
+        />
+      ))}
+      {event.subjects.length > 0 && (
         <div
           className="trace-event-body-row"
           id={rowDomId(contentRowId(rowId, "subjects"))}
-          style={{ position: "absolute", top, left: 0, right: 0, height: SIGNAL_LINE_HEIGHT }}
+          style={{
+            position: "absolute",
+            top: top + labelHeight,
+            left: 0,
+            right: 0,
+            height: SIGNAL_LINE_HEIGHT,
+          }}
         >
           <span className="trace-event-body-name">about</span>
           <span className="trace-event-body-subjects">
