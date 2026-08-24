@@ -20,11 +20,16 @@ import { invoke } from "@tauri-apps/api/core";
 let storedSettings: Record<string, unknown> = {};
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => {
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "fetch_filtered_trace" || cmd === "fetch_by_id_page") {
       return { count: 0, start: 0, rows: [] };
     }
     if (cmd === "get_settings") return { ...storedSettings };
+    // The host anchors each timeline event to a frame index (ADR 0035);
+    // anchor everything at the window start so the events do splice in.
+    if (cmd === "frame_indices_at_ns") {
+      return ((args?.timestamps as number[] | undefined) ?? []).map(() => 0);
+    }
     return [];
   }),
 }));
@@ -35,6 +40,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { TracePanel } from "./TracePanel";
+import { NotesContext, type NotesContextValue } from "./notesContext";
+import type { Note } from "./notes";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
@@ -440,5 +447,65 @@ describe("TracePanel rehydration", () => {
     // the pre-click config.
     const cfg = (control.entries()[0].element as { config?: { mode?: string } }).config;
     expect(cfg?.mode).toBe("by-id");
+  });
+});
+
+describe("TracePanel event kinds", () => {
+  const notesCtx = (notes: Note[]): NotesContextValue => ({
+    notes,
+    addNote: vi.fn(),
+    renameNote: vi.fn(),
+    recolorNote: vi.fn(),
+    describeNote: vi.fn(),
+    retagNote: vi.fn(),
+    removeNote: vi.fn(),
+  });
+
+  function renderWithNotes(notes: Note[]) {
+    const props = {
+      params: { elementId: "t1", mode: "chronological" },
+      api: { updateParameters: vi.fn() },
+    } as unknown as Parameters<typeof TracePanel>[0];
+    render(
+      // No frames: the display rows are exactly the events, so what the
+      // view shows is what the filter let through.
+      <TraceDataProvider value={{ ...traceData, count: 0 }}>
+        <ProjectContext.Provider value={projectCtx}>
+          <ElementRegistryContext.Provider
+            value={makeRegistry([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement])}
+          >
+            <NotesContext.Provider value={notesCtx(notes)}>
+              <TracePanel {...props} />
+            </NotesContext.Provider>
+          </ElementRegistryContext.Provider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+  }
+
+  const eventLabels = () =>
+    Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+
+  it("keeps a hidden-by-default kind out of the trace until this trace enables it", async () => {
+    // jsdom lays nothing out, so the row virtualizer would see a zero-height
+    // viewport and render a single row. Give it one.
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    renderWithNotes([
+      { id: "n1", timestampNs: 1_000_000_000, label: "boom", kind: "note" },
+      { id: "e1", timestampNs: 500_000_000, label: "bus error x40", kind: "busError" },
+    ]);
+    // The note splices in; the bus error does not (ADR 0035).
+    await waitFor(() => expect(eventLabels()).toEqual(["boom"]));
+
+    const box = document.querySelector<HTMLInputElement>(
+      '.event-kind-filter input[aria-label="Bus Errors"]',
+    );
+    if (!box) throw new Error("no bus-error row in the kind filter");
+    expect(box.checked).toBe(false);
+    await act(async () => {
+      fireEvent.click(box);
+    });
+    await waitFor(() => expect(eventLabels()).toEqual(["bus error x40", "boom"]));
+    ch.mockRestore();
   });
 });

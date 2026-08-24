@@ -19,6 +19,13 @@
 //! and the frontend is `{ id, timestamp_ns, label }` per note, so
 //! the path from a plot click to a saved BLF is direct.
 //!
+//! **Three categories of event share this store's delivery path**
+//! ([`EventCategory`], ADR 0035). User-authored events are the durable ones
+//! it owns; host-derived events (a coalesced run of bus errors) are computed
+//! elsewhere in the host, held apart, and never persisted or exported;
+//! frontend-derived events (the truncation marker) never reach the host at
+//! all. [`NotesStore::events`] is the merged view every surface reads.
+//!
 //! Notes also ride the disk-spill scratch (ADR 0002 DS-7): a store built
 //! with [`NotesStore::with_scratch`] writes `notes.json` into the scratch
 //! dir on **every
@@ -75,13 +82,62 @@ pub struct Note {
     /// `foreground_color`. `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub color: Option<String>,
+    /// Optional free-text body — the "why" behind the label, which the
+    /// event view discloses on demand rather than in the row. Editable on a
+    /// user-authored event; a host-derived one fills it in with the detail
+    /// behind its summary. `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Optional user-defined tag — the axis the event view filters on
+    /// beside the kind, so a user can pick out their own class of marker
+    /// ("fault", "contactor") within a kind. `#[serde(default)]` for
+    /// back-compat.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// For an event that rides a BLF `EVENT_COMMENT`: the object type of
+    /// the event the comment is attached to — `CAN_MESSAGE2` /
+    /// `CAN_FD_MESSAGE_64` for a comment made on a message, `0` for a
+    /// freestanding one. Held so an imported comment re-exports as the
+    /// same kind of comment rather than coming loose from its message.
+    /// `None` on every other kind. `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub commented_event_type: Option<u32>,
 }
 
-/// The kind of a timeline event (ADR 0035). The host's event store holds
-/// user-authored, durable kinds; *derived* kinds (the disk-spill truncation
-/// marker) are synthesized in the frontend from host data — the low-water
-/// mark — and never enter this store, so they have no variant here. The set
-/// grows as durable kinds (message-bound, trigger) are added.
+/// Where a timeline event came from (ADR 0035). The category, not the
+/// individual kind, decides the event's lifecycle: whether it is editable,
+/// whether it rides the scratch, and whether it is exported.
+///
+/// The model names **three** categories. The third —
+/// *frontend-derived*, synthesized in the frontend from host data (the
+/// disk-spill truncation marker, from the store's low-water mark) — has no
+/// variant here on purpose: those kinds never cross the wire and never
+/// reach this store, so a host-side value of that category cannot exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventCategory {
+    /// The user placed it. Editable, persisted to the scratch, exported.
+    UserAuthored,
+    /// The host computed it from the frame stream. Not editable, not
+    /// persisted, not exported — it is recomputed by whatever produces it,
+    /// and the data it summarises is what gets written out.
+    HostDerived,
+}
+
+/// Which BLF annotation record a kind is written as (ADR 0010 — in-file,
+/// no sidecar). A kind with no record is not written to a BLF at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlfRecord {
+    /// `GLOBAL_MARKER` (object type 96): a freestanding annotation on the
+    /// timeline, with its own name, description and colour fields.
+    GlobalMarker,
+    /// `EVENT_COMMENT` (object type 92): a comment attached to the event it
+    /// sits beside, carrying one text field and nothing else.
+    EventComment,
+}
+
+/// The kind of a timeline event (ADR 0035). Kinds the *host* can hold or
+/// produce appear here; frontend-derived kinds (the truncation marker) do
+/// not, per [`EventCategory`]. The set grows as kinds are added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EventKind {
@@ -89,6 +145,49 @@ pub enum EventKind {
     /// scratch, exported to BLF `GLOBAL_MARKER`.
     #[default]
     Note,
+    /// A comment bound to the message it sits beside — BLF's own
+    /// `EVENT_COMMENT`. User-authored and durable like a note; what makes
+    /// it a kind of its own is the record it rides, which tracks with its
+    /// message rather than floating on the timeline.
+    MessageBound,
+    /// A run of CAN bus errors coalesced by the host into one event with a
+    /// count and a span. Host-derived: not editable, not persisted, not
+    /// exported — the error frames it summarises stay in the capture and
+    /// are what a save writes.
+    BusError,
+}
+
+impl EventKind {
+    /// Which category this kind belongs to — the thing that fixes its
+    /// lifecycle.
+    pub fn category(self) -> EventCategory {
+        match self {
+            Self::Note | Self::MessageBound => EventCategory::UserAuthored,
+            Self::BusError => EventCategory::HostDerived,
+        }
+    }
+
+    /// The BLF annotation record this kind is written as, if any.
+    pub fn blf_record(self) -> Option<BlfRecord> {
+        match self {
+            Self::Note => Some(BlfRecord::GlobalMarker),
+            Self::MessageBound => Some(BlfRecord::EventComment),
+            Self::BusError => None,
+        }
+    }
+
+    /// Does an event of this kind belong in the durable store — the one that
+    /// rides the disk-spill scratch (ADR 0002 DS-7)?
+    pub fn persisted(self) -> bool {
+        matches!(self.category(), EventCategory::UserAuthored)
+    }
+
+    /// Is an event of this kind written out on Save Capture? Host-derived
+    /// events are not user data (ADR 0035): the frames they summarise are
+    /// what the file carries.
+    pub fn exported(self) -> bool {
+        self.blf_record().is_some()
+    }
 }
 
 /// The session-scoped notes store. Single `Mutex`-guarded vec —
@@ -98,6 +197,12 @@ pub enum EventKind {
 /// chronological order for the event list.
 pub struct NotesStore {
     inner: Mutex<Vec<Note>>,
+    /// Host-derived events ([`EventCategory::HostDerived`]) — held apart
+    /// from `inner` so the two lifecycles cannot be confused: this list is
+    /// never persisted, never exported, and is replaced wholesale by
+    /// whatever computes it. Views see it merged with `inner` through
+    /// [`Self::events`].
+    derived: Mutex<Vec<Note>>,
     /// Scratch dir for durable-kind persistence (ADR 0002 DS-7), or `None`
     /// for the in-RAM test double. When set, every edit rewrites
     /// [`SCRATCH_NOTES_FILE`] under it. Behind its own lock because the
@@ -127,6 +232,7 @@ impl NotesStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
+            derived: Mutex::new(Vec::new()),
             scratch_dir: Mutex::new(None),
         }
     }
@@ -139,6 +245,7 @@ impl NotesStore {
     pub fn with_scratch(dir: PathBuf) -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
+            derived: Mutex::new(Vec::new()),
             scratch_dir: Mutex::new(Some(dir)),
         }
     }
@@ -172,11 +279,63 @@ impl NotesStore {
         self.replace(arriving).notes
     }
 
-    /// Chronological snapshot of the current notes — what the
-    /// plot panel's IPC bootstrap reads, and what
-    /// `notes-changed` events carry.
+    /// Chronological snapshot of the **durable** events — the user-authored
+    /// ones this store owns. This is what rides the scratch; it is not what
+    /// the views read (see [`Self::events`]).
     pub fn snapshot(&self) -> Vec<Note> {
         self.inner.lock().expect("notes mutex poisoned").clone()
+    }
+
+    /// Chronological snapshot of every event the views render: the durable
+    /// ones merged with the host-derived ones. This is what `fetch_notes`
+    /// returns and what a `notes-changed` payload carries — one model, one
+    /// delivery path, whatever produced each event (ADR 0035).
+    pub fn events(&self) -> Vec<Note> {
+        let mut all = self.snapshot();
+        all.extend(
+            self.derived
+                .lock()
+                .expect("derived events mutex poisoned")
+                .iter()
+                .cloned(),
+        );
+        all.sort_by_key(|n| n.timestamp_ns);
+        all
+    }
+
+    /// The events Save Capture writes out: user-authored only. Host-derived
+    /// events summarise data the file already carries, so exporting them
+    /// would add a lossy restatement of what is already there (ADR 0035).
+    pub fn exportable(&self) -> Vec<Note> {
+        let mut out = self.snapshot();
+        out.retain(|n| n.kind.exported());
+        out
+    }
+
+    /// Replace the host-derived event set with `events` — what a host-side
+    /// detector calls when its computation changes. Non-derived kinds are
+    /// dropped: this list is not a back door into the durable store.
+    ///
+    /// `dead_code`-allowed: this is the host-derived category's only entry
+    /// point, and the detectors that will call it are not built yet. The
+    /// category is unreachable without it.
+    #[allow(dead_code)]
+    pub fn replace_derived(&self, mut events: Vec<Note>) -> Applied {
+        events.retain(|n| !n.kind.persisted());
+        events.sort_by_key(|n| n.timestamp_ns);
+        *self.derived.lock().expect("derived events mutex poisoned") = events;
+        Applied {
+            notes: self.events(),
+        }
+    }
+
+    /// Drop every host-derived event. Used by the clear / replace paths:
+    /// the frames they summarise are gone, so the summaries go with them.
+    fn clear_derived(&self) {
+        self.derived
+            .lock()
+            .expect("derived events mutex poisoned")
+            .clear();
     }
 
     /// Rewrite the scratch copy from the current notes, via atomic
@@ -199,7 +358,13 @@ impl NotesStore {
     /// otherwise. The store enforces chronological order on
     /// `timestamp_ns`.
     pub fn add(&self, note: Note) -> Option<Applied> {
-        let applied = {
+        if !note.kind.persisted() {
+            // The durable store holds user-authored events only; a
+            // host-derived one arrives through `replace_derived` (ADR 0035).
+            tracing::warn!(kind = ?note.kind, "refusing a non-durable event in the notes store");
+            return None;
+        }
+        {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
             if guard.iter().any(|n| n.id == note.id) {
                 return None;
@@ -210,59 +375,83 @@ impl NotesStore {
                 .position(|n| n.timestamp_ns > note.timestamp_ns)
                 .unwrap_or(guard.len());
             guard.insert(pos, note);
-            Applied {
-                notes: guard.clone(),
-            }
-        };
+        }
         self.persist();
-        Some(applied)
+        Some(Applied {
+            notes: self.events(),
+        })
     }
 
     /// Rename a note. `None` if `id` is unknown.
     pub fn rename(&self, id: &str, label: impl Into<String>) -> Option<Applied> {
-        let applied = {
+        {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
             let slot = guard.iter_mut().find(|n| n.id == id)?;
             slot.label = label.into();
-            Applied {
-                notes: guard.clone(),
-            }
-        };
+        }
         self.persist();
-        Some(applied)
+        Some(Applied {
+            notes: self.events(),
+        })
     }
 
     /// Recolor a note (ADR 0035 color metadata): `Some("#RRGGBB")` to set,
     /// `None` to clear back to the view default. `None` return if `id` is
     /// unknown.
     pub fn recolor(&self, id: &str, color: Option<String>) -> Option<Applied> {
-        let applied = {
+        {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
             let slot = guard.iter_mut().find(|n| n.id == id)?;
             slot.color = color;
-            Applied {
-                notes: guard.clone(),
-            }
-        };
+        }
         self.persist();
-        Some(applied)
+        Some(Applied {
+            notes: self.events(),
+        })
+    }
+
+    /// Set or clear a note's description (ADR 0035) — the disclosed body.
+    /// `None` return if `id` is unknown.
+    pub fn describe(&self, id: &str, description: Option<String>) -> Option<Applied> {
+        {
+            let mut guard = self.inner.lock().expect("notes mutex poisoned");
+            let slot = guard.iter_mut().find(|n| n.id == id)?;
+            slot.description = description.filter(|d| !d.is_empty());
+        }
+        self.persist();
+        Some(Applied {
+            notes: self.events(),
+        })
+    }
+
+    /// Set or clear a note's user-defined tag (ADR 0035). `None` return if
+    /// `id` is unknown.
+    pub fn retag(&self, id: &str, tag: Option<String>) -> Option<Applied> {
+        {
+            let mut guard = self.inner.lock().expect("notes mutex poisoned");
+            let slot = guard.iter_mut().find(|n| n.id == id)?;
+            slot.tag = tag.filter(|t| !t.is_empty());
+        }
+        self.persist();
+        Some(Applied {
+            notes: self.events(),
+        })
     }
 
     /// Remove a note. `None` if `id` is unknown.
     pub fn remove(&self, id: &str) -> Option<Applied> {
-        let applied = {
+        {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
             let before = guard.len();
             guard.retain(|n| n.id != id);
             if guard.len() == before {
                 return None;
             }
-            Applied {
-                notes: guard.clone(),
-            }
-        };
+        }
         self.persist();
-        Some(applied)
+        Some(Applied {
+            notes: self.events(),
+        })
     }
 
     /// Drop every note. Emits `Some` only if there was anything
@@ -270,11 +459,17 @@ impl NotesStore {
     pub fn clear(&self) -> Option<Applied> {
         {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
-            if guard.is_empty() {
+            let derived_empty = self
+                .derived
+                .lock()
+                .expect("derived events mutex poisoned")
+                .is_empty();
+            if guard.is_empty() && derived_empty {
                 return None;
             }
             guard.clear();
         }
+        self.clear_derived();
         self.persist();
         Some(Applied { notes: Vec::new() })
     }
@@ -284,15 +479,18 @@ impl NotesStore {
     /// the change is observable.
     pub fn replace(&self, mut notes: Vec<Note>) -> Applied {
         notes.sort_by_key(|n| n.timestamp_ns);
-        let applied = {
+        notes.retain(|n| n.kind.persisted());
+        {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
             *guard = notes;
-            Applied {
-                notes: guard.clone(),
-            }
-        };
+        }
+        // A replace swaps which capture this session holds, so the previous
+        // capture's host-derived summaries no longer describe anything.
+        self.clear_derived();
         self.persist();
-        applied
+        Applied {
+            notes: self.events(),
+        }
     }
 
     /// Restore notes from this store's scratch [`SCRATCH_NOTES_FILE`],
@@ -321,13 +519,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
 
-/// Snapshot of the session-scoped notes, chronological.
-/// Plot panels call this on mount to seed their event list and
-/// reconcile against `notes-changed` events.
+/// Snapshot of the session-scoped timeline events, chronological — the
+/// durable ones and the host-derived ones together, the same set a
+/// `notes-changed` payload carries. Views call this on mount to seed their
+/// event list and reconcile against `notes-changed` events.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn fetch_notes(state: State<'_, AppState>) -> Vec<Note> {
-    state.notes.snapshot()
+    state.notes.events()
 }
 
 /// Add a note to the session buffer. Emits `notes-changed`
@@ -359,6 +558,27 @@ pub(crate) fn rename_note(app: AppHandle, id: String, label: String) {
 pub(crate) fn recolor_note(app: AppHandle, id: String, color: Option<String>) {
     let state: State<'_, AppState> = app.state();
     if let Some(applied) = state.notes.recolor(&id, color) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Set or clear an existing note's description (ADR 0035): the body the
+/// event view discloses under the label.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn describe_note(app: AppHandle, id: String, description: Option<String>) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.describe(&id, description) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Set or clear an existing note's user-defined tag (ADR 0035).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn retag_note(app: AppHandle, id: String, tag: Option<String>) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.retag(&id, tag) {
         let _ = app.emit("notes-changed", applied.notes);
     }
 }
@@ -395,6 +615,9 @@ mod tests {
             label: label.into(),
             kind: EventKind::Note,
             color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
         }
     }
 
@@ -461,6 +684,42 @@ mod tests {
         let restored = reopened.restore().expect("scratch notes restore");
         assert_eq!(restored[0].color.as_deref(), Some("#00aaff"));
         assert_eq!(restored[0].kind, EventKind::Note);
+    }
+
+    #[test]
+    fn a_description_and_a_tag_survive_a_reopen_and_clear_when_emptied() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = NotesStore::with_scratch(dir.path().to_path_buf());
+        s.add(note("a", 1_000, "one")).unwrap();
+        s.describe("a", Some("contactor opened under load".into()))
+            .unwrap();
+        s.retag("a", Some("fault".into())).unwrap();
+
+        let reopened = NotesStore::with_scratch(dir.path().to_path_buf());
+        let back = reopened.restore().expect("notes.json present");
+        assert_eq!(
+            back[0].description.as_deref(),
+            Some("contactor opened under load")
+        );
+        assert_eq!(back[0].tag.as_deref(), Some("fault"));
+        assert_eq!(back[0].label, "one", "label untouched");
+
+        // An emptied field clears rather than storing "".
+        s.describe("a", Some(String::new())).unwrap();
+        s.retag("a", None).unwrap();
+        assert_eq!(s.snapshot()[0].description, None);
+        assert_eq!(s.snapshot()[0].tag, None);
+        // Unknown ids are no-ops.
+        assert!(s.describe("missing", Some("x".into())).is_none());
+        assert!(s.retag("missing", Some("x".into())).is_none());
+    }
+
+    #[test]
+    fn a_pre_description_note_still_deserializes() {
+        let legacy: Note = serde_json::from_str(r#"{"id":"x","timestampNs":5,"label":"old"}"#)
+            .expect("a note written before descriptions existed");
+        assert_eq!(legacy.description, None);
+        assert_eq!(legacy.tag, None);
     }
 
     #[test]
@@ -609,5 +868,114 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a", "b", "c"],
         );
+    }
+}
+
+#[cfg(test)]
+mod category_tests {
+    use super::*;
+
+    fn bus_error(id: &str, ts: u64) -> Note {
+        Note {
+            id: id.into(),
+            timestamp_ns: ts,
+            label: "bus error".into(),
+            kind: EventKind::BusError,
+            color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
+        }
+    }
+
+    fn user_note(id: &str, ts: u64) -> Note {
+        Note {
+            id: id.into(),
+            timestamp_ns: ts,
+            label: "note".into(),
+            kind: EventKind::Note,
+            color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
+        }
+    }
+
+    #[test]
+    fn each_kind_declares_its_category_and_that_category_fixes_its_lifecycle() {
+        assert_eq!(EventKind::Note.category(), EventCategory::UserAuthored);
+        assert_eq!(EventKind::BusError.category(), EventCategory::HostDerived);
+        assert!(EventKind::Note.persisted() && EventKind::Note.exported());
+        assert!(!EventKind::BusError.persisted() && !EventKind::BusError.exported());
+    }
+
+    #[test]
+    fn a_host_derived_event_is_refused_by_the_durable_store() {
+        let s = NotesStore::new();
+        assert!(s.add(bus_error("e1", 1_000)).is_none());
+        assert!(s.snapshot().is_empty());
+        assert!(s.events().is_empty());
+    }
+
+    #[test]
+    fn host_derived_events_reach_the_views_but_never_the_scratch_or_an_export() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = NotesStore::with_scratch(dir.path().to_path_buf());
+        s.add(user_note("n1", 2_000)).unwrap();
+        let applied = s.replace_derived(vec![bus_error("e1", 1_000)]);
+
+        // Views see both, chronologically.
+        assert_eq!(
+            applied
+                .notes
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["e1", "n1"],
+        );
+        assert_eq!(applied.notes, s.events());
+        // The durable snapshot and the export set see only the note.
+        assert_eq!(
+            s.snapshot()
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["n1"],
+        );
+        assert_eq!(
+            s.exportable()
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["n1"],
+        );
+        // And the scratch file the next session restores from holds only it.
+        let reopened = NotesStore::with_scratch(dir.path().to_path_buf());
+        assert_eq!(
+            reopened
+                .restore()
+                .expect("notes.json present")
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["n1"],
+        );
+    }
+
+    #[test]
+    fn clearing_the_capture_drops_the_derived_events_with_it() {
+        let s = NotesStore::new();
+        s.replace_derived(vec![bus_error("e1", 1_000)]);
+        assert!(
+            s.clear().is_some(),
+            "derived-only store still has something to clear"
+        );
+        assert!(s.events().is_empty());
+    }
+
+    #[test]
+    fn the_bus_error_kind_crosses_the_wire_camel_cased() {
+        let v = serde_json::to_value(bus_error("e1", 1)).unwrap();
+        assert_eq!(v["kind"], "busError");
     }
 }

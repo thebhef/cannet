@@ -4,7 +4,16 @@ import { buildEventMerge } from "./eventMerge";
 import type { TimelineEvent } from "./notes";
 
 function ev(id: string): TimelineEvent {
-  return { id, timestampNs: 0, label: id, kind: "note", color: null, editable: true };
+  return {
+    id,
+    timestampNs: 0,
+    label: id,
+    kind: "note",
+    color: null,
+    description: null,
+    tag: null,
+    editable: true,
+  };
 }
 
 describe("buildEventMerge", () => {

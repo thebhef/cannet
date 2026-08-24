@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  defaultVisibleKinds,
+  EVENT_KIND_META,
+  EVENT_KINDS,
+  noteToEvent,
+  visibleEvents,
+  type EventKind,
   noteNsFromDisplay,
   noteSecondsFromWindow,
   sortNotesChronologically,
@@ -63,5 +69,52 @@ describe("timeline events (ADR 0035)", () => {
     expect(truncationEvent(5)).toMatchObject({
       id: TRUNCATION_EVENT_ID, kind: "truncation", editable: false, color: null,
     });
+  });
+});
+
+describe("event kinds", () => {
+  it("gives every kind a category, and the category fixes the lifecycle", () => {
+    expect(EVENT_KIND_META.note.category).toBe("userAuthored");
+    expect(EVENT_KIND_META.busError.category).toBe("hostDerived");
+    expect(EVENT_KIND_META.truncation.category).toBe("frontendDerived");
+    // Only the user's own events are editable.
+    expect(EVENT_KINDS.filter((k) => EVENT_KIND_META[k].editable)).toEqual([
+      "note",
+      "messageBound",
+    ]);
+  });
+
+  it("declares which kinds are noise until asked for", () => {
+    expect(EVENT_KIND_META.busError.visibleByDefault).toBe(false);
+    expect(defaultVisibleKinds().has("busError")).toBe(false);
+    expect(defaultVisibleKinds().has("note")).toBe(true);
+    expect(defaultVisibleKinds().has("truncation")).toBe(true);
+  });
+
+  it("names the BLF record a kind round-trips as, or none", () => {
+    expect(EVENT_KIND_META.note.blfRecord).toBe("GLOBAL_MARKER");
+    expect(EVENT_KIND_META.messageBound.blfRecord).toBe("EVENT_COMMENT");
+    expect(EVENT_KIND_META.busError.blfRecord).toBe(null);
+    expect(EVENT_KIND_META.truncation.blfRecord).toBe(null);
+  });
+
+  it("marks a host-derived event uneditable on the way in", () => {
+    expect(noteToEvent({ id: "e", timestampNs: 1, label: "bus error", kind: "busError" }).editable)
+      .toBe(false);
+    expect(noteToEvent(note("n", 1)).editable).toBe(true);
+  });
+
+  it("hides the kinds a view has not enabled, keeping the rest chronological", () => {
+    const all = timelineEvents(
+      [note("n", 2_000), { id: "e", timestampNs: 1_000, label: "bus error", kind: "busError" }],
+      3_000,
+    );
+    expect(all.map((e) => e.id)).toEqual(["e", "n", TRUNCATION_EVENT_ID]);
+    expect(visibleEvents(all, defaultVisibleKinds()).map((e) => e.id)).toEqual([
+      "n",
+      TRUNCATION_EVENT_ID,
+    ]);
+    const withErrors = new Set<EventKind>([...defaultVisibleKinds(), "busError"]);
+    expect(visibleEvents(all, withErrors).map((e) => e.id)).toEqual(["e", "n", TRUNCATION_EVENT_ID]);
   });
 });

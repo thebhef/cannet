@@ -11,7 +11,8 @@ import { useTraceModel } from "./traceData";
 import { LIVE_TAIL_ROWS, useLiveTailDemand } from "./liveTailDemand";
 import { useTrace, type TraceRow } from "./trace";
 import { useNotes } from "./notesContext";
-import { timelineEvents } from "./notes";
+import { timelineEvents, visibleEvents } from "./notes";
+import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import { buildEventMerge } from "./eventMerge";
 import { useFilteredTrace } from "./useFilteredTrace";
 import { useByIdView } from "./useByIdView";
@@ -250,11 +251,19 @@ export function TracePanel(props: IDockviewPanelProps) {
   // Timeline events (ADR 0035): host notes + the derived truncation marker,
   // the whole (sparse) set. They render in the chronological trace, spliced
   // among the frame rows by timestamp.
-  const { notes, renameNote, recolorNote, removeNote } = useNotes();
-  const events = useMemo(
+  const { notes, renameNote, recolorNote, describeNote, retagNote, removeNote } = useNotes();
+  const allEvents = useMemo(
     () => timelineEvents(notes, model.truncationTsNs),
     [notes, model.truncationTsNs],
   );
+  // Per-kind visibility is view-local (ADR 0035): a kind hidden by default
+  // is absent from this trace until this trace is told to show it.
+  const kindFilter = useEventKindFilter();
+  const events = useMemo(
+    () => visibleEvents(allEvents, kindFilter.visible),
+    [allEvents, kindFilter.visible],
+  );
+  const eventCounts = useMemo(() => countByKind(allEvents), [allEvents]);
 
   // Interleave events into the chronological view when the view-local toggle
   // is on — for both the unfiltered and the filtered chronological trace.
@@ -341,8 +350,14 @@ export function TracePanel(props: IDockviewPanelProps) {
   // remove, wired straight to the host notes commands. Memoised (the row is
   // memoised) — the dispatchers are themselves stable.
   const eventActions = useMemo<EventActions>(
-    () => ({ onRename: renameNote, onRecolor: recolorNote, onRemove: removeNote }),
-    [renameNote, recolorNote, removeNote],
+    () => ({
+      onRename: renameNote,
+      onRecolor: recolorNote,
+      onDescribe: describeNote,
+      onRetag: retagNote,
+      onRemove: removeNote,
+    }),
+    [renameNote, recolorNote, describeNote, retagNote, removeNote],
   );
 
   // Cross-panel "goto" (ADR 0035): a broadcast carries an event's absolute
@@ -436,6 +451,9 @@ export function TracePanel(props: IDockviewPanelProps) {
             />
             events
           </label>
+        )}
+        {mode === "chronological" && showEvents && (
+          <EventKindFilter state={kindFilter} counts={eventCounts} />
         )}
       </div>
       {mode === "by-id" ? null : (

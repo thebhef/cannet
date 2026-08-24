@@ -43,7 +43,10 @@
 pub mod format;
 mod scan;
 
-pub use scan::{scan_blf, scan_blf_cancellable, BlfScan, ScanOutcome, ScanProgress, ScannedMarker};
+pub use scan::{
+    scan_blf, scan_blf_cancellable, BlfScan, ScanOutcome, ScanProgress, ScannedComment,
+    ScannedMarker,
+};
 
 use std::fs;
 use std::io;
@@ -63,6 +66,10 @@ use format::reader::{BlfObject, BlfReadError, BlfReader};
 /// [`BlfCanFrameSource::on_marker`].
 pub type MarkerSink = Box<dyn FnMut(ScannedMarker) + Send>;
 
+/// Handler for the `EVENT_COMMENT` records a [`BlfCanFrameSource`] walks
+/// past. See [`BlfCanFrameSource::on_comment`].
+pub type CommentSink = Box<dyn FnMut(ScannedComment) + Send>;
+
 /// A `CanFrameSource` backed by a Vector BLF log file.
 pub struct BlfCanFrameSource {
     reader: BlfReader,
@@ -74,6 +81,9 @@ pub struct BlfCanFrameSource {
     /// Optional handler for the markers `next_frame` walks past, set by
     /// [`Self::on_marker`]. Without one they are skipped as before.
     marker_sink: Option<MarkerSink>,
+    /// The same, for `EVENT_COMMENT` — the file's other annotation record
+    /// type ([`Self::on_comment`]).
+    comment_sink: Option<CommentSink>,
 }
 
 impl BlfCanFrameSource {
@@ -86,6 +96,7 @@ impl BlfCanFrameSource {
             reader,
             start_unix_nanos,
             marker_sink: None,
+            comment_sink: None,
         })
     }
 
@@ -100,6 +111,14 @@ impl BlfCanFrameSource {
     /// replaces the first.
     pub fn on_marker(&mut self, sink: impl FnMut(ScannedMarker) + Send + 'static) {
         self.marker_sink = Some(Box::new(sink));
+    }
+
+    /// Hand every `EVENT_COMMENT` this source walks past to `sink`, with
+    /// its timestamp already resolved to absolute nanoseconds — the same
+    /// deal [`Self::on_marker`] offers for `GLOBAL_MARKER`, for the other
+    /// annotation record type. Setting a second sink replaces the first.
+    pub fn on_comment(&mut self, sink: impl FnMut(ScannedComment) + Send + 'static) {
+        self.comment_sink = Some(Box::new(sink));
     }
 
     /// The file's `FileStatistics` header (object count, compressed /
@@ -165,16 +184,26 @@ impl CanFrameSource for BlfCanFrameSource {
                         });
                     }
                 }
-                // The remaining non-frame events — text annotations
-                // (EVENT_COMMENT, APP_TEXT), diagnostic events
-                // (CAN_STATISTIC, DATA_LOST_BEGIN, DATA_LOST_END), and
-                // `Other` (anything we don't decode) — skip at the
+                // `EVENT_COMMENT` is the other annotation record type,
+                // offered on the same terms (`on_comment`).
+                Some(BlfObject::EventComment(c)) => {
+                    if let Some(sink) = self.comment_sink.as_mut() {
+                        sink(ScannedComment {
+                            timestamp_ns: self
+                                .start_unix_nanos
+                                .saturating_add(c.event.timestamp_ns()),
+                            comment: c,
+                        });
+                    }
+                }
+                // The remaining non-frame events — APP_TEXT, diagnostic
+                // events (CAN_STATISTIC, DATA_LOST_BEGIN, DATA_LOST_END),
+                // and `Other` (anything we don't decode) — skip at the
                 // adapter layer and keep walking. Consumers that
                 // want them walk the same file through
                 // `BlfReader` directly.
                 Some(
-                    BlfObject::EventComment(_)
-                    | BlfObject::AppText(_)
+                    BlfObject::AppText(_)
                     | BlfObject::CanStatistic(_)
                     | BlfObject::DataLostBegin(_)
                     | BlfObject::DataLostEnd(_)
@@ -630,6 +659,37 @@ impl BlfCaptureWriter {
         // uncolored event, preserving the prior byte output.
         marker.foreground_color = foreground_color;
         let bytes = format::marker::encode(&marker);
+        inner.append_object(&bytes, timestamp_ns)?;
+        self.marker_count += 1;
+        self.note_clamp(start, timestamp_ns, None);
+        Ok(())
+    }
+
+    /// Append an `EVENT_COMMENT` (object type 92) at `timestamp_ns`.
+    /// `commented_event_type` is the `ObjectType` of the event the comment
+    /// applies to — `CAN_MESSAGE2` / `CAN_FD_MESSAGE_64` for a comment made
+    /// on a message, `0` for a freestanding one — which is what makes the
+    /// comment track that message per the BLF spec rather than float on the
+    /// timeline.
+    ///
+    /// Counted in the same `marker_count` as `GLOBAL_MARKER`: both are
+    /// annotations, and a save summary that reported only one of them would
+    /// undercount what it wrote.
+    pub fn append_comment(
+        &mut self,
+        timestamp_ns: u64,
+        text: &str,
+        commented_event_type: u32,
+    ) -> Result<(), BlfWriteError> {
+        let inner = self.inner.as_mut().ok_or_else(|| {
+            BlfWriteError::Io(io::Error::other("writer has already been finished"))
+        })?;
+        let candidate = (timestamp_ns / 1_000_000) * 1_000_000;
+        let start = inner.set_start_if_unset(candidate);
+        let rel = timestamp_ns.saturating_sub(start);
+        let comment =
+            format::text::build_event_comment(rel, commented_event_type, text.as_bytes().to_vec());
+        let bytes = format::text::encode_event_comment(&comment);
         inner.append_object(&bytes, timestamp_ns)?;
         self.marker_count += 1;
         self.note_clamp(start, timestamp_ns, None);

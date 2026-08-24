@@ -45,6 +45,8 @@ const notesCtx = (notes: Note[]): NotesContextValue => ({
   addNote: vi.fn(),
   renameNote: vi.fn(),
   recolorNote: vi.fn(),
+  describeNote: vi.fn(),
+  retagNote: vi.fn(),
   removeNote: vi.fn(),
 });
 
@@ -234,5 +236,152 @@ describe("EventsPanel in a narrow panel", () => {
       "trace-event-edit",
       "trace-event-remove",
     ]);
+  });
+});
+
+describe("EventsPanel kind filter", () => {
+  const busError: Note = {
+    id: "e1",
+    timestampNs: 4_000_000_000,
+    label: "bus error x40",
+    kind: "busError",
+  };
+  const note: Note = { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" };
+
+  const labels = () =>
+    Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+
+  it("hides a kind that declares itself hidden, and shows it when asked", () => {
+    // "By default not shown anywhere" — but findable: the checklist lists
+    // the kind with its count even while it is off (ADR 0035).
+    renderPanel([busError, note]);
+    expect(labels()).toEqual(["boom"]);
+
+    const box = screen.getByLabelText("Bus Errors") as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(screen.getByLabelText("Bus Errors").closest("label")?.textContent).toContain("1");
+
+    fireEvent.click(box);
+    expect(labels()).toEqual(["bus error x40", "boom"]);
+  });
+
+  it("offers no edit controls on a host-derived event", () => {
+    renderPanel([busError]);
+    fireEvent.click(screen.getByLabelText("Bus Errors") as HTMLInputElement);
+    expect(labels()).toEqual(["bus error x40"]);
+    expect(screen.queryByLabelText("rename event")).toBeNull();
+    expect(screen.queryByLabelText("remove event")).toBeNull();
+  });
+});
+
+describe("EventsPanel event body", () => {
+  const tagged: Note = {
+    id: "n1",
+    timestampNs: 5_000_000_000,
+    label: "contactor",
+    kind: "note",
+    tag: "fault",
+    description: "opened under load",
+  };
+
+  it("keeps the body collapsed until the row is disclosed", () => {
+    renderPanel([tagged]);
+    expect(screen.queryByText("opened under load")).toBeNull();
+    fireEvent.click(screen.getByLabelText("show event details"));
+    expect(screen.getByText("opened under load")).toBeInTheDocument();
+    expect(screen.getByText("fault")).toBeInTheDocument();
+    // ...and folds back up.
+    fireEvent.click(screen.getByLabelText("hide event details"));
+    expect(screen.queryByText("opened under load")).toBeNull();
+  });
+
+  it("edits the description in place and commits it to the host", () => {
+    const ctx = notesCtx([tagged]);
+    render(
+      <TraceDataProvider value={traceData}>
+        <NotesContext.Provider value={ctx}>
+          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
+        </NotesContext.Provider>
+      </TraceDataProvider>,
+    );
+    fireEvent.click(screen.getByLabelText("show event details"));
+    fireEvent.click(screen.getByText("opened under load"));
+    const input = screen.getByLabelText("event description") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "welded shut" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(ctx.describeNote).toHaveBeenCalledWith("n1", "welded shut");
+
+    // Clearing the field clears the description rather than storing "".
+    fireEvent.click(screen.getByText("opened under load"));
+    const again = screen.getByLabelText("event description") as HTMLInputElement;
+    fireEvent.change(again, { target: { value: "  " } });
+    fireEvent.keyDown(again, { key: "Enter" });
+    expect(ctx.describeNote).toHaveBeenLastCalledWith("n1", null);
+  });
+
+  it("shows a host-derived event's body but takes no edits on it", () => {
+    renderPanel([
+      {
+        id: "e1",
+        timestampNs: 4_000_000_000,
+        label: "bus error x40",
+        kind: "busError",
+        description: "bit errors on powertrain over 1.2 s",
+      },
+    ]);
+    fireEvent.click(screen.getByLabelText("Bus Errors") as HTMLInputElement);
+    fireEvent.click(screen.getByLabelText("show event details"));
+    expect(screen.getByText("bit errors on powertrain over 1.2 s")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("bit errors on powertrain over 1.2 s"));
+    expect(screen.queryByLabelText("event description")).toBeNull();
+  });
+});
+
+describe("EventsPanel tag filter", () => {
+  it("narrows to the events carrying a matching tag", () => {
+    // jsdom lays nothing out; give the row virtualizer a viewport so all
+    // three rows are drawn.
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    renderPanel([
+      { id: "a", timestampNs: 1_000_000_000, label: "one", kind: "note", tag: "fault" },
+      { id: "b", timestampNs: 2_000_000_000, label: "two", kind: "note", tag: "contactor" },
+      { id: "c", timestampNs: 3_000_000_000, label: "three", kind: "note" },
+    ]);
+    const labels = () =>
+      Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+    expect(labels()).toEqual(["one", "two", "three"]);
+
+    fireEvent.change(screen.getByLabelText("filter by tag"), { target: { value: "cont" } });
+    expect(labels()).toEqual(["two"]);
+
+    // The suggestions are the tags actually in use.
+    expect(
+      Array.from(document.querySelectorAll("#events-panel-tags option")).map(
+        (o) => (o as HTMLOptionElement).value,
+      ),
+    ).toEqual(["contactor", "fault"]);
+
+    fireEvent.change(screen.getByLabelText("filter by tag"), { target: { value: "" } });
+    expect(labels()).toEqual(["one", "two", "three"]);
+    ch.mockRestore();
+  });
+});
+
+describe("EventsPanel record types", () => {
+  it("lists both BLF annotation records and filters them apart", () => {
+    // The record a kind rides is a property of the kind, so the kind
+    // checklist is the record-type filter — and it names the record.
+    renderPanel([
+      { id: "n1", timestampNs: 1_000_000_000, label: "a marker", kind: "note" },
+      { id: "c1", timestampNs: 2_000_000_000, label: "a comment", kind: "messageBound" },
+    ]);
+    const labels = () =>
+      Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+    expect(labels()).toEqual(["a marker", "a comment"]);
+    expect(screen.getByLabelText("Notes").closest("label")?.title).toContain("GLOBAL_MARKER");
+    expect(screen.getByLabelText("Comments").closest("label")?.title).toContain("EVENT_COMMENT");
+
+    fireEvent.click(screen.getByLabelText("Notes"));
+    expect(labels()).toEqual(["a comment"]);
   });
 });

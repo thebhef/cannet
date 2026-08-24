@@ -21,6 +21,10 @@ export interface NotesContextValue {
   /// Set or clear a note's color (`#RRGGBB`, or `null` for the view
   /// default) — ADR 0035.
   recolorNote: (id: string, color: string | null) => void;
+  /// Set or clear a note's description body (`null` clears) — ADR 0035.
+  describeNote: (id: string, description: string | null) => void;
+  /// Set or clear a note's user-defined tag (`null` clears) — ADR 0035.
+  retagNote: (id: string, tag: string | null) => void;
   /// Remove a note by id.
   removeNote: (id: string) => void;
 }
@@ -30,6 +34,8 @@ const fallback: NotesContextValue = {
   addNote: () => {},
   renameNote: () => {},
   recolorNote: () => {},
+  describeNote: () => {},
+  retagNote: () => {},
   removeNote: () => {},
 };
 
