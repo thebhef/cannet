@@ -728,9 +728,21 @@ pub(crate) fn transmit_frame_inner(
 
     let wire_status = match routing {
         None if sessions_guard.is_empty() => ipc::TransmitWireStatus::NotConnected,
-        None => ipc::TransmitWireStatus::Failed {
-            message: format!("bus {} is not bound on any active server", request.bus_id),
-        },
+        // A bound bus whose adapter has gone is not an unbound bus, and
+        // saying so sends the reader to the wrong panel.
+        None => {
+            match crate::session::unreachable_interface_for_bus(&sessions_guard, &request.bus_id) {
+                Some(interface_id) => ipc::TransmitWireStatus::Failed {
+                    message: format!(
+                    "the driver can no longer reach {interface_id}, the interface bound to bus {}",
+                    request.bus_id
+                ),
+                },
+                None => ipc::TransmitWireStatus::Failed {
+                    message: format!("bus {} is not bound on any active server", request.bus_id),
+                },
+            }
+        }
         Some(BusRoute {
             address,
             channel,

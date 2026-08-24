@@ -76,6 +76,11 @@ class OpenConfig:
 STATE_ACTIVE = "active"
 STATE_PASSIVE = "passive"
 STATE_BUS_OFF = "bus_off"
+#: Not a fault-confinement state: the driver can no longer reach the
+#: interface, so there is no controller left to report on. A backend
+#: returns this when a device read fails outright, which is what a
+#: removed USB adapter looks like from here.
+STATE_UNAVAILABLE = "unavailable"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -83,8 +88,10 @@ class ControllerState:
     """Snapshot of a controller's ISO 11898-1 fault-confinement state.
 
     ``state`` is one of :data:`STATE_ACTIVE`, :data:`STATE_PASSIVE`,
-    :data:`STATE_BUS_OFF`. ``tec`` / ``rec`` are the current Transmit /
-    Receive Error Counters; backends that don't expose them report 0.
+    :data:`STATE_BUS_OFF` or :data:`STATE_UNAVAILABLE`. ``tec`` /
+    ``rec`` are the current Transmit / Receive Error Counters; backends
+    that don't expose them report 0, and an unavailable interface
+    reports 0 for both because nothing is reading them.
     """
 
     state: str = STATE_ACTIVE
@@ -187,7 +194,10 @@ class OpenChannel(Protocol):
         """Return the controller's current fault-confinement state.
 
         Backends that don't expose state report
-        :data:`STATE_ACTIVE` with zero counters.
+        :data:`STATE_ACTIVE` with zero counters. A backend whose device
+        read fails — the adapter is gone, the handle is invalid —
+        reports :data:`STATE_UNAVAILABLE` rather than the healthy
+        default, so "we cannot reach it" never reads as "it is fine".
         """
 
     def close(self) -> None:
@@ -205,5 +215,6 @@ __all__ = [
     "STATE_ACTIVE",
     "STATE_BUS_OFF",
     "STATE_PASSIVE",
+    "STATE_UNAVAILABLE",
     "TxRejected",
 ]

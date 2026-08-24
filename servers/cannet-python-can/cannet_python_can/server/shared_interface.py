@@ -430,6 +430,10 @@ class _SharedInterface:
         cid = self._channel_id
         read = 0
         read_total = 0
+        # Whether the current read is inside a run of failures, so the
+        # 10 Hz retry loop reports one line per episode rather than one
+        # per attempt.
+        read_failing = False
         next_stats_ns = time.monotonic_ns() + _RX_STATS_INTERVAL_NS
         try:
             while not self._stop.is_set():
@@ -459,10 +463,20 @@ class _SharedInterface:
                         # channel, so keep pumping rather than breaking.
                         _log.debug("rx for %s ended at reconfigure swap: %s", cid, e)
                         continue
-                    _log.warning("rx for %s failed: %s", cid, e)
+                    # One line per episode. The retry below runs at
+                    # 10 Hz for as long as the fault lasts, and the
+                    # operator's log is a panel with a rate-limit
+                    # budget, not a trace: repeating the same sentence
+                    # ten times a second buries everything else. A read
+                    # that succeeds re-arms it, so a second episode is
+                    # still reported.
+                    if not read_failing:
+                        read_failing = True
+                        _log.warning("rx for %s failed: %s", cid, e)
                     if self._stop.wait(0.1):
                         break
                     continue
+                read_failing = False
                 if frame is not None:
                     self._rx_queue.put(frame)
                     read += 1
@@ -572,6 +586,36 @@ class _SharedInterface:
                 pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}"
             )
 
+    def _publish_state(
+        self, mapped: "pb.ControllerState.V", tec: int, rec: int
+    ) -> None:
+        """Broadcast an :class:`InterfaceState` if this differs from the
+        last one published. The single place a controller state leaves
+        the interface, so the state poll and any other discovery of the
+        controller's condition cannot disagree about what subscribers
+        were last told."""
+        with self._lock:
+            if (
+                mapped == self._last_state
+                and tec == self._last_tec
+                and rec == self._last_rec
+            ):
+                return
+            self._last_state = mapped
+            self._last_tec = tec
+            self._last_rec = rec
+            outboxes = list(self._outboxes)
+        env = pb.Envelope(
+            interface_state=pb.InterfaceState(
+                interface_id=self._channel_id,
+                state=mapped,
+                tec=tec,
+                rec=rec,
+            )
+        )
+        for ob in outboxes:
+            ob.put(env)
+
     def _state_pump(self) -> None:
         cid = self._channel_id
         while not self._stop.is_set():
@@ -583,30 +627,14 @@ class _SharedInterface:
             try:
                 st = ch.state()
             except Exception as e:  # noqa: BLE001
+                # A controller read that fails is not silence: the
+                # driver could not reach the interface. Publishing that
+                # is the whole point of the poll — swallowing it left an
+                # unplugged adapter reading error-active forever.
                 _log.debug("state poll for %s failed: %s", cid, e)
+                self._publish_state(pb.CONTROLLER_STATE_UNAVAILABLE, 0, 0)
                 continue
-            mapped = _state_name_to_proto(st.state)
-            with self._lock:
-                if (
-                    mapped == self._last_state
-                    and st.tec == self._last_tec
-                    and st.rec == self._last_rec
-                ):
-                    continue
-                self._last_state = mapped
-                self._last_tec = st.tec
-                self._last_rec = st.rec
-                outboxes = list(self._outboxes)
-            env = pb.Envelope(
-                interface_state=pb.InterfaceState(
-                    interface_id=cid,
-                    state=mapped,
-                    tec=st.tec,
-                    rec=st.rec,
-                )
-            )
-            for ob in outboxes:
-                ob.put(env)
+            self._publish_state(_state_name_to_proto(st.state), st.tec, st.rec)
 
 
 class _InterfaceRegistry:

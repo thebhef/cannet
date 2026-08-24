@@ -94,6 +94,18 @@ fault-confinement state changes. `state` is one of `Active` /
 `Passive` / `BusOff`; `tec` / `rec` are the current Transmit /
 Receive Error Counters.
 
+A fourth value, `Unavailable`, is not one of that standard's states:
+it says the driver can no longer reach the interface at all — the
+adapter was unplugged, or its handle was invalidated. It rides this
+message because it answers the same question, and because "there is
+no controller here any more" is the one answer the three-state
+machine cannot express. The sidecar reports it when a device read
+fails outright, and — for PCAN, whose python-can `Bus.state` is a
+stored echo of the value the bus was *configured* with rather than a
+device read — when PCAN-Basic's channel status names an invalid
+handle. A consumer that does not know the value treats it as
+unrecognised and reports no state, which is the honest degradation.
+
 Subscribers get a snapshot on subscribe (current state at the
 moment of subscription) plus pushes on subsequent transitions.
 

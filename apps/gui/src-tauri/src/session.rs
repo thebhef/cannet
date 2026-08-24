@@ -1048,11 +1048,56 @@ pub(crate) fn resolve_bus_route(
         for (ch, b) in &session.channel_to_bus {
             if b == bus_id {
                 if let Some((_, iid)) = session.channel_to_interface.iter().find(|(c, _)| c == ch) {
+                    if interface_is_unavailable(session, iid) {
+                        continue;
+                    }
                     return Some(BusRoute {
                         address: address.clone(),
                         channel: *ch,
                         interface_id: iid.clone(),
                     });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether the peer last said its driver can no longer reach
+/// `interface_id`.
+///
+/// The subscription, the binding and the session all survive an adapter
+/// being unplugged, so nothing else in the route makes it stop
+/// resolving — and a route that keeps resolving keeps appending
+/// tx-confirm rows for frames no wire ever carried. This is the one
+/// signal that says the far end is gone, and it is deliberately narrow:
+/// a bus-off or error-passive controller is present and recovers on its
+/// own, so it keeps its route.
+fn interface_is_unavailable(session: &RemoteSession, interface_id: &str) -> bool {
+    session
+        .controllers
+        .as_ref()
+        .and_then(|c| c.get(interface_id))
+        .is_some_and(|status| {
+            status.state == cannet_client::controller::ControllerState::Unavailable
+        })
+}
+
+/// Why `bus_id` has no route, when the reason is that its interface has
+/// gone unreachable rather than that nothing binds it. Only the wording
+/// of a transmit failure needs this — the scheduler's park (ADR 0039)
+/// treats every route loss alike.
+pub(crate) fn unreachable_interface_for_bus(
+    sessions: &std::collections::HashMap<String, RemoteSession>,
+    bus_id: &str,
+) -> Option<String> {
+    for session in sessions.values() {
+        for (ch, b) in &session.channel_to_bus {
+            if b == bus_id {
+                if let Some((_, iid)) = session.channel_to_interface.iter().find(|(c, _)| c == ch) {
+                    if interface_is_unavailable(session, iid) {
+                        return Some(iid.clone());
+                    }
                 }
             }
         }

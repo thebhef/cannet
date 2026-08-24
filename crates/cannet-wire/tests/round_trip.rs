@@ -222,12 +222,13 @@ fn interface_allocated_envelope_round_trips() {
 }
 
 #[test]
-fn interface_state_envelope_round_trips_active_passive_busoff() {
+fn interface_state_envelope_round_trips_every_controller_state() {
     use prost::Message;
     for state in [
         proto::ControllerState::Active,
         proto::ControllerState::Passive,
         proto::ControllerState::BusOff,
+        proto::ControllerState::Unavailable,
     ] {
         let s = proto::InterfaceState {
             interface_id: "virtual:bus0/bridge-can0".into(),

@@ -48,6 +48,7 @@ from .driver import (
     STATE_ACTIVE,
     STATE_BUS_OFF,
     STATE_PASSIVE,
+    STATE_UNAVAILABLE,
     TxRejected,
 )
 
@@ -63,6 +64,24 @@ except Exception as _e:  # noqa: BLE001 - swallow any import-time error.
     can = None  # type: ignore[assignment]
     _HAVE_PYTHON_CAN = False
     _IMPORT_ERROR = repr(_e)
+
+
+#: PCAN-Basic channel-status codes, from the vendor header python-can
+#: vendors as ``can.interfaces.pcan.basic``. Spelled out here rather
+#: than imported so a build without the PCAN backend still loads, and
+#: so the exact values a reading is compared against are visible where
+#: the comparison is.
+_PCAN_ERROR_BUSOFF = 0x00010
+_PCAN_ERROR_BUSPASSIVE = 0x40000
+#: Statuses that mean there is no reachable adapter behind the handle:
+#: the controller registers do not answer (REGTEST), the driver is not
+#: loaded (NODRIVER), the hardware / net / client handle is invalid
+#: (ILLHW, ILLNET, ILLCLIENT) or the channel is not initialised
+#: (INITIALIZE). None of these can be reported by a channel that is
+#: open on a present device.
+_PCAN_STATUS_UNREACHABLE = frozenset(
+    {0x00100, 0x00200, 0x01400, 0x01800, 0x01C00, 0x4000000}
+)
 
 
 class PythonCanDriver:
@@ -113,11 +132,29 @@ class PythonCanChannel:
         self._listen_only = listen_only
         self._fd = fd
         self._closed = False
+        # Set when a call into the backend fails at the device boundary
+        # -- the adapter was unplugged, the handle was invalidated --
+        # and cleared by the next call that succeeds. Read by `state`,
+        # which is how "we cannot reach this interface" leaves the
+        # driver at all: it is not a fault-confinement state, so
+        # nothing else on the channel can carry it.
+        #
+        # Only reads feed it. A failing `send` is deliberately excluded:
+        # a full transmit queue on a bus with no other node raises
+        # exactly the same way a missing adapter does, and parking a
+        # single-node bench bus is worse than being slow to notice a
+        # real removal.
+        self._unreachable = False
 
     def recv(self, timeout_s: float) -> Optional[Frame]:
         if self._closed:
             return None
-        msg = self._bus.recv(timeout=timeout_s)  # type: ignore[attr-defined]
+        try:
+            msg = self._bus.recv(timeout=timeout_s)  # type: ignore[attr-defined]
+        except Exception:
+            self._unreachable = True
+            raise
+        self._unreachable = False
         if msg is None:
             return None
         return _msg_to_frame(msg)
@@ -171,25 +208,76 @@ class PythonCanChannel:
             )
 
     def state(self) -> ControllerState:
-        """Read the controller's fault-confinement state.
+        """Read the controller's fault-confinement state, or report that
+        the interface cannot be reached.
 
-        python-can exposes ``Bus.state`` (``BusState.ACTIVE`` /
-        ``PASSIVE`` / ``ERROR``); we map ``ERROR`` to ``bus_off`` since
-        that's the closest analog of an ISO 11898-1 fault state in
-        python-can's three-value enum. TEC / REC aren't exposed
-        uniformly across backends; reported as 0.
+        Two sources, in order. A read that already failed at the device
+        boundary (see :attr:`_unreachable`) settles it: there is nothing
+        to ask. Otherwise the backend is asked — PCAN through its live
+        channel status, everything else through python-can's
+        ``Bus.state`` (``BusState.ACTIVE`` / ``PASSIVE`` / ``ERROR``,
+        with ``ERROR`` mapped to ``bus_off`` as the closest analog of an
+        ISO 11898-1 fault state in that three-value enum). A read that
+        raises reports :data:`STATE_UNAVAILABLE`, never the healthy
+        default: "we cannot reach it" must not render as "it is fine".
+
+        TEC / REC aren't exposed uniformly across backends; reported
+        as 0.
         """
         if self._closed or can is None:
             return ControllerState()
+        if self._unreachable:
+            return ControllerState(state=STATE_UNAVAILABLE)
+        pcan = self._pcan_state()
+        if pcan is not None:
+            return pcan
         try:
             raw = self._bus.state  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
-            return ControllerState()
+            self._unreachable = True
+            return ControllerState(state=STATE_UNAVAILABLE)
         name = getattr(raw, "name", str(raw)).upper()
         if name == "PASSIVE":
             return ControllerState(state=STATE_PASSIVE)
         if name in ("ERROR", "BUS_OFF", "BUSOFF"):
             return ControllerState(state=STATE_BUS_OFF)
+        return ControllerState(state=STATE_ACTIVE)
+
+    def _pcan_state(self) -> Optional[ControllerState]:
+        """PCAN's controller state read from the device, or ``None`` for
+        a backend that is not PCAN.
+
+        python-can's ``PcanBus.state`` is a **stored echo** of the value
+        the bus was configured with — its getter returns ``self._state``,
+        written only by the setter ``__init__`` calls — so it never moves
+        on its own and can never report bus-off or error-passive. The
+        live read is ``PcanBus.status()``, which calls PCAN-Basic's
+        ``CAN_GetStatus``; that is what this asks.
+
+        Statuses are matched exactly rather than by mask.
+        ``CAN_GetStatus`` answers with one code, and the vendor header's
+        "mask" constants share bits with unrelated codes, so a masked
+        test would read a busy transmit queue as a missing adapter.
+        Anything unrecognised — and both bus-error warning levels, which
+        mean a present controller counting errors — reads as active: a
+        reading that is not certainly a fault must not park a bus.
+        """
+        status_read = getattr(self._bus, "status", None)
+        if not hasattr(self._bus, "m_objPCANBasic") or not callable(status_read):
+            return None
+        try:
+            status = int(status_read())
+        except Exception:  # noqa: BLE001
+            self._unreachable = True
+            return ControllerState(state=STATE_UNAVAILABLE)
+        self._unreachable = False
+        if status in _PCAN_STATUS_UNREACHABLE:
+            self._unreachable = True
+            return ControllerState(state=STATE_UNAVAILABLE)
+        if status == _PCAN_ERROR_BUSOFF:
+            return ControllerState(state=STATE_BUS_OFF)
+        if status == _PCAN_ERROR_BUSPASSIVE:
+            return ControllerState(state=STATE_PASSIVE)
         return ControllerState(state=STATE_ACTIVE)
 
     def close(self) -> None:

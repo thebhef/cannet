@@ -387,6 +387,17 @@ row per logical bus with its ISO 11898-1 fault-confinement state
 counters, the bus load, the error-frame tally and rate, and the adapter
 with the configuration the host actually put on the wire for it.
 
+A row can also read **adapter unavailable**, which is not one of that
+standard's states: the driver can no longer reach the interface, which
+is what unplugging a USB adapter mid-session looks like. It reads as a
+fault rather than a warning, and it is the one state that **suspends
+transmission** — periodic messages targeting the bus park (as they do
+for any route loss) and resume on their own within about a second of
+the adapter coming back. Without that, the app goes on handing frames
+to a driver that cannot carry them, and each one still appears in the
+trace as though it had been sent. A bus-off controller keeps
+transmitting: it is present and recovers by itself.
+
 **Absent is not zero anywhere in that panel.** An in-process virtual bus
 has no configurable bitrate and therefore no defined load; a bus with no
 binding has no counters; a driver that reports no state contributes

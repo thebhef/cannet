@@ -8,7 +8,8 @@ behave like the grid rows they sit on.
 
 ## Status
 
-Groomed with the owner 2026-08-22. Six phases. Not started.
+Groomed with the owner 2026-08-22. Six phases. Phases 1 and 2 landed;
+see the status log.
 
 Two of the observations are **acceptance blockers for tasks already
 finished** (owner-review-queue § 4) and are carried here rather than
@@ -405,6 +406,213 @@ Branch `task-109-phase-1-quieter-surfaces` off
   `uv`, the MDF export oracle, and the sidecar freeze). NSIS installer
   built (`pnpm --dir apps/gui tauri build`).
 
+**2026-08-22 - Phase 2 (The unplugged dongle), item 2.** Branch
+`task-109-phase-2-dead-interface` off
+`task-109-phase-1-quieter-surfaces`. Investigation-first; three
+symptoms treated as three chains. No PEAK hardware exists in an agent's
+environment, so every experiment below runs against a **virtual channel
+torn down mid-stream** or against the installed python-can package, and
+the closing confirmation is owner-run (see *Blockers / side effects*).
+
+### Chain A - "no indication that there was an issue with the bus"
+
+**Observation.** The adapter was unplugged; the app showed nothing.
+
+**H-A1.** *python-can's PCAN backend never reads controller state from
+the device, so `InterfaceState` cannot move.*
+
+*Experiment.* Read `PcanBus.state`'s getter out of the installed
+package (`.venv/.../can/interfaces/pcan/pcan.py`) and enumerate every
+assignment to `self._state` in that module.
+
+*Data.* The getter is `return self._state`, whole. `self._state` is
+written in exactly one place - the `state` **setter**, which `__init__`
+calls with the configured `BusState`. No `PCANBasic` call appears in
+the getter. A live device read does exist and is unused:
+`PcanBus.status()` -> `CAN_GetStatus`.
+
+*Conclusion.* **Confirmed, and wider than this symptom.** The
+controller-state readout is structurally inert on PEAK hardware:
+`Bus.state` echoes what the bus was set up with, so bus-off and
+error-passive could never surface either. Fixed by reading `status()`
+for a PCAN bus.
+
+**H-A2.** *Our own `PythonCanChannel.state()` masks a failed controller
+read as healthy.*
+
+*Experiment.* Construct the channel over a bus whose `.state` property
+raises `OSError("PCAN_ERROR_ILLHW")` and read `state()`.
+
+*Data.* `state='active' tec=0 rec=0`, mapping to wire enum
+`CONTROLLER_STATE_ACTIVE`. The code was `except Exception: return
+ControllerState()`, and that dataclass defaults to active.
+
+*Conclusion.* **Confirmed.** A failed read was reported as a healthy
+controller.
+
+**H-A3.** *The rx pump learns of the removal but tells no subscriber.*
+
+*Experiment.* Subscribe to a virtual interface, stream a frame, then
+make `recv` and `state` both raise the way a removed PCAN handle makes
+python-can raise. Drain the subscriber outbox for 3 s.
+
+*Data.* Before teardown the subscriber saw `interface_state` and
+`frame_batch`. For 3 s after it saw **nothing at all**, across 29
+`recv` retries. The state poll's own failure was logged at *debug* and
+`continue`d; the rx pump's failure produced a `warning` **per retry** -
+13 identical lines in 1.3 s, i.e. 10 a second into the operator's
+System Messages panel and its rate-limit budget.
+
+*Conclusion.* **Confirmed.** Both detectors existed; neither published.
+
+**What landed.** A fourth wire value,
+`CONTROLLER_STATE_UNAVAILABLE = 4` - deliberately *not* a reuse of
+bus-off, which is a present controller that recovers on its own.
+`PythonCanChannel` now carries an unreachable mark, set by any driver
+**read** that fails and cleared by the next that succeeds; `state()`
+reports it rather than the healthy default, and for a PCAN bus reads
+`status()`. Statuses are matched exactly, never by mask: the vendor
+header's mask constants share bits with unrelated codes, so a masked
+test reads a busy transmit queue as a missing adapter. Both bus-error
+warning levels and a full transmit queue map to *active*, as the
+controls in `tests/test_controller_state.py` pin. `_state_pump`
+publishes through a new `_publish_state` seam, so a failed poll
+transitions the interface instead of being swallowed; the rx pump logs
+one line per failure episode and re-arms on recovery. Host, client and
+frontend render it as "Adapter unavailable", counted as a launcher
+fault rather than a warning.
+
+**Transmit failures are deliberately not a detector.** A saturated
+transmit queue on a bus with no other node raises exactly as a missing
+adapter does; parking a single-node bench bus is worse than being half
+a second slow to notice a real removal.
+
+### Chain B - "one side's utilization dropped to 0, the other remained pretty steady"
+
+**H-B1.** *The steady reading is a stale last value.*
+
+*Experiment.* Append two frames 100 ms apart on one bus, read
+`bits_per_second_by_bus`, wait 1.3 s (past `RATE_WINDOW`), read again.
+
+*Data.* `[("A", 470.0, 0.0)]` while appending, `[("A", 0.0, 0.0)]`
+1.3 s later.
+
+*Conclusion.* **Refuted.** Bus load decays correctly - samples are
+pruned on wall clock and `rate_from_samples` returns 0 with fewer than
+two in-window samples. New hypothesis written before anything changed:
+
+**H-B2.** *The steady bus is the one RBS transmits on, and its load is
+fed entirely by locally-echoed tx-confirm rows.*
+
+*Experiment.* Append five `Direction::Tx` rows on bus `pack` and read
+the status snapshot.
+
+*Data.* `bits/s [("pack", 470.0, 0.0)]`, `frames/s [("pack", 10.0)]`,
+rx/tx `(0.0, 10.0)`. Rx contributed nothing.
+
+*Conclusion.* **Confirmed, and it is the same cause as chain C.** The
+reading was live, not stale - it was measuring the host's own echo. The
+side that dropped to 0 was the receive-only one.
+
+### Chain C - "the pack bus trace continued getting updates like it thought it was sending"
+
+**H-C1.** *A tx-confirm row is evidence only that a frame was handed to
+a driver, and the route gate tests the session binding rather than the
+device.*
+
+*Experiment.* Read the transmit primitive and the route resolver;
+transmit into a session whose interface is gone, on the torn-down
+virtual channel.
+
+*Data.* `build_and_confirm` appends the row **before** any wire attempt
+and unconditionally; the scheduler discards `transmit_batch`'s result
+entirely. `resolve_bus_route` matches on `channel_to_bus` /
+`channel_to_interface`, both of which survive an adapter being
+unplugged untouched. The sidecar's own rejection *does* reach the host
+- one `Error{code: TX_REJECTED}` envelope per frame, measured - where
+`cannet-client` turns it into a `tracing::warn!` and continues. That
+line goes to dev stderr only; the System Messages panel is fed
+separately by `emit_system_log`.
+
+*Conclusion.* **Confirmed.** Nothing anywhere in the app observed that
+the frames were being refused.
+
+**What landed.** An interface reporting `unavailable` is no longer a
+live route (`session::resolve_bus_route`). ADR 0039's park then does
+the rest with no new machinery: periodics on the bus park with their
+counters frozen and stop producing tx-confirm rows, bus load falls to
+zero within the existing 1 s window, and the ~1 s parked probe resumes
+them when the adapter returns. The ADR is amended in the same commit -
+its consequences claimed routes only change at session
+register/unregister, which is no longer true. A manual single-shot
+still appends its row (ADR 0039 keeps that: an analyzer shows its own
+transmits) but its wire status now names the unreachable interface
+instead of the false "not bound on any active server".
+
+**Bus-off keeps its route**, tested as the control: parking it would
+freeze every periodic's counter across a fault the hardware clears by
+itself.
+
+### Tests
+
+- `servers/cannet-python-can/tests/test_controller_state.py` (new, 19
+  cases): the masked-read regression, the mid-stream teardown and its
+  recovery, and the whole PCAN status table with its two controls.
+- `test_shared_interface.py` +3: an interface whose device disappears
+  is reported unavailable, one that comes back is reported active
+  again, and a persistent read failure is logged once per episode
+  rather than at the retry rate.
+- `cannet-gui` +4: no route for an unavailable interface, a route for
+  every other controller state (the bus-off control), the honest
+  transmit-failure wording, and the route coming back.
+- `cannet-client` +1, the `cannet-wire` round-trip extended to the new
+  value, `busHealth` +2.
+
 ## Blockers / side effects
 
-_None recorded yet._
+**Phase 2 - the closing confirmation is owner-run.** Everything in
+phase 2's log was established against a virtual channel and against the
+installed python-can package; no PEAK adapter exists in an agent's
+environment. Two things can only be settled on the owner's rig:
+
+1. **Which detector fires on a real removal.** Both are wired: a `recv`
+   that raises, and PCAN-Basic's channel status naming an invalid
+   handle. Whether the PEAK driver raises on `Read` after an unplug,
+   returns "queue empty" forever, or answers `GetStatus` with
+   `PCAN_ERROR_ILLHW` is not knowable from here - which is why both are
+   implemented rather than one.
+2. **That the `status()` mapping does not false-positive.** It is
+   exact-match against the vendor header's codes and the two warning
+   levels are explicit controls, but it has never met hardware.
+
+**What to do, and what to expect.** Connect both PEAK dongles with a
+project that runs RBS on the pack bus, let it stream, then unplug one:
+
+| Where | Expected within ~1 s |
+|---|---|
+| Bus health launcher | tints as a fault, count 1, tooltip naming the bus |
+| Bus health panel | that bus reads **Adapter unavailable**, load `0 %` |
+| Pack bus trace | **stops** gaining rows - the phantom rows are the defect this closes |
+| Status bar bus load | falls to 0 for that bus |
+| RBS panel | its periodics park |
+
+Then plug it back in: within about a second the row returns to
+error-active and the periodics resume on their own. If instead the
+panel stays error-active and the trace keeps growing, neither detector
+fired; the next step is the sidecar log, where `rx for <id> failed: ...`
+says the read detector saw it and its absence says the removal is
+silent at the driver, in which case the state poll's `status()` read is
+where to instrument.
+
+**A finding this phase did not fix.** A wire-level transmit rejection
+is discarded: `cannet-client::is_per_frame_error_code` classifies
+`TX_REJECTED` as non-fatal and logs it with `tracing::warn!`, which
+reaches dev stderr and nothing else - not the System Messages panel,
+not bus health, not the connection chip. That is why the trace can show
+a "sent" row for a frame the far end refused, and it is *general*: a
+listen-only bus and an FD frame on a classic bus produce the same
+silent lie. The unavailable-interface route gate closes the case the
+owner hit; it does not close this one. Surfacing it is a behavioural
+choice - where it appears, and at what cadence, since a rejection at
+RBS rate is a flood and needs the coalescing the error-frame summaries
+already use - so it is filed for a ruling rather than chosen here.

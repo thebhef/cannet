@@ -633,3 +633,123 @@ def test_a_read_failure_outside_a_close_still_warns(
         )
     finally:
         reg.unsubscribe("fake:0", a)
+
+
+# ---- an interface whose device goes away mid-stream ------------------------
+
+
+class _DyingChannel(_FakeChannel):
+    """A virtual channel torn down mid-stream — the closest analogue of a
+    USB adapter being unplugged that exists without one. Reads and
+    controller-state polls both start raising once ``dead`` is set, the
+    way python-can raises when its handle no longer names hardware."""
+
+    def __init__(self, channel_id: str = "fake:0") -> None:
+        super().__init__(channel_id=channel_id)
+        self.dead = threading.Event()
+        self.recv_calls = 0
+
+    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+        self.recv_calls += 1
+        if self.dead.is_set():
+            time.sleep(0.01)
+            raise OSError("PCAN_ERROR_ILLHW: hardware handle is invalid")
+        return super().recv(timeout_s)
+
+    def state(self) -> drv.ControllerState:
+        if self.dead.is_set():
+            raise OSError("PCAN_ERROR_ILLHW: hardware handle is invalid")
+        return super().state()
+
+
+def test_an_interface_whose_device_disappears_is_reported_unavailable() -> None:
+    """The defect this covers: an adapter unplugged mid-session produced
+    no envelope of any kind. Reads failed at 10 Hz into stderr, the state
+    poll's own failure was swallowed at debug level, and every subscriber
+    went on believing the controller was error-active."""
+    driver = _ChannelDriver(_DyingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        [snapshot] = _drain(a, kind="interface_state")
+        assert snapshot.interface_state.state == pb.CONTROLLER_STATE_ACTIVE
+
+        driver.opened[0].dead.set()
+
+        [gone] = _drain(a, kind="interface_state", timeout_s=3.0)
+        assert gone.interface_state.state == pb.CONTROLLER_STATE_UNAVAILABLE
+        assert gone.interface_state.interface_id == "fake:0"
+    finally:
+        reg.unsubscribe("fake:0", a)
+
+
+def test_an_interface_that_comes_back_is_reported_active_again() -> None:
+    """The control: unavailable has to be a transition, not a terminal
+    state. Nothing else re-arms it, so a channel that stayed unavailable
+    after the adapter returned would keep its bus parked all session."""
+    driver = _ChannelDriver(_DyingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        _drain(a, kind="interface_state")
+        driver.opened[0].dead.set()
+        [gone] = _drain(a, kind="interface_state", timeout_s=3.0)
+        assert gone.interface_state.state == pb.CONTROLLER_STATE_UNAVAILABLE
+
+        driver.opened[0].dead.clear()
+        [back] = _drain(a, kind="interface_state", timeout_s=3.0)
+        assert back.interface_state.state == pb.CONTROLLER_STATE_ACTIVE
+    finally:
+        reg.unsubscribe("fake:0", a)
+
+
+def test_a_persistent_read_failure_is_logged_once_not_at_the_retry_rate(
+    caplog: "pytest.LogCaptureFixture",
+) -> None:
+    """The rx pump retries a failed read every 100 ms forever. Logging
+    each attempt put ten lines a second into the operator's System
+    Messages panel for as long as the adapter stayed out, which spends
+    the panel's rate-limit budget on one repeated sentence. One line per
+    episode; the recovery re-arms it."""
+    caplog.set_level(logging.DEBUG, logger="cannet_python_can")
+    driver = _ChannelDriver(_DyingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        _drain(a, kind="interface_state")
+        channel = driver.opened[0]
+        channel.dead.set()
+        _wait_for(lambda: channel.recv_calls > 12, timeout_s=3.0)
+        failures = [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and "rx for fake:0 failed" in r.getMessage()
+        ]
+        assert len(failures) == 1, (
+            f"{len(failures)} warnings for one episode: "
+            f"{[r.getMessage() for r in failures]}"
+        )
+
+        channel.dead.clear()
+        _wait_for(lambda: not channel.dead.is_set())
+        time.sleep(0.3)
+        channel.dead.set()
+        _wait_for(
+            lambda: (
+                len(
+                    [
+                        r
+                        for r in caplog.records
+                        if r.levelno >= logging.WARNING
+                        and "rx for fake:0 failed" in r.getMessage()
+                    ]
+                )
+                == 2
+            ),
+            timeout_s=3.0,
+        )
+    finally:
+        reg.unsubscribe("fake:0", a)
