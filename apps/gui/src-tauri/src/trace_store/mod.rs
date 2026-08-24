@@ -68,11 +68,13 @@ use cannet_spill::{CandidateSource, DiskRawStore, FilterIndex, MemRawStore, RawS
 
 use crate::filter::CandidateSet;
 
+mod anchor;
 mod byid;
 mod flush;
 mod rate;
 mod scratch;
 
+use anchor::TsAnchorIndex;
 use rate::{RateEstimate, RateTrack};
 
 /// One coherent read of a trace window's x-axis anchors. See
@@ -215,6 +217,11 @@ struct Inner {
     /// production. Owns the always-on `by-id` index too (on disk for the
     /// disk store), so it serves [`Self::matching_frames_indexed`].
     raw: Box<dyn RawStore>,
+    /// Sampled prefix maxima of `raw`'s timestamp column — what makes
+    /// [`TraceStore::frame_index_at_ns`] a bounded search over a store
+    /// that arrival order leaves unsorted. Folded lazily from the
+    /// `[through, len)` delta on query, not on append; see [`anchor`].
+    ts_anchor: TsAnchorIndex,
     /// Aggregate append-rate tracker: the running total-frame count and its
     /// rolling rate-sample window, folded in by [`Self::append`] and read by
     /// [`Self::frames_per_second`]. A [`RateTrack`] like the per-bus and
@@ -329,6 +336,7 @@ impl TraceStore {
                 session_start_ns: 0,
                 session_started: false,
                 raw,
+                ts_anchor: TsAnchorIndex::default(),
                 agg_rate: RateTrack::default(),
                 per_key: HashMap::new(),
                 key_generation: 0,
@@ -560,39 +568,44 @@ impl TraceStore {
     }
 
     /// The absolute index of the first *retained* frame whose timestamp is
-    /// `>= ts` (a lower bound), or `len()` if every retained frame is older.
-    /// This is the anchor where a timeline event at `ts` sorts into the
-    /// chronological frame stream (ADR 0035): the host owns the time↔index
-    /// mapping (ADR 0024), so the trace view never re-derives it in JS.
-    /// Frames are appended in arrival order with monotonic timestamps, so
-    /// this is an `O(log n)` binary search over `[first_index, len)`.
+    /// `>= ts`, or `len()` if every retained frame is older. This is the
+    /// anchor where a timeline event at `ts` sorts into the chronological
+    /// frame stream (ADR 0035): the host owns the time↔index mapping
+    /// (ADR 0024), so the trace view never re-derives it in JS.
+    ///
+    /// "First" is positional in the stream the trace displays, and that
+    /// stream is *arrival* order — nothing sorts it by timestamp. A
+    /// multi-bus capture interleaves deliveries, so the timestamp column
+    /// dips below its own running max and recovers routinely (ADR 0024
+    /// measured ~1.1 s, several times a minute, on a 23-hour two-bus
+    /// capture). A lower bound over those timestamps is therefore not
+    /// just imprecise but wrong: narrowing only rightwards walks straight
+    /// past an exact match sitting behind a dip and reports it absent.
+    ///
+    /// A forward scan is the contract read literally, and it is what the
+    /// tests check against, but it is `O(n)` with the append mutex held —
+    /// ~10 ms per call at 1 M rows. So the search runs over sampled
+    /// prefix maxima, which *are* monotone whatever the arrival order,
+    /// and finishes with a bounded scan; see [`anchor`].
     #[must_use]
     pub fn frame_index_at_ns(&self, ts: u64) -> usize {
-        let inner = self.lock_inner();
-        let (mut lo, mut hi) = (inner.raw.first_index(), inner.raw.len());
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            // `frame_timestamps(mid, mid+1).0` is the timestamp at `mid`,
-            // read from the meta mapping without cloning the frame.
-            let mid_ts = inner
-                .raw
-                .frame_timestamps(mid, mid + 1)
-                .0
-                .unwrap_or(u64::MAX);
-            if mid_ts < ts {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        lo
+        let mut inner = self.lock_inner();
+        let Inner { raw, ts_anchor, .. } = &mut *inner;
+        ts_anchor.frame_index_at_ns(raw.as_ref(), ts)
     }
 
     /// Wall-clock span of the buffered frames, in seconds: the timestamp
-    /// gap between the oldest and newest frame currently stored. Zero
-    /// when fewer than two frames are buffered. Drives the "N s buffered"
-    /// readout in the status line. Frames are appended in arrival order,
-    /// so `first` is the oldest and `last` the newest.
+    /// gap between the capture's live edge and its oldest retained row.
+    /// Zero when fewer than two frames are buffered. Drives the "N s
+    /// buffered" readout in the status line.
+    ///
+    /// Arrival order does not sort the timestamps, so "newest" is the
+    /// running max ([`cannet_spill::RawStore::max_ts`]) and not the last
+    /// row — a span taken between two row timestamps would shrink and
+    /// grow again every time the column dipped (ADR 0024). The floor is
+    /// the first *retained* row's timestamp, the same x-axis origin
+    /// [`Self::window_anchors`] reports; both come from
+    /// [`cannet_spill::RawStore::first_last_ts`].
     #[must_use]
     pub fn buffer_seconds(&self) -> f64 {
         let inner = self.lock_inner();
@@ -1069,6 +1082,50 @@ mod tests {
             "exact hit is the lower bound"
         );
         assert_eq!(store.frame_index_at_ns(99_000), 6, "after the last → len()");
+    }
+
+    #[test]
+    fn frame_index_at_ns_lower_bounds_a_non_monotonic_store() {
+        // Store order is *arrival* order, and a multi-bus capture
+        // interleaves deliveries, so the timestamp column dips below its
+        // own running max routinely (ADR 0024: ~1.1 s, several times a
+        // minute, on a 23-hour two-bus capture). The anchor contract is
+        // positional in that stream (ADR 0035): the *first* frame at or
+        // after the event's ts, whatever the rows around it do.
+        let store = TraceStore::new();
+        for (ts, id) in [
+            5_000_000_000u64,
+            9_000_000_000,
+            7_000_000_000,
+            8_000_000_000,
+        ]
+        .into_iter()
+        .zip(1u32..)
+        {
+            store.append(dummy(ts, id));
+        }
+        // An exact match that is still buffered must never read as
+        // missing: `9e9` sits at index 1, and a bound that only ever
+        // narrows rightwards walks straight past it to `len()`.
+        assert_eq!(
+            store.frame_index_at_ns(9_000_000_000),
+            1,
+            "exact match behind a dip"
+        );
+        // The first row at-or-after `8e9` is index 1 (`9e9`), not the row
+        // that happens to hold `8e9` later in the stream.
+        assert_eq!(
+            store.frame_index_at_ns(8_000_000_000),
+            1,
+            "first at-or-after, not the nearest"
+        );
+        assert_eq!(store.frame_index_at_ns(5_000_000_000), 0, "exact first");
+        assert_eq!(store.frame_index_at_ns(6_000_000_000), 1, "between rows");
+        assert_eq!(
+            store.frame_index_at_ns(10_000_000_000),
+            4,
+            "past every row → len()"
+        );
     }
 
     #[test]
