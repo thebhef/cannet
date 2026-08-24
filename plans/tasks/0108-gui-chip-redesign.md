@@ -154,7 +154,13 @@ each carries the reading implementation takes if no ruling arrives.
   `refresh` unused, so it comes out of the context value in the same
   commit (the "clean up your own orphans" rule), leaving the internal
   `refreshCatalog` callback as the effect's driver.
-- **The registry is 42 icons.** The prototype's inventory names them:
+- **The registry is 36 icons.** (Corrected 2026-08-22: the grooming
+  first said 42, from a miscount of the prototype's inventory markup.
+  The prototype defines **37** `<symbol>`s and its inventory section
+  lists **36** — `reload` is defined but deliberately excluded, because
+  the catalog-reload command it serves is retired in phase 4. Phase 1
+  built the 36, correctly trusting the prototype over the summary.)
+  The prototype's inventory names them:
   folder, save, import, clock, db, db-add, bus, plug, clear, plus,
   rows, chart, signals, send, loop, palette, wave, eye, graph, flag,
   tree, bell, play, pause, stop, fit-x, fit-y, search, cursors,
@@ -203,7 +209,7 @@ control it labels.
 
 | # | Phase | Model | What lands |
 |---|---|---|---|
-| 1 | The icon registry | Sonnet | The 42-icon module + `<Icon>`, path data copied from the prototype, the set-level tests, and the two audit fixes: `BusHealthLauncher`'s inline ECG zigzag replaced by the registry's `bus` topology (it collides with `signals`), and `db` split from `db-add`. No toolbar changes. |
+| 1 | The icon registry | Sonnet | The 36-icon module + `<Icon>`, path data copied from the prototype, the set-level tests, and the two audit fixes: `BusHealthLauncher`'s inline ECG zigzag replaced by the registry's `bus` topology (it collides with `signals`), and `db` split from `db-add`. No toolbar changes. |
 | 2 | The command chip and the shared overflow | Opus | `ChipButton` extending `StatusChip`'s silhouette (icon-only / icon+label, 22px chip, 12px type, badge, state on the hairline, press affordance); `statusBarFit` generalized into the toolbar overflow planner both the status bar and panel bars consume, with `…` spill and unbreakable-cluster support. Tests: no state changes geometry; a cluster never splits; drop order. |
 | 3 | The top-level toolbar | Opus | All ~20 `App.tsx` items regrouped onto chips, the Add-menu collapse, the badge treatment, Title Case. The connection / System Messages / Signal Mapping / RBS chips stay in the status bar — the toolbar gains no duplicate launcher. |
 | 4 | The plot panel toolbar | Opus | Cursor modes as icon buttons (x / y / note segment, press again for off) rather than a dropdown; the perf readout hidden by default behind the toolbar's existing right-click menu; catalog reload retired (button, command, and the orphaned context export); the solo cluster (field + paging + clear) one unbreakable unit placed left, with "Add Plot Area" to its right; overflow rather than wrap. The measurements strip **stays hidden** — no toggle anywhere. |
@@ -217,3 +223,79 @@ the phase updates the prototype so it stays the living reference for
 the icon set and the chrome — it is not deleted at the end (owner
 ruling 2026-08-21, restated 2026-08-21 evening). This is a standing
 instruction in every phase prompt, not a phase of its own.
+
+## Status log
+
+- **2026-08-22 — Phase 1, the icon registry, landed.** Branch
+  `task-108-phase-1-icon-registry` from `3c560f70`.
+  - `3837937f` adds `apps/gui/src/Icon.tsx` (`ICON_NAMES`,
+    `ICON_REGISTRY`, `<Icon name=".."/>`) and `Icon.dom.test.tsx`.
+  - `13e90c6c` points `BusHealthLauncher` at the registry's `bus` icon
+    in place of its inline ECG-zigzag `<polyline>`, with a test
+    pinning that the rendered SVG has the bus icon's shape (two
+    circles, no polyline, `viewBox="0 0 14 14"`).
+  - Frontend tests: 2682/200 files before → 2685/201 files after (all
+    green). `tsc --noEmit` and `vite build` clean.
+    `comment-references` grep (`task [0-9]|plans/` over `apps/`,
+    `crates/`) empty as of `3c904146` — it initially caught this
+    phase's own registry comments naming the prototype's `plans/`
+    path (describing it verbatim, "copied from
+    `plans/prototypes/gui-chip-redesign.html`"), which
+    `3c904146` reworded to "the design prototype" instead.
+  - **Mechanism**: took the overseer's reading — an `Icon` component
+    over a plain `name -> shape data` record, not a `<symbol>`/`<use>`
+    sprite. Shape data is typed (`path`/`circle`/`ellipse`/`rect`
+    variants with numeric/string fields) rather than a markup string,
+    so no icon can carry an attribute the registry doesn't model, and
+    copying stayed verbatim (same numbers, same path `d` strings) from
+    the prototype's `<symbol>` bodies.
+  - **Set-level test, proved by mutation**: `Icon.dom.test.tsx` pins
+    the exact 36-name set against a literal array copied from the
+    prototype's inventory, independent of whatever `ICON_NAMES` holds
+    at read time. Verified by temporarily (a) deleting `"x"` from
+    `ICON_NAMES`+registry and (b) adding an unnamed `"spare"` icon to
+    both — the pin test failed both times (the "renders every
+    registered icon" test did not, as expected, since it only walks
+    whatever the registry currently contains) — then restored both
+    mutations and re-ran green.
+  - **Registry inventory as built** (36 icons; name — for): folder —
+    open project; save — save project / save capture; import — import
+    trace; clock — recent captures; db — database panel; db-add — add
+    DBC; bus — bus health launcher (now wired); plug — connection
+    (spare, unused so far); clear — clear capture / trace clear; plus —
+    add menu / add area / add-frame-style buttons; rows — trace panel;
+    chart — plot panel; signals — signal view / RBS signals list; send
+    — transmit panel; loop — RBS panel; palette — color map; wave —
+    generator; eye — view signals; graph — graph panel (bus→views
+    fanout); flag — events panel / events toggle; tree — project panel;
+    bell — system messages; play — start/run; pause — pause; stop —
+    stop; fit-x — plot fit x axis; fit-y — plot fit y axes; search —
+    solo box / filter fields; cursors — clear cursors; cursor-x — x
+    cursor mode; cursor-y — y cursor mode; note — note-placement mode;
+    goto — event row go-to (today's ⇥); edit — inline rename (today's
+    ✎); link — events view link-events; x — remove / clear-solo
+    (today's ×).
+  - **Prototype**: not changed. Its "icon set — full inventory" section
+    already used `i-bus` (not a zigzag) for bus health and already
+    carried `i-db` separate from `i-db-add` — both audit fixes were
+    already reflected there, so the divergence to fix was in the app
+    code only.
+
+## Blockers / side effects
+
+- **"42 icons" vs. the prototype's actual inventory (36).** Both the
+  task's main description and the grooming section's "Implementation
+  detail settled by reading the code" say the registry is 42 icons.
+  Counting the prototype's own "icon set — full inventory" section
+  (the explicitly named source of truth, not the summary list) gives
+  36 named icons. The `<defs>` sprite itself defines 37 `<symbol>`s —
+  36 of the inventory plus `i-reload`, which the inventory section
+  does not list and whose command (catalog reload) the rulings retire
+  in phase 4. Per the instruction to "take the inventory from the
+  prototype, not from this list," phase 1 built the 36 named in the
+  inventory section and left `reload` out of the registry, since it
+  names no surviving command and isn't part of the reviewable set the
+  prototype documents. Flagging the "42" discrepancy rather than
+  silently reconciling it — if a wider or different set was intended,
+  say so and a later phase can add to the registry (additive, not a
+  rework of phase 1's shape).
