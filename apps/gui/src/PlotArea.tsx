@@ -58,7 +58,7 @@ import {
   type SignalValueFormat,
   type XSync,
 } from "./plotPanelConfig";
-import type { PlotExtent } from "./plotEvents";
+import { litLast, wrapMarkerLabel, type PlotExtent } from "./plotEvents";
 import { parsePlotAreaDragData, type PlotAreaDragPayload } from "./plotAreaTransfer";
 import {
   applyAutoPointFloor,
@@ -121,7 +121,22 @@ const EXTENT_WASH_ALPHA = 0.16;
 /** What a series or a marker line the highlight does not name fades to
  * while some event is being acted on. Faded, never hidden: what the
  * event is *not* about is still the reading it sits in. */
-const UNLIT_ALPHA = 0.28;
+const UNLIT_ALPHA = 0.6;
+/** Characters a marker label line holds before it wraps. An event
+ * label is free text; left unbounded it runs across the area and over
+ * its neighbours' markers. Budgeted in characters rather than as a
+ * fraction of the plot, so the chip is the same size on a wide monitor
+ * as on a narrow one — a third of a 4K plot is still a paragraph. */
+const MARKER_LABEL_MAX_CHARS = 50;
+/** Lines a marker label wraps to before it is ellipsised. Two reads as
+ * a caption; more starts covering the series it annotates. */
+const MARKER_LABEL_MAX_LINES = 2;
+/** Stand-in for "an average character" in the label font, which is
+ * proportional — the budget above is a character count, and this turns
+ * it into the pixel width {@link wrapMarkerLabel} measures against.
+ * Mixed case and a space, so it is not skewed by an all-caps or
+ * all-narrow sample. */
+const MARKER_LABEL_WIDTH_SAMPLE = "abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 /** Floor for `sample_signals`' `max_points` (the host min/max-decimates
  * to at most `2 * max_points`). We ask for ~1× the canvas width — 2
  * points per pixel after the host's 2× envelope, the full resolution a
@@ -2763,18 +2778,36 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               ctx.stroke();
               ctx.setLineDash([]);
               if (lbl != null) {
-                const tw = ctx.measureText(lbl).width;
                 const padX = 4 * ratio;
                 const h = 13 * ratio;
-                const ty = atTop ? top + 2 * ratio : top + height - h - 2 * ratio;
+                const charW =
+                  ctx.measureText(MARKER_LABEL_WIDTH_SAMPLE).width /
+                  MARKER_LABEL_WIDTH_SAMPLE.length;
+                const lines = wrapMarkerLabel(
+                  lbl,
+                  (t) => ctx.measureText(t).width,
+                  // The character budget, but never wider than the plot
+                  // it sits in — a narrow area still has to hold it.
+                  Math.max(1, Math.min(width - padX * 2, MARKER_LABEL_MAX_CHARS * charW)),
+                  MARKER_LABEL_MAX_LINES,
+                );
+                if (lines.length === 0) return;
+                const tw = Math.max(...lines.map((l) => ctx.measureText(l).width));
+                const boxH = h * lines.length;
+                // A wrapped label grows downward from the top edge and
+                // upward from the bottom one, so it stays inside the
+                // plot however many lines it took.
+                const ty = atTop ? top + 2 * ratio : top + height - boxH - 2 * ratio;
                 ctx.fillStyle = theme().canvasChipFill;
-                ctx.fillRect(xp - tw / 2 - padX, ty, tw + padX * 2, h);
+                ctx.fillRect(xp - tw / 2 - padX, ty, tw + padX * 2, boxH);
                 ctx.strokeStyle = color;
-                ctx.strokeRect(xp - tw / 2 - padX, ty, tw + padX * 2, h);
+                ctx.strokeRect(xp - tw / 2 - padX, ty, tw + padX * 2, boxH);
                 ctx.fillStyle = color;
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
-                ctx.fillText(lbl, xp, ty + h / 2);
+                lines.forEach((l, i) => {
+                  ctx.fillText(l, xp, ty + h * i + h / 2);
+                });
               }
             };
             // A linked pair's extent, as an event-colored wash at low
@@ -2797,7 +2830,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // a glance. `litEventIds` is empty at rest, and then every
             // line draws exactly as it always has.
             const dimLines = lr.litEventIds.size > 0;
-            for (const ev of lr.events) {
+            // Lit markers draw last so nothing paints over the one the
+            // reader is pointing at — fading its neighbours and then
+            // burying its label under one of their chips would say two
+            // opposite things at once.
+            for (const ev of litLast(lr.events, lr.litEventIds)) {
               ctx.globalAlpha = dimLines && !lr.litEventIds.has(ev.id) ? UNLIT_ALPHA : 1;
               vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }

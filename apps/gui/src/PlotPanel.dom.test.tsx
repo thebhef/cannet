@@ -400,6 +400,7 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { NotesContext, type NotesContextValue } from "./notesContext";
+import { resetEventHighlight, selectEvents } from "./eventHighlight";
 import type { Note } from "./notes";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { SignalGeneratorContext } from "./signalGeneratorContext";
@@ -7911,6 +7912,129 @@ describe("PlotPanel authoring an event from the plot (ADR 0056)", () => {
   });
 });
 
+describe("a note marker's label on the plot canvas", () => {
+  /// A panel with one area and the given notes, drawn once, returning
+  /// every string the draw hook painted. The recorder's `measureText` is
+  /// a flat 6 px a character, so the 50-character budget is 300 px — and
+  /// the fake plot box is 600 px wide, wide enough not to clamp it.
+  async function markerTexts(
+    notes: { id: string; label: string }[],
+    plotWidth?: number,
+  ): Promise<string[]> {
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel({
+        params: { elementId: "el-marker-label" },
+        registry: makeRegistry({
+          id: "el-marker-label",
+          // A signal, not an empty area: notes only render once an area
+          // has reported an x-axis origin from a non-empty fetch.
+          config: {
+            areas: [
+              {
+                id: "a1",
+                signals: [
+                  {
+                    busId: null,
+                    messageId: 256,
+                    extended: false,
+                    signalName: "EngineSpeed",
+                    messageName: "EngineData",
+                    unit: "rpm",
+                    color: "#4ecbff",
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+        notes: {
+          notes: notes.map((n) => ({ ...n, timestampNs: 1_000_000_000 })),
+          addNote: () => {},
+          renameNote: () => {},
+          recolorNote: () => {},
+          describeNote: () => {},
+          retagNote: () => {},
+          removeNote: () => {},
+          linkEvents: () => {},
+          unlinkEvents: () => {},
+          setNoteSubjects: () => {},
+        },
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      const inst = uplotInstances[uplotInstances.length - 1] as FakeUPlotInst & {
+        bbox: { width: number };
+      };
+      // The draw hook measures against the plot box, which the fake
+      // holds at a constant — so a narrower plot is set here, not
+      // through `clientWidth`.
+      if (plotWidth !== undefined) inst.bbox.width = plotWidth;
+      inst.drawOps.length = 0;
+      await act(async () => {
+        inst.fire("draw");
+      });
+      return inst.drawOps
+        .filter((o) => o.op === "fillText")
+        .map((o) => String((o.args as unknown[])[0]));
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  }
+
+  it("draws a short label on one line, unchanged", async () => {
+    const texts = await markerTexts([{ id: "n1", label: "brake on" }]);
+    expect(texts).toContain("brake on");
+  });
+
+  it("leaves a label inside the character budget on one line", async () => {
+    // 42 characters, under the 50 a line holds — wrapping a label that
+    // fits would be churn.
+    const label = "brake pedal pressed while the pack was warm";
+    const texts = await markerTexts([{ id: "n1", label }]);
+    expect(texts).toContain(label);
+  });
+
+  it("wraps a long label rather than running it across the plot", async () => {
+    // An event label is free text. Drawn as one chip it overruns the
+    // area and covers its neighbours' markers.
+    const label =
+      "brake pedal pressed hard while the pack was still warm and the contactor stayed shut the whole time";
+    const texts = await markerTexts([{ id: "n1", label }]);
+    expect(texts).not.toContain(label);
+    // Wrapped at a space, each line inside the 50-character budget.
+    expect(texts).toContain("brake pedal pressed hard while the pack was still");
+    expect(texts).toContain("warm and the contactor stayed shut the whole time");
+    expect(texts.every((t) => t.length <= 50)).toBe(true);
+  });
+
+  it("truncates once it runs out of lines, and says so", async () => {
+    const label =
+      "brake pedal pressed hard while the pack was still warm and the contactor had not yet opened again so the fault latched until the next key cycle";
+    const texts = await markerTexts([{ id: "n1", label }]);
+    expect(texts).toContain("brake pedal pressed hard while the pack was still");
+    // Two lines is the cap, so the second says it continues — and the
+    // ellipsis is inside the budget, not hung off the end of it.
+    const second = texts.find((t) => t.endsWith("…"));
+    expect(second).toBe("warm and the contactor had not yet opened again s…");
+    expect(second!.length).toBeLessThanOrEqual(50);
+    // Nothing past the cap reached the canvas.
+    expect(texts.some((t) => t.includes("key cycle"))).toBe(false);
+  });
+
+  it("still fits a narrow plot, whatever the character budget says", async () => {
+    // The budget is a cap on the label, not a claim about the area: a
+    // plot narrower than 60 characters wraps at the plot instead.
+    const label = "brake pedal pressed hard while the pack was still warm";
+    const texts = await markerTexts([{ id: "n1", label }], 200);
+    expect(texts).toContain("brake pedal pressed hard while");
+    expect(texts).toContain("the pack was still warm");
+  });
+});
+
 describe("where the A/B cursors put their timestamps", () => {
   const sig = (signalName: string, unit: string) => ({
     busId: null,
@@ -8066,5 +8190,113 @@ describe("where the event marker labels sit", () => {
     ]);
     expect(perArea).toHaveLength(1);
     expect(perArea[0]).toContain("brake on");
+  });
+});
+
+describe("a highlight repaints the plot", () => {
+  const sig = (signalName: string, unit: string) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+    color: "#4ecbff",
+  });
+
+  const NOTES = {
+    notes: [
+      { id: "n1", timestampNs: 1_000_000_000, label: "brake on" },
+      { id: "n2", timestampNs: 1_500_000_000, label: "contactor open" },
+    ],
+    addNote: () => {},
+    renameNote: () => {},
+    recolorNote: () => {},
+    describeNote: () => {},
+    retagNote: () => {},
+    removeNote: () => {},
+    linkEvents: () => {},
+    unlinkEvents: () => {},
+    setNoteSubjects: () => {},
+  };
+
+  afterEach(() => {
+    resetEventHighlight();
+  });
+
+  it("redraws when an event is selected, and again when it is dropped", async () => {
+    // The highlight reaches the draw hook through a ref, so nothing
+    // repaints unless the overlay effect depends on it. A live trace
+    // hides that behind its ticks; a stopped one keeps the stale frame,
+    // and the marker the reader just selected never comes forward.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel({
+        params: { elementId: "el-lit-redraw" },
+        registry: makeRegistry({
+          id: "el-lit-redraw",
+          config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }] },
+        }),
+        notes: NOTES,
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      const inst = uplotInstances[uplotInstances.length - 1] as FakeUPlotInst;
+      const before = inst.redraws;
+
+      await act(async () => {
+        selectEvents(["n1"]);
+      });
+      expect(inst.redraws).toBeGreaterThan(before);
+
+      const lit = inst.redraws;
+      await act(async () => {
+        selectEvents([]);
+      });
+      expect(inst.redraws).toBeGreaterThan(lit);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
+  it("draws the lit marker's label last, over the quiet ones", async () => {
+    // Fading the neighbours and then painting one of their chips over
+    // the lit marker says two opposite things at once.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel({
+        params: { elementId: "el-lit-order" },
+        registry: makeRegistry({
+          id: "el-lit-order",
+          config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }] },
+        }),
+        notes: NOTES,
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      const inst = uplotInstances[uplotInstances.length - 1] as FakeUPlotInst;
+      await act(async () => {
+        selectEvents(["n1"]);
+      });
+      inst.drawOps.length = 0;
+      await act(async () => {
+        inst.fire("draw");
+      });
+      const texts = inst.drawOps
+        .filter((o) => o.op === "fillText")
+        .map((o) => String((o.args as unknown[])[0]));
+      // Both labels drawn; the lit one last, so it is on top.
+      expect(texts).toContain("brake on");
+      expect(texts).toContain("contactor open");
+      expect(texts.lastIndexOf("brake on")).toBeGreaterThan(texts.lastIndexOf("contactor open"));
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
   });
 });
