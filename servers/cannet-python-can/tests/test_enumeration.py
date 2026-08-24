@@ -299,29 +299,55 @@ def test_vector_two_identical_devices_disambiguate_by_serial() -> None:
 # ---- Kvaser ----------------------------------------------------------------
 
 
-class _KvaserChannelData:
-    def __init__(self, device_name, card_serial_no, channel_no_on_card):
-        self.device_name = device_name
-        self.card_serial_no = card_serial_no
-        self.channel_no_on_card = channel_no_on_card
-
-
 def _install_fake_kvaser(per_index):
-    """`per_index` maps the global index -> _KvaserChannelData."""
-    mod_canlib_pkg = types.ModuleType("canlib")
-    mod_canlib = types.ModuleType("canlib.canlib")
-    mod_canlib.getNumberOfChannels = lambda: len(per_index)
-    mod_canlib.ChannelData = lambda i: per_index[i]
-    mod_canlib_pkg.canlib = mod_canlib
-    sys.modules["canlib"] = mod_canlib_pkg
-    sys.modules["canlib.canlib"] = mod_canlib
+    """Stub python-can's channel detector with a Kvaser channel list.
+
+    ``per_index`` is a list of ``(device_name, serial, per_card_channel)``
+    indexed by the global channel index python-can opens with. The dicts
+    handed back match what python-can's own kvaser backend emits from
+    ``get_channel_info`` — note ``dongle_channel`` is the per-card channel
+    **plus one**, which is python-can's convention, not ours.
+
+    Deliberately plants no top-level ``canlib`` module: enumeration must
+    work with only python-can's bundled backend present, since the
+    third-party ``canlib`` wrapper is not a dependency and is not frozen
+    into the shipped sidecar.
+
+    Returns the original ``can.detect_available_configs`` for restoration
+    via :func:`_uninstall_fake_kvaser`.
+    """
+    import can  # noqa: WPS433
+
+    detected = [
+        {
+            "interface": "kvaser",
+            "channel": i,
+            "device_name": name,
+            "serial": serial,
+            "dongle_channel": per_card + 1,
+        }
+        for i, (name, serial, per_card) in enumerate(per_index)
+    ]
+    original = can.detect_available_configs
+
+    def _fake_detect(interfaces: object = None) -> list[dict[str, object]]:
+        return list(detected)
+
+    can.detect_available_configs = _fake_detect
+    return original
+
+
+def _uninstall_fake_kvaser(original_detect) -> None:
+    import can  # noqa: WPS433
+
+    can.detect_available_configs = original_detect
 
 
 def test_kvaser_includes_serial_and_per_card_channel() -> None:
-    _install_fake_kvaser(
+    original = _install_fake_kvaser(
         [
-            _KvaserChannelData("Memorator Pro 2xHS v2", 67890, 0),
-            _KvaserChannelData("Memorator Pro 2xHS v2", 67890, 1),
+            ("Memorator Pro 2xHS v2", 67890, 0),
+            ("Memorator Pro 2xHS v2", 67890, 1),
         ]
     )
     try:
@@ -337,18 +363,50 @@ def test_kvaser_includes_serial_and_per_card_channel() -> None:
             "Kvaser Memorator Pro 2xHS v2 (SN:67890, ch:1)"
         )
     finally:
-        _remove_fake_modules("canlib", "canlib.canlib")
+        _uninstall_fake_kvaser(original)
 
 
 def test_kvaser_omits_sn_chunk_when_serial_missing() -> None:
-    _install_fake_kvaser([_KvaserChannelData("Leaf Light v2", 0, 0)])
+    original = _install_fake_kvaser([("Leaf Light v2", 0, 0)])
     try:
         m = _fresh_driver_module()
         chans = m._list_kvaser()
         assert chans[0].id == "kvaser:0(ch:0)"
         assert chans[0].display_name == "Kvaser Leaf Light v2 (ch:0)"
     finally:
-        _remove_fake_modules("canlib", "canlib.canlib")
+        _uninstall_fake_kvaser(original)
+
+
+def test_kvaser_does_not_need_the_third_party_canlib_package() -> None:
+    """Regression (Windows): enumeration used to ``from canlib import
+    canlib`` — Kvaser's own PyPI wrapper, which is not a declared
+    dependency and so is absent from the frozen sidecar. The import
+    failure was swallowed, and Kvaser hardware silently never appeared.
+    Discovery must ride python-can's bundled backend instead.
+    """
+    assert "canlib" not in sys.modules, "test would not prove anything"
+    original = _install_fake_kvaser([("Leaf Light v2", 111, 0)])
+    try:
+        m = _fresh_driver_module()
+        assert [c.id for c in m._list_kvaser()] == ["kvaser:0(SN:111, ch:0)"]
+    finally:
+        _uninstall_fake_kvaser(original)
+
+
+def test_kvaser_skips_channels_without_an_index() -> None:
+    """A detector entry whose ``channel`` isn't an int can't be opened,
+    so it must not be listed."""
+    original = _install_fake_kvaser([])
+    try:
+        import can  # noqa: WPS433
+
+        can.detect_available_configs = lambda interfaces=None: [
+            {"interface": "kvaser", "channel": "not-an-index"},
+        ]
+        m = _fresh_driver_module()
+        assert m._list_kvaser() == []
+    finally:
+        _uninstall_fake_kvaser(original)
 
 
 # ---- PCAN -------------------------------------------------------------------
