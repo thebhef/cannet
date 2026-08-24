@@ -11,27 +11,31 @@ import { useCallback, useMemo, useState } from "react";
 
 import {
   defaultVisibleKinds,
-  EVENT_KINDS,
-  EVENT_KIND_META,
+  EVENT_KIND_GROUPS,
   type EventKind,
+  type EventKindGroup,
   type TimelineEvent,
 } from "./notes";
 
 export interface EventKindFilterState {
   /// The kinds this view is currently showing.
   visible: ReadonlySet<EventKind>;
-  /// Show or hide one kind in this view.
-  toggle: (kind: EventKind, on: boolean) => void;
+  /// Show or hide a filter row's kinds in this view. Takes the whole
+  /// group: the row is the unit the reader acts on, and the kinds under
+  /// it have no separate control to disagree with.
+  toggle: (kinds: readonly EventKind[], on: boolean) => void;
 }
 
-/// View-local per-kind visibility, seeded from each kind's own declaration.
+/// View-local visibility, seeded from {@link defaultVisibleKinds}.
 export function useEventKindFilter(): EventKindFilterState {
   const [visible, setVisible] = useState<ReadonlySet<EventKind>>(() => defaultVisibleKinds());
-  const toggle = useCallback((kind: EventKind, on: boolean) => {
+  const toggle = useCallback((kinds: readonly EventKind[], on: boolean) => {
     setVisible((prev) => {
       const next = new Set(prev);
-      if (on) next.add(kind);
-      else next.delete(kind);
+      for (const kind of kinds) {
+        if (on) next.add(kind);
+        else next.delete(kind);
+      }
       return next;
     });
   }, []);
@@ -47,9 +51,14 @@ export function countByKind(events: readonly TimelineEvent[]): Record<string, nu
   return counts;
 }
 
-/// The checklist itself: one row per kind, its count beside it. A kind with
-/// nothing to show is still listed — the list is the answer to "what kinds
-/// are there", not just "what is here now".
+/// Every event in `group`'s kinds, added up — the number beside its row.
+function groupCount(group: EventKindGroup, counts: Record<string, number>): number {
+  return group.kinds.reduce((n, k) => n + (counts[k] ?? 0), 0);
+}
+
+/// The checklist itself: one row per {@link EVENT_KIND_GROUPS} group, its
+/// count beside it. A group with nothing to show is still listed — the
+/// list is the answer to "what is there", not just "what is here now".
 export function EventKindFilter({
   state,
   counts,
@@ -59,25 +68,25 @@ export function EventKindFilter({
 }) {
   return (
     <div className="event-kind-filter" role="group" aria-label="event kinds">
-      {EVENT_KINDS.map((kind) => (
-        <label
-          key={kind}
-          className="event-kind-filter-row"
-          // The BLF record a kind round-trips as is a property of the kind,
-          // so this checklist is also the record-type filter, and says so.
-          title={`${EVENT_KIND_META[kind].label} — ${
-            EVENT_KIND_META[kind].blfRecord ?? "not written to a capture file"
-          }`}
-        >
+      {EVENT_KIND_GROUPS.map((group) => (
+        <label key={group.label} className="event-kind-filter-row" title={`${group.label} — ${group.title}`}>
           <input
             type="checkbox"
-            aria-label={EVENT_KIND_META[kind].label}
-            checked={state.visible.has(kind)}
-            onChange={(e) => state.toggle(kind, e.target.checked)}
+            aria-label={group.label}
+            // A row is on when everything under it is. The kinds in a
+            // group only ever move together from here, so the partial
+            // state is unreachable through the UI — but a `some` test
+            // would render a checked box over a hidden kind if one ever
+            // arrived another way.
+            checked={group.kinds.every((k) => state.visible.has(k))}
+            onChange={(e) => state.toggle(group.kinds, e.target.checked)}
           />
-          <span className={`event-kind-filter-swatch event-kind-swatch-${kind}`} aria-hidden="true" />
-          <span className="event-kind-filter-label">{EVENT_KIND_META[kind].label}</span>
-          <span className="event-kind-filter-count">{counts[kind] ?? 0}</span>
+          <span
+            className={`event-kind-filter-swatch event-kind-swatch-${group.kinds[0]}`}
+            aria-hidden="true"
+          />
+          <span className="event-kind-filter-label">{group.label}</span>
+          <span className="event-kind-filter-count">{groupCount(group, counts)}</span>
         </label>
       ))}
     </div>

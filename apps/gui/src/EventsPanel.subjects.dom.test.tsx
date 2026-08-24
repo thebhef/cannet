@@ -222,8 +222,6 @@ describe("the disclosed subject line", () => {
         subjects: [{ kind: "message", messageId: 0x1a2, extended: false }],
       },
     ]);
-    // A bus error is hidden until asked for (ADR 0035).
-    fireEvent.click(screen.getByLabelText("Bus Errors"));
     expect(screen.getByLabelText("show event details")).toBeInTheDocument();
   });
 });
@@ -333,7 +331,6 @@ describe("reading a note's full text", () => {
     // description, so before this it had no body at all — and its label
     // is exactly the kind that overruns.
     renderPanel([{ id: "e1", timestampNs: 1_000, label: LONG, kind: "busError" }]);
-    fireEvent.click(screen.getByLabelText("Bus Errors"));
     fireEvent.click(screen.getByLabelText("show event details"));
     expect(bodyRow("label")?.querySelector(".trace-event-body-value")?.textContent).toBe(LONG);
   });

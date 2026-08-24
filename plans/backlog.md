@@ -922,3 +922,21 @@ next planning pass.
   prototyping the signal mapping panel
   ([task 89](tasks/0089-signal-mapping-panel.md)), but not scoped to it;
   needs grooming before it becomes a task. (Owner, 2026-08-19.)
+- `[model]` **Review and revise how event kinds encode their BLF
+  relationship.** `messageBound` exists as an `EventKind` because it
+  round-trips as BLF `EVENT_COMMENT` rather than `GLOBAL_MARKER` — the
+  Rust doc says as much: "what makes it a kind of its own is the record
+  it rides." That is a carrier fact wearing a semantic label. Nothing in
+  the application can author one (`authorEvent` never sets `kind`), so
+  the only producer is BLF import, and `commented_event_type` records
+  BLF's *object type*, not which message the comment sat beside — the
+  association is positional in the file and is not carried in our model
+  at all. So a "message-bound" event is bound to nothing, and one whose
+  object type is `0` is not even nominally message-bound. The likely
+  shape: fold the record type into a carrier field on `Note` (beside
+  `commented_event_type`, which is already exactly that) and drop the
+  kind, leaving `EventKind` for distinctions a reader makes. Touches the
+  host, the BLF import/export paths, ADR 0035 and ADR 0057, so it needs
+  designing before it is implemented. Stopgap already shipped: the kind
+  no longer has its own filter row, and files under Notes.
+  (Owner, 2026-08-24.)
