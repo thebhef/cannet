@@ -85,6 +85,14 @@ only what is specific to this phase:
   respect
 - your framing: what is already decided, what to be careful about
 
+**Never tell an agent the main tree is its own.** You groom in the
+repo while it works — task files, the roadmap, the review queue — and
+the pre-commit hook stashes unstaged changes, so an agent that
+believes the tree is exclusive will let the hook clobber your edits.
+Say the tree is **shared**, which is what `implement-phase` § 3 needs
+to hear to reach for `--no-verify` and run the hook's work by hand.
+Exclusive means a worktree, and only a worktree.
+
 **Agents sharing the main working tree run strictly sequentially** —
 two at once will clobber each other. A worktree buys overlap at two
 costs: phases still stack linearly, so a later phase built on an
@@ -94,8 +102,13 @@ own build, which is not free here.
 When an agent reports back, before launching the next:
 
 1. **Verify the branch landed as contracted** — one commit on its
-   base, tree clean, and a commit message that reads as a PR
-   description rather than a changelog. Still a chain of commits?
+   base, tree clean, a **six-row CI table** with every job named and
+   its command shown, and a commit message that reads as a PR
+   description rather than a changelog. A missing row is a red job,
+   not an oversight: `implement-phase` § 3 makes the full local CI
+   run an exit criterion, because a phase trusting the pre-commit
+   hook can report green while CI is red — and did, for 24 tasks.
+   Still a chain of commits?
    Have the agent squash first. **Keep the pre-squash HEAD hash** —
    orphaned but reflog-reachable, and the step-by-step history
    behind the squashed diff.
@@ -132,8 +145,17 @@ phase, or surface it. Never let it ride silently.
 60 s captures is under twenty minutes, and the signal is the
 *series*, not any one reading. Take data after a phase touching a
 render or data-path hot spot and at cycle boundaries; keep every
-report in `docs/performance-measurements/` as
-`YYYY-MM-DD-<commit>[-dirty].json`.
+render report in `docs/performance-measurements/frontend/` as
+`<date>-<hash>-<label>.json`. Those are working artifacts — at
+close-out the final gate folds into `baseline.json` and the dated
+reports are deleted, so an empty `frontend/` means the last campaign
+closed cleanly, not that the path is wrong.
+
+**The CAN hardware is shared informally, and the owner wins.** They
+run their own cannet on the same machine and will sometimes be
+holding the dongles; agents kill only what they started. A capture
+reporting `fps 0` is usually that, not a defect — coordinate with the
+owner rather than telling the agent to retry.
 
 **The phase agent usually takes the reading.** `implement-phase`
 tells it to whenever its work touches the integrated application, a

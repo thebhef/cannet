@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultVisibleKinds, type EventKind, type Note } from "./notes";
-import { plotTimelineEvents, subjectsForSelection } from "./plotEvents";
+import { plotEventExtents, plotTimelineEvents, subjectsForSelection } from "./plotEvents";
 import { signalRefKey, type SignalRef } from "./plotPanelConfig";
 
 const KIND_COLOR = (k: EventKind) =>
@@ -105,5 +105,28 @@ describe("subjectsForSelection", () => {
     expect(subjectsForSelection([f, s], keys(f, s))).toEqual([
       { kind: "signal", messageId: 0x180, extended: false, signalName: "PackCurrent" },
     ]);
+  });
+});
+
+describe("plotEventExtents", () => {
+  const extents = [
+    { startNs: 1_000_000_000, endNs: 3_000_000_000, color: "#ff0000", kind: "note" as const, key: "a b" },
+    { startNs: 4_000_000_000, endNs: 4_000_000_000, color: null, kind: "busError" as const, key: "c d" },
+  ];
+
+  it("has nowhere to draw before the panel has an origin", () => {
+    expect(plotEventExtents(extents, null, KIND_COLOR)).toEqual([]);
+  });
+
+  it("projects onto the same origin and colors the same way as the marker lines", () => {
+    expect(plotEventExtents(extents, 1, KIND_COLOR)).toEqual([
+      { key: "a b", t0: 0, t1: 2, color: "#ff0000" },
+      // A zero-width band is honest: two events at one instant.
+      { key: "c d", t0: 3, t1: 3, color: "#red" },
+    ]);
+  });
+
+  it("draws nothing when nothing is being acted on", () => {
+    expect(plotEventExtents([], 1, KIND_COLOR)).toEqual([]);
   });
 });

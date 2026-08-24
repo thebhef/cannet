@@ -2768,6 +2768,19 @@ button.color-chip {
 .trace-row.selected {
   background: var(--surface-row-selected);
 }
+/* A row an event being acted on is about (ADR 0056) — a frame of one of
+   its message subjects, or an event it is linked to. Transient: it holds
+   while the event is hovered or selected and leaves nothing behind, so
+   the trace at rest never carries it.
+
+   Distinct from the selection and the cursor on purpose: it says "the
+   thing you are pointing at is about this row", which is neither of
+   those, and a row can be all three at once. An inset rule on the right
+   edge, so it composes with the cursor's rule on the left. */
+.trace-row-subject {
+  background: var(--accent-tint);
+  box-shadow: inset -2px 0 0 var(--accent-marker);
+}
 
 .trace-event-label {
   flex: 0 1 auto;
