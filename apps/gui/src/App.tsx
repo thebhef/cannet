@@ -84,7 +84,7 @@ import {
 import { useTransientStatus } from "./useTransientStatus";
 import { hostSettings, useSetting } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
-import type { Note } from "./notes";
+import type { EventSubject, Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { KeybindingsContext } from "./keybindingsContext";
@@ -2938,6 +2938,9 @@ export function App() {
   const unlinkEventsRemote = useCallback((a: string, b: string) => {
     void invoke("unlink_events", { a, b }).catch(() => { /* best effort */ });
   }, []);
+  const setNoteSubjectsRemote = useCallback((id: string, subjects: EventSubject[]) => {
+    void invoke("set_note_subjects", { id, subjects }).catch(() => { /* best effort */ });
+  }, []);
   const notesValue: NotesContextValue = useMemo(
     () => ({
       notes,
@@ -2949,6 +2952,7 @@ export function App() {
       removeNote: removeNoteRemote,
       linkEvents: linkEventsRemote,
       unlinkEvents: unlinkEventsRemote,
+      setNoteSubjects: setNoteSubjectsRemote,
     }),
     [
       notes,
@@ -2960,6 +2964,7 @@ export function App() {
       removeNoteRemote,
       linkEventsRemote,
       unlinkEventsRemote,
+      setNoteSubjectsRemote,
     ],
   );
 

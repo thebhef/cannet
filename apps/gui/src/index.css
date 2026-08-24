@@ -2912,19 +2912,53 @@ button.color-chip {
   color: var(--text-muted);
   background: var(--surface-field);
 }
+/* `nowrap` is what makes the ellipsis happen: without it the label wraps
+   inside the chip, `text-overflow` never applies, and a long label grows
+   the chip past a fixed-height row instead of being trimmed. */
 .event-subject-chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .event-subject-chip svg {
   display: block;
   flex: 0 0 auto;
+}
+/* The chip's own remove control. Reference and the act of dropping it in
+   one place: the alternative is reconstructing the gesture that made the
+   reference. It inherits the chip's ink — including a link chip's borrowed
+   event colour — and is muted until the chip is pointed at, so a row of
+   chips does not read as a row of buttons. */
+.event-subject-chip-remove {
+  display: block;
+  flex: 0 0 auto;
+  padding: 0;
+  margin-right: -0.1rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.5;
+  cursor: pointer;
+}
+.event-subject-chip:hover .event-subject-chip-remove,
+.event-subject-chip-remove:hover,
+.event-subject-chip-remove:focus-visible {
+  opacity: 1;
+}
+.event-subject-chip-remove svg {
+  display: block;
+  width: 10px;
+  height: 10px;
 }
 /* A message reads in the same ink the trace's id column uses, so the
    chip and the table above it name a message the same way. */
 .event-subject-chip--message {
   color: var(--text-message);
 }
+/* A link's default ink, for a linked event that carries no colour of its
+   own. One that does overrides this inline, so the chip and the marker it
+   points at are the same colour. */
 .event-subject-chip--event {
   color: var(--text-source);
 }

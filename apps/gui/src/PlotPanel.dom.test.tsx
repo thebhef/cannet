@@ -1816,6 +1816,7 @@ describe("PlotPanel", () => {
         removeNote: () => {},
         linkEvents: () => {},
         unlinkEvents: () => {},
+        setNoteSubjects: () => {},
       };
       renderPanel({
         params: { elementId: "el-note" },
@@ -7704,6 +7705,7 @@ describe("PlotPanel authoring an event from the plot (ADR 0056)", () => {
       removeNote: () => {},
       linkEvents: () => {},
       unlinkEvents: () => {},
+      setNoteSubjects: () => {},
     };
   }
 

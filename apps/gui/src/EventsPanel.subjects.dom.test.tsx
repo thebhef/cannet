@@ -77,6 +77,7 @@ function notesCtx(notes: Note[]): NotesContextValue {
     removeNote: vi.fn(),
     linkEvents: vi.fn(),
     unlinkEvents: vi.fn(),
+    setNoteSubjects: vi.fn(),
   };
 }
 
@@ -272,3 +273,4 @@ describe("linking two events", () => {
     expect(linkChip()).toBeDisabled();
   });
 });
+

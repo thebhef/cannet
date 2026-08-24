@@ -18,7 +18,8 @@ import { formatTimestamp, type CanIdFormat } from "./format";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import { ColorChip } from "./ColorChip";
-import { EventSubjectChips } from "./EventSubjectChips";
+import { EventSubjectChips, SubjectChipView } from "./EventSubjectChips";
+import { chipRemovable } from "./notesContext";
 import {
   subjectChips,
   subjectIndexFor,
@@ -159,6 +160,9 @@ export interface EventActions {
   /// Set or clear the user-defined tag the event view filters on.
   onRetag?: (id: string, tag: string | null) => void;
   onGoto?: (timestampNs: number) => void;
+  /// Drop what one of the event's chips references (ADR 0056) — the
+  /// `×` on the chip itself. Absent in a view that does not edit.
+  onRemoveChip?: (event: TimelineEvent, chip: SubjectChip) => void;
 }
 
 /// Stable ids for the chronological row space (ADR 0044). A frame is
@@ -1256,6 +1260,16 @@ function EventRow({
   const discloses = eventDiscloses(event);
   const bodyRows = eventBodyRows(event).length;
   const onGoto = actions?.onGoto;
+  const onRemoveChip = actions?.onRemoveChip;
+  const removeChip = useMemo(
+    () =>
+      onRemoveChip === undefined
+        ? undefined
+        : (chip: SubjectChip) => {
+            if (chipRemovable(event, chip)) onRemoveChip(event, chip);
+          },
+    [onRemoveChip, event],
+  );
   const [draft, setDraft] = useState(event.label);
 
   // This is a virtualized row slot: when scrolling reuses it for a different
@@ -1385,6 +1399,7 @@ function EventRow({
           onExpand={() =>
             onToggle(`${EVENT_ROW_PREFIX}${event.id}`, isExpanded ? 0 : bodyRows)
           }
+          onRemoveChip={removeChip}
         />
       )}
       {editable && !editing && (
@@ -1448,16 +1463,15 @@ function EventBody({
           <span className="trace-event-body-name">about</span>
           <span className="trace-event-body-subjects">
             {chips.map((chip) => (
-              <span
+              <SubjectChipView
                 key={chip.key}
-                className={`event-subject-chip event-subject-chip--${chip.kind}${
-                  chip.resolved ? "" : " event-subject-chip--unresolved"
-                }`}
-                title={chip.title}
-              >
-                {chip.kind === "event" && <Icon name="link" />}
-                <span className="event-subject-chip-label">{chip.label}</span>
-              </span>
+                chip={chip}
+                onRemove={
+                  actions?.onRemoveChip !== undefined && chipRemovable(event, chip)
+                    ? () => actions.onRemoveChip?.(event, chip)
+                    : undefined
+                }
+              />
             ))}
           </span>
         </div>
