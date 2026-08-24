@@ -22,13 +22,10 @@ export type EventCategory = "userAuthored" | "hostDerived" | "frontendDerived";
 /// What a kind declares about itself — one global truth, so no view has to
 /// know a particular kind's habits.
 export interface EventKindMeta {
-  /// Name shown in a filter control.
+  /// Name for this kind on its own — a tooltip, a diagnostic. The filter
+  /// labels {@link EVENT_KIND_GROUPS}, not kinds.
   label: string;
   category: EventCategory;
-  /// Does it render without being asked for? A kind that is noise until you
-  /// go looking for it declares `false`; a view starts with it filtered out
-  /// and the user turns it on there (the override is view-local).
-  visibleByDefault: boolean;
   /// Whether the user can rename / recolor / remove it. Follows the
   /// category — only the author of an event may edit it.
   editable: boolean;
@@ -51,39 +48,75 @@ export const EVENT_KIND_META: Record<EventKind, EventKindMeta> = {
   note: {
     label: "Notes",
     category: "userAuthored",
-    visibleByDefault: true,
     editable: true,
     blfRecord: "GLOBAL_MARKER",
   },
   messageBound: {
     label: "Comments",
     category: "userAuthored",
-    visibleByDefault: true,
     editable: true,
     blfRecord: "EVENT_COMMENT",
   },
   busError: {
     label: "Bus Errors",
     category: "hostDerived",
-    // A bus error is noise until you ask for it — true of every project,
-    // which is why it belongs next to the kind and not in project state.
-    visibleByDefault: false,
     editable: false,
     blfRecord: null,
   },
   truncation: {
     label: "Truncation",
     category: "frontendDerived",
-    visibleByDefault: true,
     editable: false,
     blfRecord: null,
   },
 };
 
+/// How the kind filter is offered to a reader: one row per **group**,
+/// not one per kind.
+///
+/// A kind is a model distinction — what an event is for, and which record
+/// it round-trips as. A filter row is a reader distinction, and the two
+/// are not the same list. Two kinds differ only in the file record they
+/// are written as (`note` / `messageBound`), and nothing in the
+/// application can author the second; two others are things the tool
+/// found rather than things anyone wrote (`busError` / `truncation`). A
+/// row apiece asked the reader to hold a taxonomy they never chose.
+///
+/// Every kind belongs to exactly one group — a kind left out would be
+/// unreachable from the filter and stuck at its default.
+export interface EventKindGroup {
+  /// The row's label.
+  label: string;
+  /// What the row is, for its tooltip.
+  title: string;
+  /// The kinds this row shows and hides together.
+  kinds: readonly EventKind[];
+}
+
+export const EVENT_KIND_GROUPS: readonly EventKindGroup[] = [
+  {
+    label: "Notes",
+    title: "annotations you placed, and comments read from a capture file",
+    kinds: ["note", "messageBound"],
+  },
+  {
+    label: "Diagnostics",
+    title: "what the tool found: bus error runs, and where history was truncated",
+    kinds: ["busError", "truncation"],
+  },
+];
+
 /// The kinds a view shows before the user says otherwise — the seed for
 /// each view's own (view-local) override.
+///
+/// Everything, now that the filter is grouped. Bus errors were once
+/// filtered out by default as noise; the host coalesces a run of error
+/// frames into a single summary event (`bus_health.rs`), so a fault that
+/// produces a hundred thousand error frames produces one row — and a
+/// fault is the thing a reader most wants surfaced without going looking
+/// for it.
 export function defaultVisibleKinds(): Set<EventKind> {
-  return new Set(EVENT_KINDS.filter((k) => EVENT_KIND_META[k].visibleByDefault));
+  return new Set(EVENT_KINDS);
 }
 
 /// Drop the events whose kind this view is not showing. Applied *after*

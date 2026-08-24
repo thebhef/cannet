@@ -4,6 +4,7 @@ import {
   defaultVisibleKinds,
   EVENT_KIND_META,
   EVENT_KINDS,
+  EVENT_KIND_GROUPS,
   noteToEvent,
   visibleEvents,
   type EventKind,
@@ -89,11 +90,36 @@ describe("event kinds", () => {
     ]);
   });
 
-  it("declares which kinds are noise until asked for", () => {
-    expect(EVENT_KIND_META.busError.visibleByDefault).toBe(false);
-    expect(defaultVisibleKinds().has("busError")).toBe(false);
-    expect(defaultVisibleKinds().has("note")).toBe(true);
-    expect(defaultVisibleKinds().has("truncation")).toBe(true);
+  it("offers the filter two rows, not one per kind", () => {
+    // The filter is a list of things a reader distinguishes, not a list
+    // of things the model distinguishes. Four checkboxes for four kinds
+    // asked the reader to hold a taxonomy they never chose.
+    expect(EVENT_KIND_GROUPS.map((g) => g.label)).toEqual(["Notes", "Diagnostics"]);
+  });
+
+  it("puts every kind in exactly one filter row", () => {
+    // A kind missing from the groups is unreachable from the filter and
+    // silently stuck at its default; a kind in two is a checkbox that
+    // fights itself.
+    const grouped = EVENT_KIND_GROUPS.flatMap((g) => g.kinds);
+    expect([...grouped].sort()).toEqual([...EVENT_KINDS].sort());
+  });
+
+  it("files a comment with the notes, since a reader cannot tell them apart", () => {
+    // `messageBound` differs from `note` only in the BLF record it is
+    // written as. Nothing in the app creates one, so a row of its own
+    // was a filter for a category the user cannot produce.
+    const notes = EVENT_KIND_GROUPS.find((g) => g.label === "Notes");
+    expect(notes?.kinds).toEqual(["note", "messageBound"]);
+  });
+
+  it("files truncation with bus errors — both are the tool's own findings", () => {
+    const diag = EVENT_KIND_GROUPS.find((g) => g.label === "Diagnostics");
+    expect(diag?.kinds).toEqual(["busError", "truncation"]);
+  });
+
+  it("starts every group visible, so nothing is hidden without being asked", () => {
+    for (const k of EVENT_KINDS) expect(defaultVisibleKinds().has(k)).toBe(true);
   });
 
   it("names the BLF record a kind round-trips as, or none", () => {
@@ -115,12 +141,14 @@ describe("event kinds", () => {
       3_000,
     );
     expect(all.map((e) => e.id)).toEqual(["e", "n", TRUNCATION_EVENT_ID]);
+    // Nothing is filtered out until a view says so.
     expect(visibleEvents(all, defaultVisibleKinds()).map((e) => e.id)).toEqual([
+      "e",
       "n",
       TRUNCATION_EVENT_ID,
     ]);
-    const withErrors = new Set<EventKind>([...defaultVisibleKinds(), "busError"]);
-    expect(visibleEvents(all, withErrors).map((e) => e.id)).toEqual(["e", "n", TRUNCATION_EVENT_ID]);
+    const notesOnly = new Set<EventKind>(["note", "messageBound"]);
+    expect(visibleEvents(all, notesOnly).map((e) => e.id)).toEqual(["n"]);
   });
 });
 

@@ -563,7 +563,7 @@ describe("TracePanel event kinds", () => {
   const eventLabels = () =>
     Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
 
-  it("keeps a hidden-by-default kind out of the trace until this trace enables it", async () => {
+  it("takes a kind out of the trace when this trace turns its row off", async () => {
     // jsdom lays nothing out, so the row virtualizer would see a zero-height
     // viewport and render a single row. Give it one.
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
@@ -571,18 +571,19 @@ describe("TracePanel event kinds", () => {
       { id: "n1", timestampNs: 1_000_000_000, label: "boom", kind: "note" },
       { id: "e1", timestampNs: 500_000_000, label: "bus error x40", kind: "busError" },
     ]);
-    // The note splices in; the bus error does not (ADR 0035).
-    await waitFor(() => expect(eventLabels()).toEqual(["boom"]));
+    // Both splice in now — a coalesced bus error is one row, not noise.
+    await waitFor(() => expect(eventLabels()).toEqual(["bus error x40", "boom"]));
 
     const box = document.querySelector<HTMLInputElement>(
-      '.event-kind-filter input[aria-label="Bus Errors"]',
+      '.event-kind-filter input[aria-label="Diagnostics"]',
     );
-    if (!box) throw new Error("no bus-error row in the kind filter");
-    expect(box.checked).toBe(false);
+    if (!box) throw new Error("no diagnostics row in the kind filter");
+    expect(box.checked).toBe(true);
     await act(async () => {
       fireEvent.click(box);
     });
-    await waitFor(() => expect(eventLabels()).toEqual(["bus error x40", "boom"]));
+    // View-local, like every other view toggle (ADR 0035).
+    await waitFor(() => expect(eventLabels()).toEqual(["boom"]));
     ch.mockRestore();
   });
 });
@@ -701,16 +702,6 @@ describe("TracePanel event rows: the same interactions as the events view", () =
     };
     const ctx = notesCtx([busError]);
     renderWithNotes([busError], ctx);
-    const box = await waitFor(() => {
-      const el = document.querySelector<HTMLInputElement>(
-        '.event-kind-filter input[aria-label="Bus Errors"]',
-      );
-      if (!el) throw new Error("no bus-error row in the kind filter");
-      return el;
-    });
-    await act(async () => {
-      fireEvent.click(box);
-    });
     await waitFor(() => expect(eventLabels()).toEqual(["bus error x40"]));
     // The mouse is offered no rename here…
     expect(document.querySelector('[aria-label="rename event"]')).toBeNull();

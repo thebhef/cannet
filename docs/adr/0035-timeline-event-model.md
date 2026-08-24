@@ -79,9 +79,28 @@ render. Named so far:
 |---|---|---|---|---|
 | note | yes | yes | `GLOBAL_MARKER` | user (exists) |
 | truncation | no | no (derived) | no | disk-spill low-water mark |
-| message-bound | yes | yes | `EVENT_COMMENT` | created from a message |
+| message-bound | yes | yes | `EVENT_COMMENT` | read from a capture file (no authoring gesture) |
 | trigger | no | yes | `EVENT_COMMENT` | plot trigger fires |
 | extension/utility | varies | varies | varies | detector output |
+
+**The filter offers groups of kinds, not kinds.** A kind is a model
+distinction — what an event is for, and which record it round-trips as.
+A filter row is a *reader* distinction, and the two are not the same
+list. `note` and `message-bound` differ only in the file record they are
+written as, and nothing in the application authors the second, so a row
+apiece offered a category the user cannot produce and cannot tell apart
+on the row. `bus-error` and `truncation` are both things the tool found
+rather than things anyone wrote. Two rows, then — **Notes** and
+**Diagnostics** — with every kind in exactly one, since a kind left out
+of the groups would be unreachable from the filter and stuck at its
+default.
+
+**Nothing is filtered out before the user asks.** Bus errors were once
+hidden by default as noise. The host coalesces a run of error frames
+into a single summary event carrying a count and a span, so a fault that
+produces a hundred thousand error frames produces one row — and a fault
+is the thing a reader most wants surfaced without going looking for it.
+Visibility is still view-local, so a view that wants quiet can have it.
 
 ## Why
 
