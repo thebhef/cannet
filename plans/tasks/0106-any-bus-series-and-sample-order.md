@@ -357,6 +357,173 @@ phase 1, plus this phase's two `view_signals` tests);
 before: 2615 passed / 199 files; after: 2624 passed / 199 files.
 `npx tsc --noEmit` and `npx vite build` clean.
 
+### 2026-08-22 — phase 3: the order sweep
+
+**Branch** `task-106-phase-3-order-sweep` from `2158b9c7`. One commit,
+doc-only: `4d0e4c8b`, "Order-dependent signal cache reads name why the
+order holds."
+
+**Verifying phase 1's premise, not inheriting it.** Phase 1's note
+claimed both fills behind `partition_by_t` are ordered (one bus's
+frames; one signal channel group) but flagged that as unverified beyond
+the signal cache itself. Checked directly: `SignalKey::dbc` no longer
+admits a busless target ([`scan_chunk`]'s per-frame bus filter has no
+`None` arm), so a DBC-backed pyramid can only ever receive one bus's
+frames — confirmed by re-reading `scan_chunk` line by line, not assumed
+from the earlier commit message. A file-backed pyramid receives exactly
+one MDF signal channel group's `(timestamps_ns, values)` pair per fill
+(`fill_file_backed`, one call per group per signal in
+`fill_file_backed_signals`), with the incumbent series replaced rather
+than appended to on a re-fill — so there is no second call that could
+splice a different source's samples into the same pyramid either.
+
+**Sweep inventory.** Every reader of `t_seconds` / a pyramid level found
+via `grep -rn "t_seconds"` across `apps/gui/src-tauri/src` plus every
+frontend consumer reachable from a signal-cache-shaped payload
+(`SampledPoints` / `SignalsSample` / `RawSeries`):
+
+| site | outcome |
+| --- | --- |
+| `signal_cache::partition_by_t` (the `lower_bound` every level is searched by) | **Already enforced, doc already names why** (phase 1). Re-verified rather than trusted: re-read `scan_chunk`'s bus filter and `fill_file_backed`'s call sites myself (previous paragraph) instead of citing phase 1's say-so. |
+| `window_count`, `window_slice`, `evict_below`, `level_points` | **Sound — inherit `partition_by_t`'s invariant**, no fresh assumption of their own. Each already carries (or references) the "non-decreasing" note; left alone. |
+| `SignalCache::extrapolated_spans` (`served.first()`/`.last()`/`.windows(2)`) | **Sound.** `served` is `window()`/`window_categorical()`'s output, which is `partition_by_t`-sliced and order-preserving decimation — provably ascending, not a fresh assumption on raw input. Already has an extensive doc comment; left alone rather than padding it further. |
+| `signal_sampler::decimate_min_max`, `reduce_transitions` | **Sound.** Both are called only on pyramid-derived slices (`signal_cache.rs:508,568,586`), never on raw trace-store frames despite the module doc's "roughly time-ordered" phrasing being written with the trace store in mind. Bucketing is by index, not by a `t_seconds` search, so an actual dip would degrade approximation quality, not correctness — and after phase 1 the input is exactly ordered anyway. Left alone: the "roughly" hedge is stale flavour text, not a wrong precondition. |
+| `SignalCache::latest`, `::rate`, `::time_span`, `::all_samples` | **Fixed.** Each takes level 0's first/last live slot as the series' oldest/newest sample directly (no search), which is exactly the "min/max shortcut" pattern the sweep was told to look for. None said why that was sound. Doc comments now point at `partition_by_t`'s rationale. |
+| `SignalCacheStore::time_span` (the multi-key batch aggregator) | **Sound, not touched.** Folds `lo.min(first)` / `hi.max(last)` across each query's own `time_span()` — an explicit min/max fold, correct regardless of any relationship between queries' own spans. |
+| `SignalCache::push_sample`, `::extent`, `min_max_many` | **Sound.** Value-range tracking (`lo`/`hi`) is widen-only and never reads `t_seconds` at all. |
+| `SignalCacheStore::fill_file_backed`'s doc | **Fixed.** Asserted the incoming order was trustworthy ("the order the reader yields them in") without saying why a reader's order should be trusted. Now states the structural reason: one channel group is one continuously-sampled source, so there is no second stream that could race it the way two CAN adapters do — the same shape of argument `partition_by_t` already makes for the DBC-backed case, made explicit here too. |
+| `cannet_spill::SampleSeq`'s own `partition_point` calls (`evict_below`, the private fold helper) | **Sound — different axis.** Both search `cum_cap`, a cumulative-capacity array over segment index, monotone by construction; neither touches `t_seconds`. Same verdict shape as task 91's audit of `cannet-spill`. |
+| `cannet-mdf::signals::signal_groups` / `FileSignal::timestamps_ns` ("ascending" doc, no sort call) | **Investigated, not fixed — a boundary call, recorded below.** This is the "reader" `fill_file_backed`'s doc refers to, and it really does just trust on-disk record order with nothing enforcing it. Argued sound (one channel, one source, no interleave mechanism analogous to the bus dip — see the blocker entry) but it is a data-source crate the signal cache reads *from*, not the signal cache or a layer above it, so fixing or further hardening it is outside this phase's stated boundary. |
+| `capture.rs::write_mdf_capture`'s frame-timestamp fold | **Sound, not touched.** Folds `start_time_ns.min(frame.timestamp_ns)` over every frame — an explicit min, not a first/last shortcut, so it needs no pyramid ordering at all. |
+| `capture.rs::write_mdf_capture`'s signal loop (`points.first()`) | **Sound — correct use of an already-fixed contract.** Relies on `all_samples()`'s now-documented "in time order" guarantee; no fresh assumption of its own, left alone. |
+| `signal_fingerprint.rs` | **Nothing found.** No `t_seconds`, no search, no first/last shortcut anywhere in the module. |
+| `signal_snapshot.rs`, `view_signals.rs`, `sampling.rs`, `ipc.rs`, `emitters.rs` | **Nothing found.** Each surfaces host-computed fields (`latest`, `rate`, `time_seconds`, `from_seconds`/`last_seconds`) rather than re-deriving anything from a raw sample sequence. |
+| `plotData.ts::RawSeries.t` (and `mergeSeries`'s forward sample-and-hold walk over it) | **Fixed.** The interface doc asserted "strictly-increasing" with no reason given. `RawSeries.t` is always one signal-cache key's slice (`PlotArea.tsx`'s `seriesRel` is built straight from `snapshot.byKey`), so it inherits the same per-key guarantee `partition_by_t` establishes host-side. Doc now says so. |
+| `plotData.ts::sampleColumns`, `::splitExtrapolatedRows` | **Sound, not touched.** Both already state their ascending-`t`/ascending-`xs` assumption in their own doc comments; they consume the now-justified `RawSeries.t`, not a fresh unverified input. |
+| `plotData.ts::lastAtOrBefore`, `::firstAtOrAfter` | **Sound.** Both binary-search `xs`, which `mergeSeries` builds via `[...xsSet].sort((a, b) => a - b)` a few lines above every call — sorted by construction at the call site, not by assumption. |
+| `PlotArea.tsx::cacheTRangeFor` (`s.t[0]` / `s.t[s.t.length - 1]`) | **Sound, not touched.** A diagnostic readout already labelled "leftmost and rightmost"; correct consumer of the now-documented `RawSeries.t` contract. |
+| `PlotArea.tsx`'s `xs[0]` / `xs[xs.length - 1]` merge-window fallback | **Sound.** `xs` is `mergeSeries`'s own sorted output, not raw input — no assumption, a guarantee it just built. |
+| `eventMerge.ts::buildEventMerge` (binary searches over `anchorsAbs`) | **Checked, left alone — different layer.** `anchorsAbs` comes from the host's `frame_indices_at_ns` (the trace-store anchor task 91 already fixed), not from the signal cache, so it is outside this phase's boundary. Its doc's claim ("anchors non-decreasing because events are time-sorted") is true even over a store that dips: for any threshold `x`, the *first* store index with `ts(idx) >= x` is provably non-decreasing as `x` rises, because the set of qualifying indices can only shrink as the threshold rises, and an index that drops out of it can never let a smaller index back in for a larger threshold. Recorded so the "does anything else read `t_seconds` assuming order" question is answered for this site too, without touching trace-store territory task 91 already swept. |
+
+**No defect found above the signal cache itself.** Every site either
+inherits a proven invariant, folds explicitly rather than shortcuts, or
+was already sound before this branch. The only changes landing are the
+five doc comments above (four in `signal_cache.rs`, one in
+`plotData.ts`) — no behavioural change, so no new regression test:
+there is nothing new to guard, and mutation-testing a doc comment has
+no code to break. `partition_by_t`'s own differential coverage (the
+task-91-pattern dipping fixtures) already guards the one enforcement
+point everything else here depends on.
+
+**No index was built.** The measurement-before-index exit criterion
+does not bind: nothing found needed one.
+
+**Suites.** Before: `cargo test -p cannet-gui` 893 passed / 6 ignored
+(unchanged from phase 2's count); `cargo test --workspace` green.
+After: identical counts — doc-only change. `cargo clippy --workspace
+--all-targets` clean but for the known `cannet-dbc` warning; `cargo fmt
+--all -- --check` clean. Frontend: 2624 passed / 199 files before and
+after (unchanged); `npx tsc --noEmit` and `npx vite build` clean.
+`git grep -Ein "task [0-9]|plans/" -- apps/ crates/` empty.
+
+### 2026-08-22 — phase 3 correction: non-decreasing, not strictly increasing, and one real consumer bug
+
+Overseer review of `4d0e4c8b` caught a contradiction the first pass
+introduced rather than resolved: `plotData.ts`'s `RawSeries.t` doc
+opened with "Strictly-increasing" while the justification I appended
+under it only established non-decreasing. Re-opened on the same branch
+to settle which is true and check consumers, per the review.
+
+**Observation.** `servers/cannet-python-can/scratch_pcan_timestamps.py`
+is a diagnostic already in the repo for exactly this question, and its
+own docstring records the mechanism: "Clusters of <1 ms gaps then
+20-50 ms gaps → python-can / PCAN-Basic itself is producing bursty
+timestamps." `driver_python_can.py::_msg_to_frame` converts python-can's
+`msg.timestamp` (a float second value backed by "PEAK's µs counter" per
+its own comment) to `timestamp_ns` via `int(ts_s * 1_000_000_000)`. A
+microsecond-resolution hardware counter and a CAN-FD bus that can move a
+frame in under a microsecond means two distinct frames on the same bus
+can legitimately convert to the identical `timestamp_ns`.
+
+**Hypothesis.** Two frames on one bus can share a `t_seconds`, so the
+signal cache's per-key order guarantee is non-decreasing, not strictly
+increasing — and any doc or consumer that assumed strict uniqueness is
+wrong.
+
+**Verdict — non-decreasing, confirmed rather than asserted.** Fixed
+`plotData.ts`'s `RawSeries.t` doc to say non-decreasing and name the
+mechanism (hardware timestamp ties under a burst), instead of softening
+the wording to straddle both claims.
+
+**Consumer check.** Read every function reachable from `RawSeries.t`,
+then ran a scratch vitest file (`src/_scratch_dup_ts.test.ts`, deleted
+before commit — not part of the diff) exercising each with a duplicate
+timestamp, to get data rather than a hand-trace:
+
+| consumer | tie behaviour | verdict |
+| --- | --- | --- |
+| `mergeSeries` (`plotData.ts`) | `xsSet` is a `Set`, so a duplicate `t` collapses to one merged column; the forward sample-and-hold walk (`s.t[j] <= xs[i]`) processes both tied entries and the *later* one wins — consistent, deterministic, no crash. | **Sound.** |
+| `sampleColumns` (`plotData.ts`) | Because `xs` already collapsed the tie to one column, the walk marks that column as a genuine sample exactly once — nothing to lose, since there was never a second column for the second duplicate to occupy. | **Sound.** |
+| `indexAtOrBefore` / `valueAt` (`plotCursors.ts`) | Binary search for "last index `<= x`" returns the *later* of a tied pair — correct sample-and-hold ("most recent value"), by construction. | **Sound.** |
+| `statsOver` (`plotCursors.ts`) | **Bug, confirmed by data**, not just argument: over `{t: [0,1,2,2,3], v: [5,1,9,4,7]}`, `statsOver(s, 2, 2)` should count both samples tied at `t=2` (`{count: 2, min: 4, max: 9, mean: 6.5}`) but returned `{count: 1, min: 4, max: 4, mean: 4}` — the earlier tied sample (value 9) silently dropped. The scratch run and then the committed regression test both reproduced it before the fix. | **Fixed.** |
+
+**Root cause, from the data above.** `statsOver` derived its walk's
+start index from `indexAtOrBefore(lo)` ("last index `<= lo`") plus a
+`+1` nudge on a non-exact hit. That derivation assumes "last `<= lo`"
+and "first `>= lo`" name the same position whenever `lo` matches a
+sample exactly — true only when that sample is unique. Under a tie
+exactly on `lo`, `indexAtOrBefore` returns the *last* of the tied
+indices, and the walk starting there skips every earlier tied sample,
+undercounting the span (and silently returning a possibly-wrong
+min/max/mean, not an error). This is the same defect class the whole
+phase is auditing — a search built for a stronger order guarantee than
+the one actually enforced — one level up from `RawSeries.t` itself, in
+a *consumer* rather than in the model.
+
+**Fix.** Added `indexAtOrAfter` (`plotCursors.ts`) — a direct
+lower-bound "first index `>= x`" binary search, the complement of the
+existing `indexAtOrBefore` — and rewrote `statsOver` to start its walk
+there instead of deriving a start point from the other search. This is
+inside the phase's signal-cache-and-above boundary (`apps/gui/src`, a
+consumer of the same per-key guarantee `RawSeries.t` documents), so it
+was fixed here rather than merely recorded.
+
+**Mutation evidence.** `statsOver > counts every sample at a tied
+lower-boundary timestamp, not just the last`
+(`plotCursors.test.ts`) was written first and watched fail against the
+pre-fix code: `{count: 1, min: 4, max: 4, mean: 4}` where the tied pair
+at `t=2` (values 9 and 4) should give `{count: 2, min: 4, max: 9, mean:
+6.5}`. It passed once `indexAtOrAfter` replaced the derived start
+index — the same before/after pair *is* the mutation test the debugging
+discipline asks for: the "mutation" is the bug itself, already present
+before the fix, not one introduced and reverted afterward.
+
+**`plotCursors.ts`'s own module doc and `Series.t` doc carried the same
+"strictly increasing" claim**, independently of `plotData.ts` — found
+while tracing consumers, not part of the original ask, but the same
+defect on the same underlying data (`PlotArea.tsx`'s `seriesRef` stores
+`RawSeries` objects directly as `Series`). Corrected alongside the fix
+rather than left to contradict the now-corrected `RawSeries.t`.
+
+**What was not changed.** `lastAtOrBefore` / `firstAtOrAfter`
+(`plotData.ts`, over `xs`) were not touched — `xs` is deduplicated by
+construction (`[...xsSet]`), so there is no tie for them to mishandle.
+`enumSegments` (`plotData.ts`) and the extrapolation-span math in
+`signal_cache.rs` degrade to a zero-width cosmetic artifact under a tie
+(a segment box or dashed stretch with no width) rather than a wrong
+answer — checked, not a defect, left alone.
+
+**Commit.** `3b8fd808` — doc corrections in `plotData.ts` and
+`plotCursors.ts`, the `indexAtOrAfter` fix and its regression test in
+`plotCursors.ts` / `plotCursors.test.ts`.
+
+**Suites after the correction.** Frontend: 2625 passed / 199 files (one
+new regression test over the 2624 baseline); `npx tsc --noEmit` and
+`npx vite build` clean. No Rust file touched this round, so the Rust
+suites were not re-run; they were green as of `4d0e4c8b` and nothing
+since has touched `apps/gui/src-tauri` or `crates/`.
+`git grep -Ein "task [0-9]|plans/" -- apps/ crates/` empty.
+
 ## Blockers / side effects
 
 - **The ruling is unconfirmed by the owner.** Recorded here rather than
@@ -379,3 +546,44 @@ before: 2615 passed / 199 files; after: 2624 passed / 199 files.
 - **`examples/ev-zonal/dbc/pack.dbc` and `apps/gui/src-tauri/Cargo.toml`**
   carry line-ending-only working-tree modifications that pre-date this
   branch. Left untouched, unstaged, as instructed.
+- **`cannet-mdf::FileSignal::timestamps_ns` is documented "ascending" with
+  nothing enforcing it — a real instance of the same defect class, one
+  layer below the signal cache.** `signal_groups` (`crates/cannet-mdf/src/signals.rs`)
+  walks a channel group's records via `file.next_record` and pushes them
+  in on-disk order with no sort and no check. Argued sound rather than
+  fixed: a signal channel group is one continuously-sampled channel from
+  one source, so — unlike a CAN bus, where two independent adapters feed
+  one interleaved queue — there is no second stream whose deliveries
+  could race it and produce a dip. But that is an argument about the
+  *mechanism*, not a proof about every MDF file an external tool might
+  produce, and it is not this phase's to fix: `cannet-mdf` is a data
+  source the signal cache reads *from*, not the signal cache or anything
+  above it. Left as a finding rather than silently dropped or quietly
+  fixed out of scope.
+- **`eventMerge.ts` was checked and found sound, but is a different
+  layer's territory.** It binary-searches `anchorsAbs`, which comes from
+  the trace store's `frame_indices_at_ns` (task 91's fix), not from the
+  signal cache. Confirmed correct by a short argument (recorded in the
+  sweep inventory above) rather than left unexamined, but not touched:
+  fixing or re-documenting trace-store-side code is outside this task's
+  "signal cache and above" boundary.
+
+## Exit criteria — verdicts (overseer, 2026-08-22)
+
+| Criterion | Verdict | Earned by |
+| --- | --- | --- |
+| The any-bus series' decode behaviour is ruled on and implemented, not left asserted in two places that disagree; the two pinning tests turned around or kept deliberately, with the reason recorded | **met, on an unconfirmed ruling** | Phase 1 (`e20bb41b`). Stronger than asked: `SignalKey::dbc` takes `bus_id: String`, so the state is unrepresentable rather than merely unused, and the invariant is discharged once in `plan_batch` instead of re-checked per frame. `an_unscoped_series_decodes_each_frame_by_its_own_bus` became `a_series_naming_no_bus_decodes_nothing`, with the old rule and the reason for the change in the test. **The ruling is the overseer's recommendation; the owner has not confirmed it** — the two commits are the whole diff to revert. |
+| No binary search in the signal cache rests on an order nothing enforces | **met** | The precondition was made *true* rather than the search replaced, so the task-91 forward-scan comparison does not apply. Phase 3's 17-site inventory checked the rest; overseer re-ran an independent sweep for `partition_point` / `binary_search` / `lower_bound` across the host and `cannet-spill` and found every other site searching frame indices or slot positions, monotonic by append order. |
+| Any doc comment asserting non-decreasing sample order either describes something enforced, or is corrected | **met, after one correction** | Phase 3 (`4d0e4c8b`) named the enforcer at five sites instead of restating the assertion. It also left `RawSeries.t` claiming *strictly* increasing while its own new justification guaranteed only non-decreasing — caught in overseer review and corrected in `3b8fd808`, which established that ties are **real input** (hardware timestamps at microsecond resolution, and a CAN-FD burst outruns them). |
+| If an index is built, its cost is measured on a realistic cache, not asserted | **not applicable** | No index was built; nothing needed one. This is the outcome the grooming predicted — settling half 1 dissolved half 2. |
+
+**The task delivered one defect nobody was looking for.** Chasing the
+`RawSeries.t` contradiction turned up `plotCursors::statsOver` starting
+its walk at `indexAtOrBefore(lo) + 1`, which lands on the *last* of a
+tied pair and silently drops the earlier sample from a span's
+count / min / max / mean. Reproduced before fixing —
+`statsOver({t:[0,1,2,2,3], v:[5,1,9,4,7]}, 2, 2)` answered
+`{count:1, min:4, max:4, mean:4}` where the truth is
+`{count:2, min:4, max:9, mean:6.5}` — and fixed with a real
+`indexAtOrAfter` lower bound. The old code's own comment ("give or take
+an exact hit") was the tell.

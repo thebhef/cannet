@@ -60,6 +60,15 @@ describe("statsOver", () => {
     expect(statsOver(s, 10, 20)).toEqual({ count: 0, min: null, max: null, mean: null });
     expect(statsOver(s, 1.1, 1.9)).toEqual({ count: 0, min: null, max: null, mean: null });
   });
+  it("counts every sample at a tied lower-boundary timestamp, not just the last", () => {
+    // Two samples share t=2, the query's own lower bound. The host's
+    // signal cache guarantees non-decreasing order, not strict — two
+    // frames on one bus can land on the same hardware timestamp tick —
+    // so a tie exactly on `lo` is real input, not a malformed fixture.
+    const tied = { t: [0, 1, 2, 2, 3], v: [5, 1, 9, 4, 7] };
+    const a = statsOver(tied, 2, 2);
+    expect(a).toEqual({ count: 2, min: 4, max: 9, mean: 6.5 });
+  });
 });
 
 describe("centerWindowOn", () => {

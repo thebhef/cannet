@@ -1,12 +1,18 @@
 // Pure helpers for the plot panel's cursors and measurement strip.
 //
-// A sampled signal series here is `{ t, v }` with `t` strictly
-// increasing (display-relative seconds). "Value at x" is sample-and-hold
-// — the most recent sample at or before x — matching how the plot draws
-// CAN signals; outside the series' range it's `null`.
+// A sampled signal series here is `{ t, v }` with `t` non-decreasing
+// (display-relative seconds) — not strictly increasing: the host's
+// signal cache guarantees non-decreasing order only (see plotData.ts's
+// `RawSeries.t`), so two samples can share a `t` when two frames land on
+// the same hardware timestamp tick. Every walk below treats a tie as
+// "at or before" / "at or after" rather than assuming each `t` is
+// unique. "Value at x" is sample-and-hold — the most recent sample at
+// or before x — matching how the plot draws CAN signals; outside the
+// series' range it's `null`.
 
 export interface Series {
-  /** Strictly-increasing sample times (display-relative seconds). */
+  /** Non-decreasing sample times (display-relative seconds); see the
+   * module doc — ties are real input, not a malformed fixture. */
   t: number[];
   /** Parallel values. */
   v: number[];
@@ -14,7 +20,9 @@ export interface Series {
 
 /**
  * Index of the last sample whose time is `<= x`, or `-1` if every
- * sample is after `x` (or the series is empty). Binary search.
+ * sample is after `x` (or the series is empty). Binary search. Under a
+ * tie at `x` this is the *last* of the tied indices — the most recent
+ * of them, which is the right answer for sample-and-hold.
  */
 export function indexAtOrBefore(t: readonly number[], x: number): number {
   let lo = 0;
@@ -24,6 +32,24 @@ export function indexAtOrBefore(t: readonly number[], x: number): number {
     const mid = (lo + hi + 1) >> 1;
     if (t[mid] <= x) lo = mid;
     else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * Index of the first sample whose time is `>= x`, or `t.length` if
+ * every sample is before `x` (or the series is empty). Binary search —
+ * the complement of {@link indexAtOrBefore}: under a tie at `x` this is
+ * the *first* of the tied indices, so a walk starting here sees every
+ * one of them rather than only the last.
+ */
+function indexAtOrAfter(t: readonly number[], x: number): number {
+  let lo = 0;
+  let hi = t.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (t[mid] < x) lo = mid + 1;
+    else hi = mid;
   }
   return lo;
 }
@@ -57,15 +83,14 @@ export function statsOver(s: Series, a: number, b: number): SpanStats {
   let mn = Infinity;
   let mx = -Infinity;
   let sum = 0;
-  // Walk from the first sample >= lo. (indexAtOrBefore(lo) is the last
-  // <= lo; +1 lands on the first >= lo, give or take an exact hit.)
-  let i = indexAtOrBefore(s.t, lo);
-  if (i < 0) i = 0;
-  else if (s.t[i] < lo) i += 1;
-  for (; i < s.t.length; i++) {
+  // Walk from the first sample >= lo, found directly rather than
+  // derived from indexAtOrBefore(lo) + 1: when a sample sits exactly on
+  // `lo` and is tied with an earlier one at the same time, the "last
+  // <= lo" index skips straight past that earlier tie, undercounting
+  // the span. indexAtOrAfter lands on the *first* of any such tie.
+  for (let i = indexAtOrAfter(s.t, lo); i < s.t.length; i++) {
     const t = s.t[i];
     if (t > hi) break;
-    if (t < lo) continue;
     const val = s.v[i];
     count += 1;
     if (val < mn) mn = val;
