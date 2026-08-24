@@ -1,5 +1,11 @@
 # Task 92 — One Resolution Rule, Not Eleven Copies
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All three
+> phases landed 2026-08-21 on the chain (nothing has merged). The five
+> exit criteria are walked in phase 3's entry, all met; Shape D stays open
+> by owner ruling (owner-review-queue 2.1). Findings still owed a verdict:
+> owner-review-queue 1.2, 1.3, 3.1, 3.2.
+
 Opened by owner instruction 2026-08-20 ("sweep, with findings as
 cleanup task"), immediately after
 [ADR 0054](../../docs/adr/0054-a-decoded-value-has-one-definition.md)

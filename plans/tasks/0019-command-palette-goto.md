@@ -1,5 +1,12 @@
 # Task 19 — Argument-Taking Palette Commands
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Both steps
+> landed 2026-08-22 on the chain (nothing has merged). The whole task's
+> exit criteria are walked at `### Exit-criteria verdicts`, all five met
+> (criterion 5's roadmap/backlog half is the overseer's). `goto.traceRow`
+> was dropped to the backlog by owner ruling. Findings still owed a
+> verdict: owner-review-queue 3.18, 3.51.
+
 The framework itself (registry, bindings, palette,
 `Cmd/Ctrl+Shift+P`, `Cmd/Ctrl+P` go-to-view, fuzzy matcher) shipped
 in **Task 16**. Save-with-picker (`capture.save`), the close

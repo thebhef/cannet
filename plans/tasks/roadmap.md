@@ -16,7 +16,7 @@ Tasks keep stable numbers (they don't renumber when the order changes).
 
 | | Count |
 |---|---|
-| Implemented, awaiting acceptance | 22 |
+| Implemented, awaiting acceptance | 24 |
 | In flight | 3 |
 | Outstanding | 15 |
 
@@ -59,10 +59,18 @@ reviewer walks them.
 | [100](0100-calc-fields-dbc-config.md) | Counter/CRC declared in a DBC now populates the editor |
 | [105](0105-unfinalized-blf-recovery.md) | Reading a BLF whose writer never finalized, read-only |
 | [104](0104-load-progress-and-cancel.md) | Determinate load progress, and a discoverable cancel |
+| [102](0102-event-surface.md) | The event surface: kinds, per-view visibility, tag and description |
 | [103](0103-toolbar-status-chips.md) | The toolbar's status bar, status chips, and ADR 0055 |
 | [101](0101-bus-health.md) | Bus health — error frames labelled and coalesced, controller state, bus load |
 | [106](0106-any-bus-series-and-sample-order.md) | The any-bus series ruled on, and the signal cache's sample-order sweep |
 | [19](0019-command-palette-goto.md) | Typed-argument palette prompts, `Mod+T`/`Mod+E`, event-row keyboard actions |
+| [110](0110-chain-ci-repair.md) | Chain CI repair, and the Windows MSI bundle target dropped |
+
+**102 and 110 were added to this table 2026-08-23.** Both landed on the
+chain and neither had ever appeared here or in the owner review queue,
+so nothing they recorded had reached the owner. 110 carries no exit
+criteria at all, and 102's are the only ones in this table with a *not
+met* verdict — see owner-review-queue 3.45.
 
 Two of these have an acceptance blocker named in task 109 rather than
 in their own files:
@@ -70,9 +78,13 @@ in their own files:
 - **101** — its hardware verification (owner-review-queue 3.14) was run
   and **failed**: unplugging the PEAK dongles produced no indication of
   a bus fault, and the trace kept showing traffic. Task 109 item 2.
+  **Cleared for PCAN 2026-08-23**: after task 109 phases 2 and 2c the
+  owner re-ran it and the fix is confirmed working (owner-review-queue
+  3.38). The Vector leg is implemented and still untested (3.40).
 - **99** — it took "Space already works in the RBS panel" as a premise
   and only added the idiom to the transmit panel. The premise is
-  false. Task 109 item 7.
+  false. Task 109 item 7. **Cleared 2026-08-23**: phase 3 landed the fix
+  and the regression test the premise had cost.
 
 ## In flight
 

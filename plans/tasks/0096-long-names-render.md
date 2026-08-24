@@ -1,5 +1,13 @@
 # Task 96 — Long Signal and Enum Names Do Not Render Correctly
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
+> 2026-08-21 on the chain (nothing has merged); sixteen surfaces fixed,
+> each with a test. The three exit criteria are walked in the status log,
+> all met. The perf gate was not run in-task; owner-review-queue 1.7
+> records that the baseline was re-measured against the grown `ev-zonal`
+> on 2026-08-22, which closes it. No finding of this task is left
+> undispositioned.
+
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback:
 
 > signal/_VAL names aren't rendered correctly if they're too long.

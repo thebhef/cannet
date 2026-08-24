@@ -1,5 +1,12 @@
 # Task 98 — Signals Render Wrong on a Common Scale
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
+> 2026-08-21 on the chain (nothing has merged), investigation-first as
+> instructed: one hypothesis confirmed, three refuted. The four exit
+> criteria are walked in the status log, all met. Findings still owed a
+> verdict: owner-review-queue 1.1 (the fix reverses an ADR 0026 decision)
+> and 3.4.
+
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback:
 
 > 0.9.0 still has signals not showing up on common scale correctly;

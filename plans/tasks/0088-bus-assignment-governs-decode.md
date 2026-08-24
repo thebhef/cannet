@@ -1,5 +1,12 @@
 # Task 88 — Bus Assignment Governs Decode
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All eight
+> phases landed 2026-08-19 to 2026-08-21 on the chain (nothing has
+> merged). Fifteen exit criteria are walked across two walk sections, all
+> met, and the ADR-0031 gate the task owed was run and passed four for
+> four. Findings still owed a verdict: owner-review-queue 1.4, **1.32**,
+> **1.33**, **1.34**, 2.1 (ruled), 3.1, 3.2, **3.48**.
+
 Opened by owner ruling 2026-08-19, from task 86 phase 3's finding that
 a replacement DBC inherits neither the bus scoping nor the priority
 position of the file it displaced — and so, on a scoped project,

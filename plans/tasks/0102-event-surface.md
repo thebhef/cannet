@@ -1,5 +1,14 @@
 # Task 102 — The Event Surface: Kinds, Filtering, and Its Own View
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All five
+> phases landed 2026-08-21 on the chain (nothing has merged). **This task
+> was listed on neither `roadmap.md` nor the owner-review queue until
+> 2026-08-23**, so none of its findings had ever reached the owner. Its
+> five exit criteria are walked at `### Exit criteria — verdict`: three
+> met, one **partly met** (the graph-view clause) and one **not met** (the
+> macOS check, which needs a Mac). Findings still owed a verdict:
+> owner-review-queue **3.54**, **3.55**, **3.56**, **3.57**.
+
 Promoted from `plans/backlog.md` § "Cursors and markers" by owner
 instruction 2026-08-20, while grooming bus health (task 101): *"I think
 it would be nice if they were an event type, and by default not shown

@@ -1,5 +1,11 @@
 # Task 97 — Enum Values Still Appear on Axis Labels
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
+> 2026-08-21 on the chain (nothing has merged). The three exit criteria
+> are walked in the status log, all met. Finding still owed a verdict:
+> owner-review-queue 3.6 — whether the owner's report meant the enum
+> *lane tiles* rather than the axis.
+
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback:
 
 > enum values still appear on the axis labels sometimes. they

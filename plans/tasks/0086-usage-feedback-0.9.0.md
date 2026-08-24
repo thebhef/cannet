@@ -1,5 +1,15 @@
 # Task 86 — Usage Feedback: Import Time Origins, Enum Overlays, Events-Panel Width
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All four
+> items landed 2026-08-19 on the chain (nothing has merged); item 3 landed
+> inside task 27 phase 1. The exit criteria are walked at
+> `## Exit-criteria walk`, every one met. The blockers recorded below are
+> dispositioned in the table at `### Disposition of the blockers above` —
+> except one, which is still the owner's call and is now
+> owner-review-queue **1.31**: notes outside a selected import range are
+> dropped. Nothing in this task was verified by driving the GUI
+> (owner-review-queue 3.44).
+
 Four observations from owner use of 0.8.1 / 0.9.0-dev, opened
 2026-08-18, and first on the roadmap: every one of them has been seen
 in the wild. They are unrelated to each other; they are collected here

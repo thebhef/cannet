@@ -9,8 +9,25 @@ connect-disconnect-chip and toolbar-status-bar prototypes.
 
 ## Status
 
-Prototype-first, being groomed. The prototype:
-[`plans/prototypes/gui-chip-redesign.html`](../prototypes/gui-chip-redesign.html).
+**Code-complete, awaiting acceptance (2026-08-23).** Prototype-first;
+grooming closed 2026-08-21 and **all six phases landed 2026-08-22** on
+the chain (nothing has merged). The prototype
+[`plans/prototypes/gui-chip-redesign.html`](../prototypes/gui-chip-redesign.html)
+is durable and was maintained in the same commits. The sixteen checkable
+claims are walked at `## Exit criteria, walked (phase 6 close-out)`:
+fifteen met, one N/A.
+
+Two statements below are stale and are corrected here rather than in
+place, because they were true when they were written: **exit criterion
+16 and the phase-6 entry both say task 107 is not implemented.** Task
+107 landed all five of its phases on 2026-08-22, after phase 6 ran, so
+its event-surface toolbar exists and has never been converted to this
+language. Whether that conversion is still owed is the owner's call.
+
+Findings still owed a verdict: owner-review-queue **1.37**, **1.38**,
+3.19, 3.20, 3.21, 3.22, 3.23, 3.24, 3.25, 3.26, **3.60**. Nothing in
+this task was seen rendered in a browser — jsdom does no layout, so no
+test here proves any bar fits or lines up (owner-review-queue 3.44).
 
 ## The design language
 

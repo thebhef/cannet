@@ -1,5 +1,10 @@
 # Task 95 — Clicking Grid Content Collapses the Row It Belongs To
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All three
+> phases landed 2026-08-21 on the chain (nothing has merged). The four
+> exit criteria are walked in the status log, all met. Findings still owed
+> a verdict: owner-review-queue 1.5 and 1.6.
+
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback:
 
 > gridview; in trace view, clicking on signals collapses the message.

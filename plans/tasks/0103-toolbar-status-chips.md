@@ -1,5 +1,12 @@
 # Task 103 — Toolbar Buttons Become Status Chips
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
+> 2026-08-21 on the chain (nothing has merged); both accepted prototypes
+> are deleted. The five exit criteria are walked at
+> `## Exit criteria — verdicts`, all met, one qualified. Findings still
+> owed a verdict: owner-review-queue 1.13, 1.15, 1.16, **3.53**, and the
+> frontend-summed RBS count in **3.47**.
+
 Opened by owner instruction 2026-08-20, while grooming bus health:
 
 > health panel + status chip. We're gonna start transforming toolbar

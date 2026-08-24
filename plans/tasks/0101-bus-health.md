@@ -1,5 +1,16 @@
 # Task 101 — Bus Health: Error Frames, Bus Load, Adapter Status
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All six
+> phases landed 2026-08-22 on the chain (nothing has merged). The five
+> exit criteria are walked at `## Exit criteria — verdicts`, all met, one
+> qualified "met in code, unverified on hardware". **That hardware
+> verification was run by the owner on 2026-08-22 and failed** — which is
+> what opened task 109 item 2 — and, after task 109 phases 2 and 2c fixed
+> what it exposed, **was re-run on 2026-08-23 and confirmed working**
+> (owner-review-queue 3.38). Findings still owed a verdict:
+> owner-review-queue 1.17, 1.18, 1.27, 3.13, **3.52**, and the Vector leg
+> of the same work (3.40), which no agent can test.
+
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback. The
 list item read "error frame handling"; grooming widened it to what the
 owner actually meant:

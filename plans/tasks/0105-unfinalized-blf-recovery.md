@@ -1,8 +1,14 @@
 # Task 105 — A BLF Whose Writer Never Finalized
 
-**Status: opened 2026-08-20; groomed 2026-08-21.** Recorded from an owner
-report; the investigation below is what the overseer established before
-grooming, not a settled diagnosis.
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Opened
+> 2026-08-20, groomed 2026-08-21; **all three phases landed 2026-08-21**
+> on the chain (nothing has merged). **The exit criteria below were never
+> walked** — the three phase entries supply the evidence in prose, but no
+> per-criterion verdict was written (owner-review-queue 3.45). Findings
+> still owed a verdict: owner-review-queue 3.9, 3.10, **3.58**.
+
+Recorded from an owner report; the investigation below is what the
+overseer established before grooming, not a settled diagnosis.
 
 ## The report
 

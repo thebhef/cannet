@@ -1,5 +1,13 @@
 # Task 90 — Follow-Ups from the 86 / 27 / 87 Cycle
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Both phases
+> landed 2026-08-20 on the chain (nothing has merged): items 1, 2 and 4
+> shipped, and item 3 was split out as task 91 by owner instruction.
+> **No exit-criteria walk was written** — three of the four criteria carry
+> no verdict in this file and the fourth is struck as retired
+> (owner-review-queue 3.45). No finding of this task is left
+> undispositioned.
+
 Opened by owner ruling 2026-08-19. The findings tasks 86, 27 and 87
 recorded under their `## Blockers / side effects` headings and left
 undispositioned, collected as one task; task 88 phase 1 then added
