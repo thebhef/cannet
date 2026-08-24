@@ -134,7 +134,12 @@ ul.q li { margin:.3rem 0; }
   animation:pulse 1.2s ease-in-out infinite; }
 .chip[aria-busy="true"]:disabled { opacity:1; cursor:progress; }
 
-/* segmented chip: one hairline around N segments (run controls, mode) */
+/* segmented chip: one hairline around N segments (run controls, mode)
+   In the app this is `.chip-seg` (ChipSegment.tsx) — a `role="group"`
+   with a name, wrapping ordinary ChipButtons; it is a wrapper, never a
+   second chip. The inner chips lose their border (rather than having
+   it made transparent), so a pressed segment says so with its fill and
+   its text and the accent hairline stays the group's to spend. */
 .seg { display:inline-flex; height:22px; border:1px solid var(--border-wash);
   border-radius:2px; overflow:hidden; }
 .seg .chip { border:none; border-radius:0; height:20px; }
@@ -254,6 +259,11 @@ ul.q li { margin:.3rem 0; }
    through one planner (toolbarFit.ts), which also keeps the solo
    cluster whole — all of it on the bar or all of it in the menu. */
 .appbar.plotbar { flex-wrap:nowrap; }
+/* In the app the spill control is a ChipButton labelled … inside a
+   `.chip-menu` wrapper (`.plot-toolbar-overflow`), named "More Plot
+   Controls"; its list opens rightwards-anchored so it does not run off
+   the panel. Which controls spill is `toolbarFit.ts` through
+   `useToolbarFit`, not a scrollWidth loop like the one below. */
 .appbar.plotbar .ovf { margin-left:auto; }
 .ovf .drop li { display:flex; }
 .chip.perf[hidden], .ovf[hidden] { display:none; }
@@ -309,6 +319,9 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <symbol id="i-stop" viewBox="0 0 14 14"><rect x="3.5" y="3.5" width="7" height="7"/></symbol>
   <symbol id="i-fitx" viewBox="0 0 14 14"><path d="M1.5 7h11M3.5 4.5L1.5 7l2 2.5M10.5 4.5l2 2.5-2 2.5"/></symbol>
   <symbol id="i-fity" viewBox="0 0 14 14"><path d="M7 1.5v11M4.5 3.5L7 1.5l2.5 2M4.5 10.5l2.5 2 2.5-2"/></symbol>
+  <!-- Drawn but deliberately absent from the inventory below, and so
+       absent from the app's icon registry too: the only command it
+       named was the plot toolbar's catalog reload, which is retired. -->
   <symbol id="i-reload" viewBox="0 0 14 14"><path d="M11.5 7a4.5 4.5 0 1 1-1.3-3.2"/><path d="M11.5 1.5v2.8H8.7"/></symbol>
   <symbol id="i-search" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4"/><path d="M9 9l3.5 3.5"/></symbol>
   <symbol id="i-cursors" viewBox="0 0 14 14"><path d="M4.5 1.5v11M9.5 1.5v11"/><path d="M2 7h11"/></symbol>
@@ -575,11 +588,22 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   the cursor-mode segment (x / y / note as icon buttons —
   press the active one again for off), clear cursors, and the perf chip
   — icon-only where the icon is unambiguous, a word where it is not.
+  Two things the app does differently, deliberately: the perf read-out is
+  a <code>&lt;span&gt;</code> rather than a button (a read-out is not
+  pressable, and it carries no dot), and the run controls and
+  “All Data” are still the shared <code>TraceControls</code>
+  buttons — they become chips in the trace-panel sweep, which owns that
+  component.
   The catalog-reload button is retired (owner ruling 2026-08-21 — it has
   outlived its usefulness). The measurements strip <b>needs rework and stays hidden</b> (owner
   ruling 2026-08-21) — no toggle anywhere until it is reworked
   (<code>MeasurementMenu</code> / the measurements strip in
-  <code>PlotPanel.tsx</code>, backlogged). Hover
+  <code>PlotPanel.tsx</code>, backlogged). In the app <i>hidden</i> is
+  the ruling and <i>no toggle</i> only the mechanism, so the strip is
+  suppressed on read as well: it does not draw whatever a saved config
+  says (<code>MEASUREMENT_STRIP_DRAWS</code>), and the stored
+  preference is deliberately left intact for the rework to inherit.
+  Hover
   anything for its tooltip (the full phrases from the app). Same
   commands, same order — this is chrome only. <b>Plot 2 below is the
   same toolbar at full width, unwrapped.</b>
@@ -929,6 +953,8 @@ plotBars.forEach(bar => bar.addEventListener("contextmenu", e => {
   const li = document.createElement("li");
   const btn = document.createElement("button");
   btn.className = "chip";
+  // In the app the entry reads "show performance readout", to sit
+  // beside the "show diagnostics" the menu already carried.
   btn.textContent = (on ? "✓ " : "\u2003") + "performance readout";
   btn.addEventListener("click", () => {
     bar.querySelector(".chip.perf").hidden = on;

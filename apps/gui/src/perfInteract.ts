@@ -117,11 +117,17 @@ function scrollTrace(doc: Document, dy: number): string | null {
 }
 
 function resumeFollowLive(doc: Document): string | null {
-  const boxes = doc.querySelectorAll<HTMLInputElement>("label.checkbox input[type=checkbox]");
-  for (const box of boxes) {
-    if (box.closest("label")?.textContent?.trim() !== "follow live") continue;
-    if (box.checked) return null;
-    box.click();
+  // The plot toolbar's follow-live control is a chip toggle (ADR 0055):
+  // its accessible name identifies it and `aria-pressed` is its
+  // position. A gesture the app's own listener would not see is a
+  // gesture the capture did not measure, so this has to track the
+  // control's real markup.
+  const chips = doc.querySelectorAll<HTMLButtonElement>(
+    '.plot-panel-toolbar button[aria-label="Follow Live"]',
+  );
+  for (const chip of chips) {
+    if (chip.getAttribute("aria-pressed") === "true") return null;
+    chip.click();
     return "plot.follow-live";
   }
   return null;

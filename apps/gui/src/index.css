@@ -1058,6 +1058,40 @@ ul.status-bar-menu .status-chip {
 }
 /* === end shared command chip === */
 
+/* === Segmented chip group (ChipSegment.tsx) ===
+   Several chips that are one decision, under one hairline. The group
+   draws the outline; the chips inside drop theirs and keep a divider,
+   so the eye reads "one control, three positions" rather than three
+   controls that happen to be adjacent.
+
+   The inner chips lose their border rather than having it made
+   transparent, so a pressed segment says so with its fill and its text
+   — the accent hairline is the *group's* to spend, and re-colouring
+   one segment's edge inside a shared outline reads as a rendering
+   fault. Losing the border costs 2px of height, which the 20px here
+   gives back: the group is the same 22px as a chip standing alone, and
+   a bar of mixed chips and segments keeps one baseline. */
+.chip-seg {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  border: 1px solid var(--border-wash);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.chip-seg .chip-button {
+  border: none;
+  border-radius: 0;
+  height: 20px;
+}
+.chip-seg .chip-button--icon-only {
+  width: 20px;
+}
+.chip-seg .chip-button + .chip-button {
+  border-left: 1px solid var(--border-wash);
+}
+/* === end segmented chip group === */
+
 /* === Chip menus (a ChipButton that opens a list of ChipButtons) ===
    The toolbar's Add and Recent menus, and any menu a later bar hangs
    off a chip. The list is absolutely positioned, so a bar that hosts
@@ -3100,17 +3134,46 @@ button.color-chip {
   padding: 0.25rem 0.6rem;
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border-subtle);
-  /* The readout on the right changes width as numbers fluctuate; if
-   * the toolbar were allowed to wrap, the wrap toggle would resize the
-   * plot area underneath every tick — visible as a vertical "wiggle"
-   * on the plot. Keep one row; if it doesn't fit horizontally, let the
-   * readout clip rather than push controls to a second row. */
+  /* One row, always. A bar that wrapped would resize the plot area
+   * underneath it every time it gained or lost a line — visible as a
+   * vertical "wiggle" on the plot. Running out of room is handled by
+   * spilling controls into the `…` menu (`useToolbarFit`), never by
+   * wrapping and never by clipping: the bar must *not* be
+   * `overflow: hidden`, or it swallows that menu, which is one of its
+   * own absolutely-positioned children. */
   flex-wrap: nowrap;
-  overflow-x: hidden;
+}
+/* One measurable box per control, so the fit planner has something to
+   read a width off — the group divider in front of it included, since
+   a divider that stayed behind when its group spilled would be a rule
+   in mid-air. */
+.plot-toolbar-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+}
+/* The read-out and the spill control both sit at the right end. The
+   read-out claims the slack first when it is showing; the `…` takes it
+   otherwise. */
+.plot-toolbar-slot[data-toolbar-fit="perf"],
+.plot-toolbar-overflow {
+  margin-left: auto;
+}
+.plot-toolbar-overflow {
+  flex: none;
+}
+/* The spill menu hangs off the bar's right end, so it opens leftwards
+   rather than off the edge of the panel. */
+.plot-toolbar-overflow .chip-menu-list {
+  left: auto;
+  right: 0;
 }
 
-.plot-panel-toolbar .combobox-trigger,
-.plot-panel-toolbar button {
+/* The run controls are still the shipped buttons; everything else on
+   this bar is a chip, and a bar-wide `button` rule would out-specify
+   `.status-chip` (0,1,1 beats 0,1,0) and restyle the lot. */
+.plot-panel-toolbar .trace-controls button {
   background: var(--surface-control);
   color: var(--text-primary);
   border: 1px solid var(--border-default);
@@ -3120,13 +3183,6 @@ button.color-chip {
   font-size: 0.82rem;
 }
 
-.plot-panel-toolbar label.checkbox {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  user-select: none;
-  font-size: 0.85rem;
-}
 
 /* The stack of plot areas fills the rest of the panel; if there are
    more areas than fit at their minimum height it scrolls. */
@@ -4319,8 +4375,7 @@ button.color-chip {
 .sources-context-menu-action:hover {
   background: var(--surface-hover);
 }
-.plot-window-ctl,
-.plot-cursor-ctl {
+.plot-window-ctl {
   display: flex;
   align-items: center;
   gap: 0.25rem;
@@ -4337,38 +4392,61 @@ button.color-chip {
   font: inherit;
   font-size: 0.8rem;
 }
-/* Solo control: the panel-wide "show only these series" regex box, its
-   step controls and its position read-out. */
-.plot-solo {
-  display: flex;
+/* === Chip-shaped text field ===
+   A single-line input wearing the chip silhouette, so a bar of chips
+   with a box in it still reads as one row of one kind of thing. The
+   hairline is the field's; the input inside it has none of its own. */
+.chip-field {
+  display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  font-size: 0.8rem;
-  color: var(--text-muted);
+  gap: 0.3rem;
+  height: 22px;
+  padding: 0 0.4rem;
+  background: var(--surface-field);
+  border: 1px solid var(--border-wash);
+  border-radius: 2px;
+}
+.chip-field svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--text-faint);
+}
+.chip-field input {
+  font: inherit;
+  font-size: 0.75rem;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-body);
+  min-width: 0;
+}
+/* === end chip-shaped text field === */
+
+/* Solo control: the panel-wide "show only these series" regex box, its
+   paging segment and its clear. The three are one control wearing
+   three hats, which is why the fit planner carries them as one
+   cluster. */
+.plot-solo {
+  flex: none;
 }
 .plot-solo-input {
   width: 7rem;
-  background: var(--surface-control);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  padding: 0.1rem 0.3rem;
-  font: inherit;
-  font-size: 0.8rem;
 }
 .plot-solo-input[aria-invalid="true"] {
-  border-color: var(--danger-text);
+  color: var(--danger-text);
 }
 .plot-solo-error {
   color: var(--danger-text);
   font-size: 0.72rem;
 }
+/* The read-out is data, not a state, and it changes length as pages
+   and match counts do. Fixed to its longest ordinary form so the chips
+   beside it do not shuffle as solo is stepped. */
 .plot-solo-pos {
-  color: var(--text-faint);
-  font-size: 0.72rem;
+  width: 5rem;
+  justify-content: center;
   font-variant-numeric: tabular-nums;
-  min-width: 2.5rem;
-  text-align: center;
 }
 /* The pattern parses but selects nothing — distinct from an ordinary
  * position label (`soloLabel`'s "no matches" form), so it doesn't read
@@ -4377,43 +4455,27 @@ button.color-chip {
   color: var(--danger-text-muted);
   font-style: italic;
 }
-/* Clickable whenever there's a match list behind it — left-click opens
- * the same `SoloMatchMenu` right-click does. */
-.plot-solo-pos-clickable {
-  cursor: pointer;
+/* The points chip cycles through three words of different lengths.
+   Sized to the longest, the same way the connection chip is sized to
+   its longest state: a control that resizes as it is pressed drags
+   the whole bar with it. */
+.plot-points-chip {
+  width: 5.6rem;
+  justify-content: flex-start;
 }
-.plot-solo-pos-clickable:hover {
-  color: var(--text-secondary);
-}
-.plot-solo-step,
-.plot-solo-clear {
-  background: none;
-  border: 1px solid var(--border-strong);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.7rem;
-  padding: 0 0.3rem;
-  border-radius: 3px;
-}
-.plot-solo-step:hover:not(:disabled),
-.plot-solo-clear:hover {
-  background: var(--surface-control-hover);
-}
-/* Nothing to step through — a flat (captureless) pattern, or one that
-   matched nothing. */
-.plot-solo-step:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
+/* The performance read-out: a chip in silhouette, but a read-out — it
+   is a span, not a button, and it is off unless the bar's right-click
+   menu asks for it. Pinned right, and allowed to ellipsise rather than
+   push a control off the bar. */
 .plot-perf {
   margin-left: auto;
-  font-size: 0.72rem;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
-  /* Absorb width changes so adjacent controls don't shift. */
   flex: 0 1 auto;
   min-width: 0;
-  white-space: nowrap;
+  overflow: hidden;
+}
+.plot-perf .status-chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
 }

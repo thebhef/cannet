@@ -26,13 +26,9 @@ export interface SignalCatalogContextValue {
   /// define, expanded per project bus (`list_signals`). Empty until
   /// the first fetch resolves, or on a failed fetch.
   catalog: SignalDescriptorRecord[];
-  /// Force a re-fetch. The plot picker's manual "↻ reload signal list"
-  /// button is the one consumer that needs this — every other trigger
-  /// (bus/DBC-set change, `dbc-changed`) is automatic.
-  refresh: () => void;
 }
 
-const fallback: SignalCatalogContextValue = { catalog: [], refresh: () => {} };
+const fallback: SignalCatalogContextValue = { catalog: [] };
 
 export const SignalCatalogContext = createContext<SignalCatalogContextValue>(fallback);
 
@@ -94,6 +90,11 @@ export function SignalCatalogProvider({ children }: { children: ReactNode }): Re
     };
   }, [refreshCatalog]);
 
-  const value = useMemo(() => ({ catalog, refresh: refreshCatalog }), [catalog, refreshCatalog]);
+  // Nothing may force a re-fetch from outside: every trigger there is
+  // — the bus list, the loaded DBC set, the host's DBC-change carrier,
+  // an import finishing, the file-backed set moving — is one of the
+  // effects above. A manual "reload the signal list" escape hatch was
+  // retired because it could only ever repeat what they already do.
+  const value = useMemo(() => ({ catalog }), [catalog]);
   return <SignalCatalogContext.Provider value={value}>{children}</SignalCatalogContext.Provider>;
 }

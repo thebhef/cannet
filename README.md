@@ -1538,7 +1538,8 @@ resample at the end.
   onto its own axis under `per-unit` is still pending — see
   `plans/backlog.md`.
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
-  with one; **add plot area** appends more, all sharing one time axis,
+  with one; **Area** on the toolbar appends more, all sharing one time
+  axis,
   and they flex to fill the panel (one fills it; several split it).
   The **grip (⠿)** at the left of an area's signal-panel heading drags
   the whole area: **within the panel**, onto another area's position in
@@ -1718,30 +1719,41 @@ resample at the end.
 - **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
   wheel** pans x (synced); **right-drag** box-zooms x; **⌘/ctrl +
   wheel** zooms y on the hovered area (buried — y is usually set with
-  the per-area range control); **fit data** refits x to the full signal
-  extent. **Follow live** keeps every area pinned to the capture's
+  the per-area range control); the toolbar's **fit-x** chip refits x to
+  the full signal extent. **Follow** keeps every area pinned to the
+  capture's
   growing edge while keeping the current visible x-width (it just slides
   right); a manual x pan/zoom turns it off, the same way a manual scroll
   leaves auto-scroll in a trace panel.
-- **Show points.** A tri-state toggle on the toolbar (`auto` / `off` /
-  `on`) that applies to every series on every axis of every area in
+- **Show points.** A tri-state chip on the toolbar that cycles
+  **Points: Auto → Off → On** and applies to every series on every axis
+  of every area in
   the panel: `auto` (default) defers to uPlot's density-aware mode
   (points appear only when the sample-to-pixel ratio is low enough),
   `off` forces no points, `on` forces points always. Persists in the
   project file.
-- **Cursors & measurements** (both **off by default**). The toolbar's
-  **cursors** selector turns on **X** cursors (left-click places A,
-  right-click places B, drawn through every area — a small **Δt** chip
-  shows on the plot between them), **Y** cursors (per-area H1 / H2 —
-  values and **ΔH** show in the area's signal-panel head, plus a chip on
-  the plot), or **+ note** (left-click drops an event note at that
-  time); **clear cursors** removes them all. The **measurements** toggle
-  reveals a readout strip whose cells are configurable (the
-  **measurements ▾** checklist): A, B, Δt, 1/Δt, and per-trace value@A /
-  value@B / Δ / min / max / mean over [A, B]. Event markers — the
+- **Cursors** (**off by default**). The toolbar's cursor-mode segment
+  is three icon buttons — press the one that is on to turn it off
+  again. **X** cursors (left-click places A, right-click places B,
+  drawn through every area — a small **Δt** chip shows on the plot
+  between them), **Y** cursors (per-area H1 / H2 — values and **ΔH**
+  show in the area's signal-panel head, plus a chip on the plot), or
+  **notes** (left-click drops an event note at that time); the
+  clear-cursors chip removes them all. The measurement readout strip
+  (A, B, Δt, 1/Δt, and per-trace value@A / value@B / Δ / min / max /
+  mean over [A, B]) needs rework and does **not draw at all** for now —
+  there is no toggle for it, and a project saved with it on will not
+  show it either. The saved setting is left alone, so it comes back
+  with the rework. Event markers — the
   capture-start "T0" plus your notes — draw as vertical lines across the
   areas; the event log under the panel renames (click the label) and
   removes notes.
+- **The toolbar's right-click menu.** Right-click the plot toolbar for
+  the seldom-used switches: **show diagnostics** (the per-signal
+  y-range / cached-t-range line in each row), **show performance
+  readout** (update rate, worst recent resample, device pixel ratio,
+  frames in the trace window, cached plot points — off by default), the
+  event-kind filter and the sources picker.
 - **Number formatting.** Every float the plot shows — the signal
   panel, the cursor readouts, the measurement strip, the y-axis tick
   labels — reads under **one magnitude rule**, so a value can't read

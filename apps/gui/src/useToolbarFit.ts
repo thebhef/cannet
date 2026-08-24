@@ -19,6 +19,10 @@
 ///   cluster is not a run whose items might drop — it is width the
 ///   runs never had. {@link UseToolbarFitInput.reserve} takes it off
 ///   the top.
+/// - **The bar's own padding is not room.** `clientWidth` counts it and
+///   the items sit inside it, so planning against `clientWidth` fits a
+///   padded bar's worth of items too many and the row spills past its
+///   own edge.
 ///
 /// And one rule the hook cannot enforce, because it lives in the
 /// stylesheet: **the bar must not be `overflow: hidden`**. It looks
@@ -128,13 +132,18 @@ export function useToolbarFit<E extends HTMLElement = HTMLDivElement>({
     for (const el of bar.querySelectorAll<HTMLElement>(`[${TOOLBAR_FIT_ATTR}]`)) {
       widths.set(el.dataset.toolbarFit as string, el.offsetWidth);
     }
-    const gap = parseFloat(getComputedStyle(bar).columnGap) || 0;
+    const style = getComputedStyle(bar);
+    const gap = parseFloat(style.columnGap) || 0;
+    // `clientWidth` is the content box *plus* the padding; the items
+    // live in the content box alone.
+    const padding =
+      (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
     const width = (key: string, fallback: number) => {
       const w = widths.get(key);
       return (w === undefined || w === 0 ? fallback : w) + gap;
     };
     const next = planToolbarFit({
-      available: bar.clientWidth - (reserve?.() ?? 0),
+      available: bar.clientWidth - padding - (reserve?.() ?? 0),
       runs: runs.map((run) => ({
         id: run.id,
         widths: run.items.map((item) => width(item.key, item.fallback ?? 0)),

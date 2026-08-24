@@ -19,84 +19,12 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import css from "./index.css?raw";
 import { ChipButton } from "./ChipButton";
+import { geometryOf, installStylesheet } from "./chipCssTestKit";
 import { STATUS_CHIP_STATES } from "./StatusChip";
 
 afterEach(cleanup);
 
-beforeAll(() => {
-  const style = document.createElement("style");
-  style.textContent = css;
-  document.head.appendChild(style);
-});
-
-/// Every property that would move something if it changed. Colour,
-/// outline and animation are deliberately absent: those are exactly
-/// what a state is allowed to change.
-const GEOMETRY = [
-  "width",
-  "min-width",
-  "max-width",
-  "height",
-  "min-height",
-  "max-height",
-  "padding",
-  "padding-top",
-  "padding-right",
-  "padding-bottom",
-  "padding-left",
-  "margin",
-  "margin-top",
-  "margin-right",
-  "margin-bottom",
-  "margin-left",
-  "border",
-  "border-width",
-  "border-top-width",
-  "border-right-width",
-  "border-bottom-width",
-  "border-left-width",
-  "border-style",
-  "border-radius",
-  "font-size",
-  "font-weight",
-  "line-height",
-  "letter-spacing",
-  "gap",
-  "column-gap",
-  "row-gap",
-  "display",
-  "position",
-  "box-sizing",
-  "flex",
-  "transform",
-];
-
-/// The geometry an element actually resolves to under the app's
-/// stylesheet: every matching rule's geometry declarations, in source
-/// order, later winning.
-function geometryOf(el: Element): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const sheet of Array.from(document.styleSheets)) {
-    for (const rule of Array.from(sheet.cssRules)) {
-      const styleRule = rule as CSSStyleRule;
-      if (typeof styleRule.selectorText !== "string") continue;
-      let matches = false;
-      try {
-        matches = el.matches(styleRule.selectorText);
-      } catch {
-        // A selector jsdom cannot evaluate (`:focus-visible`) matches
-        // nothing here — and it is a state, not a geometry, rule.
-        continue;
-      }
-      if (!matches) continue;
-      for (const prop of GEOMETRY) {
-        const value = styleRule.style.getPropertyValue(prop);
-        if (value !== "") out[prop] = value;
-      }
-    }
-  }
-  return out;
-}
+beforeAll(() => installStylesheet(css));
 
 /// The chip's markup with the attributes a state writes stripped out,
 /// so "this state added an element" is caught as well as "this state
