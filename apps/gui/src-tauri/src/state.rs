@@ -1,9 +1,9 @@
 //! Machine-local UI state, persisted host-side (ADR 0032, ADR 0034),
 //! across two scopes (ADR 0042).
 //!
-//! Things the app records as the user works — last project, the open
-//! project's layout snapshot, recent BLFs, recent commands — live in
-//! `state.json`,
+//! Things the app records as the user works — last project, recent
+//! projects, the open project's layout snapshot, recent BLFs, recent
+//! commands — live in `state.json`,
 //! read and written through the [`get_state`] / [`set_state`] commands.
 //! The frontend holds no authoritative copy: it hydrates [`UiState`] at
 //! boot and writes the whole struct back on change.
@@ -12,10 +12,10 @@
 //! `app_config_dir`; the *workspace* copy is `.cannet/state.json` inside
 //! the open project directory. A read resolves the two, workspace over
 //! user per key; a write goes to the scope [`SCOPES`] declares for the
-//! key. The split is not uniform, and that is the point: `last_project`
-//! and the palette MRU follow the person, while the layout snapshot, the
-//! BLF recents, and the BLF channel maps describe one project and travel
-//! with it.
+//! key. The split is not uniform, and that is the point: `last_project`,
+//! the recent-projects list and the palette MRU follow the person, while
+//! the layout snapshot, the BLF recents, and the BLF channel maps
+//! describe one project and travel with it.
 //!
 //! This is *state*, not *settings*: none of it is a choice the user
 //! deliberately sets. ADR 0034 splits the two — user intent lives in a
@@ -50,15 +50,16 @@ const STATE_FILE: &str = "state.json";
 ///
 /// Nothing here is overridable: a piece of recorded state belongs to one
 /// scope or the other, and a value that meant two things at once would
-/// just be two values. Which project to reopen and which commands you
-/// reach for are facts about the person; the layout, the BLFs opened
-/// *in this project*, and the channel→bus mappings are facts about the
-/// project.
+/// just be two values. Which project to reopen, which projects you were
+/// working in lately, and which commands you reach for are facts about
+/// the person; the layout, the BLFs opened *in this project*, and the
+/// channel→bus mappings are facts about the project.
 ///
 /// The names are the serialized ones. `every_ui_state_key_declares_a_scope`
 /// is what keeps this table from drifting away from the struct.
 pub(crate) const SCOPES: ScopeTable = &[
     ("last_project", Scope::User),
+    ("recent_projects", Scope::User),
     ("recent_commands", Scope::User),
     ("layout", Scope::Workspace),
     ("recent_blfs", Scope::Workspace),
@@ -77,6 +78,13 @@ pub struct UiState {
     /// launch. `None` means "no named project" — fall back to `layout`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_project: Option<String>,
+    /// Absolute paths of the projects most recently opened or saved-as,
+    /// most recent first (frontend-capped MRU list). A memo about
+    /// particular files rather than a behavioural preference, so it is
+    /// state and not a setting (ADR 0034); the *bound* on its length is
+    /// the preference, and lives in `settings.json`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_projects: Vec<String>,
     /// The open project's working dockview layout — what its panels are
     /// arranged into right now, saved or not. Written only while a
     /// project is open: a session with nothing open leaves no view state
@@ -214,6 +222,10 @@ mod tests {
     fn sample() -> UiState {
         UiState {
             last_project: Some("/home/u/bench.cannet_prj".into()),
+            recent_projects: vec![
+                "/home/u/bench.cannet_prj".into(),
+                "/home/u/rig.cannet_prj".into(),
+            ],
             layout: Some(serde_json::json!({ "grid": {}, "panels": {} })),
             recent_blfs: vec!["/a.blf".into(), "/b.blf".into()],
             recent_commands: vec!["open-project".into()],
@@ -297,15 +309,16 @@ mod tests {
 
     #[test]
     fn the_project_half_lands_in_the_project_and_the_user_half_follows_the_person() {
-        // ADR 0042 §3's scope review, on disk: which project to reopen
-        // and the palette MRU are about the person; the layout, the BLFs
-        // opened in this project, and its channel maps are about the
-        // project.
+        // ADR 0042 §3's scope review, on disk: which project to reopen,
+        // which projects were open lately, and the palette MRU are about
+        // the person; the layout, the BLFs opened in this project, and
+        // its channel maps are about the project.
         let s = Scopes::new();
         s.write(&sample());
 
         let user = read_state(&s.user);
         assert_eq!(user.last_project, sample().last_project);
+        assert_eq!(user.recent_projects, sample().recent_projects);
         assert_eq!(user.recent_commands, sample().recent_commands);
         assert!(user.layout.is_none(), "the layout is not the user's");
         assert!(user.recent_blfs.is_empty());
@@ -316,6 +329,10 @@ mod tests {
         assert_eq!(project.recent_blfs, sample().recent_blfs);
         assert_eq!(project.blf_channel_maps, sample().blf_channel_maps);
         assert!(project.last_project.is_none(), "not the project's business");
+        assert!(
+            project.recent_projects.is_empty(),
+            "a list of projects is nobody's project's business"
+        );
         assert!(project.recent_commands.is_empty());
     }
 
@@ -337,6 +354,7 @@ mod tests {
             &UiState {
                 recent_blfs: vec!["/a/drive.blf".into()],
                 recent_commands: vec!["project.open".into()],
+                recent_projects: vec!["/a/a.cannet_prj".into()],
                 ..UiState::default()
             },
         )
@@ -345,6 +363,10 @@ mod tests {
         let in_b = read_state_scoped(&user, &b);
         assert!(in_b.recent_blfs.is_empty(), "{:?}", in_b.recent_blfs);
         assert_eq!(in_b.recent_commands, vec!["project.open".to_string()]);
+        // The recent-projects list is exactly the value that must *not*
+        // be scoped to a project: it is how you get back to the one you
+        // are not in.
+        assert_eq!(in_b.recent_projects, vec!["/a/a.cannet_prj".to_string()]);
     }
 
     #[test]

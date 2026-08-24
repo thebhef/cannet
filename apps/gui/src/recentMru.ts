@@ -5,13 +5,16 @@
 // and the tail is capped. Only the cap differs, so the push lives here.
 
 /// Pure MRU push: prepend `value` to `current`, dedupe against the
-/// previous list, cap at `limit`. Empty values are dropped (defensive
-/// against an accidental empty string). Returns a fresh array.
+/// previous list, cap at `limit`. A `limit` of zero remembers nothing —
+/// which is what every setting feeding this cap documents zero to mean.
+/// Empty values are dropped (defensive against an accidental empty
+/// string). Returns a fresh array.
 export function pushRecent(
   current: readonly string[],
   value: string,
   limit: number,
 ): string[] {
+  if (limit <= 0) return [];
   if (!value) return [...current];
   const out: string[] = [value];
   for (const v of current) {

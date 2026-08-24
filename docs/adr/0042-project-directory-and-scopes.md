@@ -75,7 +75,7 @@ if only one is ever opened, and is not a case to write code against.
 | Class | User scope (`app_config_dir`) | Workspace scope (`.cannet/`) |
 | --- | --- | --- |
 | Settings | preferences that follow the person | overrides for this project |
-| State | last project, palette MRU | project view state, BLF channel maps, recent BLFs |
+| State | last project, recent projects, palette MRU | project view state, BLF channel maps, recent BLFs |
 | Cache | — | disk-spill scratch, signal caches, filter index, notes |
 
 **A workspace value overrides the user value** for the same key. Which

@@ -83,6 +83,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("follow_window_ms", Scope::UserOverridable),
     ("recent_blfs_limit", Scope::UserOverridable),
     ("recent_commands_limit", Scope::UserOverridable),
+    ("recent_projects_limit", Scope::UserOverridable),
     ("solo_page_size", Scope::UserOverridable),
     ("live_update_interval_ms", Scope::UserOverridable),
     ("trace_flush_interval_ms", Scope::UserOverridable),
@@ -240,6 +241,12 @@ pub struct Settings {
     /// How many recently-run commands the palette floats to the top.
     /// Default 10. `0` remembers none.
     pub recent_commands_limit: u64,
+    /// How many recently-opened projects the toolbar and the palette
+    /// offer. Default 8. `0` remembers none. The list itself is state
+    /// rather than a setting (ADR 0034) and lives in
+    /// [`crate::state::UiState::recent_projects`]; only its bound is a
+    /// preference.
+    pub recent_projects_limit: u64,
     /// How many match groups one page of a plot panel's solo view holds.
     /// Default 1 — one group per page, so the cycle steps a group at a
     /// time. A solo pattern's capture groups bucket its matches into
@@ -557,6 +564,7 @@ impl Default for Settings {
             follow_window_ms: 10_000,
             recent_blfs_limit: 8,
             recent_commands_limit: 10,
+            recent_projects_limit: 8,
             solo_page_size: 1,
             live_update_interval_ms: 100,
             trace_flush_interval_ms: 2_000,
@@ -1093,6 +1101,7 @@ mod tests {
             follow_window_ms: 30_000,
             recent_blfs_limit: 20,
             recent_commands_limit: 3,
+            recent_projects_limit: 4,
             solo_page_size: 4,
             live_update_interval_ms: 250,
             trace_flush_interval_ms: 5_000,

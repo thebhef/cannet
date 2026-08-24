@@ -1,7 +1,8 @@
 // Machine-local UI state, persisted host-side (ADR 0032, ADR 0034).
 //
-// These values (last-opened project, the open project's layout snapshot,
-// recent captures, recent commands) used to live in `localStorage`; they now
+// These values (last-opened project, recent projects, the open project's
+// layout snapshot, recent captures, recent commands) used to live in
+// `localStorage`; they now
 // round-trip through the host's `get_state` / `set_state` commands. The
 // host is authoritative — and it also decides *where* each value lands:
 // `state.json` in the OS config dir for what follows the person, the
@@ -25,6 +26,7 @@ import { emptyBlfChannelMaps, type BlfChannelMaps } from "./blfChannelMap";
 /// Mirror of the host `UiState` struct (snake_case to match serde).
 export interface UiState {
   last_project: string | null;
+  recent_projects: string[];
   layout: unknown | null;
   recent_blfs: string[];
   recent_commands: string[];
@@ -34,6 +36,7 @@ export interface UiState {
 function emptyState(): UiState {
   return {
     last_project: null,
+    recent_projects: [],
     layout: null,
     recent_blfs: [],
     recent_commands: [],
@@ -71,6 +74,14 @@ function flush(): void {
 
 export function setLastProject(path: string | null): void {
   cache = { ...cache, last_project: path };
+  flush();
+}
+
+/// Persist the Recent-projects MRU. User-scope state (ADR 0042 §3): it
+/// is how you get back to a project you are *not* in, so it follows the
+/// person rather than any one project directory.
+export function setRecentProjects(list: readonly string[]): void {
+  cache = { ...cache, recent_projects: [...list] };
   flush();
 }
 

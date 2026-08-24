@@ -319,6 +319,21 @@ back will tint the launcher briefly where it used to stay neutral.
 **Needed: confirm the warning limit is worth a tint, or set the
 threshold at error-passive.**
 
+### 1.28 `project.close` is now `project.new`, and is no longer gated on a project file
+[task 109](tasks/0109-usage-feedback-chip-era.md) phase 4
+
+Grooming ruled the rename ("renaming a command id is a user-visible
+change to the palette — take it"). Two things ride with it that grooming
+did not name. The palette entry now reads **New project** where it read
+*Close project* — `Close project` is kept as a hidden keyword so muscle
+memory still lands on it — and the command is **ungated**: it used to
+disappear whenever no project *file* was open, which is exactly the
+session a user most wants to start over from. A stored keybinding on
+`project.close` no longer resolves and is reported as such on load.
+
+**Needed: confirm the ungating, and that "New project" is the wording
+wanted in the palette.**
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost

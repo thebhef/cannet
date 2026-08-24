@@ -89,6 +89,7 @@ import { sortNotesChronologically } from "./notes";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { KeybindingsContext } from "./keybindingsContext";
 import { recordRecentCapture, forgetRecentCapture } from "./recentCaptures";
+import { recordRecentProject, forgetRecentProject } from "./recentProjects";
 import {
   DEFAULT_SAVE_CAPTURE_NAME,
   SAVE_CAPTURE_FILTERS,
@@ -99,6 +100,7 @@ import {
   hostState,
   hydrateState,
   setRecentCaptures as persistRecentCaptures,
+  setRecentProjects as persistRecentProjects,
   setLastProject as persistLastProject,
   setLayout as persistLayout,
   setBlfChannelMaps as persistBlfChannelMaps,
@@ -481,6 +483,29 @@ export function App() {
     setRecentCaptures((current) => {
       const next = forgetRecentCapture(current, path);
       persistRecentCaptures(next);
+      return next;
+    });
+  }, []);
+  // Recent projects (the N project files most recently opened or
+  // saved-as). User-scope state (ADR 0042 §3), unlike the captures
+  // above: it is how you get back to a project you are *not* in, so it
+  // follows the person and a project switch leaves it alone — which is
+  // why `rehydrateProjectState` below re-seeds the captures and not
+  // this.
+  const [recentProjects, setRecentProjects] = useState<string[]>(
+    () => hostState().recent_projects,
+  );
+  const rememberRecentProject = useCallback((path: string) => {
+    setRecentProjects((current) => {
+      const next = recordRecentProject(current, path);
+      persistRecentProjects(next);
+      return next;
+    });
+  }, []);
+  const dropRecentProject = useCallback((path: string) => {
+    setRecentProjects((current) => {
+      const next = forgetRecentProject(current, path);
+      persistRecentProjects(next);
       return next;
     });
   }, []);
@@ -1869,10 +1894,19 @@ export function App() {
   // Record which project is "open" — both the React state and the
   // host-side pointer (ADR 0032) that reopens it on the next launch.
   // `null` means an unsaved project.
-  const rememberProject = useCallback((path: string | null) => {
-    setProjectPath(path);
-    persistLastProject(path);
-  }, []);
+  // The one place the session records which project file it is working
+  // in: the last-project pointer and the recent-projects MRU are the
+  // same fact at two depths, so they are written together rather than
+  // at each of the four call sites. `null` — a New project, which has
+  // no file yet — clears the pointer and adds nothing to the list.
+  const rememberProject = useCallback(
+    (path: string | null) => {
+      setProjectPath(path);
+      persistLastProject(path);
+      if (path !== null) rememberRecentProject(path);
+    },
+    [rememberRecentProject],
+  );
 
   // Apply an opened project: restore the panel layout (incl. per-panel
   // config in the panel params), the remote-address field, and the
@@ -2095,9 +2129,19 @@ export function App() {
         clearProjectDiskNotice();
       } catch (err) {
         setState({ kind: "error", message: String(err) });
+        // The project was moved, renamed or deleted — stop offering it.
+        // Nothing prunes the list ahead of time (`recentProjects.ts`):
+        // an entry only leaves when opening it actually fails.
+        dropRecentProject(path);
       }
     },
-    [applyProject, clearProjectDiskNotice, rememberProject, rehydrateProjectState],
+    [
+      applyProject,
+      clearProjectDiskNotice,
+      dropRecentProject,
+      rememberProject,
+      rehydrateProjectState,
+    ],
   );
 
   const handleOpenProject = useCallback(async () => {
@@ -2932,7 +2976,7 @@ export function App() {
     "project.saveAs": () => void handleSaveProjectAs(),
     // Close project = return to a fresh unsaved project (same reset
     // the New-project action performs).
-    "project.close": handleNewProject,
+    "project.new": handleNewProject,
     "trace.import": () => void handleImportTrace(),
     "dbc.add": () => void handleAddDbc(),
     "connection.connect": () => void handleConnect(),
@@ -2979,6 +3023,8 @@ export function App() {
     appCommands,
     recentCaptures,
     openRecentCapture: (path: string) => void handleImportTrace(path),
+    recentProjects,
+    openRecentProject: (path: string) => void openProjectAt(path),
   });
   const runCommand = commands.runCommand;
 
@@ -3125,6 +3171,7 @@ export function App() {
             setDirty(false);
           } catch {
             rememberProject(null);
+            dropRecentProject(projectToOpen);
           }
         }
         // The boot has reached a conclusion either way — drop the
@@ -3145,7 +3192,14 @@ export function App() {
         if (cfg) setAutomation(cfg);
       })();
     },
-    [seedDefaultLayout, applyProject, rememberProject, clearGesture, rehydrateProjectState],
+    [
+      seedDefaultLayout,
+      applyProject,
+      rememberProject,
+      dropRecentProject,
+      clearGesture,
+      rehydrateProjectState,
+    ],
   );
 
   const { resting: restingStatus, transient: transientStatus } = useMemo(
@@ -3568,6 +3622,8 @@ export function App() {
           importing={scanningTracePath !== null || importingTracePath !== null}
           recentCaptures={recentCaptures}
           onOpenRecent={(path) => void handleImportTrace(path)}
+          recentProjects={recentProjects}
+          onOpenRecentProject={(path) => void openProjectAt(path)}
         />
         <StatusBar
           connection={connectionSummary}

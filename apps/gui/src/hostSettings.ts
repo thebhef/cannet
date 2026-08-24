@@ -89,6 +89,9 @@ export interface Settings {
   recent_blfs_limit: number;
   /// How many recently-run commands the palette floats to the top.
   recent_commands_limit: number;
+  /// How many recently-opened projects the toolbar and the palette
+  /// offer. The list itself is host-side *state*, not a setting.
+  recent_projects_limit: number;
   /// How many match groups one page of a plot panel's solo view holds.
   /// `1` steps a group at a time.
   solo_page_size: number;
@@ -199,6 +202,7 @@ export function defaultSettings(): Settings {
     follow_window_ms: 10_000,
     recent_blfs_limit: 8,
     recent_commands_limit: 10,
+    recent_projects_limit: 8,
     solo_page_size: 1,
     live_update_interval_ms: 100,
     trace_flush_interval_ms: 2000,

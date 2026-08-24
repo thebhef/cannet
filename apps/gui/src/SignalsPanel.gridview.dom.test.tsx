@@ -344,6 +344,8 @@ describe("D10 end to end", () => {
       appCommands: { "capture.clear": onFired },
       recentCaptures: [],
       openRecentCapture: () => {},
+      recentProjects: [],
+      openRecentProject: () => {},
     } as unknown as Parameters<typeof useCommands>[0]);
     return (
       <>

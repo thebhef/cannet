@@ -397,6 +397,15 @@ const DESCRIPTORS: &[Spec] = &[
         control: count(),
     },
     Spec {
+        key: "recent_projects_limit",
+        backing: Backing::Field,
+        label: "Recent projects remembered",
+        help: "Zero remembers none.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: count(),
+    },
+    Spec {
         key: "solo_page_size",
         backing: Backing::Field,
         label: "Solo groups per page",

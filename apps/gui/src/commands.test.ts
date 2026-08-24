@@ -57,8 +57,8 @@ describe("the shipped command set", () => {
     // be open for — an imported trace is the case, and every other
     // capture-scoped command (`trace.import`, `capture.save`,
     // `capture.clear`) is ungated for the same reason. `hasProjectOpen`
-    // means a project *file* is open, which is what `project.close`
-    // needs and nothing else here does.
+    // means a project *file* is open — the context shape ADR 0018
+    // declares, which no command currently gates on.
     const available = (c: CommandContext) =>
       commandsAvailableIn(COMMANDS, c).map((s) => s.id);
     for (const hasProjectOpen of [true, false]) {
@@ -66,7 +66,10 @@ describe("the shipped command set", () => {
       expect(available(ctx({ hasProjectOpen }))).toContain("goto.event");
     }
     expect(available(ctx({ hasProjectOpen: false }))).toContain("project.open");
-    expect(available(ctx({ hasProjectOpen: false }))).not.toContain("project.close");
+    // New project is reachable with no project file open: the session
+    // is still working in a project (ADR 0042 §1), and that is exactly
+    // when starting a fresh one is wanted.
+    expect(available(ctx({ hasProjectOpen: false }))).toContain("project.new");
     expect(available(ctx({ focusedPanelKind: "plot" }))).toContain("plot.setVisibleRange");
     expect(available(ctx({ focusedPanelKind: "trace" }))).not.toContain("plot.setVisibleRange");
   });

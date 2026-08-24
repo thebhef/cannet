@@ -556,16 +556,32 @@ header {
   margin: 0 0.2rem;
 }
 
-/* The Recent-captures menu is one of the shared chip menus; only its
-   width is its own, since it lists file paths rather than words, and
-   a path is ellipsised rather than allowed to widen the menu. */
-.recent-captures-menu {
+/* The Recent-captures and Recent-projects menus are shared chip menus;
+   only their width is their own, since they list file paths rather than
+   words, and a path is ellipsised rather than allowed to widen the
+   menu. */
+.recent-captures-menu,
+.recent-projects-menu {
   min-width: 280px;
   max-width: 560px;
 }
-.recent-captures-menu .status-chip-label {
+.recent-captures-menu .status-chip-label,
+.recent-projects-menu .status-chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The split Save chip. The disclosure carries a caret instead of an
+   icon, so it needs none of a labelled chip's horizontal room — it is
+   narrowed to the icon-only width rather than given a second glyph to
+   the icon set. Its menu hangs off the segment's right edge, where the
+   caret is, rather than off the group's left. */
+.chip-seg.save-split .chip-button:last-child {
+  padding-inline: 0.25rem;
+}
+.save-split-menu {
+  left: auto;
+  right: 0;
 }
 
 /* Placeholder rows render only the row index until their chunk
