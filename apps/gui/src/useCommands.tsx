@@ -121,7 +121,7 @@ export interface UseCommandsOptions {
   // passed in because the registry context is provided *below* `App`.
   renameElement: (id: string, name: string) => void;
   // The app-domain command implementations (project / BLF / DBC /
-  // connection / capture / panel.add / saveAll / kill-switch / exit).
+  // connection / capture / panel.add / saveAll / exit).
   // Merged with the framework/view/palette commands owned here.
   appCommands: Record<string, () => void>;
   // The Recent-captures list — the exact same MRU `App`'s toolbar

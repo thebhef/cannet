@@ -140,8 +140,8 @@ pub(crate) struct AppState {
     /// it; the thread itself is spawned in `run`'s `setup`.
     pub(crate) transmit_scheduler: transmit_scheduler::TransmitScheduler,
     /// Rest-of-bus-simulation state (ADR 0028): loaded `.cannet_rbs`
-    /// documents per element, the project's logical-bus name map, and
-    /// the global kill-switch. Lock order: `rbs` before `databases`
+    /// documents per element and the project's logical-bus name map.
+    /// Lock order: `rbs` before `databases`
     /// before `transmit_frames` before `remote_sessions`.
     pub(crate) rbs: Mutex<rbs::RbsRuntime>,
     /// Ingest-time CRC / counter verification (ADR 0027): the

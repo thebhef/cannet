@@ -1735,7 +1735,12 @@ The collapsed face is the everyday control surface:
   the message's cycle-time (not a UI-rate `setInterval`); removing
   the message, flipping back to manual, or stopping it ends the loop,
   and reopening a project leaves every periodic stopped until you
-  press `start`.
+  press `start`. **Space** does whichever of these the cursor's row
+  calls for — a one-shot row sends, a periodic row starts or stops —
+  the same key the RBS panel uses for its own rows. With no bus
+  connected there is nowhere to send, so a send is silently nothing
+  and is never queued; a periodic still starts, and puts frames out
+  once its bus connects.
 - **Identity strip.** Description, bus, hex id, the DBC message name
   when the id matches a loaded DBC, and a per-frame `×` remove
   (confirm-on-click so an accidental tap doesn't drop a frame).
@@ -1929,6 +1934,14 @@ In the panel:
   config's flat `disabled_messages` list). Buses whose name doesn't
   match a project bus render inert (greyed) rather than failing the
   load.
+- Each message row carries a **status**: *Running* while it is
+  scheduled, *Stopped* when it could run but the element's Run is
+  off, and *Muted* when it will not play whatever it carries — an
+  enable is off above it, no database on the bus defines it, or it
+  has **no cycle time** (neither an override nor `GenMsgCycleTime`),
+  which is the one the model always knew and never said. The cell's
+  tooltip carries the specific reason, and *Muted* is the same word
+  the signals grid below uses for the same fact.
 - Signal cells show the live decode of the message's payload buffer;
   editing partial-encodes into it (enum labels and `0x…` raw hex are
   accepted), an overridden cell is marked and a light **×** clears
@@ -1942,12 +1955,12 @@ In the panel:
   taxonomy (Not Encoded / Out of Range / Unknown Value / Override /
   Default / Muted). See the View signals section above for the shared
   gridview it reuses.
-- **Run** (persisted in the project, default off) starts the enabled
-  messages on the host scheduler; actual transmission gates on
-  per-bus connectivity (a bus that connects starts its messages, a
-  drop stops them). A project saved with RBS running resumes on
-  open; the global **kill-switch** (runtime-only) stops every RBS
-  transmission at once.
+- **Run** (session state, default off — never saved with the project)
+  starts the enabled messages on the host scheduler; actual
+  transmission gates on per-bus connectivity (a bus that connects
+  starts its messages, a drop stops them). Opening a project always
+  starts stopped, so a file can never put frames on a bus by itself;
+  connecting or disconnecting a bus leaves Run where you set it.
 - **Save** writes the override edits back to the file; **Save all**
   (command palette) saves the project plus every dirty
   `.cannet_rbs`, and the exit prompt covers both. Save dialogs
@@ -2275,19 +2288,28 @@ no park, no rebuild, no wait. Only a change of definition — editing the
 of it, or unassigning it from the bus the samples came from — parks
 anything.
 
-**Unchecking a bus stops what it was driving.** A periodic transmit row
-or a rest-of-bus row that is *transmitting* is putting frames on a real
-bus, so once no database assigned to that bus defines its message any
-more, it stops — one line in the System Messages panel says how many
-did, and there is no prompt and no per-row notice. The unassign itself
-always proceeds: it is a deliberate gesture, and refusing it would make
-assignment conditional on first hunting down what is transmitting. A row
-the databases never described — a CAN id typed by hand — keeps firing,
-and so does one another database still on the bus defines. Removing a
-database from the project removes it from its buses and reaches the same
-rule the same way. A stopped transmit row keeps its configuration and is
-restarted with its own Run control; a rest-of-bus row is rebuilt by its
-element, so it resumes when the element's Run is still on.
+**Changing what a bus applies stops what it was driving.** A periodic
+transmit row or a rest-of-bus row that is *transmitting* is putting
+frames on a real bus, so it stops when the definition behind it moves:
+once no database assigned to that bus defines its message any more, and
+also when a database you check onto the bus **takes the message over**
+— it sits earlier in load order than the one the row was firing from,
+so the next frame out would carry an encoding you never armed. One line
+in the System Messages panel says how many stopped, and there is no
+prompt and no per-row notice. The change itself always proceeds: it is
+a deliberate gesture, and refusing it would make assignment conditional
+on first hunting down what is transmitting.
+
+What is *not* affected: a row the databases never described — a CAN id
+typed by hand; a database checked onto a bus where it loses the
+priority contest, or onto a bus the row does not live on; and a row
+whose winner simply falls back to a database the bus was already
+applying when you uncheck the one in front of it. Removing a database
+from the project removes it from its buses and reaches the same rule
+the same way. A stopped transmit row keeps its configuration and is
+restarted with its own Run control; a rest-of-bus element has its Run
+turned off, because its rows are rebuilt from the element and would
+otherwise come straight back.
 
 **Reloading a database stops what it was driving, too.** A DBC is
 re-read whenever the file changes on disk (with `dbc_auto_reload` on) or

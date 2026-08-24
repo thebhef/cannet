@@ -180,14 +180,16 @@ pub(crate) fn add_dbc(
 /// answers for, instead of decoding the capture a second time. What
 /// revives one is the fingerprint, not the file it came from.
 ///
-/// **Unassigning also stops what the database was driving.** Every
-/// periodic still firing that no database assigned to its bus defines
-/// any more is stopped, through the same path the user's own Stop takes
-/// ([`crate::transmit_commands::stop_periodics_left_unbacked`]), and
-/// their ids are returned so the caller can record the one system-log
-/// entry that says so. The assignment change itself always proceeds: it
-/// is a deliberate gesture, and refusing it would make assignment
-/// conditional on the user first finding what is transmitting.
+/// **An assignment change also stops what it took over.** Every
+/// periodic still firing that this database has just taken the winning
+/// definition of — or that no assigned database defines any more — is
+/// stopped, through the same path the user's own Stop takes
+/// ([`crate::transmit_commands::stop_periodics_whose_backing_changed`]),
+/// and their ids are returned so the caller can record the one
+/// system-log entry that says so. The assignment change itself always
+/// proceeds: it is a deliberate gesture, and refusing it would make
+/// assignment conditional on the user first finding what is
+/// transmitting.
 pub(crate) fn set_dbc_buses_inner(state: &AppState, path: &str, buses: Vec<String>) -> Vec<String> {
     let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state);
     {
@@ -197,7 +199,7 @@ pub(crate) fn set_dbc_buses_inner(state: &AppState, path: &str, buses: Vec<Strin
         }
     }
     invalidate_derived_caches(state);
-    crate::transmit_commands::stop_periodics_left_unbacked(state, &backed_before)
+    crate::transmit_commands::stop_periodics_whose_backing_changed(state, &backed_before, path)
 }
 
 /// [`remove_dbc`]'s body without its `AppHandle`. Removing a database
@@ -227,20 +229,31 @@ pub(crate) fn remove_dbc_inner(state: &AppState, path: &str) -> Option<Vec<Strin
     // model the pick no longer shortens.
     state.forget_dbc_picks(path);
     invalidate_derived_caches(state);
-    Some(crate::transmit_commands::stop_periodics_left_unbacked(
-        state,
-        &backed_before,
-    ))
+    Some(
+        crate::transmit_commands::stop_periodics_whose_backing_changed(state, &backed_before, path),
+    )
 }
 
-/// Record, in **one** system-log entry, that a change to the DBC set
-/// stopped periodics that were firing, and tell the open transmit views
-/// — their Run control is the state that just moved. One line however
+/// The tail every reason a DBC-set change stops a periodic shares:
+/// stop the RBS elements that owned any of the stopped rows, record it
+/// in **one** system-log entry, and tell the open transmit views —
+/// their Run control is the state that just moved. One line however
 /// many stopped: no modal and no per-element notice.
-fn report_periodics_stopped(app: &AppHandle, path: &str, stopped: &[String]) {
+///
+/// An RBS element whose rows were among them stops with them: its rows
+/// are derived, so the rebuild that follows the change would otherwise
+/// put them straight back ([`rbs::stop_elements_owning`]). Run is host
+/// state with no second copy anywhere, so the panel reads the stop off
+/// its next `rbs-changed` refetch.
+///
+/// Every reason lands here — the user's own Stop excepted, which is
+/// nobody else's business — so unassign, remove, a database taking a
+/// message over, and a reload cannot drift apart.
+fn report_periodics_stopped(app: &AppHandle, state: &AppState, path: &str, stopped: &[String]) {
     if stopped.is_empty() {
         return;
     }
+    rbs::stop_elements_owning(state, stopped);
     sys_warn!(
         app,
         "dbc",
@@ -257,13 +270,6 @@ fn report_periodics_stopped(app: &AppHandle, path: &str, stopped: &[String]) {
 /// afterwards there is no way left to ask what the old content was
 /// driving.
 ///
-/// An RBS element whose rows were among them stops with them: its rows
-/// are derived, so the rebuild the announcement runs would otherwise put
-/// them straight back ([`rbs::stop_elements_owning`]). Its Run flag is
-/// the project's, mirrored onto the host, so `rbs-run-stopped` names the
-/// elements the host turned off and the project follows — the two halves
-/// of one flag cannot be left disagreeing.
-///
 /// The reload itself always proceeds
 /// ([ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
 /// §1 governs the swap); this is the stop that happens first.
@@ -274,11 +280,7 @@ pub(crate) fn report_reload_stops(
     backed_before: &[crate::transmit_commands::BackedPeriodic],
 ) {
     let stopped = crate::transmit_commands::stop_periodics_driven_by(state, backed_before, path);
-    let elements = rbs::stop_elements_owning(state, &stopped);
-    report_periodics_stopped(app, path, &stopped);
-    if !elements.is_empty() {
-        let _ = app.emit("rbs-run-stopped", elements);
-    }
+    report_periodics_stopped(app, state, path, &stopped);
 }
 
 /// Replace the bus assignment of a loaded DBC. An empty `buses`
@@ -304,7 +306,7 @@ pub(crate) fn set_dbc_buses(
     // stopped in the same call; the announcement below is what then
     // takes them out of the pool altogether, and it notifies the RBS
     // panel itself.
-    report_periodics_stopped(&app, &path, &stopped);
+    report_periodics_stopped(&app, state.inner(), &path, &stopped);
     announce_dbc_change(&app, &path);
     dbc_list(state.inner())
 }
@@ -316,7 +318,7 @@ pub(crate) fn set_dbc_buses(
 pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
     if let Some(stopped) = remove_dbc_inner(state.inner(), &path) {
         sys_info!(&app, "dbc", "removed DBC {path}");
-        report_periodics_stopped(&app, &path, &stopped);
+        report_periodics_stopped(&app, state.inner(), &path, &stopped);
         if let Some(w) = state.dbc_watcher().as_mut() {
             w.unwatch_file(std::path::Path::new(&path));
         }

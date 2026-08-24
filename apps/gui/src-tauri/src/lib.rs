@@ -602,7 +602,6 @@ pub fn run() -> ! {
             rbs::rbs_unload,
             rbs::rbs_sync_project_buses,
             rbs::rbs_set_run,
-            rbs::rbs_set_kill_switch,
             rbs::rbs_set_enabled,
             rbs::rbs_set_period,
             rbs::rbs_set_signal,

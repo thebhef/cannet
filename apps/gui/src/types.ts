@@ -547,11 +547,6 @@ export type ProjectElement =
       /// references the config by path and never embeds the content
       /// (ADR 0028); `null` until the user picks / creates one.
       path: string | null;
-      /// The element's Run flag — persisted in the project, default
-      /// off. A project saved with RBS running resumes transmitting
-      /// on open once its bus connects (the global kill-switch is
-      /// the guard rail).
-      run: boolean;
     };
 
 /// Wildcard entry in {@link ProjectElement.sources} / {@link
@@ -1063,7 +1058,6 @@ export interface RbsView {
   /// the element was dirty or running when it landed (ADR 0053 §1).
   changedOnDisk: boolean;
   run: boolean;
-  killSwitch: boolean;
   buses: RbsBusView[];
 }
 
@@ -1094,8 +1088,16 @@ export interface RbsMessageView {
   /// Whether the file lists this message.
   inFile: boolean;
   enabled: boolean;
-  /// Scheduled right now (run && enables && !kill-switch).
+  /// Scheduled right now (run && enables).
   running: boolean;
+  /// Whether the row will transmit, and why not when it will not.
+  /// `"muted"` is the same word — and the same meaning — the RBS
+  /// signals grid uses: the message won't play regardless of what it
+  /// carries.
+  status: RbsMessageStatus;
+  /// The reason behind {@link status}, host-worded, for the cell's
+  /// tooltip.
+  statusDetail: string;
   /// Effective period (override else `GenMsgCycleTime`); `null` =
   /// none anywhere, the message can't run.
   periodMs: number | null;
@@ -1137,6 +1139,10 @@ export interface RbsSignalView {
   floatKind: "integer" | "float32" | "float64";
   hasValueTable: boolean;
 }
+
+/// Whether one RBS message row will transmit. Mirrors
+/// `rbs::view::RbsMessageStatus`.
+export type RbsMessageStatus = "running" | "stopped" | "muted";
 
 /// The RBS signals panel's taxonomy, drawn from what the encoder
 /// actually reports (`reconstruct_payload`) rather than invented.

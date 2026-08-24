@@ -30,6 +30,12 @@ Two halves make this work:
   - `--project <path>` — open a known project deterministically (rather
     than relying on the last-opened pointer);
   - `--connect-on-start` — fire the same connect action a user clicks;
+  - `--rbs-run-on-start` — arm every RBS element the project loads,
+    through the same host command the panel's Run toggle uses. A
+    rest-of-bus simulation is what puts frames on the bus in a
+    load-generating scenario, and its Run flag is session state a
+    project file cannot carry (ADR 0028), so an unattended run asks for
+    it as explicitly as a person would;
   - `--perf-capture-secs <n>` / `--perf-out <path>` — after connect
     settles, auto-capture for `n` seconds and write the `RenderReport`,
     then exit (`--perf-label <text>` names the scenario in the report);
@@ -106,10 +112,13 @@ the decision to touch interfaces, and the decision to record.
 ## Consequences
 
 - The measurement input is a saved project: its layout is the view
-  configuration under test, its bindings choose the frame source, and
-  its RBS run flag drives the load. For a hardware-free render run the
-  project should bind to a virtual bus rather than physical adapters —
-  that is a property of the saved project, not of the flags.
+  configuration under test and its bindings choose the frame source.
+  The load itself is a *flag*, not a project field —
+  `--rbs-run-on-start` arms the simulation the project references — so
+  a run that forgets it measures an idle bus and says so in its rates.
+  For a hardware-free render run the project should bind to a virtual
+  bus rather than physical adapters — that is a property of the saved
+  project, not of the flags.
 - **A capture is only comparable to another capture of the same build
   kind.** A development build runs a debug host behind React's
   development bundle. Measured against an otherwise identical release

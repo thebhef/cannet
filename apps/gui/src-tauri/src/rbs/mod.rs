@@ -19,8 +19,8 @@
 //! overrides). Messages are **enabled by default** — rest-of-bus:
 //! everything plays unless muted via the flat `disabled_messages`
 //! list. Whether an entry is *scheduled* is the AND of the element's
-//! Run flag, the bus / ECU enables, the message not being muted, and
-//! the global kill-switch; actual wire transmission additionally
+//! Run flag, the bus / ECU enables, and the message not being muted;
+//! actual wire transmission additionally
 //! gates on per-bus connectivity inside the scheduler (a disconnected
 //! bus keeps ticking and resumes on reconnect). Reconciliation is
 //! idempotent: [`runtime::sync_schedules`] recomputes desired-running for
@@ -39,7 +39,7 @@ pub use runtime::RbsRuntime;
 // nameable only where a test has to stand host state up by hand.
 #[cfg(test)]
 pub(crate) use runtime::RbsElementState;
-pub(crate) use runtime::{refresh_all_elements, stop_elements_owning};
+pub(crate) use runtime::{refresh_all_elements, stop_all_elements, stop_elements_owning};
 
 mod view;
 
@@ -64,19 +64,19 @@ mod commands;
 
 pub use commands::{
     rbs_dirty, rbs_dismiss_disk_change, rbs_init, rbs_load, rbs_save, rbs_save_as, rbs_set_calc,
-    rbs_set_enabled, rbs_set_kill_switch, rbs_set_period, rbs_set_run, rbs_set_signal,
-    rbs_sync_project_buses, rbs_unload,
+    rbs_set_enabled, rbs_set_period, rbs_set_run, rbs_set_signal, rbs_sync_project_buses,
+    rbs_unload,
 };
 // Hidden tauri command helpers (see the view re-export note above).
 pub use commands::{
     __cmd__rbs_dirty, __cmd__rbs_dismiss_disk_change, __cmd__rbs_init, __cmd__rbs_load,
     __cmd__rbs_save, __cmd__rbs_save_as, __cmd__rbs_set_calc, __cmd__rbs_set_enabled,
-    __cmd__rbs_set_kill_switch, __cmd__rbs_set_period, __cmd__rbs_set_run, __cmd__rbs_set_signal,
+    __cmd__rbs_set_period, __cmd__rbs_set_run, __cmd__rbs_set_signal,
     __cmd__rbs_sync_project_buses, __cmd__rbs_unload, __tauri_command_name_rbs_dirty,
     __tauri_command_name_rbs_dismiss_disk_change, __tauri_command_name_rbs_init,
     __tauri_command_name_rbs_load, __tauri_command_name_rbs_save, __tauri_command_name_rbs_save_as,
     __tauri_command_name_rbs_set_calc, __tauri_command_name_rbs_set_enabled,
-    __tauri_command_name_rbs_set_kill_switch, __tauri_command_name_rbs_set_period,
-    __tauri_command_name_rbs_set_run, __tauri_command_name_rbs_set_signal,
-    __tauri_command_name_rbs_sync_project_buses, __tauri_command_name_rbs_unload,
+    __tauri_command_name_rbs_set_period, __tauri_command_name_rbs_set_run,
+    __tauri_command_name_rbs_set_signal, __tauri_command_name_rbs_sync_project_buses,
+    __tauri_command_name_rbs_unload,
 };
