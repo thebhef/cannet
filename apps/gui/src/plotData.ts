@@ -435,67 +435,44 @@ export function enumSegments(
 }
 
 /**
- * Unit-based y-scale grouping (ADR 0026): on an axis, series sharing
- * a unit share one y scale, and each unit group auto-scales
- * independently to fill the axis.
+ * The scale an axis draws (ADR 0026): the union of every series on it.
  *
- * Given each signal's own observed value range (the plot area's
- * per-signal auto-norm latch), returns the range each signal should
- * actually be *normalised by*: the union (min lo, max hi) of the
- * latched ranges across every signal in its unit group. Signals with
- * a non-empty unit group by that unit; **unitless signals each form
- * their own group** — two signals that merely both lack a unit are
- * not known to be commensurable, and pinning them to a shared scale
- * would flatten whichever has the smaller range.
+ * **An axis draws one scale.** Every series on an axis is normalised by
+ * the same range, so the range the axis labels is the range each series
+ * was drawn against — no series can be drawn at an amplitude the axis
+ * does not state. Giving a series a scale of its own is what the
+ * y-axis *mode* is for: `per-unit` puts each unit on its own axis and
+ * `individual` puts each series on one.
  *
- * A signal with no entry in `perSignalRanges` (nothing decoded yet)
- * contributes nothing to its group and gets no entry in the result —
- * the renderer keeps its midline fallback for it.
+ * Given the axis's series (`keys`) and each series' own observed value
+ * range (the plot area's per-signal auto-norm latch), returns the range
+ * they should all be normalised by. A series with no entry in
+ * `perSignalRanges` (nothing decoded yet) contributes nothing; `null`
+ * when no series has a range at all, and the renderer keeps its midline
+ * fallback.
  *
- * A group whose *whole* union has no span — every member constant at
- * the same value — is widened to {@link CONSTANT_MIN_RANGE_FRACTION}
- * of that value either side of it, so the axis labels read the value
- * it holds instead of a bare 0–1. See {@link constantRange}.
+ * An axis whose union has no span — every series constant at the same
+ * value — is widened to {@link CONSTANT_MIN_RANGE_FRACTION} of that
+ * value either side of it, so the axis labels read the value it holds
+ * instead of a bare 0–1. See {@link constantRange}.
  */
-/** Which y-scale group a signal belongs to: its unit, or itself when
- * it declares none (two signals that merely both lack a unit are not
- * known to be commensurable). Shared with the renderer, which has to
- * fold per-group facts — a log axis's smallest positive value — over
- * the same grouping {@link groupScaleRanges} unions by. */
-export function scaleGroupKey(m: { key: string; unit: string }): string {
-  return m.unit ? `unit:${m.unit}` : `sig:${m.key}`;
-}
-
-export function groupScaleRanges(
-  members: ReadonlyArray<{ key: string; unit: string }>,
+export function axisAutoRange(
+  keys: ReadonlyArray<string>,
   perSignalRanges: ReadonlyMap<string, { lo: number; hi: number }>,
-): Map<string, { lo: number; hi: number }> {
-  // Pass 1: union each unit group's range.
-  const groupRange = new Map<string, { lo: number; hi: number }>();
-  const groupKeyFor = scaleGroupKey;
-  for (const m of members) {
-    const r = perSignalRanges.get(m.key);
+): { lo: number; hi: number } | null {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const key of keys) {
+    const r = perSignalRanges.get(key);
     if (!r) continue;
-    const gk = groupKeyFor(m);
-    const g = groupRange.get(gk);
-    if (!g) groupRange.set(gk, { lo: r.lo, hi: r.hi });
-    else {
-      if (r.lo < g.lo) g.lo = r.lo;
-      if (r.hi > g.hi) g.hi = r.hi;
-    }
+    if (r.lo < lo) lo = r.lo;
+    if (r.hi > hi) hi = r.hi;
   }
-  // Pass 2: hand each signal its group's range, widening a group that
-  // turned out to have no span at all.
-  const out = new Map<string, { lo: number; hi: number }>();
-  for (const m of members) {
-    if (!perSignalRanges.has(m.key)) continue;
-    const g = groupRange.get(groupKeyFor(m));
-    if (g) out.set(m.key, g.hi > g.lo ? { lo: g.lo, hi: g.hi } : constantRange(g.lo));
-  }
-  return out;
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+  return hi > lo ? { lo, hi } : constantRange(lo);
 }
 
-/** Half-width of a constant group's scale, as a fraction of the value
+/** Half-width of a constant axis's scale, as a fraction of the value
  * it holds. Ten per cent puts the trace mid-canvas with round-ish
  * numbers either side, so the axis reads as the value. */
 export const CONSTANT_MIN_RANGE_FRACTION = 0.1;
@@ -507,7 +484,7 @@ export const CONSTANT_MIN_RANGE_FRACTION = 0.1;
 export const CONSTANT_ZERO_HALF_RANGE = 1;
 
 /**
- * The scale to draw a group that never moves on.
+ * The scale to draw an axis whose series never move on.
  *
  * A constant has no span, so any scale for it is a choice rather than
  * a measurement — but *some* choice has to be made: normalising by a
