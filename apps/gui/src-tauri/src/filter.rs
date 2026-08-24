@@ -316,8 +316,10 @@ pub enum DecodeDependentLeaf<'a> {
 /// when the frame's bus is in the database's assigned set, so a database
 /// assigned to no bus decodes nothing: loading a file makes it available,
 /// assigning it to a bus makes it decode. A `None` `bus_id` is a query
-/// that names no bus (a file-backed or legacy any-bus signal key — a
-/// stored frame always has one), and no assignment can contain it.
+/// that names no bus — a file-backed signal, which has none, or a view
+/// reference saved before per-bus signal binding; a stored frame always
+/// has one. No assignment can contain "no bus", so such a query is
+/// admitted by nothing.
 #[must_use]
 pub(crate) fn dbc_applies(buses: &[String], bus_id: Option<&str>) -> bool {
     match bus_id {

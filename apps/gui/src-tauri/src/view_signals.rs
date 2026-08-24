@@ -31,7 +31,11 @@
 //!    defines it. Nothing decodes the signal at all, so a view showing
 //!    it shows nothing. A reference naming no bus lands here too: under
 //!    bus-governed decode ([`crate::filter::dbc_applies`]) no assignment
-//!    can contain "no bus".
+//!    can contain "no bus", and the decode path has no series for it at
+//!    all ([ADR 0054](../../../docs/adr/0054-a-decoded-value-has-one-definition.md)).
+//!    Such a reference is kept rather than migrated or dropped, and
+//!    this panel is where it is repaired: its candidates are drawn from
+//!    every bus that decodes, so choosing one re-points it there.
 //! 2. **Scale** — it decodes, but on a different *scale* from the one
 //!    the view was configured against: a different unit, factor or
 //!    offset. The unit case is the one with a visible consequence
@@ -49,10 +53,11 @@
 //!    resolves **here**: recording a database for the signal
 //!    ([`set_signal_dbc_pick`]) settles the choice, and the row leaves
 //!    Ambiguous because there is no longer more than one candidate in
-//!    its chain. The other repair the panel offers — re-pointing the
-//!    views at a signal that replaced a renamed one — is a rewrite of
-//!    the references themselves, which live in the project's opaque
-//!    `elements` blob, so it is made where those are owned and arrives
+//!    its chain. The other two repairs the panel offers — re-pointing
+//!    the views at a signal that replaced a renamed one, and re-pointing
+//!    a reference that names no bus at one that decodes — are rewrites
+//!    of the references themselves, which live in the project's opaque
+//!    `elements` blob, so they are made where those are owned and arrive
 //!    back here as an ordinary change to what the views push.
 //! 4. **Stale** — it decodes, on the scale the view expects, but the
 //!    decoder differs from the view's configuration in some other
@@ -97,9 +102,10 @@ use crate::signal_snapshot::{definition_index, signal_identity};
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewSignalRef {
-    /// Logical bus the reference is bound to. `None` is a legacy
-    /// "any bus" selection, which decodes nothing under bus-governed
-    /// decode.
+    /// Logical bus the reference is bound to. `None` is a selection
+    /// saved before per-bus signal binding: it decodes nothing under
+    /// bus-governed decode, reads as Not Decoded here, and is repaired
+    /// by re-pointing it at a bus from this panel's source picker.
     pub bus_id: Option<String>,
     pub message_id: u32,
     pub extended: bool,
@@ -215,10 +221,21 @@ pub struct ViewSignalDiff {
 /// what the panel's source picker offers where there is a choice to
 /// make. Several candidates naming the same signal under different
 /// databases is the ambiguous case; several naming different signals
-/// under one database is the remap case.
+/// under one database is the remap case; and one naming a *different
+/// bus* is the re-point, which is the only repair open to a reference
+/// that names no bus.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewSignalCandidate {
+    /// The bus this definition decodes on. The row's own bus for every
+    /// candidate of an ordinary row; for a reference that names none,
+    /// the bus the candidate would re-point it at.
+    pub bus_id: String,
+    /// The project's name for [`Self::bus_id`], or the id when the
+    /// project has no name for it — the same rendering
+    /// [`ViewSignalRow::bus_name`] gets, so the picker and the bus
+    /// column say the same thing.
+    pub bus_name: String,
     pub dbc_path: String,
     pub signal_name: String,
     pub message_name: String,
@@ -267,6 +284,13 @@ pub struct ViewSignalRow {
     /// for) — **unless a pick is in force**, which a Decoded row keeps
     /// its candidates for, since the pick has to stay reversible from
     /// the same control that made it.
+    ///
+    /// A row whose reference names **no bus** takes its candidates from
+    /// every bus the loaded databases are assigned to, because nothing
+    /// on its own (absent) bus can ever decode it
+    /// ([ADR 0054](../../../docs/adr/0054-a-decoded-value-has-one-definition.md)).
+    /// Choosing one re-points the reference at that bus, which is the
+    /// repair that keeps the rule from being a silent emptying.
     pub candidates: Vec<ViewSignalCandidate>,
     /// Every field where the serving database differs from what the
     /// views recorded. Empty for `Decoded` and `Not Decoded`.
@@ -342,27 +366,54 @@ fn build_rows<'a>(
         }
     }
 
+    // Every bus the loaded databases are assigned to, in a stable
+    // order — the buses a reference that names none can be re-pointed
+    // at, since those are the only ones anything decodes on.
+    let repoint_buses: BTreeSet<&'a str> = dbs
+        .iter()
+        .flat_map(|(_, _, buses)| buses.iter().map(String::as_str))
+        .collect();
+
+    // Which buses a row is described on. Its own, when it names one;
+    // every bus that decodes, when it does not — those descriptions are
+    // the re-point offers, and its own (absent) bus offers nothing.
+    let buses_for = |r: &'a ViewSignalRef| -> Vec<Option<&'a str>> {
+        match r.bus_id.as_deref() {
+            Some(bus) => vec![Some(bus)],
+            None => repoint_buses.iter().copied().map(Some).collect(),
+        }
+    };
+
     // One `describe_message` per (bus, message) rather than per row:
     // the referenced signals of one message all resolve through the
-    // same walk of the assigned databases.
+    // same walk of the assigned databases. Filled in full first, so the
+    // rows below read it by reference rather than copying a message
+    // descriptor each.
     let mut messages: HashMap<(Option<&str>, u32, bool), DescribedMessage<'a>> = HashMap::new();
+    for agg in aggregates.values() {
+        let r = agg.reference;
+        for bus in buses_for(r) {
+            messages
+                .entry((bus, r.message_id, r.extended))
+                .or_insert_with(|| describe_on_bus(dbs, bus, r.message_id, r.extended));
+        }
+    }
 
     let mut rows: Vec<ViewSignalRow> = aggregates
-        .into_iter()
+        .iter()
         .map(|(id, agg)| {
             let r = agg.reference;
-            let described = messages
-                .entry((r.bus_id.as_deref(), r.message_id, r.extended))
-                .or_insert_with(|| {
-                    describe_on_bus(dbs, r.bus_id.as_deref(), r.message_id, r.extended)
-                });
+            let described: Vec<(Option<&'a str>, &DescribedMessage<'a>)> = buses_for(r)
+                .into_iter()
+                .map(|bus| (bus, &messages[&(bus, r.message_id, r.extended)]))
+                .collect();
             row(
-                &id,
+                id,
                 r,
                 &agg.used_by,
-                index.resolved(&id, picks),
-                index.picked(&id, picks),
-                described,
+                index.resolved(id, picks),
+                index.picked(id, picks),
+                &described,
                 bus_names,
             )
         })
@@ -411,27 +462,33 @@ fn row(
     used_by: &BTreeSet<&str>,
     definers: &[&str],
     picked: Option<&str>,
-    described: &[(&str, MessageDescriptor)],
+    described: &[(Option<&str>, &DescribedMessage<'_>)],
     bus_names: &HashMap<String, String>,
 ) -> ViewSignalRow {
+    // What the reference's *own* bus offers. Empty for a reference that
+    // names none — nothing decodes there — which is what makes such a
+    // row Not Decoded; the entries under the other buses are the
+    // re-point offers, and none of them is serving anything yet.
+    let own: &[(&str, MessageDescriptor)] = described
+        .iter()
+        .find(|(bus, _)| *bus == reference.bus_id.as_deref())
+        .map_or(&[], |(_, d)| d.as_slice());
+
     // The serving database is the first of the *resolved* chain — the
     // one the user picked where they picked one, and otherwise the
     // first that defines the signal. Either way it is the one the
     // decoder resolves it from (`DefinitionIndex::resolved`).
     let serving = definers.first().and_then(|path| {
-        described
-            .iter()
-            .find(|(p, _)| p == path)
-            .and_then(|(p, m)| {
-                m.signals
-                    .iter()
-                    // A multiplexed message may declare the name in
-                    // several arms; the first is the one this row
-                    // reports, as the decoder's own spec list orders
-                    // them.
-                    .find(|s| s.name == reference.signal_name)
-                    .map(|s| (*p, m, s))
-            })
+        own.iter().find(|(p, _)| p == path).and_then(|(p, m)| {
+            m.signals
+                .iter()
+                // A multiplexed message may declare the name in
+                // several arms; the first is the one this row
+                // reports, as the decoder's own spec list orders
+                // them.
+                .find(|s| s.name == reference.signal_name)
+                .map(|s| (*p, m, s))
+        })
     });
 
     let mut diffs = Vec::new();
@@ -520,32 +577,50 @@ fn row(
         candidates: if status == ViewSignalStatus::Decoded && picked.is_none() {
             Vec::new()
         } else {
-            candidates(described)
+            candidates(described, bus_names)
         },
         diffs,
     }
 }
 
-/// Every `(database, signal)` the referenced message offers on this
-/// bus, in project load order then declaration order — the source
-/// picker's options. A name repeated across multiplexor arms of one
-/// database is one option.
-fn candidates(described: &[(&str, MessageDescriptor)]) -> Vec<ViewSignalCandidate> {
+/// Every `(bus, database, signal)` the referenced message offers, in
+/// bus order then project load order then declaration order — the
+/// source picker's options. A name repeated across multiplexor arms of
+/// one database is one option.
+///
+/// One bus for an ordinary row (its own); every bus that decodes for a
+/// reference that names none, whose options are therefore all
+/// re-points.
+fn candidates(
+    described: &[(Option<&str>, &DescribedMessage<'_>)],
+    bus_names: &HashMap<String, String>,
+) -> Vec<ViewSignalCandidate> {
     let mut out: Vec<ViewSignalCandidate> = Vec::new();
-    for (path, message) in described {
-        for signal in &message.signals {
-            if out
-                .iter()
-                .any(|c| c.dbc_path == *path && c.signal_name == signal.name)
-            {
-                continue;
+    for (bus, message_on_bus) in described {
+        // A description under no bus offers nothing: no assignment can
+        // contain "no bus", so `describe_on_bus` returned an empty list
+        // for it in the first place.
+        let Some(bus) = *bus else { continue };
+        for (path, message) in *message_on_bus {
+            for signal in &message.signals {
+                if out
+                    .iter()
+                    .any(|c| c.bus_id == bus && c.dbc_path == *path && c.signal_name == signal.name)
+                {
+                    continue;
+                }
+                out.push(ViewSignalCandidate {
+                    bus_id: bus.to_owned(),
+                    bus_name: bus_names
+                        .get(bus)
+                        .cloned()
+                        .unwrap_or_else(|| bus.to_owned()),
+                    dbc_path: (*path).to_owned(),
+                    signal_name: signal.name.clone(),
+                    message_name: message.name.clone(),
+                    unit: signal.unit.clone(),
+                });
             }
-            out.push(ViewSignalCandidate {
-                dbc_path: (*path).to_owned(),
-                signal_name: signal.name.clone(),
-                message_name: message.name.clone(),
-                unit: signal.unit.clone(),
-            });
         }
     }
     out
@@ -924,7 +999,9 @@ mod tests {
     #[test]
     fn a_reference_bound_to_no_bus_is_not_decoded() {
         // Bus assignment governs decode, and no assignment can contain
-        // "no bus" — a legacy any-bus selection decodes nothing.
+        // "no bus" — a selection saved before per-bus signal binding
+        // decodes nothing. The decode path agrees: `signal_cache` has no
+        // series for such a reference at all.
         let db = plain();
         let buses = power();
         let reg = registry(&[("v1", "Plot 1", vec![bare(None, "PackVolts")])]);
@@ -932,6 +1009,69 @@ mod tests {
 
         assert_eq!(rows[0].status, ViewSignalStatus::NotDecoded);
         assert_eq!(rows[0].bus_name, None);
+        assert!(
+            rows[0].status.needs_attention(),
+            "so the launcher badge counts it with the panel closed",
+        );
+    }
+
+    #[test]
+    fn a_reference_bound_to_no_bus_is_offered_the_buses_that_decode() {
+        // What keeps "a busless series resolves nothing" from being a
+        // silent emptying: the row's own (absent) bus can never decode,
+        // so the picker offers every bus the loaded databases are
+        // assigned to, and choosing one re-points the reference there.
+        let db = plain();
+        let both = vec!["power".to_string(), "chassis".to_string()];
+        let reg = registry(&[("v1", "Plot 1", vec![bare(None, "PackVolts")])]);
+        let rows = build(&reg, &[("a.dbc", &db, &both)]);
+
+        assert_eq!(rows[0].status, ViewSignalStatus::NotDecoded);
+        assert_eq!(
+            rows[0].serving_dbc, None,
+            "nothing decodes it, whatever is on offer",
+        );
+        let offers: Vec<(&str, &str, &str)> = rows[0]
+            .candidates
+            .iter()
+            .map(|c| {
+                (
+                    c.bus_id.as_str(),
+                    c.bus_name.as_str(),
+                    c.signal_name.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            offers,
+            vec![
+                ("chassis", "chassis", "PackVolts"),
+                ("chassis", "chassis", "Other"),
+                ("power", "Powertrain", "PackVolts"),
+                ("power", "Powertrain", "Other"),
+            ],
+            "one offer per (bus, database, signal), and the bus is named \
+             the way the bus column names it",
+        );
+    }
+
+    #[test]
+    fn an_ordinary_row_offers_only_its_own_bus() {
+        // The other side of the same rule: a reference that already
+        // names a bus is not offered a different one. Re-pointing across
+        // buses is the repair for a reference that has none, not a
+        // choice to make everywhere.
+        let db = plain();
+        let both = vec!["power".to_string(), "chassis".to_string()];
+        let reg = registry(&[("v1", "Plot 1", vec![bare(Some("power"), "Gone")])]);
+        let rows = build(&reg, &[("a.dbc", &db, &both)]);
+
+        assert_eq!(rows[0].status, ViewSignalStatus::NotDecoded);
+        assert!(
+            rows[0].candidates.iter().all(|c| c.bus_id == "power"),
+            "an assigned reference is offered its own bus only: {:?}",
+            rows[0].candidates,
+        );
     }
 
     #[test]

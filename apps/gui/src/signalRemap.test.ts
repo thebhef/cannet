@@ -32,7 +32,8 @@ import type { ProjectElement } from "./types";
 import type { TransmitFrameConfig } from "./transmitFrameConfig";
 
 const REMAP: SignalRemap = {
-  busId: "power",
+  fromBusId: "power",
+  toBusId: "power",
   messageId: 0x100,
   extended: false,
   from: "EngSpeed",
@@ -258,6 +259,129 @@ describe("remapTransmitFrames", () => {
       frame({ id: "f3", calc: { counter: { signal: "EngSpeed", increment: 1 } } }),
     ];
     expect(remapTransmitFrames(frames, REMAP).map((f) => f.id)).toEqual(["f3"]);
+  });
+});
+
+// The one remap that moves a bus: a reference saved before per-bus
+// signal binding names none, decodes nothing (ADR 0054), and the repair
+// the panel offers is a definition on a bus that does decode. The name
+// stays; the identity every store holds moves onto the bus.
+describe("re-pointing a reference that names no bus", () => {
+  const REPOINT: SignalRemap = {
+    fromBusId: null,
+    toBusId: "power",
+    messageId: 0x100,
+    extended: false,
+    from: "EngSpeed",
+    to: "EngSpeed",
+    messageName: "EngineData",
+    unit: "rpm",
+    dbcPath: "powertrain.dbc",
+  };
+  const BUSLESS_KEY = "*|s:256:EngSpeed";
+  const ON_POWER_KEY = "power|s:256:EngSpeed";
+  const busless = (over: Record<string, unknown> = {}) =>
+    plotSignal("EngSpeed", { busId: null, ...over });
+
+  it("moves a plot series and its area's primary key onto the bus", () => {
+    const config = {
+      areas: [{ id: "a1", signals: [busless()], primarySignalKey: BUSLESS_KEY }],
+    };
+    const next = remapPlotConfig(config, REPOINT) as {
+      areas: { signals: Record<string, unknown>[]; primarySignalKey: string }[];
+    } | null;
+    expect(next?.areas[0].signals[0]).toMatchObject({ busId: "power", signalName: "EngSpeed" });
+    expect(next?.areas[0].primarySignalKey).toBe(ON_POWER_KEY);
+  });
+
+  it("leaves a series that already names a bus alone", () => {
+    const config = { areas: [{ id: "a1", signals: [plotSignal("EngSpeed")] }] };
+    expect(remapPlotConfig(config, REPOINT)).toBeNull();
+  });
+
+  it("moves the signals view's selection key and its section assignment", () => {
+    const config = {
+      selection: { keys: [busless()] },
+      sections: { names: ["Drive"], assignments: { [BUSLESS_KEY]: "Drive" }, patterns: {} },
+    };
+    const next = remapSignalsConfig(config, REPOINT) as {
+      selection: { keys: Record<string, unknown>[] };
+      sections: { assignments: Record<string, string> };
+    } | null;
+    expect(next?.selection.keys[0]).toMatchObject({ busId: "power" });
+    expect(next?.sections.assignments).toEqual({ [ON_POWER_KEY]: "Drive" });
+  });
+
+  it("moves a colormap's target onto the bus", () => {
+    const element = {
+      kind: "colormap",
+      id: "cm1",
+      busId: null,
+      messageId: 0x100,
+      extended: false,
+      signalName: "EngSpeed",
+      rules: [],
+    } as unknown as Extract<ProjectElement, { kind: "colormap" }>;
+    expect(remapColorMapPatch(element, REPOINT)).toEqual({
+      signalName: "EngSpeed",
+      busId: "power",
+    });
+  });
+
+  it("moves no transmit frame — the frame's own bus is not the reference's", () => {
+    const frame: TransmitFrameConfig = {
+      id: "f1",
+      description: "",
+      busId: "power",
+      canId: 0x100,
+      extended: false,
+      kind: "classic",
+      dataHex: "00",
+      cycleMs: 100,
+      cycleMode: "manual",
+      brs: false,
+      dlc: 8,
+      calc: { counter: { signal: "EngSpeed", increment: 1 } },
+    };
+    expect(remapTransmitFrames([frame], REPOINT)).toEqual([]);
+  });
+
+  it("carries the colour override onto the new identity", async () => {
+    const colors: { key: string; color: string | null }[] = [];
+    await remapSignal(
+      {
+        elements: [],
+        updateElement: () => {},
+        signalColors: { [BUSLESS_KEY]: "#123456" },
+        setSignalColor: (key, color) => colors.push({ key, color }),
+      },
+      REPOINT,
+    );
+    expect(colors).toEqual([
+      { key: ON_POWER_KEY, color: "#123456" },
+      { key: BUSLESS_KEY, color: null },
+    ]);
+  });
+
+  it("is a no-op when neither the name nor the bus moves", async () => {
+    const patches: string[] = [];
+    await remapSignal(
+      {
+        elements: [
+          {
+            kind: "plot",
+            id: "p1",
+            sources: ["*"],
+            config: { areas: [{ id: "a1", signals: [busless()] }] },
+          },
+        ],
+        updateElement: (id) => patches.push(id),
+        signalColors: {},
+        setSignalColor: () => {},
+      },
+      { ...REPOINT, toBusId: null },
+    );
+    expect(patches).toEqual([]);
   });
 });
 
