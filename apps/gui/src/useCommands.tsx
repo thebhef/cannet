@@ -15,7 +15,8 @@ import type { AddPanelOptions, DockviewApi } from "dockview";
 import type { ProjectElement } from "./types";
 import type { RegistryEntry } from "./projectElements";
 import type { Note } from "./notes";
-import { GOTO_EVENT, gotoEventItems } from "./gotoEvent";
+import { GOTO_EVENT, gotoEventItems, parseTimeInTrace, timeInTraceTargetNs } from "./gotoEvent";
+import { parseVisibleRangeInput } from "./plotVisibleRange";
 import { elementViewEntries } from "./gotoViews";
 import { elementLabel } from "./elementLabel";
 import { basename } from "./windowTitle";
@@ -146,6 +147,9 @@ interface CommandPrompt {
   label: string;
   /// The value the field opens with, pre-selected.
   initial: string;
+  /// Gate the submit: a non-null return is shown as an inline error and
+  /// keeps the prompt open instead of calling `submit`.
+  validate?: (value: string) => string | null;
   submit: (value: string) => void;
 }
 
@@ -375,10 +379,10 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   // always set whenever a command's context targets one of their
   // kinds, so the fallback is only ever exercised for singletons.
   const runFocusedPanelCommand = useCallback(
-    (commandId: string) => {
+    (commandId: string, arg?: string) => {
       const active = activePanelRef.current;
       if (!active) return;
-      panelCommands.invoke(active.elementId ?? active.id, commandId);
+      panelCommands.invoke(active.elementId ?? active.id, commandId, arg);
     },
     [panelCommands],
   );
@@ -551,9 +555,44 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "palette.show": () => setOpenPalette("commands"),
     "goto.view": () => setOpenPalette("goto"),
     "goto.event": () => setOpenPalette("gotoEvent"),
+    // Prompt for a time (seconds since session start, non-negative — a
+    // negative value is a validation error, not a pre-session seek) and
+    // broadcast it on the same cross-panel goto bus the events view and
+    // the go-to-event palette use (ADR 0035), so the trace scrolls and
+    // every plot re-centres exactly as for a named event.
+    "goto.timeInTrace": () => {
+      setPrompt({
+        label: "Go to time (seconds since start)",
+        initial: "",
+        validate: (value) => {
+          const parsed = parseTimeInTrace(value);
+          return parsed.ok ? null : parsed.error;
+        },
+        submit: (value) => {
+          const parsed = parseTimeInTrace(value);
+          if (!parsed.ok) return; // the validator already blocked this
+          void emit(GOTO_EVENT, timeInTraceTargetNs(sessionStartSeconds, parsed.seconds));
+        },
+      });
+    },
     "plot.fitXAxis": () => runFocusedPanelCommand("plot.fitXAxis"),
     "plot.followLive.enable": () => runFocusedPanelCommand("plot.followLive.enable"),
     "panel.find": () => runFocusedPanelCommand("panel.find"),
+    // Prompt for a range ("min max" / "min,max" / "min..max") or a bare
+    // width, and hand the raw text to the focused plot's own handler —
+    // it alone knows the current window needed to resolve a width into
+    // concrete bounds (`plotVisibleRange.ts`).
+    "plot.setVisibleRange": () => {
+      setPrompt({
+        label: "Set visible range (min max, or a width)",
+        initial: "",
+        validate: (value) => {
+          const parsed = parseVisibleRangeInput(value);
+          return parsed.ok ? null : parsed.error;
+        },
+        submit: (value) => runFocusedPanelCommand("plot.setVisibleRange", value),
+      });
+    },
     "view.back": () => navigateViewHistory(-1),
     "view.forward": () => navigateViewHistory(1),
     // Close the focused panel only — the chord (`Mod+W`) must never
@@ -865,6 +904,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
         <PalettePrompt
           label={prompt.label}
           initialValue={prompt.initial}
+          validate={prompt.validate}
           onSubmit={(value) => {
             setPrompt(null);
             prompt.submit(value);

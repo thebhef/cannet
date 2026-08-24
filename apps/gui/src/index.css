@@ -1473,6 +1473,14 @@ ul.status-bar-menu .status-chip {
   color: var(--text-muted);
 }
 
+/* Invalid prompt input: shown instead of submitting, keeping the
+   prompt open rather than silently discarding the value. */
+.palette-prompt-error {
+  font-size: 0.8rem;
+  color: var(--danger-text);
+  margin-top: 0.3rem;
+}
+
 .palette-list {
   list-style: none;
   margin: 0;
