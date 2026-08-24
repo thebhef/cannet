@@ -11,6 +11,7 @@ import type {
 import { sectionHeaderOf, signalOf } from "./types";
 import { TraceControls } from "./TraceControls";
 import { ChipButton } from "./ChipButton";
+import { Icon } from "./Icon";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import { useTrace } from "./trace";
 import { useElementPanel, useElementRehydrate } from "./useElementPanel";
@@ -977,7 +978,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                       {k.signalName}
                     </span>
                     <button title="remove from selection" onClick={() => removeKey(key)}>
-                      ×
+                      <Icon name="x" />
                     </button>
                   </span>
                 );
@@ -1236,7 +1237,7 @@ function SectionHeaderRow({
             /…/{patternCount > 0 ? ` ${patternCount}` : ""}
           </button>
           <button type="button" aria-label={`rename section ${header.name}`} onClick={onStartRename}>
-            ✎
+            <Icon name="edit" />
           </button>
           <button
             type="button"
@@ -1244,7 +1245,7 @@ function SectionHeaderRow({
             title="delete this section; its signals stay in the view, unsectioned"
             onClick={onDelete}
           >
-            ×
+            <Icon name="x" />
           </button>
         </>
       )}

@@ -2661,6 +2661,11 @@ ul.status-bar-menu .status-chip {
 .trace-event-goto:hover {
   color: var(--text-secondary);
 }
+.trace-event-goto svg,
+.trace-event-edit svg,
+.trace-event-remove svg {
+  display: block;
+}
 
 /* The row's colour swatch — a `<button>` for editable events (click
    opens the picker via `ColorChip`), a bare `<span>` for the derived
@@ -3593,6 +3598,11 @@ button.color-chip {
 .plot-signal-remove:hover {
   color: var(--cursor-pink);
 }
+.plot-area-remove svg,
+.plot-signal-remove svg,
+.plot-area-filter-clear svg {
+  display: block;
+}
 
 .plot-area-empty {
   padding: 0.4rem;
@@ -3696,6 +3706,9 @@ button.color-chip {
 .signals-manual-pick button:hover {
   color: var(--text-primary);
 }
+.signals-manual-pick button svg {
+  display: block;
+}
 .signals-name {
   cursor: grab;
 }
@@ -3741,6 +3754,9 @@ button.color-chip {
 }
 .signals-section-header button:hover {
   color: var(--text-primary);
+}
+.signals-section-header button svg {
+  display: block;
 }
 .signals-section-name-input {
   background: var(--surface-control);
@@ -5490,6 +5506,7 @@ button.color-chip {
   padding: 0 2px;
 }
 .rbs-clear:hover { color: var(--danger-text); }
+.rbs-clear svg { display: block; }
 .rbs-calc-cell { color: var(--text-source); }
 .rbs-calc-cell em { font-size: 10px; }
 .rbs-no-signals { color: var(--text-faint); font-style: italic; }

@@ -768,7 +768,7 @@ function MessageRow({
             placeholder="period"
             ariaLabel={`${m.key} period`}
             disabled={inert || unknown}
-            title={m.periodOverridden ? "override — × to track GenMsgCycleTime" : "GenMsgCycleTime"}
+            title={m.periodOverridden ? "override — clear it to track GenMsgCycleTime" : "GenMsgCycleTime"}
           />
           ms
           {m.periodOverridden && (
@@ -785,7 +785,7 @@ function MessageRow({
                 }).catch(() => {})
               }
             >
-              ×
+              <Icon name="x" />
             </button>
           )}
         </span>
