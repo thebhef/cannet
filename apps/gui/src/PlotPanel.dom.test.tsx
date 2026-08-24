@@ -8181,6 +8181,83 @@ describe("where the event marker labels sit", () => {
     expect(perArea[1]).not.toContain("brake on");
   });
 
+  it("hands the labels to the next area when the top one is collapsed live", async () => {
+    // The interactive path, which the config-driven test below cannot
+    // reach: an area that was already drawing has to stop, and the one
+    // under it has to start.
+    //
+    // Note what this does *not* prove. jsdom rebuilds the lower area's
+    // uPlot on the collapse (the assertion that it is the same instance
+    // fails), so the draw hook gets a fresh closure either way and this
+    // stays green whether `isFirst` is read off the closure or off the
+    // live ref. The ref read is the correct form regardless — every
+    // other mutable draw input in this file goes through it, because
+    // the hook is registered once per instance — but a browser that
+    // does not rebuild is a case only the application can show.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel({
+        params: { elementId: "el-marker-collapse" },
+        registry: makeRegistry({
+          id: "el-marker-collapse",
+          config: {
+            areas: [
+              { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+              { id: "a2", signals: [sig("EngineTemp", "degC")] },
+            ],
+          },
+        }),
+        notes: {
+          notes: [{ id: "n1", timestampNs: 1_000_000_000, label: "brake on" }],
+          addNote: () => {},
+          renameNote: () => {},
+          recolorNote: () => {},
+          describeNote: () => {},
+          retagNote: () => {},
+          removeNote: () => {},
+          linkEvents: () => {},
+          unlinkEvents: () => {},
+          setNoteSubjects: () => {},
+        },
+      });
+      const settle = async () => {
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 60));
+        });
+      };
+      await settle();
+      const live = () => {
+        const all = uplotInstances as FakeUPlotInst[];
+        const out: FakeUPlotInst[] = [];
+        for (let i = all.length - 1; i >= 0; i--) {
+          const area = all[i].root.closest(".plot-area");
+          if (area === null || area.classList.contains("collapsed")) continue;
+          if (!out.some((l) => l.root === all[i].root)) out.unshift(all[i]);
+        }
+        return out;
+      };
+      const drew = (u: FakeUPlotInst) => {
+        u.drawOps.length = 0;
+        u.fire("draw");
+        return u.drawOps
+          .filter((o) => o.op === "fillText")
+          .map((o) => String((o.args as unknown[])[0]))
+          .includes("brake on");
+      };
+      expect(live().map(drew)).toEqual([true, false]);
+
+      fireEvent.click(screen.getAllByRole("button", { name: "collapse plot area" })[0]);
+      await settle();
+      const after = live();
+      expect(after).toHaveLength(1);
+      expect(drew(after[0])).toBe(true);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
   it("moves the labels down when the top area is collapsed", async () => {
     // Collapsing the topmost area used to take the marker labels with
     // it — a collapsed area is a heading row with no canvas to draw on.
