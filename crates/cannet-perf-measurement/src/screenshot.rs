@@ -257,13 +257,12 @@ window.__shot = {
     status: (document.querySelector(".status") || {}).textContent || "",
     plot: (document.querySelector(".plot-panel") || {}).innerText || "",
   }),
-  /* True while no trace import is running. The toolbar's import button
-     is the app's own statement about it: it says "Loading trace…"
-     from the first byte of the census to the pump's `log-finished`. */
-  importIdle: () =>
-    ![...document.querySelectorAll(".toolbar button")].some(
-      (e) => e.textContent.trim() === "Loading trace…",
-    ),
+  /* True while no trace import is running. The toolbar's import chip
+     is the app's own statement about it: it carries `aria-busy` from
+     the first byte of the census to the pump's `log-finished` (its
+     label stays "Import" throughout — the busy state is a chip
+     attribute now, not a relabel). */
+  importIdle: () => !document.querySelector('.toolbar button[aria-busy="true"]'),
 };
 "#;
 
@@ -319,19 +318,22 @@ pub const SCENARIO: &[Step] = &[
     },
     // One added panel per step: each lands as the active tab of its
     // group, so adding two in a row would photograph only the second.
+    // The toolbar is commands only (no hand-rolled buttons of its own
+    // any more) — these panels are opened by their command, the same
+    // dispatch a click on the Add menu or the bar's own chip performs.
     Step {
         name: "04-transmit",
-        script: "(async () => { await window.__shot.toolbar('Add transmit panel'); })()",
+        script: "(async () => { await window.__shot.command('Add transmit panel'); })()",
         shows: &["transmit"],
     },
     Step {
         name: "05-colormap",
-        script: "(async () => { await window.__shot.toolbar('Add color map'); })()",
+        script: "(async () => { await window.__shot.command('Add color map'); })()",
         shows: &["colormap"],
     },
     Step {
         name: "06-project-graph",
-        script: "(async () => { await window.__shot.toolbar('Graph panel'); })()",
+        script: "(async () => { await window.__shot.command('Show project graph'); })()",
         shows: &["project-graph"],
     },
     Step {
@@ -1270,10 +1272,17 @@ mod tests {
     /// this: every label any scenario clicks must exist in the source
     /// that defines it.
     ///
-    /// Two spellings, because the frontend has two. A command or toolbar
-    /// label is *declared* (`label: "…"`); a modal's button carries its
-    /// text as JSX, where the only stable thing to match is the label on
-    /// a line of its own.
+    /// Two spellings, because the frontend has two. A command label is
+    /// *declared* (`label: "…"`); a modal's button carries its text as
+    /// JSX, where the only stable thing to match is the label on a line
+    /// of its own.
+    ///
+    /// `toolbar` is not one of them: the toolbar became commands-only
+    /// (every chip dispatches through the same `onRun` the palette
+    /// uses), so no scenario step drives one by raw button text any
+    /// more — each former toolbar step now goes through `command`
+    /// instead, reaching the identical dispatch. `window.__shot.toolbar`
+    /// stays defined for ad-hoc use; nothing here exercises it.
     #[test]
     fn the_scenarios_drive_labels_the_frontend_still_defines() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1281,7 +1290,6 @@ mod tests {
             std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"))
         };
         let commands = read("apps/gui/src/commands.ts");
-        let app = read("apps/gui/src/App.tsx");
         let blf_modal = read("apps/gui/src/BlfChannelMapModal.tsx");
         let declared = |src: &str, label: &str| src.contains(&format!("label: \"{label}\""));
         let jsx_text = |src: &str, label: &str| src.lines().any(|l| l.trim() == label);
@@ -1292,7 +1300,6 @@ mod tests {
                 "commands.ts",
                 &declared as &dyn Fn(&str, &str) -> bool,
             ),
-            ("toolbar", &app, "App.tsx", &declared),
             (
                 "modal",
                 &blf_modal,

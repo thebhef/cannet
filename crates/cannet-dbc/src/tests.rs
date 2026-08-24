@@ -612,7 +612,7 @@ fn defines_message_answers_for_the_message_not_for_its_attributes() {
     let id = cannet_core::CanId::standard(256).unwrap();
     assert!(plain
         .dbc_calculated_fields(id)
-        .is_some_and(|c| c.is_empty()));
+        .is_some_and(super::calc::CalculatedFieldsConfig::is_empty));
     assert!(plain.defines_message(id));
 }
 
