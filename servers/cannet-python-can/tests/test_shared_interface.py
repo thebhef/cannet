@@ -41,6 +41,7 @@ _ensure_on_path()
 
 from cannet_python_can import driver as drv  # noqa: E402
 from cannet_python_can import server as srv  # noqa: E402
+from cannet_python_can.server import shared_interface as si  # noqa: E402
 from cannet_python_can._proto import cannet_pb2 as pb  # noqa: E402
 
 
@@ -409,6 +410,60 @@ def test_bus_off_state_maps_to_proto_bus_off() -> None:
     assert env.interface_state.state == pb.CONTROLLER_STATE_BUS_OFF
     assert env.interface_state.tec == 255
     assert env.interface_state.rec == 120
+
+
+def test_warning_state_maps_to_proto_warning() -> None:
+    """The counter-derived warning level rides its own wire value; a
+    build that folded it into active would show a bus over the ISO
+    warning limit as healthy, which is the reading an unplugged CAN
+    cable produced."""
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    outbox: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", outbox)
+    _drain(outbox, kind="interface_state")
+
+    driver.opened[0].set_state(
+        drv.ControllerState(state=drv.STATE_WARNING, tec=104, rec=0)
+    )
+
+    [env] = _drain(outbox, kind="interface_state", timeout_s=3.0)
+    assert env.interface_state.state == pb.CONTROLLER_STATE_WARNING
+    assert env.interface_state.tec == 104
+
+
+def test_a_pinned_controller_publishes_once_however_long_the_fault_lasts() -> None:
+    """Coalescing, where it has to happen.
+
+    A transmitter driving an open circuit produced about 5,200 error
+    frames a second on the bench, each one carrying the counters this
+    state is derived from. Publishing an ``InterfaceState`` per frame
+    would flood every subscriber; the poll's own cadence plus the
+    publish-on-change gate is what keeps it to one envelope per actual
+    transition. Three poll intervals with the counters pinned must
+    produce exactly one.
+    """
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    outbox: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", outbox)
+    _drain(outbox, kind="interface_state")
+
+    driver.opened[0].set_state(
+        drv.ControllerState(state=drv.STATE_PASSIVE, tec=128, rec=0)
+    )
+    _drain(outbox, kind="interface_state", timeout_s=3.0)
+
+    time.sleep(si._STATE_POLL_INTERVAL_S * 3)
+    extra = []
+    while True:
+        try:
+            env = outbox.get_nowait()
+        except queue.Empty:
+            break
+        if env.WhichOneof("body") == "interface_state":
+            extra.append(env)
+    assert extra == [], "a pinned controller re-published while nothing changed"
 
 
 # ---- error broadcast (item #23) -------------------------------------------

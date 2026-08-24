@@ -5,7 +5,14 @@
 //! healthy, **error-passive** once either counter passes 127 (its error
 //! flags turn recessive and stop destroying other nodes' traffic), and
 //! **bus-off** once the transmit counter passes 255, at which point it
-//! is off the wire entirely. That state and those two counters are the
+//! is off the wire entirely. A fourth reading rides the same message:
+//! **warning**, either counter past 95. That is the limit the standard
+//! defines on the way to error-passive rather than a confinement state
+//! of its own, and it is here because it is the first reading that
+//! separates a bus in trouble from a quiet one — a peer that cannot say
+//! it reports a failing bus as healthy.
+//!
+//! That state and those two counters are the
 //! only thing a controller reports about *why* a bus is unwell — the
 //! error frames themselves carry no identity.
 //!
@@ -35,8 +42,15 @@ use std::sync::{Arc, Mutex};
 /// ISO 11898-1 fault confinement, as a controller reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControllerState {
-    /// Healthy: both counters below 128, error flags dominant.
+    /// Healthy: both counters below 96, error flags dominant.
     Active,
+    /// Either counter above 95, neither past 127. Not one of ISO
+    /// 11898-1's three confinement states — the controller is still
+    /// error-active and its flags are still dominant — but it is the
+    /// warning limit the standard defines on the way to error-passive,
+    /// and it is the first reading that distinguishes a bus in trouble
+    /// from a quiet one.
+    Warning,
     /// A counter above 127. The node still communicates, but its error
     /// flags are recessive — it no longer destroys others' traffic.
     Passive,
@@ -62,6 +76,7 @@ impl ControllerState {
             2 => Some(Self::Passive),
             3 => Some(Self::BusOff),
             4 => Some(Self::Unavailable),
+            5 => Some(Self::Warning),
             _ => None,
         }
     }
@@ -71,6 +86,7 @@ impl ControllerState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Warning => "warning",
             Self::Passive => "passive",
             Self::BusOff => "busOff",
             Self::Unavailable => "unavailable",
@@ -190,9 +206,26 @@ mod tests {
     #[test]
     fn the_wire_enum_maps_onto_the_names_the_gui_spells() {
         assert_eq!(ControllerState::Active.as_str(), "active");
+        assert_eq!(ControllerState::Warning.as_str(), "warning");
         assert_eq!(ControllerState::Passive.as_str(), "passive");
         assert_eq!(ControllerState::BusOff.as_str(), "busOff");
         assert_eq!(ControllerState::Unavailable.as_str(), "unavailable");
+    }
+
+    #[test]
+    fn a_controller_over_the_warning_limit_is_neither_healthy_nor_passive() {
+        // The reading an open CAN wire produced. Before it existed the
+        // only names available were "active" and "passive", so a peer
+        // reporting the warning limit had to be flattened into one of
+        // them — and flattening it into active is what made an
+        // unplugged cable look like a healthy bus.
+        let states = ControllerStates::new();
+        states.record("PCAN_USBBUS1", 5, 104, 0);
+        let got = states.get("PCAN_USBBUS1").unwrap();
+        assert_eq!(got.state, ControllerState::Warning);
+        assert_ne!(got.state, ControllerState::Active);
+        assert_ne!(got.state, ControllerState::Passive);
+        assert_eq!(got.tec, 104);
     }
 
     #[test]

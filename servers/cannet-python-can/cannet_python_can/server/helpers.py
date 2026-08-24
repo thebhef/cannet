@@ -161,6 +161,8 @@ def _configure_to_open_config(cfg: pb.ConfigureBus) -> drv.OpenConfig:
 
 
 def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
+    if name == drv.STATE_WARNING:
+        return pb.CONTROLLER_STATE_WARNING
     if name == drv.STATE_PASSIVE:
         return pb.CONTROLLER_STATE_PASSIVE
     if name == drv.STATE_BUS_OFF:

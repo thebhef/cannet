@@ -300,6 +300,25 @@ the bus or the ECU the press is deliberately inert.
 
 **Needed: confirm the message is the right subject, or name another.**
 
+### 1.27 The bus-health launcher now tints for the warning limit, not only for passive and worse
+[task 109](tasks/0109-usage-feedback-chip-era.md) phase 2c
+
+Grooming settled that `CONTROLLER_STATE_WARNING` joins the wire. It did
+not say whether a controller merely over the ISO warning limit is a
+*concern* the status-bar launcher lights up for. The reading taken is
+yes, with the warning tint rather than the fault tint: it is the reading
+a real fault produces on its way to error-passive, and a launcher that
+stayed neutral until 128 would go on saying nothing through the part of
+a fault an operator could still act on. The bus-health row reads
+`Error-warning` in the same palette as `Error-passive`; the words tell
+them apart.
+
+Consequence: a bus with occasional errors that crosses 96 and settles
+back will tint the launcher briefly where it used to stay neutral.
+
+**Needed: confirm the warning limit is worth a tint, or set the
+threshold at error-passive.**
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost
@@ -415,6 +434,54 @@ the harness tally fix it depends on — starts before that.
 
 ---
 
+### 2.4 Pattern-matched signals belong in the view-signals list
+
+**Owner ruling 2026-08-22**, on task 109 item 1: *"I think the
+exception is wrong. Those fields do dynamically update but I still want
+them in the list."* The owner grants the premise — a pattern's matches
+re-evaluate live — and rejects the conclusion `viewSignalsPush.ts`
+drew from it. A pattern row pushes identity-only and needs no host
+change; it can read Decoded / Not Decoded / Ambiguous and never Scale
+or Stale, which is correct rather than a gap. Detail and consequences
+in [task 109](tasks/0109-usage-feedback-chip-era.md) § 1.
+
+### 2.5 The perf capture is skipped for the rest of task 109
+
+**Owner instruction 2026-08-22**, given mid-phase-3: no ADR-0031
+capture for the remaining phases, nothing written to
+`docs/performance-measurements/frontend/`. The installer stays the
+per-phase deliverable. Phases record the skip in their status log so
+the omission reads as a decision. Phase 3's three runs had already
+completed when the instruction arrived and read in band (renderer
+263–302 MB, tree 668–704 MB, rx ~1506 f/s, tx ~1749 f/s); their reports
+were deleted.
+
+### 2.6 "Unplugged the PEAK" means the CAN link, not the USB device
+
+**Owner clarification 2026-08-22.** Task 109 item 2, and therefore task
+101's failed hardware verification, is a **bus-health** fault under ISO
+11898-1 fault confinement — not device removal. Phase 2 built
+device-removal detection for a fault nobody has tested; the reported
+one is different and remains open. The bench measurement, the
+per-vendor counter sources, and the resulting phases 2c–2e are in
+[task 109](tasks/0109-usage-feedback-chip-era.md) § 2 (addendum).
+
+### 2.7 Bus-health state ships for PCAN and Vector; Kvaser is deferred
+
+**Owner ruling 2026-08-23.** Task 109 phases 2c and 2d implement
+counter-derived controller state for PCAN and Vector. Kvaser is left
+out of this pass: it is the only vendor whose `canReadStatus` and
+`canReadErrorCounters` python-can does not bind (nobody upstream has
+ever attempted it — the closest is PR #477, which added the `err_frame`
+tally that cannot yield a state), and CANlib's own header warns that
+*"not all CAN controllers provide access to the error counters; in this
+case, an educated guess is returned."* So a Kvaser TEC may be an
+estimate where PEAK's is an exact register — the estimate-vs-measurement
+question that would otherwise need a wire decision is deferred with it.
+The owner re-tests on hardware after 2c and 2d land and the fix is
+revisited if needed. Detail in
+[task 109](tasks/0109-usage-feedback-chip-era.md) § 2 (addendum).
+
 ## 3. Open findings nobody has dispositioned
 
 Recorded by the phases that found them, not yet decided.
@@ -458,7 +525,8 @@ Recorded by the phases that found them, not yet decided.
 | 3.35 | **The ADR-0031 memory metrics are not isolated from other processes, and fail silently in both directions.** `descendant_pids` (`crash.rs`) walks recorded parent-pid links, and Windows never clears a process's `ParentProcessId` when its parent exits — so an unrelated orphan joins our tree the moment one of our processes reuses its dead parent's pid. Observed: a run's sidecar took pid 64880, which the operator's separately-running cannet still names as its parent, and its whole 4 GB application was measured as ours (`tree_mb_peak` 5132.6 vs a 1547.4 limit). Worse, when another cannet owns the shared WebView2 browser process **our own renderer is not our descendant**, so `webview_mb` / `renderer_mb_peak` read exactly 0.0 and `tree_mb_peak` reads ~122 MB — and *passes*. Confirmed by a ground-truth `Win32_Process` walk alongside a capture. Same class as the idle-bus silent disarm, in a metric family nobody checks for plausibility. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.36 | **Task 107 phase 5's memory behaviour is unmeasured, and the phase could not fix that.** Every capture this session was taken with the operator's own cannet running, which is what 3.35 makes unreadable; killing it was not an option under the shared-hardware rule. The timing metrics are sound (verified load, every gated metric under baseline). A clean memory reading needs one capture set taken with the machine to itself. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.37 | **A wire-level transmit rejection reaches the app and is thrown away.** `cannet-client::is_per_frame_error_code` classifies `TX_REJECTED` as non-fatal and logs it with `tracing::warn!`, which goes to dev stderr only — not the System Messages panel, not bus health, not the connection chip. So a tx-confirm trace row is a **local echo, never a wire confirmation**, and the trace can show a frame as sent that the far end refused: a listen-only bus, an FD frame on a classic bus, a saturated queue. Task 109 phase 2's route gate closes the unplugged-adapter case; this general one is a behavioural choice (where a rejection surfaces, and at what cadence — at RBS rate it is a flood and needs coalescing) so it was recorded rather than chosen. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
-| 3.38 | **The bus-health readout was structurally inert on the only hardware there is.** python-can's `PcanBus.state` getter returns `self._state`, written only by the setter `__init__` calls — a stored echo of the configured value, never a device read — so bus-off and error-passive could not surface on PEAK no matter what the controller did. Task 109 phase 2 switches a PCAN bus onto the live `status()` read (`CAN_GetStatus`), matched against exact vendor status codes. That makes task 101's controller state work for the first time on this rig, and it is a behaviour change on a live data path that **has never met hardware** — worth knowing before the confirmation run. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
+| 3.39 | **Error frames are trace rows, one each, and that is most likely the owner's third symptom.** During the bench fault the adapter emitted 115,136 error frames in 22 s (~5,200/s), and nothing filters them out of the ingest path: `session.rs`'s only error branch *adds* the health-coalescer fold and the `trace_store.append` below it is unconditional, `trace_store/flush.rs` persists the kind like any other, and `trace_query.rs` spells it for the paged view. So the pack bus trace kept growing at ~5,200 rows/s during the fault. Phase 2 attributed "the trace continued getting updates" to tx-confirm rows and closed that case; this is a second, larger contributor it did not see. **Not fixed:** `bus_health.rs` records the opposite decision in its module doc ("The frames themselves are stored like any other frame ... so a saved capture is not a lossy restatement of what was received"), so suppressing or coalescing them changes what a save contains. Drop them, coalesce them into one row, or keep them and filter at the view - a behavioural choice, and a separate phase. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
+| 3.38 | **The bus-health readout was structurally inert on the only hardware there is.** python-can's `PcanBus.state` getter returns `self._state`, written only by the setter `__init__` calls — a stored echo of the configured value, never a device read — so bus-off and error-passive could not surface on PEAK no matter what the controller did. Task 109 phase 2 switches a PCAN bus onto the live `status()` read (`CAN_GetStatus`), matched against exact vendor status codes. That makes task 101's controller state work for the first time on this rig, and it is a behaviour change on a live data path that **has never met hardware** — worth knowing before the confirmation run. **Superseded in part by phase 2c:** the bench run showed `CAN_GetStatus` itself under-reports (it stops at `BUSWARNING` on a transmitter driving an open circuit), so the state is now derived from the error frames' TEC/REC and the status word only floors it. The exact match survives for the no-hardware code family alone. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 
 ---
 

@@ -67,6 +67,7 @@ export function useBusHealth(): BusHealthMap {
 /// and this one comes back when someone plugs the cable in.
 const CONTROLLER_STATE_TEXT: Record<string, string> = {
   active: "Error-active",
+  warning: "Error-warning",
   passive: "Error-passive",
   busOff: "Bus-off",
   unavailable: "Adapter unavailable",
@@ -75,6 +76,7 @@ const CONTROLLER_STATE_TEXT: Record<string, string> = {
 /// The indicator style each controller state paints with. Absent from
 /// the map means error-active, which is the unremarkable case.
 const CONTROLLER_STATE_TONE: Record<string, BusHealthRow["tone"]> = {
+  warning: "warning",
   passive: "passive",
   busOff: "busoff",
   unavailable: "unavailable",
@@ -92,11 +94,11 @@ export interface BusHealthRow {
   busId: string;
   /// The project's name for the bus.
   name: string;
-  /// `Error-active` / `Error-passive` / `Bus-off` / `Adapter
-  /// unavailable` / `Not connected`.
+  /// `Error-active` / `Error-warning` / `Error-passive` / `Bus-off` /
+  /// `Adapter unavailable` / `Not connected`.
   stateText: string;
   /// The style key the row's indicator paints with.
-  tone: "active" | "passive" | "busoff" | "unavailable" | "off";
+  tone: "active" | "warning" | "passive" | "busoff" | "unavailable" | "off";
   /// Percentage of the wire in use, or `null` where it cannot be known.
   loadPercent: number | null;
   /// Why the load is unknowable, for the cell's tooltip. `null` when
@@ -174,14 +176,26 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
 }
 
 /// The buses the status-bar launcher reports on: every one whose
-/// controller is not error-active, including one whose adapter the
-/// driver can no longer reach. A bus that has not reported a state
-/// is *not* a concern — silence is not a fault, and the launcher would
-/// otherwise light up for every virtual bus and every driver that does
-/// not answer.
+/// controller is not error-active, including one that is merely over
+/// the ISO warning limit and one whose adapter the driver can no longer
+/// reach. A bus that has not reported a state is *not* a concern —
+/// silence is not a fault, and the launcher would otherwise light up
+/// for every virtual bus and every driver that does not answer.
+///
+/// The warning limit earns a place here rather than being treated as
+/// close enough to healthy: it is the reading a fault produces on its
+/// way to error-passive, and a launcher that stayed dark until 128
+/// would go on saying nothing through the part of a fault an operator
+/// could still act on.
 export function busHealthConcerns(rows: readonly BusHealthRow[]): BusHealthConcern[] {
   return rows
-    .filter((r) => r.tone === "passive" || r.tone === "busoff" || r.tone === "unavailable")
+    .filter(
+      (r) =>
+        r.tone === "warning" ||
+        r.tone === "passive" ||
+        r.tone === "busoff" ||
+        r.tone === "unavailable",
+    )
     .map((r) => ({
       bus: r.name,
       state: r.stateText.toLowerCase(),

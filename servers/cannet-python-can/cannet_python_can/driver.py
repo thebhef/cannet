@@ -74,6 +74,14 @@ class OpenConfig:
 #: Controller state names returned by :meth:`OpenChannel.state`.
 #: Mapped by the wire layer onto the ``ControllerState`` proto enum.
 STATE_ACTIVE = "active"
+#: Either error counter has passed 95 but neither has reached 128. The
+#: controller still communicates and its error flags are still dominant,
+#: so this is not one of ISO 11898-1's three confinement states -- it is
+#: the warning limit the standard defines on the way to error-passive,
+#: and every vendor's status word reports it. Without a name for it a
+#: fault that never gets past the warning limit is indistinguishable
+#: from a healthy bus, which is what an unplugged CAN cable looked like.
+STATE_WARNING = "warning"
 STATE_PASSIVE = "passive"
 STATE_BUS_OFF = "bus_off"
 #: Not a fault-confinement state: the driver can no longer reach the
@@ -87,16 +95,67 @@ STATE_UNAVAILABLE = "unavailable"
 class ControllerState:
     """Snapshot of a controller's ISO 11898-1 fault-confinement state.
 
-    ``state`` is one of :data:`STATE_ACTIVE`, :data:`STATE_PASSIVE`,
-    :data:`STATE_BUS_OFF` or :data:`STATE_UNAVAILABLE`. ``tec`` /
-    ``rec`` are the current Transmit / Receive Error Counters; backends
-    that don't expose them report 0, and an unavailable interface
-    reports 0 for both because nothing is reading them.
+    ``state`` is one of :data:`STATE_ACTIVE`, :data:`STATE_WARNING`,
+    :data:`STATE_PASSIVE`, :data:`STATE_BUS_OFF` or
+    :data:`STATE_UNAVAILABLE`. ``tec`` / ``rec`` are the current
+    Transmit / Receive Error Counters; backends that don't expose them
+    report 0, and an unavailable interface reports 0 for both because
+    nothing is reading them.
     """
 
     state: str = STATE_ACTIVE
     tec: int = 0
     rec: int = 0
+
+
+#: Fault-confinement states ordered by how bad they are, so two
+#: independent readings of the same controller can be combined without
+#: either being able to talk the other down. :data:`STATE_UNAVAILABLE`
+#: is deliberately absent: it is not a point on this scale but the
+#: absence of a controller to place on it, and it short-circuits.
+_STATE_SEVERITY = {
+    STATE_ACTIVE: 0,
+    STATE_WARNING: 1,
+    STATE_PASSIVE: 2,
+    STATE_BUS_OFF: 3,
+}
+
+
+def worse_state(a: str, b: str) -> str:
+    """The more severe of two fault-confinement readings.
+
+    A controller has one state, but a backend can offer two views of it
+    that disagree -- PEAK's ``CAN_GetStatus`` word and its error frames'
+    counters did exactly that on the bench, the word saying "warning"
+    while the counters said 128, i.e. error-passive. Neither view is
+    allowed to lower the other: a status bit set means the controller
+    set it, and a counter over a threshold means the controller counted
+    past it.
+    """
+    return a if _STATE_SEVERITY.get(a, 0) >= _STATE_SEVERITY.get(b, 0) else b
+
+
+def state_from_counters(tec: int, rec: int) -> str:
+    """ISO 11898-1 fault confinement, read off the error counters.
+
+    The counters *are* the state machine: the standard defines
+    error-passive as either counter above 127 and bus-off as the
+    transmit counter above 255, and both fall again on every successful
+    transmission or reception, so recovery needs no separate signal. 96
+    is the standard's warning limit.
+
+    The receive counter cannot take a controller bus-off -- only a
+    transmitter removes itself from the wire -- which is why the two are
+    thresholded separately rather than folded into one worst-counter
+    figure first.
+    """
+    if tec > 255:
+        return STATE_BUS_OFF
+    if tec > 127 or rec > 127:
+        return STATE_PASSIVE
+    if tec > 95 or rec > 95:
+        return STATE_WARNING
+    return STATE_ACTIVE
 
 
 class FrameKind(enum.Enum):
@@ -198,6 +257,12 @@ class OpenChannel(Protocol):
         read fails — the adapter is gone, the handle is invalid —
         reports :data:`STATE_UNAVAILABLE` rather than the healthy
         default, so "we cannot reach it" never reads as "it is fine".
+
+        Where a backend exposes the error counters, the state is
+        :func:`state_from_counters` over them rather than whatever the
+        vendor's status word says on its own: the counters are what ISO
+        11898-1 defines confinement on, and a status word that
+        under-reports cannot be told apart from a healthy bus.
         """
 
     def close(self) -> None:
@@ -216,5 +281,8 @@ __all__ = [
     "STATE_BUS_OFF",
     "STATE_PASSIVE",
     "STATE_UNAVAILABLE",
+    "STATE_WARNING",
     "TxRejected",
+    "state_from_counters",
+    "worse_state",
 ]

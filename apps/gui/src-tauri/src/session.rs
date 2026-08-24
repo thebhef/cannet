@@ -1071,8 +1071,9 @@ pub(crate) fn resolve_bus_route(
 /// resolving — and a route that keeps resolving keeps appending
 /// tx-confirm rows for frames no wire ever carried. This is the one
 /// signal that says the far end is gone, and it is deliberately narrow:
-/// a bus-off or error-passive controller is present and recovers on its
-/// own, so it keeps its route.
+/// a controller over the warning limit, error-passive or even bus-off is
+/// present and recovers on its own as its counters fall, so it keeps its
+/// route (ADR 0039).
 fn interface_is_unavailable(session: &RemoteSession, interface_id: &str) -> bool {
     session
         .controllers

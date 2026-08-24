@@ -38,10 +38,13 @@ The transmit scheduler's periodic-emission semantics, in four rules:
    on transmitting into a driver that cannot carry the frames, and
    every one of them still appends a tx-confirm row. A trace that shows
    traffic no wire carried is wrong data, not a missing indicator. The
-   test is deliberately narrow: an error-passive or **bus-off**
-   controller keeps its route, because it is present and recovers on
-   its own, and parking it would freeze every counter over a fault the
-   hardware clears by itself.
+   test is deliberately narrow: a controller over the ISO 11898-1
+   **warning** limit, one that has gone **error-passive**, and even one
+   that is **bus-off** all keep their routes, because each is present
+   and recovers on its own — the error counters fall on every
+   successful transmission — and parking one would freeze every
+   counter over a fault the hardware clears by itself. Only
+   `unavailable` parks, because only there is the device itself gone.
 4. **Wake contract: best-effort OS timer.** The driver blocks on the
    command channel with a deadline timeout; typical wake lateness is
    ≤2 ms (measured), and the regression guard is the perf rig's

@@ -158,6 +158,183 @@ mid-stream, and can read what python-can's PEAK backend does on device
 removal — but the closing check is owner-run, and can be scheduled at
 any point after the phase reports.
 
+### 2 (addendum) — what the hardware actually reports, measured
+
+**Owner clarification 2026-08-22: "unplugged" means the CAN link, not
+the USB device.** This is a bus-health fault under ISO 11898-1 fault
+confinement, not device removal. Phase 2 built device-removal detection
+(`CONTROLLER_STATE_UNAVAILABLE`) for a fault nobody has tested; the
+reported one is a different fault, and phase 2 did not fix it.
+
+Measured with the owner at the bench, 2026-08-22. Two PEAK PCAN-USB FD
+adapters at 500 kbit/s, `PCAN_USBBUS1` transmitting 100 f/s,
+`PCAN_USBBUS2` present as an ACKing node, `PCAN_BUSOFF_AUTORESET`
+confirmed **0**, `LISTEN_ONLY` 0. The owner disconnected one end of the
+CAN cable at 10.9 s and reconnected at 33.4 s. Ground truth for the
+open wire is the receiving channel: `rx2` ran 90–100 f/s, fell to
+**0** for the whole window, and resumed on reconnect.
+
+Four candidate state sources, sampled together:
+
+| Source | During the fault | Verdict |
+|---|---|---|
+| `bus.state` (python-can) | `ACTIVE` | the stored echo phase 2 documented — never moves |
+| `CAN_GetStatus` | `BUSWARNING` (0x8) and no further | **under-reports** — never reaches passive |
+| `PCAN_MESSAGE_STATUS` frames | 3 frames, all `BUSWARNING` | same under-report |
+| **error frames** | **TEC 8 → 128, held, then decrements to 0** | **authoritative** |
+
+The error-frame payload is the finding. Byte 3 rose in steps of exactly
+8 per failed transmission (`08 10 18 … 80`), pinned at **`0x80` = 128**
+for 114,917 consecutive frames, briefly overshot (`88 90 b7 bb`), and
+on reconnect counted **down** to zero as transmissions succeeded. That
+is TEC, by its own arithmetic. Byte 2 is REC, zero throughout because
+we were the transmitter. Byte 1 is an error-type code (`0x19` while
+faulting, `0x00` while recovering).
+
+**TEC ≥ 128 is error-passive.** That is why PCAN-View reads "error
+passive" and "warning" simultaneously — it derives state from the
+counters, and PEAK's own `ANYBUSERR = 0x4001C` (`BUSLIGHT | BUSWARNING
+| BUSOFF | BUSPASSIVE`) shows these are flags meant to be masked, not
+matched.
+
+Raw runs and probe scripts are in the session scratchpad
+(`pcan/B-tx.txt`, `pcan/D-status.txt`, `pcan/watch_*.py`); they are the
+only reproduction of this that exists without hardware.
+
+#### Three independent places the state is lost
+
+1. **PCAN** — `_pcan_state()` reads `CAN_GetStatus`, which never gets
+   past `BUSWARNING`, and then maps warning to `STATE_ACTIVE` anyway.
+   Its exact-match test also cannot fire on a composite: a genuine
+   `BUSPASSIVE | BUSWARNING` (`0x40008`) fails `status == 0x40000` and
+   falls through to active.
+2. **Vector and Kvaser** — neither backend overrides `state`, and
+   `BusABC.state`'s getter **returns `BusState.ACTIVE` unconditionally**
+   (a hardcoded default, not `NotImplementedError`). The readout has
+   therefore never worked on any backend, for two different reasons.
+3. **The counters are already arriving and nothing reads them.**
+   `_msg_to_frame` copies `msg.data` verbatim and tags
+   `FrameKind.ERROR`, so TEC and REC cross the wire in bytes 2–3 of
+   every error frame. `tec` / `rec` ship as constant 0.
+
+#### Where each vendor surfaces the counters
+
+| Vendor | State | TEC / REC | Reachable how |
+|---|---|---|---|
+| PCAN | error-frame counters (`GetStatus` under-reports) | **bytes 2–3 of the error frame** | already in `_msg_to_frame`; nothing decodes them |
+| Vector | `XL_CHIP_STATE` / `XL_CAN_EV_TAG_CHIP_STATE` events carry `busStatus` | **`txErrorCounter`, `rxErrorCounter`** on `s_xl_chip_state` | `VectorBus.handle_can_event` / `handle_canfd_event` are **empty hooks python-can calls for exactly these events and documents for subclassing**; `xlCanRequestChipState` is already bound in `xldriver.py` |
+| Kvaser | `canReadStatus` (`canSTAT_ERROR_WARNING` / `ERROR_PASSIVE` / `BUS_OFF`) | `canReadErrorCounters` | **neither is bound by python-can.** Its bound set covers only `canRequestBusStatistics` / `canGetBusStatistics`, whose `BusStatistics` carries frame counts, err-frame count, bus load and overruns — no state, no counters. We must bind them ourselves in python-can's own `__get_canlib_function` idiom |
+
+Kvaser is the only one needing a new binding, and it is the only one
+whose error frames do not carry counters, so the explicit call is not
+optional there.
+
+**`BusStatistics.err_frame` is not a substitute, despite the name.** It
+is *"Number of error frames"* — a cumulative tally of error frames
+observed, monotonic and unbounded. TEC and REC are the controller's own
+0–255 registers, and fault confinement is defined on their values:
+they rise 8 per failed transmit, **fall 1 per success**, and separate
+transmit from receive. A tally does none of that. On the bench run
+above the equivalent tally would have read 115,136 — a number that
+cannot say which state the controller is in, cannot distinguish
+transmitting into a dead bus from receiving on a noisy one, and never
+falls when the cable goes back in, while TEC did all three. Deriving
+state from it would be the heuristic the owner ruled out. It belongs
+with bus load as a health metric, not as a state source.
+
+**The upstream gap is known and deliberate.** python-can issue #736,
+*"Meaning of `can.BusABC.state`"* (December 2019, still open against
+4.6.1 — the version in `uv.lock`), asks exactly this question: does
+`state` mean driver-to-interface connectivity or ISO 11898-1 controller
+state? It notes `KvaserBus` and `VectorBus` do not implement it. The
+semantics were never settled, which is why `BusABC.state` returns a
+hardcoded `ACTIVE` rather than raising. A fossil of the intent survives
+in python-can's own Kvaser constants: `canIOCTL_CLEAR_ERROR_COUNTERS`
+is bound, and nothing reads them.
+
+So this is not a library that already solved the problem behind an API
+we failed to find — it is six years of deferred semantics. That argues
+for keeping the derivation in **our** seam and reading each vendor
+directly, rather than implementing or monkey-patching `Bus.state` and
+inheriting an unsettled contract.
+
+Two caveats from CANlib's own header, which the Kvaser work must
+surface rather than hide:
+
+- `canReadErrorCounters(hnd, *txErr, *rxErr, *ovErr)` — *"Not all CAN
+  controllers provide access to the error counters; in this case, an
+  educated guess is returned."* On some Kvaser hardware TEC/REC are an
+  **estimate**. PEAK's are exact registers. Displaying both as "TEC"
+  without distinction would launder an estimate into a measurement,
+  which is the thing the owner ruled out.
+- `canReadStatus(hnd, *flags)` — *"returns the latest known status... If
+  a status change happens precisely when `canReadStatus()` is called, it
+  may not be reflected in the returned result."* A documented staleness
+  window, so a single sample is not authoritative.
+
+**The upstream idiom, where it has landed, is a live read with masked
+bits.** Five backends implement `state` today — `etas`, `ixxat` (two
+drivers), `pcan`, `systec` — and none of them is Kvaser, Vector or
+socketcan. The ixxat implementation is the closest analogue to what we
+need:
+
+```python
+status = structures.CANLINESTATUS()
+_canlib.canControlGetStatus(self._control_handle, ctypes.byref(status))
+error_byte_1 = status.dwStatus & 0x0F
+if error_byte_1 & constants.CAN_STATUS_BUSOFF:   # masked, not ==
+    return BusState.ERROR
+```
+
+A live device read, and **masked** bit tests. Phase 2 chose the
+opposite on both counts.
+
+**Owner ruling 2026-08-23: this pass ships PCAN and Vector only.**
+Kvaser is deferred — it is the one vendor needing bindings nobody
+upstream has written, and the one whose counters CANlib itself calls an
+*"educated guess"* on some controllers. Both make it the expensive,
+least-trustworthy third. The hardware re-test happens after 2c and 2d
+land, and the fix is revisited if that test says so.
+
+Nobody upstream has attempted Kvaser state or error counters — there is
+no such PR, open or merged, in the repository's history. The closest is
+#477, *"Added support for bus statistics in the kvaser interface"*,
+which added `canGetBusStatistics`: the `err_frame` tally ruled out
+above. The one Kvaser health feature python-can has is the count that
+cannot yield a state.
+
+It also settles whether to implement `Bus.state` ourselves: **no.**
+ixxat has to fold bus-off into `BusState.ERROR` and report listen-only
+as `PASSIVE`, because python-can's three-value enum cannot hold
+warning / passive / bus-off separately. Our wire carries all three plus
+`UNAVAILABLE`, so conforming to `Bus.state` would mean flattening our
+own model to fit an interface whose meaning has been unsettled since
+2019. Read each vendor directly, in our own seam.
+
+#### Volume is a design constraint
+
+**115,136 error frames in 22 seconds — about 5,200/s.** Whatever
+consumes these coalesces at the source or floods everything downstream.
+This may also be the real explanation of the owner's third symptom
+("the pack bus trace continued getting updates"): error frames arriving
+at 5,200/s, not phantom transmits. Check before assuming.
+
+#### Consequences for the wire
+
+- **`CONTROLLER_STATE_WARNING` has no value.** TEC or REC in 96–127 is
+  a real ISO state all three vendors report, and it is the state an
+  open circuit settles in. Today it is unrepresentable, which is
+  precisely why the owner's test looked like nothing happened. Adding
+  it is additive, the same shape as phase 2's `UNAVAILABLE`.
+- **`tec` / `rec` are available on all three vendors**, so they can be
+  populated rather than hedged as optional.
+- **Warning and passive must not park a route.** ADR 0039's amendment
+  already exempts error-passive and bus-off; warning joins them. Only
+  `UNAVAILABLE` parks.
+
+Phase 2's `UNAVAILABLE` work stays in place — USB removal is a real
+fault, just not the reported one.
+
 ### 3 — the status bar's read-out
 
 **Owner ruling 2026-08-22:** *"the connect/disconnect chip and bus
@@ -324,6 +501,9 @@ None. Grooming closed 2026-08-22.
 | 4 | The project affordances | Opus | Items 4, 5 and 6, all in task 108's chip language. New Project as a chip and an honestly-named command; Save as a split chip whose primary press saves; recent projects as user-scope state beside `last_project`, bounded by a new `recent_projects_limit` setting, surfaced in both the bar and the palette. |
 | 5 | The keyboard-nav highlight | Opus | Item 8, investigation-first. A DOM-level reproduction pinning the focused element and its classes on ArrowLeft, then the narrowest fix the data supports. |
 | 6 | The view-signals panel reads empty | Opus | Item 1. Pattern-matched signals join the list, per the owner ruling: the pure builders take each view's resolved matches as well as its persisted picks and push them identity-only, and `viewSignalsPush.ts`'s module doc is rewritten to record the decision it now carries the opposite of. No host change expected — confirm that. Then verify the reported symptom is gone; if the panel is still empty, the mount-order hypothesis is live and the phase follows it to a verdict. |
+
+| 2c | Counter-derived controller state, and the wire it needs | Opus | PCAN's error-frame TEC/REC become the state source, replacing the `CAN_GetStatus` exact-match test; bus-error bits masked, the `ILLHW` / `ILLNET` / `ILLHANDLE` family still matched exactly. `CONTROLLER_STATE_WARNING` added to the wire — the derivation has nowhere to put its result without it — and `tec` / `rec` populated instead of 0, through to the bus-health surface. Coalesced at the source: 5,200 error frames/s is the measured rate. ADR 0039 amended so warning, like passive and bus-off, keeps its route. |
+| 2d | Vector | Opus | A `VectorBus` subclass overriding `handle_can_event` / `handle_canfd_event` — the hooks python-can documents for exactly these events — plus `xlCanRequestChipState` to poll. `busStatus`, `txErrorCounter`, `rxErrorCounter` feed the same derivation 2c defines. Cannot be verified without Vector hardware; say so rather than implying it was tested. |
 
 Phases 2 and 5 — and phase 6 if its symptom survives the ruled
 change — follow the scientific method into the status log:
@@ -651,7 +831,177 @@ That is a candidate for "the entire box gets highlighted on leftarrow",
 offered as a place to point the reproduction; it is not a conclusion,
 and no experiment here tested it.
 
+**2026-08-23 - Phase 2c (Counter-derived controller state, and the wire
+it needs).** Branch `task-109-phase-2c-counter-derived-state` off
+`task-109-phase-3-rbs-grid-rows`. Implements the addendum's measured
+spec rather than re-deriving it; the bench numbers below are the
+owner's, not this phase's.
+
+**Phase 2's `UNAVAILABLE` path is untouched.** The two answer different
+faults: `unavailable` is a USB device that is gone and cannot be read,
+counter-derived confinement is a present controller on a broken wire.
+Neither is a special case of the other, and `unavailable` still
+short-circuits ahead of every counter - pinned by
+`test_an_unreachable_adapter_still_outranks_every_counter`, which feeds
+TEC 128 *and* `PCAN_ERROR_ILLHW` and expects `unavailable`.
+
+### What landed
+
+- **The counters are the state source on PCAN.** `PythonCanChannel.recv`
+  decodes bytes 2 (REC) and 3 (TEC) off every `FrameKind.ERROR` payload
+  and stores them as one tuple, so the state thread can never read a
+  torn pair from the rx thread's write. `state()` runs
+  `driver.state_from_counters` over them. The decode is gated on the
+  bus being PCAN: byte 2/3 is PEAK's layout, SocketCAN puts the pair at
+  6/7, and a virtual bus carries whatever the sender put there - a
+  control test feeds the same payload from a non-PCAN bus and expects no
+  state change.
+- **Thresholds are the standard's**, in one pure function in
+  `driver.py` so phase 2d's Vector chip-state events feed the same
+  derivation: >95 warning, >127 passive, >255 bus-off, with bus-off on
+  the transmit counter only - a receiver never removes itself from the
+  wire. They fall on success, so recovery needs no separate signal and
+  no decay timer: a controller that stops at TEC 100 on an idle bus
+  really is at 100.
+- **The status word is masked, and is a floor rather than the answer.**
+  `_pcan_status_state` masks `BUSOFF` / `BUSPASSIVE` / `BUSWARNING`,
+  because PEAK's own `PCAN_ERROR_ANYBUSERR = 0x4001C` defines those four
+  as a union and a real reading combines them - `BUSPASSIVE |
+  BUSWARNING = 0x40008` cannot match phase 2's `status == 0x40000`.
+  `BUSLIGHT` reads active: it sits below the standard's warning limit.
+  The two readings are combined with `worse_state`, so the
+  under-reporting status word cannot talk the counters down and the
+  status word's bus-off (a transmit counter no single payload byte can
+  express) cannot be talked down by them.
+- **The `REGTEST` / `NODRIVER` / `ILLHW` / `ILLNET` / `ILLHANDLE` /
+  `INITIALIZE` family keeps exact matching**, as phase 2 had it. Those
+  are multi-bit values that overlap each other bit for bit - 0x1400,
+  0x1800 and 0x1C00 share the 0x0400 and 0x0800 bits - so masking would
+  read one as another and a busy transmit queue as a missing adapter.
+  Phase 2's comment named 0x1C00 `ILLCLIENT`; the vendor table calls it
+  `ILLHANDLE`, corrected here.
+- **`CONTROLLER_STATE_WARNING = 5`** on the wire, additive and the same
+  shape as phase 2's `UNAVAILABLE = 4`; `driver.STATE_WARNING`,
+  `cannet_client::controller::ControllerState::Warning`, `"warning"`
+  through `bus_health`, `Error-warning` in the panel with the warning
+  palette, and a concern the status-bar launcher tints for.
+- **`tec` / `rec` are populated** instead of the constant 0 they have
+  shipped as since task 101, end to end.
+- **Coalescing is at the source and needed no new machinery.** The
+  decode is two array reads on the rx thread; nothing publishes from
+  there. The 500 ms state poll reads the latest pair and
+  `_publish_state`'s existing publish-on-change gate does the rest, so
+  the measured 5,200 error frames/s produce **one** `InterfaceState`
+  per actual transition rather than 5,200 -
+  `test_a_pinned_controller_publishes_once_however_long_the_fault_lasts`
+  holds the counters pinned across three poll intervals and asserts an
+  empty outbox.
+- **ADR 0039 amended** so warning, error-passive and bus-off all keep
+  their routes and only `unavailable` parks. `interface_is_unavailable`
+  already tested for exactly `Unavailable`, so the code needed no
+  change - the ADR's consequence text did.
+
+### Tests
+
+`tests/test_counter_derived_state.py` (new, 35 cases): the threshold
+table, the recorded climb / pin / overshoot / fall, the REC control, the
+data-frame control, the short-payload control, the non-PCAN control, the
+masked flag table, the exact-match no-hardware table, and both
+directions of the counter-versus-status combination. The payloads are
+the captured bytes - TEC `08 10 18 ... 80`, the pin at `0x80`, the
+overshoot `88 90 b7 bb`, the fall `b7 ... 02 01 00`, byte 1 `0x19` while
+faulting and `0x00` while recovering. **Falsified before being
+trusted:** with the two-line counter decode removed from `recv`, 7 of
+them fail. `test_shared_interface.py` +2 (the warning wire value, the
+coalescing bound), `test_controller_state.py`'s status table updated
+where masking changes the answer (`BUSWARNING` now reads warning),
+`cannet-client` +1, the `cannet-wire` round-trip extended,
+`busHealth.test.ts` +2.
+
+### The owner's third symptom: the error frames are the trace rows
+
+**Observation.** "the pack bus trace continued getting updates like it
+thought it was sending", at a measured 115,136 error frames in 22 s.
+
+**Hypothesis.** *The rows are the error frames themselves, not phantom
+transmits: nothing filters `FrameKind::ERROR` out of the ingest path.*
+
+**Experiment.** Enumerate every branch on the error payload kind
+between the wire decode and the trace store, and check whether any of
+them is a filter.
+
+**Data.** Five sites, none of them a filter.
+`cannet-wire/src/convert.rs:147` decodes `FrameKind::Error` into
+`CanFramePayload::Error` (dropping the payload, which is why the
+counters had to be decoded in the sidecar).
+`session.rs:958` is the only error branch in the ingest loop and it
+*adds* the health-coalescer fold; `trace_store.append(raw)` below it is
+unconditional. `trace_store/flush.rs:78` persists the kind like any
+other. `trace_query.rs:189` spells it `"error"` for the paged trace
+view. `bus_health.rs`'s module doc states the decision explicitly:
+*"The frames themselves are stored like any other frame - the summary
+sits beside them, never instead of them."*
+
+**Conclusion. Confirmed.** During that fault the pack bus trace gained
+about 5,200 rows a second, every one a real error frame the adapter
+reported. Phase 2 attributed the symptom to tx-confirm rows and closed
+that case; this is a second, larger contributor it did not see.
+
+**Not fixed here, and deliberately.** Suppressing or coalescing error
+frames in the trace reverses a documented decision about what a saved
+capture contains, and the alternatives (drop them, coalesce them into
+one row, keep them and filter at the view) are a behavioural choice with
+a real cost either way. Filed as owner-review-queue 3.39 for a ruling,
+and it is a separate phase, not this one.
+
+### Not done
+
+**Perf skipped by owner instruction** (queue 2.5). No ADR-0031 capture
+was taken and nothing was written to
+`docs/performance-measurements/frontend/`.
+
+**Kvaser is out of scope** by owner ruling 2026-08-23 (queue 2.7); no
+bindings were added. Vector is phase 2d.
+
 ## Blockers / side effects
+
+**Phase 2c - the owner's re-test script.** Everything in phase 2c was
+established against the recorded bench payloads and against the
+installed python-can package; no PEAK adapter exists in an agent's
+environment, so the closing confirmation is owner-run. It covers the
+CAN-link fault, and does not replace phase 2's script below - those are
+different tests of different paths.
+
+**What to do.** Two PEAK adapters on one 500 kbit/s bus, a project that
+runs RBS on the pack bus, both connected and streaming. Then **pull one
+end of the CAN cable** - the wire, not the USB plug.
+
+| Where | Expected within ~1 s |
+|---|---|
+| Bus health panel, transmitting bus | **Error-passive**, TEC climbing to 128 and pinning there, REC 0 |
+| Bus health panel, receiving bus | load falls to `0 %`; its own state may stay error-active, which is correct - it is not the node failing to transmit |
+| Bus health launcher | tints (warning tint on the way up, fault tint only if it reaches bus-off), count 1, tooltip naming the bus |
+| Pack bus trace | **keeps gaining rows** - those are the error frames, at roughly 5,200/s. Not a regression; see queue 3.39 |
+| RBS panel | periodics keep running. Warning and error-passive deliberately keep their routes |
+
+Plug the cable back in: within about a second TEC counts back down to 0
+and the panel returns to **Error-active** on its own. Nothing needs to
+be restarted.
+
+**If the panel stays error-active**, the derivation is not seeing the
+counters. First check whether the trace is gaining rows during the
+fault: if it is **not**, the adapter is not emitting error frames and
+the fault is upstream of everything this phase touched - grep the
+sidecar log for `rx stats` on that interface to confirm frames are
+arriving at all. If the trace **is** gaining rows but the panel is not
+moving, the payload layout differs from the bench capture: the decode
+reads bytes 2 and 3 of the error frame's payload, and those bytes are
+visible in the trace row itself.
+
+**If the panel reads `Adapter unavailable`** instead, phase 2's path
+fired rather than this one - that means a device read failed, which a
+CAN-link fault should not cause. Worth reporting; the two paths are
+meant to be distinguishable.
 
 **Phase 2 - the closing confirmation is owner-run.** Everything in
 phase 2's log was established against a virtual channel and against the

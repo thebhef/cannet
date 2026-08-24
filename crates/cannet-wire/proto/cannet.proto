@@ -266,6 +266,13 @@ enum ControllerState {
   // not know this value treats it as unrecognised and reports no
   // state, which is the honest degradation.
   CONTROLLER_STATE_UNAVAILABLE = 4;
+  // Either error counter is above 95 but neither has reached 128. Not
+  // one of ISO 11898-1's three confinement states — the controller is
+  // still error-active — but it is the warning limit the standard
+  // defines on the way to error-passive, and every vendor's status
+  // word reports it. Without it a fault that never gets past the
+  // warning limit is indistinguishable from a healthy bus.
+  CONTROLLER_STATE_WARNING = 5;
 }
 
 // Install a bridge whose RX feeds from, and TX forwards to, an
