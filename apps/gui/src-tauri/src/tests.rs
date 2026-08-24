@@ -3124,6 +3124,85 @@ fn a_blf_save_of_a_frames_only_capture_warns_about_nothing() {
     assert!(capture::dropped_file_backed_warning(&state.signal_caches.file_signals()).is_none());
 }
 
+/// A scan of a capture whose writer never finalized it earns exactly
+/// one line, and that line says how much came back and what did not.
+#[test]
+fn a_recovered_capture_says_what_it_recovered() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("killed.blf");
+    let mut writer = cannet_blf::BlfCaptureWriter::create(&path).unwrap();
+    for i in 0..20_000u64 {
+        writer
+            .append(
+                &cannet_core::CanFrame::classic(
+                    1_700_000_000_u64 * 1_000_000_000 + i * 1_000_000,
+                    0,
+                    cannet_core::CanId::standard(0x100).unwrap(),
+                    cannet_core::Direction::Rx,
+                    vec![1, 2, 3, 4, 5, 6, 7, 8],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    // A hard kill: neither `finish` nor `Drop` runs, so the partial
+    // file keeps the placeholder header its writer stamped at open.
+    std::mem::forget(writer);
+    let part = dir.path().join("killed.blf.part");
+
+    let scan = cannet_blf::scan_blf(&part).unwrap();
+    let line = capture::recovered_capture_warning(&scan)
+        .expect("a capture with a placeholder header is worth a line");
+    assert!(line.contains("never finalized"), "{line}");
+    assert!(
+        line.contains(&format!("{} frame(s)", scan.frame_count)),
+        "{line}"
+    );
+    assert!(line.contains("wall clock"), "{line}");
+    assert!(
+        !line.contains("incomplete record"),
+        "our writer's containers go out whole: {line}"
+    );
+
+    // Truncate it the way a buffered writer's death does, and the same
+    // line names the fragment too.
+    let mut bytes = std::fs::read(&part).unwrap();
+    bytes.truncate(bytes.len() - 4096);
+    let torn = dir.path().join("torn.blf");
+    std::fs::write(&torn, &bytes).unwrap();
+    let scan = cannet_blf::scan_blf(&torn).unwrap();
+    let line = capture::recovered_capture_warning(&scan).expect("a torn capture warns");
+    assert!(line.contains("incomplete record"), "{line}");
+    assert!(
+        line.contains(&format!("{} frame(s)", scan.frame_count)),
+        "{line}"
+    );
+}
+
+/// And an intact capture is scanned without a word about it — a warning
+/// every import emits is one nobody reads.
+#[test]
+fn an_intact_capture_is_scanned_without_a_recovery_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("whole.blf");
+    let mut writer = cannet_blf::BlfCaptureWriter::create(&path).unwrap();
+    writer
+        .append(
+            &cannet_core::CanFrame::classic(
+                1_700_000_000_u64 * 1_000_000_000,
+                0,
+                cannet_core::CanId::standard(0x100).unwrap(),
+                cannet_core::Direction::Rx,
+                vec![1],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    writer.finish().unwrap();
+    let scan = cannet_blf::scan_blf(&path).unwrap();
+    assert!(capture::recovered_capture_warning(&scan).is_none());
+}
+
 /// A capture holding two file-backed signals, one DBC loaded beside
 /// them so both provenances are in play at once.
 #[allow(clippy::cast_precision_loss)] // ten small integers
