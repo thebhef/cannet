@@ -73,6 +73,8 @@ import {
 import {
   capturePath,
   splitStatus,
+  statusMetrics,
+  statusMetricsTooltip,
   type LogState,
   type RemoteStatus,
   type TransientStatus,
@@ -161,9 +163,13 @@ import {
   elementPanelTitle,
   normalizeSingletonTitles,
   panelsForElementId,
+  showRbsSignalsPanel,
   stripMaximizedNode,
   validateLayout,
 } from "./dockLayout";
+import { StatusBar, type StatusBarChip } from "./StatusBar";
+import { summarizeConnection, useConnectionStates } from "./connectionStates";
+import { useRbsAttentionCount } from "./rbsAttention";
 import {
   EMPTY_FOCUS_HISTORY,
   initLayoutHistory,
@@ -1009,10 +1015,13 @@ export function App() {
     invalidateCache();
   }, [dbcGeneration, invalidateCache]);
 
-  // The view-signals launcher badge's live count: read here,
-  // independently of whether the view-signals panel is mounted, so the
-  // toolbar button stays live with the panel closed.
+  // The signal mapping chip's live count: read here, independently of
+  // whether the view-signals panel is mounted, so the badge stays live
+  // with the panel closed.
   const viewSignalsAttentionCount = useViewSignalsAttentionCount();
+  // The host's per-bus connection map, which the connection chip
+  // aggregates. The host owns it; this only subscribes.
+  const connStates = useConnectionStates();
 
   // The unfiltered `RowPage` read: raw chronological rows for an
   // absolute index range. A trace window translates its local offset
@@ -3121,30 +3130,31 @@ export function App() {
       splitStatus({
         state,
         remoteSessions,
-        dbcPaths,
         count,
-        firstIndex,
-        framesPerSecond,
-        bufferSeconds,
-        scratchBytes,
-        memBytes,
         scanningBlfPath,
         scanningMdfPath,
       }),
-    [
-      state,
-      remoteSessions,
-      dbcPaths,
-      count,
-      firstIndex,
-      framesPerSecond,
-      bufferSeconds,
-      scratchBytes,
-      memBytes,
-      scanningBlfPath,
-      scanningMdfPath,
-    ],
+    [state, remoteSessions, count, scanningBlfPath, scanningMdfPath],
   );
+  // The numbers the header shows, as discrete metrics rather than a
+  // sentence. Every figure is the host's: the rate, the elapsed span
+  // and the two residency figures arrive on `trace-grew`, the frame
+  // count is the store's. Bus load has no host-side source yet, so
+  // nothing reports it and it stays out of the list.
+  const metrics = useMemo(
+    () =>
+      statusMetrics({
+        count,
+        firstIndex,
+        framesPerSecond,
+        busLoadPercent: null,
+        bufferSeconds,
+        scratchBytes,
+        memBytes,
+      }),
+    [count, firstIndex, framesPerSecond, bufferSeconds, scratchBytes, memBytes],
+  );
+  const metricsTooltip = useMemo(() => statusMetricsTooltip(metrics), [metrics]);
   // Transient status notices (errors, completions, remote connect/error
   // summaries) flash in the header for a few seconds and mirror to the
   // system log, then the bar reverts to the resting residency line — a
@@ -3337,16 +3347,17 @@ export function App() {
   // Command-backed toolbar (ADR 0037): an ordered list of command ids —
   // every button dispatches through `runCommand`, so a click gets the same
   // recent-tracking and context gate as the palette and keyboard. The few
-  // buttons that carry view-extras (the Connect/Disconnect toggle, the
-  // disabled-while-empty Clear/Save, the Recent-captures dropdown, the
-  // unread badge, the view-signals attention badge) stay bespoke, keyed
-  // by a sentinel and interleaved in order.
+  // buttons that carry view-extras (the disabled-while-empty Clear/Save,
+  // the Recent-captures dropdown) stay bespoke, keyed by a sentinel and
+  // interleaved in order.
+  //
+  // The toolbar is commands only. What used to sit here and report a
+  // *condition* rather than perform an action — the Connect toggle, the
+  // system-messages unread badge, the signal-mapping attention badge —
+  // is in the status bar below, where the condition already is.
   type ToolbarItem =
     | "sep"
-    | "connection"
     | "recentCaptures"
-    | "systemMessages"
-    | "viewSignals"
     | { id: string; label: string; disabled?: boolean; busy?: boolean };
   // The capture whose census is walking right now, in whichever format
   // — one trace-open at a time, so at most one of the two is set.
@@ -3374,8 +3385,6 @@ export function App() {
     "recentCaptures",
     { id: "dbc.add", label: "Add DBC…" },
     "sep",
-    "connection",
-    "sep",
     { id: "capture.clear", label: "Clear", disabled: count === 0 },
     { id: "capture.save", label: "Save capture…", disabled: count === 0 },
     "sep",
@@ -3387,11 +3396,9 @@ export function App() {
     { id: "panel.add.colormap", label: "Add color map" },
     { id: "panel.add.generator", label: "Add generator" },
     { id: "panel.show.dbc", label: "Database panel" },
-    "viewSignals",
     { id: "panel.show.projectGraph", label: "Graph panel" },
     { id: "panel.show.events", label: "Events panel" },
     { id: "panel.show.project", label: "Project panel" },
-    "systemMessages",
   ];
   const renderToolbarItem = (item: ToolbarItem, i: number) => {
     if (item === "sep") {
@@ -3431,68 +3438,6 @@ export function App() {
         </div>
       );
     }
-    if (item === "connection") {
-      return remoteConnected ? (
-        <button key="connection" onClick={() => runCommand("connection.disconnect")}>
-          Disconnect
-        </button>
-      ) : (
-        <button
-          key="connection"
-          onClick={() => runCommand("connection.connect")}
-          disabled={interfaceBindings.length === 0}
-          title={
-            interfaceBindings.length === 0
-              ? "Add interface bindings in the project panel first"
-              : undefined
-          }
-        >
-          Connect
-        </button>
-      );
-    }
-    if (item === "systemMessages") {
-      const unread = systemLog.unread;
-      return (
-        <button
-          key="system-messages"
-          onClick={() => runCommand("panel.show.systemMessages")}
-          className="system-messages-button"
-          aria-label={unread > 0 ? `System messages (${unread} unread)` : "System messages"}
-        >
-          System messages
-          {unread > 0 && (
-            <span className="system-messages-badge" aria-hidden="true">
-              {unread > 99 ? "99+" : unread}
-            </span>
-          )}
-        </button>
-      );
-    }
-    if (item === "viewSignals") {
-      // The launcher badge: the same needing-attention count
-      // `list_view_signals` gives the panel, live whether or not the
-      // panel is open (`useViewSignalsAttentionCount`), quiet at zero.
-      return (
-        <button
-          key="view-signals"
-          onClick={() => runCommand("panel.show.viewSignals")}
-          className="view-signals-button"
-          aria-label={
-            viewSignalsAttentionCount > 0
-              ? `View signals (${viewSignalsAttentionCount} need attention)`
-              : "View signals"
-          }
-        >
-          View signals
-          {viewSignalsAttentionCount > 0 && (
-            <span className="view-signals-badge" aria-hidden="true">
-              {viewSignalsAttentionCount > 99 ? "99+" : viewSignalsAttentionCount}
-            </span>
-          )}
-        </button>
-      );
-    }
     return (
       <button
         key={item.id}
@@ -3505,15 +3450,78 @@ export function App() {
     );
   };
 
-  return (
-    <main className="app">
-      <header>
-        <div className="toolbar">{toolbarItems.map(renderToolbarItem)}</div>
-        <div
-          className="status"
-          title="buffered frames · frame rate · elapsed capture · resident memory (app + WebView) · disk-spill cache on disk"
-        >
-          {/* The load in flight: how far it has got, and the way out of
+  // The connection chip's state: the host's per-bus map, folded over
+  // the project buses that carry a binding. The chip both reports the
+  // aggregate and is the control, so nothing says "connected" from two
+  // places.
+  const connectionSummary = useMemo(
+    () =>
+      summarizeConnection(
+        buses
+          .filter((b) => interfaceBindings.some((binding) => binding.bus_id === b.id))
+          .map((b) => ({ id: b.id, name: b.name })),
+        connStates,
+        remoteConnected,
+      ),
+    [buses, interfaceBindings, connStates, remoteConnected],
+  );
+  // Every RBS configuration the project has open — what the RBS mapping
+  // chip counts problems across, and (when there is exactly one) where
+  // pressing it goes.
+  const rbsElements = useMemo(
+    () => registry.filter((e) => e.element.kind === "rbs"),
+    [registry],
+  );
+  const rbsElementIds = useMemo(() => rbsElements.map((e) => e.element.id), [rbsElements]);
+  const rbsAttentionCount = useRbsAttentionCount(rbsElementIds);
+  // Pinned left to right: System messages, Signal mapping, RBS mapping.
+  // They are pushed into the overflow menu from the right, so the last
+  // one standing is the one that reports faults.
+  const statusChips: StatusBarChip[] = [
+    {
+      id: "system-messages",
+      label: "System messages",
+      badge: systemLog.unread,
+      title: "Everything the host and the app have logged this session.",
+      onPress: () => runCommand("panel.show.systemMessages"),
+    },
+    {
+      id: "signal-mapping",
+      label: "Signal mapping",
+      badge: viewSignalsAttentionCount,
+      title: "The signals the open views reference, and which of them need attention.",
+      onPress: () => runCommand("panel.show.viewSignals"),
+    },
+    {
+      id: "rbs-mapping",
+      label: "RBS mapping",
+      badge: rbsAttentionCount,
+      // Reporting combines across configurations; editing does not. With
+      // one config there is no ambiguity about where an edit belongs, so
+      // the chip opens that config's own grid. With several there is,
+      // and the view that lists every config's problems together —
+      // naming which config each belongs to — is not built yet, so the
+      // chip reports without pretending to navigate.
+      title:
+        rbsElements.length === 0
+          ? "No RBS configuration in this project."
+          : rbsElements.length === 1
+            ? "RBS signal mapping notes and warnings. Opens the RBS signals grid."
+            : `RBS signal mapping notes and warnings across ${rbsElements.length} configurations. Open one from its own RBS panel — a combined view is not built yet.`,
+      disabled: rbsElements.length !== 1,
+      onPress: () => {
+        const api = dockApiRef.current;
+        const entry = rbsElements[0];
+        if (api === null || entry === undefined) return;
+        showRbsSignalsPanel(api, entry.element.id, elementLabel(entry.element));
+      },
+    },
+  ];
+  // Whatever is in flight, and the response to it. The bar is a readout
+  // that also carries the way out of what it reports.
+  const statusNotices = (
+    <>
+      {/* The load in flight: how far it has got, and the way out of
               it. Spans the census and the pump — it must not drop out
               just because data has started reaching the plot panel —
               and the status text alongside it names the file. The bar
@@ -3592,8 +3600,28 @@ export function App() {
               }}
             />
           )}
-          {status}
-        </div>
+    </>
+  );
+
+  return (
+    <main className="app">
+      <header>
+        <div className="toolbar">{toolbarItems.map(renderToolbarItem)}</div>
+        <StatusBar
+          connection={connectionSummary}
+          onConnectionPress={() =>
+            runCommand(
+              connectionSummary.action === "disconnect"
+                ? "connection.disconnect"
+                : "connection.connect",
+            )
+          }
+          notices={statusNotices}
+          statusText={status}
+          metrics={metrics}
+          metricsTooltip={metricsTooltip}
+          chips={statusChips}
+        />
       </header>
       <ProjectContext.Provider value={projectContextValue}>
         <SignalCatalogProvider>

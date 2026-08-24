@@ -113,6 +113,44 @@ A routable TCP listener on first bare run means a Windows Defender
 Firewall prompt, separate from the mDNS one and on a different port.
 Documented in the README; nothing in code can pre-empt it.
 
+### 1.13 The RBS chip does navigate to an individual RBS file, which the ruling said it would not
+[Task 103](tasks/0103-toolbar-status-chips.md) · **diverges from an owner ruling**
+
+The ruling: *"The RBS chip is for the RBS signal mapping and any
+notes/warnings there, not for RBS status, and it doesn't take us to any
+individual RBS file."*
+
+What shipped: the **reporting** half is exactly as ruled — the badge
+counts problems across every open `.cannet_rbs`. The **destination** is
+not. With exactly one configuration open the chip opens that
+configuration's signals grid, which is an individual RBS file. With none
+or several it reports, is disabled, and its tooltip says why.
+
+The phase could not do otherwise honestly: the combined problems view
+the ruling implies **does not exist**, and it declined to invent one.
+That was the right call — but it means a stated ruling is currently
+contradicted in the one-config case, which is the common case.
+
+**Needed: either accept the one-config shortcut, or scope the combined
+problems view as its own task.** Flagged rather than left to be
+discovered.
+
+### 1.14 Bus load has no source
+[Task 103](tasks/0103-toolbar-status-chips.md)
+
+The metric's slot, drop order and formatting are implemented and tested,
+but nothing computes bus load — the app passes `null`, so the readout
+never appears. It is one of the six metrics the owner ordered, and
+[task 101](tasks/0101-bus-health.md) is where the model for it would
+come from.
+
+### 1.15 Pressing the connection chip while connecting disconnects
+[Task 103](tasks/0103-toolbar-status-chips.md)
+
+The prototype's state table left this undecided. A connect that never
+lands has no other escape, so the phase chose cancel. Reasonable, and
+recorded because it was a choice rather than a ruling.
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost
@@ -264,6 +302,7 @@ test or artefact.
 | 100 | Counter/CRC declared in a DBC now populates the editor |
 | 105 | Reading a BLF whose writer never finalized, read-only |
 | 104 | Determinate load progress, and a discoverable cancel |
+| 103 | The toolbar's status bar, status chips, and ADR 0055 |
 
 ## 5. Housekeeping owed at close-out
 

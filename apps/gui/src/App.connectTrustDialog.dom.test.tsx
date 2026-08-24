@@ -146,6 +146,15 @@ const IDENTITY_CHANGED = {
   observed: "SHA256:newnewnew",
 };
 
+/// The connection control: a status chip in the bar rather than a
+/// toolbar button, so it is found by its own class and its state reads
+/// off its accessible name.
+function connectionChip(): HTMLButtonElement {
+  const chip = document.querySelector<HTMLButtonElement>("button.status-chip--connection");
+  if (!chip) throw new Error("no connection chip");
+  return chip;
+}
+
 function findButton(label: string): HTMLButtonElement {
   const btn = Array.from(
     document.querySelectorAll<HTMLButtonElement>("button"),
@@ -166,7 +175,7 @@ async function mountWithBenchProject() {
     fireEvent.click(findButton("Open…"));
   });
   await waitFor(() => {
-    if (findButton("Connect").disabled) throw new Error("Connect still disabled");
+    if (connectionChip().disabled) throw new Error("Connect still disabled");
   });
 }
 
@@ -209,7 +218,7 @@ describe("when a trust question becomes a modal", () => {
     rig.refuseConnect = true;
     await mountWithBenchProject();
     await act(async () => {
-      fireEvent.click(findButton("Connect"));
+      fireEvent.click(connectionChip());
     });
     const dialogs = await screen.findAllByRole("dialog");
     expect(dialogs).toHaveLength(1);
@@ -225,7 +234,7 @@ describe("when a trust question becomes a modal", () => {
     rig.refuseConnect = true;
     await mountWithBenchProject();
     await act(async () => {
-      fireEvent.click(findButton("Connect"));
+      fireEvent.click(connectionChip());
     });
     await waitFor(() => {
       if (!invokeMock.mock.calls.some((c) => c[0] === "get_server_prompts"))

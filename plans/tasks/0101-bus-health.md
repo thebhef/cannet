@@ -144,13 +144,16 @@ And what is missing:
 
   - The **panel** carries the detail: one row per bus with controller
     state, TEC/REC, load, error rate and adapter identity.
-  - The **chip** is the always-visible summary — the worst current
-    state across buses — so bus-off is noticed without going looking
-    for it, and it opens the panel. It lives in the **status bar
-    directly beneath the toolbar**, beside the connection chip
-    (`plans/prototypes/toolbar-status-bar.html`). **There is no window
-    footer** — owner ruling 2026-08-20, correcting an overseer
-    misreading that built one.
+  - The always-visible summary lives in the **status bar directly
+    beneath the toolbar**, beside the connection chip. **There is no
+    window footer** — owner ruling 2026-08-20, correcting an overseer
+    misreading that built one. Task 103 has since built that bar and
+    ruled the summary an **icon launcher rather than a chip** (a single
+    summary cannot name which bus is off): `BusHealthLauncher.tsx`
+    exists and `StatusBar` takes it as a `busHealth` prop, which this
+    task supplies once there is a health model to feed it and a panel
+    for it to open. See
+    [ADR 0055](../../docs/adr/0055-status-chips-and-the-status-bar.md).
   - **Prototype the chip before building it.** This repo's practice is
     an HTML prototype under `plans/prototypes/`, reviewed with the
     owner, deleted by the phase that implements it (task 89 did exactly

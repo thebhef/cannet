@@ -3,27 +3,37 @@ import { describe, expect, it } from "vitest";
 import {
   loadProgressReadout,
   splitStatus,
+  statusMetrics,
+  statusMetricsTooltip,
   type LogState,
   type RemoteStatus,
   type StatusInputs,
+  type StatusMetricsInputs,
 } from "./statusLine";
 import type { RemoteSessionResult } from "./types";
 
-// Baseline inputs: no session, no DBC, no residency figures. Override
-// per case.
+// Baseline inputs: no session, nothing scanning. Override per case.
 function inputs(over: Partial<StatusInputs>): StatusInputs {
   return {
     state: { kind: "idle" },
     remoteSessions: new Map(),
-    dbcPaths: [],
+    count: 0,
+    scanningBlfPath: null,
+    scanningMdfPath: null,
+    ...over,
+  };
+}
+
+// Baseline metric inputs: an empty buffer with no figures at all.
+function metricInputs(over: Partial<StatusMetricsInputs>): StatusMetricsInputs {
+  return {
     count: 0,
     firstIndex: 0,
     framesPerSecond: 0,
+    busLoadPercent: null,
     bufferSeconds: 0,
     scratchBytes: null,
     memBytes: null,
-    scanningBlfPath: null,
-    scanningMdfPath: null,
     ...over,
   };
 }
@@ -68,26 +78,20 @@ describe("splitStatus", () => {
     expect(resting).toMatch(/Loading next\.mf4/);
   });
 
-  it("a running BLF stream is resting with the residency line, no transient", () => {
+  it("a running BLF stream names the capture and leaves the numbers to the metrics", () => {
     const state: LogState = { kind: "running", result: { blf_path: "/logs/drive.blf" } };
-    const { resting, transient } = splitStatus(
-      inputs({ state, count: 1000, framesPerSecond: 500, bufferSeconds: 65, scratchBytes: 42 * 1024 * 1024 }),
-    );
+    const { resting, transient } = splitStatus(inputs({ state, count: 1000 }));
     expect(transient).toBeNull();
-    expect(resting).toContain("Streaming drive.blf");
-    expect(resting).toContain("cache");
+    expect(resting).toBe("Streaming drive.blf");
+    // The numbers are discrete aligned metrics now; a sentence in
+    // front of them is exactly what stopped them aligning.
+    expect(resting).not.toMatch(/frames|RAM|cache|elapsed/);
   });
 
-  it("names the two residency figures `RAM` and `cache`", () => {
-    const { resting } = splitStatus(
-      inputs({
-        state: { kind: "running", result: { blf_path: "a.blf" } },
-        memBytes: 128 * 1024 * 1024,
-        scratchBytes: 42 * 1024 * 1024,
-      }),
-    );
-    expect(resting).toContain("128 MB RAM");
-    expect(resting).toContain("42.0 MB cache");
+  it("says nothing at all about the DBCs — that is the Database panel's fact", () => {
+    const state: LogState = { kind: "running", result: { blf_path: "a.blf" } };
+    const { resting } = splitStatus(inputs({ state, count: 5 }));
+    expect(resting).not.toMatch(/DBC/);
   });
 
   it("an error is a transient at error level; the bar rests at the idle prompt", () => {
@@ -98,11 +102,11 @@ describe("splitStatus", () => {
 
   it("done is an info transient; the bar rests at a static residency readout", () => {
     const state: LogState = { kind: "done", result: { blf_path: "/logs/drive.blf" }, total: 12345 };
-    const { resting, transient } = splitStatus(inputs({ state, count: 12345, bufferSeconds: 10 }));
+    const { resting, transient } = splitStatus(inputs({ state, count: 12345 }));
     expect(transient?.level).toBe("info");
     expect(transient?.text).toContain("Done: 12,345 frames from drive.blf");
-    expect(resting).not.toContain("Done:");
-    expect(resting).toContain("frames");
+    // A loaded buffer needs no words: the metrics carry it.
+    expect(resting).toBe("");
   });
 
   it("a live remote stream rests on residency; a connect error flashes as an error transient", () => {
@@ -111,7 +115,7 @@ describe("splitStatus", () => {
       ["9.9.9.9:9", { kind: "error", message: "refused" }],
     ]);
     const { resting, transient } = splitStatus(inputs({ remoteSessions, count: 50 }));
-    expect(resting).toContain("Streaming from 1 server");
+    expect(resting).toBe("Streaming from 1 server (1 interface)");
     expect(transient?.level).toBe("error");
     expect(transient?.text).toContain("9.9.9.9:9: refused");
   });
@@ -121,6 +125,79 @@ describe("splitStatus", () => {
     const { resting, transient } = splitStatus(inputs({ remoteSessions }));
     expect(resting).toMatch(/Open a BLF log/);
     expect(transient).toEqual({ text: "1 connecting.", level: "info" });
+  });
+});
+
+describe("statusMetrics", () => {
+  it("orders the metrics as ruled, left to right", () => {
+    const metrics = statusMetrics(
+      metricInputs({
+        count: 1_234_567,
+        framesPerSecond: 18_400,
+        busLoadPercent: 34,
+        bufferSeconds: 2467,
+        memBytes: 4.2 * 1024 ** 3,
+        scratchBytes: 12.1 * 1024 ** 3,
+      }),
+    );
+    expect(metrics.map((m) => m.id)).toEqual([
+      "fps",
+      "busLoad",
+      "frames",
+      "elapsed",
+      "ram",
+      "cache",
+    ]);
+    expect(metrics.map((m) => m.label)).toEqual([
+      "f/s",
+      "bus load",
+      "frames",
+      "elapsed",
+      "RAM",
+      "cache",
+    ]);
+    expect(metrics.map((m) => m.value)).toEqual([
+      "18.4k",
+      "34 %",
+      (1_234_567).toLocaleString(),
+      "41:07",
+      "4.2 GB",
+      "12.1 GB",
+    ]);
+  });
+
+  it("marks bus load as the live-only metric", () => {
+    // Frames, elapsed, RAM and cache describe the buffer and are
+    // equally true of a loaded file; a capture has no wire.
+    const metrics = statusMetrics(metricInputs({ busLoadPercent: 12 }));
+    expect(metrics.find((m) => m.id === "busLoad")?.live).toBe(true);
+    expect(metrics.filter((m) => m.live).map((m) => m.id)).toEqual(["busLoad"]);
+  });
+
+  it("omits bus load entirely when nothing is on a wire", () => {
+    const metrics = statusMetrics(metricInputs({ count: 10, framesPerSecond: 5 }));
+    expect(metrics.map((m) => m.id)).toEqual(["fps", "frames"]);
+  });
+
+  it("shows a figure only when there is one", () => {
+    expect(statusMetrics(metricInputs({})).map((m) => m.id)).toEqual(["frames"]);
+    expect(
+      statusMetrics(metricInputs({ scratchBytes: 0, memBytes: 0 })).map((m) => m.id),
+    ).toEqual(["frames"]);
+  });
+
+  it("keeps the retained-of-total shape once eviction has truncated history", () => {
+    const metrics = statusMetrics(metricInputs({ count: 1000, firstIndex: 400 }));
+    expect(metrics.find((m) => m.id === "frames")?.value).toBe("600 of 1,000");
+  });
+
+  it("writes the whole readout as one tooltip, dropped metrics included", () => {
+    const metrics = statusMetrics(
+      metricInputs({ count: 12, framesPerSecond: 500, bufferSeconds: 65, memBytes: 1024 }),
+    );
+    expect(statusMetricsTooltip(metrics)).toBe(
+      ["500 f/s", "12 frames", "1:05 elapsed", "1.0 KB RAM"].join("\n"),
+    );
   });
 });
 
