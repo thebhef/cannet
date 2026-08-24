@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 let storedSettings: Record<string, unknown> = {};
 vi.mock("@tauri-apps/api/core", () => ({
@@ -15,7 +15,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { hydrateSettings } from "./hostSettings";
-import { TraceView } from "./TraceView";
+import { TraceView, type EventActions } from "./TraceView";
 import { defaultColumns } from "./traceColumns";
 import { SIGNAL_DND_MIME } from "./dragSignals";
 import type { TraceRow } from "./trace";
@@ -60,16 +60,20 @@ function frameRow(index: number, signals = 2): TraceRow {
   } as unknown as TraceRow;
 }
 
-function eventRow(id: string, label: string): TraceRow {
+const EVENT_TS = 5_000_000_000;
+
+function eventRow(id: string, label: string, editable = true): TraceRow {
   return {
     row: "event",
     event: {
       id,
       label,
-      kind: "note",
-      timestampNs: 0,
+      // The derived events are the ones that take no edits (ADR 0035);
+      // the truncation marker is the one in this view's own space.
+      kind: editable ? "note" : "truncation",
+      timestampNs: EVENT_TS,
       color: null,
-      editable: true,
+      editable,
     } as unknown as TimelineEvent,
   };
 }
@@ -95,6 +99,7 @@ function view(props: {
   getRow: (i: number) => TraceRow | null;
   autoScroll?: boolean;
   onAutoScrollDisabled?: () => void;
+  eventActions?: EventActions;
 }) {
   return (
     <TraceView
@@ -111,6 +116,7 @@ function view(props: {
       getRow={props.getRow}
       ensureVisible={noop}
       onAutoScrollDisabled={props.onAutoScrollDisabled ?? noop}
+      eventActions={props.eventActions}
     />
   );
 }
@@ -290,6 +296,139 @@ describe("chronological cursor and selection", () => {
     // rule the wheel follows when it scrolls back to look at history.
     fireEvent.keyDown(grid(), { key: "Home" });
     expect(released).toHaveBeenCalled();
+  });
+});
+
+describe("event rows on the gridview action keys (ADR 0044)", () => {
+  /// The three event-row surfaces a keypress can reach, all mocked so a
+  /// test can say which one fired.
+  function actions(): EventActions & { onGoto: ReturnType<typeof vi.fn> } {
+    return {
+      onRename: vi.fn(),
+      onRecolor: vi.fn(),
+      onRemove: vi.fn(),
+      onGoto: vi.fn(),
+    } as EventActions & { onGoto: ReturnType<typeof vi.fn> };
+  }
+
+  /// A capture of three rows whose middle one is a timeline event.
+  function withEvent(a: EventActions, editable = true) {
+    return render(
+      view({
+        count: 3,
+        getRow: (d) => (d === 1 ? eventRow("n1", "boom", editable) : frameRow(d)),
+        eventActions: a,
+      }),
+    );
+  }
+
+  /// Put the cursor on the event row: two steps down from nothing.
+  function cursorToEvent() {
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(activeRow()).toHaveClass("trace-event-row");
+  }
+
+  it("marks the event row the cursor lands on, not only the one clicked", () => {
+    // The row's own click-focus state was a second cursor beside the
+    // layer's; arrowing onto the row left it unmarked, so nothing said
+    // which row Space and F2 were about to act on.
+    const a = actions();
+    withEvent(a);
+    const row = () => document.querySelector(".trace-event-row") as HTMLElement;
+    expect(row()).not.toHaveClass("trace-event-focused");
+    cursorToEvent();
+    expect(row()).toHaveClass("trace-event-focused");
+    // …and it lets go when the cursor moves off.
+    fireEvent.keyDown(grid(), { key: "ArrowUp" });
+    expect(row()).not.toHaveClass("trace-event-focused");
+    // A click still marks it, because a click still moves the cursor.
+    fireEvent.click(row());
+    expect(row()).toHaveClass("trace-event-focused");
+  });
+
+  it("broadcasts the row's goto on Space, exactly as its button does", () => {
+    const a = actions();
+    withEvent(a);
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    fireEvent.keyDown(grid(), { key: " " });
+    // A frame row has no primary action of its own.
+    expect(a.onGoto).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    fireEvent.keyDown(grid(), { key: " " });
+    expect(a.onGoto).toHaveBeenCalledWith(EVENT_TS);
+    // The same call the button makes — the key is the button's keyboard
+    // equivalent, not a second path with its own target.
+    fireEvent.click(screen.getByLabelText("go to this event"));
+    expect(a.onGoto).toHaveBeenCalledTimes(2);
+    expect(a.onGoto.mock.calls[1]).toEqual(a.onGoto.mock.calls[0]);
+  });
+
+  it("begins the row's rename on F2, and commits it like the button's does", () => {
+    const a = actions();
+    withEvent(a);
+    cursorToEvent();
+    expect(screen.queryByLabelText("event label")).toBeNull();
+    fireEvent.keyDown(grid(), { key: "F2" });
+    const input = screen.getByLabelText("event label") as HTMLInputElement;
+    expect(input.value).toBe("boom");
+    fireEvent.change(input, { target: { value: "crunch" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(a.onRename).toHaveBeenCalledWith("n1", "crunch");
+  });
+
+  it("takes no F2 on a derived event, which the mouse cannot edit either", () => {
+    // The gate is editability, not the keybinding: a row with no rename
+    // control must not grow one because the cursor is on it.
+    const a = actions();
+    withEvent(a, false);
+    cursorToEvent();
+    expect(screen.queryByLabelText("rename event")).toBeNull();
+    fireEvent.keyDown(grid(), { key: "F2" });
+    expect(screen.queryByLabelText("event label")).toBeNull();
+    expect(a.onRename).not.toHaveBeenCalled();
+  });
+
+  it("still goes to a derived event on Space", () => {
+    // Read-only is about editing. Every event is a place in time.
+    const a = actions();
+    withEvent(a, false);
+    cursorToEvent();
+    fireEvent.keyDown(grid(), { key: " " });
+    expect(a.onGoto).toHaveBeenCalledWith(EVENT_TS);
+  });
+
+  it("hands the keyboard back to the grid when the rename ends", () => {
+    // The field unmounts when the edit ends, and focus with nowhere to
+    // go lands on the document body — where the grid's keys are dead
+    // and the next Tab restarts from the top of the page (ADR 0044).
+    const a = actions();
+    withEvent(a);
+    cursorToEvent();
+    fireEvent.keyDown(grid(), { key: "F2" });
+    const input = screen.getByLabelText("event label") as HTMLInputElement;
+    input.focus();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByLabelText("event label")).toBeNull();
+    expect(document.activeElement).toBe(grid());
+    // …and the cursor is still on the row that was renamed, so F2 opens
+    // it again rather than nothing.
+    fireEvent.keyDown(grid(), { key: "F2" });
+    expect(screen.getByLabelText("event label")).toBeInTheDocument();
+  });
+
+  it("leaves the keys alone where the view supplies no event actions", () => {
+    // The events an unwired view shows are read-only and go nowhere;
+    // the keys must not half-work.
+    render(
+      view({ count: 3, getRow: (d) => (d === 1 ? eventRow("n1", "boom") : frameRow(d)) }),
+    );
+    cursorToEvent();
+    fireEvent.keyDown(grid(), { key: "F2" });
+    fireEvent.keyDown(grid(), { key: " " });
+    expect(screen.queryByLabelText("event label")).toBeNull();
+    expect(screen.queryByLabelText("go to this event")).toBeNull();
   });
 });
 

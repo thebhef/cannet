@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 
 import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
@@ -348,7 +348,14 @@ export function TracePanel(props: IDockviewPanelProps) {
 
   // Inline edit handlers for editable event rows (ADR 0035): rename / color /
   // remove, wired straight to the host notes commands. Memoised (the row is
-  // memoised) — the dispatchers are themselves stable.
+  // memoised) — the dispatchers are themselves stable. `onGoto` broadcasts
+  // the event's absolute timestamp on the cross-panel bus, the same call the
+  // events view makes: an event row carries the same interactions wherever it
+  // is drawn, and Space on the gridview cursor's row is that control from the
+  // keyboard (ADR 0044). The broadcast comes back to this panel's own
+  // listener below, which re-anchors the view on the row — which is where the
+  // cursor already is, so the jump the other panels make costs this one
+  // nothing.
   const eventActions = useMemo<EventActions>(
     () => ({
       onRename: renameNote,
@@ -356,6 +363,7 @@ export function TracePanel(props: IDockviewPanelProps) {
       onDescribe: describeNote,
       onRetag: retagNote,
       onRemove: removeNote,
+      onGoto: (timestampNs) => void emit(GOTO_EVENT, timestampNs),
     }),
     [renameNote, recolorNote, describeNote, retagNote, removeNote],
   );

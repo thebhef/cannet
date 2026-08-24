@@ -75,6 +75,7 @@ content inside a row is reached by Tab, not by the grid cursor.
 | Right | closed → expand; open → first child | closed → expand content; open → its first content row, where the content is rows | no-op |
 | Left | open → collapse; closed → parent | open → collapse content; closed → parent | parent |
 | Space | panel-defined primary action (default none) | ″ | ″ |
+| F2 | panel-defined rename/edit of the cursor row (default none) | ″ | ″ |
 | Enter | unbound (user-customizable) | ″ | ″ |
 | Home/End | first/last row | ″ | ″ |
 | PageUp/Down | move cursor one viewport | ″ | ″ |
@@ -87,6 +88,24 @@ Space, not Enter, is the action key, and the action is the panel's
 to define (transmit: send the focused frame once, or start / stop it
 when the row is periodic); expansion is already covered by Left/Right,
 so no default action is bound.
+
+**The action-key vocabulary is Space and F2, and it grows only in the
+layer.** Each is an optional callback the panel may leave unbound, so a
+view that has no such action is unchanged by the key existing; each is
+also in the dispatcher's suppression set, so a global binding on it
+cannot go silent inside a grid without the shortcuts view saying so.
+The rule for adding a third: a key earns a place here when the action
+it names belongs to *rows* rather than to one panel — the test being
+whether the same rows appear in more than one view, because that is
+when a view-local copy starts to drift. An action only one panel's rows
+have stays that panel's, reached through Space or through the row's own
+controls by Tab.
+
+*(Amended 2026-08-22. F2 joined Space. Event rows carry an inline label
+and appear in two views — the events view and the chronological trace's
+interleaved rows — so binding rename in either view would have written
+it twice. Editability is the panel's to judge: the layer offers the key
+and the panel declines it on a row the mouse cannot edit either.)*
 
 **The layer owns the way into a row's content, and the way back
 out.** Tab pressed on the container moves focus to the cursor row's
@@ -150,7 +169,7 @@ The dispatcher's capture-phase listener fires before any panel
 handler, so the layer marks its container and the dispatcher treats
 focus-inside-a-gridview like its existing focus-inside-an-editable
 suppression for the keys the grid consumes (unmodified navigation
-keys, Space, Tab, plus Ctrl/Cmd+A, Shift+Tab and Shift+Up/Down).
+keys, Space, F2, Tab, plus Ctrl/Cmd+A, Shift+Tab and Shift+Up/Down).
 Escape is *not* among them: the grid takes it only when a row's content
 left it unclaimed, so a context-gated global Escape binding keeps first
 claim on it. The grid makes that

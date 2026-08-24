@@ -336,6 +336,8 @@ Recorded by the phases that found them, not yet decided.
 | 3.14 | **Controller state and TEC/REC are unverified on hardware.** The sidecar's state-poll thread was already producing `InterfaceState`; task 101 built the consumer and tested it at unit tier, but no dongle was available to the phase. The owner holds the hardware. | [task 101](tasks/0101-bus-health.md) |
 | 3.15 | **`cannet-mdf::FileSignal::timestamps_ns` is documented "ascending" with nothing enforcing it** — no sort in `signal_groups`. Argued structurally sound (one source, no CAN-style interleave), but it is a data-source crate *below* the signal cache and outside the phase's boundary, so it was recorded rather than swept. | [task 106](tasks/0106-any-bus-series-and-sample-order.md) |
 | 3.16 | **`plotCursors::statsOver` undercounted a span with tied sample times** — fixed in `3b8fd808` with a real lower bound. FYI rather than a decision: worth knowing because the measurement strip it feeds is the surface [task 108](tasks/0108-gui-chip-redesign.md) rules stays hidden pending rework, so the wrong numbers were not on screen. | [task 106](tasks/0106-any-bus-series-and-sample-order.md) |
+| 3.17 | **A phase reported a gate clean that was not.** Task 19 step 1's status log claimed `git grep -Ein "task [0-9]\|plans/" -- apps/ crates/` was empty; step 2 found `plotVisibleRange.ts`'s own header naming the task and fixed it in `2dd618d6`. Nothing reached `main` — the `comment-references` CI job would have failed the branch — but a phase's own verification claim was wrong, which is the reason the overseer re-runs gates rather than reading reports. No task opened; noted as a process fact. | [task 19](tasks/0019-command-palette-goto.md) |
+| 3.18 | **Two focus models coexist in the trace gridviews.** Event rows are `tabIndex={0}` by an explicit earlier decision with a test behind it, so a click focuses the row rather than the container — beside the container-plus-`aria-activedescendant` model everything else uses. Also: no ARIA `role` on any trace gridview container or row, which leaves `aria-activedescendant` inert to assistive tech there. Both are whole-container concerns, outside task 19's event-rows-only ARIA scope. | [task 19](tasks/0019-command-palette-goto.md) |
 | 3.6 | Task 97's grooming asked that the owner see both axes before the **lanes** axis changed. No comparison was produced, because the lanes axis has no y-gutter labelling to compare — it already draws nothing there, and its labels are the tiles. If the owner meant the lane *tiles*, that is a different request, and it cuts against the stated reason for removing the axis labels. | [task 97](tasks/0097-enum-labels-on-axis.md) |
 
 ---
@@ -369,6 +371,7 @@ test or artefact.
 | 103 | The toolbar's status bar, status chips, and ADR 0055 |
 | 101 | Bus health — error frames labelled and coalesced, controller state, bus load |
 | 106 | The any-bus series ruled on, and the signal cache's sample-order sweep |
+| 19 | Typed-argument palette prompts, `Mod+T`/`Mod+E`, and event-row keyboard actions |
 
 ## 5. Housekeeping owed at close-out
 
