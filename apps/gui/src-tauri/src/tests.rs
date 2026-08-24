@@ -4257,6 +4257,29 @@ fn effective_calc_respects_bus_scoping_and_reports_errors() {
     );
 }
 
+#[test]
+fn a_malformed_calculated_field_attribute_warns_instead_of_vanishing() {
+    // A typo in a `CannetCounter` value costs the designation, and
+    // the only other symptom is a message that has no counter — which
+    // is indistinguishable from one that was never given one. The
+    // load surfaces the file, the message, the signal and the
+    // attribute text so the reason is on the system log.
+    let state = test_state();
+    let typo = CALC_ATTR_DBC.replace("increment=1;rollover=15", "rolover=15");
+    let installed = crate::dbc_commands::install_dbc(&state, "typo.dbc", &typo).unwrap();
+    let warning = installed
+        .warnings
+        .iter()
+        .find(|w| w.contains("CannetCounter"))
+        .expect("the malformed designation warns");
+    assert!(warning.contains("Status.AliveCtr"), "{warning}");
+    assert!(warning.contains("rolover=15"), "{warning}");
+    // Control: the same DBC without the typo loads clean, so the
+    // warning is the typo's and not the file's.
+    let clean = crate::dbc_commands::install_dbc(&state, "clean.dbc", CALC_ATTR_DBC).unwrap();
+    assert!(clean.warnings.is_empty(), "{:?}", clean.warnings);
+}
+
 /// 291 `Status` with `AliveCtr` at `ctr_start`, and the cannet
 /// counter / CRC attributes only when `with_attrs`.
 fn calc_placement_dbc(ctr_start: u32, with_attrs: bool) -> String {
