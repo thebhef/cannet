@@ -3057,6 +3057,17 @@ committed version stays `0.0.0`; the binary stamps its own
 `git describe --tags --dirty` version (shown in the settings panel's
 About section) and the installer takes its version from the tag.
 
+**Test builds.** Tick **Dry run** when you dispatch it — against any
+branch — and the same build runs without creating a tag or a release.
+Every artifact attaches to the workflow run instead, one per platform,
+expiring after 14 days; artifacts upload in both modes, so a real
+release is downloadable from its run too. This is how an installable
+build reaches a machine that has no toolchain on it, which is the only
+way to exercise hardware CI can't reach: a multi-channel Kvaser card,
+for instance, cannot be tested on macOS at all (CANlib supports no
+multi-channel device there), so it has to be a Windows or Linux box
+with the card plugged in.
+
 The runner writes that version into `tauri.conf.json` — a tracked file —
 so it commits the edit to its throwaway checkout *before* tagging, and
 asserts the stamp is exactly `vX.Y.Z` before building. Otherwise the
