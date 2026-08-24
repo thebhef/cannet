@@ -334,6 +334,22 @@ session a user most wants to start over from. A stored keybinding on
 **Needed: confirm the ungating, and that "New project" is the wording
 wanted in the palette.**
 
+### 1.29 Every grid panel drops the browser focus ring once its cursor exists
+[task 109](tasks/0109-usage-feedback-chip-era.md) phase 5
+
+The reported whole-box highlight is the UA focus ring on the gridview
+container, which is what holds DOM focus for the whole grid. It is
+suppressed while the container names an active row, and kept while it
+names none — so the trace, by-id, signals, view-signals, transmit,
+database, RBS tree, RBS signals and BLF marker panels all stop drawing
+a ring round the viewport once the cursor is somewhere, and the row's
+own cursor styling is the only focus indication from then on.
+
+**Needed: confirm the row indicator alone is legible enough, on the
+panels where the cursor rides on the selection background rather than
+an outline.** The detail and the experiment are in the task's status
+log.
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost

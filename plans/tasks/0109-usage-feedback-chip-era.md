@@ -10,7 +10,7 @@ behave like the grid rows they sit on.
 
 Groomed with the owner 2026-08-22, with phases 2b / 2c / 2d added after
 the 2026-08-22 bench session found the reported fault was the CAN link,
-not the USB device. Phases 1, 2, 2b, 3, 2c, 2d and 4 landed; 5 and 6
+not the USB device. Phases 1, 2, 2b, 3, 2c, 2d, 4 and 5 landed; 6
 outstanding. Kvaser deferred by owner ruling 2026-08-23. See the status
 log.
 
@@ -1212,6 +1212,152 @@ was taken and nothing was written to
 still described the project panel's *Connect all* / *Disconnect all*
 button, which phase 1 removed. Both now point at the status-bar chip —
 a doc-vs-code mismatch in a paragraph this phase was editing anyway.
+
+**2026-08-23 — Phase 5 (The keyboard-nav highlight), item 8.**
+Branch `task-109-phase-5-nav-highlight` off
+`task-109-phase-4-project-affordances`. Investigation-first; the
+scientific-method chain is below and the fix cites the experiment that
+confirmed it.
+
+### Observation
+
+The owner's, verbatim: *"seeing weird highlighting during keyboard nav
+in the trace panel; the entire box gets highlighted on leftarrow"*.
+
+### Hypotheses
+
+1. **Focus lands on a container carrying a visible ring.** Every
+   gridview container is `tabIndex: 0` and no stylesheet rule suppresses
+   its outline, so a press that changes nothing would leave the UA ring
+   round the whole scroll viewport as the only visible change. (Offered
+   by phase 3 as a place to point the reproduction, explicitly not a
+   verdict, and untested there.)
+2. **ArrowLeft moves the cursor to a parent row whose selected styling
+   spans the whole box.** `gridviewRows.ts`'s `ArrowLeft` case walks out
+   to the nearest shallower row when there is nothing to collapse.
+
+### Experiment
+
+A jsdom reproduction against the real `TraceView`
+(`apps/gui/src/zzExperiment.dom.test.tsx`, scratch, deleted after the
+run), logging `document.activeElement`, the container's
+`aria-activedescendant` and every row's class list after each press.
+jsdom does no layout, so this pins **which element holds focus and what
+classes apply**, never appearance — which is exactly what separates the
+two hypotheses: hypothesis 2 predicts a class change on some element,
+hypothesis 1 predicts none. Two entry paths were run, mouse-then-
+keyboard and keyboard-only, because they differ in when the container
+takes focus.
+
+### Data
+
+Keyboard-only entry, ten collapsed frame rows:
+
+| Step | `document.activeElement` | `aria-activedescendant` | rows changed |
+|---|---|---|---|
+| after render | `BODY` | absent | — |
+| container focused (as Tab would) | `DIV.trace-rows` | absent | none |
+| ArrowDown | `DIV.trace-rows` | `trace:r0:-f%3A0` | row 0 gains `selected` |
+| **ArrowLeft** (depth-0, collapsed) | `DIV.trace-rows` | `trace:r0:-f%3A0` | **none** |
+
+`ArrowLeft` reported `defaultPrevented=true` and
+`document.documentElement.outerHTML` **byte-identical** before and
+after. Mouse-then-keyboard entry behaved the same on focus: the click
+handler focuses the container (`makeRowGridPropsCache`), never a row.
+Where ArrowLeft *does* move — from a disclosed depth-1 signal row — the
+only class it applies is `selected` on one 22 px `.trace-row`.
+
+### Conclusion
+
+**Hypothesis 2 is falsified.** In the reported case ArrowLeft changes
+nothing in the app's own markup at all, and in the case where it does
+move, the class it applies covers one row, not the box.
+
+**Hypothesis 1 is confirmed for the part the instrument can reach.**
+The element holding focus after ArrowLeft is `DIV.trace-rows` — the
+whole scroll viewport — and a stylesheet walk finds no rule touching
+`outline` on it or on any other gridview container. A `tabindex="0"`
+element with focus and no author outline gets the UA focus ring; that
+last link is a browser fact, not something jsdom can show, and is
+recorded here as an inference rather than a measurement.
+
+**Why ArrowLeft and not ArrowDown.** ArrowLeft on a collapsed top-level
+row is the one nav key that moves nothing: the arrows and Home/End move
+the cursor and its row highlight with it, ArrowRight expands. Selectors
+4's own UA note — *"if the user interacts with the page via the
+keyboard, the currently focused element should match
+`:focus-visible`"* — puts the ring up on the first keypress and leaves
+it up, so on every other press it is chrome behind a moving row
+highlight, and on this one it is the only thing that changed. The fix
+is therefore not ArrowLeft-specific either.
+
+### The fix
+
+One rule in `index.css`, keyed on the attribute `useGridview` stamps on
+every container:
+
+```css
+[data-gridview][aria-activedescendant]:focus { outline: none; }
+```
+
+**Not `outline: none` on the containers.** A keyboard user needs to
+know where focus is, and the container is where it is. The
+`[aria-activedescendant]` guard is the whole design: React omits that
+attribute while `cursor` is `null`, so a container Tabbed into before
+the cursor has moved anywhere **keeps its ring** — there is no row
+indicator yet for it to defer to — and loses it the moment a row starts
+carrying the cursor. `:focus` rather than `:focus-visible` because
+`:focus` is the superset, and the guard, not the pseudo-class, is what
+protects the accessible case.
+
+**Shared, not per-panel.** All nine gridview containers
+(`.trace-rows` ×3, `.dbc-panel-tree`, `.rbs-tree`, `.rbs-signals-rows`,
+`.tx-panel-list`, `.view-signals-rows`, `.blf-map-markers-list`) carry
+the same artefact and are fixed by the one rule; so is any panel that
+adopts the layer later. Filed as owner-review-queue 1.29, since it is a
+visible change to focus indication in every grid panel.
+
+**The panels were surveyed for what the rule leans on.** Six declare
+`isSelectable: () => true`, so the cursor collapsing the selection onto
+itself is what marks the row; `DatabasePanel` and `RbsPanel` have
+unselectable rows and mark the cursor directly (`.dbc-row-active`,
+`data-active`); the trace's timeline event rows, also unselectable,
+carry `.trace-event-focused`. No gridview leaves a cursor unmarked, so
+none is stranded by the rule.
+
+### Tests
+
+- `gridviewFocusRing.test.ts` (3, new) — reads `index.css?raw` the way
+  `dockPanelScrolling.test.ts` does, since jsdom neither lays out nor
+  loads the stylesheet. The suppression exists and is focus-scoped; no
+  suppression exists that is *not* attribute-guarded (the a11y half —
+  this is what an "`outline: none` everywhere" fix would trip); and
+  every panel's row-level cursor indicator is still drawn.
+- `TraceView.gridview.dom.test.tsx` (+1) — the DOM contract the rule
+  keys on: container focused with no cursor names no row and marks
+  none, ArrowDown names one and marks it, and ArrowLeft on a collapsed
+  top-level row leaves focus and `document.body.innerHTML` untouched.
+
+Falsified before being trusted: rewriting the rule as
+`[data-gridview]:focus` fails two of the three CSS cases, and renaming
+`.dbc-row-active` fails the third with the panel named in the message.
+The first CSS case failed before the rule was added.
+
+**Docs.** ADR 0044's cursor-and-focus paragraph carries a 2026-08-23
+amendment stating the rule and the obligation it puts on panels — each
+owes its cursor a visible row indicator that does not depend on the row
+being selectable.
+
+### Not done
+
+**Perf skipped by owner instruction** (queue 2.5). No ADR-0031 capture
+was taken and nothing was written to
+`docs/performance-measurements/frontend/`.
+
+**No browser-rendered confirmation.** Per the no-UI-automation rule the
+ring itself was never photographed; the chain above stops at "the
+container holds focus and no author rule suppresses its outline". The
+closing look is the owner's, on the installer.
 
 ## Blockers / side effects
 

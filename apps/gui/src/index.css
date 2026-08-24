@@ -1164,6 +1164,28 @@ ul.status-bar-menu .status-chip {
 }
 /* === end chip menus === */
 
+/* === Shared gridview container (ADR 0044) ===
+   A gridview's container is the one element of the grid that holds DOM
+   focus: rows are recycled or absent in the paged viewports, so the
+   active row is named by `aria-activedescendant` instead of focused.
+   That makes the container `tabindex="0"`, and the UA rings the whole
+   box — the entire scroll viewport, not the row the cursor is on. On a
+   press that moves the cursor the row indicator moves with it and the
+   box ring reads as chrome; on a press that moves nothing (Left on a
+   top-level row, Right on a plain leaf) it is the only thing on screen
+   that changed, and it reads as the whole panel lighting up.
+
+   So while the container names an active row, that row's own cursor
+   styling is the focus indication and the box ring goes. While it names
+   none — focus arrived by Tab and the cursor has not moved yet — the
+   ring is all a keyboard user has, and the attribute guard keeps it.
+   Keyed on the attribute the layer stamps on every gridview container,
+   so this covers the panels that adopt it later too. */
+[data-gridview][aria-activedescendant]:focus {
+  outline: none;
+}
+/* === end shared gridview container === */
+
 /* A capture census walking: indeterminate, since the walk's length is
    the file's length. Same sliding chip the plot shows while its first
    sample builds (`.plot-area-building-bar`), sized for the status line
