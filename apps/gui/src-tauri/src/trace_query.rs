@@ -13,11 +13,10 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, State};
 
-use cannet_core::CanId;
 use cannet_dbc::Database;
 
 use crate::app_state::{AppState, LoadedDbc};
-use crate::dbc_commands::decode_against;
+use crate::dbc_commands::{decode_against, decode_resolved};
 use crate::filter::{self, DecodeDependentLeaf, FilterPredicate};
 use crate::ipc::{
     self, ByIdSnapshot, FilteredTracePage, RowPage, SignalPageRow, SignalSections, SignalSelection,
@@ -40,6 +39,7 @@ pub(crate) fn collect_trace_records(
     let end_us = usize::try_from(end).unwrap_or(usize::MAX);
     let raw = state.trace_store.slice(start_us, end_us);
     let dbs = state.databases();
+    let model = state.decode_model(&dbs);
     let violations: std::collections::HashMap<u64, &'static str> = state
         .verifier
         .violations_in(start, end)
@@ -50,7 +50,7 @@ pub(crate) fn collect_trace_records(
         .map(|(i, frame)| {
             #[allow(clippy::cast_possible_truncation)]
             let absolute_index = start + i as u64;
-            let decoded = decode_against(&dbs, &frame);
+            let decoded = decode_against(&model, &frame);
             let mut record = TraceFrameRecord::from_raw(absolute_index, &frame, decoded);
             record.violation = violations.get(&absolute_index).copied();
             record
@@ -281,9 +281,10 @@ pub(crate) async fn fetch_by_id_page(
     let rows = state.trace_store.latest_in_window(start, end);
     let mut snaps: Vec<ByIdSnapshot> = {
         let dbs = state.databases();
+        let model = state.decode_model(&dbs);
         rows.into_iter()
             .filter_map(|row| {
-                let decoded = decode_against(&dbs, &row.frame);
+                let decoded = decode_against(&model, &row.frame);
                 let record = TraceFrameRecord::from_raw(
                     u64::try_from(row.index).unwrap_or(u64::MAX),
                     &row.frame,
@@ -390,13 +391,21 @@ pub(crate) fn fetch_signal_page_inner(
     let names: HashMap<String, String> = bus_names.into_iter().collect();
     // Snapshot the DBC set (Arc clones) so decode and the store's
     // windowed queries run without holding the databases lock.
-    let dbs: Vec<(Arc<Database>, Vec<String>)> = {
+    let dbs: Vec<(String, Arc<Database>, Vec<String>)> = {
         let guard = state.databases();
         guard
             .iter()
-            .map(|d| (d.db.clone(), d.buses.clone()))
+            .map(|d| (d.path.clone(), d.db.clone(), d.buses.clone()))
             .collect()
     };
+    // The picks travel with the set: a snapshot row is a decoded value
+    // like any other, so it resolves per signal (ADR 0054).
+    let model = crate::signal_fingerprint::DecodeModel::new(
+        dbs.iter()
+            .map(|(path, db, buses)| crate::signal_fingerprint::DbcScope { path, db, buses })
+            .collect(),
+        state.picks_snapshot(),
+    );
     // Shared, cached universe — rebuilding and re-sorting one entry per
     // signal per bus on every poll tick is what this cache exists to
     // avoid. The view's `sources` wiring is applied inside the selection
@@ -409,7 +418,7 @@ pub(crate) fn fetch_signal_page_inner(
     // typed into a section would have no rows to claim.
     let selection = signal_snapshot::selection_with_section_patterns(selection, sections);
     let selected = signal_snapshot::select_descriptors(&all, &selection, &names, source_buses)?;
-    let mut rows = collect_signal_rows(state, &dbs, &all, &selected, start, end);
+    let mut rows = collect_signal_rows(state, &model, &all, &selected, start, end);
     // File-backed signals (`docs/CONTEXT.md`) are rows of this view too.
     // They come from the capture rather than from a DBC, so they are not
     // in the descriptor universe and their columns are read off the
@@ -538,7 +547,7 @@ fn plain_latest_for<'a>(
 
 fn collect_signal_rows(
     state: &AppState,
-    dbs: &[(Arc<Database>, Vec<String>)],
+    dbs: &crate::signal_fingerprint::DecodeModel<'_>,
     all: &[(Option<String>, cannet_dbc::SignalDescriptor)],
     selected: &[usize],
     start: usize,
@@ -567,7 +576,7 @@ fn collect_signal_rows(
     for ((bus, id, extended), wanted) in &streams {
         if !wanted.plain.is_empty() {
             if let Some(latest) = plain_latest.get(&(bus.clone(), *id, *extended)) {
-                if let Some(decoded) = decode_snapshot_frame(dbs, &latest.frame) {
+                if let Some(decoded) = decode_resolved(dbs, &latest.frame) {
                     extract_snapshot_cells(
                         &mut cells,
                         all,
@@ -591,7 +600,7 @@ fn collect_signal_rows(
                 end,
             );
             for (sel, (_, frame)) in &latest {
-                let Some(decoded) = decode_snapshot_frame(dbs, frame) else {
+                let Some(decoded) = decode_resolved(dbs, frame) else {
                     continue;
                 };
                 let (rate, count) = state
@@ -639,21 +648,6 @@ fn collect_signal_rows(
             }
         })
         .collect()
-}
-
-/// Decode a raw frame against the DBC-set snapshot — the same
-/// first-applicable-DBC-wins and per-bus-scoping rules as
-/// [`decode_against`], but returning the borrow-rich
-/// [`cannet_dbc::DecodedMessage`] (the snapshot rows need `raw_signed`,
-/// which the wire-shape [`DecodedRecord`] doesn't carry).
-fn decode_snapshot_frame<'a>(
-    dbs: &'a [(Arc<Database>, Vec<String>)],
-    frame: &RawTraceFrame,
-) -> Option<cannet_dbc::DecodedMessage<'a>> {
-    let id = CanId::new(frame.id, frame.extended).ok()?;
-    dbs.iter()
-        .filter(|(_, buses)| filter::dbc_applies(buses, frame.bus_id.as_deref()))
-        .find_map(|(db, _)| db.decode_raw(id, frame.payload.data()))
 }
 
 /// The filter index `AppState` keeps live for the trace's current filtered
@@ -733,12 +727,13 @@ pub(crate) fn windowed_filter_page(
 fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<TraceFrameRecord> {
     let pairs = state.trace_store.frames_at(page_idxs);
     let dbs = state.databases();
+    let model = state.decode_model(&dbs);
     pairs
         .into_iter()
         .map(|(i, frame)| {
             let index = u64::try_from(i).unwrap_or(u64::MAX);
             let mut record =
-                TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
+                TraceFrameRecord::from_raw(index, &frame, decode_against(&model, &frame));
             record.violation = state.verifier.violation_at(index);
             record
         })
@@ -803,9 +798,10 @@ pub(crate) fn ensure_active_filter_index<'a>(
             active.resolve_count = active.resolve_count.wrapping_add(1);
         }
         let decode_ids = &active.decode_ids;
+        let model = state.decode_model(&dbs);
         let keep = |f: &RawTraceFrame| {
             let decoded = if decode_ids.contains(&f.id) {
-                decode_against(&dbs, f)
+                decode_against(&model, f)
             } else {
                 None
             };
