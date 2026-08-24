@@ -6942,6 +6942,18 @@ button.color-chip {
   white-space: nowrap;
 }
 
+/* The label row, which is the one body value allowed to wrap: it exists
+   because the label is capped on the plot marker and ellipsised on the
+   row above, so this is where it is read in full. Clamped to the rows
+   the body reserved for it, so it can never overrun into the tag. */
+.trace-event-body-wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  line-height: 18px;
+}
+
 .trace-event-body-editable {
   cursor: text;
 }
