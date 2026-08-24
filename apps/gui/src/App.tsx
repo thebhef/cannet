@@ -84,7 +84,7 @@ import {
 import { useTransientStatus } from "./useTransientStatus";
 import { hostSettings, useSetting } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
-import type { EventSubject, Note } from "./notes";
+import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { KeybindingsContext } from "./keybindingsContext";
@@ -199,6 +199,8 @@ import {
   type UndoOrder,
 } from "./elementHistory";
 import { UndoGestureContext, type UndoGesture } from "./undoGesture";
+import { EMPTY_LINK_HISTORY, type LinkHistory, type LinkStep } from "./eventLinkHistory";
+import { useEventLinkUndo } from "./useEventLinkUndo";
 import { PanelCommandsContext } from "./panelCommands";
 import { useCommands } from "./useCommands";
 import {
@@ -468,6 +470,11 @@ export function App() {
   // list at `src-tauri/src/notes.rs`). Bootstrapped by
   // `fetch_notes` and kept current by `notes-changed` events.
   const [notes, setNotes] = useState<Note[]>([]);
+  // The notes as of this render, for the callbacks that must read them
+  // without re-binding on every note change — recording a link step has
+  // to know which side already holds the reference.
+  const notesRef = useRef<Note[]>(notes);
+  notesRef.current = notes;
   // Recent captures (the N most-recently-imported BLF/MDF paths,
   // persisted host-side per ADR 0032). Offered in the Import-trace
   // flow; format routing at open time is by extension (`importFormat.ts`).
@@ -550,6 +557,11 @@ export function App() {
   // re-anchoring) that must not become a step. `applyingElementsRef`
   // marks a restore in progress, so undo can't undo itself.
   const elementHistoryRef = useRef<ElementHistory>(initElementHistory([]));
+  // Event links (`eventLinkHistory.ts`), the third stack. Steps rather
+  // than snapshots — a link's inverse is another link — but ordered
+  // against the other two by the same log, so one chord always reverses
+  // the most recent change whichever stack it lives on.
+  const linkHistoryRef = useRef<LinkHistory>(EMPTY_LINK_HISTORY);
   const undoOrderRef = useRef<UndoOrder>(EMPTY_UNDO_ORDER);
   const pendingElementEditRef = useRef(false);
   const applyingElementsRef = useRef(false);
@@ -1854,6 +1866,7 @@ export function App() {
     layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
     elementHistoryRef.current = initElementHistory([]);
     undoOrderRef.current = EMPTY_UNDO_ORDER;
+    linkHistoryRef.current = EMPTY_LINK_HISTORY;
     clearGesture();
     focusHistoryRef.current = api.activePanel
       ? recordFocus(EMPTY_FOCUS_HISTORY, api.activePanel.id)
@@ -1984,6 +1997,7 @@ export function App() {
       // registry once this render lands.)
       elementHistoryRef.current = initElementHistory([]);
       undoOrderRef.current = EMPTY_UNDO_ORDER;
+      linkHistoryRef.current = EMPTY_LINK_HISTORY;
       clearGesture();
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);
@@ -2932,15 +2946,31 @@ export function App() {
   const removeNoteRemote = useCallback((id: string) => {
     void invoke("remove_note", { id }).catch(() => { /* best effort */ });
   }, []);
-  const linkEventsRemote = useCallback((a: string, b: string) => {
-    void invoke("link_events", { a, b }).catch(() => { /* best effort */ });
+  // Event links are the third undo stack (ADR 0050) — steps rather than
+  // snapshots, ordered against the other two by the shared log.
+  const dispatchLink = useCallback((step: LinkStep) => {
+    if (step.kind === "subjects") {
+      void invoke("set_note_subjects", { id: step.eventId, subjects: step.after }).catch(() => {
+        /* best effort */
+      });
+      return;
+    }
+    const cmd = step.linked ? "link_events" : "unlink_events";
+    void invoke(cmd, { a: step.stores, b: step.other }).catch(() => { /* best effort */ });
   }, []);
-  const unlinkEventsRemote = useCallback((a: string, b: string) => {
-    void invoke("unlink_events", { a, b }).catch(() => { /* best effort */ });
-  }, []);
-  const setNoteSubjectsRemote = useCallback((id: string, subjects: EventSubject[]) => {
-    void invoke("set_note_subjects", { id, subjects }).catch(() => { /* best effort */ });
-  }, []);
+  const gestureId = useCallback(() => gestureRef.current?.id, []);
+  const {
+    linkEvents: linkEventsRemote,
+    unlinkEvents: unlinkEventsRemote,
+    setNoteSubjects: setNoteSubjectsRemote,
+    applyEventLinkHistory,
+  } = useEventLinkUndo({
+    notesRef,
+    linkHistoryRef,
+    undoOrderRef,
+    gestureId,
+    dispatch: dispatchLink,
+  });
   const notesValue: NotesContextValue = useMemo(
     () => ({
       notes,
@@ -3016,6 +3046,8 @@ export function App() {
     elementHistoryRef,
     undoOrderRef,
     applyElementHistory,
+    linkHistoryRef,
+    applyEventLinkHistory,
     registry,
     activePanel,
     projectPath,
@@ -3127,6 +3159,7 @@ export function App() {
       // saved layout hasn't yet.)
       layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
       undoOrderRef.current = EMPTY_UNDO_ORDER;
+      linkHistoryRef.current = EMPTY_LINK_HISTORY;
       clearGesture();
 
       // Perf self-driving flags (ADR 0031) override the last-opened
