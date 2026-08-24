@@ -59,28 +59,77 @@ The panel is `ViewSignalsPanel.tsx`, fed by the host's
 references signals, on mount and on config change, un-pushing on
 unmount.
 
-Three hypotheses, ranked by what the code says:
+Three hypotheses were ranked before the owner ruled. Two survive as
+things the phase still has to check; the middle one the owner has now
+decided rather than investigated.
 
-- **Not the filter.** `viewSignalsFilter.ts` is explicit that "nothing
-  selected is no filter", so an empty status selection cannot produce
-  an empty grid. The attention count is a badge, not a filter.
-- **Patterns are never pushed** — the leading hypothesis, in the
+- **Not the status filter.** `viewSignalsFilter.ts` is explicit that
+  "nothing selected is no filter", so an empty status selection cannot
+  produce an empty grid. The attention count is a badge, not a filter.
+- **Pattern-selected signals are never pushed** — by design, in the
   module's own words: *"A **pattern** … is re-evaluated against the
   live catalog on every render — it has no recorded configuration for
   the database to have drifted from, and it cannot go stale the way a
   manual pick can, so it is never pushed."* A project whose views
-  select signals by pattern therefore has an empty panel **by design**,
-  which is exactly the reported symptom.
+  select signals by pattern therefore has an empty panel, which is the
+  reported symptom.
 - **The owner's parenthetical** — a push that only happens for views
   mounted after the panel exists. The hook's `useEffect` runs on mount
   regardless of whether the panel exists, so this is unlikely, but it
   is cheap to falsify and must be falsified rather than argued away.
 
-**Investigation-first.** The verdict decides whether this is a defect,
-a missing empty-state, or a model change. Note that making
-pattern-selected signals pushable is a real model change — a pattern
-has no stable identity to key a row on, and the module's doc comment
-explains why it was excluded. Do not assume that is the answer.
+**Owner ruling 2026-08-22: the pattern exclusion is wrong.**
+*"May be the pattern-based exception you mentioned but I think the
+exception is wrong. Those fields do dynamically update but I still
+want them in the list."* The owner grants the premise — a pattern's
+matches do re-evaluate live — and rejects the conclusion drawn from
+it. A signal a view is actually using belongs in the list of signals
+that view uses, whether the view named it or matched it.
+
+This is cheaper than "a model change" made it sound, because the wire
+shape already carries the case:
+
+| Fact | Where |
+|---|---|
+| `messageName` and `unit` on a `ViewSignalRef` are already `Option<String>` | `view_signals.rs:121`–`123` |
+| identity-only refs already ship — the colormap target and a transmit frame's counter/CRC signal push no recorded fields | `colorMapViewSignalRefs`, `transmitViewSignalRefs` |
+| the host already handles them: `serving.is_none()` → Not Decoded, and the drift comparison only runs where a recorded field exists | `view_signals.rs:498`, `:543`–`:557` |
+
+So a pattern-resolved row pushes as **identity only** and needs no
+host change. It can read Decoded, Not Decoded or Ambiguous, and never
+Scale or Stale — which is correct rather than a gap, since there is no
+recorded comparand for it to have drifted from. That property is the
+thing to write down in the module doc, which currently records the
+opposite decision and must be rewritten in the same commit.
+
+The work is frontend-side and lands in the pure builders, where it
+stays unit-testable: `plotViewSignalRefs`, `signalsViewSignalRefs` and
+the signal-generator rule case take the view's **resolved matches**
+alongside its persisted picks, instead of the persisted picks alone.
+Pattern resolution already happens inside the panels against the live
+catalog; the builders receive its output.
+
+Three consequences the phase owns:
+
+- **The attention badge counts pattern rows.** A pattern matching a
+  signal no database serves now contributes to `attention_count`.
+  Wanted — that is the panel's job — but it is a visible change to a
+  shipped number.
+- **Row count follows pattern breadth.** A wide pattern puts every
+  match in the panel. Check the grid at a realistic breadth rather
+  than assuming.
+- **Re-push churn is bounded but real.** Matches change whenever the
+  catalog does — a DBC loads, a bus assignment changes. The hook
+  already skips a re-push that is equal by value
+  (`usePushViewSignals`'s `lastSent`), so churn tracks actual change;
+  confirm that holds when the input is a resolved set rather than a
+  stored list.
+
+**The symptom still has to be confirmed cured.** The ruling settles
+what belongs in the list, not that the exclusion was the whole cause.
+If the owner's project populates after this change, the third
+hypothesis dies with it; if it is still empty, that hypothesis is live
+and the phase follows it.
 
 ### 2 — the unplugged PEAK dongle
 
@@ -273,9 +322,10 @@ None. Grooming closed 2026-08-22.
 | 3 | The RBS panels become grid rows | Opus | Items 7 and 10. `RbsSignalsPanel`'s rows adopt the gridview layer (cursor, keyboard, selection, Space); `RbsPanel`'s message rows get Space bound to enable/disable, with the test task 99 never wrote. One idiom across both panels. **Unblocks task 99's acceptance.** |
 | 4 | The project affordances | Opus | Items 4, 5 and 6, all in task 108's chip language. New Project as a chip and an honestly-named command; Save as a split chip whose primary press saves; recent projects as user-scope state beside `last_project`, bounded by a new `recent_projects_limit` setting, surfaced in both the bar and the palette. |
 | 5 | The keyboard-nav highlight | Opus | Item 8, investigation-first. A DOM-level reproduction pinning the focused element and its classes on ArrowLeft, then the narrowest fix the data supports. |
-| 6 | The view-signals panel reads empty | Opus | Item 1, investigation-first. Falsify all three hypotheses in order; the verdict decides between a defect fix, an empty-state that says why, and a model change. A model change is escalated, not taken. |
+| 6 | The view-signals panel reads empty | Opus | Item 1. Pattern-matched signals join the list, per the owner ruling: the pure builders take each view's resolved matches as well as its persisted picks and push them identity-only, and `viewSignalsPush.ts`'s module doc is rewritten to record the decision it now carries the opposite of. No host change expected — confirm that. Then verify the reported symptom is gone; if the panel is still empty, the mount-order hypothesis is live and the phase follows it to a verdict. |
 
-Phases 2, 5 and 6 follow the scientific method into the status log:
+Phases 2 and 5 — and phase 6 if its symptom survives the ruled
+change — follow the scientific method into the status log:
 observation → hypothesis → experiment → data → conclusion, and no root
 cause or fix without citing the experiment whose data confirmed it.
 
@@ -285,9 +335,10 @@ cause or fix without citing the experiment whose data confirmed it.
    a recorded verdict explaining why no change was made.
 2. Items 2 and 7 have verdicts good enough to unblock tasks 101 and 99
    in owner-review-queue § 4.
-3. The three investigations (items 1, 2, 8) each carry a full
-   observation → conclusion chain in the status log, with the
-   confirming experiment named.
+3. The investigations (items 2 and 8, and item 1 if the panel is still
+   empty after the ruled change) each carry a full observation →
+   conclusion chain in the status log, with the confirming experiment
+   named.
 4. No regression in the ADR 0031 harness beyond the owner's thresholds,
    and a reading taken for any phase touching a render or data path.
 5. Docs move with the code: ADR 0042 / 0034 gain nothing new unless the
@@ -296,7 +347,63 @@ cause or fix without citing the experiment whose data confirmed it.
 
 ## Status log
 
-_Nothing implemented yet._
+**2026-08-22 — Phase 1 (Surfaces that say too much), items 3 and 9.**
+Branch `task-109-phase-1-quieter-surfaces` off
+`task-107-phase-5-highlight-extent`.
+
+- Item 3: `statusLine.ts`'s `splitStatus` no longer builds the
+  `Streaming from N server(s) (M interfaces)` resting line or the
+  `N connecting` / `N error(s) (address: message)` transient. A
+  remote session still keeps the idle prompt from showing while one is
+  running (blank resting instead), and a session with nothing running
+  still falls back to the idle prompt exactly as before — but there is
+  no longer any text about what the session is or why it failed. That
+  now lives solely on the connect/disconnect chip
+  (`connectionStates.ts`'s `summarizeConnection`) and the system log
+  (`session.rs`'s existing `sys_error!("connection", …)` calls at
+  connect/subscribe failure) — neither touched by this phase.
+  Reachability of both was pinned before this change and stays green
+  after it: `connectionSummary.test.ts`'s "every attempt failed reads
+  Failed" (chip state `failed`) and `systemLog.test.ts`'s
+  `"connection"`/`"error"` fixture, exercised through the level filter,
+  source filter and unread-badge computation. No AppHandle-level mock
+  exists in this crate to drive `session.rs::connect` end-to-end (the
+  established convention here, per `project.rs`'s own test-module
+  comment, is to test the pure logic beneath an `AppHandle`-taking
+  function rather than to add a Tauri mock harness), so the log side is
+  pinned at the level the codebase already pins it at rather than by
+  adding new test infrastructure mid-removal.
+  `StatusBar.tsx`'s metrics row was pushed rightward because
+  `.status-bar .status` (the notice span) shared `flex-grow` with
+  `.status-bar-spacer`, ballooning even when its own text was short or
+  empty. Changed to `flex: 0 1 auto` (shrink-only) so the metrics start
+  immediately after the notice's actual content; the spacer alone now
+  absorbs the freed space, still pushing the pinned chips to the right
+  edge.
+- Item 9: removed the Connect all / Disconnect all button
+  (`ProjectPanel.tsx`) and the `onConnect` / `onDisconnect` chain
+  through `projectContext.ts` (`ProjectContextValue`) and `App.tsx`'s
+  context-value memo. `handleConnect` / `handleDisconnect` stay — the
+  status-bar chip still runs them as commands — and `p.remoteConnected`
+  stays for its other consumers. The empty-state copy at
+  `ProjectPanel.tsx` now points at the status bar instead of naming the
+  removed button. `Manage servers…` is now alone in that
+  `.project-buttons` row; that shape already exists twice elsewhere in
+  the same file (the bare "Add bus" / "Add virtual bus" rows), so it
+  reads as this panel's normal idiom rather than a leftover — no
+  redesign made.
+- Test fallout: rewrote the two `statusLine.test.ts` cases that
+  asserted the removed strings; updated one `ProjectPanel.manageServers
+  .dom.test.tsx` case that asserted "Connect all" existed (now asserts
+  neither button exists); dropped the now-nonexistent `onConnect` /
+  `onDisconnect` fields from nine other test files that build a typed
+  `ProjectContextValue` object literal (excess-property checking would
+  otherwise fail `tsc -b`).
+- All six CI jobs green locally (`cargo test --workspace`, `cargo
+  clippy --workspace --all-targets -- -D warnings`, `pnpm --dir
+  apps/gui test` + `build`, the Python sidecar's ruff/mypy/pytest via
+  `uv`, the MDF export oracle, and the sidecar freeze). NSIS installer
+  built (`pnpm --dir apps/gui tauri build`).
 
 ## Blockers / side effects
 

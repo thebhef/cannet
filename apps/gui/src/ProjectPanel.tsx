@@ -516,21 +516,11 @@ export function ProjectPanel(props: IDockviewPanelProps) {
         ))}
         {p.interfaceBindings.length === 0 && (
           <div className="project-empty">
-            No interfaces selected. Pick one on a logical bus above to enable
-            Connect.
+            No interfaces selected. Pick one on a logical bus above, then
+            connect from the status bar.
           </div>
         )}
         <div className="project-buttons">
-          {p.interfaceBindings.length > 0 &&
-            (p.remoteConnected ? (
-              <button type="button" onClick={p.onDisconnect}>
-                Disconnect all
-              </button>
-            ) : (
-              <button type="button" onClick={p.onConnect}>
-                Connect all
-              </button>
-            ))}
           {/* Unconditional, unlike the bus rows' copies of this
               launcher: a project with no buses yet is exactly when a
               user needs to add the server their interfaces live on. */}

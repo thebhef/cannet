@@ -115,13 +115,14 @@ describe("reaching the Servers panel from the project view", () => {
     expect(launcher()).toBeInTheDocument();
   });
 
-  it("offers the launcher alongside Connect once a bus is bound", () => {
+  it("offers the launcher once a bus is bound, alone — connecting is the status bar's job now", () => {
     renderPanel({
       buses: [{ id: "b1", name: "Bus 1" } as Bus],
       bindings: [{ kind: "remote", server: REMOTE, interface: "can0", bus_id: "b1" }],
     });
     expect(launcher()).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect all" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect all" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Disconnect all" })).not.toBeInTheDocument();
   });
 
   it("opens the Servers panel", () => {

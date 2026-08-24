@@ -109,22 +109,34 @@ describe("splitStatus", () => {
     expect(resting).toBe("");
   });
 
-  it("a live remote stream rests on residency; a connect error flashes as an error transient", () => {
+  it("a running remote session blanks the line — the chip and the log carry it now", () => {
+    // No "Streaming from N server(s)" text and no error-summary
+    // transient: the connect/disconnect chip is the resting readout for
+    // a session (`connectionStates.ts`'s `summarizeConnection`) and a
+    // connect failure's reason lands in the system log
+    // (`session.rs`'s `sys_error!("connection", …)`), so this line has
+    // nothing left to add while one is running.
     const remoteSessions = new Map<string, RemoteStatus>([
       ["1.2.3.4:5", remoteRunning],
       ["9.9.9.9:9", { kind: "error", message: "refused" }],
     ]);
     const { resting, transient } = splitStatus(inputs({ remoteSessions, count: 50 }));
-    expect(resting).toBe("Streaming from 1 server (1 interface)");
-    expect(transient?.level).toBe("error");
-    expect(transient?.text).toContain("9.9.9.9:9: refused");
+    expect(resting).toBe("");
+    expect(transient).toBeNull();
   });
 
-  it("only-connecting remote sessions rest at the idle prompt with an info transient", () => {
-    const remoteSessions = new Map<string, RemoteStatus>([["h:1", { kind: "connecting" }]]);
-    const { resting, transient } = splitStatus(inputs({ remoteSessions }));
-    expect(resting).toMatch(/Open a BLF log/);
-    expect(transient).toEqual({ text: "1 connecting.", level: "info" });
+  it("only-connecting or only-errored remote sessions rest at the idle prompt, no transient", () => {
+    const connecting = new Map<string, RemoteStatus>([["h:1", { kind: "connecting" }]]);
+    expect(splitStatus(inputs({ remoteSessions: connecting }))).toEqual({
+      resting: "Open a BLF log or connect to a server to begin.",
+      transient: null,
+    });
+
+    const errored = new Map<string, RemoteStatus>([["h:1", { kind: "error", message: "refused" }]]);
+    expect(splitStatus(inputs({ remoteSessions: errored }))).toEqual({
+      resting: "Open a BLF log or connect to a server to begin.",
+      transient: null,
+    });
   });
 });
 

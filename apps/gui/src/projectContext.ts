@@ -93,8 +93,6 @@ export interface ProjectContextValue {
   /// `bus_id`. Each project bus has at most one binding, so a
   /// single id is enough to address it.
   onRemoveBinding: (bus_id: string) => void;
-  onConnect: () => void;
-  onDisconnect: () => void;
   /// Virtual buses (ADR 0021).
   localVirtualBuses: LocalVirtualBusDef[];
   /// Add a new virtual bus def. The host instantiates it

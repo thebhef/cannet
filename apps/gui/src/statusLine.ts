@@ -1,11 +1,17 @@
 // What the header status bar reads, as pure logic: a split of app
 // state into a *resting* notice (what is happening) and an optional
-// *transient* one (errors, completions, remote connect/error
-// summaries), plus the discrete metrics that stand beside them —
-// frames, rate, elapsed, RAM, cache (ADR 0002 DS-8). The view shows
-// the transient for a few seconds, mirrors it to the system log, then
-// reverts to the resting line, so a notice is never lost. Kept here as
-// pure logic so the classification is unit-testable without rendering.
+// *transient* one (errors, completions), plus the discrete metrics
+// that stand beside them — frames, rate, elapsed, RAM, cache (ADR 0002
+// DS-8). The view shows the transient for a few seconds, mirrors it to
+// the system log, then reverts to the resting line, so a notice is
+// never lost. Kept here as pure logic so the classification is
+// unit-testable without rendering.
+//
+// Remote-session identity and failure detail are **not** this
+// function's job: the connect/disconnect chip (`connectionStates.ts`)
+// carries the resting state, and the system log carries a failure's
+// reason. This line only blanks itself out of the way while a session
+// is actively streaming, so it doesn't keep offering the idle prompt.
 
 import type {
   ImportMdfResult,
@@ -77,9 +83,9 @@ export interface StatusInputs {
 
 /// Classify the current app state into a resting notice + an optional
 /// transient one. Ongoing activity (idle prompt, BLF load, live
-/// stream) is *resting*; discrete outcomes (error, done, remote
-/// connect/error summaries) are *transient* — the resting line says
-/// only what is happening, and everything else flashes and reverts.
+/// stream) is *resting*; discrete outcomes (error, done) are
+/// *transient* — the resting line says only what is happening, and
+/// everything else flashes and reverts.
 ///
 /// The resting line carries **no numbers**: frames, rate, elapsed and
 /// the two residency figures are discrete aligned metrics
@@ -102,35 +108,16 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
     return { resting: `Loading ${shortenPath(inp.scanningMdfPath)} …`, transient: null };
   }
 
-  // Remote sessions take priority over the BLF idle/done line — the user
-  // is actively streaming. Running sessions name the stream;
-  // connecting/errored sessions are the transient notice.
+  // Remote sessions take priority over the BLF idle/done line — the
+  // user is actively streaming, and the idle prompt would be wrong.
+  // Beyond that, this line has nothing to add: who the session is
+  // streaming from lives on the connect/disconnect chip, and a
+  // connect failure's reason lives in the system log (both already
+  // carry it — see `connectionStates.ts` and `session.rs`'s
+  // `sys_error!("connection", …)` calls).
   if (remoteSessions.size > 0) {
-    const entries = Array.from(remoteSessions.entries());
-    const running = entries.filter(([, s]) => s.kind === "running");
-    const connecting = entries.filter(([, s]) => s.kind === "connecting").length;
-    const errored = entries.filter(([, s]) => s.kind === "error");
-    const totalInterfaces = running.reduce(
-      (acc, [, s]) => (s.kind === "running" ? acc + s.result.interfaces.length : acc),
-      0,
-    );
-    const resting =
-      running.length > 0
-        ? `Streaming from ${running.length} server${running.length === 1 ? "" : "s"} (${totalInterfaces} interface${totalInterfaces === 1 ? "" : "s"})`
-        : idlePrompt;
-    const parts: string[] = [];
-    if (connecting > 0) parts.push(`${connecting} connecting`);
-    if (errored.length > 0) {
-      const first = errored[0];
-      parts.push(
-        first[1].kind === "error"
-          ? `${errored.length} error${errored.length === 1 ? "" : "s"} (${first[0]}: ${first[1].message})`
-          : `${errored.length} error${errored.length === 1 ? "" : "s"}`,
-      );
-    }
-    const transient: TransientStatus | null =
-      parts.length > 0 ? { text: `${parts.join(" · ")}.`, level: errored.length > 0 ? "error" : "info" } : null;
-    return { resting, transient };
+    const running = Array.from(remoteSessions.values()).some((s) => s.kind === "running");
+    return { resting: running ? "" : idlePrompt, transient: null };
   }
 
   switch (state.kind) {

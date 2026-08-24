@@ -523,8 +523,6 @@ const projectCtx: ProjectContextValue = {
   busesWithPendingHwConfig: [],
   onAddBinding: () => {},
   onRemoveBinding: () => {},
-  onConnect: () => {},
-  onDisconnect: () => {},
   localVirtualBuses: [],
   onAddVirtualBus: () => {},
   onRemoveVirtualBus: () => {},

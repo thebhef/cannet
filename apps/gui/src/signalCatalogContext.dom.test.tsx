@@ -75,8 +75,6 @@ function baseProjectCtx(over: Partial<ProjectContextValue> = {}): ProjectContext
     busesWithPendingHwConfig: [],
     onAddBinding: () => {},
     onRemoveBinding: () => {},
-    onConnect: () => {},
-    onDisconnect: () => {},
     localVirtualBuses: [],
     onAddVirtualBus: () => {},
     onRemoveVirtualBus: () => {},

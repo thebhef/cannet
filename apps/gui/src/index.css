@@ -615,10 +615,11 @@ header {
   background: var(--divider);
 }
 /* Whatever is happening, and the response to it. Shrinks and
-   ellipsises before the numbers give way, and takes whatever they
-   leave once they have. */
+   ellipsises before the numbers give way, but never grows past its own
+   content — a growing notice box is what was shoving the metrics away
+   from the left edge, so the metrics start right after it. */
 .status-bar .status {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
