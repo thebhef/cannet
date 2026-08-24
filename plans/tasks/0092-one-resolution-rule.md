@@ -22,13 +22,13 @@ dbs.iter()
    .find_map(|d| d.db.SOMETHING(..))
 ```
 
-| site | what it looks for |
-|---|---|
-| `dbc_commands.rs:609` (`list_value_tables`) | a `VAL_` table for the signal |
-| `app_state.rs:523` | the DBC default for calculated fields |
-| `verification.rs:142` | the same calculated-field default |
-| `transmit_commands.rs:79` | the same again |
-| `app_state.rs:478` (mux extractor) | a decodable mux selector |
+| site | what it looks for | verdict (phase 1) |
+|---|---|---|
+| `dbc_commands.rs:609` (`list_value_tables`) | a `VAL_` table for the signal | **defective — fixed** |
+| `app_state.rs:523` | the DBC default for calculated fields | already correct |
+| `verification.rs:142` | the same calculated-field default | already correct |
+| `transmit_commands.rs:79` | the same again | already correct |
+| `app_state.rs:478` (mux extractor) | a decodable mux selector | correct per signal; one per-*frame* exposure |
 
 **Why this is suspect, not merely duplicated.** It skips *past* the
 database that actually decodes the signal to a later one that happens
@@ -39,13 +39,21 @@ ADR the answer should be *the winner's* `VAL_` table, and if the winner
 has none, then there are no labels; borrowing from a different file is
 the defect, not the fallback.
 
-**Confidence: the code shape permits it; not yet demonstrated with a
-failing test.** Each site needs a case built (winner defines the signal
-but carries no `VAL_` / no calc fields, a later eligible database
-carries both) before it is called a bug. Task 86 fixed the *bus
-scoping* half of this family — "enum labels no longer come from a
-database that can't decode the signal" — and this is the remaining
-per-signal half.
+**Measured 2026-08-21 (phase 1): one of the five is a defect.** The
+constructed case — winner defines the signal but carries no `VAL_` / no
+calc fields, a later eligible database on the same bus carries both —
+was built per site and run. Only `list_value_tables` borrowed: it
+answered `["Zero", "One"]` for a signal whose winning definition
+declares no labels. The three calculated-field sites turn on
+`Database::dbc_calculated_fields` returning `Some` — an *empty* config
+— for any message the database defines, so `find` / `find_map` already
+stops at the first assigned database that **defines the message**; they
+look like Shape A and are not. The mux extractor resolves per signal
+and is likewise correct for this case. Data per site is in the status
+log; what is left over is under Blockers / side effects. Task 86 fixed
+the *bus scoping* half of this family — "enum labels no longer come
+from a database that can't decode the signal" — and this was the
+remaining per-signal half.
 
 ### Shape B — resolving per *message* where the rule is per *signal*
 
@@ -236,3 +244,153 @@ first, and closing it changes decoded values.
   is turned around to say so — or left open with the owner's ruling
   recorded and the test still pinning the accepted exposure.
 - The shared resolver's rustdoc cites ADR 0054.
+
+## Blockers / side effects
+
+Recorded by phase 1, 2026-08-21.
+
+- **The mux extractor falls through per frame, the way the sampler
+  does.** `app_state::refresh_mux_extractor`'s closure asks each
+  eligible database in turn for `decode_mux_selector` and takes the
+  first that answers *for that payload*. Where the winner defines the
+  multiplexor but cannot read it out of this frame — selector in byte
+  7, three-byte payload — the next database answers, and the mux index
+  holds a selector the winning definition never produced. Measured:
+  `a.dbc` (first on the bus) puts `Mux` at bit 56, `b.dbc` at bit 0; a
+  `[1, 7, 0]` frame yields selector `1`, from b.dbc. Pinned as
+  `a_selector_the_winner_withholds_is_read_from_the_next_database`
+  (`tests.rs`), **not** fixed: it is the same decision as Shape D's —
+  closing it changes what the per-signal latest-value view shows — and
+  Shape D is an owner ruling. Whoever rules on Shape D should rule on
+  this in the same breath; they are one question asked at two sites.
+- **Calculated-field resolution is per message, not per signal.** The
+  three calc sites resolve the whole designation — counter signal and
+  CRC signal both — against the first database that defines the
+  *message*. ADR 0054 resolves per **signal**, so a message whose
+  counter signal is defined by one database and whose CRC signal is
+  defined by another has no expressed answer today. No case was built
+  for it (the phase's constructed case is the per-signal `VAL_` one)
+  and it is exotic; named here so phase 3's shared resolver decides it
+  deliberately rather than inheriting per-message resolution by
+  accident.
+- **`list_value_tables` does not consult the per-signal database pick.**
+  The fix makes it read the first *defining* database in
+  assignment-filtered load order, which is the pre-pick half of
+  ADR 0054 part 2. A project that has recorded an explicit pick for the
+  signal still gets labels from load order. That is exactly the gap the
+  task's own "Why this is load-bearing" section describes from the
+  other side, and closing it belongs to phase 3's shared resolver,
+  where picks are already honoured.
+- **`RbsElementState` is re-exported `#[cfg(test)]` from `rbs`.** It is
+  the value type of `RbsRuntime::elements`, a public field, and was not
+  nameable outside `rbs` — so a test standing host state up by hand
+  could not build one. Test-only, to keep a warning-free non-test
+  build; if a production caller ever needs it the `cfg` comes off.
+
+## Status log
+
+### 2026-08-21 — Phase 1: verifying the Shape A sites (branch `task-92-phase-1-shape-a`)
+
+Branched from `plans-task-88-complete` at `13285974`. Baseline
+`cargo test -p cannet-gui`: **811 passed, 6 ignored**; clippy clean.
+
+Method per site: build the case the scope names — the winner defines
+the signal but carries no `VAL_` / no calculated-field default, a later
+eligible database on the same bus carries both — observe what the site
+returns, and only then judge. Every case ran first as a throw-away
+printing test with a **reversed-load-order control**, so that a
+"correct" reading is a discrimination rather than an absence. The
+scratch tests were reverted before anything was written for keeps.
+
+**Site 1 — `dbc_commands::list_value_tables_inner`. Defective.**
+
+- *Observation.* `a.dbc` and `b.dbc` both assigned to bus `p`, both
+  defining `256/"A"`, only `b.dbc` carrying
+  `VAL_ 256 A 0 "Zero" 1 "One"`. `list_value_tables_inner(.., "A", ..,
+  Some("p"))` returned `["Zero", "One"]`.
+- *Expected under ADR 0054 part 3.* `[]` — `a.dbc` supplies the
+  definition every value of `A` decodes from, and it declares no
+  labels.
+- *Cause, from the code the experiment ran.* The predicate is
+  `value_table_for_signal(..).is_some()`, which is false both for "does
+  not define the signal" and for "defines it with no table", so the
+  scan reads past the winner.
+- *Fix.* Stop at the first eligible database that **defines the
+  signal** (`Database::defines_signal`, new — a hash lookup plus the
+  message's signal list) and answer with its table, or with nothing.
+  `enum_labels_come_from_the_database_that_defines_the_signal` went red
+  first, then green; it pins the reversed order too, and the case where
+  a database ahead of the winner does not define the signal at all (not
+  a candidate, so the winner is unchanged).
+  `defines_signal_answers_for_the_signal_not_for_its_value_table`
+  (`cannet-dbc`) pins the distinction at the source. README updated.
+  Commit `00e5a6a7`.
+
+**Sites 2, 3, 4 — the calculated-field trio. Already correct.**
+
+- *Hypothesis going in.* The same borrow as site 1: a later database's
+  `CannetCounter` / `CannetCrc` designation applied to a message the
+  winner decodes.
+- *Experiment.* `a.dbc` defines `291 Status` with `AliveCtr` at bit 48
+  and no cannet attributes; `b.dbc`, behind it on the same bus, defines
+  `291` with `AliveCtr` at bit **40** and both attributes. Three frames
+  counting 0, 1, 2 in byte 6's low nibble (bit 48).
+- *Data.* `resolve_effective_calc` with no override: `Ok(None)` — b's
+  designations not borrowed. With a counter override: payload
+  `[00,00,00,00,00,00,01,00]`, i.e. bit 48, a.dbc's placement.
+  `VerificationState::rebuild_configs` with the RBS override: **no
+  violations**. `app_state::rebuild_verification` end to end: **no
+  violations** — so neither b.dbc's counter placement nor its CRC
+  reached the config.
+- *Controls (load order reversed).* `Ok(Some)` with payload carrying
+  `01` in byte 5's low nibble and `46` in byte 7 — b's counter at bit
+  40 and its CRC; `[(1,"counter"),(2,"counter")]`;
+  `[(0,"crc"),(1,"counter"),(2,"counter")]`. The three clean readings
+  are therefore discriminations.
+- *Conclusion — hypothesis refuted, with the mechanism.*
+  `Database::dbc_calculated_fields` returns `Some` for **any** message
+  the database defines — an empty config when it designates nothing —
+  and `None` only when the message is absent. So `find` / `find_map`
+  over that predicate already means "the first assigned database that
+  defines the message". The shape reads like Shape A and is not one.
+- *Change.* Tests only:
+  `a_transmit_rows_calculated_fields_come_from_the_defining_database`
+  (`tests.rs`),
+  `an_rbs_override_resolves_against_the_database_that_defines_the_message`
+  and `a_dbc_calculated_field_default_comes_from_the_defining_database`
+  (`verification.rs`), each carrying its reversed-order control. No
+  production behaviour touched. Commit `9d8cf8ea`.
+
+**Site 5 — `app_state::refresh_mux_extractor`. Correct per signal; one
+per-frame exposure.**
+
+- *Case A (both define the multiplexor).* `a.dbc` reads the selector
+  from byte 1, `b.dbc` from byte 0, a.dbc first. Frame `[1,7,0,9,..]`
+  → selector **7**, a.dbc's. Reversed → **1**. The winner wins.
+- *Case B (the winner's message is not multiplexed).* `a.dbc` defines
+  `512` with one plain signal and no multiplexor anywhere; `b.dbc` is
+  the mux database. Selector **1**, from b.dbc. Judged **correct**, not
+  a skip: resolution is per signal, `scoped_descriptors` dedups per
+  signal, and `Mux` / `ModeA` / `ModeB` have exactly one definition on
+  this bus — b.dbc's. A database that does not define a signal is not
+  a candidate for it. The `has_multiplexor()` pre-filter can only drop
+  databases that define no multiplexor at all, which can never win a
+  multiplexor signal.
+- *Case C (the winner withholds it for this payload).* `a.dbc` puts
+  `Mux` at bit 56, `b.dbc` at bit 0, a.dbc first; a three-byte frame
+  `[1,7,0]` → selector **1**, from b.dbc, for a `Mux` that a.dbc
+  defines. This is the per-frame fall-through rather than the
+  per-signal question, and it is Shape D's shape. Pinned as
+  `a_selector_the_winner_withholds_is_read_from_the_next_database` and
+  recorded under Blockers / side effects; **not** fixed, because
+  closing it changes what a view shows and Shape D is an owner ruling.
+- *Change.* Tests only:
+  `the_mux_selector_comes_from_the_database_that_defines_the_multiplexor`,
+  `a_multiplexor_only_one_database_defines_is_still_that_databases_to_supply`,
+  and the exposure pin. Commit `9d8cf8ea`.
+
+**Gates.** `cargo test -p cannet-gui`: 811 → **818 passed, 6 ignored**
+(1 site-1 test, 5 pins, 1 exposure pin). `cargo test -p cannet-dbc`
+(lib): 109 → **110**. `cargo clippy -p cannet-gui --all-targets` and
+`cargo fmt --all -- --check` clean. `cargo test --workspace` clean.
+Frontend untouched. Perf harness not run — the overseer owns it.

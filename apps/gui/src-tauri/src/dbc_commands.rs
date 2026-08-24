@@ -621,6 +621,13 @@ pub(crate) fn list_value_tables(
 /// old fall-back-to-every-database answer was guessing for. The
 /// file-backed branch is unaffected — no DBC bears on a file-backed
 /// series.
+///
+/// Within that set the winner is the first database that **defines the
+/// signal**, and the labels are whatever that one says — none, if it
+/// declares no `VAL_` table. A value has one definition and its labels
+/// belong to that definition (ADR 0054), so reading on to a later file
+/// that happens to carry a table would label a value that file never
+/// produced.
 pub(crate) fn list_value_tables_inner(
     state: &AppState,
     message_id: u32,
@@ -638,16 +645,17 @@ pub(crate) fn list_value_tables_inner(
         .databases()
         .iter()
         .filter(|d| filter::dbc_applies(&d.buses, bus_id))
-        .find_map(|d| {
+        .find(|d| d.db.defines_signal(message_id, extended, signal_name))
+        .and_then(|d| {
             d.db.value_table_for_signal(message_id, extended, signal_name)
-                .map(|rows| {
-                    rows.iter()
-                        .map(|e| ipc::ValueTableEntryRecord {
-                            raw: e.raw,
-                            label: e.label.clone(),
-                        })
-                        .collect()
+        })
+        .map(|rows| {
+            rows.iter()
+                .map(|e| ipc::ValueTableEntryRecord {
+                    raw: e.raw,
+                    label: e.label.clone(),
                 })
+                .collect()
         })
         .unwrap_or_default()
 }
