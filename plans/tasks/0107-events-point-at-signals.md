@@ -865,6 +865,144 @@ cannet running; it was discarded, not filed.
 - `pnpm --dir apps/gui test` 2795 passed across 210 files. All six CI
   jobs run locally and green.
 
+### Phase 4 - authoring gestures (2026-08-22)
+
+Landed on `task-107-phase-4-authoring`, off `task-107-phase-3-subject-chips`
+(`bbb1062f`). Frontend only; no Rust changed.
+
+**One constructor is the whole design.** `authorEvent(timestampNs,
+subjects, existingCount)` in `notes.ts` mints every user-authored event -
+id, `note N` label, the wheel colour at the existing count, and the
+subject list. The plot's note cursor now goes through it too, so the
+three ways to make an event produce one indistinguishable shape.
+Provenance-agnostic is not a field we left out; it is a function nobody
+can route around. A test pins it: two events authored from different
+gestures have the same key set and differ only in subjects and time.
+
+**Plot - Shift+left-click over a selection.** `PlotArea`'s `mouseup`
+dispatcher gained one branch, ahead of the cursor-mode dispatch:
+
+- **Ahead of it, not inside it.** The gesture is a modifier of its own,
+  so it reads the same in `x` / `y` / `note` / `off`. Putting it after
+  the `cursorMode === "off"` early return would make it silently dead in
+  the mode a plot spends most of its time in.
+- **Gated on the selection naming something**, so with nothing selected
+  the click falls through and behaves exactly as it did before. That is
+  what keeps it from stealing a gesture: Shift was read nowhere in
+  `mousedown` / `mouseup`, so Shift+click *was* a plain click - and with
+  no selection it still is.
+- **The subjects come from the model's own selection**, per logical area
+  (`selectionSubjectsByArea` in `PlotPanel`, over `subjectsForSelection`
+  in `plotEvents.ts`). Clicking any axis of the area that holds the
+  selection names the whole selection; an area that does not hold it
+  names nothing.
+- **Time comes from the path that already existed** - `onAddNote(x)`'s
+  `baseSeconds + t`, unchanged. Nothing new re-derives time from pixels.
+
+**Trace - the row's context menu rides the panel's existing one.**
+`TraceView` gained `onFrameContextMenu`; a frame row given one keeps the
+right-click (`preventDefault` + `stopPropagation`, the column header's
+settled precedent) and hands the frame up. `TracePanel`'s menu state
+grew the frame, and `SourcesContextMenu` grew a `rowAction` slot that
+draws **above** the checklist - the more specific target's command
+first, the view-wide sources where they have always been.
+
+The alternative, a second menu of its own, was rejected: the panel opens
+its sources picker on *any* right-click, and rows are almost all of the
+panel, so a row-owned menu would take that affordance away over most of
+the surface. One menu, two scopes, nothing lost.
+
+**Judgement calls, for the record.**
+
+- **`NotesContextValue.addNote` now takes the whole `Note`** rather than
+  four positional arguments. `authorEvent` returns exactly the struct
+  `add_note` accepts, and a fifth positional argument for subjects was
+  the alternative. `App.tsx`'s dispatcher shrank to one `invoke`.
+- **A file-backed series contributes no subject.** Its `messageId` is a
+  signal channel group index, not an arbitration id, so a structural
+  reference built from it would name a message that does not exist. A
+  selection of nothing but file-backed rows therefore names nothing and
+  the gesture falls through. Recorded as a blocker rather than papered
+  over.
+- **The trace row's event is labelled `note N`, not `<message> marked`**
+  as the prototype drew it. A label that names the gesture's input is a
+  provenance tell in everything but the schema - you could sort events
+  by how they were made. The subject chip already says what it is about.
+- **No dialog.** The existing creation path is silent (auto label, auto
+  colour, edited in place afterwards); both gestures match it. The
+  prototype's trailing ellipsis on the menu item, which promises one, is
+  dropped.
+- **Neither gesture needs `NotesStore::linked_events`.** Phase 3 named
+  this phase its next plausible caller. It is not one: authoring writes,
+  it does not read links, and nothing here runs host-side at all. The
+  `#[allow(dead_code)]` stays, and phase 5's highlight work - which does
+  read links - reads them in the frontend through `linkedEventIds`, so
+  it will not be the caller either. Worth a decision.
+
+**README.** The events section gains the two gestures and the
+provenance-agnostic statement; the Notes paragraph no longer claims the
+note cursor is the only way one is placed.
+
+**Perf.** Three 60 s ADR-0031 captures on ev-zonal, release build,
+`--perf-interact scrub`. Load verified on every run before reading
+anything: `ids_measured` 173, rx 1601-1608 f/s, tx 1604-1610 f/s. The
+canonical three-report `check` passed, 69 metrics gated, nothing failed.
+`tx_late_ms_max` came in at 24.4 / 18.4 / 24.8 ms against a 55.7 limit -
+the ~20 ms neighbourhood phase 3 saw on two of its three runs, with no
+sign of its 73.8 ms outlier. Memory under baseline on every tier
+(renderer peak 310-312 MB vs 316; tree peak 725-730 vs 742). Reports
+committed as `2026-08-22-bbb1062f-authoring-run{1,2,3}.json`, named for
+the base commit the way phase 3's siblings are.
+
+**Perf-recipe documentation fixed, at the overseer's instruction.**
+`README.md`'s worked capture recipe used `--connect-on-start` alone, and
+`--rbs-run-on-start` appeared nowhere in the frontend perf instructions -
+two phases in a row followed the documented recipe and measured an idle
+bus. The code block now carries the flag, it has its own bullet saying
+why (an RBS Run flag is session state no project carries, per ADR 0028,
+and a fresh `--app-data-dir` has none to resume, so `--connect-on-start`
+alone connects successfully to a silent bus), and the always-on/off table
+carries a row for it. The prose that claimed the run flag was "already in
+the saved project" was wrong and is corrected. The three runs above are
+the corrected recipe run verbatim.
+`crates/cannet-perf-measurement/README.md`'s Idle-scenario line was
+checked and left alone: its "launched without `--connect-on-start`"
+describes the *screenshot* harness, which passes neither flag (the RBS
+flag appears nowhere in that crate's source), so with no connection
+there is no load whatever the RBS flag says.
+
+**Prototype.** Updated in this commit to match what shipped - the plot
+gesture's mode-independence and its no-selection fall-through, and the
+trace item riding the panel's existing menu. Phase 5 deletes the file.
+
+**Tests** - 23 new, written first and watched fail; the plot gesture's
+were additionally mutation-proved by disabling the branch (3 of the 5
+flipped red, the two no-regression guards correctly did not).
+
+- `notes` (5): the constructor mints at the given time with the given
+  subjects; the label numbers and the colour cycles off the existing
+  count; ids are distinct; two gestures' events have the same key set;
+  an unsubjected event is what it always was.
+- `plotEvents` (5): the selection becomes subjects in the area's order;
+  only what is selected; the extended flag survives; the same signal on
+  two buses collapses to one subject; a file-backed series contributes
+  none.
+- `PlotPanel` (5): Shift+click authors about the selection; the event
+  records nothing about the gesture; it works in `x` / `y` / `note`; with
+  nothing selected nothing happens; the note cursor's plain click stays
+  subject-less.
+- `TraceView` (3): a frame row hands the frame up and stops the event;
+  with no owner it bubbles as before; an event row offers nothing.
+- `TracePanel` (5): the menu leads with the action and keeps the picker;
+  the id is named when no database is; the event is about that message
+  at that frame's time and closes the menu; the extended flag survives;
+  a right-click that hit no row offers no action.
+- One shipped assertion moved with the dispatcher's signature
+  (`PlotPanel.dom.test.tsx`'s wheel-colour test reads `note.color`
+  instead of the fourth positional argument).
+- `pnpm --dir apps/gui test` 2818 passed across 210 files. All six CI
+  jobs run locally and green.
+
 ## Blockers / side effects
 
 ### Phase 1 (2026-08-22) — both since repaired
@@ -945,3 +1083,48 @@ are clean.
   passes on nothing — exactly the silent-disarm failure mode the perf
   rules warn about. The frontend perf instructions in
   `crates/cannet-perf-measurement/README.md` do not name the flag.
+
+### Phase 4 (2026-08-22)
+
+- **Shift+click was not a free gesture, only an unread one.** Shift is
+  inspected nowhere in the plot canvas's `mousedown` / `mouseup`, so
+  Shift+left-click has always behaved as a plain left-click: place
+  cursor A in `x` mode, H1 in `y`, a note in `note`. It now authors an
+  event **when the clicked area holds a signal selection**, and does the
+  old thing otherwise. Nobody could have been relying on the difference -
+  there was none to rely on - but it is a change to what a modified click
+  does on a shipped surface, and it is deliberately mode-independent, so
+  it also fires in `off`, where a click used to do nothing.
+- **A right-click on a frame row no longer opens the plain sources
+  picker.** It opens the same menu with one extra action on top. The
+  picker is intact and in the same place; what changed is that the menu
+  now has an item above it, and the row's right-click no longer reaches
+  the panel handler (the row's own handler puts the same menu up).
+- **A file-backed series cannot be an event's subject.** Its
+  `messageId` is a signal channel group index, not an arbitration id, so
+  `EventSubject`'s structural form has nothing true to say about it.
+  Shift+click over a selection of nothing but file-backed rows names
+  nothing and falls through to the cursor mode. Closing it means a
+  fourth referent kind - a file-backed signal reference - which is a
+  model change (ADR 0056).
+- **The plot gesture is undiscoverable.** Nothing on the plot says
+  Shift+click does anything; the README does. The prototype showed a
+  hint in the plot bar ("Shift+click to mark ...") that the shipped
+  toolbar has no room for, and the chip language has no hint-text
+  element. Recorded rather than invented.
+- **`NotesStore::linked_events` still has no caller**, for the second
+  phase running. Phase 3 nominated this phase; authoring writes rather
+  than reads, and phase 5's highlight work reads links in the frontend
+  through `linkedEventIds`, so it will not be the caller either. The
+  `#[allow(dead_code)]` should probably be resolved by deleting the
+  wrapper - the free `linked_event_ids` it delegates to has a production
+  caller and states the same contract.
+- **An event created from a trace row is timestamped through the wire's
+  `f64` seconds.** `TraceFrameRecord` carries `timestamp_seconds`
+  (`timestamp_ns / 1e9`), so the gesture inverts that division. At
+  absolute unix ns the double's ulp is ~238 ns, far below the ~600 us
+  mean inter-frame gap at ev-zonal's 1608 f/s, so the event anchors to
+  its own frame in practice. It is not exact, and a capture with
+  duplicate-timestamp frames could anchor an event one row late.
+  `Note.timestampNs` is a JS number on the same wire, so this is the
+  system's existing precision floor rather than a new one.

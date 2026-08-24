@@ -726,3 +726,132 @@ describe("TracePanel event rows: the same interactions as the events view", () =
     expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 500_000_000);
   });
 });
+
+describe("TracePanel authoring an event from a trace row (ADR 0056)", () => {
+  // The trace row's context menu creates an event subjected to that
+  // message. It rides the panel's existing right-click menu rather than
+  // opening a second one, so the sources picker every right-click has
+  // always offered is still there.
+  const FRAME_TS_S = 12.5;
+
+  const notesCtx = (addNote: NotesContextValue["addNote"]): NotesContextValue => ({
+    notes: [],
+    addNote,
+    renameNote: vi.fn(),
+    recolorNote: vi.fn(),
+    describeNote: vi.fn(),
+    retagNote: vi.fn(),
+    removeNote: vi.fn(),
+    linkEvents: vi.fn(),
+    unlinkEvents: vi.fn(),
+  });
+
+  function frame(index: number, id: number, extended: boolean, name: string | null) {
+    return {
+      index,
+      timestamp_seconds: FRAME_TS_S + index / 1000,
+      channel: 0,
+      id,
+      extended,
+      direction: "Rx",
+      kind: { kind: "classic" },
+      data: [1, 2],
+      decoded: name == null ? null : { name, signals: [] },
+      bus_id: "b1",
+    };
+  }
+
+  function renderFrames(
+    frames: ReturnType<typeof frame>[],
+    addNote: NotesContextValue["addNote"] = vi.fn(),
+  ) {
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    const props = {
+      params: { elementId: "t1", mode: "chronological" },
+      api: { updateParameters: vi.fn() },
+    } as unknown as Parameters<typeof TracePanel>[0];
+    const data: TraceData = {
+      ...traceData,
+      count: frames.length,
+      fetchRange: async (start: number, end: number) =>
+        frames.slice(start, end) as unknown as Awaited<ReturnType<TraceData["fetchRange"]>>,
+    };
+    render(
+      <TraceDataProvider value={data}>
+        <ProjectContext.Provider value={projectCtx}>
+          <ElementRegistryContext.Provider
+            value={makeRegistry([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement])}
+          >
+            <NotesContext.Provider value={notesCtx(addNote)}>
+              <TracePanel {...props} />
+            </NotesContext.Provider>
+          </ElementRegistryContext.Provider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+    return { restore: () => ch.mockRestore() };
+  }
+
+  const frameRowEl = async () => {
+    await waitFor(() => expect(document.querySelector(".trace-row .col-id")).toBeTruthy());
+    return document.querySelector(".trace-row") as HTMLElement;
+  };
+
+  const createItem = () =>
+    Array.from(document.querySelectorAll(".sources-context-menu-action")).find((b) =>
+      (b.textContent ?? "").startsWith("Create event from"),
+    ) as HTMLElement | undefined;
+
+  it("offers the create action, and keeps the sources picker with it", async () => {
+    const { restore } = renderFrames([frame(0, 0x1a2, false, "BMS_Status")]);
+    fireEvent.contextMenu(await frameRowEl());
+    expect(document.querySelector(".sources-context-menu")).toBeInTheDocument();
+    expect(createItem()?.textContent).toBe("Create event from BMS_Status");
+    // The checklist the panel has always shown is still on the menu.
+    expect(document.querySelector(".sources-picker-header")).toBeInTheDocument();
+    restore();
+  });
+
+  it("names the arbitration id when no database names the message", async () => {
+    const { restore } = renderFrames([frame(0, 0x1a2, false, null)]);
+    fireEvent.contextMenu(await frameRowEl());
+    expect(createItem()?.textContent).toBe("Create event from s:1A2");
+    restore();
+  });
+
+  it("creates an event about that message, at that frame's time", async () => {
+    const addNote = vi.fn();
+    const { restore } = renderFrames([frame(0, 0x1a2, false, "BMS_Status")], addNote);
+    fireEvent.contextMenu(await frameRowEl());
+    fireEvent.click(createItem()!);
+    expect(addNote).toHaveBeenCalledTimes(1);
+    const note = addNote.mock.calls[0]![0] as Note;
+    expect(note.subjects).toEqual([{ kind: "message", messageId: 0x1a2, extended: false }]);
+    expect(note.timestampNs).toBe(Math.round(FRAME_TS_S * 1e9));
+    // Provenance-agnostic: the same shape the plot's gesture produces.
+    expect(Object.keys(note).sort()).toEqual(["color", "id", "label", "subjects", "timestampNs"]);
+    // Acting on it closes the menu.
+    expect(document.querySelector(".sources-context-menu")).not.toBeInTheDocument();
+    restore();
+  });
+
+  it("keeps the extended flag, which is half of message identity", async () => {
+    const addNote = vi.fn();
+    const { restore } = renderFrames([frame(0, 0x18daf1, true, null)], addNote);
+    fireEvent.contextMenu(await frameRowEl());
+    fireEvent.click(createItem()!);
+    expect((addNote.mock.calls[0]![0] as Note).subjects).toEqual([
+      { kind: "message", messageId: 0x18daf1, extended: true },
+    ]);
+    restore();
+  });
+
+  it("offers no create action on a right-click that hit no frame row", async () => {
+    const { restore } = renderFrames([frame(0, 0x1a2, false, "BMS_Status")]);
+    await frameRowEl();
+    fireEvent.contextMenu(document.querySelector(".trace-panel")!);
+    expect(document.querySelector(".sources-context-menu")).toBeInTheDocument();
+    expect(createItem()).toBeUndefined();
+    restore();
+  });
+});

@@ -400,6 +400,7 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { NotesContext, type NotesContextValue } from "./notesContext";
+import type { Note } from "./notes";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { SignalGeneratorContext } from "./signalGeneratorContext";
 import { stableSignalColor, wheelColor } from "./palette";
@@ -1840,8 +1841,8 @@ describe("PlotPanel", () => {
         fireEvent.mouseUp(window, { button: 0, clientX: 150, clientY: 100 });
         expect(addNote).toHaveBeenCalled();
       });
-      const lastCall = addNote.mock.calls[addNote.mock.calls.length - 1]!;
-      expect(lastCall[3]).toBe(wheelColor(2));
+      const note = addNote.mock.calls[addNote.mock.calls.length - 1]![0] as Note;
+      expect(note.color).toBe(wheelColor(2));
     } finally {
       cw.mockRestore();
       ch.mockRestore();
@@ -7654,5 +7655,149 @@ describe("the plot toolbar's performance read-out", () => {
     expect(perfItem()).toHaveAttribute("aria-checked", "true");
     fireEvent.click(perfItem());
     expect(document.querySelector(".plot-perf")).toBeNull();
+  });
+});
+
+describe("PlotPanel authoring an event from the plot (ADR 0056)", () => {
+  /// Shift+click in a plot area with signals selected creates an event
+  /// whose subjects are those signals and whose time is the clicked x.
+  /// The gesture is a modifier on the canvas, so it reads the same in
+  /// every cursor mode — and with nothing selected it names nothing and
+  /// leaves the click to whatever the mode already did.
+  function notesCtx(addNote: ReturnType<typeof vi.fn>): NotesContextValue {
+    return {
+      notes: [],
+      addNote,
+      renameNote: () => {},
+      recolorNote: () => {},
+      describeNote: () => {},
+      retagNote: () => {},
+      removeNote: () => {},
+      linkEvents: () => {},
+      unlinkEvents: () => {},
+    };
+  }
+
+  const signalRow = (name: string): HTMLElement => {
+    const found = Array.from(document.querySelectorAll(".plot-signal-row")).find(
+      (r) => r.querySelector(".plot-signal-name")?.textContent === name,
+    );
+    if (!found) throw new Error(`no signal row for ${name}`);
+    return found as HTMLElement;
+  };
+
+  /// Mount a panel in `cursorMode`, add `names` to its area and select
+  /// them, then hand back the note dispatcher and the uPlot instance.
+  async function setup(names: string[], cursorMode: string) {
+    const addNote = vi.fn();
+    renderPanel({
+      params: { elementId: `el-auth-${cursorMode}-${names.join("+")}` },
+      registry: makeRegistry({
+        id: `el-auth-${cursorMode}-${names.join("+")}`,
+        config: { areas: [{ id: "a1", signals: [] }], cursorMode },
+      }),
+      notes: notesCtx(addNote),
+    });
+    for (const n of names) {
+      addFocusedSignal(n);
+      await waitFor(() => expect(signalRow(n)).toBeInTheDocument());
+    }
+    names.forEach((n, i) => fireEvent.click(signalRow(n), i === 0 ? {} : { ctrlKey: true }));
+    const inst = uplotInstances[uplotInstances.length - 1]!;
+    await act(async () => inst.fire("ready"));
+    return { addNote, inst };
+  }
+
+  const clickPlot = (inst: { over: Element }, init: Record<string, unknown>) => {
+    fireEvent.mouseDown(inst.over, { button: 0, clientX: 150, clientY: 100, ...init });
+    fireEvent.mouseUp(window, { button: 0, clientX: 150, clientY: 100, ...init });
+  };
+
+  let cw: ReturnType<typeof vi.spyOn>;
+  let ch: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      queueMicrotask(() => cb(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+  });
+  afterEach(() => {
+    cw.mockRestore();
+    ch.mockRestore();
+  });
+
+  it("authors an event about the selected signals", async () => {
+    const { addNote, inst } = await setup(["EngineSpeed", "EngineTemp"], "off");
+    await waitFor(() => {
+      clickPlot(inst, { shiftKey: true });
+      expect(addNote).toHaveBeenCalled();
+    });
+    const note = addNote.mock.calls[addNote.mock.calls.length - 1]![0] as Note;
+    expect(note.subjects).toEqual([
+      { kind: "signal", messageId: 256, extended: false, signalName: "EngineSpeed" },
+      { kind: "signal", messageId: 256, extended: false, signalName: "EngineTemp" },
+    ]);
+    expect(Number.isFinite(note.timestampNs)).toBe(true);
+  });
+
+  it("records nothing about the gesture that made it", async () => {
+    // Provenance-agnostic (ADR 0056): the event is a note like any
+    // other — same kind default, same label scheme, same wheel color.
+    const { addNote, inst } = await setup(["EngineSpeed"], "off");
+    await waitFor(() => {
+      clickPlot(inst, { shiftKey: true });
+      expect(addNote).toHaveBeenCalled();
+    });
+    const note = addNote.mock.calls[addNote.mock.calls.length - 1]![0] as Note;
+    expect(Object.keys(note).sort()).toEqual(["color", "id", "label", "subjects", "timestampNs"]);
+    expect(note.label).toBe("note 1");
+    expect(note.color).toBe(wheelColor(0));
+  });
+
+  it("works in every cursor mode, being a modifier of its own", async () => {
+    for (const mode of ["x", "y", "note"]) {
+      cleanup();
+      const { addNote, inst } = await setup(["EngineSpeed"], mode);
+      await waitFor(() => {
+        clickPlot(inst, { shiftKey: true });
+        expect(addNote).toHaveBeenCalled();
+      });
+      const note = addNote.mock.calls[addNote.mock.calls.length - 1]![0] as Note;
+      expect(note.subjects).toHaveLength(1);
+    }
+  });
+
+  it("names nothing and stays out of the way when no signal is selected", async () => {
+    // Nothing selected: Shift+click in `off` mode does what it always
+    // did, which is nothing at all.
+    const addNote = vi.fn();
+    renderPanel({
+      params: { elementId: "el-auth-none" },
+      registry: makeRegistry({
+        id: "el-auth-none",
+        config: { areas: [{ id: "a1", signals: [] }], cursorMode: "off" },
+      }),
+      notes: notesCtx(addNote),
+    });
+    addFocusedSignal("EngineSpeed");
+    await waitFor(() => expect(signalRow("EngineSpeed")).toBeInTheDocument());
+    const inst = uplotInstances[uplotInstances.length - 1]!;
+    await act(async () => inst.fire("ready"));
+    clickPlot(inst, { shiftKey: true });
+    await act(async () => {});
+    expect(addNote).not.toHaveBeenCalled();
+  });
+
+  it("leaves the note cursor's own plain click subject-less", async () => {
+    const { addNote, inst } = await setup(["EngineSpeed"], "note");
+    await waitFor(() => {
+      clickPlot(inst, {});
+      expect(addNote).toHaveBeenCalled();
+    });
+    const note = addNote.mock.calls[addNote.mock.calls.length - 1]![0] as Note;
+    expect(note.subjects).toEqual([]);
   });
 });

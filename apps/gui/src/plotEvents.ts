@@ -3,8 +3,8 @@
 // without mounting a plot: the panel only has to supply its origin, the
 // kinds it is showing, and the theme colors.
 
-import { timelineEvents, type EventKind, type Note } from "./notes";
-import type { NoteEvent } from "./plotPanelConfig";
+import { timelineEvents, type EventKind, type EventSubject, type Note } from "./notes";
+import { signalRefKey, type NoteEvent, type SignalRef } from "./plotPanelConfig";
 
 /// Event cursors for the plot, in display-relative seconds against
 /// `baseSeconds` (the panel's x-axis origin in absolute seconds).
@@ -29,4 +29,41 @@ export function plotTimelineEvents(
       label: e.label,
       color: e.color ?? kindColor(e.kind),
     }));
+}
+
+/// What a plot area's current signal selection is *about*, as event
+/// subjects (ADR 0056) — the list an event authored from that selection
+/// carries.
+///
+/// Two things the structural reference forces, both deliberate:
+///
+/// - **The bus is dropped**, because a subject stores none. Selecting the
+///   same signal on two buses therefore yields one subject, not two
+///   identical ones.
+/// - **A file-backed series contributes nothing.** Its `messageId` is a
+///   signal channel group index rather than an arbitration id, so writing
+///   it as a message reference would name a message that does not exist.
+///   A selection of nothing but file-backed rows names no subject at all.
+///
+/// Order follows the area's own signal list, so the chips read down the
+/// side panel rather than in click order.
+export function subjectsForSelection(
+  signals: readonly SignalRef[],
+  selectedKeys: ReadonlySet<string>,
+): EventSubject[] {
+  const out: EventSubject[] = [];
+  const seen = new Set<string>();
+  for (const s of signals) {
+    if (s.fileBacked || !selectedKeys.has(signalRefKey(s))) continue;
+    const key = `${s.extended ? "x" : "s"}:${s.messageId}:${s.signalName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      kind: "signal",
+      messageId: s.messageId,
+      extended: s.extended,
+      signalName: s.signalName,
+    });
+  }
+  return out;
 }

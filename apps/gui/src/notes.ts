@@ -1,8 +1,10 @@
-// Session-scoped notes (event annotations placed by the
-// plot panel's `+ note` cursor). The host owns the canonical list
+// Session-scoped notes (event annotations the user places on the
+// timeline). The host owns the canonical list
 // (`apps/gui/src-tauri/src/notes.rs`); this module is the pure-TS
 // helpers + types every consumer (the PlotPanel hook, App.tsx, the
 // unit tests) shares.
+
+import { wheelColor } from "./palette";
 
 /// The kind of a timeline event (ADR 0035). `note` is the user-placed
 /// marker the host stores; `messageBound` is a comment attached to the
@@ -153,6 +155,35 @@ export interface TimelineEvent {
 /// Synthetic id of the derived truncation marker — stable so the views
 /// can key it and the rename/remove paths can reject it (it isn't a note).
 export const TRUNCATION_EVENT_ID = "__truncation";
+
+/// Mint a new user-authored event at `timestampNs`, about `subjects`
+/// (ADR 0056) — **the one constructor every authoring gesture uses**.
+///
+/// That is the point of it, not a convenience. An event carries nothing
+/// that says how it was made: the gesture that dropped it on a plot with
+/// signals selected and the one that raised it from a trace row produce
+/// the same shape, and after the fact neither the model nor any view can
+/// tell them apart. Routing both through one function is how that stays
+/// true as gestures are added — a second constructor is where a
+/// provenance tell would creep in.
+///
+/// `existingCount` is how many events the session already holds: it
+/// numbers the label and picks the color off the shared signal wheel
+/// (ADR 0026), the way plot series seed by area signal count, so
+/// successive events are distinguishable without anyone picking.
+export function authorEvent(
+  timestampNs: number,
+  subjects: readonly EventSubject[],
+  existingCount: number,
+): Note {
+  return {
+    id: crypto.randomUUID(),
+    timestampNs,
+    label: `note ${existingCount + 1}`,
+    color: wheelColor(existingCount),
+    subjects: [...subjects],
+  };
+}
 
 /// Map a host event to a [`TimelineEvent`]; defaults a pre-kind / add-path
 /// note to the `note` kind and no color. Editability comes from the kind's

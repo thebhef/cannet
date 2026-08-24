@@ -939,6 +939,7 @@ pnpm --dir apps/gui tauri build --no-bundle       # release host + production bu
   --project /abs/path/to/examples/ev-zonal/ev-zonal.cannet_prj \
   --app-data-dir /abs/path/to/perf-app-data \
   --connect-on-start \
+  --rbs-run-on-start \
   --perf-capture-secs 60 \
   --perf-interact scrub \
   --perf-out /abs/path/to/docs/performance-measurements/frontend/<date>-<hash>.json
@@ -994,6 +995,14 @@ report is written.
   logged to the System Messages panel / `cannet.log`), rather than the
   capture running over a session that never connected and writing a
   normal-shaped, empty report.
+- `--rbs-run-on-start` arms every rest-of-bus simulation element the
+  project loads, the same thing the RBS panel's Run toggle does.
+  **A measurement run needs it.** An RBS Run flag is session state a
+  project file cannot carry (ADR 0028) and a fresh `--app-data-dir`
+  has none saved to resume, so `--connect-on-start` on its own
+  connects successfully to a *silent* bus: the capture succeeds, a
+  normal-shaped report is written, and every gated metric passes on
+  no load at all. On `ev-zonal` the simulation **is** the load.
 - `--perf-capture-secs <n>` captures the frontend diagnostics for `n`
   seconds after the session settles, then writes the report and exits.
 - `--perf-out <path>` is where the `RenderReport` JSON lands;
@@ -1015,9 +1024,10 @@ report is written.
   a capture by hand from the devtools console.
 
 Everything else the run needs is already in the saved project: the panel
-layout (the views under test), the bus bindings (the frame source), and
-the rest-of-bus simulation's run flag (the load, which resumes on
-connect). For a hardware-free run the project should bind to a virtual
+layout (the views under test) and the bus bindings (the frame source).
+The load is not — the rest-of-bus simulation's run flag is session
+state no project file carries, which is what `--rbs-run-on-start` is
+for. For a hardware-free run the project should bind to a virtual
 bus. See [ADR 0031](docs/adr/0031-gui-performance-automation-self-driving.md).
 
 **What is running when you don't ask.** Measurement machinery ships in
@@ -1030,6 +1040,7 @@ place. Off unless a flag turns it on:
 | Render-tier capture (`RenderReport`), and with it the host's process-memory sampler and the `flush_ms` / `tx_late_ms` max-recorders | off — no capture armed, no sampler, no atomics written | `--perf-capture-secs`, or `window.__cannetPerf.begin()` |
 | Synthetic gesture driving | off — no interval scheduled | `--perf-interact` |
 | Project auto-open / auto-connect / auto-exit | off | `--project`, `--connect-on-start` |
+| Rest-of-bus simulation Run (the load a measurement run needs) | off — the flag is session state no project carries | `--rbs-run-on-start` |
 | User-scope redirection | off — the real profile | `--app-data-dir` |
 | `tx-flush` / `tx-sched` dev-log lines (stderr only; they never reach the System Messages panel or `cannet.log`) | off — the default log filter excludes both targets, so the lines are never formatted | `RUST_LOG=tx-flush=info,tx-sched=info` |
 | WebView DevTools / remote debugging port | closed — the release build has no inspector | the `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` environment variable, read by the WebView2 runtime (what the screenshot harness sets) |
@@ -2721,7 +2732,8 @@ precision floor).
 
 **Notes**. Notes are placed by the plot panel's `+ note` cursor
 mode (left-click on the canvas drops a labelled marker at that
-time). They now live in a single, session-scoped store on the
+time), and by the two subject-bearing gestures below. They live
+in a single, session-scoped store on the
 host (`apps/gui/src-tauri/src/notes.rs`) — a note placed in plot
 panel A is visible in plot panel B over the same timeline. Edits
 flow through `add_note` / `rename_note` / `remove_note` Tauri
@@ -2813,6 +2825,29 @@ you select rather than a marker beside the frames — click an event to
 select it and Ctrl/Cmd+click a second. The toolbar's **Link Events**
 chip then joins them; with two already-linked events selected the same
 chip reads **Unlink Events** and takes the link away.
+
+**Two gestures put a subject on an event as it is created.**
+
+- **In a plot area: select signals, then Shift+click the canvas.** The
+  event lands at the clicked time with those signals as its subjects.
+  Shift is a modifier of its own, so it reads the same whichever cursor
+  mode the plot is in — including *off*, where a plain click does
+  nothing. With no signals selected in that area it names nothing and
+  the click behaves exactly as it did before. A file-backed series
+  contributes no subject: its "message id" is a channel group index,
+  not an arbitration id, so there is no message for a structural
+  reference to name.
+- **In the trace: right-click a frame row.** The panel's context menu —
+  the same one that has always carried the sources picker — leads with
+  **Create event from &lt;message&gt;**, and the event it creates is about
+  that message, at that frame's time.
+
+**Neither gesture leaves a trace of itself.** An event records what it
+is about and when, never how it was authored: the two gestures, and the
+note cursor's plain click, all mint the same shape, and afterwards
+nothing in the model or in any view can tell them apart. That is the
+point — the same event arrives from a trigger, an import or a plugin in
+exactly the same form.
 
 **Both BLF annotation records.** BLF carries annotations two ways, and
 cannet now reads and writes both. A note is a `GLOBAL_MARKER`

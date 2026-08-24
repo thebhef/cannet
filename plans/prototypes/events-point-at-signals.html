@@ -230,7 +230,9 @@ kbd { font:11px ui-monospace, monospace; color:var(--text-label);
 <h2>The plot, and creating an event from signals</h2>
 <p class="note">
   Select signals in the legend, then <kbd>Shift</kbd>+click in the plot: a new
-  event lands at the clicked time with those signals as its subjects.
+  event lands at the clicked time with those signals as its subjects. As
+  shipped the modifier reads the same in every cursor mode, and with no
+  signals selected it names nothing and the click does what it always did.
   Hover or select any event (flag here, or row below) and its subject series
   stay lit while the rest dim; a span brightens its band.
 </p>
@@ -283,7 +285,11 @@ kbd { font:11px ui-monospace, monospace; color:var(--text-label);
 <p class="note">
   Right-click a frame row for the context menu. The created event carries the
   message as its subject and the frame&rsquo;s timestamp, and interleaves into
-  the trace like any event.
+  the trace like any event. As shipped the item leads the panel&rsquo;s
+  existing right-click menu — the one that has always carried the sources
+  picker — rather than opening a second menu of its own, and it names the
+  event the way every other authoring gesture does: an event records what
+  it is about, never how it was made.
 </p>
 <div class="frame">
   <table class="grid" id="trace">

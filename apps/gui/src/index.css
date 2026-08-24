@@ -4400,6 +4400,14 @@ button.color-chip {
 .sources-context-menu-action:hover {
   background: var(--surface-hover);
 }
+/* An action about the row the right-click landed on sits *above* the
+ * picker, so its divider is on the other side. */
+.sources-context-menu-action--leading {
+  margin-top: 0;
+  margin-bottom: 0.2rem;
+  border-top: 0;
+  border-bottom: 1px solid var(--border-default);
+}
 .plot-window-ctl {
   display: flex;
   align-items: center;

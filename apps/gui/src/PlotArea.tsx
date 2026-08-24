@@ -78,6 +78,7 @@ import { type Series, valueAt } from "./plotCursors";
 import type { PatternResolution } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
 import { type YAxisMode } from "./plotAxisDerivation";
+import type { EventSubject } from "./notes";
 import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
 import { useUndoGesture } from "./undoGesture";
 import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } from "./scrollJank";
@@ -109,6 +110,8 @@ const ZOOM_STEP = 1.15;
 /** Line width (CSS px) for a *selected* series, against 1 for the rest.
  * Enough to pick one trace out of a dense area at a glance without the
  * line reading as a band. */
+const EMPTY_SUBJECTS: readonly EventSubject[] = [];
+
 const SELECTED_SERIES_WIDTH = 2;
 /** Floor for `sample_signals`' `max_points` (the host min/max-decimates
  * to at most `2 * max_points`). We ask for ~1× the canvas width — 2
@@ -658,7 +661,14 @@ interface PlotAreaProps {
   onAreaResampled: (areaId: string, firstT: number | null, lastT: number | null) => void;
   onPlaceCursorX: (which: "a" | "b", t: number) => void;
   onPlaceCursorY: (which: "h1" | "h2", v: number) => void;
-  onAddNote: (t: number) => void;
+  /** Author an event at display-relative time `t`, about `subjects`
+   * (ADR 0056). The note cursor's plain click passes none; Shift+click
+   * over a selection passes what that selection is about. */
+  onAddNote: (t: number, subjects: readonly EventSubject[]) => void;
+  /** What this area's signal selection is about (ADR 0056), resolved by
+   * the panel. Empty when the selection is elsewhere or names nothing
+   * structural, which is what turns the Shift+click gesture off. */
+  selectionSubjects: readonly EventSubject[];
   /** The area→panel reporting surface (measurement series, perf
    * timings, effective rate, cache size, x-axis base) — one grouped
    * object instead of six parallel callbacks. See {@link PlotAreaReports}. */
@@ -1162,6 +1172,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onPlaceCursorX,
     onPlaceCursorY,
     onAddNote,
+    selectionSubjects,
     reports,
     resetYEpoch,
     xEpoch,
@@ -1588,6 +1599,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onPlaceCursorX,
     onPlaceCursorY,
     onAddNote,
+    selectionSubjects,
     reports,
   });
   useEffect(() => {
@@ -1609,6 +1621,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       onPlaceCursorX,
       onPlaceCursorY,
       onAddNote,
+      selectionSubjects,
       reports,
     };
   });
@@ -2869,13 +2882,25 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 return;
               }
               if (d.moved) return; // left-drag pan already applied
+              // Shift+left-click authors an event about whatever this
+              // area has selected (ADR 0056), at the clicked x. It sits
+              // ahead of the cursor-mode dispatch deliberately: it is a
+              // modifier gesture of its own, so it reads the same in
+              // every mode — including `off`, where a plain click does
+              // nothing. With nothing selected it names nothing and
+              // falls through, so an unselected area behaves exactly as
+              // it did before the gesture existed.
+              if (d.btn === 0 && e.shiftKey && lr.selectionSubjects.length > 0) {
+                lr.onAddNote(u.posToVal(e.clientX - r.left, "x"), lr.selectionSubjects);
+                return;
+              }
               if (lr.cursorMode === "off") return;
               const x = u.posToVal(e.clientX - r.left, "x");
               const y = u.posToVal(e.clientY - r.top, "y");
               if (d.btn === 0) {
                 if (lr.cursorMode === "x") lr.onPlaceCursorX("a", x);
                 else if (lr.cursorMode === "y") lr.onPlaceCursorY("h1", y);
-                else if (lr.cursorMode === "note") lr.onAddNote(x);
+                else if (lr.cursorMode === "note") lr.onAddNote(x, EMPTY_SUBJECTS);
               } else {
                 if (lr.cursorMode === "x") lr.onPlaceCursorX("b", x);
                 else if (lr.cursorMode === "y") lr.onPlaceCursorY("h2", y);

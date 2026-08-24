@@ -26,15 +26,14 @@ import { useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { useTrace } from "./trace";
 import { PERF_TITLE, PlotToolbar } from "./PlotToolbar";
 import { useNotes } from "./notesContext";
-import { timelineEvents } from "./notes";
-import { plotTimelineEvents } from "./plotEvents";
+import { authorEvent, timelineEvents, type EventSubject } from "./notes";
+import { plotTimelineEvents, subjectsForSelection } from "./plotEvents";
 import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { parseVisibleRangeInput, resolveVisibleRange } from "./plotVisibleRange";
 import { mergeSeries } from "./plotData";
 import { hostSettings, useSetting } from "./hostSettings";
 import { fetchWindowExtent } from "./useDecimatedRange";
-import { wheelColor } from "./palette";
 import {
   SIGNALS_WIDTH_MAX,
   SIGNALS_WIDTH_MIN,
@@ -186,6 +185,9 @@ const MEASUREMENT_STRIP_DRAWS: boolean = false;
 
 /** Stable empty set for areas with no manual picks yet. */
 const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
+/// Shared "this area names nothing" list, so an area outside the
+/// selection sees an unchanged prop identity and does not re-render.
+const EMPTY_SUBJECTS: readonly EventSubject[] = [];
 /** Stable empty list for areas with no patterns — a fresh `[]` per render
  * would defeat `PlotArea`'s memo. */
 const EMPTY_RESOLUTIONS: readonly PatternResolution[] = [];
@@ -1354,18 +1356,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // frames in the window) there's no sensible ns to write —
   // silently drop.
   const addNote = useCallback(
-    (t: number) => {
+    (t: number, subjects: readonly EventSubject[]) => {
       if (baseSeconds == null || !Number.isFinite(baseSeconds)) return;
       const timestampNs = Math.round((baseSeconds + t) * 1e9);
-      // Color cycles the shared signal wheel by the existing note
-      // count — like plot series seed by area signal count (ADR 0026) —
-      // so successive notes are visually distinct without any picking.
-      dispatchAddNote(
-        crypto.randomUUID(),
-        timestampNs,
-        `note ${sessionNotes.length + 1}`,
-        wheelColor(sessionNotes.length),
-      );
+      // `authorEvent` is the shared constructor, so a note dropped by
+      // the note cursor and one raised by Shift+click over a selection
+      // differ only in their subjects (ADR 0056) — the label and the
+      // wheel color come out the same way for both.
+      dispatchAddNote(authorEvent(timestampNs, subjects, sessionNotes.length));
     },
     [baseSeconds, dispatchAddNote, sessionNotes.length],
   );
@@ -2118,6 +2116,24 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return m;
   }, [derivedAreaConfigs, signalSelection]);
 
+  /// What each logical area's selection is *about* (ADR 0056) — the
+  /// subjects Shift+click in that area's plot authors an event with.
+  /// Keyed on the parent area, not the derived axis, because the
+  /// selection belongs to the logical area: clicking any of its axes
+  /// names the whole selection, and an area that does not hold the
+  /// selection names nothing and leaves the click to the cursor mode.
+  const selectionSubjectsByArea = useMemo(() => {
+    const m = new Map<string, readonly EventSubject[]>();
+    for (const a of effectiveAreas) {
+      const subjects =
+        a.id === signalSelection.areaId
+          ? subjectsForSelection(a.signals, signalSelection.ids)
+          : EMPTY_SUBJECTS;
+      m.set(a.id, subjects.length === 0 ? EMPTY_SUBJECTS : subjects);
+    }
+    return m;
+  }, [effectiveAreas, signalSelection]);
+
   // Fit-to-panel weights (ADR 0026): resolve a flex-grow for every
   // live derived axis (stored value or default 1), and prune stored
   // entries whose axis no longer exists so the config doesn't
@@ -2657,6 +2673,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onAreaResampled={onAreaResampled}
               onPlaceCursorX={placeCursorX}
               onAddNote={addNote}
+              selectionSubjects={selectionSubjectsByArea.get(parent.id) ?? EMPTY_SUBJECTS}
               reports={reports}
               resetYEpoch={resetYEpoch}
               xEpoch={xEpoch}
