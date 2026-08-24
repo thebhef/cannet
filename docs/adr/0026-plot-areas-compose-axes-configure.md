@@ -4,7 +4,8 @@ Status: accepted (2026-06-09; partially shipped — see "Implementation
 status"); amended (2026-08-21) — **an axis draws one scale**: every
 series on an axis is normalised by the union of what is drawn there,
 replacing the per-unit-group auto-scaling that let a series be drawn at
-an amplitude its axis never stated.
+an amplitude its axis never stated; amended (2026-08-21) — **a
+single-enum axis's y gutter carries raw codes, not value names.**
 
 The plot view grows a level. Until now a plot panel held a flat list
 of plot areas, each rendering as exactly one chart. This ADR records
@@ -119,7 +120,16 @@ horizontal label ribbon down the middle of the plot rather than a
 per-value lane — decoupling the ribbon from the held value keeps
 labels legible where a tall value table would otherwise collapse
 per-value lanes to a few pixels, while the stepped line still draws at
-the actual value. Under **unified** mode an enum plots as a plain
+the actual value. **Its y gutter carries the raw codes and not their
+names.** The ribbon already names the value where the reader is
+looking, so a second copy of every name running down the gutter buys
+nothing and costs it the width of the table's longest entry. The codes
+stay, because they are the only positions on that axis that mean
+anything and they are what gives the reader a sense of scale — but the
+value table decides which positions may carry a tick, never how many
+do: the axis thins them to its own tick density, so a several-hundred-
+entry table draws the ticks that fit rather than one per entry. Under
+**unified** mode an enum plots as a plain
 numeric line with no labels (a text box per overlaid enum would be
 noise). "Lane" is an axis *render style*, not a new structural level.
 
@@ -576,7 +586,10 @@ below:
   still reserved — see "one y gutter for the whole stack"), draws
   stepped series, and paints per-lane tiles via the shared
   `drawEnumTiles(band)` helper. The single-enum axis reuses the same
-  helper with one full-height centered band. Pure `enumSegments()`
+  helper with one full-height centered band, and draws its own ticks on
+  the table's raw codes thinned to uPlot's chosen increment
+  (`plotAxisScale.ts::enumTickSplits`), sizing its gutter from the
+  numbers it actually draws. Pure `enumSegments()`
   walks the (t, v) arrays; segments narrower than the label width draw
   the colored tile without text — and without a box, since a plate with
   no text on it is just a hole in the tile's color. Tile labels centre
