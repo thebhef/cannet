@@ -403,6 +403,22 @@ broken wire as a healthy bus. The counters climb 8 per failed
 transmission, cross the standard's thresholds, and fall again on every
 success, so recovery needs no separate signal.
 
+On a Vector adapter the same two counters arrive as **chip-state
+events**: the XL driver reports `busStatus`, `txErrorCounter` and
+`rxErrorCounter` together, and cannet asks for a fresh reading on the
+same half-second cadence it polls PEAK on. The state is derived from
+those counters by the same rule, with the reported `busStatus` acting
+only as a floor it cannot fall below. **This path has never met Vector
+hardware** — it is written from the XL API's field definitions and
+covered by unit tests against faked events, so treat a Vector reading as
+unconfirmed until someone has watched one move.
+
+Neither vendor's state comes from python-can's `Bus.state`. That
+enum has three values and cannot hold error-warning, error-passive and
+bus-off apart, its meaning has been unsettled upstream since 2019, and
+its default getter returns "active" for any backend that does not
+override it — which both of these do not.
+
 A row can also read **adapter unavailable**, which is not one of that
 standard's states: the driver can no longer reach the interface, which
 is what unplugging a USB adapter mid-session looks like. It reads as a

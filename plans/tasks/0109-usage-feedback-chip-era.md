@@ -8,8 +8,11 @@ behave like the grid rows they sit on.
 
 ## Status
 
-Groomed with the owner 2026-08-22. Six phases. Phases 1 and 2 landed;
-see the status log.
+Groomed with the owner 2026-08-22, with phases 2b / 2c / 2d added after
+the 2026-08-22 bench session found the reported fault was the CAN link,
+not the USB device. Phases 1, 2, 2b, 3, 2c and 2d landed; 4, 5 and 6
+outstanding. Kvaser deferred by owner ruling 2026-08-23. See the status
+log.
 
 Two of the observations are **acceptance blockers for tasks already
 finished** (owner-review-queue § 4) and are carried here rather than
@@ -963,7 +966,203 @@ was taken and nothing was written to
 **Kvaser is out of scope** by owner ruling 2026-08-23 (queue 2.7); no
 bindings were added. Vector is phase 2d.
 
+**2026-08-23 - Phase 2d (Vector).** Branch
+`task-109-phase-2d-vector-chip-state` off
+`task-109-phase-2c-counter-derived-state`. Sidecar-only: the wire, the
+host and the panel already carry warning and real counters from 2c, so
+this phase adds a second source feeding the same derivation and changes
+nothing downstream of `OpenChannel.state()`.
+
+**Implemented and untested against hardware.** No Vector adapter exists
+in an agent's environment, and neither does the XL library: python-can
+answers the import with *"Could not import vxlapi: Vector XL library not
+found: vxlapi64"*, so the backend cannot load here at all. Everything
+below is written from the installed python-can 4.6.1's own field
+definitions and exercised against faked chip-state events. Do not read
+it as working; read it as implemented, with the owner's re-test script
+in the blockers section below.
+
+### What landed
+
+- **A `VectorBus` subclass, not a patch.**
+  `VectorBus.handle_can_event` and `handle_canfd_event` are empty
+  methods python-can calls for every non-message event and **documents
+  for subclassing** - their own docstrings name `XL_CHIP_STATE` and
+  `XL_CAN_EV_TAG_CHIP_STATE` as tags that arrive there. The subclass
+  overrides both, tests the tag, and stores
+  `(busStatus, txErrorCounter, rxErrorCounter)` as one tuple so the
+  state thread cannot read a torn triple from the rx thread's write.
+  The classic queue carries it in `tagData.chipState`
+  (`s_xl_chip_state`), the FD queue in `tagData.canChipState`
+  (`s_xl_can_ev_chip_state`); the two structs declare the same three
+  leading fields in the same order, so one reader serves both.
+- **The tag test is load-bearing.** python-can routes *every*
+  non-message event to those hooks - timers, sync pulses, transceiver
+  events, FD rx/tx errors - and the union member would then be whatever
+  bytes that other event put there. Six tests pin that a non-chip-state
+  tag leaves the last reading alone.
+- **Polled, not only awaited.** `xlCanRequestChipState` is already bound
+  in `xldriver.py`, so `state()` places a request on every poll - the
+  same 500 ms `_state_pump` cadence PCAN's status read runs on, so
+  `_publish_state`'s publish-on-change gate coalesces Vector's readings
+  exactly as 2c verified for PEAK's. The XL driver answers
+  asynchronously, as an event on the queue the messages come out of, so
+  the request is placed first and the *previous* answer read: a reading
+  is always one poll (half a second) old. A request that raises - which
+  python-can's `errcheck` does on any non-zero XL status - reports
+  `unavailable`, never the healthy default.
+- **One derivation, two vendors.** `_vector_state` runs
+  `driver.state_from_counters(tec, rec)` and combines it with the masked
+  `busStatus` through `driver.worse_state`, which is what `_pcan_state`
+  does with its status word. **The derivation was not forked and did not
+  need to change**: Vector's counters are the same two ISO 11898-1
+  registers PEAK's error frames carry, and `XL_BusStatus` is a bit field
+  (BUSOFF 1, ERROR_PASSIVE 2, ERROR_WARNING 4, ERROR_ACTIVE 8) that
+  masks the same way PEAK's `ANYBUSERR` union does. Vector is the easier
+  of the two - the counters arrive beside the status instead of inside a
+  payload - but the counters still outrank the status bits, because that
+  is the rule 2c established and nothing about Vector argues against it.
+- **`Bus.state` is still not implemented**, per the addendum's ruling.
+  python-can's three-value `BusState` cannot hold warning, passive and
+  bus-off apart (ixxat folds bus-off into `BusState.ERROR`), its
+  semantics have been open upstream since 2019 (issue #736, still open
+  against 4.6.1), and `BusABC`'s getter returns `ACTIVE` unconditionally
+  for any backend that skips it - which `VectorBus` does. The derivation
+  stays in our seam.
+- **The open path constructs the subclass directly.**
+  `can.interface.Bus` resolves the class from python-can's own
+  `BACKENDS` table, which can only ever name `VectorBus`; handing it a
+  subclass would mean editing that table, i.e. the monkey-patch the
+  documented hooks exist to avoid. `_open_vector_bus` runs the same
+  `can.util.load_config` merge `Bus` performs first, so a Vector open
+  still sees whatever `can.rc` or a `can.conf` would have contributed -
+  only the class being constructed changes.
+- **Nothing else routes through the new path.** `_is_vector` is
+  `hasattr(bus, "request_chip_state")`, our own subclass's marker, so a
+  Kvaser or virtual bus is untouched and still falls back to
+  `Bus.state`. A test pins that a Vector error frame's payload does
+  *not* move the counters: bytes 2/3 as REC/TEC is PEAK's layout, gated
+  on `_is_pcan`, and Vector reports through chip-state events instead.
+
+### Tests
+
+`tests/test_vector_chip_state.py` (new, 31 cases): the constants
+re-checked against python-can's own `xldefine` enums (they are spelled
+out in the driver so the module loads with no XL library, which means
+they can drift), the masked `busStatus` table, both event shapes
+recorded through the real subclass's hooks, six non-chip-state tags
+ignored, the shared threshold table asserted equal to
+`state_from_counters`, both directions of the counter-versus-status
+combination, the not-yet-answered case, the poll count, a failing
+request reporting `unavailable`, and the PEAK-payload control.
+`test_enumeration.py`'s `test_open_non_pcan_does_not_touch_pcan_basic`
+rewritten for the new open path - its fake Vector module now offers a
+`VectorBus` base class, and the test additionally pins that the opened
+channel really is the chip-state subclass, since a silently-unsubclassed
+open would install no hooks at all. Its teardown clears the driver's
+cached subclass, which would otherwise outlive the fake module it was
+derived from and be handed to the next test (that leak was caught by a
+real cross-file failure, not reasoned about).
+
+**Falsified before being trusted.** With the `_is_vector` branch removed
+from `state()`, 11 of the 31 fail. With the two hooks' tag tests
+replaced by `if True`, 6 fail.
+
+### The one thing that *is* verified here
+
+The XL library's absence is the environment's actual state, so "Vector
+unavailable must not break the sidecar" is testable end to end and was
+tested end to end: `uv run cannet-python-can --bind 127.0.0.1:0` boots,
+logs `Could not import vxlapi: Vector XL library not found: vxlapi64` as
+a warning, enumerates the two PEAK channels, and reports `sidecar
+listening 127.0.0.1:<port>`. Two unit tests hold the same line -
+enumeration answers with the library missing, and the subclass is built
+lazily so its import cannot be dragged into module load.
+
+### Error-frame volume
+
+**Not made worse by this phase, and possibly better on Vector.** Queue
+3.39's 5,200 error frames/s is a PEAK measurement, and this phase adds
+no new frame source: chip-state answers are XL *events*, which
+python-can consumes inside `_recv_internal` and never turns into a
+`Message`, so they cannot reach the trace. Whether a Vector adapter
+emits error *frames* at PEAK's rate during the same fault is unknown and
+untestable here - the owner's re-test script below asks for it, because
+if Vector is quiet where PEAK floods, that is a data point for 3.39's
+ruling.
+
+### Not done
+
+**Perf skipped by owner instruction** (queue 2.5). No ADR-0031 capture
+was taken and nothing was written to
+`docs/performance-measurements/frontend/`. The phase touches no render
+or data path - it adds a second producer behind an existing 2 Hz poll.
+
+**Kvaser is out of scope** by owner ruling 2026-08-23 (queue 2.7). No
+bindings were added, and nothing here makes adding them harder: a third
+vendor implements one `_<vendor>_state` method against the same
+`state_from_counters` / `worse_state` pair.
+
 ## Blockers / side effects
+
+**Phase 2d - the owner's Vector re-test script, and the phase is
+unverified until it is run.** Everything in phase 2d was written from
+python-can 4.6.1's own field definitions and tested against faked
+chip-state events. No Vector adapter exists in an agent's environment
+and neither does the XL library, so the backend cannot even load there -
+python-can logs *"Could not import vxlapi: Vector XL library not found:
+vxlapi64"*. **This path has never met Vector hardware.** Treat a Vector
+bus-health reading as unconfirmed until this script has been run.
+
+**What to do.** A Vector device on a 500 kbit/s bus with a second node
+that ACKs (a second channel on the same card is enough - bind both as
+separate logical buses), a project that runs RBS on the bus the Vector
+channel is bound to, connected and streaming. Then **pull one end of the
+CAN cable** - the wire, not the USB plug. This is the same fault phase
+2c's PEAK script exercises, on the other vendor.
+
+| Where | Expected within ~1 s |
+|---|---|
+| Bus health panel, transmitting bus | **Error-passive**, TEC climbing to 128 and pinning there, REC 0 |
+| Bus health panel, receiving bus | load falls to `0 %`; its own state may stay error-active, which is correct - it is not the node failing to transmit |
+| Bus health launcher | tints (warning tint on the way up, fault tint only if it reaches bus-off), count 1, tooltip naming the bus |
+| RBS panel | periodics keep running. Warning and error-passive deliberately keep their routes |
+| Trace | **record whether it gains rows, and roughly how fast.** PEAK floods it at about 5,200 error frames/s during this fault; whether Vector does the same is unknown and is a data point for queue 3.39 |
+
+Plug the cable back in: within about a second TEC counts back down to 0
+and the panel returns to **Error-active** on its own. Nothing needs to
+be restarted.
+
+**Also worth one deliberate check the PEAK script does not need**: run
+the same fault on an **FD-configured** Vector bus as well as a classic
+one. The two event queues are different structs read through different
+hooks (`handle_can_event` / `tagData.chipState` for classic,
+`handle_canfd_event` / `tagData.canChipState` for FD) and only one of
+them is exercised by a given open. A classic run says nothing about the
+FD path.
+
+**If the panel stays error-active with TEC 0**, the chip-state events are
+not arriving. The request is placed on every 500 ms poll through
+`xlCanRequestChipState`; if it were failing the panel would read
+**Adapter unavailable** instead, so error-active with zero counters means
+the request succeeded and the answer either never came or came with a tag
+the hook did not match. The sidecar's debug log (`--log-file`) is the
+place to instrument next - the hooks are silent by design, since they sit
+on the receive path.
+
+**If the panel reads `Adapter unavailable`** on a card that is plainly
+present, `xlCanRequestChipState` is raising. python-can's `errcheck`
+raises on any non-zero XL status, including ones that are not "the card
+is gone"; the raised `VectorOperationError` names the status, and it will
+be in the sidecar's stderr / log file. That would mean the request needs
+a narrower failure test than "any exception", which is a real possibility
+this phase could not distinguish from here.
+
+**If Vector's counters read plausibly but the state does not move**, the
+derivation is shared with PEAK and PEAK's is bench-confirmed, so suspect
+the `busStatus` mapping rather than the thresholds: `XL_BusStatus` is
+read as a bit field, and a card that reports it as an enumerated value
+instead would land on the wrong branch.
 
 **Phase 2c - the owner's re-test script.** Everything in phase 2c was
 established against the recorded bench payloads and against the
