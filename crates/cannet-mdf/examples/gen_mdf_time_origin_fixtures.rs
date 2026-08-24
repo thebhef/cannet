@@ -118,11 +118,13 @@ fn write_wall_clock_signals(path: &Path) -> Result<(), Box<dyn std::error::Error
         timestamp_ns: WALL_CLOCK_NS + 100_000_000,
         name: "before first frame".into(),
         properties: vec![("cannet.id".into(), "time-origins-0".into())],
+        ..MdfEvent::default()
     });
     writer.add_event(MdfEvent {
         timestamp_ns: WALL_CLOCK_NS + 1_500_000_000,
         name: "mid capture".into(),
         properties: vec![("cannet.id".into(), "time-origins-1".into())],
+        ..MdfEvent::default()
     });
 
     writer.finish()?;

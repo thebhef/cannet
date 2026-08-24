@@ -2330,7 +2330,8 @@ never produce a BLF wearing an `.mf4` name.
 | --- | --- | --- |
 | frames (classic / FD / remote / error) | yes | yes |
 | logical bus assignment | channel number | `CAN_DataFrame.BusChannel` |
-| notes / event markers | `GLOBAL_MARKER` | `##EV` blocks |
+| notes / event markers | `GLOBAL_MARKER` / `EVENT_COMMENT` | `##EV` blocks |
+| an event's id, kind, tag, and subjects | `cannet-event/1` text block | `cannet-event/1` text block |
 | file-backed signals | **dropped** | signal channel groups |
 | the project's DBCs | no | embedded `##AT` attachments |
 
@@ -2345,6 +2346,19 @@ inside the file ([ADR 0010](docs/adr/0010-no-sidecar-files.md)). What it
 deliberately does *not* write is DBC-decoded signals as channels: the
 frames plus the attached DBC already say all of that, and writing both
 would double-count every signal on re-import.
+
+An event holds more than either format has fields for — a stable id, a
+kind, a user tag, and the structural references saying what it is *about*
+([ADR 0056](docs/adr/0056-an-event-subject-is-a-structural-reference.md)).
+All of that rides a readable `cannet-event/1` text block in the record's
+own text field, under the user's own words: a BLF marker's description, a
+BLF comment's text, an MDF event comment's `<TX>`. MDF's native event
+fields are additionally populated as far as they honestly go — the
+standard's marker type, a user cause, and a real begin/end range pair
+where a link joins exactly two events — so another MDF tool draws the span
+without knowing anything about cannet.
+[ADR 0057](docs/adr/0057-one-text-block-carries-an-event.md) has the
+grammar and exactly what each format's round-trip loses.
 
 The MDF a save writes is always **sorted and finalized**, uncompressed
 `##DT`. Timestamps are `f64` seconds against the capture's own

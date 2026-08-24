@@ -433,7 +433,7 @@ mod tests {
         assert_eq!(m.timestamp_ns, BASE_NS + 5_000);
         assert_eq!(m.marker.marker_name, b"halfway");
         assert_eq!(m.marker.description, b"note-1");
-        assert_eq!(m.marker.foreground_color, 0x00FF_8800);
+        assert_eq!(m.marker.background_color, 0x00FF_8800);
     }
 
     /// Path to one of the committed `examples/time-origins/` captures.

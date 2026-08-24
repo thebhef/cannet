@@ -610,12 +610,133 @@ Landed on `task-107-phase-1-subject-model`, off `task-108-phase-6-panel-icons`.
   passed across 207 files; `cargo clippy --workspace --all-targets` clean
   except the pre-existing warning below.
 
+### Phase 2 — the carrier (2026-08-22)
+
+Landed on `task-107-phase-2-carrier`, off `chain-ci-repair` (`1ef20769`).
+
+**One grammar, three records.** `apps/gui/src-tauri/src/event_text.rs` is
+the whole serializer and parser: the `cannet-event/1` block, written into
+a BLF marker's `description`, a BLF comment's text field, and an MDF
+event comment's `<TX>`. The block carries only what the container cannot —
+id, kind, tag, subjects, and (where the record has no field of its own)
+label, colour and the commented object type. The human description comes
+first and verbatim; the split is at the **last** header line; unknown keys
+and malformed lines are kept rather than dropped.
+[ADR 0057](../../docs/adr/0057-one-text-block-carries-an-event.md) records
+it, including the per-format loss table the phase was asked for.
+
+**MDF gained the `<TX>` half of the event comment.** `comment_xml` now
+emits `<TX>` before `common_properties` (the `EVcomment` schema's order)
+and `read_events` parses both, so a foreign tool's properties still
+round-trip while the block rides the text element.
+
+**Native interop, written where it is honest.** `MdfEvent` gained
+`range: Option<MdfEventRange>` and the writer emits a begin/end pair —
+patching the link address in the trailer, since an end event points back
+at a begin block written after it — only where a link joins exactly two
+events and nothing else links either. A fan-out link gets no range. Read
+back, a foreign range pair becomes one more untyped link, deduplicated
+against whatever the block already said.
+
+**`ev_type` was wrong, and had been.** See the investigation below.
+
+**BLF's second colour, fixed as queued.** `append_marker` now puts the
+event's colour in `background_color` under a white `foreground_color` —
+python-can's convention, text on a filled chip. An uncoloured event keeps
+`build`'s neutral black-on-white, byte-identical to before. On read the
+colour is the fill unless the fill is white, in which case it is the
+foreground — which reads the neutral default as uncoloured and, for free,
+reads every marker written under the old convention. Two shipped
+assertions moved from `foreground_color` to `background_color`
+(`cannet-blf` lib and `scan` tests), as expected.
+
+**Legacy read paths kept.** The `cannet:event:` packing, the bare-id
+marker, and the MDF `cannet.*` `common_properties` are still read and no
+longer written. Judgement call: this file's `note_from_marker` already
+carried a bare-id fallback, so keeping two more is the module's own idiom,
+and dropping them would make an existing capture open with its ids and
+tags mangled. Twelve lines and one test.
+
+#### Investigation — `ev_type` (scientific method)
+
+- **Observation.** `mdf4-rs 0.6.0` `EventType` is `Recording = 0`,
+  `Trigger = 1`, `Marker = 2`, and `from_u8` returns `None` for 3–6.
+  `write.rs` has been writing `EventType::Marker` for every note since the
+  MDF writer landed.
+- **Hypothesis.** The crate's numbering disagrees with ASAM MDF 4.x, which
+  puts `EV_T_MARKER` at 6 and assigns 2 to `EV_T_ACQUISITION_INTERRUPT`.
+- **Experiment.** Ask an implementation that is not the one we link:
+  `asammdf`'s `blocks.v4_constants`, read directly.
+- **Data.** `EVENT_TYPE_MARKER 6`, `EVENT_TYPE_ACQUISITION_INTERRUPT 2`,
+  `EVENT_TYPE_TO_STRING {…, 2: 'Acquisition interrupt', 6: 'Bookmark'}`.
+  `EventCause` and `EventRangeType` both match the crate.
+- **Conclusion.** The crate is wrong on this one enum. The write boundary
+  now stamps the byte directly (`EV_TYPE_MARKER = 6`), the read side is
+  unaffected (`cannet-mdf` never consults `ev_type`), and the oracle
+  asserts the byte through asammdf.
+
+#### `ev_scope` is not written, and the grooming's condition is never met
+
+The research recommended `scope_addrs` for subjects that resolve to a
+`##CN` or `##CG` in the file. Reading the writer: a cannet MDF has three
+bus-logging groups, one per frame *structure*, and one group per
+file-backed signal — no per-message channel group, and deliberately no
+DBC-decoded signal channels. So a message subject has nothing to point at,
+and pointing one at `CAN_DataFrame` would claim the event is about every
+data frame. Scope is left empty; ADR 0057 records the condition under
+which it becomes writable. Queued as 3.29.
+
+#### A groomed rule that needs a model change to hold fully
+
+"Unknown keys are preserved verbatim on rewrite" holds at the text layer
+(parse → serialize keeps them, with a test) but **not** through
+`file → Note → file`: `Note` has no field to hold them, and adding one is
+a durable-schema change phase 1 fixed. Implemented the closest faithful
+reading, recorded the gap in ADR 0057's loss table, queued as 3.30.
+
+**Not done, deliberately.** No UI — subjects reach the row in phase 3. No
+perf reading: a save/open path with no render surface and no live data
+path, and the harness exercises neither.
+
+**Tests** — 33 new, the grammar's written first and watched fail.
+
+- `event_text` (14): the description comes first and the block follows;
+  every subject kind round-trips; an extended id is distinguishable; a
+  signal name with a space survives; no header means all description;
+  prose that merely mentions the block is not a block; the last header
+  wins; an unknown key, a malformed line and an unknown kind are each kept
+  verbatim; nothing-but-a-description writes no header; a carrier with no
+  name or colour field carries them in the block; a multi-line description
+  keeps its blank lines; every kind's key matches its wire spelling.
+- `cannet-gui` integration (7): every subject kind survives a BLF
+  round-trip on both records, and an MDF round-trip; an unambiguous pair
+  also gets MDF's native range and a fan-out does not; a foreign MDF range
+  pair reads back as a link; a link to an unexported event survives
+  unresolved; `#000000` reads back uncoloured from BLF and survives in
+  MDF; both pre-block forms are still read.
+- `cannet-mdf` (6): `<TX>` and the properties share one comment, in schema
+  order; markup in the text survives escaping; a comment without text
+  yields none; a native range pair links both ways and leaves a point
+  event alone; an event is written as the standard's marker type.
+- `cannet-blf` (1): a marker carries the event colour as its fill over
+  white text, with an uncoloured marker as the control.
+- The asammdf oracle now checks each event's `<TX>` text, `ev_type`,
+  `ev_cause`, `ev_range_type` and the address its range link resolves to;
+  `export_sample` writes a range pair and a `<TX>` block so it has
+  something to check.
+
+All six CI jobs run locally and green.
+
 ## Blockers / side effects
 
-Both of these are **inherited from the base branch**
-(`task-108-phase-6-panel-icons`, `d846c48d`), reproduce with this phase's
-changes reverted, and are in files this phase does not touch. Recorded
-here because they block the commit gate for everything on this stack.
+### Phase 1 (2026-08-22) — both since repaired
+
+Both were **inherited from the base branch**
+(`task-108-phase-6-panel-icons`, `d846c48d`), reproduced with phase 1's
+changes reverted, and were in files phase 1 did not touch. `1ef20769`
+(`chain-ci-repair`) fixed both; phase 2 branched off it and `cargo test
+--workspace` and `cargo clippy --workspace --all-targets -- -D warnings`
+are clean.
 
 - **`cannet-perf-measurement` unit test fails.**
   `screenshot::tests::the_scenarios_drive_labels_the_frontend_still_defines`
@@ -628,3 +749,24 @@ here because they block the commit gate for everything on this stack.
   — `redundant_closure_for_method_calls` on `.is_some_and(|c| c.is_empty())`.
   Byte-identical at the base commit. `cargo clippy --workspace --all-targets
   -- -D warnings` — the pre-commit hook and the CI job — fails on it.
+
+### Phase 2 (2026-08-22)
+
+- **Every `##EV` block cannet has ever written carries `ev_type = 2`**,
+  which ASAM MDF 4.x reads as `EV_T_ACQUISITION_INTERRUPT`. New files are
+  correct; files already on disk are mislabelled to any conformant reader,
+  and nothing rewrites them. Ours read them fine — `cannet-mdf` does not
+  consult `ev_type`.
+- **`mdf4-rs 0.6.0`'s `EventType` is wrong and `from_u8` rejects 3–6**, so
+  a foreign file using those types parses as `Marker` rather than being
+  reported. The write side is worked around here; the read side is
+  untouched because nothing reads the field. Worth an upstream issue.
+- **A BLF marker's colours changed meaning.** A coloured event's bytes are
+  different from every previous release's — the colour moved from
+  `foreground_color` to `background_color`. Ours reads both; another tool
+  will draw a filled chip where it used to draw coloured text. Nobody has
+  watched CANoe draw either, so the reading is still corroboration rather
+  than observation.
+- **A `#000000` event loses its colour through BLF** (§ ADR 0057's loss
+  table). Pre-existing — the packed `0` has always meant both black and
+  uncoloured — and now pinned by a test rather than left implicit.

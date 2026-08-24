@@ -2295,13 +2295,8 @@ fn an_mdf_whose_signals_start_before_its_frames_anchors_on_the_signals() {
     let mut source =
         MdfCanFrameSource::open(time_origin_fixture("wall-clock-signals.mf4")).unwrap();
     let groups = source.signal_groups();
-    let mut synthetic_idx = 0u64;
-    let notes: Vec<crate::notes::Note> = source
-        .events()
-        .unwrap()
-        .iter()
-        .map(|e| crate::capture::note_from_event(e, &mut synthetic_idx))
-        .collect();
+    let notes: Vec<crate::notes::Note> =
+        crate::capture::notes_from_mdf_events(&source.events().unwrap());
 
     // Every channel the fixture writes has to be mapped: an unmapped
     // channel's frames are dropped, so an empty mapping would import
@@ -3088,7 +3083,7 @@ fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
 /// that message on the way back out.
 ///
 /// The third annotation is the control: a comment written by another tool,
-/// with no `cannet:event:` packing at all. It has to survive as an event
+/// with no `cannet-event/1` block at all. It has to survive as an event
 /// too — reading only our own packing would silently drop every comment a
 /// `CANalyzer` user made.
 #[test]
@@ -3159,11 +3154,10 @@ fn both_blf_annotation_records_round_trip() {
 }
 
 /// An event's tag and description have no field of their own in a BLF
-/// `GLOBAL_MARKER`, so they ride the marker's opaque `description` behind a
-/// `cannet:event:` prefix — in the file, no sidecar. A note carrying neither
-/// still writes the bare id it always did, which is the control: it proves
-/// the round-trip below is reading the structured form and not simply
-/// echoing whatever text it found.
+/// `GLOBAL_MARKER`, so they ride the marker's `description` in the
+/// `cannet-event/1` block — in the file, no sidecar. The control is a note
+/// carrying neither: it proves the round-trip is reading the block and not
+/// simply echoing whatever text it found.
 #[test]
 fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
     let dir = tempfile::tempdir().unwrap();
@@ -3235,6 +3229,406 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
     assert_eq!(back[0].id, "n-plain");
     assert_eq!(back[0].description, None);
     assert_eq!(back[0].tag, None);
+}
+
+/// One frame, so a capture write has something to anchor its origin on.
+fn one_frame(ts: u64) -> Vec<trace_store::RawTraceFrame> {
+    vec![trace_store::RawTraceFrame {
+        timestamp_ns: ts,
+        channel: 0,
+        id: 0x100,
+        extended: false,
+        direction: Direction::Rx,
+        payload: CanFramePayload::Classic(vec![1]),
+        bus_id: None,
+    }]
+}
+
+/// The three subject kinds, mixed on one event, plus the event they point
+/// at — the shape every carrier round-trip below writes.
+fn subject_bearing_notes(ts: u64) -> Vec<notes::Note> {
+    vec![
+        notes::Note {
+            id: "n-subjects".into(),
+            timestamp_ns: ts + 1_000,
+            label: "contactor".into(),
+            kind: notes::EventKind::Note,
+            color: Some("#FF8800".into()),
+            description: Some("opened under load\nsecond line".into()),
+            tag: Some("fault".into()),
+            commented_event_type: None,
+            subjects: vec![
+                notes::EventSubject::Signal {
+                    message_id: 0x180,
+                    extended: false,
+                    signal_name: "Pack Current".into(),
+                },
+                notes::EventSubject::Message {
+                    message_id: 0x18DA_00F1,
+                    extended: true,
+                },
+                notes::EventSubject::Event {
+                    id: "n-other".into(),
+                },
+            ],
+        },
+        notes::Note {
+            id: "n-other".into(),
+            timestamp_ns: ts + 2_000,
+            label: "contactor closed".into(),
+            kind: notes::EventKind::Note,
+            color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
+            subjects: Vec::new(),
+        },
+    ]
+}
+
+/// Every subject kind survives a BLF save → open, on both annotation
+/// records, and the link is still readable from the end that does not hold
+/// it — the symmetric read the model promises (ADR 0056).
+///
+/// The `EVENT_COMMENT` half is the one that discriminates: that record has
+/// no name and no colour field of its own, so a block that carried only the
+/// subjects would come back with an empty label.
+#[test]
+fn every_subject_kind_survives_a_blf_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("subjects.blf");
+    let ts = 1_700_000_000_000_000_000u64;
+
+    let mut notes_in = subject_bearing_notes(ts);
+    notes_in.push(notes::Note {
+        id: "c-subjects".into(),
+        timestamp_ns: ts + 3_000,
+        label: "commanded from the BMS".into(),
+        kind: notes::EventKind::MessageBound,
+        color: Some("#3366FF".into()),
+        description: None,
+        tag: Some("contactor".into()),
+        commented_event_type: Some(86),
+        subjects: vec![notes::EventSubject::Message {
+            message_id: 0x2A1,
+            extended: false,
+        }],
+    });
+
+    capture::write_blf_capture(dest.to_str().unwrap(), &one_frame(ts), &notes_in, &[]).unwrap();
+    let mut back = notes_via_import_walk(dest.to_str().unwrap());
+    back.sort_by_key(|n| n.timestamp_ns);
+    assert_eq!(back, notes_in, "a BLF carries the model exactly");
+
+    // The link is stored once, on `n-subjects`, and both ends see it.
+    assert_eq!(notes::linked_event_ids(&back, "n-other"), ["n-subjects"]);
+}
+
+/// The same, through MDF's `##EV` blocks. MDF's event has a name but no
+/// colour, no kind our vocabulary can use and no notion of the record a
+/// message-bound event was attached to, so all of that rides the block
+/// beside the subjects.
+#[test]
+fn every_subject_kind_survives_an_mdf_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("subjects.mf4");
+    let ts = 1_700_000_000_000_000_000u64;
+    let state = test_state();
+    for frame in one_frame(ts) {
+        state.trace_store.append(frame);
+    }
+
+    let mut notes_in = subject_bearing_notes(ts);
+    notes_in.push(notes::Note {
+        id: "c-subjects".into(),
+        timestamp_ns: ts + 3_000,
+        label: "commanded from the BMS".into(),
+        kind: notes::EventKind::MessageBound,
+        color: Some("#3366FF".into()),
+        description: None,
+        tag: Some("contactor".into()),
+        commented_event_type: Some(86),
+        subjects: vec![notes::EventSubject::Message {
+            message_id: 0x2A1,
+            extended: false,
+        }],
+    });
+
+    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &notes_in, &[]).unwrap();
+    let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
+    let back = capture::notes_from_mdf_events(&source.events().unwrap());
+    assert_eq!(back, notes_in, "an MDF carries the model exactly");
+    assert_eq!(notes::linked_event_ids(&back, "n-other"), ["n-subjects"]);
+}
+
+/// A pair of events linked to each other and to nothing else is
+/// unambiguously a span, so it additionally gets MDF's own begin/end range
+/// pair — legible to tools that know nothing about cannet's block.
+///
+/// The control is the fan-out link beside it: three events on one link have
+/// no native form (MDF's range holds exactly one partner), so no range is
+/// written and the link survives in the block alone. Writing one anyway
+/// would tell another tool something the model does not say.
+#[test]
+fn an_unambiguous_pair_also_gets_mdfs_native_range_and_a_fan_out_does_not() {
+    let ts = 1_700_000_000_000_000_000u64;
+    let mut span = subject_bearing_notes(ts);
+    span[0].subjects.retain(|s| s.referenced_event().is_some());
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("span.mf4");
+    let state = test_state();
+    for frame in one_frame(ts) {
+        state.trace_store.append(frame);
+    }
+    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &span, &[]).unwrap();
+    let events = cannet_mdf::MdfCanFrameSource::open(&dest)
+        .unwrap()
+        .events()
+        .unwrap();
+    assert_eq!(
+        events[0].range,
+        Some(cannet_mdf::MdfEventRange::Begin { end: 1 }),
+    );
+    assert_eq!(
+        events[1].range,
+        Some(cannet_mdf::MdfEventRange::End { begin: 0 }),
+    );
+
+    // The control: a third event on the same link.
+    let mut fan_out = span.clone();
+    fan_out[0].subjects.push(notes::EventSubject::Event {
+        id: "n-third".into(),
+    });
+    fan_out.push(notes::Note {
+        id: "n-third".into(),
+        timestamp_ns: ts + 3_000,
+        label: "third".into(),
+        kind: notes::EventKind::Note,
+        color: None,
+        description: None,
+        tag: None,
+        commented_event_type: None,
+        subjects: Vec::new(),
+    });
+    let dest = dir.path().join("fanout.mf4");
+    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &fan_out, &[]).unwrap();
+    let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
+    let events = source.events().unwrap();
+    assert!(
+        events.iter().all(|e| e.range.is_none()),
+        "a fan-out link has no honest native form",
+    );
+    // …and the model still comes back whole.
+    assert_eq!(capture::notes_from_mdf_events(&events), fan_out);
+}
+
+/// A range pair another tool wrote is that tool's way of saying two events
+/// belong together, so it reads back as one more untyped link (ADR 0056).
+/// The events carry no block, so this exercises the native read alone.
+#[test]
+fn a_foreign_mdf_range_pair_reads_back_as_a_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("foreign-range.mf4");
+    let ts = 1_700_000_000_000_000_000u64;
+    let mut writer = cannet_mdf::MdfCaptureWriter::create(
+        &dest,
+        cannet_mdf::MdfCaptureLayout {
+            start_time_ns: ts,
+            max_payload_len: 8,
+        },
+    )
+    .unwrap();
+    writer
+        .append_frame(
+            &cannet_core::CanFrame::classic(
+                ts,
+                0,
+                cannet_core::CanId::standard(0x100).unwrap(),
+                Direction::Rx,
+                vec![1],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    writer.add_event(cannet_mdf::MdfEvent {
+        timestamp_ns: ts + 1_000,
+        name: "measurement begins".into(),
+        range: Some(cannet_mdf::MdfEventRange::Begin { end: 1 }),
+        ..cannet_mdf::MdfEvent::default()
+    });
+    writer.add_event(cannet_mdf::MdfEvent {
+        timestamp_ns: ts + 2_000,
+        name: "measurement ends".into(),
+        range: Some(cannet_mdf::MdfEventRange::End { begin: 0 }),
+        ..cannet_mdf::MdfEvent::default()
+    });
+    writer.finish().unwrap();
+
+    let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
+    let back = capture::notes_from_mdf_events(&source.events().unwrap());
+    assert_eq!(back.len(), 2);
+    assert_eq!(
+        notes::linked_event_ids(&back, &back[0].id),
+        [back[1].id.clone()],
+    );
+    // Both halves hold the reference here, because the file states both
+    // halves; the symmetric read collapses that to one link per end.
+    assert_eq!(
+        notes::linked_event_ids(&back, &back[1].id),
+        [back[0].id.clone()],
+    );
+}
+
+/// What each carrier loses, asserted rather than described (ADR 0057).
+///
+/// A link to an event the file does not carry — one linked to a
+/// host-derived event, which the export boundary keeps out — survives as
+/// an unresolved reference rather than being swept. ADR 0056 sweeps event
+/// references on **deletion** only; saving is not deleting, and a reference
+/// that resolves to nothing is a state, not a fault.
+#[test]
+fn a_link_to_an_unexported_event_survives_the_round_trip_unresolved() {
+    let dir = tempfile::tempdir().unwrap();
+    let ts = 1_700_000_000_000_000_000u64;
+    let notes_in = vec![notes::Note {
+        id: "n-linked".into(),
+        timestamp_ns: ts + 1_000,
+        label: "after the storm".into(),
+        kind: notes::EventKind::Note,
+        color: None,
+        description: None,
+        tag: None,
+        commented_event_type: None,
+        subjects: vec![notes::EventSubject::Event {
+            id: "bus-error-0".into(),
+        }],
+    }];
+
+    let dest = dir.path().join("dangling.blf");
+    capture::write_blf_capture(dest.to_str().unwrap(), &one_frame(ts), &notes_in, &[]).unwrap();
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back, notes_in);
+    assert!(
+        notes::linked_event_ids(&back, "n-linked").is_empty(),
+        "unresolved, but still stored",
+    );
+}
+
+/// The one thing a BLF marker's colour field cannot say.
+///
+/// A packed `0x000000` is both "black" and "no colour chosen", and the
+/// record has no third state, so a black event comes back uncoloured.
+/// MDF has no colour field at all — the block carries it — so black
+/// survives there. The asymmetry is BLF's, not the model's, and the honest
+/// place to pin it is a test rather than a paragraph.
+#[test]
+fn a_black_event_colour_reads_back_uncoloured_from_a_blf_marker_and_survives_in_mdf() {
+    let dir = tempfile::tempdir().unwrap();
+    let ts = 1_700_000_000_000_000_000u64;
+    let notes_in = vec![notes::Note {
+        id: "n-black".into(),
+        timestamp_ns: ts + 1_000,
+        label: "black".into(),
+        kind: notes::EventKind::Note,
+        color: Some("#000000".into()),
+        description: None,
+        tag: None,
+        commented_event_type: None,
+        subjects: Vec::new(),
+    }];
+
+    let dest = dir.path().join("black.blf");
+    capture::write_blf_capture(dest.to_str().unwrap(), &one_frame(ts), &notes_in, &[]).unwrap();
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back[0].color, None, "BLF's packed 0 is also 'uncoloured'");
+
+    let dest = dir.path().join("black.mf4");
+    let state = test_state();
+    for frame in one_frame(ts) {
+        state.trace_store.append(frame);
+    }
+    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &notes_in, &[]).unwrap();
+    let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
+    let back = capture::notes_from_mdf_events(&source.events().unwrap());
+    assert_eq!(back[0].color.as_deref(), Some("#000000"));
+}
+
+/// A capture written by an earlier build still opens with its events
+/// intact: the `cannet:event:` packing a BLF annotation carried, and the
+/// `cannet.*` `common_properties` an `##EV` block carried, are both still
+/// read even though neither is written any more.
+#[test]
+fn the_forms_written_before_the_event_block_are_still_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let ts = 1_700_000_000_000_000_000u64;
+
+    // BLF: the packed marker description, and before it the bare id.
+    let dest = dir.path().join("legacy.blf");
+    {
+        let mut w = cannet_blf::BlfCaptureWriter::create_with_start(&dest, ts).unwrap();
+        w.append_marker(
+            ts + 1_000,
+            "packed",
+            "cannet:event:fault\nold-1\nthe body",
+            0,
+        )
+        .unwrap();
+        w.append_marker(ts + 2_000, "bare", "old-2", 0).unwrap();
+        w.append_comment(ts + 3_000, "cannet:event:t\nold-3\nlabel\nbody", 86)
+            .unwrap();
+        w.finish().unwrap();
+    }
+    let mut back = notes_via_import_walk(dest.to_str().unwrap());
+    back.sort_by_key(|n| n.timestamp_ns);
+    assert_eq!(back[0].id, "old-1");
+    assert_eq!(back[0].tag.as_deref(), Some("fault"));
+    assert_eq!(back[0].description.as_deref(), Some("the body"));
+    assert_eq!(back[1].id, "old-2");
+    assert_eq!(back[1].description, None);
+    assert_eq!(back[2].id, "old-3");
+    assert_eq!(back[2].label, "label");
+
+    // MDF: the `cannet.*` properties.
+    let dest = dir.path().join("legacy.mf4");
+    let mut writer = cannet_mdf::MdfCaptureWriter::create(
+        &dest,
+        cannet_mdf::MdfCaptureLayout {
+            start_time_ns: ts,
+            max_payload_len: 8,
+        },
+    )
+    .unwrap();
+    writer
+        .append_frame(
+            &cannet_core::CanFrame::classic(
+                ts,
+                0,
+                cannet_core::CanId::standard(0x100).unwrap(),
+                Direction::Rx,
+                vec![1],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    writer.add_event(cannet_mdf::MdfEvent {
+        timestamp_ns: ts + 1_000,
+        name: "old".into(),
+        properties: vec![
+            ("cannet.id".into(), "old-4".into()),
+            ("cannet.color".into(), "#FF8800".into()),
+            ("cannet.description".into(), "body".into()),
+            ("cannet.tag".into(), "fault".into()),
+        ],
+        ..cannet_mdf::MdfEvent::default()
+    });
+    writer.finish().unwrap();
+    let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
+    let back = capture::notes_from_mdf_events(&source.events().unwrap());
+    assert_eq!(back[0].id, "old-4");
+    assert_eq!(back[0].color.as_deref(), Some("#FF8800"));
+    assert_eq!(back[0].description.as_deref(), Some("body"));
+    assert_eq!(back[0].tag.as_deref(), Some("fault"));
 }
 
 /// Coalescing an error storm is a **display** decision with a **write-side**
@@ -3488,8 +3882,8 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             label: "first".into(),
             kind: notes::EventKind::Note,
             color: Some("#FF8800".into()),
-            // The disclosed body and the user tag have their own
-            // `common_properties` keys, so they round-trip like the color.
+            // The disclosed body and the user tag have no `##EV` field of
+            // their own, so they ride the block like the color.
             description: Some("what it looked like".into()),
             tag: Some("fault".into()),
             commented_event_type: None,
@@ -3537,13 +3931,7 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
     }
 
     // --- markers ---
-    let mut synthetic_idx = 0u64;
-    let notes_back: Vec<notes::Note> = source
-        .events()
-        .unwrap()
-        .iter()
-        .map(|e| capture::note_from_event(e, &mut synthetic_idx))
-        .collect();
+    let notes_back = capture::notes_from_mdf_events(&source.events().unwrap());
     assert_eq!(notes_back, notes_in);
 
     // --- file-backed signals ---
@@ -3658,14 +4046,12 @@ fn the_demo_mdf_imports_frames_signals_and_markers() {
     }
 
     // And what it puts in the notes store.
-    let mut synthetic_idx = 0u64;
-    let notes: Vec<notes::Note> = source
-        .events()
-        .expect("the demo MDF's events read")
-        .iter()
-        .map(|e| capture::note_from_event(e, &mut synthetic_idx))
-        .collect();
-    assert_eq!(synthetic_idx, 0, "every demo event carries its own id");
+    let notes =
+        capture::notes_from_mdf_events(&source.events().expect("the demo MDF's events read"));
+    assert!(
+        notes.iter().all(|n| !n.id.starts_with("mdf-event-")),
+        "every demo event carries its own id",
+    );
     let labels: Vec<&str> = notes.iter().map(|n| n.label.as_str()).collect();
     assert_eq!(labels, ["run start", "gear shift", "GPS fix", "run end"]);
     assert_eq!(notes[0].id, "demo-0");
@@ -3673,23 +4059,21 @@ fn the_demo_mdf_imports_frames_signals_and_markers() {
     assert_eq!(notes[0].timestamp_ns, source.start_unix_nanos());
 }
 
-/// An event another tool wrote carries no `cannet.id`, so the import
+/// An event another tool wrote carries no `cannet-event/1` block, so the import
 /// mints a deterministic one — the same rule a third-party BLF marker
 /// gets, and what keeps its rename/remove paths working.
 #[test]
 fn an_mdf_event_without_a_cannet_id_gets_a_synthetic_one() {
-    let mut idx = 0u64;
     let plain = cannet_mdf::MdfEvent {
         timestamp_ns: 1_700_000_000_000_000_000,
         name: "someone else's marker".into(),
-        properties: vec![],
+        ..cannet_mdf::MdfEvent::default()
     };
-    let first = capture::note_from_event(&plain, &mut idx);
-    let second = capture::note_from_event(&plain, &mut idx);
-    assert_eq!(first.id, "mdf-event-0");
-    assert_eq!(second.id, "mdf-event-1");
-    assert_eq!(first.label, "someone else's marker");
-    assert_eq!(first.color, None);
+    let notes = capture::notes_from_mdf_events(&[plain.clone(), plain]);
+    assert_eq!(notes[0].id, "mdf-event-0");
+    assert_eq!(notes[1].id, "mdf-event-1");
+    assert_eq!(notes[0].label, "someone else's marker");
+    assert_eq!(notes[0].color, None);
 }
 
 /// And a capture with none is saved without a word about it — a warning
