@@ -63,6 +63,7 @@
 //!   an indefinite stall.
 
 pub mod clock;
+pub mod controller;
 pub mod tls;
 
 use std::sync::mpsc;
@@ -83,6 +84,7 @@ use tokio_stream::StreamExt;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::clock::{ClockSample, OffsetSlew, SessionClock};
+use crate::controller::ControllerStates;
 use crate::tls::{CertPin, ObservedPin};
 
 /// Outgoing-envelope channel depth for the per-session request stream.
@@ -624,6 +626,7 @@ pub fn connect_and_subscribe(
                 rx: frame_rx,
                 subscriptions: ready.resolved,
                 clock: ready.clock,
+                controllers: ready.controllers,
             },
             handle: SessionHandle {
                 shutdown_tx: Some(shutdown_tx),
@@ -651,6 +654,11 @@ struct SessionReady {
     /// still in flight: readiness must not wait on the clock, and the
     /// caller reads the answer whenever it wants one.
     clock: SessionClock,
+    /// Per-interface controller state, filled in by the worker as
+    /// `InterfaceState` envelopes arrive. Empty at readiness for a peer
+    /// that has not reported yet -- which is not the same as healthy, so
+    /// a reader gets `None` rather than "error-active".
+    controllers: ControllerStates,
 }
 
 /// The combined receive + shutdown handle returned by
@@ -684,6 +692,13 @@ impl RemoteCanFrameSource {
     #[must_use]
     pub fn clock(&self) -> &SessionClock {
         self.receiver.clock()
+    }
+
+    /// Controller state per interface. See
+    /// [`FrameReceiver::controllers`].
+    #[must_use]
+    pub fn controllers(&self) -> &ControllerStates {
+        self.receiver.controllers()
     }
 
     /// Split into the shutdown handle, the receive half, and the
@@ -721,6 +736,7 @@ pub struct FrameReceiver {
     rx: mpsc::Receiver<Result<CanFrame, ConnectionError>>,
     subscriptions: Vec<ResolvedSubscription>,
     clock: SessionClock,
+    controllers: ControllerStates,
 }
 
 impl FrameReceiver {
@@ -754,6 +770,20 @@ impl FrameReceiver {
     #[must_use]
     pub fn clock(&self) -> &SessionClock {
         &self.clock
+    }
+
+    /// Fault-confinement state of the controllers behind this session --
+    /// the ISO 11898-1 state machine and its two error counters, as the
+    /// peer's `InterfaceState` envelopes report them.
+    ///
+    /// Read-only and non-blocking, like [`Self::clock`]: the session
+    /// worker writes as reports arrive and a control surface reads
+    /// whenever it wants to. An interface no peer has reported on is
+    /// absent from the map -- which is *not* the same as error-active,
+    /// and must not be rendered as if it were.
+    #[must_use]
+    pub fn controllers(&self) -> &ControllerStates {
+        &self.controllers
     }
 }
 
@@ -1081,6 +1111,9 @@ async fn run_session(
     // subscribes, and a server that never answers must cost nothing
     // but a status of `Unsupported` once the window closes.
     let clock = SessionClock::pending();
+    // Filled in by the `InterfaceState` arm below and read through the
+    // session handle; the clone handed to the caller shares this map.
+    let controllers = ControllerStates::new();
     let mut slew = OffsetSlew::default();
     let mut clock_samples: Vec<ClockSample> = Vec::with_capacity(CLOCK_PROBE_COUNT);
     let mut probes_sent = 0usize;
@@ -1107,6 +1140,7 @@ async fn run_session(
                 req_tx: req_tx_for_handle.clone(),
                 resolved: resolved.clone(),
                 clock: clock.clone(),
+                controllers: controllers.clone(),
             }));
         }
         ready_sent = true;
@@ -1217,6 +1251,7 @@ async fn run_session(
                                         req_tx: req_tx_for_handle.clone(),
                                         resolved: resolved.clone(),
                                         clock: clock.clone(),
+                                        controllers: controllers.clone(),
                                     }));
                                 }
                                 ready_sent = true;
@@ -1279,15 +1314,27 @@ async fn run_session(
                             }
                         }
                     }
+                    Some(Body::InterfaceState(state)) => {
+                        // The controller's own account of why a bus is
+                        // unwell. It is not a frame, so it does not go
+                        // out on the frame channel; it lands in the
+                        // session's controller map, which
+                        // `FrameReceiver::controllers` reads.
+                        controllers.record(
+                            &state.interface_id,
+                            state.state,
+                            state.tec,
+                            state.rec,
+                        );
+                    }
                     // Subscribe / Unsubscribe round-trips (a peer
                     // echoing the request) are ignored; wire `Log`
                     // envelopes (ADR 0014) and the remaining
                     // virtual-bus / hardware-server envelopes
-                    // (`InterfaceState`, `ConfigureBus`,
-                    // `AttachBridge`, `DetachBridge`) have no
-                    // consumer in this crate; the GUI host bridges
-                    // them into its own surfaces. A `ClockProbe` is
-                    // a client→server envelope, so one arriving here
+                    // (`ConfigureBus`, `AttachBridge`, `DetachBridge`)
+                    // have no consumer in this crate; the GUI host
+                    // bridges them into its own surfaces. A `ClockProbe`
+                    // is a client→server envelope, so one arriving here
                     // is a peer echoing. `None` is the no-body case.
                     // All drop.
                     Some(
@@ -1295,7 +1342,6 @@ async fn run_session(
                         | Body::Subscribe(_)
                         | Body::Unsubscribe(_)
                         | Body::ConfigureBus(_)
-                        | Body::InterfaceState(_)
                         | Body::AttachBridge(_)
                         | Body::DetachBridge(_)
                         | Body::ClockProbe(_),

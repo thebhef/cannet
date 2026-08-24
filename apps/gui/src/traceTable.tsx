@@ -15,6 +15,16 @@ import {
 } from "./format";
 import { NameText } from "./NameText";
 
+/// What a bus error frame reads as in the message column, and the row
+/// class and tooltip that go with it. An error frame is not a frame in
+/// the sense the rest of the model uses — no payload, no decode — so a
+/// row showing one has to say so rather than looking like a data frame
+/// that happened to carry nothing.
+export const ERROR_FRAME_LABEL = "Bus error";
+export const ERROR_FRAME_ROW_CLASS = "trace-row-error-frame";
+export const ERROR_FRAME_TITLE =
+  "CAN bus error frame — the controller reported an error on the wire; it carries no id payload of its own";
+
 /// The content for one trace cell, given the column. The `#` column is
 /// the row's 1-based index in the chronological view, and the total
 /// frame count for the id in the by-id view (passed as `count`); it's
@@ -62,6 +72,10 @@ export function cellContent(
     case "data":
       return formatData(frame);
     case "msg":
+      // An error frame has no payload and no decode, so with the `type`
+      // column hidden by default nothing else on the row would tell it
+      // apart from a zero-byte data frame. It says what it is here.
+      if (frame.kind.kind === "error") return ERROR_FRAME_LABEL;
       // No caret: the row itself is the disclosure (ADR 0044's "no
       // separate expander control"), matching ByIdTable's settled call.
       return frame.decoded ? <NameText name={frame.decoded.name} /> : "";

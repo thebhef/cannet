@@ -16,8 +16,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_client::{
-    clock::SessionClock, ConnectionError, PreSubscribeConfig, SessionHandle, SessionTransmitter,
-    Subscription,
+    clock::SessionClock, controller::ControllerStates, ConnectionError, PreSubscribeConfig,
+    SessionHandle, SessionTransmitter, Subscription,
 };
 use cannet_core::CanFrameSource;
 
@@ -68,6 +68,13 @@ pub(crate) struct RemoteSession {
     /// clock to measure. Cheap to clone: [`crate::clock_status`] polls
     /// it from a separate task without touching the session map.
     pub(crate) clock: Option<SessionClock>,
+    /// ISO 11898-1 fault-confinement state per wire interface, as the
+    /// peer's `InterfaceState` envelopes report it. `None` for the
+    /// in-process backend, which has no controller at all — and that is
+    /// a different answer from "error-active", which is why it is an
+    /// option rather than an empty map. Polled by
+    /// [`crate::bus_health`] the same way the clock status is.
+    pub(crate) controllers: Option<ControllerStates>,
 }
 
 /// Backend-specific transmit machinery for a [`RemoteSession`].
@@ -505,6 +512,7 @@ pub(crate) async fn connect_remote_server(
 
     let (handle, receiver, transmitter) = source.into_parts();
     let clock = receiver.clock().clone();
+    let controllers = receiver.controllers().clone();
     let stop = Arc::new(AtomicBool::new(false));
 
     // Build the channel-to-bus mapping from the per-server
@@ -541,6 +549,7 @@ pub(crate) async fn connect_remote_server(
             channel_to_bus,
             stop: Arc::clone(&stop),
             clock: Some(clock),
+            controllers: Some(controllers),
         },
     )
     .inspect_err(|e| fail_subscribed(&app, e))?;
@@ -693,8 +702,9 @@ fn connect_local_vbus(
             stop: Arc::clone(&stop),
             // No `Session` is opened for an in-process vbus backend
             // (see the module docs), so there is no peer clock to
-            // measure.
+            // measure and no controller to report a state.
             clock: None,
+            controllers: None,
         },
     )?;
 
@@ -901,6 +911,11 @@ where
     S::Error: fmt::Display,
 {
     let state: State<'_, AppState> = app.state();
+    // Bus errors are coalesced host-side for display (ADR 0035). The
+    // frames still go into the store below like any other frame — the
+    // summary is produced *beside* them, never instead of them, so a
+    // saved capture keeps every error frame that was received.
+    let health = app.try_state::<crate::bus_health::BusHealth>();
     let mut total: u64 = 0;
     // For replay sources (BLF, MDF) the session timeline is the file's
     // own; `anchor` tracks the earliest timestamp seen so far, which is
@@ -934,6 +949,16 @@ where
                 }
                 if replay_origin && anchor_replay_session(&state, &mut anchor, raw.timestamp_ns) {
                     restamp_scratch_for_capture(&state);
+                    // This frame mints a new capture, so the previous
+                    // one's health has nothing left to describe.
+                    if let Some(health) = health.as_ref() {
+                        health.clear();
+                    }
+                }
+                if matches!(raw.payload, cannet_core::CanFramePayload::Error) {
+                    if let (Some(health), Some(bus_id)) = (health.as_ref(), raw.bus_id.as_deref()) {
+                        health.observe_error(bus_id, raw.timestamp_ns);
+                    }
                 }
                 // Ingest-time verification (ADR 0027): ids with a
                 // calculated-field config get checked against the

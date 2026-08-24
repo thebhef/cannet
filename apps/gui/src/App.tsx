@@ -61,6 +61,8 @@ import { ViewSignalsPanel } from "./ViewSignalsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { AboutPanel } from "./AboutPanel";
 import { EventsPanel } from "./EventsPanel";
+import { BusHealthPanel } from "./BusHealthPanel";
+import { busHealthConcerns, busHealthRows, useBusHealth } from "./busHealth";
 import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
 import {
   EMPTY_SYSTEM_LOG_MIRROR,
@@ -152,6 +154,7 @@ import {
   SETTINGS_PANEL_COMPONENT,
   ABOUT_PANEL_COMPONENT,
   EVENTS_PANEL_COMPONENT,
+  BUS_HEALTH_PANEL_COMPONENT,
   SERVERS_PANEL_COMPONENT,
   SHORTCUTS_PANEL_COMPONENT,
   SIGNALS_PANEL_COMPONENT,
@@ -277,6 +280,7 @@ const DOCK_COMPONENTS = {
   [SETTINGS_PANEL_COMPONENT]: SettingsPanel,
   [ABOUT_PANEL_COMPONENT]: AboutPanel,
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
+  [BUS_HEALTH_PANEL_COMPONENT]: BusHealthPanel,
   [SHORTCUTS_PANEL_COMPONENT]: ShortcutsPanel,
   [SERVERS_PANEL_COMPONENT]: ServersPanel,
 };
@@ -351,6 +355,10 @@ export function App() {
   // fact. `null` until the first poll answers.
   const [rebuildProgress, setRebuildProgress] = useState<RebuildProgress | null>(null);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
+  // `null`, never zero: a loaded file has no wire and a bus with no
+  // known bitrate has nothing to divide by, and the bar leaves the
+  // metric out rather than reporting an idle wire that does not exist.
+  const [busLoadPercent, setBusLoadPercent] = useState<number | null>(null);
   const [bufferSeconds, setBufferSeconds] = useState(0);
   // On-disk scratch footprint from the latest `trace-grew`; `null` when the
   // store is in-RAM, which hides the cache-size readout.
@@ -1104,6 +1112,7 @@ export function App() {
           frames_per_second_rx,
           frames_per_second_tx,
           frames_per_second_by_bus,
+          bus_load_percent,
           frames_dropped_before_session,
           session_start_seconds,
           buffer_seconds,
@@ -1138,6 +1147,7 @@ export function App() {
         // table and the plot disagreed about the same instant.
         setSessionStartSeconds(session_start_seconds);
         setFramesPerSecond(frames_per_second);
+        setBusLoadPercent(bus_load_percent);
         setBufferSeconds(buffer_seconds);
         setScratchBytes(scratch_bytes);
         setMemBytes(mem_bytes);
@@ -3153,22 +3163,29 @@ export function App() {
     [state, remoteSessions, count, scanningBlfPath, scanningMdfPath],
   );
   // The numbers the header shows, as discrete metrics rather than a
-  // sentence. Every figure is the host's: the rate, the elapsed span
-  // and the two residency figures arrive on `trace-grew`, the frame
-  // count is the store's. Bus load has no host-side source yet, so
-  // nothing reports it and it stays out of the list.
+  // sentence. Every figure is the host's: the rate, the elapsed span,
+  // the two residency figures and the bus load all arrive on
+  // `trace-grew`, and the frame count is the store's.
   const metrics = useMemo(
     () =>
       statusMetrics({
         count,
         firstIndex,
         framesPerSecond,
-        busLoadPercent: null,
+        busLoadPercent,
         bufferSeconds,
         scratchBytes,
         memBytes,
       }),
-    [count, firstIndex, framesPerSecond, bufferSeconds, scratchBytes, memBytes],
+    [
+      count,
+      firstIndex,
+      framesPerSecond,
+      busLoadPercent,
+      bufferSeconds,
+      scratchBytes,
+      memBytes,
+    ],
   );
   const metricsTooltip = useMemo(() => statusMetricsTooltip(metrics), [metrics]);
   // Transient status notices (errors, completions, remote connect/error
@@ -3481,6 +3498,26 @@ export function App() {
       ),
     [buses, interfaceBindings, connStates, remoteConnected],
   );
+  // The status bar's bus-health launcher. It stays neutral while every
+  // reporting controller is error-active and tints with a count when one
+  // is not; pressing it opens the panel, which is where "which bus" is
+  // answered (ADR 0055). The interface display names the panel's adapter
+  // column needs are not wanted here, so the rows are built without
+  // them — the launcher names buses, not adapters.
+  const busHealth = useBusHealth();
+  const busHealthProps = useMemo(() => {
+    const rows = busHealthRows({
+      buses,
+      bindings: interfaceBindings,
+      interfaces: [],
+      connStates,
+      health: busHealth,
+    });
+    return {
+      concerns: busHealthConcerns(rows),
+      onOpen: () => runCommand("panel.show.busHealth"),
+    };
+  }, [buses, interfaceBindings, connStates, busHealth, runCommand]);
   // Every RBS configuration the project has open — what the RBS mapping
   // chip counts problems across, and (when there is exactly one) where
   // pressing it goes.
@@ -3632,6 +3669,7 @@ export function App() {
                 : "connection.connect",
             )
           }
+          busHealth={busHealthProps}
           notices={statusNotices}
           statusText={status}
           metrics={metrics}

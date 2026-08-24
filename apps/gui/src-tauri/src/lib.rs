@@ -38,6 +38,7 @@
 //! return.
 
 mod app_state;
+mod bus_health;
 mod capture;
 mod clock_status;
 mod connect_flow;
@@ -502,6 +503,7 @@ pub fn run() -> ! {
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
         .manage(connection_state::ConnectionStates::default())
+        .manage(bus_health::BusHealth::default())
         .manage(connect_flow::ServerPrompts::default())
         .manage(server_browse::DiscoveredServers::default())
         .manage(diag::DiagState::default())
@@ -522,6 +524,7 @@ pub fn run() -> ! {
             fetch_signal_page,
             fetch_filtered_trace,
             clear_trace_store,
+            bus_health::get_bus_health,
             restore_scratch_capture,
             signal_pyramids_rebuilding,
             connect_remote_server,
@@ -702,6 +705,7 @@ pub fn run() -> ! {
             spawn_trace_grew_emitter(app.handle().clone());
             spawn_trace_flusher(app.handle().clone());
             spawn_clock_status_emitter(app.handle().clone());
+            bus_health::spawn_bus_health_emitter(app.handle().clone());
             // Apply the persisted windowed-ring scratch cap (ADR 0002 DS-8)
             // so a flush honors it from the first tick.
             apply_cache_caps(app.handle());

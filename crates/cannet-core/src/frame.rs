@@ -121,7 +121,86 @@ pub enum CanFramePayload {
     Error,
 }
 
+/// How many bit times a frame occupies on the wire, split by the rate
+/// each part is clocked at.
+///
+/// CAN FD switches bit rate mid-frame when BRS is set, so a single
+/// figure cannot describe an FD frame's occupancy: the arbitration
+/// phase runs at the nominal rate and the data phase at its own. A
+/// classic frame puts everything in [`Self::arbitration`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OnWireBits {
+    /// Bit times clocked at the nominal (arbitration) rate.
+    pub arbitration: u64,
+    /// Bit times clocked at the FD data rate. Zero unless the frame is
+    /// CAN FD *with* BRS — an FD frame without BRS runs entirely at the
+    /// nominal rate.
+    pub data: u64,
+}
+
+/// Fixed-format bits of a classic frame with a standard id: start of
+/// frame, arbitration, control, CRC and its delimiter, the ACK slot and
+/// its delimiter, end of frame, and the intermission that must follow
+/// before the next frame may start.
+const STANDARD_FRAME_BITS: u64 = 47;
+/// The same for an extended id, which carries 18 more id bits plus SRR
+/// and IDE.
+const EXTENDED_FRAME_BITS: u64 = 67;
+/// An FD frame's data-phase trailer beyond the payload: the stuff-count
+/// field, the CRC and its delimiter.
+const FD_DATA_PHASE_TRAILER_BITS: u64 = 25;
+/// An error flag (6 bits, up to 12 when other nodes superpose their
+/// own) plus its 8-bit delimiter.
+const ERROR_FRAME_BITS: u64 = 13;
+
 impl CanFramePayload {
+    /// Bit times this payload occupies on the wire for a frame with the
+    /// given id width.
+    ///
+    /// **Stuff bits are not counted.** The number of them depends on the
+    /// transmitted bit pattern including the controller-computed CRC,
+    /// which is not on the wire format we retain, so a figure derived
+    /// from this reads low against a heavily-stuffed stream rather than
+    /// guessing at the difference. Everything computed from it — the
+    /// virtual bus's frame pacing, a bus-load percentage — inherits that
+    /// and says so.
+    #[must_use]
+    pub fn on_wire_bits(&self, extended: bool) -> OnWireBits {
+        let fixed = if extended {
+            EXTENDED_FRAME_BITS
+        } else {
+            STANDARD_FRAME_BITS
+        };
+        match self {
+            Self::Classic(data) => OnWireBits {
+                arbitration: fixed + 8 * data.len() as u64,
+                data: 0,
+            },
+            Self::Remote { .. } => OnWireBits {
+                arbitration: fixed,
+                data: 0,
+            },
+            Self::Fd { data, flags } => {
+                let payload = FD_DATA_PHASE_TRAILER_BITS + 8 * data.len() as u64;
+                if flags.bitrate_switch {
+                    OnWireBits {
+                        arbitration: fixed,
+                        data: payload,
+                    }
+                } else {
+                    OnWireBits {
+                        arbitration: fixed + payload,
+                        data: 0,
+                    }
+                }
+            }
+            Self::Error => OnWireBits {
+                arbitration: ERROR_FRAME_BITS,
+                data: 0,
+            },
+        }
+    }
+
     pub fn data(&self) -> &[u8] {
         match self {
             Self::Classic(d) | Self::Fd { data: d, .. } => d.as_slice(),
@@ -374,5 +453,82 @@ mod tests {
     fn debug_formats_standard_id_with_s_prefix() {
         let id = CanId::standard(0x123).unwrap();
         assert_eq!(format!("{id:?}"), "CanId(s:123)");
+    }
+
+    #[test]
+    fn a_classic_frame_is_its_fixed_format_plus_its_payload() {
+        let bits = CanFramePayload::Classic(vec![0; 8]).on_wire_bits(false);
+        assert_eq!(
+            bits,
+            OnWireBits {
+                arbitration: 47 + 64,
+                data: 0
+            }
+        );
+        // An extended id costs 20 more bit times and nothing else.
+        let bits = CanFramePayload::Classic(vec![0; 8]).on_wire_bits(true);
+        assert_eq!(
+            bits,
+            OnWireBits {
+                arbitration: 67 + 64,
+                data: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_remote_frame_carries_no_payload_bits() {
+        let bits = CanFramePayload::Remote { dlc: 8 }.on_wire_bits(false);
+        assert_eq!(
+            bits,
+            OnWireBits {
+                arbitration: 47,
+                data: 0
+            }
+        );
+    }
+
+    #[test]
+    fn only_a_bitrate_switched_fd_frame_puts_bits_in_the_data_phase() {
+        // This is the whole reason the count is split: without BRS the
+        // frame runs end to end at the nominal rate, and charging its
+        // payload to the data rate would understate the wire it used.
+        let payload = |brs| CanFramePayload::Fd {
+            data: vec![0; 64],
+            flags: CanFdFlags {
+                bitrate_switch: brs,
+                error_state_indicator: false,
+            },
+        };
+        assert_eq!(
+            payload(true).on_wire_bits(false),
+            OnWireBits {
+                arbitration: 47,
+                data: 25 + 512
+            },
+        );
+        assert_eq!(
+            payload(false).on_wire_bits(false),
+            OnWireBits {
+                arbitration: 47 + 25 + 512,
+                data: 0
+            },
+        );
+    }
+
+    #[test]
+    fn an_error_frame_is_a_flag_and_a_delimiter() {
+        // Smaller than any data frame: 6 dominant bits (up to 12 when
+        // other nodes superpose their own) plus an 8-bit delimiter.
+        let bits = CanFramePayload::Error.on_wire_bits(false);
+        assert_eq!(
+            bits,
+            OnWireBits {
+                arbitration: 13,
+                data: 0
+            }
+        );
+        // The id width is irrelevant: an error flag carries no id.
+        assert_eq!(CanFramePayload::Error.on_wire_bits(true), bits);
     }
 }

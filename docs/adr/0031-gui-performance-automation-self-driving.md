@@ -342,3 +342,63 @@ Limits still ratchet down only. The outlier run is reported with the
 rest of the distribution — the record says "this happened once and
 these five runs did not", and the next reader can see the pattern
 forming if it is forming.
+
+## Amendment (2026-08-22) — the baseline is re-taken at the end of a chain
+
+Owner ruling: *"I'm good to baseline with the perf as it is right
+now."* Taken after reviewing the whole render-tier series — 84 captures
+across 19 builds — rather than after any single run.
+
+**This is a re-baseline, not a promotion to clear a failure.** Every
+run on the tree it was taken from passed at its old limits. Two things
+made it due:
+
+- The example projects grew, and `ev-zonal` is the harness's project,
+  so the stored baseline described a project that no longer existed.
+  A line-for-line comparison against it could not distinguish a
+  regression from a bigger project.
+- The frontend genuinely holds more than it did — `jsheap_mb_peak`
+  +18.9 %, `renderer_mb_peak` +5.7 % — from a status bar, status
+  chips, disclosed content rows and an event surface. The owner judged
+  that increase marginal for the load and not worth chasing.
+
+The rule it does **not** relax: a baseline is never promoted to make a
+failing run pass, and a limit is never widened for one. Both remain
+owner rulings recorded here.
+
+### What the re-baseline tightened, and the one place to watch
+
+Most limits moved with their metric. Two tightened sharply because the
+old baseline was itself an unlucky reading:
+
+| metric | old limit | new limit | worst ever seen |
+|---|---|---|---|
+| `tx_late_ms_max` | 156.391 | **55.686** | **102.774** |
+| `flush_ms_max` | 72.544 | 64.481 | 32.398 |
+
+**`tx_late_ms_max` is now gated below its own observed spread.** It has
+read 102.8 ms on this rig on an unchanged build, and the new limit is
+55.7. A future run may fail there with nothing regressing.
+
+That is not a reason to widen it — limits ratchet down only, and the
+metric has run 5–25 ms for the whole recent chain. It *is* a reason to
+treat a single failure there as suspect: reach for a same-day control
+build before believing it, the way the `lag_ms_max` and
+`rx_gap_short_frac_worst` investigations did. If it fires repeatedly
+on unchanged builds, that is the evidence for an owner ruling to
+re-gate it, not a licence to raise it quietly.
+
+### Provenance of this baseline
+
+Frontend metrics come from a single capture — the median of four runs
+on the chain head — and the three host modes were measured live on a
+quiet rig at promotion time. The dated snapshot carries a `-dirty`
+suffix from two stat-only working-tree entries with empty diffs, not
+from uncommitted code.
+
+**Check `hardware_peak.ingest_fps_overall` on any snapshot before
+promoting it.** A first attempt at this re-baseline produced `0.000`
+there, because another cannet instance held the PCAN dongles; promoting
+it would have set a zero limit and killed the metric silently. A metric
+that reads zero where it previously read a rate is a failed capture,
+never a result.

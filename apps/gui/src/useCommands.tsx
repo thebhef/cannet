@@ -28,7 +28,9 @@ import {
   DBC_PANEL_COMPONENT,
   DBC_PANEL_ID,
   EVENTS_PANEL_COMPONENT,
+  BUS_HEALTH_PANEL_COMPONENT,
   EVENTS_PANEL_ID,
+  BUS_HEALTH_PANEL_ID,
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
@@ -347,6 +349,15 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       }),
     [showSingletonPanel],
   );
+  const showBusHealthPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: BUS_HEALTH_PANEL_ID,
+        component: BUS_HEALTH_PANEL_COMPONENT,
+        title: "Bus health",
+      }),
+    [showSingletonPanel],
+  );
   // Not `showSingletonPanel`: the bus row's "Manage servers…" opens the
   // same panel from outside this hook, and both go through one helper.
   const showServersPanel = useCallback(() => {
@@ -511,6 +522,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "panel.show.settings": showSettingsPanel,
     "panel.show.about": showAboutPanel,
     "panel.show.events": showEventsPanel,
+    "panel.show.busHealth": showBusHealthPanel,
     "panel.show.shortcuts": showShortcutsPanel,
     "panel.show.servers": showServersPanel,
     // Rename in place: the palette stays open and becomes a text field
@@ -773,6 +785,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     singleton(SETTINGS_PANEL_ID, "Settings", showSettingsPanel);
     singleton(ABOUT_PANEL_ID, "About", showAboutPanel);
     singleton(EVENTS_PANEL_ID, "Events", showEventsPanel);
+    singleton(BUS_HEALTH_PANEL_ID, "Bus health", showBusHealthPanel, "bus load error frames");
     singleton(SHORTCUTS_PANEL_ID, "Keyboard shortcuts", showShortcutsPanel);
     singleton(SERVERS_PANEL_ID, "Servers", showServersPanel);
     return views;
@@ -787,6 +800,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     showSettingsPanel,
     showAboutPanel,
     showEventsPanel,
+    showBusHealthPanel,
     showShortcutsPanel,
     showServersPanel,
   ]);

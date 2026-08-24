@@ -46,7 +46,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::frame::{CanFrame, CanFramePayload, Direction};
+use crate::frame::{CanFrame, Direction};
 use crate::io::{CanFrameSink, CanFrameSource};
 
 /// Configuration for a [`SharedBus`].
@@ -625,34 +625,16 @@ fn send_no_acknowledger(state: &BusState, originator_id: ParticipantId, frame: C
 
 /// Approximate on-wire duration of `frame` at the configured bit rates.
 ///
-/// Classic CAN uses a fixed header (47 bits for standard, 67 for
-/// extended) plus 8 bits per data byte. CAN FD uses the same header at
-/// the arbitration rate plus a data-phase tail (25 bits of trailer + 8
-/// bits per data byte) at `fd_data_speed_bps` when BRS is set. Error
-/// frames are modelled as 13 bits. Bit-stuffing overhead is not
-/// included — this is the virtual-bus arbiter's timeline, not a
-/// wire-accurate clock.
+/// The bit count is [`CanFramePayload::on_wire_bits`] — the one model of
+/// what a frame occupies on the wire, shared with the host's bus-load
+/// figure so the two cannot drift into two answers. Bit-stuffing
+/// overhead is not included there, which suits this caller: it is the
+/// virtual-bus arbiter's timeline, not a wire-accurate clock.
 fn frame_duration(frame: &CanFrame, config: &BusConfig) -> Duration {
     let arb_speed = config.speed_bps.max(1);
-    let extended = frame.id.is_extended();
-    let header_bits: u64 = if extended { 67 } else { 47 };
-    match &frame.payload {
-        CanFramePayload::Classic(data) => {
-            let bits = header_bits + 8 * (data.len() as u64);
-            ns_for(bits, arb_speed)
-        }
-        CanFramePayload::Remote { .. } => ns_for(header_bits, arb_speed),
-        CanFramePayload::Fd { data, flags } => {
-            let data_bits = 25 + 8 * (data.len() as u64);
-            let data_speed = if flags.bitrate_switch {
-                config.fd_data_speed_bps.unwrap_or(arb_speed).max(1)
-            } else {
-                arb_speed
-            };
-            ns_for(header_bits, arb_speed) + ns_for(data_bits, data_speed)
-        }
-        CanFramePayload::Error => ns_for(13, arb_speed),
-    }
+    let bits = frame.payload.on_wire_bits(frame.id.is_extended());
+    let data_speed = config.fd_data_speed_bps.unwrap_or(arb_speed).max(1);
+    ns_for(bits.arbitration, arb_speed) + ns_for(bits.data, data_speed)
 }
 
 fn ns_for(bits: u64, speed_bps: u64) -> Duration {

@@ -142,7 +142,17 @@ impl RateTrack {
     /// allows. The single sampling path the aggregate, per-bus, and
     /// per-direction trackers all use.
     pub(super) fn observe(&mut self, ts_ns: u64, now: Instant) {
-        self.count += 1;
+        self.observe_weighted(ts_ns, now, 1);
+    }
+
+    /// The same fold, counting `weight` rather than one. Bus load is the
+    /// same windowed read as a frame rate over a different unit — bit
+    /// times instead of frames — so it shares the sampling and pruning
+    /// rather than growing a second, subtly different window.
+    pub(super) fn observe_weighted(&mut self, ts_ns: u64, now: Instant, weight: u64) {
+        self.count = self
+            .count
+            .saturating_add(usize::try_from(weight).unwrap_or(usize::MAX));
         sample_if_due(&mut self.samples, now, ts_ns, self.count);
     }
 }
@@ -209,6 +219,33 @@ pub(super) fn by_bus_fps(inner: &mut Inner, now: Instant) -> Vec<(String, f64)> 
             (bus.clone(), rate_from_samples(&br.samples))
         })
         .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Bit times per second per logical bus, split by the rate each part is
+/// clocked at: `(bus, arbitration_bits_per_second, data_bits_per_second)`.
+///
+/// The numerator, not the percentage: the store knows what went over the
+/// wire, and only the session knows what bitrate the wire is running at.
+/// Combining the two is the bus-health model's job.
+pub(super) fn by_bus_bits(inner: &mut Inner, now: Instant) -> Vec<(String, f64, f64)> {
+    let mut out: Vec<(String, f64, f64)> = inner
+        .per_bus_arb_bits
+        .iter_mut()
+        .map(|(bus, br)| {
+            prune_rate_samples(&mut br.samples, now);
+            (bus.clone(), rate_from_samples(&br.samples), 0.0)
+        })
+        .collect();
+    for (bus, br) in &mut inner.per_bus_data_bits {
+        prune_rate_samples(&mut br.samples, now);
+        let rate = rate_from_samples(&br.samples);
+        match out.iter_mut().find(|(b, _, _)| b == bus) {
+            Some(entry) => entry.2 = rate,
+            None => out.push((bus.clone(), 0.0, rate)),
+        }
+    }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
@@ -365,6 +402,76 @@ mod tests {
         store.append(dummy(100_000_000, 2));
         let rate = store.frames_per_second();
         assert!((rate - 10.0).abs() < 1.0, "expected ~10/s, got {rate}");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // 0.0 is the exact "no data phase ran" sentinel.
+    fn bits_per_second_by_bus_reads_the_wire_not_the_frame_count() {
+        // The whole point of a second unit: two buses at the *same* frame
+        // rate load the wire differently when their frames differ in
+        // size. Eight payload bytes is 64 bit times on top of the 47 a
+        // standard frame costs anyway, so bus B occupies 111/47 of what
+        // bus A does while both carry the same number of frames.
+        let store = TraceStore::new();
+        let payload = |ts: u64, bus: &str, len: usize| {
+            let mut f = dummy_on_bus(ts, 1, bus);
+            f.payload = cannet_core::CanFramePayload::Classic(vec![0; len]);
+            f
+        };
+        store.append(payload(0, "A", 0));
+        store.append(payload(0, "B", 8));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        store.append(payload(100_000_000, "A", 0));
+        store.append(payload(100_000_000, "B", 8));
+
+        let snap = store.status_snapshot();
+        let bits = |bus: &str| {
+            snap.bits_per_second_by_bus
+                .iter()
+                .find(|(b, _, _)| b == bus)
+                .map(|(_, arb, data)| (*arb, *data))
+                .unwrap()
+        };
+        // One frame's worth of bits over the 100 ms between the samples.
+        assert!((bits("A").0 - 470.0).abs() < 1.0, "{:?}", bits("A"));
+        assert!((bits("B").0 - 1110.0).abs() < 1.0, "{:?}", bits("B"));
+        // The control: neither bus is CAN FD, so nothing is charged to a
+        // data phase that never ran.
+        assert_eq!(bits("A").1, 0.0);
+        assert_eq!(bits("B").1, 0.0);
+        // And the frame rates are identical, which is what makes the two
+        // readings different measurements rather than the same one twice.
+        let fps = |bus: &str| {
+            snap.frames_per_second_by_bus
+                .iter()
+                .find(|(b, _)| b == bus)
+                .map(|(_, r)| *r)
+                .unwrap()
+        };
+        assert!((fps("A") - fps("B")).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_bitrate_switched_fd_frame_splits_its_bits_across_the_two_phases() {
+        let store = TraceStore::new();
+        let fd = |ts: u64| {
+            let mut f = dummy_on_bus(ts, 1, "A");
+            f.payload = cannet_core::CanFramePayload::Fd {
+                data: vec![0; 64],
+                flags: cannet_core::CanFdFlags {
+                    bitrate_switch: true,
+                    error_state_indicator: false,
+                },
+            };
+            f
+        };
+        store.append(fd(0));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        store.append(fd(100_000_000));
+        let snap = store.status_snapshot();
+        let (_, arb, data) = snap.bits_per_second_by_bus[0].clone();
+        assert!((arb - 470.0).abs() < 1.0, "{arb}");
+        assert!((data - 5370.0).abs() < 1.0, "{data}");
     }
 
     #[test]
