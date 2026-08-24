@@ -17,6 +17,23 @@ pub trait CanFrameSource {
     type Error;
 
     fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error>;
+
+    /// How many frames this source has pulled off its underlying stream
+    /// so far, or `None` for a source with no such notion.
+    ///
+    /// This is what a *replay* reports progress against, and it counts
+    /// frames read rather than frames yielded on purpose: a filtering
+    /// wrapper drops frames after reading them, and the denominator a
+    /// caller has — a census's frame count over the whole file — counts
+    /// what was read. Comparing yielded frames against it would make a
+    /// windowed import stall part-way and never finish.
+    ///
+    /// `None` is the honest answer for a live stream: it has no end to
+    /// be a fraction of. Defaulted, so a source only implements this if
+    /// it has something to say.
+    fn frames_read(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// A push-based consumer of CAN frames.
@@ -92,6 +109,10 @@ pub struct WindowedSource<S> {
     start_ns: Option<u64>,
     end_ns: Option<u64>,
     done: bool,
+    /// Frames pulled out of `inner`, filtered or not. See
+    /// [`CanFrameSource::frames_read`] for why the count is taken here
+    /// rather than at what this yields.
+    frames_read: u64,
 }
 
 impl<S: CanFrameSource> WindowedSource<S> {
@@ -103,6 +124,7 @@ impl<S: CanFrameSource> WindowedSource<S> {
             start_ns,
             end_ns,
             done: false,
+            frames_read: 0,
         }
     }
 }
@@ -119,6 +141,7 @@ impl<S: CanFrameSource> CanFrameSource for WindowedSource<S> {
                 self.done = true;
                 return Ok(None);
             };
+            self.frames_read += 1;
             if self
                 .start_ns
                 .is_some_and(|start| frame.timestamp_ns < start)
@@ -130,6 +153,10 @@ impl<S: CanFrameSource> CanFrameSource for WindowedSource<S> {
             }
             return Ok(Some(frame));
         }
+    }
+
+    fn frames_read(&self) -> Option<u64> {
+        Some(self.frames_read)
     }
 }
 
@@ -258,6 +285,36 @@ mod tests {
                 .collect::<Vec<_>>()
                 .into_iter(),
         }
+    }
+
+    /// The window filters what it yields, not what it reads, and
+    /// progress has to be reported against the latter — otherwise a
+    /// narrow import range reports a fraction of a fraction and the bar
+    /// never reaches its end.
+    #[test]
+    fn frames_read_counts_what_the_window_pulled_in_not_what_it_let_through() {
+        let mut source = WindowedSource::new(vec_source(&[1, 2, 3, 4, 5]), Some(4), None);
+        assert_eq!(source.frames_read(), Some(0));
+
+        let mut yielded = 0;
+        while source.next_frame().unwrap().is_some() {
+            yielded += 1;
+        }
+
+        assert_eq!(yielded, 2, "only frames 4 and 5 are in the window");
+        assert_eq!(
+            source.frames_read(),
+            Some(5),
+            "but the whole source was read, and that is what a census counted",
+        );
+    }
+
+    /// A source that has no end to be a fraction of says so, rather than
+    /// making one up. The default is what every live source inherits.
+    #[test]
+    fn a_source_with_no_notion_of_progress_reports_none() {
+        let source = vec_source(&[1, 2, 3]);
+        assert_eq!(source.frames_read(), None);
     }
 
     #[test]

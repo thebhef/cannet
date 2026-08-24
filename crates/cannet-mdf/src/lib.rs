@@ -78,7 +78,7 @@ mod write;
 
 pub use attachments::MdfAttachment;
 pub use events::MdfEvent;
-pub use scan::{scan_mdf, MdfScan};
+pub use scan::{scan_mdf, scan_mdf_cancellable, MdfScan, ScanOutcome, ScanProgress};
 pub use signals::{FileSignal, SignalChannelGroup, SignalGroupCensus};
 pub use write::{MdfCaptureLayout, MdfCaptureWriter, MdfWriteError, MdfWritten};
 

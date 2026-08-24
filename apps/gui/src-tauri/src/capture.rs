@@ -14,6 +14,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -22,7 +23,10 @@ use cannet_core::{CanFrame as CoreCanFrame, CanId};
 use cannet_mdf::MdfCanFrameSource;
 
 use crate::app_state::AppState;
-use crate::ipc::{ImportMdfResult, LogFinished, OpenLogResult, ValueTableEntryRecord};
+use crate::ipc::{
+    ImportMdfResult, LoadProgress, LogFinished, OpenLogResult, RebuildProgressRecord,
+    ValueTableEntryRecord,
+};
 use crate::notes::{self, Note};
 use crate::sampling::off_async_workers;
 use crate::signal_cache::{FileSignalEntry, FileSignalInfo, SignalCacheStore};
@@ -40,6 +44,100 @@ use crate::session::{panic_message, run_pump};
 /// 0052) come and go with the capture instead of being polled for.
 pub(crate) const FILE_SIGNALS_CHANGED: &str = "file-signals-changed";
 
+/// Event carrying how far the trace load in flight has got — see
+/// [`LoadProgress`] for what each phase counts against what.
+pub(crate) const LOAD_PROGRESS: &str = "load-progress";
+
+/// Paces [`LOAD_PROGRESS`] to the frontend's own live-update cadence.
+///
+/// The checkpoints behind it fire thousands of times a second, which is
+/// what makes a cancel land promptly; a status line redrawn that often
+/// would cost more than the load it is reporting on. The cadence is the
+/// one `trace-grew` already runs at (`live_update_interval_ms`) rather
+/// than a second knob, because it is the same question — how often the
+/// status line is allowed to change — asked about a different number.
+pub(crate) struct ProgressPacer {
+    last: Instant,
+    period: Duration,
+}
+
+impl ProgressPacer {
+    /// Start paced, so the first report waits a period rather than
+    /// firing on the checkpoint a millisecond into the walk.
+    pub(crate) fn new() -> Self {
+        Self {
+            last: Instant::now(),
+            period: Duration::from_millis(crate::settings::effective().live_update_interval_ms),
+        }
+    }
+
+    /// Whether a report is due at `now`, consuming the slot if it is.
+    pub(crate) fn due(&mut self, now: Instant) -> bool {
+        if now.duration_since(self.last) < self.period {
+            return false;
+        }
+        self.last = now;
+        true
+    }
+}
+
+/// Frames the pump moves between two looks at the clock.
+///
+/// The pump's cancel check is per frame and stays there; this is only
+/// about how often progress is worth reporting, and reading the clock
+/// costs more per frame than the check does. At any plausible pump rate
+/// this is single-digit milliseconds, well under the pacer's own period,
+/// so the cadence the user sees is the pacer's and not this.
+const PROGRESS_CHECKPOINT_FRAMES: u64 = 16_384;
+
+/// Determinate progress for an import pump: the census's frame count as
+/// the denominator, and the pacing that keeps the reports to a cadence.
+///
+/// Only a replay has one of these. A live session has no end to be a
+/// fraction of, so it carries `None` and the pump's loop skips all of
+/// this (see [`LoadProgress`]).
+pub(crate) struct ImportProgress {
+    total_frames: u64,
+    pacer: ProgressPacer,
+    until_checkpoint: u64,
+}
+
+impl ImportProgress {
+    pub(crate) fn new(total_frames: u64) -> Self {
+        Self {
+            total_frames,
+            pacer: ProgressPacer::new(),
+            until_checkpoint: PROGRESS_CHECKPOINT_FRAMES,
+        }
+    }
+
+    /// Whether the pump has run far enough to be worth asking the clock.
+    /// One decrement and one compare, which is what keeps this off the
+    /// per-frame cost of the loop it sits in.
+    pub(crate) fn checkpoint(&mut self) -> bool {
+        self.until_checkpoint -= 1;
+        if self.until_checkpoint > 0 {
+            return false;
+        }
+        self.until_checkpoint = PROGRESS_CHECKPOINT_FRAMES;
+        true
+    }
+
+    /// Report `frames_read` if the pacer says a report is due.
+    pub(crate) fn report(&mut self, app: &AppHandle, frames_read: u64) {
+        if !self.pacer.due(Instant::now()) {
+            return;
+        }
+        let _ = app.emit(
+            LOAD_PROGRESS,
+            LoadProgress::Import {
+                frames: frames_read,
+                total_frames: self.total_frames,
+            },
+        );
+    }
+}
+
 /// Per-channel BLF bus mapping. One entry per channel the caller wants
 /// to route, naming the logical bus its frames land on. A channel with
 /// no entry is **dropped**: the import dialog's "(skip)" is spelled by
@@ -56,6 +154,13 @@ pub struct ChannelBusMapping {
 /// Start importing `blf_path`, routing each channel per
 /// `channel_bus_mapping`, optionally narrowed to `[start_ns, end_ns]`
 /// (either or both `None` for unbounded).
+///
+/// `total_frames` is the frame count the census of this same file
+/// returned, and it is what makes the import's progress determinate: it
+/// travels with the request rather than being re-derived, because the
+/// walk that found it has already happened and walking again to find it
+/// twice is the cost this whole phase exists to avoid. `None` means no
+/// progress is reported — the load still runs.
 ///
 /// The whole import is **one pass over the file**: the pump walks it
 /// once, and the capture's `GLOBAL_MARKER` annotations are collected on
@@ -93,6 +198,7 @@ pub(crate) async fn open_log(
     #[allow(non_snake_case)] channel_bus_mapping: Option<Vec<ChannelBusMapping>>,
     start_ns: Option<u64>,
     end_ns: Option<u64>,
+    #[allow(non_snake_case)] total_frames: Option<u64>,
 ) -> Result<OpenLogResult, String> {
     // Open the BLF before returning so the user gets immediate feedback
     // if the path is wrong.
@@ -171,6 +277,9 @@ pub(crate) async fn open_log(
     // whichever way.
     let cancel = Arc::new(AtomicBool::new(false));
     *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
+    // Read back after the pump: it is what tells a cancellation apart
+    // from an end of file on this side (see `import_was_cancelled`).
+    let cancelled_probe = Arc::clone(&cancel);
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
@@ -190,6 +299,7 @@ pub(crate) async fn open_log(
                     // replay_origin: the session anchors on the file's own
                     // earliest timestamp (ADR 0024), which the pump tracks.
                     true,
+                    total_frames.map(ImportProgress::new),
                 )
             }));
             // This pump is done — cleanly, cancelled, or panicked —
@@ -205,6 +315,12 @@ pub(crate) async fn open_log(
                     return;
                 }
             };
+            // Abandoned: the frames this walk appended are being
+            // cleared right now, so its markers have no capture to
+            // belong to. Stop before applying them.
+            if import_was_cancelled(&cancelled_probe) {
+                return;
+            }
             // The markers the pump walked past. Applied once the pass is
             // over — the file's annotations are only fully known when
             // its last object has been read. A marker can precede the
@@ -231,6 +347,24 @@ pub(crate) async fn open_log(
     Ok(result)
 }
 
+/// Whether the import that has just ended was cancelled rather than
+/// finishing, and so must apply none of what its walk collected.
+///
+/// A pump exits through the same clean path whichever way it stopped,
+/// and everything an import gathers *alongside* the frames — a BLF's
+/// `GLOBAL_MARKER` notes, an MDF's file-backed signal series — is
+/// applied after it, because none of it is fully known until the walk
+/// is over. The frontend, meanwhile, has seen `log-finished` and is
+/// already clearing the partial capture. Applying afterwards would put
+/// content into a session whose frames are gone.
+///
+/// For an MDF this is not a race but a certainty: filling the file's
+/// signal series takes as long as the content is big, and it starts
+/// after the pump has already announced it finished.
+pub(crate) fn import_was_cancelled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
+}
+
 /// Flip whichever import's cancel flag [`AppState::import_cancel`] holds
 /// right now, if any. Factored out from [`cancel_import`] so it's
 /// testable against a plain `AppState` — the command wrapper needs a
@@ -242,18 +376,28 @@ pub(crate) fn cancel_import_now(state: &AppState) {
     }
 }
 
-/// Cancel the trace-open pump in flight right now (`open_log` /
-/// `import_mdf`), if any. Cooperative, not immediate: it flips the flag
-/// the pump loop (`run_pump`) checks once per frame, so the pump finishes
-/// its current iteration and then exits through its ordinary clean-exit
-/// path — same `log-finished: Ok` a natural end-of-file emits, since the
+/// Cancel whichever phase of a trace open is in flight right now — the
+/// census (`scan_blf_channels` / `scan_mdf_channels`) or the pump
+/// (`open_log` / `import_mdf`) — if either is. One command for both:
+/// the phases are sequential, only one trace open runs at a time, and
+/// [`AppState::import_cancel`] therefore never holds more than one flag.
+///
+/// Cooperative, not immediate: it flips the flag the running walk checks
+/// at its checkpoint — once per frame in `run_pump`, once per
+/// checkpoint stride in a census.
+///
+/// The two phases end differently, and the difference is what they have
+/// produced. A cancelled census has produced nothing: its command
+/// returns `None` and there is nothing to undo. A cancelled pump has
+/// frames in the store, and exits through its ordinary clean-exit path
+/// — the same `log-finished: Ok` a natural end-of-file emits, since the
 /// loop itself cannot tell "stopped because EOF" from "stopped because
 /// asked to". The frontend is the one that knows it asked, and treats
 /// the next `log-finished` as an abandonment: it clears the partial
 /// frames the pump already appended rather than presenting them as a
 /// finished capture.
 ///
-/// A no-op, not an error, when nothing is importing — the busy launcher
+/// A no-op, not an error, when nothing is loading — the Cancel button
 /// this backs isn't perfectly synchronized with the pump's own lifetime
 /// (a click can race the pump's natural completion), and a stray call
 /// after the pump has already finished should do nothing rather than
@@ -961,13 +1105,30 @@ pub struct BlfScanResult {
 pub(crate) async fn scan_blf_channels(
     app: AppHandle,
     blf_path: String,
-) -> Result<BlfScanResult, String> {
+) -> Result<Option<BlfScanResult>, String> {
     off_async_workers(move || {
         let started = std::time::Instant::now();
-        let scan = match cannet_blf::scan_blf(&blf_path) {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = e.to_string();
+        let mut pacer = ProgressPacer::new();
+        let scan = match census_blf(&app.state::<AppState>(), &blf_path, &mut |p| {
+            if pacer.due(Instant::now()) {
+                let _ = app.emit(
+                    LOAD_PROGRESS,
+                    LoadProgress::Census {
+                        bytes_read: p.bytes_read,
+                        total_bytes: p.total_bytes,
+                    },
+                );
+            }
+        }) {
+            Ok(Some(s)) => s,
+            // Cancelled. Nothing was produced and nothing is owed: the
+            // caller drops the open rather than showing a dialog over a
+            // census that never finished.
+            Ok(None) => {
+                sys_info!(&app, "blf-import", "census of {blf_path} cancelled");
+                return Ok(None);
+            }
+            Err(msg) => {
                 sys_error!(&app, "blf-import", "BLF scan failed: {msg}");
                 return Err(msg);
             }
@@ -997,16 +1158,50 @@ pub(crate) async fn scan_blf_channels(
             .iter()
             .map(|m| note_from_marker(m, &mut synthetic_idx))
             .collect();
-        Ok(BlfScanResult {
+        Ok(Some(BlfScanResult {
             channels: scan.channels,
             frame_count: scan.frame_count,
             first_timestamp_ns: scan.first_timestamp_ns,
             last_timestamp_ns: scan.last_timestamp_ns,
             start_unix_nanos: scan.start_unix_nanos,
             markers,
-        })
+        }))
     })
     .await
+}
+
+/// Walk `path`'s census under a cancel flag installed in
+/// [`AppState::import_cancel`], reporting progress at each checkpoint.
+///
+/// The flag is the same one the pump uses, so one `cancel_import` stops
+/// whichever phase of a trace open is running — the phases are
+/// sequential and only one trace open runs at a time, so there is never
+/// more than one flag to hold. It is installed before the walk and
+/// cleared however the walk ends.
+///
+/// `Ok(None)` means cancelled. A census produces nothing until it
+/// finishes — its channel set, frame count and span are only right once
+/// the whole file has been read — so a cancelled one has no partial
+/// result to return and nothing anywhere to undo.
+///
+/// Factored out of [`scan_blf_channels`] so it's testable against a
+/// plain [`AppState`]: the command wrapper needs a live Tauri app to
+/// construct its `State` and to emit, and the suite has no harness for
+/// one.
+pub(crate) fn census_blf(
+    state: &AppState,
+    path: &str,
+    on_progress: &mut dyn FnMut(cannet_blf::ScanProgress),
+) -> Result<Option<cannet_blf::BlfScan>, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.import_cancel() = Some(Arc::clone(&cancel));
+    let outcome = cannet_blf::scan_blf_cancellable(path, &cancel, on_progress);
+    *state.import_cancel() = None;
+    match outcome {
+        Ok(cannet_blf::ScanOutcome::Complete(scan)) => Ok(Some(scan)),
+        Ok(cannet_blf::ScanOutcome::Cancelled) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Start importing `mdf_path`, routing each `BusChannel` per
@@ -1014,7 +1209,8 @@ pub(crate) async fn scan_blf_channels(
 /// The MDF counterpart of [`open_log`]: same shape, same
 /// one-pass-over-the-source pipeline (`run_pump`, generic over
 /// [`cannet_core::CanFrameSource`]), same `WindowedSource` import-range
-/// filter (ADR 0046), same [`cancel_import`] cancellation. The file's
+/// filter (ADR 0046), same [`cancel_import`] cancellation, same
+/// `total_frames` denominator from the census. The file's
 /// `##EV` blocks become session notes, the part `GLOBAL_MARKER` records
 /// play on the BLF path — read up front rather than through a sink,
 /// because MDF events hang off the header block rather than riding the
@@ -1033,7 +1229,12 @@ pub(crate) async fn scan_blf_channels(
 /// the Tauri main thread.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+#[allow(clippy::unused_async)]
+// `async` is what makes Tauri run it off the main thread
+// A Tauri command: the args are the IPC payload fields, and the body is
+// one pump thread with one linear tail — opening, the pump, and what the
+// walk collected, in the order they happen.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn import_mdf(
     app: AppHandle,
     mdf_path: String,
@@ -1042,6 +1243,7 @@ pub(crate) async fn import_mdf(
     end_ns: Option<u64>,
     #[allow(non_snake_case)] import_signals: Option<bool>,
     #[allow(non_snake_case)] import_messages: Option<bool>,
+    #[allow(non_snake_case)] total_frames: Option<u64>,
 ) -> Result<ImportMdfResult, String> {
     // Absent flags mean "everything the file has" — the shape the
     // command had before the contents became selectable.
@@ -1096,6 +1298,7 @@ pub(crate) async fn import_mdf(
     // spawns, checked by `run_pump`'s loop, cleared once the pump ends.
     let cancel = Arc::new(AtomicBool::new(false));
     *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
+    let cancelled_probe = Arc::clone(&cancel);
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
@@ -1115,6 +1318,7 @@ pub(crate) async fn import_mdf(
                         // replay_origin: the session anchors on the file's
                         // own earliest timestamp (ADR 0024).
                         true,
+                        total_frames.map(ImportProgress::new),
                     )
                 } else {
                     // The frontend's load state ends on this event
@@ -1122,6 +1326,14 @@ pub(crate) async fn import_mdf(
                     let _ = app_for_thread.emit("log-finished", LogFinished::Ok { total: 0 });
                     None
                 };
+                // Abandoned: the frames are being cleared right now, so
+                // the file's signals and events have no capture to
+                // belong to. Stop before the fill, which is the
+                // expensive part and would otherwise run to completion
+                // long after the user asked for it to stop.
+                if import_was_cancelled(&cancelled_probe) {
+                    return;
+                }
                 // The file's signals and events are on the capture's
                 // timeline too, and either can start before its first
                 // frame — an MDF's earliest content routinely does. Fold
@@ -1518,13 +1730,27 @@ pub struct MdfScanResult {
 pub(crate) async fn scan_mdf_channels(
     app: AppHandle,
     mdf_path: String,
-) -> Result<MdfScanResult, String> {
+) -> Result<Option<MdfScanResult>, String> {
     off_async_workers(move || {
         let started = std::time::Instant::now();
-        let scan = match cannet_mdf::scan_mdf(&mdf_path) {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = e.to_string();
+        let mut pacer = ProgressPacer::new();
+        let scan = match census_mdf(&app.state::<AppState>(), &mdf_path, &mut |p| {
+            if pacer.due(Instant::now()) {
+                let _ = app.emit(
+                    LOAD_PROGRESS,
+                    LoadProgress::Census {
+                        bytes_read: p.bytes_read,
+                        total_bytes: p.total_bytes,
+                    },
+                );
+            }
+        }) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                sys_info!(&app, "mdf-import", "census of {mdf_path} cancelled");
+                return Ok(None);
+            }
+            Err(msg) => {
                 sys_error!(&app, "mdf-import", "MDF scan failed: {msg}");
                 return Err(msg);
             }
@@ -1562,7 +1788,7 @@ pub(crate) async fn scan_mdf_channels(
             .iter()
             .map(|e| note_from_event(e, &mut synthetic_idx))
             .collect();
-        Ok(MdfScanResult {
+        Ok(Some(MdfScanResult {
             channels: scan.channels,
             frame_count: scan.frame_count,
             first_timestamp_ns: scan.first_timestamp_ns,
@@ -1573,9 +1799,27 @@ pub(crate) async fn scan_mdf_channels(
             signal_group_count: scan.signal_groups.len(),
             signal_count: scan.signal_groups.iter().map(|g| g.signal_count).sum(),
             decoded_message_groups: scan.decoded_message_groups.iter().map(Into::into).collect(),
-        })
+        }))
     })
     .await
+}
+
+/// [`census_blf`] for an MDF: same flag, same `Ok(None)` for cancelled,
+/// same reason for being factored out of its command.
+pub(crate) fn census_mdf(
+    state: &AppState,
+    path: &str,
+    on_progress: &mut dyn FnMut(cannet_mdf::ScanProgress),
+) -> Result<Option<cannet_mdf::MdfScan>, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.import_cancel() = Some(Arc::clone(&cancel));
+    let outcome = cannet_mdf::scan_mdf_cancellable(path, &cancel, on_progress);
+    *state.import_cancel() = None;
+    match outcome {
+        Ok(cannet_mdf::ScanOutcome::Complete(scan)) => Ok(Some(scan)),
+        Ok(cannet_mdf::ScanOutcome::Cancelled) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Drop every stored frame and start a fresh session timeline rooted
@@ -1664,21 +1908,25 @@ pub struct RestoredCapture {
 }
 
 /// Whether the session is still owed the cold pyramid rebuild a restore
-/// forced (ADR 0047). Factored out from [`signal_pyramids_rebuilding`]
-/// so it's testable against a plain `AppState` — the command wrapper
-/// needs a live Tauri app to construct its `State`.
-pub(crate) fn pyramids_rebuilding_now(state: &AppState) -> bool {
-    state.signal_caches.rebuilding(state.trace_store.len())
+/// forced (ADR 0047), and how far it has got. Factored out from
+/// [`signal_pyramids_rebuilding`] so it's testable against a plain
+/// `AppState` — the command wrapper needs a live Tauri app to construct
+/// its `State`.
+pub(crate) fn pyramids_rebuilding_now(state: &AppState) -> RebuildProgressRecord {
+    state
+        .signal_caches
+        .rebuild_progress(state.trace_store.len())
+        .into()
 }
 
-/// The still-rebuilding fact, polled by the frontend while it shows the
+/// The rebuild's progress, polled by the frontend while it shows the
 /// rebuild chip. A queryable fact rather than an event: the answer is
 /// derived from where the caches' decode cursors have reached, so there
 /// is no single moment for the host to fire, and the chip only asks
 /// while it is up.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn signal_pyramids_rebuilding(state: State<'_, AppState>) -> bool {
+pub(crate) fn signal_pyramids_rebuilding(state: State<'_, AppState>) -> RebuildProgressRecord {
     pyramids_rebuilding_now(&state)
 }
 
@@ -1739,7 +1987,7 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
     // fast and then every plot over it spent minutes re-decoding, with
     // nothing said. The frontend announces this and offers to drop the
     // capture instead of paying for it.
-    let pyramids_rebuilding = pyramids_rebuilding_now(&state);
+    let pyramids_rebuilding = pyramids_rebuilding_now(&state).rebuilding;
     let first_index = first_index_usize as u64;
     let session_start_ns = state.trace_store.session_start_ns();
     // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the

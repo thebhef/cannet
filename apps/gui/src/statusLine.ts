@@ -7,7 +7,13 @@
 // bar settles back to the residency readout. Kept here as pure logic so
 // the classification is unit-testable without rendering.
 
-import type { ImportMdfResult, OpenLogResult, RemoteSessionResult, SystemLogLevel } from "./types";
+import type {
+  ImportMdfResult,
+  LoadProgress,
+  OpenLogResult,
+  RemoteSessionResult,
+  SystemLogLevel,
+} from "./types";
 import { formatFrameCount } from "./format";
 
 /// Whatever a capture-source command (`open_log`, `import_mdf`) handed
@@ -220,4 +226,59 @@ export function formatBytes(bytes: number): string {
 function shortenPath(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash >= 0 ? path.slice(slash + 1) : path;
+}
+
+/// One phase's progress, in whatever the phase counts. The two load
+/// phases come off the `load-progress` event; the cache rebuild is
+/// polled, so it is not part of that union but draws in the same chip.
+export type ProgressReport =
+  | LoadProgress
+  | { phase: "cache_rebuild"; decoded: number; total: number };
+
+/// The determinate readout beside a load's progress bar: how full the
+/// bar is, and the number next to it.
+///
+/// `null` when there is nothing honest to show — no report has arrived
+/// yet, or the phase's denominator is zero (an empty file, a capture
+/// with no bus records). The caller shows the indeterminate chip then:
+/// a bar pinned at 0 % would claim a measurement that has not been made.
+///
+/// The phases read differently because they count different things.
+/// The census counts bytes and the rebuild counts frames across every
+/// pyramid at once, neither of which means anything to the reader as a
+/// figure, so both show only the percentage. The import counts frames,
+/// which are the thing being imported, so it shows them.
+export function loadProgressReadout(
+  progress: ProgressReport | null,
+): { fraction: number; text: string } | null {
+  if (progress === null) return null;
+  if (progress.phase === "census") {
+    if (progress.total_bytes <= 0) return null;
+    const fraction = clampFraction(progress.bytes_read / progress.total_bytes);
+    return { fraction, text: `${Math.round(fraction * 100)} %` };
+  }
+  // The rebuild counts frames too, but across every pyramid at once —
+  // a figure whose magnitude means nothing to anyone — so it shows the
+  // percentage the way the census does.
+  if (progress.phase === "cache_rebuild") {
+    if (progress.total <= 0) return null;
+    const fraction = clampFraction(progress.decoded / progress.total);
+    return { fraction, text: `${Math.round(fraction * 100)} %` };
+  }
+  if (progress.total_frames <= 0) return null;
+  const fraction = clampFraction(progress.frames / progress.total_frames);
+  return {
+    fraction,
+    text: `${progress.frames.toLocaleString()} / ${progress.total_frames.toLocaleString()} frames`,
+  };
+}
+
+/// A load reports what it walked, and what it walked is not always what
+/// lands: an import windowed to a time range, or with channels skipped,
+/// pumps fewer frames than the census counted. Clamping keeps the bar
+/// inside itself rather than letting a rounding or a filter push it past
+/// the end.
+function clampFraction(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
 }

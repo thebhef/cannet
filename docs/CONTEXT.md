@@ -218,10 +218,15 @@ a large file costs two full passes: the census, then the import pump
 that actually moves frames into the capture model. Shortened to
 "census" in code and comments; the full name is the one to use when
 the phase needs distinguishing from the import.
+Both passes report their progress and can be cancelled, and they do it
+against different denominators: the census discovers the frame count,
+so it reports against the file's length, while the import already has
+the count the census returned and reports against frames.
 _Avoid_: "scan" alone, which is also what the plot's resample and the
 DBC sweep do. _Avoid_: calling the census "the import" — the import is
-the second pass, and the two differ in what they can report and
-whether they can be cancelled.
+the second pass, and the two differ in what they have produced when
+they are cancelled: a census has produced nothing, an import has
+frames in the store.
 
 ### Transmit
 

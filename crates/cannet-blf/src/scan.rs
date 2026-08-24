@@ -19,6 +19,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::format::marker::GlobalMarker;
 use crate::format::object::{object_type, EVENT_HEADER_BYTES};
@@ -102,9 +103,54 @@ fn relative_timestamp_ns(object_bytes: &[u8]) -> Option<u64> {
         .map(ObjectHeaderV1::timestamp_ns)
 }
 
+/// How far a census walk has got, reported at each checkpoint.
+///
+/// Bytes, not frames: discovering the frame count is what the census is
+/// *for*, so frames are not a total it knows before it starts, while
+/// the file's length is known at open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanProgress {
+    /// Bytes pulled off disk so far, header included. Non-decreasing,
+    /// and equal to `total_bytes` once the walk has ended.
+    pub bytes_read: u64,
+    /// The file's length in bytes, as it was at open.
+    pub total_bytes: u64,
+}
+
+/// What a cancellable census walk ended as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanOutcome {
+    /// The walk reached the end of the file; here is what it found.
+    Complete(BlfScan),
+    /// The walk saw the cancel flag raised and stopped. A census
+    /// produces nothing until it finishes — the channel set, the frame
+    /// count and the span are only right once the whole file has been
+    /// read — so there is no partial result to hand back, and nothing
+    /// for a caller to undo.
+    Cancelled,
+}
+
+/// Objects walked between two checkpoints.
+///
+/// A checkpoint is where the walk observes the cancel flag and reports
+/// its progress, so the stride trades cancel latency against per-object
+/// cost. The walk runs at roughly 13 M objects/s on a warm file, so
+/// this is on the order of a millisecond of latency there, and stays
+/// inside a frame's worth even on a walk an order of magnitude slower —
+/// while the per-object cost is one increment and one compare.
+const CHECKPOINT_OBJECTS: u64 = 16_384;
+
+/// A cancel flag for the walks that have no cancel of their own — never
+/// raised, so [`scan_blf`] compiles down to the same walk it always was
+/// bar the checkpoint's counter.
+static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+
 /// Walk `path` header-only and report its channel census, frame count,
 /// time span, and markers. See the module docs for what this does and
 /// does not decode.
+///
+/// Uninterruptible; [`scan_blf_cancellable`] is the same walk with a
+/// cancel flag and a progress callback.
 ///
 /// # Errors
 ///
@@ -112,6 +158,33 @@ fn relative_timestamp_ns(object_bytes: &[u8]) -> Option<u64> {
 /// [`BlfSourceError::ChannelOutOfRange`] if an on-disk channel number
 /// doesn't fit `cannet_core`'s 0-based `u8` channel space.
 pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
+    match scan_blf_cancellable(path, &NEVER_CANCELLED, &mut |_| {})? {
+        ScanOutcome::Complete(scan) => Ok(scan),
+        // Unreachable: the flag handed in is never raised.
+        ScanOutcome::Cancelled => unreachable!("NEVER_CANCELLED was raised"),
+    }
+}
+
+/// [`scan_blf`], but interruptible and reporting how far it has got.
+///
+/// Every [`CHECKPOINT_OBJECTS`] objects the walk reads `cancel` and
+/// calls `on_progress`. Raising `cancel` stops the walk at the next
+/// checkpoint and yields [`ScanOutcome::Cancelled`]; the walk has
+/// written nothing anywhere, so stopping it costs nothing to undo.
+///
+/// `on_progress` is called from the walking thread and runs inside the
+/// walk, so it must be cheap: a caller that publishes progress to a UI
+/// throttles there, since the checkpoint fires far faster than any
+/// consumer needs it to.
+///
+/// # Errors
+///
+/// As [`scan_blf`].
+pub fn scan_blf_cancellable<P: AsRef<Path>>(
+    path: P,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(ScanProgress),
+) -> Result<ScanOutcome, BlfSourceError> {
     let mut reader = BlfReader::open(path)?;
     let start_unix_nanos = reader.start_unix_nanos();
     let unfinalized = reader.file_statistics().is_unfinalized();
@@ -120,7 +193,26 @@ pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
     let mut first_timestamp_ns: Option<u64> = None;
     let mut last_timestamp_ns: Option<u64> = None;
     let mut markers = Vec::new();
-    while let Some(raw) = reader.next_raw_object()? {
+    let total_bytes = reader.file_bytes();
+    let mut until_checkpoint = CHECKPOINT_OBJECTS;
+    loop {
+        // Ahead of the read, not after it: `next_raw_object` borrows the
+        // reader for as long as the object it yields is alive, and the
+        // checkpoint wants the reader's byte position.
+        until_checkpoint -= 1;
+        if until_checkpoint == 0 {
+            until_checkpoint = CHECKPOINT_OBJECTS;
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(ScanOutcome::Cancelled);
+            }
+            on_progress(ScanProgress {
+                bytes_read: reader.disk_bytes_read(),
+                total_bytes,
+            });
+        }
+        let Some(raw) = reader.next_raw_object()? else {
+            break;
+        };
         if raw.base.object_type == object_type::GLOBAL_MARKER {
             let marker = crate::format::marker::decode(raw.bytes).map_err(BlfReadError::from)?;
             markers.push(ScannedMarker {
@@ -140,7 +232,13 @@ pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
             last_timestamp_ns = Some(last_timestamp_ns.map_or(abs, |l: u64| l.max(abs)));
         }
     }
-    Ok(BlfScan {
+    // The walk is over, so the file has been read to its end: say so,
+    // rather than leaving the last report a checkpoint short of it.
+    on_progress(ScanProgress {
+        bytes_read: reader.disk_bytes_read(),
+        total_bytes,
+    });
+    Ok(ScanOutcome::Complete(BlfScan {
         channels: channels.into_iter().collect(),
         frame_count,
         first_timestamp_ns,
@@ -151,7 +249,7 @@ pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
         // Read after the walk: the fragment is at the end of the file,
         // so the reader can only have met it once it got there.
         truncated_tail_bytes: reader.truncated_tail_bytes(),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -159,6 +257,7 @@ mod tests {
     use super::*;
     use crate::BlfCaptureWriter;
     use cannet_core::{CanFdFlags, CanFrame, CanId, Direction};
+    use std::sync::atomic::Ordering;
 
     const BASE_NS: u64 = 1_700_000_000_u64 * 1_000_000_000;
 
@@ -341,6 +440,107 @@ mod tests {
             "the latest frame is well before the end of the file"
         );
         assert!(scan.first_timestamp_ns <= scan.last_timestamp_ns);
+    }
+
+    /// A census over a file whose bytes are all resident must still be
+    /// interruptible: the checkpoint is what a cancel is observed at,
+    /// and without one the phase can only be waited out.
+    #[test]
+    fn a_cancelled_census_stops_the_walk_and_reports_no_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cancel.blf");
+        let mut writer = BlfCaptureWriter::create(&path).unwrap();
+        for i in 0..400_000u64 {
+            writer
+                .append(&classic(BASE_NS + i * 1_000, 0, 0x100))
+                .unwrap();
+        }
+        writer.finish().unwrap();
+
+        // Raised at the first checkpoint, so the walk stops at the
+        // second one at the latest — well short of the whole file.
+        let cancel = AtomicBool::new(false);
+        let mut checkpoints = 0u32;
+        let outcome = scan_blf_cancellable(&path, &cancel, &mut |_| {
+            checkpoints += 1;
+            cancel.store(true, Ordering::Relaxed);
+        })
+        .unwrap();
+
+        assert_eq!(outcome, ScanOutcome::Cancelled);
+        assert!(
+            checkpoints < 4,
+            "the walk kept going past the cancel ({checkpoints} checkpoints)"
+        );
+    }
+
+    /// The same walk, uncancelled, is the control: it runs to the end
+    /// and reports every frame, so the assertion above is about the
+    /// cancel and not about a checkpoint that stops the walk regardless.
+    #[test]
+    fn an_uncancelled_census_runs_to_the_end_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uncancelled.blf");
+        let mut writer = BlfCaptureWriter::create(&path).unwrap();
+        for i in 0..400_000u64 {
+            writer
+                .append(&classic(BASE_NS + i * 1_000, 0, 0x100))
+                .unwrap();
+        }
+        writer.finish().unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let mut checkpoints = 0u32;
+        let outcome = scan_blf_cancellable(&path, &cancel, &mut |_| checkpoints += 1).unwrap();
+
+        let ScanOutcome::Complete(scan) = outcome else {
+            panic!("an uncancelled census must complete");
+        };
+        assert_eq!(scan.frame_count, 400_000);
+        assert!(
+            checkpoints > 4,
+            "only {checkpoints} checkpoints in 400k objects"
+        );
+    }
+
+    /// Progress is reported against the file's own length: the census
+    /// discovers the frame count, so bytes are the only total it knows
+    /// before it starts. It must be non-decreasing, never overshoot,
+    /// and land on the whole file when the walk ends.
+    #[test]
+    fn census_progress_is_bytes_read_against_the_files_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("progress.blf");
+        let mut writer = BlfCaptureWriter::create(&path).unwrap();
+        for i in 0..400_000u64 {
+            writer
+                .append(&classic(BASE_NS + i * 1_000, 0, 0x100))
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        let on_disk = std::fs::metadata(&path).unwrap().len();
+
+        let cancel = AtomicBool::new(false);
+        let mut seen: Vec<ScanProgress> = Vec::new();
+        let outcome = scan_blf_cancellable(&path, &cancel, &mut |p| seen.push(p)).unwrap();
+        assert!(matches!(outcome, ScanOutcome::Complete(_)));
+
+        assert!(!seen.is_empty(), "no progress was reported at all");
+        for p in &seen {
+            assert_eq!(p.total_bytes, on_disk);
+            assert!(p.bytes_read <= p.total_bytes, "progress overshot: {p:?}");
+        }
+        for pair in seen.windows(2) {
+            assert!(
+                pair[1].bytes_read >= pair[0].bytes_read,
+                "progress went backwards: {pair:?}"
+            );
+        }
+        assert_eq!(
+            seen.last().unwrap().bytes_read,
+            on_disk,
+            "the last report must be the whole file"
+        );
     }
 
     #[test]

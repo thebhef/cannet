@@ -36,8 +36,10 @@ const knobs = {
     session_start_seconds: 1000,
     pyramids_rebuilding: true,
   },
-  /// What the host answers when the chip polls it.
-  stillRebuilding: true,
+  /// What the host answers when the chip polls it: still rebuilding,
+  /// and how far along. A zero total is the honest answer before any
+  /// plot has served — no cache exists yet to have a cursor.
+  rebuildProgress: { rebuilding: true, decoded: 0, total: 0 },
 };
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -69,7 +71,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "restore_scratch_capture":
         return knobs.restored;
       case "signal_pyramids_rebuilding":
-        return knobs.stillRebuilding;
+        return knobs.rebuildProgress;
       case "fetch_system_log":
       case "fetch_notes":
       case "fetch_trace_range":
@@ -188,7 +190,7 @@ beforeEach(async () => {
     session_start_seconds: 1000,
     pyramids_rebuilding: true,
   };
-  knobs.stillRebuilding = true;
+  knobs.rebuildProgress = { rebuilding: true, decoded: 0, total: 0 };
   await hydrateState();
   await hydrateSettings();
 });
@@ -204,7 +206,38 @@ describe("Cold pyramid rebuild — feedback", () => {
     const bar = chip();
     expect(bar).not.toBeNull();
     expect(bar?.textContent).toContain("Rebuilding signal caches…");
-    // The same indeterminate chip the trace-open census uses.
+    // Indeterminate at this point and honestly so: the host has not
+    // answered a poll yet, so nothing has said how far along it is.
+    expect(bar?.querySelector(".trace-scan-bar")).not.toBeNull();
+  });
+
+  it("shows how far along the rebuild is once the host says", async () => {
+    // The wait is determinate: every pyramid re-decodes the same store,
+    // so the host can report frames decoded across all of them, and the
+    // chip stops being a "something is happening" animation.
+    knobs.rebuildProgress = { rebuilding: true, decoded: 3_000, total: 10_000 };
+    await boot();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1200));
+    });
+
+    const bar = chip();
+    expect(bar?.querySelector(".trace-scan-bar")).toBeNull();
+    expect(bar?.querySelector(".trace-progress-bar")).toHaveAttribute("aria-valuenow", "30");
+    expect(bar?.querySelector(".trace-progress-readout")?.textContent).toBe("30 %");
+  });
+
+  it("stays indeterminate while the host has nothing to measure", async () => {
+    // The control for the test above: a rebuild is owed but no plot has
+    // served, so there is no decode cursor anywhere and no fraction to
+    // draw. Saying "0 %" would claim a measurement nobody has made.
+    await boot();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1200));
+    });
+
+    const bar = chip();
+    expect(bar?.querySelector(".trace-progress-bar")).toBeNull();
     expect(bar?.querySelector(".trace-scan-bar")).not.toBeNull();
   });
 
@@ -233,7 +266,7 @@ describe("Cold pyramid rebuild — feedback", () => {
     expect(chip()).not.toBeNull();
     expect(invokeCalls).toContain("signal_pyramids_rebuilding");
 
-    knobs.stillRebuilding = false;
+    knobs.rebuildProgress = { rebuilding: false, decoded: 0, total: 0 };
     await act(async () => {
       await new Promise((r) => setTimeout(r, 1200));
     });
