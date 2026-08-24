@@ -21,7 +21,7 @@ use crate::ipc::{
     SignalDescriptorRecord, SignalRecord, ValueTableEntryRecord,
 };
 use crate::trace_store::RawTraceFrame;
-use crate::{filter, rbs, signal_snapshot};
+use crate::{rbs, signal_snapshot};
 use crate::{sys_error, sys_info, sys_warn};
 
 /// The loaded-DBC list as IPC records (each one's path + message
@@ -358,17 +358,30 @@ pub(crate) fn decode_against(
     dbs: &crate::signal_fingerprint::DecodeModel<'_>,
     frame: &RawTraceFrame,
 ) -> Option<DecodedRecord> {
-    decode_resolved(dbs, frame).map(|m| DecodedRecord {
+    decode_resolved(
+        dbs,
+        frame.bus_id.as_deref(),
+        frame.id,
+        frame.extended,
+        frame.payload.data(),
+    )
+    .map(|m| DecodedRecord {
         name: m.name.to_string(),
         transmitter: m.transmitter.map(str::to_string),
         signals: m.signals.iter().map(signal_to_wire).collect(),
     })
 }
 
-/// Decode a raw frame against the model, skipping any database not
-/// assigned to the frame's bus ([`filter::dbc_applies`]) — which
-/// includes every database assigned to no bus at all. `None` when none
-/// of them recognises the arbitration id.
+/// Decode one payload against the model, skipping any database not
+/// assigned to `bus_id` ([`filter::dbc_applies`]) — which includes
+/// every database assigned to no bus at all. `None` when none of them
+/// recognises the arbitration id.
+///
+/// Takes the frame's parts rather than a frame, so the transmit
+/// panel's hypothetical payload
+/// ([`decode_frame`]) resolves through exactly the same rule as a
+/// captured one: a panel-side frame is decoded by the databases that
+/// would decode it once it is on the wire.
 ///
 /// **Which database supplies which signal is decided per signal, not
 /// per message**
@@ -381,33 +394,42 @@ pub(crate) fn decode_against(
 ///
 /// Resolving that way on every frame would cost every project a decode
 /// per eligible database to settle an ambiguity almost none of them
-/// have. So a message **no signal of which carries a pick** keeps the
-/// single `decode_raw` call it always had
-/// ([`DecodeModel::message_has_pick`](crate::signal_fingerprint::DecodeModel::message_has_pick)
-/// is the per-frame test, and it costs nothing where no pick exists at
-/// all). Without a pick the two resolutions agree on every signal the
-/// first defining database defines, and differ only in the ones it does
-/// not — which this path has never reported and which the caches serve
-/// in their own right.
+/// have. So a message **only one loaded database defines, no signal of
+/// which carries a pick** keeps the single `decode_raw` call it always
+/// had. Both halves are per-frame lookups that cost nothing where the
+/// condition cannot arise —
+/// [`DecodeModel::message_spans_databases`](crate::signal_fingerprint::DecodeModel::message_spans_databases)
+/// and
+/// [`DecodeModel::message_has_pick`](crate::signal_fingerprint::DecodeModel::message_has_pick)
+/// — and where only one database defines the message, its decode *is*
+/// the per-signal resolution: every signal of that message is its, and
+/// there is nothing behind it to disagree.
 ///
-/// The picked case pays for its answer: each eligible database decodes
-/// the message once, and each signal comes from the database a pick
-/// names, or from the first that defines it. A signal the winning
+/// The two questions are separate on purpose. A signal only a later
+/// database defines has exactly one definition whatever the picks say,
+/// so whether the row reports it must not depend on whether some
+/// *other* signal of the message was pinned — a fast path that changes
+/// which signals appear is a second resolution rule, not an
+/// optimisation.
+///
+/// The resolved case pays for its answer: each eligible database
+/// decodes the message once, and each signal comes from the database a
+/// pick names, or from the first that defines it. A signal the winning
 /// definition withholds for this payload is absent rather than borrowed
 /// from behind it — that definition produced no value, so there is
 /// none.
 pub(crate) fn decode_resolved<'a>(
     dbs: &crate::signal_fingerprint::DecodeModel<'a>,
-    frame: &RawTraceFrame,
+    bus_id: Option<&str>,
+    message_id: u32,
+    extended: bool,
+    data: &[u8],
 ) -> Option<cannet_dbc::DecodedMessage<'a>> {
-    let id = CanId::new(frame.id, frame.extended).ok()?;
-    let bus_id = frame.bus_id.as_deref();
-    let data = frame.payload.data();
-    let mut eligible = dbs
-        .iter()
-        .filter(|d| filter::dbc_applies(d.buses, bus_id))
-        .map(|d| d.db);
-    if !dbs.message_has_pick(frame.id, frame.extended) {
+    let id = CanId::new(message_id, extended).ok()?;
+    let mut eligible = dbs.eligible(bus_id).map(|d| d.db);
+    if !dbs.message_spans_databases(message_id, extended)
+        && !dbs.message_has_pick(message_id, extended)
+    {
         return eligible.find_map(|db| db.decode_raw(id, data));
     }
     let eligible: Vec<&'a Database> = eligible.collect();
@@ -418,7 +440,7 @@ pub(crate) fn decode_resolved<'a>(
     // definition comes from, not the message's.
     let base_index = decoded.iter().position(Option::is_some)?;
     let base = decoded[base_index].as_ref()?;
-    let picked = |name: &str| dbs.picked_index(bus_id, frame.id, frame.extended, name);
+    let picked = |name: &str| dbs.picked_index(bus_id, message_id, extended, name);
 
     let mut signals: Vec<DecodedSignal<'a>> = Vec::with_capacity(base.signals.len());
     let mut base_names: HashSet<&str> = HashSet::with_capacity(base.signals.len());
@@ -458,7 +480,7 @@ pub(crate) fn decode_resolved<'a>(
             let winner = picked(sig.name).or_else(|| {
                 eligible
                     .iter()
-                    .position(|db| db.defines_signal(frame.id, frame.extended, sig.name))
+                    .position(|db| db.defines_signal(message_id, extended, sig.name))
             });
             if winner == Some(i) {
                 signals.push(sig.clone());
@@ -717,20 +739,22 @@ pub(crate) fn list_value_tables(
 ///
 /// `bus_id` scopes the DBC-backed branch exactly the way decode does:
 /// the labels come from the databases `filter::dbc_applies` admits for
-/// that bus, first-match-wins within that set, so a lane's labels can
-/// only ever come from a database that could have decoded it. A lookup
+/// that bus, resolved per signal within that set, so a lane's labels
+/// can only ever come from the database that decoded it. A lookup
 /// naming no bus therefore resolves through nothing — every frame has a
 /// bus, so a DBC-backed series is never in the "bus unknown" state the
 /// old fall-back-to-every-database answer was guessing for. The
 /// file-backed branch is unaffected — no DBC bears on a file-backed
 /// series.
 ///
-/// Within that set the winner is the first database that **defines the
-/// signal**, and the labels are whatever that one says — none, if it
-/// declares no `VAL_` table. A value has one definition and its labels
-/// belong to that definition (ADR 0054), so reading on to a later file
-/// that happens to carry a table would label a value that file never
-/// produced.
+/// Within that set the winner is
+/// [`DecodeModel::signal_source`](crate::signal_fingerprint::DecodeModel::signal_source)
+/// — the database that supplies the signal's definition, which is the
+/// one a pick names or the first that defines it — and the labels are
+/// whatever that one says, none if it declares no `VAL_` table. A value
+/// has one definition and its labels belong to that definition
+/// (ADR 0054), so reading on to a later file that happens to carry a
+/// table would label a value that file never produced.
 pub(crate) fn list_value_tables_inner(
     state: &AppState,
     message_id: u32,
@@ -744,11 +768,10 @@ pub(crate) fn list_value_tables_inner(
             .signal_caches
             .file_signal_value_table(message_id, signal_name);
     }
-    state
-        .databases()
-        .iter()
-        .filter(|d| filter::dbc_applies(&d.buses, bus_id))
-        .find(|d| d.db.defines_signal(message_id, extended, signal_name))
+    let dbs = state.databases();
+    let model = state.decode_model(&dbs);
+    model
+        .signal_source(bus_id, message_id, extended, signal_name)
         .and_then(|d| {
             d.db.value_table_for_signal(message_id, extended, signal_name)
         })
@@ -806,11 +829,13 @@ pub(crate) fn encode_frame(
 /// mux indicator, …) — what the transmit panel needs to render the
 /// signals table without reimplementing DBC walking on the frontend.
 ///
-/// `bus_id` is the bus the row transmits on, and scopes the lookup the
-/// same way decode is scoped: only databases assigned to that bus may
-/// answer, so a row on no bus — or one whose bus has no database
-/// assigned — describes nothing. Returns `None` if no such DBC matches
-/// the id.
+/// `bus_id` is the bus the row transmits on, and the database that
+/// answers is
+/// [`DecodeModel::message_source`](crate::signal_fingerprint::DecodeModel::message_source)'s
+/// — the same one the row's payload decodes and encodes through, so a
+/// row on no bus (or one whose bus has no database assigned) describes
+/// nothing, and a pick on one of the message's signals moves all three
+/// together. Returns `None` if no such DBC matches the id.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn describe_message(
@@ -829,52 +854,56 @@ pub(crate) fn describe_message_inner(
     extended: bool,
 ) -> Option<ipc::MessageDescriptorRecord> {
     let id = cannet_core::CanId::new(message_id, extended).ok()?;
-    state.first_dbc_on_bus(bus_id, |db| {
-        db.describe_message(id).map(|desc| {
-            let signals: Vec<ipc::SignalDescriptorRichRecord> = desc
-                .signals
-                .into_iter()
-                .map(|s| ipc::SignalDescriptorRichRecord {
-                    name: s.name,
-                    unit: s.unit,
-                    factor: s.factor,
-                    offset: s.offset,
-                    min: s.min,
-                    max: s.max,
-                    size: s.size,
-                    signed: s.signed,
-                    mux: signal_mux_record(s.mux),
-                    float_kind: float_kind_str(s.float_kind),
-                    has_value_table: s.has_value_table,
-                    start_value_raw: s.start_value_raw,
-                })
-                .collect();
-            let calc_fields = if desc.calc_fields.is_empty() {
-                None
-            } else {
-                Some(ipc::CalcFieldsSpec::from_config(&desc.calc_fields))
-            };
-            ipc::MessageDescriptorRecord {
-                name: desc.name,
-                expected_len: desc.expected_len,
-                is_fd: desc.is_fd,
-                brs: desc.brs,
-                gen_msg_cycle_time_ms: desc.gen_msg_cycle_time_ms,
-                gen_msg_send_type: desc.gen_msg_send_type,
-                uses_extended_mux: desc.uses_extended_mux,
-                calc_fields,
-                signals,
-            }
+    let dbs = state.databases();
+    state
+        .decode_model(&dbs)
+        .message_source(bus_id, message_id, extended)
+        .and_then(|d| {
+            d.db.describe_message(id).map(|desc| {
+                let signals: Vec<ipc::SignalDescriptorRichRecord> = desc
+                    .signals
+                    .into_iter()
+                    .map(|s| ipc::SignalDescriptorRichRecord {
+                        name: s.name,
+                        unit: s.unit,
+                        factor: s.factor,
+                        offset: s.offset,
+                        min: s.min,
+                        max: s.max,
+                        size: s.size,
+                        signed: s.signed,
+                        mux: signal_mux_record(s.mux),
+                        float_kind: float_kind_str(s.float_kind),
+                        has_value_table: s.has_value_table,
+                        start_value_raw: s.start_value_raw,
+                    })
+                    .collect();
+                let calc_fields = if desc.calc_fields.is_empty() {
+                    None
+                } else {
+                    Some(ipc::CalcFieldsSpec::from_config(&desc.calc_fields))
+                };
+                ipc::MessageDescriptorRecord {
+                    name: desc.name,
+                    expected_len: desc.expected_len,
+                    is_fd: desc.is_fd,
+                    brs: desc.brs,
+                    gen_msg_cycle_time_ms: desc.gen_msg_cycle_time_ms,
+                    gen_msg_send_type: desc.gen_msg_send_type,
+                    uses_extended_mux: desc.uses_extended_mux,
+                    calc_fields,
+                    signals,
+                }
+            })
         })
-    })
 }
 
 /// Decode the current payload bytes of a hypothetical (panel-side)
-/// frame through the first database **assigned to `bus_id`** that
-/// claims `(message_id, extended)`. Same decoded-signal shape the trace
-/// view uses, and the same scoping — a panel-side frame is decoded by
-/// exactly the databases that would decode it once it is on the wire —
-/// but the frame doesn't need to be in the trace store.
+/// frame. Same decoded-signal shape the trace view uses and the same
+/// resolution — [`decode_resolved`], so a panel-side frame is decoded
+/// by exactly the databases that would decode it once it is on the
+/// wire, per signal — but the frame doesn't need to be in the trace
+/// store.
 ///
 /// Returns `None` if no such DBC matches the id.
 #[tauri::command]
@@ -902,13 +931,17 @@ pub(crate) fn decode_frame_inner(
     extended: bool,
     data: &[u8],
 ) -> Option<ipc::DecodedFrameRecord> {
-    let id = cannet_core::CanId::new(message_id, extended).ok()?;
-    state.first_dbc_on_bus(bus_id, |db| {
-        db.decode_raw(id, data)
-            .map(|decoded| ipc::DecodedFrameRecord {
-                name: decoded.name.to_string(),
-                signals: decoded.signals.iter().map(signal_to_wire).collect(),
-            })
+    let dbs = state.databases();
+    decode_resolved(
+        &state.decode_model(&dbs),
+        bus_id,
+        message_id,
+        extended,
+        data,
+    )
+    .map(|decoded| ipc::DecodedFrameRecord {
+        name: decoded.name.to_string(),
+        signals: decoded.signals.iter().map(signal_to_wire).collect(),
     })
 }
 
@@ -930,23 +963,29 @@ pub(crate) fn encode_frame_inner(
         .collect();
     // The scan writes the encoded payload into `bytes` in place and
     // yields the skipped-signal list; `bytes` is consumed after it.
-    let skipped = state.first_dbc_on_bus(bus_id, |db| {
-        db.encode_frame(id, &signal_pairs, &mut bytes)
-            .map(|report| {
-                report
-                    .skipped
-                    .into_iter()
-                    .map(|s| ipc::EncodeFrameSkipped {
-                        name: s.name,
-                        reason: match s.reason {
-                            cannet_dbc::SkipReason::SignalNotFound => "signal_not_found",
-                            cannet_dbc::SkipReason::BaseTooShort => "base_too_short",
-                            cannet_dbc::SkipReason::SizeOutOfRange => "size_out_of_range",
-                        },
-                    })
-                    .collect()
-            })
-    });
+    let dbs = state.databases();
+    let skipped = state
+        .decode_model(&dbs)
+        .message_source(bus_id, message_id, extended)
+        .and_then(|d| {
+            d.db.encode_frame(id, &signal_pairs, &mut bytes)
+                .map(|report| {
+                    report
+                        .skipped
+                        .into_iter()
+                        .map(|s| ipc::EncodeFrameSkipped {
+                            name: s.name,
+                            reason: match s.reason {
+                                cannet_dbc::SkipReason::SignalNotFound => "signal_not_found",
+                                cannet_dbc::SkipReason::BaseTooShort => "base_too_short",
+                                cannet_dbc::SkipReason::SizeOutOfRange => "size_out_of_range",
+                            },
+                        })
+                        .collect()
+                })
+        });
+    // `bytes` is written in place above; the guard is done with.
+    drop(dbs);
     match skipped {
         Some(skipped) => Ok(ipc::EncodeFrameResponse { bytes, skipped }),
         None => Err(format!(

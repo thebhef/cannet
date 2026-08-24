@@ -600,6 +600,39 @@ fn defines_signal_answers_for_the_signal_not_for_its_value_table() {
 }
 
 #[test]
+fn defines_message_answers_for_the_message_not_for_its_attributes() {
+    let db = Database::parse(VAL_DBC).unwrap();
+    assert!(db.defines_message(cannet_core::CanId::standard(256).unwrap()));
+    // Unknown id, and the wrong id flavour for a known one.
+    assert!(!db.defines_message(cannet_core::CanId::standard(999).unwrap()));
+    assert!(!db.defines_message(cannet_core::CanId::extended(256).unwrap()));
+    // A message that designates no calculated fields is defined all
+    // the same — the distinction the method exists for.
+    let plain = Database::parse(SAMPLE_DBC).unwrap();
+    let id = cannet_core::CanId::standard(256).unwrap();
+    assert!(plain
+        .dbc_calculated_fields(id)
+        .is_some_and(|c| c.is_empty()));
+    assert!(plain.defines_message(id));
+}
+
+#[test]
+fn multiplexor_signal_name_names_the_signal_the_selector_reads() {
+    let db = Database::parse(SAMPLE_DBC).unwrap();
+    let muxed = cannet_core::CanId::standard(512).unwrap();
+    assert_eq!(db.multiplexor_signal_name(muxed), Some("Mux"));
+    // A message with no multiplexor, and an id no message claims.
+    assert_eq!(
+        db.multiplexor_signal_name(cannet_core::CanId::standard(256).unwrap()),
+        None,
+    );
+    assert_eq!(
+        db.multiplexor_signal_name(cannet_core::CanId::standard(0x600).unwrap()),
+        None,
+    );
+}
+
+#[test]
 fn signal_outside_payload_is_skipped() {
     let db = Database::parse(SAMPLE_DBC).unwrap();
     // EngineData expects 8 bytes; if we pass only 1, every signal that

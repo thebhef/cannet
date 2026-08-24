@@ -73,6 +73,13 @@ pub(crate) struct AppState {
     /// the first `fetch_signal_page`; dropped by
     /// [`invalidate_derived_caches`] on any DBC-set change.
     pub(crate) descriptor_snapshot: Mutex<Option<signal_snapshot::DescriptorSnapshot>>,
+    /// Cached "which message ids more than one loaded database defines"
+    /// index — see
+    /// [`signal_fingerprint::split_messages`](crate::signal_fingerprint::split_messages).
+    /// A pure function of the DBC set, like the descriptor universe
+    /// above, and dropped by [`invalidate_derived_caches`] on the same
+    /// events. `None` until the first decode model is built.
+    pub(crate) split_messages: Mutex<Option<Arc<crate::signal_fingerprint::SplitMessages>>>,
     /// Active remote sessions, keyed by server address. Each value is
     /// the gRPC [`SessionHandle`] (drop to disconnect), a
     /// [`SessionTransmitter`] the transmit panel uses to push frames
@@ -287,7 +294,9 @@ impl AppState {
         &self,
         dbcs: &'a [LoadedDbc],
     ) -> crate::signal_fingerprint::DecodeModel<'a> {
-        decode_model(dbcs, self.picks_snapshot())
+        let scopes = dbc_scopes(dbcs);
+        let split = self.split_message_index(&scopes);
+        crate::signal_fingerprint::DecodeModel::with_split(scopes, self.picks_snapshot(), split)
     }
 
     /// Forget every per-signal database pick naming `path`, and say
@@ -323,6 +332,38 @@ impl AppState {
             .expect("descriptor_snapshot mutex poisoned")
     }
 
+    pub(crate) fn split_messages(
+        &self,
+    ) -> MutexGuard<'_, Option<Arc<crate::signal_fingerprint::SplitMessages>>> {
+        self.split_messages
+            .lock()
+            .expect("split_messages mutex poisoned")
+    }
+
+    /// The split-message index for `scopes` — built on first use and
+    /// reused until the DBC set changes, exactly like
+    /// [`Self::scoped_descriptor_snapshot`] and for the same reason:
+    /// it is a pure function of the set, and building it walks every
+    /// message of every database, which is tens of microseconds on a
+    /// project with two large databases and far too much to pay per
+    /// serve.
+    ///
+    /// Deliberately holds only one lock at a time (check, release,
+    /// build, store), so it adds no edge to the documented lock order.
+    /// Two concurrent misses may each build one; they are equal by
+    /// construction.
+    pub(crate) fn split_message_index(
+        &self,
+        scopes: &[crate::signal_fingerprint::DbcScope<'_>],
+    ) -> Arc<crate::signal_fingerprint::SplitMessages> {
+        if let Some(hit) = self.split_messages().as_ref().map(Arc::clone) {
+            return hit;
+        }
+        let built = Arc::new(crate::signal_fingerprint::split_messages(scopes));
+        *self.split_messages() = Some(Arc::clone(&built));
+        built
+    }
+
     /// The bus-expanded descriptor universe — built on first use and
     /// reused until the DBC set (or a database's bus assignment)
     /// changes. See [`signal_snapshot::DescriptorSnapshot`] for why this
@@ -351,36 +392,6 @@ impl AppState {
         });
         built
     }
-
-    /// First loaded DBC **assigned to `bus_id`** (in priority order) for
-    /// which `f` yields a value — the per-bus "first assigned database
-    /// that answers wins" scan the transmit panel's describe / decode /
-    /// encode queries share, and the same priority the decode path
-    /// applies to a frame. A query naming no bus resolves through
-    /// nothing, because no assignment contains "no bus"
-    /// ([`filter::dbc_applies`]).
-    pub(crate) fn first_dbc_on_bus<T>(
-        &self,
-        bus_id: Option<&str>,
-        f: impl FnMut(&Database) -> Option<T>,
-    ) -> Option<T> {
-        self.first_dbc_on_bus_with_path(bus_id, f).map(|(_, v)| v)
-    }
-
-    /// [`Self::first_dbc_on_bus`], naming the database that answered as
-    /// well as its answer. One scan, two projections: "what does this
-    /// bus say?" and "which database is saying it?" can never disagree,
-    /// which is what makes the second usable as provenance.
-    pub(crate) fn first_dbc_on_bus_with_path<T>(
-        &self,
-        bus_id: Option<&str>,
-        mut f: impl FnMut(&Database) -> Option<T>,
-    ) -> Option<(String, T)> {
-        self.databases()
-            .iter()
-            .filter(|loaded| filter::dbc_applies(&loaded.buses, bus_id))
-            .find_map(|loaded| f(loaded.db.as_ref()).map(|v| (loaded.path.clone(), v)))
-    }
 }
 
 /// Drop the derived, lazily-built decode state after a DBC-set change:
@@ -402,6 +413,10 @@ impl AppState {
 /// so the new set is what decides which of them are stale, which keep
 /// decoding, and which are parked against their definition's return.
 pub(crate) fn invalidate_derived_caches(state: &AppState) {
+    // Before anything reads a model off the new set: the split-message
+    // index is a function of that set, and `decode_model` below builds
+    // one.
+    *state.split_messages() = None;
     // Lock order: the DBC set before the signal caches, as every other
     // path that needs both takes them (`persist_pyramids`, `restore`,
     // `sample_signals`).
@@ -436,31 +451,23 @@ pub(crate) fn pyramid_validity(state: &AppState) -> Option<crate::signal_cache::
     })
 }
 
-/// The model a signal decodes against: each database with the buses it
-/// is scoped to, **in load order** (the order is the "first DBC that
-/// decodes wins" priority, so it is part of what a signal decodes to),
-/// plus the per-signal database picks that override that order where
-/// the user has made a choice
-/// ([`crate::signal_fingerprint::DecodeModel`]). Borrowed from the guard
-/// the caller holds, so the set cannot move under the fingerprints taken
-/// from it.
+/// The loaded set as the borrowed scopes a decode model is built from:
+/// each database with the buses it is scoped to, **in load order** (the
+/// order is the "first DBC that decodes wins" priority, so it is part
+/// of what a signal decodes to). Borrowed from the guard the caller
+/// holds, so the set cannot move under the fingerprints taken from it.
 ///
-/// `picks` is a cheap `Arc` clone off [`AppState::signal_dbc_picks`], so
-/// this stays callable per serve.
-pub(crate) fn decode_model(
-    dbcs: &[LoadedDbc],
-    picks: Arc<crate::signal_fingerprint::SignalDbcPicks>,
-) -> crate::signal_fingerprint::DecodeModel<'_> {
-    crate::signal_fingerprint::DecodeModel::new(
-        dbcs.iter()
-            .map(|d| crate::signal_fingerprint::DbcScope {
-                path: &d.path,
-                db: d.db.as_ref(),
-                buses: &d.buses,
-            })
-            .collect(),
-        picks,
-    )
+/// [`AppState::decode_model`] joins these to the per-signal picks and
+/// the cached split-message index; a test that is not about ambiguity
+/// pairs them with [`DecodeModel::plain`](crate::signal_fingerprint::DecodeModel::plain).
+pub(crate) fn dbc_scopes(dbcs: &[LoadedDbc]) -> Vec<crate::signal_fingerprint::DbcScope<'_>> {
+    dbcs.iter()
+        .map(|d| crate::signal_fingerprint::DbcScope {
+            path: &d.path,
+            db: d.db.as_ref(),
+            buses: &d.buses,
+        })
+        .collect()
 }
 
 /// (Re)install the trace store's multiplexor-selector extractor from
@@ -470,13 +477,36 @@ pub(crate) fn decode_model(
 /// append path never takes the `databases` lock; a DBC-set change just
 /// swaps the closure (and resets the index) here. `None` when no loaded
 /// DBC has a multiplexed message — the common case pays nothing.
+///
+/// **The one resolution site that cannot hold a
+/// [`DecodeModel`](crate::signal_fingerprint::DecodeModel)**, for that
+/// reason: a model borrows the loaded set, and this runs per appended
+/// frame. So it snapshots the picks alongside the databases and applies
+/// the rule through
+/// [`signal_fingerprint::picked_path`](crate::signal_fingerprint::picked_path),
+/// which is where that rule is written down. A candidate whose
+/// multiplexor signal is pinned to a *different* database is not a
+/// candidate for it — that is the per-signal half of ADR 0054 — so a
+/// user who sees the wrong arm can pick their way out of it. A pick
+/// change re-installs the closure, because it goes through
+/// [`invalidate_derived_caches`] like any other change to what the set
+/// decodes.
+///
+/// The fall-through behind the winner stays: a database that defines
+/// the multiplexor but cannot read it out of *this* payload lets the
+/// next one answer. That is an accepted exposure of the per-frame
+/// decode path, not the per-signal question this resolves.
 fn refresh_mux_extractor(state: &AppState) {
-    let snap: Vec<(Arc<Database>, Vec<String>)> = {
+    // Lock order: the DBC set before the picks, as `decode_model` takes
+    // them.
+    let (snap, picks) = {
         let dbs = state.databases();
-        dbs.iter()
+        let snap: Vec<(String, Arc<Database>, Vec<String>)> = dbs
+            .iter()
             .filter(|d| d.db.has_multiplexor())
-            .map(|d| (d.db.clone(), d.buses.clone()))
-            .collect()
+            .map(|d| (d.path.clone(), d.db.clone(), d.buses.clone()))
+            .collect();
+        (snap, state.picks_snapshot())
     };
     if snap.is_empty() {
         state.trace_store.set_mux_extractor(None);
@@ -486,9 +516,24 @@ fn refresh_mux_extractor(state: &AppState) {
         .trace_store
         .set_mux_extractor(Some(Arc::new(move |f: &RawTraceFrame| {
             let id = CanId::new(f.id, f.extended).ok()?;
+            let bus_id = f.bus_id.as_deref();
             snap.iter()
-                .filter(|(_, buses)| filter::dbc_applies(buses, f.bus_id.as_deref()))
-                .find_map(|(db, _)| db.decode_mux_selector(id, f.payload.data()))
+                .filter(|(_, _, buses)| filter::dbc_applies(buses, bus_id))
+                .find_map(|(path, db, _)| {
+                    // Costs nothing where no pick exists at all, which
+                    // is every project that has never met an ambiguity.
+                    if !picks.is_empty() {
+                        let chosen = db.multiplexor_signal_name(id).and_then(|name| {
+                            crate::signal_fingerprint::picked_path(
+                                &picks, bus_id, f.id, f.extended, name,
+                            )
+                        });
+                        if chosen.is_some_and(|c| c != path) {
+                            return None;
+                        }
+                    }
+                    db.decode_mux_selector(id, f.payload.data())
+                })
         })));
 }
 /// Rebuild the ingest-time verifier's config index from the loaded
@@ -500,6 +545,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
     let overrides: Vec<(String, u32, bool, cannet_dbc::CalculatedFieldsConfig)> = {
         let rbs_guard = state.rbs();
         let dbs = state.databases();
+        let model = state.decode_model(&dbs);
         let mut out = Vec::new();
         for element in rbs_guard.elements.values() {
             for (bus_key, bus) in &element.file.buses {
@@ -529,11 +575,14 @@ pub(crate) fn rebuild_verification(state: &AppState) {
                         let Ok(override_config) = spec.to_config() else {
                             continue;
                         };
-                        // Per-field layering over the DBC default.
-                        let dbc_default = dbs
-                            .iter()
-                            .filter(|d| filter::dbc_applies(&d.buses, Some(bus_id.as_str())))
-                            .find_map(|d| d.db.dbc_calculated_fields(can_id))
+                        // Per-field layering over the DBC default —
+                        // the *defining* database's, resolved once
+                        // (ADR 0054), so a designation never comes
+                        // from a file that does not describe this
+                        // message.
+                        let dbc_default = model
+                            .message_source(Some(bus_id.as_str()), id, extended)
+                            .and_then(|d| d.db.dbc_calculated_fields(can_id))
                             .cloned()
                             .unwrap_or_default();
                         let merged = merge_calc_override(dbc_default, Some(override_config));
@@ -547,7 +596,9 @@ pub(crate) fn rebuild_verification(state: &AppState) {
         out
     };
     let dbs = state.databases();
-    state.verifier.rebuild_configs(&dbs, &overrides);
+    state
+        .verifier
+        .rebuild_configs(&state.decode_model(&dbs), &overrides);
 }
 
 /// Re-resolve every TX-registry entry's calculated fields against the
@@ -559,9 +610,10 @@ pub(crate) fn rebuild_verification(state: &AppState) {
 pub(crate) fn refresh_calc_resolutions(app: &AppHandle) {
     let state: State<'_, AppState> = app.state();
     let dbs = state.databases();
+    let model = state.decode_model(&dbs);
     let mut registry = state.transmit_frames();
     for (id, request, spec) in registry.resolution_inputs() {
-        match resolve_effective_calc(&dbs, &request, spec.as_ref()) {
+        match resolve_effective_calc(&model, &request, spec.as_ref()) {
             Ok(resolved) => registry.set_resolved_calc(&id, resolved),
             Err(e) => {
                 registry.set_resolved_calc(&id, None);

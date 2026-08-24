@@ -143,6 +143,87 @@ pub struct DecodeModel<'a> {
     /// per-signal resolution it selects reads the picks for *that*
     /// bus and so still lands on the load-order default.
     message_picks: HashSet<(u32, bool)>,
+    /// The messages **more than one loaded database defines**, as
+    /// `(message id, extended)` — the index behind
+    /// [`Self::message_spans_databases`]. Derived from the set when the
+    /// model is built, so it is empty in every project that never
+    /// loaded two databases claiming one id, which is almost all of
+    /// them.
+    ///
+    /// Neither the bus nor the signal lists are part of it. It is a
+    /// *gate*: where it answers `true` the caller resolves per signal,
+    /// which is exact whatever the buses and whatever the two
+    /// databases declare — over-answering costs a slower decode of one
+    /// message and can never change an answer, while computing the
+    /// exact "does a later database define a signal the winner does
+    /// not" would mean walking every signal of every database instead
+    /// of every message.
+    split_messages: Arc<SplitMessages>,
+}
+
+/// The `(message id, extended)` pairs more than one loaded database
+/// defines — see [`DecodeModel::message_spans_databases`] for what it
+/// gates. A pure function of the loaded set, so it is cached against
+/// that set rather than rebuilt per serve
+/// ([`AppState::split_message_index`](crate::app_state::AppState::split_message_index)).
+pub type SplitMessages = HashSet<(u32, bool)>;
+
+/// The messages more than one of `dbcs` defines. One walk of each
+/// database's message ids, and none at all below two databases, so a
+/// single-database project pays nothing for the index or for the
+/// branch it feeds.
+///
+/// Not free above that: two 500-message databases cost tens of
+/// microseconds to index, which is why the result is cached against
+/// the DBC set instead of built per serve.
+#[must_use]
+pub fn split_messages(dbcs: &[DbcScope<'_>]) -> SplitMessages {
+    if dbcs.len() < 2 {
+        return HashSet::new();
+    }
+    let mut seen: SplitMessages = SplitMessages::new();
+    let mut split: SplitMessages = SplitMessages::new();
+    for d in dbcs {
+        for (id, extended, _) in d.db.message_names() {
+            if !seen.insert((id, extended)) {
+                split.insert((id, extended));
+            }
+        }
+    }
+    split
+}
+
+/// What a pick says about one signal, over a bare picks map: the loaded
+/// path the user chose, or `None` where they chose nothing.
+///
+/// A free function because one consumer — the trace store's
+/// multiplexor-selector extractor — runs on the append path and cannot
+/// hold a [`DecodeModel`] (that would mean taking the `databases` lock
+/// per frame), so it carries a snapshot of the picks instead. The rule
+/// itself is spelled once, here.
+///
+/// Costs nothing — not even the identity string — in a project with no
+/// picks at all.
+#[must_use]
+pub fn picked_path<'p>(
+    picks: &'p SignalDbcPicks,
+    bus_id: Option<&str>,
+    message_id: u32,
+    extended: bool,
+    signal_name: &str,
+) -> Option<&'p str> {
+    if picks.is_empty() {
+        return None;
+    }
+    picks
+        .get(&signal_identity(
+            bus_id,
+            message_id,
+            extended,
+            signal_name,
+            false,
+        ))
+        .map(String::as_str)
 }
 
 impl<'a> DecodeModel<'a> {
@@ -153,20 +234,46 @@ impl<'a> DecodeModel<'a> {
             .keys()
             .filter_map(|k| crate::signal_snapshot::identity_message(k))
             .collect();
+        let split_messages = Arc::new(split_messages(&dbcs));
         Self {
             dbcs,
             picks,
             message_picks,
+            split_messages,
+        }
+    }
+
+    /// The set, the picks, and a **shared** split-message index — the
+    /// per-serve constructor. The index is a pure function of the set,
+    /// so it is built once per DBC-set change and `Arc`-cloned here
+    /// rather than recomputed per serve (ADR 0033).
+    #[must_use]
+    pub fn with_split(
+        dbcs: Vec<DbcScope<'a>>,
+        picks: Arc<SignalDbcPicks>,
+        split_messages: Arc<SplitMessages>,
+    ) -> Self {
+        let message_picks = picks
+            .keys()
+            .filter_map(|k| crate::signal_snapshot::identity_message(k))
+            .collect();
+        Self {
+            dbcs,
+            picks,
+            message_picks,
+            split_messages,
         }
     }
 
     /// The set with no picks — the load-order default everywhere.
     #[must_use]
     pub fn plain(dbcs: Vec<DbcScope<'a>>) -> Self {
+        let split_messages = Arc::new(split_messages(&dbcs));
         Self {
             dbcs,
             picks: Arc::default(),
             message_picks: HashSet::new(),
+            split_messages,
         }
     }
 
@@ -181,6 +288,27 @@ impl<'a> DecodeModel<'a> {
     #[must_use]
     pub fn message_has_pick(&self, message_id: u32, extended: bool) -> bool {
         !self.message_picks.is_empty() && self.message_picks.contains(&(message_id, extended))
+    }
+
+    /// Whether more than one loaded database defines this message — the
+    /// other question a per-message decode asks per frame, and the one
+    /// that makes its fast path exact rather than merely cheap.
+    ///
+    /// Which signals a message can yield is a property of the loaded
+    /// set: not of the picks, not of the payload. Where one database
+    /// defines the message, every signal of it is that database's and
+    /// decoding it once is the whole answer. Where two do, a signal
+    /// only the later one defines still has exactly one definition
+    /// (ADR 0054), and reporting it must not depend on whether some
+    /// *other* signal of the message happens to carry a pick.
+    ///
+    /// A **lookup**, never a scan: the index is built once per model,
+    /// and a project that has never loaded two databases claiming one
+    /// id answers `false` off an emptiness check without hashing
+    /// anything.
+    #[must_use]
+    pub fn message_spans_databases(&self, message_id: u32, extended: bool) -> bool {
+        !self.split_messages.is_empty() && self.split_messages.contains(&(message_id, extended))
     }
 
     /// The picks this model resolves against.
@@ -199,18 +327,124 @@ impl<'a> DecodeModel<'a> {
         extended: bool,
         signal_name: &str,
     ) -> Option<&str> {
-        if self.picks.is_empty() {
-            return None;
+        picked_path(&self.picks, bus_id, message_id, extended, signal_name)
+    }
+
+    /// The databases eligible to decode a frame on `bus_id`, in project
+    /// load order — the first half of ADR 0054's resolution rule, and
+    /// the one scan every "which database supplies this" question
+    /// starts from. A database assigned to no bus, or to other buses
+    /// only, decodes nothing here ([`filter::dbc_applies`]).
+    pub fn eligible<'s, 'b>(
+        &'s self,
+        bus_id: Option<&'b str>,
+    ) -> impl Iterator<Item = &'s DbcScope<'a>> + use<'s, 'b, 'a> {
+        self.dbcs
+            .iter()
+            .filter(move |d| filter::dbc_applies(d.buses, bus_id))
+    }
+
+    /// **Which database supplies one signal's definition** — ADR 0054's
+    /// resolution rule, whole: eligible for the bus, then project load
+    /// order over the databases that *define the signal*, unless a
+    /// per-signal pick names one of them.
+    ///
+    /// This is the answer for anything that belongs to a decoded
+    /// **value**: its bits, its scaling, its `VAL_` labels, its unit.
+    /// Reading past the winner because it lacks the attribute being
+    /// looked for would attach that attribute to a value the file it
+    /// came from never produced, which ADR 0054 part 3 forbids — so a
+    /// winner that declares nothing answers *nothing*, and does not
+    /// defer to the file behind it.
+    ///
+    /// A pick naming a database that is not a definer — removed,
+    /// unassigned, or edited until it no longer defines the signal — is
+    /// ignored, exactly as the decode ignores it: a stale pick must
+    /// never silence a signal something still defines.
+    #[must_use]
+    pub fn signal_source(
+        &self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+    ) -> Option<&DbcScope<'a>> {
+        let pick = self.pick_path(bus_id, message_id, extended, signal_name);
+        let mut first = None;
+        for d in self.eligible(bus_id) {
+            if !d.db.defines_signal(message_id, extended, signal_name) {
+                continue;
+            }
+            if pick == Some(d.path) {
+                return Some(d);
+            }
+            if first.is_none() {
+                if pick.is_none() {
+                    return Some(d);
+                }
+                first = Some(d);
+            }
         }
-        self.picks
-            .get(&signal_identity(
-                bus_id,
-                message_id,
-                extended,
-                signal_name,
-                false,
-            ))
-            .map(String::as_str)
+        first
+    }
+
+    /// **Which database supplies a whole message's statement about
+    /// itself** — its name, its transmitter, its declared length, and
+    /// the calculated-field designation ADR 0027 reads off it: eligible
+    /// for the bus, then load order over the databases that *define the
+    /// message*, unless a pick on one of its signals names one of them.
+    ///
+    /// **Deliberately per message, where [`Self::signal_source`] is per
+    /// signal.** ADR 0054 resolves a decoded *value*, and these facts
+    /// are not values: a `CannetCounter` designation names a signal and
+    /// resolves to a bit placement *on the message entry that declared
+    /// it*, so counter-from-one-file plus CRC-from-another is not a
+    /// statement any database made. One file describes the message.
+    ///
+    /// The pick still reaches it, because the pick is how a user says
+    /// which file describes this traffic: where any signal of the
+    /// message is pinned to an eligible database that defines the
+    /// message, that database supplies the message-level facts too.
+    /// Without a pick — every project that has never resolved an
+    /// ambiguity — the answer is the first defining database, exactly
+    /// as it always was. Where two picks on one message name two
+    /// databases, the earlier in load order wins, so the answer stays a
+    /// function of the project rather than of map iteration order.
+    #[must_use]
+    pub fn message_source(
+        &self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+    ) -> Option<&DbcScope<'a>> {
+        let id = CanId::new(message_id, extended).ok()?;
+        if !self.message_has_pick(message_id, extended) {
+            return self.eligible(bus_id).find(|d| d.db.defines_message(id));
+        }
+        // Only reached for a message some pick names, so the scan over
+        // the pick map is paid by the ambiguity that provoked it. The
+        // prefix is `signal_identity` with the signal name cut off, so
+        // the two spellings of the key cannot drift apart.
+        let prefix = signal_identity(bus_id, message_id, extended, "", false);
+        let named: Vec<&str> = self
+            .picks
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let mut first = None;
+        for d in self.eligible(bus_id) {
+            if !d.db.defines_message(id) {
+                continue;
+            }
+            if named.contains(&d.path) {
+                return Some(d);
+            }
+            if first.is_none() {
+                first = Some(d);
+            }
+        }
+        first
     }
 
     /// **The resolution rule, once.** Where a pick names a database that
@@ -234,9 +468,7 @@ impl<'a> DecodeModel<'a> {
     ) -> Option<usize> {
         let pick = self.pick_path(bus_id, message_id, extended, signal_name)?;
         let id = CanId::new(message_id, extended).ok()?;
-        self.dbcs
-            .iter()
-            .filter(|d| filter::dbc_applies(d.buses, bus_id))
+        self.eligible(bus_id)
             .position(|d| d.path == pick && !d.db.signal_decode_specs(id, signal_name).is_empty())
     }
 }
@@ -405,22 +637,16 @@ pub fn dbc_encoding(
     };
     if let Ok(id) = id {
         let picked = dbcs.picked_index(bus_id, message_id, extended, signal_name);
-        let mut eligible = 0usize;
-        for dbc in dbcs.iter() {
-            // Only the databases that can decode *this* series: its
-            // frames arrive on one bus, so a database
-            // `filter::dbc_applies` rejects for that bus can never
-            // supply one of its samples — editing it must not force a
-            // rebuild that provably cannot move a value.
-            if !filter::dbc_applies(dbc.buses, bus_id) {
-                continue;
-            }
-            // The pick's position is counted over the same eligible
-            // sequence the decode walks (`signal_sampler::sample_shared`
-            // over `scan_chunk`'s `eligible`), so the chain hashed here
-            // is the chain that decodes.
-            let this = eligible;
-            eligible += 1;
+        // Only the databases that can decode *this* series: its frames
+        // arrive on one bus, so a database `DecodeModel::eligible`
+        // rejects for that bus can never supply one of its samples —
+        // editing it must not force a rebuild that provably cannot move
+        // a value. The pick's position is counted over the same
+        // eligible sequence the decode walks
+        // (`signal_sampler::sample_shared` over `scan_chunk`'s
+        // `eligible`), so the chain hashed here is the chain that
+        // decodes.
+        for (this, dbc) in dbcs.eligible(bus_id).enumerate() {
             if picked.is_some_and(|p| p != this) {
                 continue;
             }
@@ -695,6 +921,122 @@ mod tests {
             path.to_owned(),
         );
         DecodeModel::new(dbcs, Arc::new(picks))
+    }
+
+    #[test]
+    fn signal_source_is_the_first_defining_database_or_the_one_a_pick_names() {
+        // The per-signal half of the resolution rule, on its own. `a`
+        // defines `S` and declares no `VAL_` table; `b`, behind it,
+        // defines `S` too. The winner is `a` — an attribute it lacks
+        // is not a reason to read on (ADR 0054).
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&format!(
+            "{}VAL_ 256 S 0 \"Zero\" ;{nl}",
+            message(&[PLAIN]),
+            nl = "
+",
+        ));
+        let bus = fp_bus();
+        let elsewhere = vec!["other".to_string()];
+        let set = || {
+            vec![
+                scope("a.dbc", &a, &bus),
+                scope("b.dbc", &b, &bus),
+                scope("c.dbc", &b, &elsewhere),
+            ]
+        };
+        let path = |m: &DecodeModel<'_>| {
+            m.signal_source(Some(FP_BUS), 256, false, "S")
+                .map(|d| d.path.to_string())
+        };
+        assert_eq!(path(&plain(set())), Some("a.dbc".into()), "load order");
+        assert_eq!(
+            path(&pinned(set(), "b.dbc")),
+            Some("b.dbc".into()),
+            "the pick overrides load order"
+        );
+        // A pick naming a database that is not a definer here — `c` is
+        // assigned to another bus — is ignored, not honoured-and-empty.
+        assert_eq!(
+            path(&pinned(set(), "c.dbc")),
+            Some("a.dbc".into()),
+            "a pick that names no eligible definer"
+        );
+        // Nothing defines the signal, and no bus at all.
+        assert!(plain(set())
+            .signal_source(Some(FP_BUS), 256, false, "Nope")
+            .is_none());
+        assert!(plain(set()).signal_source(None, 256, false, "S").is_none());
+    }
+
+    #[test]
+    fn message_source_is_the_first_defining_database_or_the_one_a_pick_names() {
+        // The per-message half. `a` defines 256 and declares nothing
+        // about it; `b`, behind it, defines 256 too. Without a pick the
+        // answer is `a`; a pick on any *signal* of the message moves it,
+        // because a pick is how a user says which file describes this
+        // traffic.
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&message(&[PLAIN]));
+        let bus = fp_bus();
+        let set = || vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)];
+        let path = |m: &DecodeModel<'_>| {
+            m.message_source(Some(FP_BUS), 256, false)
+                .map(|d| d.path.to_string())
+        };
+        assert_eq!(path(&plain(set())), Some("a.dbc".into()), "load order");
+        assert_eq!(
+            path(&pinned(set(), "b.dbc")),
+            Some("b.dbc".into()),
+            "picked"
+        );
+        assert_eq!(
+            path(&pinned(set(), "a.dbc")),
+            Some("a.dbc".into()),
+            "a pick agreeing with load order changes nothing"
+        );
+        // A pick on *another* message leaves this one on load order,
+        // even though the picks map is no longer empty.
+        let mut picks = SignalDbcPicks::new();
+        picks.insert(
+            signal_identity(Some(FP_BUS), 257, false, "S", false),
+            "b.dbc".to_owned(),
+        );
+        assert_eq!(
+            path(&DecodeModel::new(set(), Arc::new(picks))),
+            Some("a.dbc".into()),
+        );
+        // No message, and no bus.
+        assert!(plain(set())
+            .message_source(Some(FP_BUS), 999, false)
+            .is_none());
+        assert!(plain(set()).message_source(None, 256, false).is_none());
+    }
+
+    #[test]
+    fn message_spans_databases_answers_for_the_ids_two_databases_claim() {
+        // The other per-frame branch a per-message decode takes. It is
+        // a property of the loaded set alone, so no pick moves it, and
+        // a one-database project answers false without an index at all.
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&dbc_text(&format!("BO_ 257 N: 8 ECU\n SG_ {PLAIN}\n")));
+        let bus = fp_bus();
+
+        let one = plain(vec![scope("a.dbc", &a, &bus)]);
+        assert!(!one.message_spans_databases(256, false), "one database");
+
+        let disjoint = plain(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]);
+        assert!(!disjoint.message_spans_databases(256, false));
+        assert!(!disjoint.message_spans_databases(257, false));
+
+        let shared = plain(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &a, &bus)]);
+        assert!(shared.message_spans_databases(256, false));
+        assert!(!shared.message_spans_databases(256, true), "id width");
+        assert!(!shared.message_spans_databases(257, false), "another id");
+        // A pick is not an input: the set decides.
+        assert!(
+            !pinned(vec![scope("a.dbc", &a, &bus)], "a.dbc").message_spans_databases(256, false)
+        );
     }
 
     #[test]
