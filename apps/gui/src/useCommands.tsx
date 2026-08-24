@@ -75,6 +75,7 @@ import {
   type FocusHistory,
   type LayoutHistory,
 } from "./viewHistory";
+import type { LinkHistory } from "./eventLinkHistory";
 import {
   popRedo,
   popUndo,
@@ -109,6 +110,10 @@ export interface UseCommandsOptions {
   /// Step the element stack and write the snapshot back. Returns
   /// whether it changed anything (see `App`).
   applyElementHistory: (dir: "undo" | "redo") => boolean;
+  /// The event-link stack, read the same way — whether a chord has a
+  /// link step to take, and how to take it.
+  linkHistoryRef: MutableRefObject<LinkHistory>;
+  applyEventLinkHistory: (dir: "undo" | "redo") => boolean;
   // Reactive model reads.
   registry: readonly RegistryEntry[];
   activePanel: ActivePanel;
@@ -217,6 +222,8 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     elementHistoryRef,
     undoOrderRef,
     applyElementHistory,
+    linkHistoryRef,
+    applyEventLinkHistory,
     registry,
     activePanel,
     projectPath,
@@ -449,7 +456,12 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   const applyViewHistory = useCallback(
     (dir: "undo" | "redo") => {
       const canStep = (stack: UndoStack): boolean => {
-        const history = stack === "layout" ? layoutHistoryRef.current : elementHistoryRef.current;
+        const history =
+          stack === "layout"
+            ? layoutHistoryRef.current
+            : stack === "events"
+              ? linkHistoryRef.current
+              : elementHistoryRef.current;
         if (!history) return false;
         return (dir === "undo" ? history.past : history.future).length > 0;
       };
@@ -464,6 +476,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
         undoOrderRef.current = r.order;
         let applied = false;
         if (r.stacks.includes("element")) applied = applyElementHistory(dir);
+        if (r.stacks.includes("events")) applied = applyEventLinkHistory(dir) || applied;
         if (r.stacks.includes("layout")) applied = applyLayoutHistory(dir) || applied;
         if (applied) return;
       }
@@ -471,9 +484,11 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     [
       layoutHistoryRef,
       elementHistoryRef,
+      linkHistoryRef,
       undoOrderRef,
       applyLayoutHistory,
       applyElementHistory,
+      applyEventLinkHistory,
     ],
   );
   const cycleTabInGroup = useCallback(

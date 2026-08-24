@@ -1,6 +1,6 @@
 # ADR 0050 — Undo/redo covers view state only, never the bus
 
-Status: accepted (2026-08-09)
+Status: accepted (2026-08-09); amended 2026-08-23 — an event's references are in
 
 ## Context
 
@@ -32,7 +32,25 @@ again where a step is restored:
 
 | In (undoable) | Out (never) |
 |---|---|
-| Plot areas / signals / solo / visibility / collapse / y-axis mode / primary / sort / patterns; colors, colormap + generator rules; trace & signals columns, sections; element renames; panel open / close / move; filter add / remove, predicate edits, sources rewiring | `rbs.path`; all transmit config; connection; capture control; DBC set; project open / save; settings; notes / markers |
+| Plot areas / signals / solo / visibility / collapse / y-axis mode / primary / sort / patterns; colors, colormap + generator rules; trace & signals columns, sections; element renames; panel open / close / move; filter add / remove, predicate edits, sources rewiring; **what an event refers to** — links between events, and the messages and signals it names | `rbs.path`; all transmit config; connection; capture control; DBC set; project open / save; settings; note *content* — adding, removing, renaming, recoloring, retagging, describing |
+
+**What an event refers to is in; what it says is not.** A reference
+([ADR 0056](0056-an-event-subject-is-a-structural-reference.md)) is a
+relationship, not an annotation: it carries no text the user would
+lose, it has exactly one inverse, and it is made and unmade by the same
+pointing gestures as everything else in the left-hand column. The two
+kinds of reference are stored differently — a link lives on one of the
+two events, a subject on the event's own list — but that is a storage
+fact, not something the reader is asked to hold: the `×` on a chip
+means one thing whether the chip names a linked event or a signal, so
+both are undone by one chord. Half of the chips on a row being
+reversible would be the surprising rule, not the complete one.
+
+Note *content* stays out, and that boundary is deliberate rather than
+unfinished: it is what keeps `Mod+Z` from ever destroying something the
+user typed. Undoing an "add note" would delete text; undoing a rename
+would replace it. The rule the user holds is "your views undo, and what
+your notes point at; what you wrote does not."
 
 Two further boundaries follow from the same rule:
 
@@ -62,6 +80,13 @@ Two further boundaries follow from the same rule:
   for what they put on a bus during development. The rule exists so the
   tool never *surprises* an operator into transmitting — not because
   the tool is the last line of defence.
+- **A reference is view-shaped; note text is not.** The asymmetry test
+  above is what decides it. Reversing a link or a subject costs nothing
+  but that reference — every event's label, tag and description is
+  untouched, and one more chord puts it back. Reversing a note edit
+  costs prose the user wrote and cannot re-derive, which is the same
+  shape of loss the rule exists to prevent, just off the bus instead of
+  on it.
 - **An allowlist fails closed.** A new field on an element is outside
   undo until someone adds it to the list. A denylist would make every
   new transmit-shaped field undoable by omission, which is exactly the
@@ -76,6 +101,19 @@ Two further boundaries follow from the same rule:
   carries only allowlisted fields, and a restore writes back only
   allowlisted fields. An excluded field therefore cannot be replayed
   even if a snapshot were taken while it was changing.
+- **An event's references are recorded as steps, not snapshots** (a
+  third stack, `eventLinkHistory.ts`, interleaved with the other two by
+  the same order log). A link's inverse is another link; a subject
+  list's inverse is the list as it was, which the step carries whole
+  because `set_note_subjects` replaces the list. Snapshotting the notes
+  list instead would hold more state, and would drag every other note
+  edit into undo's reach on the way — the boundary above would then be
+  enforced by nothing but care. A link step also records *which end*
+  the host stores the reference on, so a restore puts it back on that
+  event rather than moving it to the other one.
+- **The recording lives at the dispatch layer**, not at the gesture. A
+  view calls `setNoteSubjects` and gets an undo step without asking, so
+  a second way to add or drop a subject cannot be added without one.
 - Undoing an element removal restores the view, not the element's host
   state: an RBS element that comes back is not re-loaded and not
   running, and a transmit element's messages are not re-added to the
