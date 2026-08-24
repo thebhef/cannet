@@ -315,6 +315,17 @@ append/scan drift was machine state and not the change.
 
 ---
 
+### 2.3 The gate does not run until development is done and the owner has looked
+Ruled by the owner 2026-08-22
+
+*"Don't run perf test until the dev is done and I have a chance to look
+at everything."* This is tighter than 2.2, which deferred the gate to
+the end of the chain: the run now waits on the **owner's review**, not
+merely on the last phase landing. Nothing in §5's gate item — including
+the harness tally fix it depends on — starts before that.
+
+---
+
 ## 3. Open findings nobody has dispositioned
 
 Recorded by the phases that found them, not yet decided.
@@ -343,6 +354,9 @@ Recorded by the phases that found them, not yet decided.
 | 3.21 | **The top toolbar wraps rather than overflowing.** The prototype gives the header `flex-wrap: wrap` and reserves the `…` overflow for the plot bar, and the Add-menu collapse leaves only twelve chips — so the shared `useToolbarFit` hook shipped with `StatusBar` as its only consumer. If the header should overflow instead, the prototype does not currently say so. | [task 108](tasks/0108-gui-chip-redesign.md) |
 | 3.22 | **The measurement strip is suppressed by a switch, and one test went with it.** "Stays hidden" now means hidden for saved configs too — `MEASUREMENT_STRIP_DRAWS = false` gates the render while the stored `measEnabled` is deliberately left intact, so the rework inherits real preferences. Two consequences the rework must pick up: `MeasurementMenu` is a deliberate orphan (deleting the thing to be reworked is not a saving), and the panel-tier test that read the strip's rendered cells to guard a **derived-axis id mismatch** was removed rather than kept asserting nothing. Overseer check: the derivation itself is still covered at unit tier by `plotAxisDerivation.test.ts`, so the exposure while hidden is nil — but the strip-to-derivation seam is unguarded and the rework must write that test again, failing first. | [task 108](tasks/0108-gui-chip-redesign.md) |
 | 3.23 | **Plot perf-readout visibility is view-local while its menu sibling `showDiag` persists.** One line of `plotPanelConfig` either way; flagged because the two sit next to each other on one menu and behave differently. | [task 108](tasks/0108-gui-chip-redesign.md) |
+| 3.24 | **Two bars hand-write the chip element instead of using `ChipButton`.** RBS Signals and View Signals need the tall status *swatch* they share with each row's status cell, not the component's round dot, so they render `<button className="status-chip chip-button">` directly. The styling is genuinely shared — they carry the same classes and the phase deleted the bespoke CSS they used to have — so this is not a visual fork, but two call sites now bypass the component and will not inherit changes to it. Cheap fix: give `ChipButton` an indicator form (swatch alongside dot) and move both onto it. Flagged by the phase rather than decided silently. | [task 108](tasks/0108-gui-chip-redesign.md) |
+| 3.25 | **Servers' "Add Server" uses `pressed` for a disclosure** that is neither a toggle nor a menu, so it announces a pressed state for something that is not one. One-line accessibility nit; needs the right ARIA (`aria-expanded`) rather than the toggle prop. | [task 108](tasks/0108-gui-chip-redesign.md) |
+| 3.26 | **Ten bars were swept; two were mutation-proved.** The phase pinned handlers per bar and proved the pinning discriminates on the trace panel (Pause→Stop) and system messages (Clear→copyAll), reasoning in its log that the rest did not need it. That is within what was asked, and the net test delta (+5 across ten bars, with large edits to existing per-bar tests) is consistent with a restyle rather than a rewrite — but **control-preservation across the other eight bars rests on the pre-existing tests being behavioural rather than markup-shaped.** Worth a look during the chrome review, since a quietly mis-wired control is the failure mode of a breadth phase. | [task 108](tasks/0108-gui-chip-redesign.md) |
 | 3.6 | Task 97's grooming asked that the owner see both axes before the **lanes** axis changed. No comparison was produced, because the lanes axis has no y-gutter labelling to compare — it already draws nothing there, and its labels are the tiles. If the owner meant the lane *tiles*, that is a different request, and it cuts against the stated reason for removing the axis labels. | [task 97](tasks/0097-enum-labels-on-axis.md) |
 
 ---
@@ -398,6 +412,24 @@ test or artefact.
   scrub actually happened, not just that the report is clean. The
   script's two other targets — uPlot's `.u-over` and `.trace-rows` —
   were confirmed untouched by the chrome sweep.
+
+  **Overseer inspection 2026-08-22 — the harness cannot currently tell
+  you this, and that is the real defect.** Every gesture function
+  returns a label naming what it did, and `startPerfInteraction`
+  **discards the return value**: `perfInteractTick(doc, tick, script)`
+  is called for its side effect and nothing counts the labels. A
+  gesture whose target is missing returns `null` and is skipped
+  silently — deliberate, so that a layout with no plot is still a
+  legitimate capture — but nothing anywhere records *how often* that
+  happened. A run where the script found none of its targets produces a
+  report structurally identical to a good one, only quieter.
+
+  So the close-out gate needs a fix before it needs a run: **the
+  interaction script should tally the gestures it performed and the
+  report should carry that tally**, so a disarmed harness is visible in
+  the data instead of having to be remembered. Small, but it is the
+  precondition for every number the gate produces. Scoped to the
+  post-107 cleanup, ahead of the gate run itself.
 - Replace the repo's pre-existing ignored mDNS round-trip test, which
   advertises a real `_cannet._tcp` instance on the LAN. It is the
   pattern agents copy, and real advertisements collide on the shared

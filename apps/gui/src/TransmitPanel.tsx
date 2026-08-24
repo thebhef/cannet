@@ -12,6 +12,7 @@ import { SIGNAL_DND_MIME, dragHasSignals, parseSignalDragData } from "./dragSign
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
 import { FrameDropZone, TransmitFrameRow } from "./TransmitFrameRow";
+import { ChipButton } from "./ChipButton";
 import {
   type TransmitFrameConfig,
   configToFrame,
@@ -440,9 +441,13 @@ export function TransmitPanel(props: IDockviewPanelProps) {
       }}
     >
       <div className="tx-panel-toolbar">
-        <button type="button" onClick={addFrame}>
-          + frame
-        </button>
+        <ChipButton
+          icon="plus"
+          label="Frame"
+          ariaLabel="Add Frame"
+          title="add a frame to transmit"
+          onPress={addFrame}
+        />
       </div>
       {/* The frame list is the gridview container: it holds focus and
           names the active row, and its marker keeps the global
@@ -450,7 +455,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
       <div className="tx-panel-list" ref={listRef} {...grid.containerProps}>
         {frames.length === 0 && (
           <div className="tx-empty">
-            No frames yet. Click "+ frame" to add one.
+            No frames yet. Click "Frame" to add one.
           </div>
         )}
         {frames.map((f) => (

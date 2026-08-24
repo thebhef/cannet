@@ -196,7 +196,7 @@ describe("TracePanel live-tail demand", () => {
     ]);
     await waitFor(() => expect(declaredRows()).toBe(LIVE_TAIL_ROWS));
     const byId = [...container.querySelectorAll("button")].find(
-      (b) => b.textContent?.replace(/\s+/g, " ").trim() === "by ID",
+      (b) => b.textContent?.replace(/\s+/g, " ").trim() === "By ID",
     )!;
     await act(async () => {
       fireEvent.click(byId);
@@ -289,16 +289,21 @@ describe("TracePanel view defaults", () => {
   const oneTrace: ProjectElement[] = [
     { kind: "trace", id: "t1", sources: ["*"] } as ProjectElement,
   ];
-  /// Which mode button the panel is showing as selected.
+  /// Which mode chip the panel is showing as pressed.
   const activeMode = (container: HTMLElement) =>
-    [...container.querySelectorAll(".mode-toggle button.active")]
+    [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        '.chip-seg[aria-label="Trace Mode"] button[aria-pressed="true"]',
+      ),
+    ]
       .map((b) => b.textContent?.replace(/\s+/g, " ").trim())
       .join();
-  /// A toolbar checkbox by its label text ("auto-scroll", "events").
-  const toolbarBox = (container: HTMLElement, label: string) =>
-    [...container.querySelectorAll<HTMLLabelElement>(".trace-panel-toolbar label.checkbox")]
-      .find((l) => l.textContent?.trim() === label)
-      ?.querySelector("input") ?? null;
+  /// A toolbar toggle chip's pressed state, by its accessible name
+  /// ("Auto-Scroll", "Events").
+  const chipPressed = (container: HTMLElement, name: string) =>
+    [...container.querySelectorAll<HTMLButtonElement>(".trace-panel-toolbar button[aria-pressed]")]
+      .find((b) => b.getAttribute("aria-label") === name)
+      ?.getAttribute("aria-pressed") === "true";
 
   it("opens a fresh panel in the configured default mode", async () => {
     // `by-id` is the default, so asking for `chronological` proves the
@@ -306,7 +311,7 @@ describe("TracePanel view defaults", () => {
     storedSettings = { trace_mode: "chronological" };
     await hydrateSettings();
     const { container } = renderPanel(oneTrace, 100, null);
-    expect(activeMode(container)).toBe("trace");
+    expect(activeMode(container)).toBe("Trace");
   });
 
   it("takes auto-scroll and the events overlay from the settings", async () => {
@@ -318,8 +323,8 @@ describe("TracePanel view defaults", () => {
     };
     await hydrateSettings();
     const { container } = renderPanel(oneTrace, 100, null);
-    expect(toolbarBox(container, "auto-scroll")?.checked).toBe(false);
-    expect(toolbarBox(container, "events")?.checked).toBe(false);
+    expect(chipPressed(container, "Auto-Scroll")).toBe(false);
+    expect(chipPressed(container, "Events")).toBe(false);
   });
 
   it("lets a panel's own saved config win over the default", async () => {
@@ -338,22 +343,22 @@ describe("TracePanel view defaults", () => {
       config: { mode: "chronological", autoScroll: true, showEvents: true },
     } as unknown as ProjectElement;
     const { container } = renderPanel([el], 100, null);
-    expect(activeMode(container)).toBe("trace");
-    expect(toolbarBox(container, "auto-scroll")?.checked).toBe(true);
-    expect(toolbarBox(container, "events")?.checked).toBe(true);
+    expect(activeMode(container)).toBe("Trace");
+    expect(chipPressed(container, "Auto-Scroll")).toBe(true);
+    expect(chipPressed(container, "Events")).toBe(true);
   });
 
   it("does not retro-fit an open panel when the default changes", async () => {
     // Changing a default is not a broadcast: the panel read it once, at
     // creation, and keeps what it has.
     const { container, grow } = renderPanel(oneTrace, 100, null);
-    expect(activeMode(container)).toBe("by ID");
+    expect(activeMode(container)).toBe("By ID");
     storedSettings = { trace_mode: "chronological" };
     await act(async () => {
       await hydrateSettings();
     });
     grow(150);
-    expect(activeMode(container)).toBe("by ID");
+    expect(activeMode(container)).toBe("By ID");
   });
 });
 
@@ -387,15 +392,19 @@ describe("TracePanel config persistence", () => {
 });
 
 describe("TracePanel rehydration", () => {
-  /// Which mode button the panel is showing as selected.
+  /// Which mode chip the panel is showing as pressed.
   const activeMode = (container: HTMLElement) =>
-    [...container.querySelectorAll(".mode-toggle button.active")]
+    [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        '.chip-seg[aria-label="Trace Mode"] button[aria-pressed="true"]',
+      ),
+    ]
       .map((b) => b.textContent?.replace(/\s+/g, " ").trim())
       .join();
-  const toolbarBox = (container: HTMLElement, label: string) =>
-    [...container.querySelectorAll<HTMLLabelElement>(".trace-panel-toolbar label.checkbox")]
-      .find((l) => l.textContent?.trim() === label)
-      ?.querySelector("input") ?? null;
+  const chipPressed = (container: HTMLElement, name: string) =>
+    [...container.querySelectorAll<HTMLButtonElement>(".trace-panel-toolbar button[aria-pressed]")]
+      .find((b) => b.getAttribute("aria-label") === name)
+      ?.getAttribute("aria-pressed") === "true";
 
   /// The panel over a registry that really applies patches, so a write
   /// from outside the panel reaches it the way the app's would.
@@ -427,31 +436,93 @@ describe("TracePanel rehydration", () => {
       autoScroll: true,
       showEvents: true,
     });
-    expect(activeMode(container)).toBe("by ID");
+    expect(activeMode(container)).toBe("By ID");
     act(() => {
       control.update("t1", {
         config: { mode: "chronological", autoScroll: false, showEvents: false },
       });
     });
-    expect(activeMode(container)).toBe("trace");
-    expect(toolbarBox(container, "auto-scroll")?.checked).toBe(false);
-    expect(toolbarBox(container, "events")?.checked).toBe(false);
+    expect(activeMode(container)).toBe("Trace");
+    expect(chipPressed(container, "Auto-Scroll")).toBe(false);
+    expect(chipPressed(container, "Events")).toBe(false);
   });
 
   it("keeps the panel's own edit — a persist is not a resync trigger", () => {
     const { container, control } = renderLive({ mode: "chronological" });
     const byId = [...container.querySelectorAll("button")].find(
-      (b) => b.textContent?.replace(/\s+/g, " ").trim() === "by ID",
+      (b) => b.textContent?.replace(/\s+/g, " ").trim() === "By ID",
     )!;
     act(() => {
       fireEvent.click(byId);
     });
-    expect(activeMode(container)).toBe("by ID");
+    expect(activeMode(container)).toBe("By ID");
     // The element followed the panel, not the other way round: the
     // panel's own persist must not have bounced back as a resync to
     // the pre-click config.
     const cfg = (control.entries()[0].element as { config?: { mode?: string } }).config;
     expect(cfg?.mode).toBe("by-id");
+  });
+});
+
+describe("TracePanel run controls", () => {
+  // The shared `TraceControls` run chips are icon-only, in a
+  // `ChipSegment`, but drive the same `useTrace` handle the old plain
+  // buttons did. Pause and Stop both freeze the window at the current
+  // session count, so a test that only checks "the window froze" cannot
+  // tell one chip from the other wired to the wrong handler — only
+  // `isPaused` does.
+  function renderRunning() {
+    // A freshly seeded element runs (`freshTrace`), so the bar shows
+    // Pause / Stop, not Start.
+    const { Provider, control } = makeLiveRegistry([
+      { kind: "trace", id: "t1", sources: ["*"] } as ProjectElement,
+    ]);
+    const props = {
+      params: { elementId: "t1" },
+      api: { updateParameters: vi.fn() },
+    } as unknown as Parameters<typeof TracePanel>[0];
+    const { container } = render(
+      <TraceDataProvider value={traceData}>
+        <ProjectContext.Provider value={projectCtx}>
+          <Provider>
+            <TracePanel {...props} />
+          </Provider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+    return { container, control };
+  }
+
+  const runChip = (container: HTMLElement, name: string): HTMLButtonElement => {
+    const btn = [
+      ...container.querySelectorAll<HTMLButtonElement>(".trace-panel-toolbar button"),
+    ].find((b) => b.getAttribute("aria-label") === name);
+    if (!btn) throw new Error(`run chip "${name}" not found`);
+    return btn;
+  };
+
+  it("Pause freezes the window but marks it resumable", () => {
+    const { container, control } = renderRunning();
+    fireEvent.click(runChip(container, "Pause"));
+    const state = control.entries()[0].trace;
+    expect(state.end).not.toBeNull();
+    expect(state.isPaused).toBe(true);
+  });
+
+  it("Stop freezes the window without leaving it resumable", () => {
+    const { container, control } = renderRunning();
+    fireEvent.click(runChip(container, "Stop"));
+    const state = control.entries()[0].trace;
+    expect(state.end).not.toBeNull();
+    expect(state.isPaused).toBe(false);
+  });
+
+  it("Clear collapses the window to empty at the current count, keeping it running", () => {
+    const { container, control } = renderRunning();
+    fireEvent.click(runChip(container, "Clear"));
+    const state = control.entries()[0].trace;
+    expect(state.end).toBeNull();
+    expect(state.start).toBe(traceData.count);
   });
 });
 

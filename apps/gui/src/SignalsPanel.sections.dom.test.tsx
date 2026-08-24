@@ -327,7 +327,7 @@ describe("SignalsPanel sections", () => {
     // away and its header opens in the inline editor.
     ROWS = [headerRow("Section 1", 0)];
     const { registry } = renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: "add section" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Section" }));
     await waitFor(() => {
       expect(lastSections()?.names).toEqual(["Section 1"]);
     });
@@ -342,7 +342,7 @@ describe("SignalsPanel sections", () => {
   it("gives each new section a starter name that does not collide", async () => {
     ROWS = [];
     renderPanel({ params: { sections: { names: ["Section 1"], assignments: {} } } });
-    fireEvent.click(screen.getByRole("button", { name: "add section" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Section" }));
     await waitFor(() => {
       expect(lastSections()?.names).toEqual(["Section 1", "Section 2"]);
     });
@@ -524,7 +524,7 @@ describe("SignalsPanel rehydration", () => {
     ROWS = [];
     const { control } = renderLive({ sections: { names: [], assignments: {}, patterns: {} } });
     await waitFor(() => expect(lastSections()?.names).toEqual([]));
-    fireEvent.click(screen.getByRole("button", { name: "add section" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Section" }));
     await waitFor(() => expect(lastSections()?.names).toEqual(["Section 1"]));
     const el = control.entries()[0].element as { config?: { sections?: { names: string[] } } };
     expect(el.config?.sections?.names).toEqual(["Section 1"]);

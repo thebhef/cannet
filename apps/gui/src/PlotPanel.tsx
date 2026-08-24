@@ -887,7 +887,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /** Fit the x-axis to `[start, ext)`, where `ext` comes from a host
    * round-trip over `[ws, we)` when possible (falling back to the
    * panel's own rendered extent) — the shared body behind "fit data"
-   * (fits to the *window's* current start) and "All data" (fits to the
+   * (fits to the *window's* current start) and "All Data" (fits to the
    * whole buffer, `start` pinned at 0 rather than derived). */
   const fitToRange = useCallback(
     async (start: number, ws: number, we: number) => {
@@ -986,11 +986,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setResetYEpoch((n) => n + 1);
   }, [trace]);
 
-  /** "All data": widen the trace window to the whole session buffer
+  /** "All Data": widen the trace window to the whole session buffer
    * (still following live if it was already running — `allDataTrace`)
    * and fit the x-axis to it. The DBC-reload recovery workflow this
    * serves: Clear collapses the window to now so re-picking signals
-   * against the fresh DBC resamples cheaply, then All data widens back
+   * against the fresh DBC resamples cheaply, then All Data widens back
    * out for one full-history resample. Overlay reset mirrors Clear;
    * `fitToRange` bumps `resetYEpoch` itself, so no separate call here. */
   const handleAllData = useCallback(() => {

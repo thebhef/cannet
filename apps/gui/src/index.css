@@ -540,8 +540,7 @@ header {
    `.toolbar button` rule here would out-specify the shared chip and
    quietly restyle it. */
 
-.toolbar label.checkbox,
-.trace-panel-toolbar label.checkbox {
+.toolbar label.checkbox {
   display: flex;
   align-items: center;
   gap: 0.3rem;
@@ -1390,11 +1389,6 @@ ul.status-bar-menu .status-chip {
 }
 
 .servers-search {
-  background: var(--surface-field);
-  border: 1px solid var(--border-default);
-  color: var(--text-primary);
-  border-radius: 4px;
-  padding: 0.2rem 0.4rem;
   min-width: 14rem;
 }
 
@@ -2526,27 +2520,14 @@ ul.status-bar-menu .status-chip {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-/* Start / Stop / Pause / Resume / Clear controls in a trace panel's
-   toolbar (the shared `TraceControls` component). */
+/* Start / Stop / Pause / Resume / Clear chips in a trace panel's
+   toolbar (the shared `TraceControls` component): a `ChipSegment` for
+   the run controls, an optional "All Data" chip, and the status
+   read-out. */
 .trace-controls {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-}
-
-.trace-controls button {
-  font: inherit;
-  font-size: 0.85rem;
-  background: transparent;
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  padding: 0.05rem 0.45rem;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.trace-controls button:hover {
-  background: var(--surface-button-hover);
+  gap: 0.4rem;
 }
 
 .trace-status {
@@ -2566,37 +2547,6 @@ ul.status-bar-menu .status-chip {
 
 .trace-status-stopped {
   color: var(--text-muted);
-}
-
-/* Chronological / by-ID mode toggle in a trace panel's toolbar. */
-.mode-toggle {
-  display: inline-flex;
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.mode-toggle button {
-  font: inherit;
-  font-size: 0.85rem;
-  background: transparent;
-  border: 0;
-  color: var(--text-muted);
-  padding: 0.05rem 0.5rem;
-  cursor: pointer;
-}
-
-.mode-toggle button + button {
-  border-left: 1px solid var(--border-subtle);
-}
-
-.mode-toggle button:hover {
-  background: var(--surface-button-hover);
-}
-
-.mode-toggle button.active {
-  background: var(--surface-toggle-active);
-  color: var(--text-primary);
 }
 
 /* Right-click-the-header column show/hide menu (positioned at the
@@ -3168,19 +3118,6 @@ button.color-chip {
 .plot-toolbar-overflow .chip-menu-list {
   left: auto;
   right: 0;
-}
-
-/* The run controls are still the shipped buttons; everything else on
-   this bar is a chip, and a bar-wide `button` rule would out-specify
-   `.status-chip` (0,1,1 beats 0,1,0) and restyle the lot. */
-.plot-panel-toolbar .trace-controls button {
-  background: var(--surface-control);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  padding: 0.15rem 0.4rem;
-  font: inherit;
-  font-size: 0.82rem;
 }
 
 
@@ -4681,19 +4618,6 @@ button.color-chip {
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface-tx-toolbar);
 }
-.tx-panel-toolbar button {
-  background: var(--surface-control);
-  color: var(--text-muted);
-  border: 1px solid var(--border-default);
-  border-radius: 3px;
-  font: inherit;
-  padding: 0.1rem 0.5rem;
-  cursor: pointer;
-}
-.tx-panel-toolbar button:hover {
-  color: var(--text-primary);
-  border-color: var(--border-hover);
-}
 .tx-panel-list {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -5138,27 +5062,10 @@ button.color-chip {
   border-bottom: 1px solid var(--border-soft);
   background: var(--surface-pop);
 }
-.system-messages-toolbar .combobox-trigger {
-  background: var(--surface-raised);
-  color: var(--text-primary);
-  border: 1px solid var(--border-strong);
-  padding: 0.15rem 0.35rem;
-  border-radius: 3px;
-}
-.system-messages-toolbar button {
-  background: var(--surface-raised);
-  color: var(--text-primary);
-  border: 1px solid var(--border-strong);
-  padding: 0.15rem 0.6rem;
-  border-radius: 3px;
-  cursor: pointer;
-}
-.system-messages-toolbar button:hover:not(:disabled) {
-  background: var(--surface-control-hover);
-}
-.system-messages-toolbar button:disabled {
-  opacity: 0.5;
-  cursor: default;
+.system-messages-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 .system-messages-count {
   color: var(--text-muted);
@@ -5241,12 +5148,6 @@ button.color-chip {
 }
 .dbc-panel-search {
   flex: 1 1 0;
-  background: var(--surface-raised);
-  color: var(--text-primary);
-  border: 1px solid var(--border-strong);
-  padding: 0.2rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.85rem;
 }
 .dbc-panel-match-count {
   color: var(--text-muted);
@@ -5369,17 +5270,9 @@ button.color-chip {
   text-overflow: ellipsis;
 }
 
-/* Phase 12 polish: panel-wide "details" toggle + per-row detail block. */
-.dbc-panel-details-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  color: var(--text-secondary);
-  font-size: 0.78rem;
-  cursor: pointer;
-  user-select: none;
-}
-/* Also load-bearing for the virtualizer: a detail block is exactly
+/* The panel-wide "details" toggle is a ChipButton now; only the
+   per-row detail block it shows/hides is still this stylesheet's own.
+   Load-bearing for the virtualizer: a detail block is exactly
    `DETAIL_LINE_HEIGHT` per rendered `dt`/`dd` pair plus `DETAIL_CHROME`
    (3 px padding + the 1 px rule) — see `dbcPanelViewport.ts`. The
    zero row-gap, the fixed line-height, and `dd`'s `nowrap` are what
@@ -5458,12 +5351,6 @@ button.color-chip {
   border-bottom: 1px solid var(--border-soft);
   flex-wrap: wrap;
 }
-.rbs-run-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 600;
-}
 .rbs-kill-on {
   background: var(--danger-surface-strong);
   color: var(--danger-text-bright);
@@ -5471,11 +5358,6 @@ button.color-chip {
 .rbs-filter {
   flex: 1;
   min-width: 120px;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-strong);
-  color: inherit;
-  padding: 2px 6px;
-  border-radius: 3px;
 }
 .rbs-path {
   color: var(--text-faint);
@@ -6381,31 +6263,13 @@ button.color-chip {
   gap: 0.3rem;
   flex-wrap: wrap;
 }
-.view-signals-status-filter {
-  display: flex;
-  align-items: stretch;
-  gap: 0.35rem;
-  padding: 0.1rem 0.4rem 0.1rem 0.25rem;
-  font: inherit;
-  color: var(--text-muted);
-  background: var(--surface-field);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  cursor: pointer;
-}
-.view-signals-status-filter:hover {
-  background: var(--surface-hover);
-}
-.view-signals-status-filter[aria-pressed="true"] {
-  border-color: var(--accent-marker);
-  color: var(--text-primary);
-}
-.view-signals-status-filter[aria-pressed="false"] .view-signals-chip {
+/* The status filter chips keep their own tall status swatch (also used
+   in each row's status cell) rather than the shared chip's round dot —
+   see the same note on `.rbs-signals-chip` below, which mirrors this
+   block. Everything else about the control is the shared `.status-chip
+   .chip-button` silhouette. */
+.chip-button[aria-pressed="false"] .view-signals-chip {
   opacity: 0.45;
-}
-.view-signals-status-filter > span {
-  align-self: center;
-  font-size: 0.8rem;
 }
 
 .view-signals-chip {
@@ -6431,25 +6295,6 @@ button.color-chip {
   background: var(--ok-dot);
 }
 
-.view-signals-busfilter {
-  position: relative;
-  display: inline-flex;
-}
-.view-signals-busbtn {
-  font: inherit;
-  font-size: 0.8rem;
-  min-width: 8rem;
-  text-align: left;
-  color: var(--text-muted);
-  background: var(--surface-field);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  padding: 0.15rem 0.4rem;
-  cursor: pointer;
-}
-.view-signals-busbtn:hover {
-  background: var(--surface-hover);
-}
 .view-signals-busmenu {
   position: absolute;
   top: calc(100% + 4px);
@@ -6502,29 +6347,6 @@ button.color-chip {
 .view-signals-busmenu button:hover {
   background: var(--surface-hover);
   color: var(--text-primary);
-}
-
-.view-signals-wash-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-
-.view-signals-counts {
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-  font: inherit;
-  background: none;
-  border: none;
-  padding: 0.15rem 0.1rem;
-  cursor: pointer;
-}
-.view-signals-counts:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
 }
 
 .view-signals-rows {
@@ -6653,31 +6475,13 @@ button.color-chip {
   gap: 0.3rem;
   flex-wrap: wrap;
 }
-.rbs-signals-status-filter {
-  display: flex;
-  align-items: stretch;
-  gap: 0.35rem;
-  padding: 0.1rem 0.4rem 0.1rem 0.25rem;
-  font: inherit;
-  color: var(--text-muted);
-  background: var(--surface-field);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  cursor: pointer;
-}
-.rbs-signals-status-filter:hover {
-  background: var(--surface-hover);
-}
-.rbs-signals-status-filter[aria-pressed="true"] {
-  border-color: var(--accent-marker);
-  color: var(--text-primary);
-}
-.rbs-signals-status-filter[aria-pressed="false"] .rbs-signals-chip {
+/* The status filter chips keep their own tall status swatch (also used
+   in each row's status cell) rather than the shared chip's round dot —
+   two shapes for the same status taxonomy would be its own collision.
+   Everything else about the control is the shared `.status-chip
+   .chip-button` silhouette. */
+.chip-button[aria-pressed="false"] .rbs-signals-chip {
   opacity: 0.45;
-}
-.rbs-signals-status-filter > span {
-  align-self: center;
-  font-size: 0.8rem;
 }
 
 .rbs-signals-chip {
@@ -6706,25 +6510,6 @@ button.color-chip {
   background: var(--text-muted);
 }
 
-.rbs-signals-busfilter {
-  position: relative;
-  display: inline-flex;
-}
-.rbs-signals-busbtn {
-  font: inherit;
-  font-size: 0.8rem;
-  min-width: 8rem;
-  text-align: left;
-  color: var(--text-muted);
-  background: var(--surface-field);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  padding: 0.15rem 0.4rem;
-  cursor: pointer;
-}
-.rbs-signals-busbtn:hover {
-  background: var(--surface-hover);
-}
 .rbs-signals-busmenu {
   position: absolute;
   top: calc(100% + 4px);
@@ -6777,29 +6562,6 @@ button.color-chip {
 .rbs-signals-busmenu button:hover {
   background: var(--surface-hover);
   color: var(--text-primary);
-}
-
-.rbs-signals-wash-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-
-.rbs-signals-counts {
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-  font: inherit;
-  background: none;
-  border: none;
-  padding: 0.15rem 0.1rem;
-  cursor: pointer;
-}
-.rbs-signals-counts:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
 }
 
 .rbs-signals-rows {

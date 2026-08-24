@@ -457,6 +457,12 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <div class="workspace">
     <div class="panel">
       <div class="tabs"><span class="tab active">Trace 1</span><span class="tab">Signals</span><span class="src">TracePanel.tsx · TraceControls.tsx · TraceView.tsx</span></div>
+      <!-- The app keeps one control this mock doesn't draw: a small
+           uppercase "running / paused / stopped" read-out after the run
+           controls, wearing no chip shape. It is not a command — many
+           App-level tests use it as their "the trace panel has mounted"
+           signal and one pins its text — so the sweep left it exactly as
+           it was rather than folding it into a chip or dropping it. -->
       <div class="appbar panelbar">
   <span class="seg">
     <button class="chip icon-only" title="Start"><svg><use href="#i-play"/></svg></button>
@@ -696,8 +702,14 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
     <button class="chip icon-only" title="Stop"><svg><use href="#i-stop"/></svg></button>
     <button class="chip icon-only" title="Clear"><svg><use href="#i-clear"/></svg></button>
   </span>
-  <span class="chipfield" title="add signals by pattern — same dialect as the plot's solo box"><svg><use href="#i-search"/></svg><input placeholder="add signals…" aria-label="signal pattern"></span>
-  <button class="chip" title="new section…"><svg><use href="#i-plus"/></svg>Section</button>
+  <!-- Divergence from this mock's own earlier draft: the app has no
+       live add-by-pattern field directly on the bar. The shipped
+       control is a toggle chip ("Selection (n)" / "Selection (n + m
+       Patterns)") that opens an in-panel editor with the manual picks
+       and the regex patterns — same control the panel had before this
+       pass, restyled rather than replaced. -->
+  <button class="chip toggle" title="edit this view's selection: manual picks and regex patterns (bus/ecu/message/signal)">Selection (3 + 1 Patterns)</button>
+  <button class="chip" title="group this view's signals under a named section"><svg><use href="#i-plus"/></svg>Section</button>
 </div></div>
 <div class="vbar"><span class="who">transmit<code>TransmitPanel.tsx</code></span><div class="appbar panelbar">
   <button class="chip" title="add a frame to transmit"><svg><use href="#i-plus"/></svg>Frame</button>
@@ -711,6 +723,11 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <button class="chip" title="Every field this config transmits, with where each value came from"><svg><use href="#i-signals"/></svg>Signals</button>
 </div></div>
 <div class="vbar"><span class="who">RBS signals<code>RbsSignalsPanel.tsx</code></span><div class="appbar panelbar">
+  <!-- Divergence: the app keeps its existing tall status swatch here
+       (also drawn in each row's own status cell) instead of the round
+       `.dot` this mock draws — one taxonomy, one shape, in both places
+       it appears. Unifying it with the chip dot is an in-panel-icon
+       question for a later, bounded sweep, not this pass. -->
   <button class="chip toggle" title="Filter to Not Encoded"><span class="dot" style="background:var(--danger-text)"></span>Not Encoded (2)</button>
   <button class="chip toggle" title="Filter to Out of Range"><span class="dot" style="background:var(--warn-border)"></span>Out of Range (1)</button>
   <button class="chip toggle" title="Filter to Unknown Value"><span class="dot" style="background:var(--warn-border)"></span>Unknown Value (0)</button>
@@ -724,6 +741,11 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
       <li><button class="chip">CAN1 (52)</button></li>
     </ul>
   </span>
+  <!-- Also on the real bar, not drawn here: a "Row Highlights" toggle
+       and a footer shortcut chip summarising "N of M need attention" /
+       "N of M shown" — pre-existing controls the sweep restyled along
+       with the rest, even though this mock only sketched the filters
+       and the bus menu. -->
 </div></div>
 <div class="vbar"><span class="who">events view (107)<code>EventsPanel.tsx</code></span><div class="appbar panelbar">
   <button class="chip" disabled title="link the two selected events — a linked pair draws its extent while either is selected"><svg><use href="#i-link"/></svg>Link Events</button>
@@ -742,6 +764,16 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <button class="chip" title="Add a server this machine cannot hear advertising — one on another subnet, or one started --no-mdns"><svg><use href="#i-plus"/></svg>Server</button>
 </div></div>
 <div class="vbar"><span class="who">system messages<code>SystemMessagesPanel.tsx</code></span><div class="appbar panelbar">
+  <!-- Divergence: the app's Source and Min Level pickers are the
+       shared fzf `Combobox` (the one select-like control the app
+       uses everywhere), not a bespoke chip + `<ul>` menu — forking a
+       second picker just for these two bars would be exactly the kind
+       of parallel implementation this pass avoids. The combobox's
+       trigger button wears the chip silhouette directly
+       (`className="status-chip chip-button"`, same trick the plot
+       bar's perf read-out and the status-filter chips use), so it
+       still reads as one chip on the row; its own "▾" affordance and
+       dropdown are untouched. -->
   <span class="menu-wrap">
     <button class="chip" data-menu="srcMenu" title="filter by source">Source: All&nbsp;▾</button>
     <ul class="drop" id="srcMenu" hidden>
@@ -764,6 +796,12 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <span class="caption" style="font-variant-numeric:tabular-nums">128&thinsp;/&thinsp;254</span>
 </div></div>
 <div class="vbar"><span class="who">view signals<code>ViewSignalsPanel.tsx</code></span><div class="appbar panelbar">
+  <!-- Same divergence as the RBS signals bar above: the app keeps its
+       tall status swatch (shared with each row's status cell) rather
+       than this mock's round `.dot`. Also on the real bar, not drawn
+       here: a "Row Highlights" toggle and a footer "N of M" shortcut
+       chip, restyled along with everything else even though this mock
+       only sketched the filters and the bus menu. -->
   <button class="chip toggle" title="Filter to Not Decoded"><span class="dot" style="background:var(--danger-text)"></span>Not Decoded (1)</button>
   <button class="chip toggle" title="Filter to Scale"><span class="dot" style="background:var(--warn-border)"></span>Scale (2)</button>
   <button class="chip toggle" title="Filter to Ambiguous"><span class="dot" style="background:var(--warn-border)"></span>Ambiguous (1)</button>

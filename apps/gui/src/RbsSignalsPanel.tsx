@@ -57,6 +57,7 @@ import { arrayRowSpace, type GridviewAdapter, type GridviewRow as GridviewRowMod
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { formatCanIdHex } from "./format";
+import { ChipButton } from "./ChipButton";
 import { NameText } from "./NameText";
 
 interface RbsSignalsPanelParams {
@@ -277,31 +278,26 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
               <button
                 key={s}
                 type="button"
-                className="rbs-signals-status-filter"
+                className="status-chip chip-button"
                 aria-pressed={pressed}
                 title={pressed ? `Stop filtering to ${STATUS_LABEL[s]}` : `Filter to ${STATUS_LABEL[s]}`}
                 onClick={() => toggleStatus(s)}
               >
                 <i className={`rbs-signals-chip rbs-signals-chip--${STATUS_CLASS[s]}`} aria-hidden="true" />
-                <span>
+                <span className="status-chip-label">
                   {STATUS_LABEL[s]} ({count})
                 </span>
               </button>
             );
           })}
         </span>
-        <span className="rbs-signals-busfilter">
-          <button
-            type="button"
-            className="rbs-signals-busbtn"
-            aria-haspopup="menu"
-            aria-expanded={busMenuOpen}
-            onClick={() => setBusMenuOpen((v) => !v)}
-          >
-            {busFilter.size === 0
-              ? "Bus: all"
-              : `Bus: ${[...busFilter].sort().join(", ")}`}
-          </button>
+        <span className="chip-menu">
+          <ChipButton
+            label={busFilter.size === 0 ? "Bus: All" : `Bus: ${[...busFilter].sort().join(", ")}`}
+            title="filter by bus"
+            menuOpen={busMenuOpen}
+            onPress={() => setBusMenuOpen((v) => !v)}
+          />
           {busMenuOpen && (
             <div ref={busMenuRef} className="rbs-signals-busmenu" role="menu">
               {busOptions.map((o) => (
@@ -322,22 +318,18 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
             </div>
           )}
         </span>
-        <label
-          className="rbs-signals-wash-toggle"
+        <ChipButton
+          label="Row Highlights"
           title="highlight each row's background by its status; the status column always names it"
-        >
-          <input type="checkbox" checked={washesOn} onChange={(e) => setWashesOn(e.target.checked)} />
-          row highlights
-        </label>
+          pressed={washesOn}
+          onPress={() => setWashesOn((v) => !v)}
+        />
         <span className="spacer" />
-        <button
-          type="button"
-          className="rbs-signals-counts"
+        <ChipButton
+          label={countsLabel}
           title={onProblems ? "Show every status again" : "Filter to fields the frame does not carry as written"}
-          onClick={toggleProblemsShortcut}
-        >
-          {countsLabel}
-        </button>
+          onPress={toggleProblemsShortcut}
+        />
       </div>
       <div ref={containerRef} className="rbs-signals-rows" {...grid.containerProps}>
         <GridviewHeader<RbsSignalColumnKey>

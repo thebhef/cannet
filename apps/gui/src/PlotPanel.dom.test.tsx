@@ -3731,7 +3731,7 @@ describe("PlotPanel All data button", () => {
     const controls = screen.getByRole("button", { name: "Clear" }).closest<HTMLElement>(
       ".trace-controls",
     )!;
-    expect(within(controls).getByRole("button", { name: "All data" })).toBeInTheDocument();
+    expect(within(controls).getByRole("button", { name: "All Data" })).toBeInTheDocument();
   });
 
   it("widens a parked, stopped window to the whole buffer and fits the x-axis to it", async () => {
@@ -3752,7 +3752,7 @@ describe("PlotPanel All data button", () => {
       inst.xCalls.length = 0;
 
       await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "All data" }));
+        fireEvent.click(screen.getByRole("button", { name: "All Data" }));
       });
       await act(async () => {});
 
@@ -3760,7 +3760,7 @@ describe("PlotPanel All data button", () => {
       // in the default fixture) — still stopped, since it wasn't running.
       expect(registry.get("el-alldata")?.trace).toEqual({ start: 0, end: 100, isPaused: false });
       // The x-axis fit starts at 0 — not the old parked start (40) that
-      // plain Fit Data would have used — which is what "All data" adds.
+      // plain Fit Data would have used — which is what "All Data" adds.
       const last = inst.xCalls[inst.xCalls.length - 1];
       expect(last?.min).toBe(0);
     });
@@ -3777,7 +3777,7 @@ describe("PlotPanel All data button", () => {
       await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
 
       await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "All data" }));
+        fireEvent.click(screen.getByRole("button", { name: "All Data" }));
       });
 
       // A running trace stays running (grows with the buffer) — only its
@@ -5357,7 +5357,7 @@ describe("PlotPanel solo", () => {
       // Park the fetch a window change asks for…
       mockSampleStall.on = true;
       await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "All data" }));
+        fireEvent.click(screen.getByRole("button", { name: "All Data" }));
       });
       await waitFor(() => expect(mockSampleStall.pending.length).toBeGreaterThan(0));
 

@@ -218,17 +218,23 @@ function findChip(name: string): HTMLButtonElement {
 
 /// The trace panel's selected view mode, as its toolbar shows it.
 function traceMode(): string {
-  return Array.from(document.querySelectorAll(".trace-panel .mode-toggle button.active"))
+  return Array.from(
+    document.querySelectorAll<HTMLButtonElement>(
+      '.trace-panel .chip-seg[aria-label="Trace Mode"] button[aria-pressed="true"]',
+    ),
+  )
     .map((b) => b.textContent?.replace(/\s+/g, " ").trim())
     .join();
 }
 
-/// Click one of the trace panel's mode buttons.
+/// Click one of the trace panel's mode chips.
 function clickMode(label: string): void {
   const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>(".trace-panel .mode-toggle button"),
+    document.querySelectorAll<HTMLButtonElement>(
+      '.trace-panel .chip-seg[aria-label="Trace Mode"] button',
+    ),
   ).find((b) => b.textContent?.replace(/\s+/g, " ").trim() === label);
-  if (!btn) throw new Error(`mode button "${label}" not found`);
+  if (!btn) throw new Error(`mode chip "${label}" not found`);
   fireEvent.click(btn);
 }
 
@@ -328,25 +334,25 @@ describe("element undo", () => {
     await mountApp();
     // The seeded trace view opens by-ID; switching it writes the
     // element's config, which is what the history records.
-    expect(traceMode()).toBe("by ID");
+    expect(traceMode()).toBe("By ID");
     await act(async () => {
-      clickMode("trace");
+      clickMode("Trace");
     });
-    expect(traceMode()).toBe("trace");
+    expect(traceMode()).toBe("Trace");
 
     await act(async () => {
       key({ key: "z", ctrlKey: true });
     });
     // The panel repaints from the restored element (the rehydrate path).
     await waitFor(() => {
-      if (traceMode() !== "by ID") throw new Error(`undo left mode "${traceMode()}"`);
+      if (traceMode() !== "By ID") throw new Error(`undo left mode "${traceMode()}"`);
     });
 
     await act(async () => {
       key({ key: "y", ctrlKey: true });
     });
     await waitFor(() => {
-      if (traceMode() !== "trace") throw new Error(`redo left mode "${traceMode()}"`);
+      if (traceMode() !== "Trace") throw new Error(`redo left mode "${traceMode()}"`);
     });
   }, 30_000);
 
@@ -378,16 +384,16 @@ describe("element undo", () => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
     });
     await act(async () => {
-      clickMode("trace");
+      clickMode("Trace");
     });
-    expect(traceMode()).toBe("trace");
+    expect(traceMode()).toBe("Trace");
 
     // Newest first: the view change, then the panel that preceded it.
     await act(async () => {
       key({ key: "z", ctrlKey: true });
     });
     await waitFor(() => {
-      if (traceMode() !== "by ID") throw new Error(`undo left mode "${traceMode()}"`);
+      if (traceMode() !== "By ID") throw new Error(`undo left mode "${traceMode()}"`);
     });
     expect(document.querySelector(".plot-panel")).not.toBeNull();
 
@@ -398,7 +404,7 @@ describe("element undo", () => {
       if (document.querySelector(".plot-panel"))
         throw new Error("plot panel still present after the second undo");
     });
-    expect(traceMode()).toBe("by ID");
+    expect(traceMode()).toBe("By ID");
 
     // And back out again, oldest-undone first.
     await act(async () => {
@@ -407,12 +413,12 @@ describe("element undo", () => {
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("plot panel not restored");
     });
-    expect(traceMode()).toBe("by ID");
+    expect(traceMode()).toBe("By ID");
     await act(async () => {
       key({ key: "y", ctrlKey: true });
     });
     await waitFor(() => {
-      if (traceMode() !== "trace") throw new Error(`redo left mode "${traceMode()}"`);
+      if (traceMode() !== "Trace") throw new Error(`redo left mode "${traceMode()}"`);
     });
   }, 30_000);
 
@@ -778,13 +784,15 @@ describe("element undo", () => {
     // The next press is a different interaction: a click on the trace
     // panel's mode toggle.
     const modeButton = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(".trace-panel .mode-toggle button"),
-    ).find((b) => b.textContent?.replace(/\s+/g, " ").trim() === "trace")!;
+      document.querySelectorAll<HTMLButtonElement>(
+        '.trace-panel .chip-seg[aria-label="Trace Mode"] button',
+      ),
+    ).find((b) => b.textContent?.replace(/\s+/g, " ").trim() === "Trace")!;
     await act(async () => {
       fireEvent.pointerDown(modeButton);
       fireEvent.click(modeButton);
     });
-    expect(traceMode()).toBe("trace");
+    expect(traceMode()).toBe("Trace");
 
     // Two edits, two steps: the first chord takes back only the mode
     // change, and the drag is still there behind it.
@@ -792,7 +800,7 @@ describe("element undo", () => {
       key({ key: "z", ctrlKey: true });
     });
     await waitFor(() => {
-      if (traceMode() !== "by ID") throw new Error(`undo left mode "${traceMode()}"`);
+      if (traceMode() !== "By ID") throw new Error(`undo left mode "${traceMode()}"`);
     });
     expect(sidePanelWidth()).toBe(before + 40);
 
@@ -856,11 +864,11 @@ describe("element undo", () => {
       if (!document.querySelector(".dbc-panel")) throw new Error("no Database panel yet");
     });
     await act(async () => {
-      clickMode("trace");
+      clickMode("Trace");
     });
-    expect(traceMode()).toBe("trace");
+    expect(traceMode()).toBe("Trace");
 
-    const search = document.querySelector<HTMLInputElement>("input.dbc-panel-search")!;
+    const search = document.querySelector<HTMLInputElement>(".dbc-panel-search input")!;
     await act(async () => {
       fireEvent.change(search, { target: { value: "engine" } });
     });
@@ -872,9 +880,9 @@ describe("element undo", () => {
       key({ key: "z", ctrlKey: true });
     });
     await waitFor(() => {
-      if (traceMode() !== "by ID") throw new Error(`undo left mode "${traceMode()}"`);
+      if (traceMode() !== "By ID") throw new Error(`undo left mode "${traceMode()}"`);
     });
-    expect(document.querySelector<HTMLInputElement>("input.dbc-panel-search")!.value).toBe(
+    expect(document.querySelector<HTMLInputElement>(".dbc-panel-search input")!.value).toBe(
       "engine",
     );
   }, 30_000);
@@ -924,20 +932,23 @@ describe("element undo", () => {
     await waitFor(() => {
       if (!document.querySelector(".rbs-panel")) throw new Error("no RBS panel yet");
     });
-    const runBox = () =>
-      document.querySelector<HTMLInputElement>(".rbs-run-toggle input[type=checkbox]")!;
+    const runChip = () =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".rbs-panel button")).find(
+        (b) => b.getAttribute("aria-label") === "Run" || b.textContent === "Run",
+      )!;
+    const runPressed = () => runChip().getAttribute("aria-pressed") === "true";
 
     // A view change (undoable) …
     await act(async () => {
-      clickMode("trace");
+      clickMode("Trace");
     });
-    expect(traceMode()).toBe("trace");
+    expect(traceMode()).toBe("Trace");
     // … then a bus-facing one (never undoable): arm the simulation.
     await act(async () => {
-      fireEvent.click(runBox());
+      fireEvent.click(runChip());
     });
     await waitFor(() => {
-      if (!runBox().checked) throw new Error("run flag did not take");
+      if (!runPressed()) throw new Error("run flag did not take");
     });
     const armed = rbsHostCalls();
     expect(armed).toContain("rbs_set_run");
@@ -948,9 +959,9 @@ describe("element undo", () => {
       key({ key: "z", ctrlKey: true });
     });
     await waitFor(() => {
-      if (traceMode() !== "by ID") throw new Error(`undo left mode "${traceMode()}"`);
+      if (traceMode() !== "By ID") throw new Error(`undo left mode "${traceMode()}"`);
     });
-    expect(runBox().checked).toBe(true);
+    expect(runPressed()).toBe(true);
     expect(rbsHostCalls()).toEqual(armed);
 
     // Same on the way back out.
@@ -958,9 +969,9 @@ describe("element undo", () => {
       key({ key: "y", ctrlKey: true });
     });
     await waitFor(() => {
-      if (traceMode() !== "trace") throw new Error(`redo left mode "${traceMode()}"`);
+      if (traceMode() !== "Trace") throw new Error(`redo left mode "${traceMode()}"`);
     });
-    expect(runBox().checked).toBe(true);
+    expect(runPressed()).toBe(true);
     expect(rbsHostCalls()).toEqual(armed);
   }, 30_000);
 });

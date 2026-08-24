@@ -33,6 +33,7 @@ import { arrayRowSpace, type GridviewAdapter, type GridviewRow as GridviewRowMod
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { NameText } from "./NameText";
+import { ChipButton } from "./ChipButton";
 
 /// This panel's persisted view state — the column layout, sort, the
 /// toolbar filters and the wash toggle. All workspace state (nothing
@@ -363,31 +364,30 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
               <button
                 key={s}
                 type="button"
-                className="view-signals-status-filter"
+                className="status-chip chip-button"
                 aria-pressed={pressed}
                 title={pressed ? `Stop filtering to ${STATUS_LABEL[s]}` : `Filter to ${STATUS_LABEL[s]}`}
                 onClick={() => toggleStatus(s)}
               >
                 <i className={`view-signals-chip view-signals-chip--${STATUS_CLASS[s]}`} aria-hidden="true" />
-                <span>
+                <span className="status-chip-label">
                   {STATUS_LABEL[s]} ({count})
                 </span>
               </button>
             );
           })}
         </span>
-        <span className="view-signals-busfilter">
-          <button
-            type="button"
-            className="view-signals-busbtn"
-            aria-haspopup="menu"
-            aria-expanded={busMenuOpen}
-            onClick={() => setBusMenuOpen((v) => !v)}
-          >
-            {busFilter.size === 0
-              ? "Bus: all"
-              : `Bus: ${busOptions.filter((o) => busFilter.has(o.key)).map((o) => o.label).join(", ")}`}
-          </button>
+        <span className="chip-menu">
+          <ChipButton
+            label={
+              busFilter.size === 0
+                ? "Bus: All"
+                : `Bus: ${busOptions.filter((o) => busFilter.has(o.key)).map((o) => o.label).join(", ")}`
+            }
+            title="filter by bus"
+            menuOpen={busMenuOpen}
+            onPress={() => setBusMenuOpen((v) => !v)}
+          />
           {busMenuOpen && (
             <div ref={busMenuRef} className="view-signals-busmenu" role="menu">
               {busOptions.map((o) => (
@@ -412,26 +412,18 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
             </div>
           )}
         </span>
-        <label
-          className="view-signals-wash-toggle"
+        <ChipButton
+          label="Row Highlights"
           title="highlight each row's background by its status; the status column always names it"
-        >
-          <input
-            type="checkbox"
-            checked={washesOn}
-            onChange={(e) => setWashesOn(e.target.checked)}
-          />
-          row highlights
-        </label>
+          pressed={washesOn}
+          onPress={() => setWashesOn((v) => !v)}
+        />
         <span className="spacer" />
-        <button
-          type="button"
-          className="view-signals-counts"
+        <ChipButton
+          label={countsLabel}
           title={onAttention ? "Show every status again" : "Filter to the signals needing attention"}
-          onClick={toggleAttentionShortcut}
-        >
-          {countsLabel}
-        </button>
+          onPress={toggleAttentionShortcut}
+        />
       </div>
       {/* The rows container is the gridview container (ADR 0044): it
           holds focus and names the active row via

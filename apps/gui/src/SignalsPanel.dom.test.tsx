@@ -315,7 +315,7 @@ describe("SignalsPanel", () => {
     // host-side, so the proof is the next `fetch_signal_page` carrying
     // the new pattern in the same slot.
     renderPanel({ params: { selection: { keys: [], patterns: ["EngineSpeed"] } } });
-    fireEvent.click(screen.getByRole("button", { name: /selection \(0 \+ 1 patterns\)/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Selection \(0 \+ 1 Patterns\)/ }));
     const input = screen.getByLabelText("pattern 1") as HTMLInputElement;
     expect(input.value).toBe("EngineSpeed");
     fireEvent.change(input, { target: { value: "EngineTemp" } });
@@ -326,12 +326,12 @@ describe("SignalsPanel", () => {
       expect(sel?.patterns).toEqual(["EngineTemp"]);
     });
     // Edited in place: still one pattern, not removed-and-re-added.
-    expect(screen.getByRole("button", { name: /selection \(0 \+ 1 patterns\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Selection \(0 \+ 1 Patterns\)/ })).toBeInTheDocument();
   });
 
   it("abandons a pattern edit on Escape", async () => {
     renderPanel({ params: { selection: { keys: [], patterns: ["EngineSpeed"] } } });
-    fireEvent.click(screen.getByRole("button", { name: /selection \(0 \+ 1 patterns\)/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Selection \(0 \+ 1 Patterns\)/ }));
     const input = screen.getByLabelText("pattern 1") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "nonsense" } });
     fireEvent.keyDown(input, { key: "Escape" });
@@ -370,7 +370,7 @@ describe("SignalsPanel", () => {
     });
     // The toolbar's selection summary reflects the new manual pick…
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /selection \(1\)/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Selection \(1\)/ })).toBeInTheDocument();
     });
     // …and the next host fetch carries the key.
     await waitFor(() => {
@@ -438,6 +438,25 @@ describe("SignalsPanel", () => {
         ),
       ).toBe(true);
     });
+  });
+});
+
+describe("SignalsPanel toolbar", () => {
+  // The Selection chip and the Add Section chip are two different chips
+  // with two different effects — one opens an in-panel editor, the
+  // other creates a section — so a test that only checks "something
+  // changed" cannot tell one wired to the other's handler.
+  it("opens and closes the selection editor from its own chip, leaving no section behind", () => {
+    renderPanel();
+    const selectionChip = () => screen.getByRole("button", { name: /^Selection \(/ });
+    expect(document.querySelector(".signals-selection-editor")).toBeNull();
+    fireEvent.click(selectionChip());
+    expect(document.querySelector(".signals-selection-editor")).not.toBeNull();
+    expect(selectionChip()).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(selectionChip());
+    expect(document.querySelector(".signals-selection-editor")).toBeNull();
+    // Toggling the editor never touches the section list.
+    expect(document.querySelector(".signals-section-header")).toBeNull();
   });
 });
 
