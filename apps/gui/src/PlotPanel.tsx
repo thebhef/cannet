@@ -265,6 +265,8 @@ import {
   applySplitterDelta,
   axisCollapsedFromRaw,
   axisWeightsFromRaw,
+  bottomDrawingAxis,
+  topDrawingAxis,
   collapsedRunHeads,
   equalizePair,
   pruneAxisCollapsed,
@@ -2344,6 +2346,26 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// Which collapsed axis heads each contiguous run of them — one
   /// shared drag handle per run rather than one per axis (ADR 0026).
   const runHeadFlags = useMemo(() => collapsedRunHeads(collapsedFlags), [collapsedFlags]);
+  /// The axis that carries the bottom-of-column chrome. Not simply the
+  /// last rendered axis: a collapsed one draws no canvas, so the x-axis
+  /// time label and cursor delta have to fall back up the stack to the
+  /// lowest axis that still has a plot.
+  ///
+  /// With the whole stack collapsed there is nothing to carry them and
+  /// the answer is unobservable — so it stays where it was rather than
+  /// moving. `isLast` is a uPlot-rebuild input; letting it flip on a
+  /// canvas-less axis buys a rebuild that paints nothing.
+  const bottomAxisIdx = useMemo(
+    () => bottomDrawingAxis(collapsedFlags) ?? collapsedFlags.length - 1,
+    [collapsedFlags],
+  );
+  /// The axis that carries the top-of-column chrome — the event marker
+  /// labels. Same rule as `bottomAxisIdx`, from the other end:
+  /// collapsing the topmost area used to take the labels with it.
+  const topAxisIdx = useMemo(
+    () => topDrawingAxis(collapsedFlags) ?? 0,
+    [collapsedFlags],
+  );
 
   // Iterate the *derived* axes, not the parent areas: `reportSeries`
   // stores each axis's sampled series under its derived id (which in
@@ -2693,8 +2715,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
               label={areaLabels.get(parent.id) ?? "Area"}
               subtitle={d.subtitle}
               areaSignalCount={parent.signals.length}
-              isFirst={idx === 0}
-              isLast={idx === renderedAxes.length - 1}
+              isFirst={idx === topAxisIdx}
+              isLast={idx === bottomAxisIdx}
               // Focus marks the *logical area* the toolbar's "add
               // signal" targets, so every derived axis of the focused
               // parent gets the outline — deliberate: the drop target

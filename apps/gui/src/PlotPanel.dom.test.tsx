@@ -3816,6 +3816,25 @@ describe("PlotPanel area collapse", () => {
     return last.areas ?? [];
   }
 
+  /// The x-axis config of each *drawing* uPlot, top to bottom. Two
+  /// filters, both needed: a superseded instance stays in the mock's
+  /// array (so keep the newest per mounted root, as `liveInstances`
+  /// does), and a collapsed area keeps its last instance's root in the
+  /// document while drawing nothing — which is the very state under
+  /// test, so it must not be counted.
+  function liveXAxes(): { label?: unknown }[] {
+    const all = uplotInstances as unknown as (FakeUPlotInst & {
+      opts: { axes?: { scale?: string; label?: unknown }[] };
+    })[];
+    const live: typeof all = [];
+    for (let i = all.length - 1; i >= 0; i--) {
+      const area = all[i].root.closest(".plot-area");
+      if (area === null || area.classList.contains("collapsed")) continue;
+      if (!live.some((l) => l.root === all[i].root)) live.unshift(all[i]);
+    }
+    return live.map((u) => (u.opts.axes ?? []).find((a) => a.scale !== "y") ?? {});
+  }
+
   it("collapses and expands an area from its head toggle, persisting the flag", () => {
     const registry = makeRegistry({
       id: "el-collapse",
@@ -3887,6 +3906,65 @@ describe("PlotPanel area collapse", () => {
     expect(areas.length).toBe(1);
     expect(areas[0].classList.contains("collapsed")).toBe(true);
     expect(screen.getAllByRole("button", { name: "expand plot area" }).length).toBe(1);
+  });
+
+  it("keeps the x-axis time label when the bottom area is collapsed", async () => {
+    // Bottom-of-column chrome — the x-axis time label, and with it the
+    // A/B cursor delta — belongs to the lowest axis that *draws*, not to
+    // the last one in the stack. A collapsed area is a heading row with
+    // no canvas behind it, so anchoring positionally made both vanish
+    // the moment the bottom area was collapsed.
+    const registry = makeRegistry({
+      id: "el-collapse-xaxis",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+          { id: "a2", collapsed: true, signals: [sig("EngineTemp", "degC")] },
+        ],
+      },
+    });
+    await withSizedCanvas(async () => {
+      renderPanel({ params: { elementId: "el-collapse-xaxis" }, registry });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      // One area draws; the collapsed one has no uPlot at all.
+      const live = liveXAxes();
+      expect(live).toHaveLength(1);
+      expect(live[0].label).toBeDefined();
+    });
+  });
+
+  it("moves the x-axis time label back down when the bottom area is expanded", async () => {
+    const registry = makeRegistry({
+      id: "el-collapse-xaxis-back",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+          { id: "a2", signals: [sig("EngineTemp", "degC")] },
+        ],
+      },
+    });
+    await withSizedCanvas(async () => {
+      renderPanel({ params: { elementId: "el-collapse-xaxis-back" }, registry });
+      const settle = async () => {
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 60));
+        });
+      };
+      await settle();
+      // Two drawing axes: only the lower one carries the label.
+      expect(liveXAxes().map((a) => a.label !== undefined)).toEqual([false, true]);
+
+      // Collapse the lower area; the label moves up to the one still drawing.
+      fireEvent.click(screen.getAllByRole("button", { name: "collapse plot area" })[1]);
+      await settle();
+      expect(liveXAxes().map((a) => a.label !== undefined)).toEqual([true]);
+
+      fireEvent.click(screen.getByRole("button", { name: "expand plot area" }));
+      await settle();
+      expect(liveXAxes().map((a) => a.label !== undefined)).toEqual([false, true]);
+    });
   });
 
   it("carries the pattern match chip on a collapsed area's heading", async () => {
@@ -7830,5 +7908,163 @@ describe("PlotPanel authoring an event from the plot (ADR 0056)", () => {
     });
     const note = addNote.mock.calls[addNote.mock.calls.length - 1]![0] as Note;
     expect(note.subjects).toEqual([]);
+  });
+});
+
+describe("where the A/B cursors put their timestamps", () => {
+  const sig = (signalName: string, unit: string) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+    color: "#4ecbff",
+  });
+
+  /// Every string each stacked area's draw hook painted, top to bottom,
+  /// with a pair of x cursors already placed.
+  async function textsPerArea(areas: unknown[]): Promise<string[][]> {
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel({
+        params: { elementId: "el-ab-label" },
+        registry: makeRegistry({
+          id: "el-ab-label",
+          config: { areas, cursorX: { a: 0.5, b: 1.5 } },
+        }),
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      const all = uplotInstances as FakeUPlotInst[];
+      const live: FakeUPlotInst[] = [];
+      for (let i = all.length - 1; i >= 0; i--) {
+        const area = all[i].root.closest(".plot-area");
+        if (area === null || area.classList.contains("collapsed")) continue;
+        if (!live.some((l) => l.root === all[i].root)) live.unshift(all[i]);
+      }
+      for (const u of live) u.drawOps.length = 0;
+      await act(async () => {
+        for (const u of live) u.fire("draw");
+      });
+      return live.map((u) =>
+        u.drawOps.filter((o) => o.op === "fillText").map((o) => String((o.args as unknown[])[0])),
+      );
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  }
+
+  const abLabels = (texts: string[]) => texts.filter((t) => /^[AB] /.test(t));
+
+  it("labels the pair once, on the bottom area", async () => {
+    // One x is one time however many areas it crosses. The lines cross
+    // all of them — that is what lines a reading in one area up with a
+    // reading in another — but the timestamp is said once, beside the
+    // x-axis time label and the delta chip.
+    const perArea = await textsPerArea([
+      { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+      { id: "a2", signals: [sig("EngineTemp", "degC")] },
+    ]);
+    expect(perArea).toHaveLength(2);
+    expect(abLabels(perArea[0])).toEqual([]);
+    expect(abLabels(perArea[1])).toHaveLength(2);
+  });
+
+  it("still labels them on a single-area panel", async () => {
+    const perArea = await textsPerArea([{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }]);
+    expect(abLabels(perArea[0])).toHaveLength(2);
+  });
+
+  it("moves the labels up when the bottom area is collapsed", async () => {
+    // Same rule as the x-axis time label: the bottom *drawing* axis
+    // carries it, and a collapsed area draws nothing.
+    const perArea = await textsPerArea([
+      { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+      { id: "a2", collapsed: true, signals: [sig("EngineTemp", "degC")] },
+    ]);
+    expect(perArea).toHaveLength(1);
+    expect(abLabels(perArea[0])).toHaveLength(2);
+  });
+});
+
+describe("where the event marker labels sit", () => {
+  const sig = (signalName: string, unit: string) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+    color: "#4ecbff",
+  });
+
+  /// Every string each drawing area painted, top to bottom, with one
+  /// note on the timeline.
+  async function textsPerArea(areas: unknown[]): Promise<string[][]> {
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel({
+        params: { elementId: "el-marker-top" },
+        registry: makeRegistry({ id: "el-marker-top", config: { areas } }),
+        notes: {
+          notes: [{ id: "n1", timestampNs: 1_000_000_000, label: "brake on" }],
+          addNote: () => {},
+          renameNote: () => {},
+          recolorNote: () => {},
+          describeNote: () => {},
+          retagNote: () => {},
+          removeNote: () => {},
+          linkEvents: () => {},
+          unlinkEvents: () => {},
+          setNoteSubjects: () => {},
+        },
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      const all = uplotInstances as FakeUPlotInst[];
+      const live: FakeUPlotInst[] = [];
+      for (let i = all.length - 1; i >= 0; i--) {
+        const area = all[i].root.closest(".plot-area");
+        if (area === null || area.classList.contains("collapsed")) continue;
+        if (!live.some((l) => l.root === all[i].root)) live.unshift(all[i]);
+      }
+      for (const u of live) u.drawOps.length = 0;
+      await act(async () => {
+        for (const u of live) u.fire("draw");
+      });
+      return live.map((u) =>
+        u.drawOps.filter((o) => o.op === "fillText").map((o) => String((o.args as unknown[])[0])),
+      );
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  }
+
+  it("labels the markers once, on the top area", async () => {
+    const perArea = await textsPerArea([
+      { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+      { id: "a2", signals: [sig("EngineTemp", "degC")] },
+    ]);
+    expect(perArea).toHaveLength(2);
+    expect(perArea[0]).toContain("brake on");
+    expect(perArea[1]).not.toContain("brake on");
+  });
+
+  it("moves the labels down when the top area is collapsed", async () => {
+    // Collapsing the topmost area used to take the marker labels with
+    // it — a collapsed area is a heading row with no canvas to draw on.
+    const perArea = await textsPerArea([
+      { id: "a1", collapsed: true, signals: [sig("EngineSpeed", "rpm")] },
+      { id: "a2", signals: [sig("EngineTemp", "degC")] },
+    ]);
+    expect(perArea).toHaveLength(1);
+    expect(perArea[0]).toContain("brake on");
   });
 });
