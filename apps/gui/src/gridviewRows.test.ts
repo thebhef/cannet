@@ -18,8 +18,9 @@ interface Node {
   kind: GridviewRowKind;
   /// Branch children — present in the row space only while expanded.
   children?: Node[];
-  /// Leaf content block — expanding it adds no rows.
-  content?: boolean;
+  /// How many rows this leaf discloses when it is open. Content is
+  /// rows, so expanding one grows the space exactly as a branch does.
+  content?: number;
 }
 
 const TREE: Node[] = [
@@ -28,7 +29,7 @@ const TREE: Node[] = [
     kind: "branch",
     children: [
       { id: "msg", kind: "branch", children: [{ id: "sig", kind: "leaf" }] },
-      { id: "frame", kind: "leaf", content: true },
+      { id: "frame", kind: "leaf", content: 2 },
     ],
   },
   { id: "empty-branch", kind: "branch" },
@@ -36,7 +37,8 @@ const TREE: Node[] = [
 ];
 
 /// The visible rows for an expansion set: a collapsed branch hides its
-/// subtree, an expanded leaf still occupies exactly one row.
+/// subtree, and an open leaf's disclosed content follows it as rows of
+/// its own.
 function flatten(nodes: readonly Node[], expanded: ReadonlySet<string>, depth = 0): GridviewRow[] {
   const out: GridviewRow[] = [];
   for (const n of nodes) {
@@ -44,11 +46,16 @@ function flatten(nodes: readonly Node[], expanded: ReadonlySet<string>, depth = 
     out.push({
       id: n.id,
       kind: n.kind,
-      expandable: n.kind === "branch" ? children.length > 0 : n.content === true,
+      expandable: n.kind === "branch" ? children.length > 0 : (n.content ?? 0) > 0,
       depth,
     });
-    if (n.kind === "branch" && expanded.has(n.id)) {
+    if (!expanded.has(n.id)) continue;
+    if (n.kind === "branch") {
       out.push(...flatten(children, expanded, depth + 1));
+    } else {
+      for (let c = 0; c < (n.content ?? 0); c += 1) {
+        out.push({ id: `${n.id}/c${c}`, kind: "leaf", expandable: false, depth: depth + 1 });
+      }
     }
   }
   return out;
@@ -82,13 +89,14 @@ describe("row space", () => {
     });
   });
 
-  it("grows when a branch expands and not when a leaf's content does", () => {
+  it("grows whenever a row opens, branch children and leaf content alike", () => {
     expect(space().count).toBe(3);
     expect(space("bus").count).toBe(5);
     expect(space("bus", "msg").count).toBe(6);
-    // `frame` is a leaf with content: expanding it grows the row, not
-    // the row space.
-    expect(space("bus", "frame").count).toBe(5);
+    // `frame` is a leaf with content, and content is rows: opening it
+    // puts its two disclosed rows in the space.
+    expect(space("bus", "frame").count).toBe(7);
+    expect(space("bus", "frame").rowIdAt(3)).toBe("frame/c0");
   });
 
   it("reports a childless branch as not expandable", () => {
@@ -150,14 +158,13 @@ describe("cursor expansion (Right)", () => {
     );
   });
 
-  it("expands a leaf's content block and then does nothing", () => {
+  it("expands a leaf's content and then steps into its first row", () => {
     expect(cursorAction(space("bus"), "frame", "ArrowRight", 10)).toEqual({
       type: "expand",
       id: "frame",
     });
-    expect(cursorAction(space("bus", "frame"), "frame", "ArrowRight", 10)).toEqual({
-      type: "none",
-    });
+    const s = space("bus", "frame");
+    expect(cursorAction(s, "frame", "ArrowRight", 10)).toEqual(move(s, "frame/c0"));
   });
 
   it("does nothing on a plain leaf or a childless branch", () => {
@@ -183,7 +190,7 @@ describe("cursor collapse (Left)", () => {
     });
   });
 
-  it("collapses an open leaf's content block", () => {
+  it("collapses an open leaf's content", () => {
     expect(cursorAction(space("bus", "frame"), "frame", "ArrowLeft", 10)).toEqual({
       type: "collapse",
       id: "frame",
@@ -195,6 +202,11 @@ describe("cursor collapse (Left)", () => {
     expect(cursorAction(s, "msg", "ArrowLeft", 10)).toEqual({ type: "collapse", id: "msg" });
     expect(cursorAction(s, "sig", "ArrowLeft", 10)).toEqual(move(s, "msg"));
     expect(cursorAction(s, "frame", "ArrowLeft", 10)).toEqual(move(s, "bus"));
+  });
+
+  it("walks out of a content row to the row that disclosed it", () => {
+    const s = space("bus", "frame");
+    expect(cursorAction(s, "frame/c1", "ArrowLeft", 10)).toEqual(move(s, "frame"));
   });
 
   it("does nothing at the top level with nothing to collapse", () => {

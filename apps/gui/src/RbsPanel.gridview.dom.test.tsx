@@ -2,9 +2,10 @@
 //
 // The RBS panel on the shared gridview (ADR 0044). The tree is a
 // headless single-column instance: buses and ECUs are branches, a
-// message row is a leaf whose signal table is disclosed content and adds
-// no rows. Search runs through the layer's filter slot, which replaced
-// the panel's own fzf copy.
+// message row is a leaf whose signal table is disclosed content — an
+// editor face rather than a list of rows, so it is a block below the
+// row and not rows of the space (ADR 0044). Search runs through the
+// layer's filter slot, which replaced the panel's own fzf copy.
 //
 // `RbsPanel.dom.test.tsx` remains the panel's contract net (the host
 // commands, the value cells, the menus); this file covers only what the
@@ -206,10 +207,26 @@ describe("RbsPanel on the gridview", () => {
     fireEvent.keyDown(tree, { key: "ArrowRight" });
     // The content block appears…
     expect(screen.getByLabelText("PackVoltage value")).toBeInTheDocument();
-    // …and the row space is unchanged: a leaf's content adds no rows.
+    // …and the row space is unchanged: this content is an editor face,
+    // reached by Tab, so it is a block rather than rows (ADR 0044).
     expect(document.querySelectorAll("[role=treeitem]").length).toBe(rowsBefore);
     fireEvent.keyDown(tree, { key: "ArrowLeft" });
     expect(screen.queryByLabelText("PackVoltage value")).not.toBeInTheDocument();
+  });
+
+  it("clicking inside a disclosed signal table leaves the message open", async () => {
+    // The defect the trace views had: the toggle must be the message's
+    // own line, never the footprint of what it disclosed. Here the
+    // table is a sibling of the row rather than a child of it, so the
+    // click has nothing to bubble into — this pins that.
+    renderPanel();
+    await screen.findByText("PackStatus");
+    fireEvent.click(screen.getByLabelText("toggle 0x100"));
+    const name = await screen.findByText("PackVoltage");
+    expect(rowOf("PackStatus")).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(name);
+    expect(rowOf("PackStatus")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("PackVoltage value")).toBeInTheDocument();
   });
 
   it("a value input inside a row keeps its own keys", async () => {

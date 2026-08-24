@@ -263,6 +263,21 @@ describe("signal view cursor", () => {
     });
   });
 
+  it("clicking a signal inside a section leaves the section open", async () => {
+    // The defect the trace views had: a click on what a row disclosed
+    // must act on the row clicked, not on the one that disclosed it.
+    // Here a section's signals are already rows of the space, each its
+    // own element — this pins that they stay that way.
+    renderPanel(SECTIONED);
+    await screen.findByText(/EngineSpeed/);
+    const section = () => screen.getByRole("button", { name: "Pack section" });
+    expect(section()).toHaveAttribute("aria-expanded", "true");
+    const row = screen.getByText(/EngineSpeed/).closest(".trace-row") as HTMLElement;
+    fireEvent.click(row);
+    expect(section()).toHaveAttribute("aria-expanded", "true");
+    expect(selectedText().join()).toContain("EngineSpeed");
+  });
+
   it("moves the cursor with no sections at all, over a flat row space", async () => {
     ROWS = [signalRow("Coolant", 257), signalRow("EngineSpeed", 256)];
     renderPanel();
