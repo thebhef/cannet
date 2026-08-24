@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The chip language — GUI polish prototype</title>
+<style>
+/* Dark tokens: verbatim from apps/gui/src/index.css :root.
+   Light: verbatim from its [data-theme="light"] block, except the few
+   marked (*) — carried across from the task 89 / 101 / 107 prototypes. */
+:root {
+  --divider:#2c3444; --divider-subtle:#1f2630;
+  --surface-app:#0e1116; --surface-canvas:#0b1220; --surface-field:#0f172a;
+  --surface-row:#11161e; --surface-hover:#1c2530;
+  --surface-section-header:#131a24; --surface-toolbar-control:#1c2230;
+  --surface-toolbar-control-hover:#2a3447;
+  --text-body:#d8dee9; --text-data:#c5d2e0; --text-label:#e6ecf5; --text-muted:#94a3b8;
+  --text-faint:#64748b; --text-dim:#475569; --text-message:#93c5fd; --text-source:#a5b4fc;
+  --border-subtle:#243040; --border-wash:rgb(255 255 255 / 0.14);
+  --border-wash-strong:rgb(255 255 255 / 0.28);
+  --accent-marker:#4ecbff;
+  --warn-border:#eab308; --warn-text:#fbbf24;
+  --danger-text:#f87171;
+  --ok-text:#4ade80; --ok-dot:#22c55e;
+  --modified-marker:#4f8ef7; --modified-text:#4f8ef7;
+  --surface-pop:#111827; --shadow-menu:rgba(0,0,0,0.45);
+  --scope-text:#5eead4;
+  --danger-badge:#dc2626; --text-on-solid:#fff;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --divider:#d3d8e0; --divider-subtle:#e4e7ec;
+  --surface-app:#f4f5f7; --surface-canvas:#ffffff; --surface-field:#ffffff;
+  --surface-row:#ffffff; --surface-hover:#eceff3;
+  --surface-section-header:#eaedf2; --surface-toolbar-control:#e8ebf0;
+  --surface-toolbar-control-hover:#dbe0e9;
+  --text-body:#1f2937; --text-data:#3b4757; --text-label:#0f172a; --text-muted:#5b6879;
+  --text-faint:#78849a; --text-dim:#98a3b3; --text-message:#1d4ed8; --text-source:#4338ca;
+  --border-subtle:#d8dce3; --border-wash:rgb(15 23 42 / 0.14);
+  --border-wash-strong:rgb(15 23 42 / 0.28);
+  --accent-marker:#0263a8;              /* (*) */
+  --warn-border:#b8860b;                /* (*) */
+  --warn-text:#7a4a06;
+  --danger-text:#a01212;                /* (*) */
+  --ok-text:#116434; --ok-dot:#16a34a;
+  --modified-marker:#2563eb; --modified-text:#1d4ed8;
+  --surface-pop:#ffffff; --shadow-menu:rgba(15,23,42,0.18);
+  --scope-text:#166f5c;
+  --danger-badge:#dc2626; --text-on-solid:#fff;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--surface-app); color:var(--text-body);
+  font:13px/1.45 "Segoe UI", system-ui, sans-serif; }
+.wrap { padding:18px; max-width:1120px; margin:0 auto; }
+h1 { font-size:16px; margin:0 0 .2rem; color:var(--text-label); }
+h2 { font-size:13px; margin:1.8rem 0 .5rem; color:var(--text-label);
+  border-bottom:1px solid var(--divider); padding-bottom:.3rem; }
+p.note { color:var(--text-muted); margin:.2rem 0 1rem; max-width:74ch; }
+.bar { display:flex; gap:.5rem; align-items:center; margin-bottom:1rem; }
+button.plain { font:inherit; color:var(--text-body);
+  background:var(--surface-toolbar-control); border:1px solid var(--border-subtle);
+  border-radius:3px; padding:.2rem .5rem; cursor:pointer; }
+button.plain:hover { background:var(--surface-toolbar-control-hover); }
+.caption { color:var(--text-faint); font-size:12px; }
+code { color:var(--text-source); }
+ul.q { color:var(--text-muted); max-width:74ch; padding-left:1.1rem; }
+ul.q li { margin:.3rem 0; }
+
+/* === the bars under comparison === */
+.appbar { display:flex; align-items:center; gap:.4rem; padding:.35rem .5rem;
+  background:var(--surface-section-header); border:1px solid var(--divider);
+  border-radius:4px; flex-wrap:wrap; }
+.sep { width:1px; align-self:stretch; margin:2px 2px; background:var(--divider); }
+
+/* Today's buttons, approximated for the before-row. */
+.legacy { font:inherit; color:var(--text-body); background:var(--surface-toolbar-control);
+  border:1px solid var(--border-subtle); border-radius:3px; padding:.2rem .55rem;
+  cursor:pointer; white-space:nowrap; }
+
+/* === The chip ===
+   One silhouette for every control: task 103's SHIPPED `.status-chip`
+   (StatusChip.tsx / index.css, ADR 0055) extended from status to
+   commands — 2px radius, --border-wash hairline, 12px type, ~22px
+   tall, the full idle/connecting/connected/degraded/failed state
+   vocabulary. State tints the hairline and the dot; nothing resizes
+   (the shipped component tests exactly that invariant). */
+.chip { display:inline-flex; align-items:center; gap:.35rem; font:inherit;
+  font-size:12px; height:22px; color:var(--text-body); cursor:pointer;
+  background:var(--surface-toolbar-control);
+  border:1px solid var(--border-wash); border-radius:2px;
+  padding:0 .45rem; white-space:nowrap;
+  transition:background .12s, border-color .12s; }
+.chip:hover { background:var(--surface-toolbar-control-hover); }
+.chip:focus-visible { outline:2px solid var(--accent-marker); outline-offset:1px; }
+.chip:disabled { color:var(--text-dim); cursor:default; }
+.chip:disabled:hover { background:var(--surface-toolbar-control); }
+.chip svg { width:13px; height:13px; flex:none; stroke:currentColor;
+  fill:none; stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
+.chip.icon-only { padding:0; width:22px; justify-content:center; }
+.chip[aria-pressed="true"] { border-color:var(--accent-marker);
+  color:var(--text-label); background:var(--surface-hover); }
+.chip .badge { background:var(--danger-badge); color:var(--text-on-solid);
+  border-radius:2px; padding:0 .28rem; font-size:11px; font-weight:600;
+  line-height:15px; font-variant-numeric:tabular-nums; }
+.chip .dot { width:.5rem; height:.5rem; border-radius:2px; flex:none;
+  background:var(--text-dim); border:1px solid var(--border-wash-strong); }
+/* the connection chip: state on the hairline, per the approved prototype */
+.chip[data-state="connected"] { border-color:var(--ok-dot); }
+.chip[data-state="connected"] .dot { background:var(--ok-dot); }
+.chip[data-state="connected"] { color:var(--ok-text); }
+.chip[data-state="connecting"] { border-color:var(--accent-marker); }
+.chip[data-state="connecting"] .dot { background:var(--accent-marker);
+  animation:pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
+.chip[data-state="degraded"] { border-color:var(--warn-border); color:var(--warn-text); }
+.chip[data-state="degraded"] .dot { background:var(--warn-border); }
+.chip[data-state="failed"] { border-color:var(--danger-text); color:var(--danger-text); }
+.chip[data-state="failed"] .dot { background:var(--danger-text); }
+/* busy (import running): the accent hairline pulses */
+.chip[aria-busy="true"] { border-color:var(--accent-marker);
+  animation:pulse 1.2s ease-in-out infinite; }
+
+/* segmented chip: one hairline around N segments (run controls, mode) */
+.seg { display:inline-flex; height:22px; border:1px solid var(--border-wash);
+  border-radius:2px; overflow:hidden; }
+.seg .chip { border:none; border-radius:0; height:20px; }
+.seg .chip + .chip { border-left:1px solid var(--border-wash); }
+
+/* chip-shaped text field (the plot's solo box) */
+.chipfield { display:inline-flex; align-items:center; gap:.3rem; height:22px;
+  background:var(--surface-field); border:1px solid var(--border-wash);
+  border-radius:2px; padding:0 .4rem; }
+.chipfield svg { width:13px; height:13px; stroke:var(--text-faint); fill:none;
+  stroke-width:1.4; stroke-linecap:round; }
+.chipfield input { font:inherit; font-size:12px; background:none; border:none;
+  outline:none; color:var(--text-body); width:9rem; }
+
+/* drop menu, same shape as the status-bar prototype's */
+.menu-wrap { position:relative; display:inline-flex; }
+.drop { position:absolute; top:100%; left:0; margin:4px 0 0 0; padding:4px;
+  list-style:none; display:flex; flex-direction:column; gap:2px;
+  background:var(--surface-pop); border:1px solid var(--border-subtle);
+  border-radius:4px; z-index:50; box-shadow:0 4px 12px var(--shadow-menu); }
+.drop[hidden] { display:none; }
+.drop .chip { border-color:transparent; width:100%; justify-content:flex-start; }
+.drop .chip:hover { border-color:var(--border-wash); }
+
+/* === Status bar: verbatim from toolbar-status-bar.html (tasks 103/101),
+   not redesigned here — it already speaks the chip language. === */
+.statusbar { display:flex; align-items:center; gap:.45rem;
+  padding:.26rem .4rem; background:var(--surface-section-header);
+  border:1px solid var(--divider); border-radius:0 0 4px 4px;
+  flex-wrap:nowrap; white-space:nowrap; }
+.statusbar > * { flex:none; }
+.statusbar .spacer { flex:1 1 auto; }
+.sb-sep { width:1px; align-self:stretch; background:var(--divider); margin:0 .15rem; }
+.chip .label { white-space:nowrap; flex:1 1 auto; text-align:left; }
+.chip .count { color:var(--text-faint); font-variant-numeric:tabular-nums; flex:none; }
+.chip[data-state="connected"] .label { color:var(--ok-text); }
+.w-conn { width:8.75rem; }
+/* the shipped notices slot (task 104): progress + its response */
+.sb-notice { display:inline-flex; align-items:center; gap:.35rem; font-size:12px;
+  color:var(--text-muted); min-width:0; overflow:hidden; white-space:nowrap; }
+.sb-notice b { color:var(--text-data); font-variant-numeric:tabular-nums; }
+.prog { display:inline-block; width:5.5rem; height:4px; border-radius:2px;
+  background:var(--divider-subtle); overflow:hidden; flex:none; }
+.prog > i { display:block; height:100%; background:var(--accent-marker); }
+.chip.cancel { border-color:var(--danger-text); color:var(--danger-text);
+  height:18px; font-size:11px; padding:0 .35rem; }
+.metric { display:inline-flex; align-items:baseline; gap:.28rem; font-size:12px; }
+.metric b { color:var(--text-data); font-weight:600;
+  font-variant-numeric:tabular-nums; }
+.metric span { color:var(--text-faint); }
+.metric.live b { color:var(--text-message); }
+.iconbtn { display:inline-flex; align-items:center; gap:.28rem; font:inherit;
+  font-size:12px; color:var(--text-muted); cursor:pointer;
+  background:var(--surface-toolbar-control);
+  border:1px solid var(--border-wash); border-radius:2px;
+  padding:.14rem .35rem; }
+.iconbtn:hover { background:var(--surface-toolbar-control-hover); color:var(--text-body); }
+.iconbtn svg { display:block; }
+.iconbtn[data-state="failed"] { border-color:var(--danger-text); color:var(--danger-text); }
+.iconbtn .n { font-variant-numeric:tabular-nums; font-weight:600; }
+.chip[data-state="degraded"] .label { color:var(--warn-text); }
+.mockbar { border:1px solid var(--divider); border-radius:4px; margin:.5rem 0 .15rem; overflow:visible; }
+.mockbar .statusbar { border:none; }
+.more { display:inline-flex; align-items:center; gap:.35rem; font:inherit;
+  font-size:12px; color:var(--text-body); cursor:pointer;
+  background:var(--surface-toolbar-control);
+  border:1px solid var(--border-wash); border-radius:2px;
+  padding:.14rem .45rem; }
+.more:hover { background:var(--surface-toolbar-control-hover); }
+.more .badge { background:var(--danger-badge); color:var(--text-on-solid);
+  border-radius:2px; padding:0 .28rem; font-size:11px; font-weight:600;
+  font-variant-numeric:tabular-nums; }
+.drop.right { left:auto; right:0; }
+
+/* Custom tooltip for the new chrome: instant, chip-shaped, replaces the
+   native title delay. Fed from data-tip (titles are converted on load). */
+#tip { position:fixed; z-index:99; max-width:22rem; pointer-events:none;
+  background:var(--surface-pop); color:var(--text-body); font-size:12px;
+  border:1px solid var(--border-subtle); border-radius:2px;
+  padding:.25rem .5rem; box-shadow:0 4px 12px var(--shadow-menu);
+  white-space:pre-line; display:none; }
+
+/* === the assembled frame === */
+.appframe { border:1px solid var(--divider); border-radius:4px;
+  background:var(--surface-app); overflow:visible; }
+.appframe .appbar.hdr { border:none; border-bottom:1px solid var(--divider);
+  border-radius:4px 4px 0 0; }
+.appframe .statusbar { border:none; border-bottom:1px solid var(--divider);
+  border-radius:0; }
+.workspace { display:grid; grid-template-columns:1fr 1fr; gap:8px;
+  padding:8px; }
+.panel.wide { grid-column:1 / -1; }
+.panel { background:var(--surface-canvas); border:1px solid var(--divider);
+  border-radius:4px; overflow:hidden; display:flex; flex-direction:column; }
+.tabs { display:flex; gap:2px; background:var(--surface-app);
+  border-bottom:1px solid var(--divider); padding:2px 2px 0; }
+.tab { font-size:12px; color:var(--text-faint); padding:.15rem .6rem;
+  border:1px solid transparent; border-bottom:none; border-radius:3px 3px 0 0; }
+.tab.active { color:var(--text-label); background:var(--surface-canvas);
+  border-color:var(--divider); }
+.panel .appbar.panelbar { border:none; border-bottom:1px solid var(--divider);
+  border-radius:0; padding:.3rem .45rem; }
+.solo-group { display:inline-flex; gap:.35rem; align-items:center; flex:none; }
+/* labeled rows for the all-views sweep */
+.vbar { display:flex; gap:.6rem; align-items:flex-start; margin:.45rem 0; }
+.vbar .who { width:10.5rem; flex:none; color:var(--text-faint); font-size:12px;
+  padding-top:.35rem; text-align:right; }
+.vbar .who code, .tabs .src { display:block; font-size:10px; color:var(--text-dim); }
+.tabs .src { margin-left:auto; padding:.25rem .4rem; }
+.vbar .appbar { flex:1; }
+/* Plot bars never wrap: what does not fit spills into the … menu,
+   the status bar's own overflow pattern. */
+.appbar.plotbar { flex-wrap:nowrap; }
+.appbar.plotbar .ovf { margin-left:auto; }
+.ovf .drop li { display:flex; }
+.chip.perf[hidden], .ovf[hidden] { display:none; }
+.trows { font:11px ui-monospace, monospace; color:var(--text-data); }
+.trow { display:flex; gap:1.2rem; padding:.22rem .55rem;
+  border-bottom:1px solid var(--divider-subtle);
+  font-variant-numeric:tabular-nums; }
+.trow .id { color:var(--text-message); }
+.trow .d { color:var(--text-muted); }
+.plotmock { flex:1; min-height:90px; }
+.plotmock svg { display:block; width:100%; height:100%; }
+
+/* icon inventory */
+.icon-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr));
+  gap:.35rem; }
+.icon-cell { display:flex; align-items:center; gap:.5rem; padding:.35rem .45rem;
+  background:var(--surface-canvas); border:1px solid var(--divider-subtle);
+  border-radius:3px; }
+.icon-cell svg { width:14px; height:14px; flex:none; stroke:var(--text-body);
+  fill:none; stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
+.icon-cell b { color:var(--text-label); font-weight:600; font-size:12px; }
+.icon-cell .caption { display:block; }
+
+table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
+.cmp th, .cmp td { text-align:left; padding:.3rem .5rem; font-size:12px;
+  border-bottom:1px solid var(--divider-subtle); vertical-align:top; }
+.cmp th { color:var(--text-label); font-weight:600; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-folder" viewBox="0 0 14 14"><path d="M1.5 3.5h4l1.5 1.5h5.5v6h-11z"/></symbol>
+  <symbol id="i-save" viewBox="0 0 14 14"><path d="M2 2h8l2 2v8H2z"/><path d="M4.5 2v3h5V2M4.5 12V8h5v4"/></symbol>
+  <symbol id="i-import" viewBox="0 0 14 14"><path d="M7 1.5v7M4.5 6L7 8.5 9.5 6"/><path d="M1.5 9.5v3h11v-3"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5"/><path d="M7 4v3.2l2 1.4"/></symbol>
+  <symbol id="i-db" viewBox="0 0 14 14"><ellipse cx="7" cy="3" rx="5" ry="1.8"/><path d="M2 3v8c0 1 2.2 1.8 5 1.8s5-.8 5-1.8V3"/><path d="M2 7c0 1 2.2 1.8 5 1.8s5-.8 5-1.8"/></symbol>
+  <symbol id="i-clear" viewBox="0 0 14 14"><path d="M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.7 8h5.6l.7-8"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 14 14"><path d="M7 2.5v9M2.5 7h9"/></symbol>
+  <symbol id="i-rows" viewBox="0 0 14 14"><path d="M2 3.5h10M2 7h10M2 10.5h10"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 14 14"><path d="M1.5 12.5v-11M1.5 12.5h11"/><path d="M3 9.5l3-3.5 2.5 2 3-4.5"/></symbol>
+  <symbol id="i-signals" viewBox="0 0 14 14"><path d="M1.5 7h2l1.5-4 2.5 8 1.5-4h3.5"/></symbol>
+  <symbol id="i-send" viewBox="0 0 14 14"><path d="M1.5 7L12.5 2 9.5 12.5 6.5 8.5z M6.5 8.5L12.5 2"/></symbol>
+  <symbol id="i-loop" viewBox="0 0 14 14"><path d="M2.5 6a4.5 4.5 0 0 1 8.4-1.5M11.5 8a4.5 4.5 0 0 1-8.4 1.5"/><path d="M11 2v2.8h-2.8M3 12V9.2h2.8"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 14 14"><path d="M7 1.5a5.5 5.5 0 1 0 0 11c1 0 1.2-.9.7-1.5-.6-.8-.2-2 1-2h1.3c1.4 0 2.5-1 2.5-2.5C12.5 3.8 10 1.5 7 1.5z"/><circle cx="4.5" cy="5" r=".7"/><circle cx="7.5" cy="3.8" r=".7"/><circle cx="9.8" cy="5.6" r=".7"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 14 14"><path d="M1.5 7c1.5-4 3-4 4.5 0s3 4 4.5 0 1.5-2 2 0"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 14 14"><path d="M1.5 7S3.5 3.5 7 3.5 12.5 7 12.5 7 10.5 10.5 7 10.5 1.5 7 1.5 7z"/><circle cx="7" cy="7" r="1.6"/></symbol>
+  <symbol id="i-graph" viewBox="0 0 14 14"><circle cx="3" cy="7" r="1.6"/><circle cx="11" cy="3" r="1.3"/><circle cx="11" cy="7" r="1.3"/><circle cx="11" cy="11" r="1.3"/><path d="M4.5 6.3L9.7 3.5M4.7 7h4.9M4.5 7.7L9.7 10.5"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 14 14"><path d="M3 12.5V1.5"/><path d="M3 2h7.5L8.5 4.5 10.5 7H3"/></symbol>
+  <symbol id="i-tree" viewBox="0 0 14 14"><path d="M3 2.5h8"/><path d="M4.5 4.5V11"/><path d="M4.5 7.5h4M4.5 11h4"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 14 14"><path d="M7 1.8c-2.2 0-3.5 1.6-3.5 3.7 0 3-1.3 4-1.3 4h9.6s-1.3-1-1.3-4c0-2.1-1.3-3.7-3.5-3.7z"/><path d="M5.8 11.5a1.3 1.3 0 0 0 2.4 0"/></symbol>
+  <symbol id="i-play" viewBox="0 0 14 14"><path d="M4 2.5l7 4.5-7 4.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 14 14"><path d="M4.5 2.5v9M9.5 2.5v9"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 14 14"><rect x="3.5" y="3.5" width="7" height="7"/></symbol>
+  <symbol id="i-fitx" viewBox="0 0 14 14"><path d="M1.5 7h11M3.5 4.5L1.5 7l2 2.5M10.5 4.5l2 2.5-2 2.5"/></symbol>
+  <symbol id="i-fity" viewBox="0 0 14 14"><path d="M7 1.5v11M4.5 3.5L7 1.5l2.5 2M4.5 10.5l2.5 2 2.5-2"/></symbol>
+  <symbol id="i-reload" viewBox="0 0 14 14"><path d="M11.5 7a4.5 4.5 0 1 1-1.3-3.2"/><path d="M11.5 1.5v2.8H8.7"/></symbol>
+  <symbol id="i-search" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4"/><path d="M9 9l3.5 3.5"/></symbol>
+  <symbol id="i-cursors" viewBox="0 0 14 14"><path d="M4.5 1.5v11M9.5 1.5v11"/><path d="M2 7h11"/></symbol>
+  <symbol id="i-cursx" viewBox="0 0 14 14"><path d="M4.5 1.5v11M9.5 1.5v11"/></symbol>
+  <symbol id="i-cursy" viewBox="0 0 14 14"><path d="M1.5 4.5h11M1.5 9.5h11"/></symbol>
+  <symbol id="i-note" viewBox="0 0 14 14"><path d="M2.5 1.5h9v8l-3 3h-6z"/><path d="M8.5 12.5v-3h3"/><path d="M4.5 5h5M4.5 7.5h3"/></symbol>
+  <symbol id="i-bus" viewBox="0 0 14 14"><path d="M1.5 7h11"/><path d="M4.5 7V4.2M9.5 7v2.8"/><circle cx="4.5" cy="3" r="1.2"/><circle cx="9.5" cy="11" r="1.2"/></symbol>
+  <symbol id="i-db-add" viewBox="0 0 14 14"><ellipse cx="5.5" cy="3.2" rx="4" ry="1.5"/><path d="M1.5 3.2v7.3c0 .9 1.8 1.5 4 1.5 .8 0 1.6-.1 2.2-.2M9.5 3.2v3.3"/><path d="M11.5 8.5v4M9.5 10.5h4"/></symbol>
+  <symbol id="i-goto" viewBox="0 0 14 14"><path d="M11.5 2.5v9"/><path d="M2 7h6.5M6 4.5L8.5 7 6 9.5"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 14 14"><path d="M2.5 11.5l.8-2.8 6.4-6.4 2 2-6.4 6.4z"/><path d="M8.7 3.3l2 2"/></symbol>
+  <symbol id="i-x" viewBox="0 0 14 14"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7"/></symbol>
+  <symbol id="i-link" viewBox="0 0 14 14"><path d="M6 8l2-2"/><path d="M8.5 8.5l2-2a2.1 2.1 0 0 0-3-3l-2 2M5.5 5.5l-2 2a2.1 2.1 0 0 0 3 3l2-2"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 14 14"><path d="M4.5 1.5v3M9.5 1.5v3"/><path d="M3 4.5h8v2.5a4 4 0 0 1-8 0z"/><path d="M7 11v1.8"/></symbol>
+</defs></svg>
+<div class="wrap">
+
+<h1>The chip language — GUI polish prototype</h1>
+<p class="note">
+  Task 108. One control silhouette everywhere — the <code>.color-chip</code>
+  shape (2px radius, <code>--border-wash</code> hairline) already carried by
+  the connection-chip and status-bar prototypes — with smaller controls, a
+  common icon set, and state expressed on the hairline. This page restyles
+  the chrome only: <b>every control keeps its exact command, order, and
+  behaviour</b>; nothing here proposes changing what the toolbar does, and
+  the icons are hand-drawn placeholders for whatever set is adopted.
+</p>
+
+<div class="bar">
+  <button class="plain" id="themeBtn">Toggle theme</button>
+  <span class="caption">Both themes use the app&rsquo;s own tokens.</span>
+</div>
+
+<h2>The top-level toolbar — today</h2>
+<div class="appbar">
+  <button class="legacy">Open project…</button>
+  <button class="legacy">Save project</button>
+  <span class="sep"></span>
+  <button class="legacy">Import trace…</button>
+  <button class="legacy">Recent</button>
+  <button class="legacy">Add DBC…</button>
+  <span class="sep"></span>
+  <button class="legacy">Connect</button>
+  <span class="sep"></span>
+  <button class="legacy" disabled>Clear</button>
+  <button class="legacy" disabled>Save capture…</button>
+  <span class="sep"></span>
+  <button class="legacy">Add trace</button>
+  <button class="legacy">Add plot panel</button>
+  <button class="legacy">Add signal view</button>
+  <button class="legacy">Add transmit panel</button>
+  <button class="legacy">Add RBS panel</button>
+  <button class="legacy">Add color map</button>
+  <button class="legacy">Add generator</button>
+  <button class="legacy">Database panel</button>
+  <button class="legacy">View signals</button>
+  <button class="legacy">Graph panel</button>
+  <button class="legacy">Events panel</button>
+  <button class="legacy">Project panel</button>
+  <button class="legacy">System messages</button>
+</div>
+
+<h2>The chrome, assembled</h2>
+<p class="note">
+  Everything in place, as it will sit in the application: the header is the
+  toolbar with the status bar directly beneath it (where today&rsquo;s
+  status line sits), and the workspace holds a trace panel and a plot
+  panel with their toolbars in situ. The status bar is
+  <code>toolbar-status-bar.html</code>&rsquo;s design <b>verbatim</b> —
+  not redesigned — and its settled rulings hold: Connect, View signals
+  and System messages report from the bar and nowhere else, so the
+  toolbar above carries none of them.
+</p>
+<div class="appframe">
+  <div class="appbar hdr">
+  <button class="chip" title="Open project…"><svg><use href="#i-folder"/></svg>Open</button>
+  <button class="chip" title="Save project"><svg><use href="#i-save"/></svg>Save</button>
+  <span class="sep"></span>
+  <button class="chip" id="importChip" title="Import trace… (BLF / MDF)"><svg><use href="#i-import"/></svg>Import</button>
+  <span class="menu-wrap">
+    <button class="chip" data-menu="recentMenu" title="Recent captures"><svg><use href="#i-clock"/></svg>Recent</button>
+    <ul class="drop" id="recentMenu" hidden>
+      <li><button class="chip">drive-cycle-08.blf</button></li>
+      <li><button class="chip">bench-2026-08-19.mf4</button></li>
+    </ul>
+  </span>
+  <button class="chip" title="Add DBC…"><svg><use href="#i-db-add"/></svg>DBC</button>
+  <span class="sep"></span>
+  <button class="chip" title="Clear capture"><svg><use href="#i-clear"/></svg>Clear</button>
+  <button class="chip" title="Save capture…"><svg><use href="#i-save"/></svg>Capture</button>
+  <span class="sep"></span>
+  <span class="menu-wrap">
+    <button class="chip" data-menu="addMenu" title="Add a panel"><svg><use href="#i-plus"/></svg>Add&nbsp;▾</button>
+    <ul class="drop" id="addMenu" hidden>
+      <li><button class="chip"><svg><use href="#i-rows"/></svg>Trace</button></li>
+      <li><button class="chip"><svg><use href="#i-chart"/></svg>Plot Panel</button></li>
+      <li><button class="chip"><svg><use href="#i-signals"/></svg>Signal View</button></li>
+      <li><button class="chip"><svg><use href="#i-send"/></svg>Transmit Panel</button></li>
+      <li><button class="chip"><svg><use href="#i-loop"/></svg>RBS Panel</button></li>
+      <li><button class="chip"><svg><use href="#i-palette"/></svg>Color Map</button></li>
+      <li><button class="chip"><svg><use href="#i-wave"/></svg>Generator</button></li>
+    </ul>
+  </span>
+  <span class="sep"></span>
+  <button class="chip icon-only" title="Database panel"><svg><use href="#i-db"/></svg></button>
+  <button class="chip icon-only" title="Graph panel"><svg><use href="#i-graph"/></svg></button>
+  <button class="chip icon-only" title="Events panel"><svg><use href="#i-flag"/></svg></button>
+  <button class="chip icon-only" title="Project panel"><svg><use href="#i-tree"/></svg></button>
+  </div>
+  <div class="statusbar">
+  <button class="chip w-conn" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">5 / 5</span></button>
+  <button class="iconbtn" title="Bus health — all buses error-active"><svg width="13" height="13" aria-hidden="true" style="fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round"><use href="#i-bus"/></svg></button>
+  <span class="sb-sep"></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>18.4k</b><span>f/s</span></span>
+  <span class="metric live" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>34 %</b><span>bus load</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>1 234 567</b><span>frames</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>41:07</b><span>elapsed</span></span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System Messages</span><span class="badge">2</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal Mapping</span><span class="badge">4</span></button>
+  <span class="menu-wrap">
+    <button class="more" data-menu="sbMore" title="1 more status chip — RBS Mapping (3)"><span>&hellip;</span><span class="badge">3</span></button>
+    <ul class="drop right" id="sbMore" hidden>
+      <li><button class="chip"><span class="dot"></span><span class="label">RBS Mapping</span><span class="badge">3</span></button></li>
+    </ul>
+  </span>
+  </div>
+  <div class="workspace">
+    <div class="panel">
+      <div class="tabs"><span class="tab active">Trace 1</span><span class="tab">Signals</span><span class="src">TracePanel.tsx · TraceControls.tsx · TraceView.tsx</span></div>
+      <div class="appbar panelbar">
+  <span class="seg">
+    <button class="chip icon-only" title="Start"><svg><use href="#i-play"/></svg></button>
+    <button class="chip icon-only" title="Pause"><svg><use href="#i-pause"/></svg></button>
+    <button class="chip icon-only" title="Stop"><svg><use href="#i-stop"/></svg></button>
+    <button class="chip icon-only" title="Clear"><svg><use href="#i-clear"/></svg></button>
+  </span>
+  <span class="seg">
+    <button class="chip toggle" aria-pressed="true">Trace</button>
+    <button class="chip toggle">By&nbsp;ID</button>
+  </span>
+  <button class="chip toggle" aria-pressed="true" title="follow the live edge">Auto-Scroll</button>
+  <button class="chip toggle" aria-pressed="true" title="interleave timeline events"><svg><use href="#i-flag"/></svg>Events</button>
+      </div>
+      <div class="trows">
+        <div class="trow"><span>12.041</span><span class="id">0x1A2</span><span>BMS_Status</span><span class="d">01 F4 0B B8 00 64</span></div>
+        <div class="trow"><span>12.043</span><span class="id">0x0C1</span><span>DriveCmd</span><span class="d">02 1F 00 00</span></div>
+        <div class="trow"><span>12.049</span><span class="id">0x310</span><span>ThermalReport</span><span class="d">2E 30 31 2B</span></div>
+        <div class="trow"><span>12.051</span><span class="id">0x1A2</span><span>BMS_Status</span><span class="d">01 F2 0B B6 00 66</span></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="tabs"><span class="tab active">Plot 1</span><span class="src">PlotPanel.tsx (plot-panel-toolbar)</span></div>
+      <div class="appbar panelbar plotbar">
+  <span class="seg">
+    <button class="chip icon-only" title="Start"><svg><use href="#i-play"/></svg></button>
+    <button class="chip icon-only" title="Pause"><svg><use href="#i-pause"/></svg></button>
+    <button class="chip icon-only" title="Stop"><svg><use href="#i-stop"/></svg></button>
+    <button class="chip icon-only" title="Clear — also wipes cursors and notes overlays"><svg><use href="#i-clear"/></svg></button>
+  </span>
+  <button class="chip" title="widen the window to all captured data">All Data</button>
+  <span class="sep"></span>
+  <button class="chip icon-only" title="fit x axis to the data"><svg><use href="#i-fitx"/></svg></button>
+  <button class="chip icon-only" title="fit each area's y-axis to its currently visible data — useful after zooming in"><svg><use href="#i-fity"/></svg></button>
+  <span class="solo-group" title="solo: show only the series whose bus/ecu/message/signal path matches this regex; clearing the box (or Escape) brings the full view back — right-click for the match list">
+    <span class="chipfield"><svg><use href="#i-search"/></svg><input value="BMS" aria-label="solo pattern"></span>
+    <span class="seg">
+      <button class="chip icon-only" title="previous page (PgUp) — the cycle runs all → page 1 → … → page N → all">‹</button>
+      <button class="chip" title="what solo has on show and how many of the matches that is; click for the match list" style="font-variant-numeric:tabular-nums">12&thinsp;/&thinsp;34</button>
+      <button class="chip icon-only" title="next page (PgDn) — the cycle runs all → page 1 → … → page N → all">›</button>
+    </span>
+    <button class="chip icon-only" title="clear solo — every series goes back to its own visibility"><svg><use href="#i-x"/></svg></button>
+  </span>
+  <button class="chip" title="add plot area"><svg><use href="#i-plus"/></svg>Area</button>
+  <button class="chip toggle" aria-pressed="true" title="follow the live edge">Follow</button>
+  <button class="chip points" title="draw sample points on every series: auto = let uPlot decide based on sample density; off = never; on = always">Points: Auto</button>
+  <span class="sep"></span>
+  <span class="seg" title="cursor placement mode — press again for off">
+    <button class="chip icon-only toggle" aria-pressed="true" title="x cursors — vertical lines placed on click"><svg><use href="#i-cursx"/></svg></button>
+    <button class="chip icon-only toggle" title="y cursors — horizontal lines placed on click"><svg><use href="#i-cursy"/></svg></button>
+    <button class="chip icon-only toggle" title="notes — click places a timeline note"><svg><use href="#i-note"/></svg></button>
+  </span>
+  <button class="chip icon-only" title="remove all placed cursors"><svg><use href="#i-cursors"/></svg></button>
+  <span class="sep"></span>
+  <button class="chip perf" hidden title="update rate · worst recent resample (host slice + decode in parens) · device pixel ratio · frames in trace window · cached plot points (biggest area)" style="cursor:default">
+    <span class="dot" style="background:var(--ok-dot)"></span>30&nbsp;Hz&nbsp;·&nbsp;2.1&nbsp;ms
+  </button>
+  <span class="menu-wrap ovf" hidden><button class="more" title="controls that did not fit">&hellip;</button><ul class="drop right"></ul></span>
+      </div>
+      <div class="plotmock" aria-hidden="true">
+        <svg viewBox="0 0 400 90" preserveAspectRatio="none">
+          <polyline points="0,60 40,42 80,55 120,30 160,48 200,25 240,44 280,20 320,38 360,28 400,45"
+            fill="none" stroke="#4f8ef7" stroke-width="1.5"/>
+          <polyline points="0,30 40,38 80,26 120,44 160,32 200,50 240,36 280,52 320,40 360,56 400,42"
+            fill="none" stroke="#5eead4" stroke-width="1.5"/>
+        </svg>
+      </div>
+    </div>
+    <div class="panel wide">
+      <div class="tabs"><span class="tab active">Plot 2 — full width</span><span class="src">PlotPanel.tsx (plot-panel-toolbar)</span></div>
+      <div class="appbar panelbar plotbar">
+  <span class="seg">
+    <button class="chip icon-only" title="Start"><svg><use href="#i-play"/></svg></button>
+    <button class="chip icon-only" title="Pause"><svg><use href="#i-pause"/></svg></button>
+    <button class="chip icon-only" title="Stop"><svg><use href="#i-stop"/></svg></button>
+    <button class="chip icon-only" title="Clear — also wipes cursors and notes overlays"><svg><use href="#i-clear"/></svg></button>
+  </span>
+  <button class="chip" title="widen the window to all captured data">All Data</button>
+  <span class="sep"></span>
+  <button class="chip icon-only" title="fit x axis to the data"><svg><use href="#i-fitx"/></svg></button>
+  <button class="chip icon-only" title="fit each area's y-axis to its currently visible data — useful after zooming in"><svg><use href="#i-fity"/></svg></button>
+  <span class="solo-group" title="solo: show only the series whose bus/ecu/message/signal path matches this regex; clearing the box (or Escape) brings the full view back — right-click for the match list">
+    <span class="chipfield"><svg><use href="#i-search"/></svg><input value="BMS" aria-label="solo pattern"></span>
+    <span class="seg">
+      <button class="chip icon-only" title="previous page (PgUp) — the cycle runs all → page 1 → … → page N → all">‹</button>
+      <button class="chip" title="what solo has on show and how many of the matches that is; click for the match list" style="font-variant-numeric:tabular-nums">12&thinsp;/&thinsp;34</button>
+      <button class="chip icon-only" title="next page (PgDn) — the cycle runs all → page 1 → … → page N → all">›</button>
+    </span>
+    <button class="chip icon-only" title="clear solo — every series goes back to its own visibility"><svg><use href="#i-x"/></svg></button>
+  </span>
+  <button class="chip" title="add plot area"><svg><use href="#i-plus"/></svg>Area</button>
+  <button class="chip toggle" aria-pressed="true" title="follow the live edge">Follow</button>
+  <button class="chip points" title="draw sample points on every series: auto = let uPlot decide based on sample density; off = never; on = always">Points: Auto</button>
+  <span class="sep"></span>
+  <span class="seg" title="cursor placement mode — press again for off">
+    <button class="chip icon-only toggle" aria-pressed="true" title="x cursors — vertical lines placed on click"><svg><use href="#i-cursx"/></svg></button>
+    <button class="chip icon-only toggle" title="y cursors — horizontal lines placed on click"><svg><use href="#i-cursy"/></svg></button>
+    <button class="chip icon-only toggle" title="notes — click places a timeline note"><svg><use href="#i-note"/></svg></button>
+  </span>
+  <button class="chip icon-only" title="remove all placed cursors"><svg><use href="#i-cursors"/></svg></button>
+  <span class="sep"></span>
+  <button class="chip perf" hidden title="update rate · worst recent resample (host slice + decode in parens) · device pixel ratio · frames in trace window · cached plot points (biggest area)" style="cursor:default">
+    <span class="dot" style="background:var(--ok-dot)"></span>30&nbsp;Hz&nbsp;·&nbsp;2.1&nbsp;ms
+  </button>
+  <span class="menu-wrap ovf" hidden><button class="more" title="controls that did not fit">&hellip;</button><ul class="drop right"></ul></span>
+      </div>
+      <div class="plotmock" aria-hidden="true">
+        <svg viewBox="0 0 900 90" preserveAspectRatio="none">
+          <polyline points="0,60 90,42 180,55 270,30 360,48 450,25 540,44 630,20 720,38 810,28 900,45"
+            fill="none" stroke="#4f8ef7" stroke-width="1.5"/>
+          <polyline points="0,30 90,38 180,26 270,44 360,32 450,50 540,36 630,52 720,40 810,56 900,42"
+            fill="none" stroke="#5eead4" stroke-width="1.5"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note">
+  Per surface: the toolbar keeps every command in today&rsquo;s order
+  (Import shows the busy hairline-pulse per click; the seven
+  &ldquo;Add&nbsp;X&rdquo; buttons collapse into the <i>Add&nbsp;▾</i>
+  menu — shown as the proposal, still an open question). The trace
+  toolbar turns run controls and the mode toggle into segmented chips and
+  the checkboxes into pressed toggles. The plot toolbar carries its
+  <b>complete</b> control set: the shared run controls plus the
+  plot-only &ldquo;all data&rdquo;, add area, fit x / y, the solo cluster
+  (field + paging + clear as <b>one unbreakable unit</b>, moved left so it
+  spills into the &hellip; menu only when it really must), follow, points,
+  the cursor-mode segment (x / y / note as icon buttons —
+  press the active one again for off), clear cursors, and the perf chip
+  — icon-only where the icon is unambiguous, a word where it is not.
+  The catalog-reload button is retired (owner ruling 2026-08-21 — it has
+  outlived its usefulness). The measurements strip <b>needs rework and stays hidden</b> (owner
+  ruling 2026-08-21) — no toggle anywhere until it is reworked
+  (<code>MeasurementMenu</code> / the measurements strip in
+  <code>PlotPanel.tsx</code>, backlogged). Hover
+  anything for its tooltip (the full phrases from the app). Same
+  commands, same order — this is chrome only. <b>Plot 2 below is the
+  same toolbar at full width, unwrapped.</b>
+</p>
+
+<h2>The status bar, variant by variant</h2>
+<p class="note">
+  The bar&rsquo;s content is modal — the shipped <code>StatusBar.tsx</code>
+  swaps what the notices slot and metrics show, and
+  <code>statusBarFit.ts</code> drops metrics and collapses chips
+  (alternating from the right) as width shrinks. As the deleted
+  status-bar prototype did, each state gets its own instance; the
+  assembled view above shows only the default. The Cancel / Discard
+  responses are chips of the same language.
+</p>
+<div class="mockbar"><div class="statusbar">
+  <button class="chip w-conn" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">5 / 5</span></button>
+  <button class="iconbtn" title="Bus health — all buses error-active"><svg width="13" height="13" style="fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round" aria-hidden="true"><use href="#i-bus"/></svg></button>
+  <span class="sb-sep"></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>18.4k</b><span>f/s</span></span>
+  <span class="metric live" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>34 %</b><span>bus load</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>1 234 567</b><span>frames</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>41:07</b><span>elapsed</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>4.2 GB</b><span>RAM</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>12.1 GB</b><span>cache</span></span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System Messages</span><span class="badge">2</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal Mapping</span><span class="badge">4</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS Mapping</span><span class="badge">3</span></button>
+</div></div>
+<p class="caption">Wide — everything fits: six metrics, three pinned chips.</p>
+<div class="mockbar"><div class="statusbar">
+  <button class="chip w-conn"><span class="dot"></span><span class="label">Not connected</span></button>
+  <span class="sb-sep"></span>
+  <span class="sb-notice" title="census: determinate on file bytes, cancellable (task 104)">
+    <span class="prog"><i style="width:38%"></i></span>Scanning&nbsp;<code>drive-cycle.blf</code>&nbsp;<b>38&thinsp;%</b>
+    <button class="chip cancel">Cancel</button>
+  </span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System Messages</span><span class="badge">2</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal Mapping</span><span class="badge">4</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS Mapping</span><span class="badge">3</span></button>
+</div></div>
+<p class="caption">Census — determinate on bytes, cancellable.</p>
+<div class="mockbar"><div class="statusbar">
+  <button class="chip w-conn"><span class="dot"></span><span class="label">Not connected</span></button>
+  <span class="sb-sep"></span>
+  <span class="sb-notice" title="import: determinate on the census's own frame count, cancellable (task 104)">
+    <span class="prog"><i style="width:54%"></i></span>Importing&nbsp;<code>drive-cycle.blf</code>&nbsp;<b>667&thinsp;k&thinsp;/&thinsp;1.2&thinsp;M</b>
+    <button class="chip cancel">Cancel</button>
+  </span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System Messages</span><span class="badge">2</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal Mapping</span><span class="badge">4</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS Mapping</span><span class="badge">3</span></button>
+</div></div>
+<p class="caption">Import — determinate on frames, cancellable.</p>
+<div class="mockbar" style="max-width:34rem"><div class="statusbar">
+  <button class="chip w-conn" data-state="degraded"><span class="dot"></span><span class="label">Connected</span><span class="count">4 / 5</span></button>
+  <button class="iconbtn" data-state="failed" title="Bus health — Body is bus-off"><svg width="13" height="13" style="fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round" aria-hidden="true"><use href="#i-bus"/></svg><span class="n">1</span></button>
+  <span class="sb-sep"></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>18.4k</b><span>f/s</span></span>
+  <span class="metric live" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>34 %</b><span>bus load</span></span>
+  <span class="spacer"></span>
+  <span class="menu-wrap">
+    <button class="more" data-menu="sbNarrow" title="3 collapsed status chips — badge is the summed count"><span>&hellip;</span><span class="badge">9</span></button>
+    <ul class="drop right" id="sbNarrow" hidden>
+      <li><button class="chip"><span class="dot"></span><span class="label">System Messages</span><span class="badge">2</span></button></li>
+      <li><button class="chip"><span class="dot"></span><span class="label">Signal Mapping</span><span class="badge">4</span></button></li>
+      <li><button class="chip"><span class="dot"></span><span class="label">RBS Mapping</span><span class="badge">3</span></button></li>
+    </ul>
+  </span>
+</div></div>
+<p class="caption">Narrow + degraded — metrics down to two, every chip collapsed
+  (summed badge), one bus off on the health launcher.</p>
+
+<h2>Every other button bar, same treatment</h2>
+<p class="note">
+  All nine remaining toolbars in the app, each restyled onto the chip
+  shape — same controls, same order, per panel. The signals view shares
+  the trace toolbar&rsquo;s run controls; the two status-filter bars (RBS
+  signals, view signals) were already chips in spirit and only change
+  silhouette.
+</p>
+<div class="vbar"><span class="who">signals view<code>SignalsPanel.tsx</code></span><div class="appbar panelbar">
+  <span class="seg">
+    <button class="chip icon-only" title="Start"><svg><use href="#i-play"/></svg></button>
+    <button class="chip icon-only" title="Pause"><svg><use href="#i-pause"/></svg></button>
+    <button class="chip icon-only" title="Stop"><svg><use href="#i-stop"/></svg></button>
+    <button class="chip icon-only" title="Clear"><svg><use href="#i-clear"/></svg></button>
+  </span>
+  <span class="chipfield" title="add signals by pattern — same dialect as the plot's solo box"><svg><use href="#i-search"/></svg><input placeholder="add signals…" aria-label="signal pattern"></span>
+  <button class="chip" title="new section…"><svg><use href="#i-plus"/></svg>Section</button>
+</div></div>
+<div class="vbar"><span class="who">transmit<code>TransmitPanel.tsx</code></span><div class="appbar panelbar">
+  <button class="chip" title="add a frame to transmit"><svg><use href="#i-plus"/></svg>Frame</button>
+</div></div>
+<div class="vbar"><span class="who">RBS<code>RbsPanel.tsx</code></span><div class="appbar panelbar">
+  <button class="chip toggle" title="Transmit enabled messages (session state, default off — never saved with the project)"><svg><use href="#i-play"/></svg>Run</button>
+  <button class="chip" title="Write override edits back to the .cannet_rbs file"><svg><use href="#i-save"/></svg>Save&nbsp;•</button>
+  <span class="chipfield" title="filter messages / signals"><svg><use href="#i-search"/></svg><input placeholder="filter messages / signals" aria-label="filter"></span>
+  <span class="caption" title="the loaded .cannet_rbs file">ev-cycle.cannet_rbs</span>
+  <button class="chip" title="Open a different .cannet_rbs…"><svg><use href="#i-folder"/></svg>Open</button>
+  <button class="chip" title="Every field this config transmits, with where each value came from"><svg><use href="#i-signals"/></svg>Signals</button>
+</div></div>
+<div class="vbar"><span class="who">RBS signals<code>RbsSignalsPanel.tsx</code></span><div class="appbar panelbar">
+  <button class="chip toggle" title="Filter to Not Encoded"><span class="dot" style="background:var(--danger-text)"></span>Not Encoded (2)</button>
+  <button class="chip toggle" title="Filter to Out of Range"><span class="dot" style="background:var(--warn-border)"></span>Out of Range (1)</button>
+  <button class="chip toggle" title="Filter to Unknown Value"><span class="dot" style="background:var(--warn-border)"></span>Unknown Value (0)</button>
+  <button class="chip toggle" aria-pressed="true" title="Filter to Override"><span class="dot" style="background:var(--modified-marker)"></span>Override (12)</button>
+  <button class="chip toggle" title="Filter to Default"><span class="dot" style="background:var(--text-dim)"></span>Default (231)</button>
+  <button class="chip toggle" title="Filter to Muted"><span class="dot"></span>Muted (4)</button>
+  <span class="menu-wrap">
+    <button class="chip" data-menu="rbsBusMenu" title="filter by bus">Bus: All&nbsp;▾</button>
+    <ul class="drop" id="rbsBusMenu" hidden>
+      <li><button class="chip">CAN0 (198)</button></li>
+      <li><button class="chip">CAN1 (52)</button></li>
+    </ul>
+  </span>
+</div></div>
+<div class="vbar"><span class="who">events view (107)<code>EventsPanel.tsx</code></span><div class="appbar panelbar">
+  <button class="chip" disabled title="link the two selected events — a linked pair draws its extent while either is selected"><svg><use href="#i-link"/></svg>Link Events</button>
+</div></div>
+<div class="vbar"><span class="who">database<code>DatabasePanel.tsx</code></span><div class="appbar panelbar">
+  <span class="chipfield" style="flex:0 1 24rem" title="search messages, signals, comments, attributes…"><svg><use href="#i-search"/></svg><input placeholder="search messages, signals, comments, attributes…" aria-label="search database content" style="width:100%"></span>
+  <button class="chip toggle" title="show bit layout, scale, range, attributes, value table for every signal">Details</button>
+  <button class="chip toggle" aria-pressed="true" title="show each signal's live decoded value (latest frame; mux-aware)">Values</button>
+</div></div>
+<div class="vbar"><span class="who">graph<code>ProjectGraphPanel.tsx</code></span><div class="appbar panelbar">
+  <button class="chip" title="Create a new filter element; it fans in from every bus by default until a trace or plot is wired to it"><svg><use href="#i-plus"/></svg>Filter</button>
+  <button class="chip" title="Clear saved node positions and re-lay-out the graph from scratch">Reset Layout</button>
+</div></div>
+<div class="vbar"><span class="who">servers<code>ServersPanel.tsx</code></span><div class="appbar panelbar">
+  <span class="chipfield" title="search servers"><svg><use href="#i-search"/></svg><input placeholder="search" aria-label="search servers"></span>
+  <button class="chip" title="Add a server this machine cannot hear advertising — one on another subnet, or one started --no-mdns"><svg><use href="#i-plus"/></svg>Server</button>
+</div></div>
+<div class="vbar"><span class="who">system messages<code>SystemMessagesPanel.tsx</code></span><div class="appbar panelbar">
+  <span class="menu-wrap">
+    <button class="chip" data-menu="srcMenu" title="filter by source">Source: All&nbsp;▾</button>
+    <ul class="drop" id="srcMenu" hidden>
+      <li><button class="chip">All</button></li>
+      <li><button class="chip">keybindings</button></li>
+      <li><button class="chip">import</button></li>
+    </ul>
+  </span>
+  <span class="menu-wrap">
+    <button class="chip" data-menu="lvlMenu" title="minimum level to show">Level: Info&nbsp;▾</button>
+    <ul class="drop" id="lvlMenu" hidden>
+      <li><button class="chip">Debug</button></li>
+      <li><button class="chip">Info</button></li>
+      <li><button class="chip">Warn</button></li>
+      <li><button class="chip">Error</button></li>
+    </ul>
+  </span>
+  <button class="chip" title="copy the filtered messages to the clipboard">Copy All</button>
+  <button class="chip" title="clear the log"><svg><use href="#i-clear"/></svg>Clear</button>
+  <span class="caption" style="font-variant-numeric:tabular-nums">128&thinsp;/&thinsp;254</span>
+</div></div>
+<div class="vbar"><span class="who">view signals<code>ViewSignalsPanel.tsx</code></span><div class="appbar panelbar">
+  <button class="chip toggle" title="Filter to Not Decoded"><span class="dot" style="background:var(--danger-text)"></span>Not Decoded (1)</button>
+  <button class="chip toggle" title="Filter to Scale"><span class="dot" style="background:var(--warn-border)"></span>Scale (2)</button>
+  <button class="chip toggle" title="Filter to Ambiguous"><span class="dot" style="background:var(--warn-border)"></span>Ambiguous (1)</button>
+  <button class="chip toggle" title="Filter to Stale"><span class="dot"></span>Stale (0)</button>
+  <button class="chip toggle" title="Filter to Decoded"><span class="dot" style="background:var(--ok-dot)"></span>Decoded (37)</button>
+  <span class="menu-wrap">
+    <button class="chip" data-menu="vsBusMenu" title="filter by bus">Bus: All&nbsp;▾</button>
+    <ul class="drop" id="vsBusMenu" hidden>
+      <li><button class="chip">CAN0 (28)</button></li>
+      <li><button class="chip">CAN1 (13)</button></li>
+    </ul>
+  </span>
+</div></div>
+
+<h2>The icon set — full inventory</h2>
+<p class="note">
+  Every icon this page uses, by name and assignment — <b>this is the
+  set</b> (owner ruling 2026-08-21): hand-drawn, 14px grid, 1.4px
+  rounded stroke, no external icon library. Implementation ships these
+  as an in-repo registry (one shared SVG sprite); this sheet is the
+  registry&rsquo;s reference, and this page is kept after dev as the
+  living design reference. <b>One icon, one meaning</b>, audited
+  2026-08-21: the bus-health zigzag collided with <code>signals</code> and
+  is redrawn as a bus topology; <code>db</code> split from
+  <code>db-add</code> (panel vs. action). Where one icon serves several
+  commands it is the same <i>verb</i> deliberately — <code>save</code>
+  for every save, <code>plus</code> for every add, <code>search</code>
+  for every filter box, <code>clear</code> for every clear — and the
+  label or tooltip names the object.
+</p>
+<div class="icon-grid">
+  <div class="icon-cell"><svg><use href="#i-folder"/></svg><span><b>folder</b><span class="caption">Open project</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-save"/></svg><span><b>save</b><span class="caption">Save project / Save capture</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-import"/></svg><span><b>import</b><span class="caption">Import trace</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-clock"/></svg><span><b>clock</b><span class="caption">Recent captures</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-db"/></svg><span><b>db</b><span class="caption">Database panel</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-db-add"/></svg><span><b>db-add</b><span class="caption">Add DBC</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-bus"/></svg><span><b>bus</b><span class="caption">bus health (status bar)</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-plug"/></svg><span><b>plug</b><span class="caption">connection (spare)</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-clear"/></svg><span><b>clear</b><span class="caption">Clear capture / trace clear</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-plus"/></svg><span><b>plus</b><span class="caption">Add menu / add area</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-rows"/></svg><span><b>rows</b><span class="caption">trace panel</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-chart"/></svg><span><b>chart</b><span class="caption">plot panel</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-signals"/></svg><span><b>signals</b><span class="caption">signal view</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-send"/></svg><span><b>send</b><span class="caption">transmit panel</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-loop"/></svg><span><b>loop</b><span class="caption">RBS Panel</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-palette"/></svg><span><b>palette</b><span class="caption">color map</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-wave"/></svg><span><b>wave</b><span class="caption">generator</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-eye"/></svg><span><b>eye</b><span class="caption">view signals</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-graph"/></svg><span><b>graph</b><span class="caption">graph panel — bus→views fanout</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-flag"/></svg><span><b>flag</b><span class="caption">events panel / events toggle</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-tree"/></svg><span><b>tree</b><span class="caption">project panel</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-bell"/></svg><span><b>bell</b><span class="caption">system messages</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-play"/></svg><span><b>play</b><span class="caption">trace start / resume</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-pause"/></svg><span><b>pause</b><span class="caption">trace pause</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-stop"/></svg><span><b>stop</b><span class="caption">trace stop</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-fitx"/></svg><span><b>fit-x</b><span class="caption">plot: fit x axis</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-fity"/></svg><span><b>fit-y</b><span class="caption">plot: fit y axes</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-search"/></svg><span><b>search</b><span class="caption">solo box / find</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-cursors"/></svg><span><b>cursors</b><span class="caption">plot: clear cursors</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-cursx"/></svg><span><b>cursor-x</b><span class="caption">plot: x-cursor mode</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-cursy"/></svg><span><b>cursor-y</b><span class="caption">plot: y-cursor mode</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-note"/></svg><span><b>note</b><span class="caption">plot: note-placement mode</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-goto"/></svg><span><b>goto</b><span class="caption">event row: go to (today&rsquo;s ⇥)</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-edit"/></svg><span><b>edit</b><span class="caption">inline rename (today&rsquo;s ✎)</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-link"/></svg><span><b>link</b><span class="caption">events view: link events (task 107)</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-x"/></svg><span><b>x</b><span class="caption">remove / clear-solo (today&rsquo;s ×)</span></span></div>
+</div>
+
+<h2>What changed, what didn't</h2>
+<table class="cmp">
+  <tr><th></th><th>today</th><th>chip language</th></tr>
+  <tr><td>control shape</td><td>3px radius, <code>--border-subtle</code>, 13px type</td>
+      <td>the <code>.color-chip</code> silhouette: 2px radius, <code>--border-wash</code> hairline, 12px type, 22px tall</td></tr>
+  <tr><td>words</td><td>every button a phrase (&ldquo;Add transmit panel&rdquo;)</td>
+      <td>short verb + icon; icon-only where universal; full phrase in the tooltip</td></tr>
+  <tr><td>state</td><td>disabled greying, separate badge spans</td>
+      <td>hairline tint + dot (connected / busy / failed), badges unchanged in-chip</td></tr>
+  <tr><td>commands</td><td colspan="2">identical — every chip dispatches the same command id in the same order; this is chrome only</td></tr>
+</table>
+
+<h2>Settled by owner rulings 2026-08-21</h2>
+<ul class="q">
+  <li><b>Icon-only threshold:</b> as prototyped — the wordless panel
+    launchers and run controls stand.</li>
+  <li><b>The Add menu:</b> approved — the seven &ldquo;Add X&rdquo;
+    buttons collapse into the one menu chip.</li>
+  <li><b>Density:</b> 22px chips at 12px type, as shown.</li>
+  <li><b>Task 103 order:</b> 103 implements first; its shared chip
+    component is what this language styles.</li>
+  <li><b>Task 107:</b> its event-surface toolbar speaks this language —
+    shown in the sweep above.</li>
+</ul>
+
+</div>
+<div id="tip" role="tooltip"></div>
+<script>
+document.getElementById("themeBtn").addEventListener("click", function () {
+  const r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+// custom tooltips: convert titles inside the assembled frame to data-tip
+const tip = document.getElementById("tip");
+document.querySelectorAll(".appframe [title], .vbar [title]").forEach(el => {
+  el.dataset.tip = el.getAttribute("title");
+  el.removeAttribute("title");
+});
+document.addEventListener("mouseover", e => {
+  const el = e.target.closest("[data-tip]");
+  if (!el) { tip.style.display = "none"; return; }
+  tip.textContent = el.dataset.tip;
+  tip.style.display = "block";
+  const r = el.getBoundingClientRect();
+  tip.style.left = Math.min(r.left, innerWidth - tip.offsetWidth - 8) + "px";
+  tip.style.top = (r.bottom + 6) + "px";
+});
+document.addEventListener("scroll", () => tip.style.display = "none", true);
+// drop menus
+document.querySelectorAll("[data-menu]").forEach(b => {
+  b.addEventListener("click", e => {
+    e.stopPropagation();
+    const m = document.getElementById(b.dataset.menu);
+    const wasHidden = m.hidden;
+    document.querySelectorAll(".drop").forEach(d => d.hidden = true);
+    m.hidden = !wasHidden;
+  });
+});
+document.addEventListener("click", () =>
+  document.querySelectorAll(".drop").forEach(d => d.hidden = true));
+// toggle chips
+document.querySelectorAll(".chip.toggle").forEach(b => {
+  b.addEventListener("click", () => {
+    if (b.parentElement.classList.contains("seg")) {
+      const wasPressed = b.getAttribute("aria-pressed") === "true";
+      b.parentElement.querySelectorAll(".chip").forEach(o =>
+        o.setAttribute("aria-pressed", String(o === b && !wasPressed)));
+    } else {
+      b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"));
+    }
+  });
+});
+// plot bars spill into the … menu instead of wrapping
+function collapseBar(bar) {
+  const wrap = bar.querySelector(":scope > .ovf");
+  const list = wrap.querySelector("ul");
+  while (list.firstElementChild) {
+    const li = list.firstElementChild;
+    bar.insertBefore(li.firstElementChild, wrap);
+    li.remove();
+  }
+  wrap.hidden = true;
+  let guard = 0;
+  while (bar.scrollWidth > bar.clientWidth && guard++ < 40) {
+    wrap.hidden = false;
+    const items = [...bar.children].filter(c => c !== wrap && !c.hidden);
+    const last = items[items.length - 1];
+    if (!last) break;
+    const li = document.createElement("li");
+    li.appendChild(last);
+    list.insertBefore(li, list.firstChild);
+  }
+}
+const plotBars = document.querySelectorAll(".appbar.plotbar");
+function collapseAll() { plotBars.forEach(collapseBar); }
+addEventListener("resize", collapseAll);
+document.querySelectorAll(".ovf > .more").forEach(b =>
+  b.addEventListener("click", e => {
+    e.stopPropagation();
+    const m = b.nextElementSibling;
+    const was = m.hidden;
+    document.querySelectorAll(".drop").forEach(d => d.hidden = true);
+    m.hidden = !was;
+  }));
+// perf readout: off by default, toggled from the bar's context menu
+// (the app's plot toolbar already owns a right-click menu — this rides it)
+let ctx = null;
+function closeCtx() { if (ctx) { ctx.remove(); ctx = null; } }
+document.addEventListener("click", closeCtx);
+plotBars.forEach(bar => bar.addEventListener("contextmenu", e => {
+  e.preventDefault(); closeCtx();
+  ctx = document.createElement("ul");
+  ctx.className = "drop";
+  ctx.style.position = "fixed";
+  ctx.style.left = e.clientX + "px"; ctx.style.top = e.clientY + "px";
+  ctx.hidden = false;
+  const on = !bar.querySelector(".chip.perf").hidden;
+  const li = document.createElement("li");
+  const btn = document.createElement("button");
+  btn.className = "chip";
+  btn.textContent = (on ? "✓ " : "\u2003") + "performance readout";
+  btn.addEventListener("click", () => {
+    bar.querySelector(".chip.perf").hidden = on;
+    closeCtx(); collapseBar(bar);
+  });
+  li.appendChild(btn); ctx.appendChild(li);
+  document.body.appendChild(ctx);
+}));
+collapseAll();
+// import chip busy demo
+const imp = document.getElementById("importChip");
+imp.addEventListener("click", () =>
+  imp.setAttribute("aria-busy", String(imp.getAttribute("aria-busy") !== "true")));
+// points cycle (both plot instances)
+const ptStates = ["auto", "on", "off"];
+document.querySelectorAll(".chip.points").forEach(pts =>
+  pts.addEventListener("click", () => {
+    const cur = pts.textContent.split(": ")[1];
+    pts.textContent = "points: " + ptStates[(ptStates.indexOf(cur) + 1) % ptStates.length];
+  }));
+</script>
+</body>
+</html>
