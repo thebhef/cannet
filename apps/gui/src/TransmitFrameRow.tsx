@@ -25,6 +25,7 @@ import {
   maxDataBytesForKind,
   resizeDataHexPreserving,
 } from "./transmitFrameConfig";
+import { NameText } from "./NameText";
 
 interface FrameRowProps {
   frame: TransmitFrameConfig;
@@ -246,7 +247,7 @@ export function TransmitFrameRow({
           />
           {messageName && (
             <span className="tx-dbc-name" title="DBC message name">
-              {messageName}
+              <NameText name={messageName} />
             </span>
           )}
           <DisclosureToggle

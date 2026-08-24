@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Fzf } from "fzf";
+import { NameText } from "./NameText";
 
 export interface ComboboxOption {
   /// Submitted value — what `onChange` receives (a `<select>` option's
@@ -58,6 +59,12 @@ export interface ComboboxProps {
   /// wins Enter and the typed text is reachable when nothing matches.
   /// For value cells that must also take a raw out-of-table code.
   freeText?: boolean;
+  /// The option labels are prose — `VAL_` enum labels, free text —
+  /// rather than entity names. Prose reads front-first, so it takes
+  /// ordinary end-ellipsis and a tooltip; a name takes the
+  /// middle-ellipsis `NameText` gives it, because a DBC symbol's
+  /// distinguishing part is its tail.
+  proseLabels?: boolean;
 }
 
 /// One rendered dropdown row: an ancestor header or a pickable leaf.
@@ -79,6 +86,7 @@ export function Combobox({
   className,
   title,
   freeText,
+  proseLabels,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -229,7 +237,9 @@ export function Combobox({
         }}
         onKeyDown={onTriggerKeyDown}
       >
-        <span className="combobox-trigger-label">{closedLabel}</span>
+        <span className="combobox-trigger-label" title={proseLabels ? closedLabel : undefined}>
+          {proseLabels ? closedLabel : <NameText name={closedLabel} />}
+        </span>
       </button>
       {open &&
         pos &&
@@ -300,8 +310,9 @@ export function Combobox({
                     onClick={() => {
                       if (!row.opt.disabled) commit(row.opt.value);
                     }}
+                    title={proseLabels ? row.opt.label : undefined}
                   >
-                    {row.opt.label}
+                    {proseLabels ? row.opt.label : <NameText name={row.opt.label} />}
                   </li>
                 ),
               )}

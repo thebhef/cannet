@@ -101,3 +101,58 @@ fn zonal_dbc_carries_the_cannet_attribute_example() {
         "a rollover counter reads as a number"
     );
 }
+
+/// The fixture's long-name case. `CentralComputeThermalDerateAdvis` on
+/// the `BO_` line is the 32-character truncation the classic format
+/// allows; the real name is 44 characters and arrives through
+/// `SystemMessageLongSymbol`. Three of its signals are the same shape,
+/// two are ordinary short names — the control that makes a resolved
+/// name a discrimination rather than an absence — and one carries
+/// `VAL_` labels far past any identifier limit.
+#[test]
+fn zonal_dbc_carries_the_long_name_example() {
+    let db = load("zonal.dbc");
+    let content = db.dbc_content();
+    let msg = content
+        .iter()
+        .find(|m| m.name == "CentralComputeThermalDerateAdvisoryBroadcast")
+        .expect("the long message name resolves");
+    assert!(
+        !content
+            .iter()
+            .any(|m| m.name == "CentralComputeThermalDerateAdvis"),
+        "the truncated identifier must not survive as a name"
+    );
+
+    let names: Vec<&str> = msg.signals.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"HighVoltageBatteryPackCoolantInletTemperature"));
+    assert!(names.contains(&"ThermalDerateRequestingSubsystemIdentifier"));
+    assert!(names.contains(&"PropulsionInverterThermalDerateRequestLevel"));
+    // The controls: short names in the same message, untouched.
+    assert!(names.contains(&"DerateActive"));
+    assert!(names.contains(&"AdvisoryCounter"));
+
+    // The value table survives the rename, and carries a label longer
+    // than any DBC identifier may be.
+    let source = msg
+        .signals
+        .iter()
+        .find(|s| s.name == "ThermalDerateRequestingSubsystemIdentifier")
+        .expect("the enum signal");
+    assert!(source
+        .value_table
+        .iter()
+        .any(|e| e.label == "TractionInverterStatorWindingOverTemperature"));
+    assert!(
+        source.value_table.iter().any(|e| e.label == "Fault"),
+        "a short label beside the long ones"
+    );
+
+    // The long-symbol placeholders are an implementation detail, not
+    // metadata the DBC panel should show.
+    assert!(!msg.attributes.iter().any(|a| a.name.contains("LongSymbol")));
+    assert!(!msg
+        .signals
+        .iter()
+        .any(|s| s.attributes.iter().any(|a| a.name.contains("LongSymbol"))));
+}

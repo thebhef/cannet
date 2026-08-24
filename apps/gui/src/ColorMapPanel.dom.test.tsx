@@ -184,6 +184,15 @@ describe("ColorMapPanel", () => {
     expect((colors[2] as HTMLInputElement).value).toBe("#333333");
     // The sparse enum editor has no numeric range inputs.
     expect(document.querySelectorAll('input[type="number"]').length).toBe(0);
+    // Each label keeps its whole text reachable: the row ellipsizes at
+    // the end (a `VAL_` label has no length limit), so the tooltip is
+    // what a reader falls back to.
+    const labels = document.querySelectorAll(".colormap-enum-label");
+    expect([...labels].map((l) => l.getAttribute("title"))).toEqual([
+      "Park",
+      "Reverse",
+      "Drive",
+    ]);
   });
 
   it("a single-member value table is not an enum — the numeric range editor renders", async () => {

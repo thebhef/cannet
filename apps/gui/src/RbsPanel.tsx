@@ -60,6 +60,7 @@ import {
   type RowGridProps,
   type VisibleBus,
 } from "./rbsRowIdentity";
+import { NameText } from "./NameText";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -609,7 +610,9 @@ function BusSection({
                   onChange={(e) => setEnabled(ecu.name, null, e.target.checked)}
                   aria-label={`${ecu.name} enabled`}
                 />
-                <span className="rbs-ecu-name">{ecu.name}</span>
+                <span className="rbs-ecu-name">
+                  <NameText name={ecu.name} />
+                </span>
               </div>
               {expanded &&
                 messages.map((m) => {
@@ -859,7 +862,9 @@ function SignalRow({
         onMenu(e);
       }}
     >
-      <td className="rbs-sig-name">{s.name}</td>
+      <td className="rbs-sig-name">
+        <NameText name={s.name} />
+      </td>
       <td className="rbs-sig-value">
         <RbsValueCell
           signal={s}

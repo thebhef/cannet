@@ -38,6 +38,7 @@ import { effectiveBusColor } from "./busColor";
 import { theme, useThemeName } from "./theme";
 import { assignLanePositions, reconcileGraphNodes } from "./graphNodeLayout";
 import { useDismissableMenu } from "./useDismissableMenu";
+import { NameText } from "./NameText";
 
 /// Per-panel persisted state. Lives in the panel's dockview `params`
 /// so each project graph panel keeps its own viewport and layout
@@ -570,7 +571,9 @@ function BusNode({ data }: NodeProps) {
       />
       <div className="graph-node-label">
         <span className="graph-node-kind">Bus</span>
-        <span className="graph-node-title">{node.label}</span>
+        <span className="graph-node-title">
+          <NameText name={node.label} />
+        </span>
         <span className="graph-node-sub">id: {node.bus.id}</span>
       </div>
     </div>
@@ -588,7 +591,9 @@ function GatewayNode({ data }: NodeProps) {
       <GatewayGlyph />
       <div className="graph-node-label">
         <span className="graph-node-kind">Interface</span>
-        <span className="graph-node-title">{b.interface}</span>
+        <span className="graph-node-title">
+          <NameText name={b.interface} />
+        </span>
         <span className="graph-node-sub">@ {b.server}</span>
       </div>
     </div>
@@ -607,7 +612,9 @@ function TransmitNode({ data }: NodeProps) {
       <TransmitGlyph />
       <div className="graph-node-label">
         <span className="graph-node-kind">Transmit (source)</span>
-        <span className="graph-node-title">{node.label}</span>
+        <span className="graph-node-title">
+          <NameText name={node.label} />
+        </span>
       </div>
     </div>
   );
@@ -623,7 +630,9 @@ function TraceNode({ data }: NodeProps) {
       <TraceGlyph />
       <div className="graph-node-label">
         <span className="graph-node-kind">Trace (sink)</span>
-        <span className="graph-node-title">{node.label}</span>
+        <span className="graph-node-title">
+          <NameText name={node.label} />
+        </span>
         <InsertFilterButton
           onClick={() => insertFilterUpstream(registry, node.element.id)}
         />
@@ -642,7 +651,9 @@ function PlotNode({ data }: NodeProps) {
       <PlotGlyph />
       <div className="graph-node-label">
         <span className="graph-node-kind">Plot (sink)</span>
-        <span className="graph-node-title">{node.label}</span>
+        <span className="graph-node-title">
+          <NameText name={node.label} />
+        </span>
         <InsertFilterButton
           onClick={() => insertFilterUpstream(registry, node.element.id)}
         />
@@ -661,7 +672,9 @@ function SignalsNode({ data }: NodeProps) {
       <SignalsGlyph />
       <div className="graph-node-label">
         <span className="graph-node-kind">Signals (sink)</span>
-        <span className="graph-node-title">{node.label}</span>
+        <span className="graph-node-title">
+          <NameText name={node.label} />
+        </span>
         <InsertFilterButton
           onClick={() => insertFilterUpstream(registry, node.element.id)}
         />
@@ -717,7 +730,9 @@ function FilterNode({ data }: NodeProps) {
       <FilterGlyph />
       <div className="graph-node-label">
         <span className="graph-node-kind">Filter</span>
-        <span className="graph-node-title">{node.label}</span>
+        <span className="graph-node-title">
+          <NameText name={node.label} />
+        </span>
         <DisclosureToggle
           className="graph-node-expand nodrag"
           expanded={expanded}

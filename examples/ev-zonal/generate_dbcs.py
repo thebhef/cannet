@@ -37,6 +37,11 @@ class Sig:
     mux: str = ""  # "" plain, "M" selector, "m<N>" arm
     receivers: str = "Vector__XXX"
     float32: bool = False
+    # The full name, when the `SG_` line carries only the 32-character
+    # truncation the classic DBC format allows. Rendered as a
+    # `SystemSignalLongSymbol` attribute; readers resolve it onto the
+    # signal's name.
+    long_name: str = ""
     # cannet's own per-signal `BA_` attributes, as {name: value} --
     # e.g. {"CannetCrc": "alg=CRC-8/SAE-J1850;range=0:56;prefix=B7"}.
     # `render_dbc` declares each name it sees, so a file that uses none
@@ -54,6 +59,8 @@ class Msg:
     extended: bool = False
     cycle_ms: int = 0
     comment: str = ""
+    # As `Sig.long_name`, rendered as `SystemMessageLongSymbol`.
+    long_name: str = ""
 
 
 def fmt_num(x: float) -> str:
@@ -100,6 +107,7 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
     cannet_names: list[str] = []  # declaration order, first use wins
     vals: list[str] = []
     valtypes: list[str] = []
+    long_bas: list[str] = []
 
     for m in messages:
         auto_pack(m)
@@ -121,6 +129,11 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
                 vals.append(f"VAL_ {raw_id} {s.name} {pairs} ;")
             if s.float32:
                 valtypes.append(f"SIG_VALTYPE_ {raw_id} {s.name} : 1;")
+            if s.long_name:
+                long_bas.append(
+                    f'BA_ "SystemSignalLongSymbol" SG_ {raw_id} {s.name}'
+                    f' "{s.long_name}";'
+                )
             for attr, value in s.cannet.items():
                 if attr not in cannet_names:
                     cannet_names.append(attr)
@@ -130,13 +143,29 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
             comments.append(f'CM_ BO_ {raw_id} "{m.comment}";')
         if m.cycle_ms:
             bas.append(f'BA_ "GenMsgCycleTime" BO_ {raw_id} {m.cycle_ms};')
+        if m.long_name:
+            long_bas.append(
+                f'BA_ "SystemMessageLongSymbol" BO_ {raw_id} "{m.long_name}";'
+            )
+
+    has_long_msg = any(m.long_name for m in messages)
+    has_long_sig = any(s.long_name for m in messages for s in m.signals)
 
     out += comments
     out.append('BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;')
+    if has_long_msg:
+        out.append('BA_DEF_ BO_ "SystemMessageLongSymbol" STRING ;')
+    if has_long_sig:
+        out.append('BA_DEF_ SG_ "SystemSignalLongSymbol" STRING ;')
     out += [f'BA_DEF_ SG_ "{n}" STRING ;' for n in cannet_names]
     out.append('BA_DEF_DEF_ "GenMsgCycleTime" 0;')
+    if has_long_msg:
+        out.append('BA_DEF_DEF_ "SystemMessageLongSymbol" "";')
+    if has_long_sig:
+        out.append('BA_DEF_DEF_ "SystemSignalLongSymbol" "";')
     out += [f'BA_DEF_DEF_ "{n}" "";' for n in cannet_names]
     out += bas
+    out += long_bas
     out += cannet_bas
     out += vals
     out += valtypes
@@ -196,6 +225,23 @@ def u(name: str, bits: int, **kw) -> Sig:
 
 def s16(name: str, **kw) -> Sig:
     return Sig(name, 16, signed=True, **kw)
+
+
+# The classic DBC format caps `BO_` / `SG_` identifiers at 32
+# characters, so an authoring tool writes the truncation on the line and
+# the real name in a `System...LongSymbol` attribute. These two build
+# that pair from the real name, so the truncation can never drift from
+# it.
+LONG_SYMBOL_LIMIT = 32
+
+
+def long_sig(long_name: str, bits: int, **kw) -> Sig:
+    return Sig(long_name[:LONG_SYMBOL_LIMIT], bits, long_name=long_name, **kw)
+
+
+def long_msg(long_name: str, can_id: int, tx: str, sigs: list[Sig], **kw) -> Msg:
+    return Msg(long_name[:LONG_SYMBOL_LIMIT], can_id, tx, sigs,
+               long_name=long_name, **kw)
 
 
 def pack_messages() -> list[Msg]:
@@ -661,6 +707,42 @@ def adas_object_list() -> Msg:
                comment="Fused front object list -- cycles ObjectIndex over active tracks.")
 
 
+# The long-name case. The classic DBC identifier limit is 32
+# characters, so a name longer than that is written truncated on the
+# `BO_` / `SG_` line with the real one in a `System...LongSymbol`
+# attribute. Every surface that shows a name has to cope with the
+# result, and long `VAL_` labels have no length limit at all -- so this
+# message carries all three, each beside a short-named control so a
+# rendering can be told from a truncation.
+DERATE_SOURCES = {
+    0: "NoDerateRequestedNominalThermalEnvelope",
+    1: "TractionInverterStatorWindingOverTemperature",
+    2: "HighVoltageBatteryCellOverTemperature",
+    3: "CabinHeatPumpCondenserOverPressure",
+    4: "OnBoardChargerPowerStageDerating",
+    5: "Fault",
+}
+
+
+def thermal_derate_advisory() -> Msg:
+    return long_msg(
+        "CentralComputeThermalDerateAdvisoryBroadcast", 0x6F0, "CentralCompute",
+        [
+            long_sig("HighVoltageBatteryPackCoolantInletTemperature", 12,
+                     factor=0.1, offset=-40, minimum=-40, maximum=369.5, unit="degC",
+                     comment="Coolant inlet temperature at the pack, the derate input."),
+            long_sig("ThermalDerateRequestingSubsystemIdentifier", 4,
+                     values=DERATE_SOURCES),
+            long_sig("PropulsionInverterThermalDerateRequestLevel", 8,
+                     factor=0.5, maximum=127.5, unit="%"),
+            u("DerateActive", 1, values={0: "Off", 1: "On"}),
+            u("AdvisoryCounter", 4),
+        ],
+        cycle_ms=100,
+        comment="Thermal derate advisory -- the long-name example.",
+    )
+
+
 def zonal_messages() -> list[Msg]:
     msgs: list[Msg] = []
 
@@ -808,6 +890,8 @@ def zonal_messages() -> list[Msg]:
     for i, (name, sigs) in enumerate(body):
         msgs.append(Msg(name, 0x660 + i, "BodyGateway", sigs, cycle_ms=200))
 
+    msgs.append(thermal_derate_advisory())
+
     return msgs
 
 
@@ -825,6 +909,9 @@ def main() -> None:
     cell_detail = next(m for m in pack if m.name == "BmsCellDetail")
     muxed = [s for s in cell_detail.signals if s.mux.startswith("m")]
     assert len(muxed) >= 500, f"BmsCellDetail has {len(muxed)} muxed signals"
+    long_named = [m for m in zonal if m.long_name]
+    assert long_named, "zonal.dbc must carry the long-name example"
+    assert any(s.long_name for m in long_named for s in m.signals)
 
     for fname, version, ecus, msgs in (
         ("pack.dbc", "ev-zonal pack 1.0", PACK_ECUS, pack),
