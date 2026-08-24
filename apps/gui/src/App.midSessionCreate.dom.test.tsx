@@ -115,6 +115,7 @@ import { StrictMode } from "react";
 
 import type { TraceFrameRecord, TraceGrew } from "./types";
 import { App } from "./App";
+import { addPanelChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -155,14 +156,6 @@ function grew(count: number): TraceGrew {
     mem_bytes: null,
     tail: Array.from({ length: tailLen }, (_, i) => frame(count - tailLen + i)),
   };
-}
-
-function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("button"),
-  ).find((b) => b.textContent === label);
-  if (!btn) throw new Error(`button "${label}" not found`);
-  return btn;
 }
 
 beforeEach(() => {
@@ -210,7 +203,7 @@ describe("views created mid-session", () => {
 
     // Add a trace panel mid-session through the real toolbar path.
     await act(async () => {
-      fireEvent.click(findButton("Add trace"));
+      fireEvent.click(addPanelChip("Trace"));
     });
 
     // The new panel is *running*: its toolbar shows the running status
@@ -255,7 +248,7 @@ describe("views created mid-session", () => {
     });
 
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
 
     // The plot shares the trace window state (same registry entry shape,

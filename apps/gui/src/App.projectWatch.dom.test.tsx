@@ -147,6 +147,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 import { App } from "./App";
 import { hydrateSettings } from "./hostSettings";
 import { hydrateState } from "./hostState";
+import { addPanelChip, toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -174,15 +175,18 @@ function connectionChip(): HTMLButtonElement {
   return chip;
 }
 
+/// A button outside the toolbar; the toolbar's own controls are chips
+/// reached through `toolbarChip`.
 function button(label: string): HTMLButtonElement | undefined {
-  return Array.from(document.querySelectorAll("button")).find((b) => b.textContent === label);
+  return Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
 }
 
 /// A layout change after the boot has settled — the app's own route to
 /// unsaved changes, no test-only hatch into the dirty flag.
 async function dirtyTheProject(): Promise<void> {
-  const btn = button("Add trace");
-  if (!btn) throw new Error('no "Add trace" button');
+  const btn = addPanelChip("Trace");
   await act(async () => {
     fireEvent.click(btn);
     await new Promise((r) => setTimeout(r, 20));
@@ -299,8 +303,7 @@ describe("the project file changing on disk", () => {
     await dirtyTheProject();
     await announceDiskChange();
     expect(document.body.textContent).toContain("Project changed on disk");
-    const saveBtn = button("Save project");
-    if (!saveBtn) throw new Error('no "Save project" action');
+    const saveBtn = toolbarChip("Save");
     await act(async () => {
       fireEvent.click(saveBtn);
       await new Promise((r) => setTimeout(r, 50));

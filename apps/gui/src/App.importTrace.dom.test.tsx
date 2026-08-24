@@ -153,6 +153,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { App } from "./App";
 import { hydrateState } from "./hostState";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -160,10 +161,14 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+/// A button outside the toolbar. The toolbar's own controls are chips
+/// with short labels — "Open" up there is the Open-project chip, not a
+/// dialog's confirm — so they are excluded here and reached through
+/// `toolbarChip` instead.
 function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-    (b) => b.textContent === label,
-  );
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;
 }
@@ -197,7 +202,7 @@ describe("Import trace — dialog routing by extension", () => {
     dialogPath = "/logs/one.blf";
     await mountAndSeed();
     await act(async () => {
-      fireEvent.click(findButton("Import trace…"));
+      fireEvent.click(toolbarChip("Import"));
     });
     await waitFor(() => findButton("Open"));
     expect(invokeCalls.some((c) => c.cmd === "scan_blf_channels")).toBe(true);
@@ -208,7 +213,7 @@ describe("Import trace — dialog routing by extension", () => {
     dialogPath = "/logs/one.mf4";
     await mountAndSeed();
     await act(async () => {
-      fireEvent.click(findButton("Import trace…"));
+      fireEvent.click(toolbarChip("Import"));
     });
     await waitFor(() => findButton("Open"));
     expect(invokeCalls.some((c) => c.cmd === "scan_mdf_channels")).toBe(true);
@@ -219,7 +224,7 @@ describe("Import trace — dialog routing by extension", () => {
     dialogPath = "/logs/one.blf";
     await mountAndSeed();
     await act(async () => {
-      fireEvent.click(findButton("Import trace…"));
+      fireEvent.click(toolbarChip("Import"));
     });
     await waitFor(() => expect(dialogOpenCalls.length).toBe(1));
     const opts = dialogOpenCalls[0] as { filters: { name: string; extensions: string[] }[] };
@@ -235,7 +240,7 @@ describe("Recent captures", () => {
     dialogPath = "/logs/fresh.mf4";
     await mountAndSeed();
     await act(async () => {
-      fireEvent.click(findButton("Import trace…"));
+      fireEvent.click(toolbarChip("Import"));
     });
     await waitFor(() => findButton("Open"));
     await act(async () => {

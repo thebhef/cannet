@@ -100,19 +100,12 @@ vi.mock("uplot", () => {
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { App } from "./App";
+import { addPanelChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
-}
-
-function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("button"),
-  ).find((b) => b.textContent === label);
-  if (!btn) throw new Error(`button "${label}" not found`);
-  return btn;
 }
 
 function tabTitles(): string[] {
@@ -133,19 +126,19 @@ afterEach(() => {
 });
 
 describe("addPanel(kind) over the panel registry", () => {
-  // button label → the model-owned default name the new element's tab
+  // Add-menu entry → the model-owned default name the new element's tab
   // should show (the seed layout already has a "Trace 1", so an added
   // trace is "Trace 2").
   const cases: Array<[string, string]> = [
-    ["Add trace", "Trace 2"],
-    ["Add plot panel", "Plot 1"],
-    ["Add signal view", "Signals 1"],
-    ["Add transmit panel", "Transmit 1"],
-    ["Add RBS panel", "RBS 1"],
-    ["Add color map", "Color Map 1"],
+    ["Trace", "Trace 2"],
+    ["Plot Panel", "Plot 1"],
+    ["Signal View", "Signals 1"],
+    ["Transmit Panel", "Transmit 1"],
+    ["RBS Panel", "RBS 1"],
+    ["Color Map", "Color Map 1"],
   ];
 
-  it("each toolbar button opens a panel with the right default tab", async () => {
+  it("each Add-menu entry opens a panel with the right default tab", async () => {
     render(<App />);
     // Wait for the seeded default layout (one trace panel) to mount.
     await waitFor(() => {
@@ -157,7 +150,7 @@ describe("addPanel(kind) over the panel registry", () => {
     for (const [label, expectedTitle] of cases) {
       // eslint-disable-next-line no-await-in-loop -- one add at a time
       await act(async () => {
-        fireEvent.click(findButton(label));
+        fireEvent.click(addPanelChip(label));
       });
       // eslint-disable-next-line no-await-in-loop -- assert before next add
       await waitFor(() => {

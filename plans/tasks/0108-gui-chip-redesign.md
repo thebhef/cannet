@@ -429,6 +429,173 @@ prototype's own `.chip` were drifting from the shipped chip it claims
 to extend and were aligned to it: `gap` `.35rem` → `.4rem`, and
 `:disabled` from `color: var(--text-dim)` to `opacity: .7`.
 
+- **2026-08-22 — Phase 3, the top-level toolbar and the shared
+  measurement, landed.** Branch `task-108-phase-3-top-toolbar` from
+  `df04fedd`.
+  - `f7dfc799` adds `apps/gui/src/useToolbarFit.ts` +
+    `useToolbarFit.dom.test.tsx` and moves `StatusBar` onto it.
+  - `87bb566d` gives `ChipButton` a `menuOpen` prop — a menu trigger is
+    not a toggle.
+  - `29a9d0eb` adds `apps/gui/src/Toolbar.tsx` + `Toolbar.dom.test.tsx`
+    and the shared chip-menu CSS.
+  - `6ed0b251` mounts it in `App`, retires the legacy toolbar CSS, adds
+    `toolbarTestKit.ts`, migrates the 20 App tests that clicked the old
+    buttons, amends ADR 0055 and updates the README and the prototype.
+  - `ab92c24c` drops a task number from a comment in the new test file.
+    The `comment-references` gate was run before each commit and read
+    clean — wrongly: `git grep` without `--untracked` cannot see a file
+    that is still new. Run it as `git grep --untracked`.
+  - **Overseer review corrections, same branch.** `45e7b559` restores
+    ADR 0055's superseded rule instead of overwriting it — "do not
+    convert a command into a chip" is back, dated and annotated the way
+    ADR 0026 carries its own reversal, and the status line now reads
+    `accepted (2026-08-21); amended (2026-08-22)`. The rule itself is
+    unchanged. `5e142f53` adds `--untracked` to the
+    `comment-references` CI job (`.github/workflows/ci.yml`): the flag
+    is a no-op on CI, where a fresh checkout has everything tracked,
+    but CI is the spelling every phase copies for its pre-commit check,
+    and without it the check is blind to a file it has just written.
+    Verified by canary: a new untracked `apps/` file containing
+    `// task 999` is found by `git grep --untracked -Ein …` (exit 0,
+    the job would fail) and missed by the old spelling (exit 1, the job
+    would pass). The job body run verbatim on the clean tree passes.
+  - Frontend tests: 2704/203 files before → 2718/205 files after (all
+    green). `tsc --noEmit` and `vite build` clean; the
+    `comment-references` grep empty at each commit. No Rust touched.
+
+### The bar as it now reads
+
+Twelve chips where there were twenty buttons, same commands, same
+order: **Open** · **Save** │ **Import** · **Recent** · **DBC** │
+**Clear** · **Capture** │ **Add ▾** (Trace, Plot Panel, Signal View,
+Transmit Panel, RBS Panel, Color Map, Generator) │ four icon-only
+launchers (Database / Graph / Events / Project panel). Every tooltip is
+the exact phrase its old button carried. The toolbar carries no
+connection, System Messages, Signal Mapping or RBS launcher — it never
+did after task 103, so there was no defect to report, and
+`Toolbar.dom.test.tsx` now holds that it stays that way.
+
+### The measurement hook phases 4–6 consume
+
+**`useToolbarFit` (`apps/gui/src/useToolbarFit.ts`)** — the DOM half of
+the fit, lifted out of `StatusBar` before a second bar could copy it.
+`planToolbarFit` still does the arithmetic; this gets it its numbers.
+
+```ts
+const { barRef, fit } = useToolbarFit<HTMLDivElement>({
+  runs,               // ToolbarFitRun[]: { id, items, overflow? }
+  overflowFallback,   // px to assume for the overflow control unmeasured
+  reserve,            // () => px the runs never get (the lead)
+});
+```
+
+- `runs[].items[]` is `{ key, fallback?, cluster? }` — the planner's
+  `widths` / `clusters` with the widths not yet filled in. `key` is also
+  the value of the item's `data-toolbar-fit` attribute, which is how the
+  hook finds the element to measure. `TOOLBAR_FIT_ATTR` and
+  `TOOLBAR_FIT_OVERFLOW_KEY` (`"overflow"`) are exported; the old
+  `data-sb-measure` name is gone.
+- `fit` is `planToolbarFit`'s plan —
+  `Readonly<Record<runId, keptCount>>` — and is everything-kept before
+  the first measurement, so no bar flashes empty on mount.
+- `reserve()` is read at measure time, so it may look at the caller's
+  own refs (`StatusBar` returns its lead width plus the notice's
+  guaranteed slice). The lead is **not** a run: it never gives way.
+- The hook re-measures in a `useLayoutEffect` after *every* render and
+  from a `ResizeObserver` on the bar, both reached through a ref, so a
+  re-rendering bar does not churn observers.
+- The one rule it cannot enforce: **the bar must not be
+  `overflow: hidden`** — a clipping bar swallows its own absolutely
+  positioned menu. `StatusBar.dom.test.tsx` asserts that against
+  `index.css`; a bar adopting the hook should assert the same about its
+  own class.
+- **What jsdom cannot check**: `offsetWidth` / `clientWidth` are always
+  0 there, so `useToolbarFit.dom.test.tsx` supplies every width and
+  tests the arithmetic (the width map, the gap, the reserve, the
+  overflow charge). Nothing in the suite proves the hook reads a real
+  rendered box; only the running app does.
+
+**The top toolbar does not use it.** The prototype gives `.appbar` (the
+header) `flex-wrap: wrap` and reserves the no-wrap-plus-overflow
+treatment for `.plotbar`; the Add-menu collapse leaves the header at
+twelve chips, so nothing there needed to give way. `StatusBar` is the
+hook's only consumer until phase 4.
+
+### The pattern a sweep phase should copy
+
+- **Extract the bar into its own component** taking `onRun(commandId)`
+  plus the few view facts its chips need (`captureEmpty`, `importing`),
+  and render it from the owner. `Toolbar.tsx` is 200 lines that came out
+  of `App.tsx`, and the point is not tidiness: a bar that renders from
+  props can be pinned by a test with a spy for `onRun`, which is what
+  makes "every command still reachable" checkable at all.
+- **Pin the bar against a literal table in the test file** — order,
+  label, tooltip, and the command each chip dispatches — never against
+  the array the component renders from. `Toolbar.dom.test.tsx`'s `BAR`
+  and `ADD_MENU` are the shape to copy.
+- **Labels are Title Case and short; the tooltip is the old full
+  phrase, sentence case.** Every tooltip on this bar is the exact words
+  its old button carried, which is why the README needed only its
+  labels changing. Keep that property — it is what makes a sweep
+  reviewable.
+- **Icon-only chips need a `title` or an `ariaLabel`** (`ChipButton`
+  falls back `ariaLabel ?? label ?? title`), and tests find chips by
+  accessible name — see `toolbarTestKit.ts`.
+- **Menus hang off `ChipButton`'s `menuOpen` prop** and the shared
+  `.chip-menu` / `.chip-menu-list` classes. Do not add a caret element:
+  `aria-haspopup` carries it. (The Add chip's caret is a character in
+  its label, matching the prototype, with `ariaLabel` keeping the
+  accessible name clean.)
+- **Delete the bar's legacy `button` CSS in the same commit.** A
+  `.toolbar button { … }` rule out-specifies `.status-chip` (0,1,1 beats
+  0,1,0) and silently restyles every chip on that bar. Each remaining
+  bar has one: `.plot-panel-toolbar button`, `.tx-panel-toolbar button`,
+  `.system-messages-toolbar button`.
+- **Expect the test migration to be most of the diff.** Twenty files
+  clicked the old toolbar by `textContent`. Two things bite: the new
+  short labels collide with dialog buttons (the toolbar's "Open" chip
+  vs. the channel-map dialog's "Open" confirm), so each file's local
+  `findButton` now skips `.toolbar`; and a menu opened inside an outer
+  `act(...)` has not rendered yet when the same statement looks for its
+  entry, so `addPanelChip` opens it inside `flushSync`.
+- **What not to copy**: `.seg` is still unbuilt (phase 4 needs it
+  first), and this bar wraps rather than overflowing — a bar that must
+  not wrap takes `useToolbarFit`, not `flex-wrap`.
+
+### How the tests were proved by mutation
+
+1. **Every command still reachable.** `Toolbar.dom.test.tsx` renders the
+   bar with a spy for `onRun` and clicks every chip. Proved three ways:
+   pointing the Graph-panel chip at `panel.show.events` failed
+   "dispatches its own command from every chip"; deleting Color Map from
+   the Add menu failed "collapses the seven Add commands into one menu";
+   adding a System Messages launcher back to the bar failed three tests
+   including "carries no launcher for anything the status bar already
+   reports". All restored and re-run green.
+2. **The hook's dropped-item memory.** The width map is exercised with a
+   deliberately absurd `fallback` (1000 against a real 100), so a
+   forgetful hook cannot bring a dropped item back and stays *stably*
+   wrong at one item rather than flapping to the right answer. Replacing
+   `widthsRef.current` with a fresh `Map` per measure failed four of the
+   five tests — including the gap and reserve ones, which is right:
+   without the memory those bars oscillate.
+3. **The gap and the reserve.** Dropping `+ gap` from the per-item cost
+   failed only "charges every item for the gap in front of it";
+   dropping `- reserve()` failed only "takes the reserved lead off the
+   top". Both restored and re-run green.
+4. **The menu-trigger prop.** Forcing `aria-haspopup` to `undefined`
+   failed `ChipButton`'s new "announces the menu it opens" test.
+
+### Prototype
+
+Kept and updated in the same commit, three places: the before-shot
+section is retitled "before this pass" and says why it still shows
+Connect / View signals / System messages; the `.menu-wrap` comment names
+the app's `.chip-menu` / `.chip-menu-list` classes and the
+`aria-haspopup` trigger; and the busy-chip rule records that the app's
+import chip is *also* disabled while it runs, so it keeps full contrast
+and takes the progress cursor rather than dimming.
+
 ## Blockers / side effects
 
 - **`useConnectionStates` still hand-rolls fetch-then-listen, and still
@@ -464,3 +631,36 @@ to extend and were aligned to it: `gap` `.35rem` → `.4rem`, and
   silently reconciling it — if a wider or different set was intended,
   say so and a later phase can add to the registry (additive, not a
   rework of phase 1's shape).
+
+- **The import chip no longer relabels itself to "Loading trace…"**
+  (phase 3). The shipped button swapped its own label mid-load; the chip
+  keeps the label "Import" and says it is loading with the pulsing
+  accent hairline, the disabled state, and a tooltip naming the status
+  bar's Cancel. That is the prototype's own treatment of this chip
+  (`#importChip` toggles `aria-busy` and nothing else) and the reason
+  `ChipButton` has a `busy` prop at all — but it is still a change to a
+  shipped, user-visible string, taken deliberately rather than drifted
+  into. `App.importTraceGuard` / `App.traceOpenCancel` now pin the
+  tooltip and the state instead of the label.
+
+- **ADR 0055 §1 said "Do not convert a command into a chip"**
+  (phase 3). That sentence and this task's chip language cannot both
+  stand, and the owner rulings are the newer decision, so the ADR was
+  amended: the silhouette is shared, and the dot — present only on a
+  chip with a state to report — is what keeps the distinction readable.
+  The superseded rule is kept and annotated rather than overwritten
+  (`45e7b559`, after overseer review), and the status line records the
+  amendment. Flagged because it is an amendment to an accepted ADR made
+  by an implementation phase.
+
+- **The top-level toolbar wraps rather than overflowing** (phase 3), per
+  the prototype (`.appbar` is `flex-wrap: wrap`; only `.plotbar` is
+  `nowrap` with the overflow menu). The shared measurement hook this
+  phase was asked to build therefore has one consumer, `StatusBar`,
+  until phase 4 arrives. If the header is meant to overflow too, that is
+  a design decision the prototype does not currently carry.
+
+- **`README.md` still named a toolbar Connect button** (phase 3) — doc
+  rot from task 103, which moved the control to the status bar. The line
+  was corrected in passing because it names the toolbar; nothing else in
+  that section was touched.

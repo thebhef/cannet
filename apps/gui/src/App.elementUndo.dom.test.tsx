@@ -185,6 +185,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { App } from "./App";
 import { hydrateState } from "./hostState";
+import { addPanelChip, toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -192,10 +193,14 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+/// A button outside the toolbar. The toolbar's own controls are chips
+/// with short labels — "Open" up there is the Open-project chip, not a
+/// dialog's confirm — so they are excluded here and reached through
+/// `toolbarChip` instead.
 function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-    (b) => b.textContent === label,
-  );
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;
 }
@@ -337,7 +342,7 @@ describe("element undo", () => {
   it("adding a panel is one step — the panel's own config seed is not another", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
@@ -356,7 +361,7 @@ describe("element undo", () => {
   it("undoes the most recent change, whichever stack it lives on", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
@@ -403,7 +408,7 @@ describe("element undo", () => {
   it("brings back a removed element and its panel in one chord", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
@@ -421,7 +426,7 @@ describe("element undo", () => {
     // Remove the element: the registry loses it and its panel closes —
     // one gesture across both stacks.
     await act(async () => {
-      fireEvent.click(findButton("Project panel"));
+      fireEvent.click(toolbarChip("Project panel"));
     });
     await act(async () => {
       fireEvent.click(buttonIn(elementRow("Plot 1"), "Remove"));
@@ -457,7 +462,7 @@ describe("element undo", () => {
       if (tabTitles().includes("Plot 1")) throw new Error("redo left the panel open");
     });
     await act(async () => {
-      fireEvent.click(findButton("Project panel"));
+      fireEvent.click(toolbarChip("Project panel"));
     });
     expect(() => elementRow("Plot 1")).toThrow();
   }, 30_000);
@@ -468,7 +473,7 @@ describe("element undo", () => {
     // rendered — a panel only renders while it is the visible one in
     // its group, and a cross-panel drag needs both ends alive.
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
@@ -480,13 +485,13 @@ describe("element undo", () => {
     // project panel forward, focus the trace from its inventory, then
     // add — a new panel joins whichever group is active.
     await act(async () => {
-      fireEvent.click(findButton("Project panel"));
+      fireEvent.click(toolbarChip("Project panel"));
     });
     await act(async () => {
       fireEvent.click(buttonIn(elementRow("Trace 1"), "Focus"));
     });
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await act(async () => {
       fireEvent.click(buttonIn(elementRow("Plot 1"), "Focus"));
@@ -530,7 +535,7 @@ describe("element undo", () => {
   it("a drag of the side-panel splitter is one step, not one per mouse move", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
@@ -581,7 +586,7 @@ describe("element undo", () => {
     try {
       await mountApp();
       await act(async () => {
-        fireEvent.click(findButton("Add plot panel"));
+        fireEvent.click(addPanelChip("Plot Panel"));
       });
       await waitFor(() => {
         if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
@@ -658,7 +663,7 @@ describe("element undo", () => {
   it("inserting a filter upstream is one step — the filter goes with it", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Graph panel"));
+      fireEvent.click(toolbarChip("Graph panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".graph-node-trace")) throw new Error("no trace node yet");
@@ -703,7 +708,7 @@ describe("element undo", () => {
   it("adding a filter from the graph toolbar is undoable on its own", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Graph panel"));
+      fireEvent.click(toolbarChip("Graph panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".graph-panel")) throw new Error("no graph panel yet");
@@ -735,7 +740,7 @@ describe("element undo", () => {
     // join the drag's step and stop being undoable on its own.
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
@@ -792,7 +797,7 @@ describe("element undo", () => {
   it("a typed rename is one step, not one per keystroke", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Project panel"));
+      fireEvent.click(toolbarChip("Project panel"));
     });
     const input = elementRow("Trace 1").querySelector<HTMLInputElement>("input")!;
 
@@ -834,7 +839,7 @@ describe("element undo", () => {
     // history scrubs `params`.
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Database panel"));
+      fireEvent.click(toolbarChip("Database panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".dbc-panel")) throw new Error("no Database panel yet");
@@ -870,7 +875,7 @@ describe("element undo", () => {
     // the panel's Run toggle uses.
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Add RBS panel"));
+      fireEvent.click(addPanelChip("RBS Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".rbs-panel")) throw new Error("no RBS panel yet");
@@ -889,7 +894,7 @@ describe("element undo", () => {
     };
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Add RBS panel"));
+      fireEvent.click(addPanelChip("RBS Panel"));
     });
     await waitFor(() => {
       const armed = vi
@@ -903,7 +908,7 @@ describe("element undo", () => {
   it("never replays a behavior field, and never wakes the host reconciler", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("Add RBS panel"));
+      fireEvent.click(addPanelChip("RBS Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".rbs-panel")) throw new Error("no RBS panel yet");

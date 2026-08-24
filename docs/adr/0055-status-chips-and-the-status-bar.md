@@ -1,6 +1,9 @@
 # ADR 0055 — A state that wants pressing is a chip, and the header's readout is a status bar
 
-Status: accepted (2026-08-21)
+Status: accepted (2026-08-21); amended (2026-08-22) — **a command
+wears the chip silhouette too**, reversing “do not convert a command
+into a chip”: the dot, not the shape, is what separates a state from
+a command.
 
 ## Context
 
@@ -48,9 +51,24 @@ a **badge** (a needs-attention count, absent at zero). Width uniformity
 is *within* one chip's state set and is sized to that chip's longest
 state — never global, which would spend the bar on short labels.
 
-**Do not convert a command into a chip.** A control that is only ever
-pressed is a button; styling it as a chip only makes the distinction
-unreadable.
+**A command wears the same silhouette, and is told apart by the dot.**
+The chip shape is the app's one control shape — commands, toggles,
+status chips and colour swatches read as one species — so a command is
+the same hairline, radius and density, implemented as the very same
+component with a press affordance rather than a second almost-identical
+control. What separates the two is the indicator: **a chip carries a dot
+only when it has a state to report**, and a plain command grows none.
+The distinction stays readable without spending a second shape on it.
+
+*Adopted 2026-08-22, reversing the rule this ADR was accepted with.*
+The original read: **do not convert a command into a chip** — a
+control that is only ever pressed is a button, and styling it as a chip
+only makes the distinction unreadable. That reasoning assumed the
+silhouette was the only thing available to carry the distinction. It
+was reversed by the one-shape ruling: every control in the chrome —
+command, toggle, status chip, colour swatch — wears the `.color-chip`
+silhouette, and the indicator does the separating instead. A reader
+looking for a state looks for the dot, not for a different outline.
 
 ### 2. Something that cannot say *which* one is a launcher, not a chip
 

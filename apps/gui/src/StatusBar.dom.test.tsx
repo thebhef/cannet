@@ -24,7 +24,7 @@ import type { StatusMetric } from "./statusLine";
 const layout = { bar: 0, lead: 0, notice: 0 } as Record<string, number>;
 
 function sizeOf(el: HTMLElement): number {
-  const key = el.dataset.sbMeasure;
+  const key = el.dataset.toolbarFit;
   if (key !== undefined) return layout[key] ?? 0;
   if (el.classList.contains("status-bar")) return layout.bar;
   if (el.classList.contains("status-bar-lead")) return layout.lead;
@@ -131,7 +131,7 @@ function renderBar(barWidth: number, over: Partial<Parameters<typeof StatusBar>[
 
 function visibleMetrics(): string[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".status-bar > .status-metric")).map(
-    (el) => el.dataset.sbMeasure!.replace("metric:", ""),
+    (el) => el.dataset.toolbarFit!.replace("metric:", ""),
   );
 }
 

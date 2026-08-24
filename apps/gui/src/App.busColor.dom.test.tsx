@@ -98,6 +98,7 @@ import { App } from "./App";
 import { hydrateState } from "./hostState";
 import { defaultBusColor } from "./busColor";
 import type { Bus } from "./types";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -105,10 +106,14 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+/// A button outside the toolbar. The toolbar's own controls are chips
+/// with short labels — "Open" up there is the Open-project chip, not a
+/// dialog's confirm — so they are excluded here and reached through
+/// `toolbarChip` instead.
 function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("button"),
-  ).find((b) => b.textContent === label);
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;
 }
@@ -121,7 +126,7 @@ function busSwatches(): HTMLInputElement[] {
 async function saveAndReadBuses(): Promise<Bus[]> {
   const before = invokeMock.mock.calls.length;
   await act(async () => {
-    fireEvent.click(findButton("Save project"));
+    fireEvent.click(toolbarChip("Save"));
   });
   await waitFor(() => {
     const call = invokeMock.mock.calls
@@ -159,7 +164,7 @@ describe("bus colors persist only when customized", () => {
     });
 
     await act(async () => {
-      fireEvent.click(findButton("Project panel"));
+      fireEvent.click(toolbarChip("Project panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".project-panel")) throw new Error("no project panel yet");

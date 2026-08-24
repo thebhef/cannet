@@ -535,34 +535,10 @@ header {
   margin-bottom: 0.4rem;
 }
 
-.toolbar button {
-  background: var(--surface-toolbar-control);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  padding: 0.25rem 0.6rem;
-  cursor: pointer;
-  font: inherit;
-}
-
-.toolbar button:hover:not(:disabled) {
-  background: var(--surface-toolbar-control-hover);
-}
-
-.toolbar button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* A button that is off because its own action is still running, not
-   because it is unavailable: it keeps full contrast and takes the
-   progress cursor, so "working" doesn't read as "greyed out". */
-.toolbar button[aria-busy="true"]:disabled {
-  opacity: 1;
-  border-color: var(--accent-progress);
-  color: var(--accent-progress);
-  cursor: progress;
-}
+/* The toolbar declares no button styling of its own: every control in
+   it is a `.chip-button`, which is where the shape lives. A
+   `.toolbar button` rule here would out-specify the shared chip and
+   quietly restyle it. */
 
 .toolbar label.checkbox,
 .trace-panel-toolbar label.checkbox {
@@ -581,55 +557,16 @@ header {
   margin: 0 0.2rem;
 }
 
-/* Recent-captures dropdown. Dismisses on outside click / Escape via
- * the shared `useDismissableMenu` hook; styling matches the
- * surrounding toolbar buttons. */
-.toolbar .recent-captures {
-  position: relative;
-}
-.toolbar .recent-captures > button {
-  cursor: pointer;
-  padding: 0.2rem 0.5rem;
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  background: var(--surface-toolbar-summary);
-  color: inherit;
-  font: inherit;
-}
-.toolbar .recent-captures > button:hover {
-  background: var(--surface-hover-strong);
-}
-.toolbar ul.recent-captures-menu {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  margin: 4px 0 0 0;
-  padding: 4px 0;
-  list-style: none;
-  background: var(--surface-control);
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
+/* The Recent-captures menu is one of the shared chip menus; only its
+   width is its own, since it lists file paths rather than words, and
+   a path is ellipsised rather than allowed to widen the menu. */
+.recent-captures-menu {
   min-width: 280px;
   max-width: 560px;
-  z-index: 50;
-  box-shadow: 0 4px 12px var(--shadow-menu);
 }
-.toolbar ul.recent-captures-menu > li > button {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 0.25rem 0.6rem;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  white-space: nowrap;
+.recent-captures-menu .status-chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
-}
-.toolbar ul.recent-captures-menu > li > button:hover {
-  background: var(--surface-hover-strong);
 }
 
 /* Placeholder rows render only the row index until their chunk
@@ -1111,7 +1048,55 @@ ul.status-bar-menu .status-chip {
     animation: none;
   }
 }
+/* A chip that is off because its own command is still running, not
+   because it is unavailable: it keeps full contrast and takes the
+   progress cursor, so "working" doesn't read as "greyed out". The
+   pulsing hairline above is the rest of what it says. */
+.chip-button[aria-busy="true"]:disabled {
+  opacity: 1;
+  cursor: progress;
+}
 /* === end shared command chip === */
+
+/* === Chip menus (a ChipButton that opens a list of ChipButtons) ===
+   The toolbar's Add and Recent menus, and any menu a later bar hangs
+   off a chip. The list is absolutely positioned, so a bar that hosts
+   one must not clip — the same rule the status bar's overflow menu
+   carries. Inside the list the chips drop their hairline until hovered:
+   a column of outlined chips reads as a grid, not a menu. */
+.chip-menu {
+  position: relative;
+  display: inline-flex;
+}
+.chip-menu-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin: 4px 0 0 0;
+  padding: 4px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--surface-pop);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  z-index: 50;
+  box-shadow: 0 4px 12px var(--shadow-menu);
+}
+.chip-menu-list > li {
+  display: flex;
+  min-width: 0;
+}
+.chip-menu-list .chip-button {
+  border-color: transparent;
+  width: 100%;
+  justify-content: flex-start;
+}
+.chip-menu-list .chip-button:hover:not(:disabled) {
+  border-color: var(--border-wash);
+}
+/* === end chip menus === */
 
 /* A capture census walking: indeterminate, since the walk's length is
    the file's length. Same sliding chip the plot shows while its first

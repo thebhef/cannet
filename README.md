@@ -343,12 +343,23 @@ unchanged server restages, in seconds. `tauri dev` does neither — a
 development build has no bundle to fill.
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
-cannet window. Use **Import trace…** to pick a log (a Vector `.blf`
-or an ASAM MDF 4.x bus-logging `.mf4` — the dialog's filter list
-offers both, plus "all supported"); **Add DBC…**
+cannet window. Use the toolbar's **Import** chip to pick a log (a
+Vector `.blf` or an ASAM MDF 4.x bus-logging `.mf4` — the dialog's
+filter list offers both, plus "all supported"); **DBC**
 loads a database for live decoding — load more than one and frames
 decode against each in order, first match wins (every loaded DBC
 applies to the one interface for now).
+
+**The toolbar is chips.** Every control in it wears the app's one
+control shape (ADR 0055): a short Title Case label beside a drawn icon,
+with the full sentence — *Open project…*, *Save capture…* — in the
+tooltip. Where the icon says it on its own, the chip is the icon alone
+and the tooltip is all of its words: **Database panel**, **Graph
+panel**, **Events panel**, **Project panel**. The seven panel-adding
+commands sit behind one **Add** menu rather than seven near-identical
+phrases across the bar. Everything is still a command: a chip
+dispatches the same command id the palette and the keyboard do, so
+what a chip does is documented once, wherever that command is.
 
 **Under the toolbar is the status bar.** The toolbar is commands —
 things you press to make something happen. The bar beneath it is the
@@ -1097,7 +1108,7 @@ row per arbitration id with its latest frame and its current message
 rate (the **msg/s** column, by-id only) — click a column header to
 sort by it (click again to reverse, again to clear — ▲ / ▼ marks the
 sorted column); *trace* is the chronological view (one row per frame,
-follows the live edge). **Add trace** creates a new trace element and a
+follows the live edge). **Add ▸ Trace** creates a new trace element and a
 panel for it (in by-ID mode — toggle it anytime); the new trace starts
 **empty and stopped** (hit **Start** to begin capturing), regardless of
 what's already in the session buffer. The project panel
@@ -1306,7 +1317,7 @@ panel's column layout and auto-scroll toggle), the project's elements
 (traces — and later plots, transmit messages, …), the loaded DBC
 paths, the project's logical buses, and the interface bindings (each
 of which names its own server address). The **project panel** (or the
-toolbar's **Open project…** / **Save project**) drives it: **Save** /
+toolbar's **Open** / **Save**) drives it: **Save** /
 **Save As…** write one, **Open…** restores it (re-loads the DBCs and
 restores the bus / binding configuration — hit **Connect** to switch),
 **New** starts a fresh unsaved project (default layout, no DBCs, disconnected,
@@ -1483,7 +1494,7 @@ writes, so the panel teaches the file.
   the capture you are working on, this one bounds what is kept for a
   session that may never come.
 
-**Add plot panel** opens a signal plot (Phase 4): a uPlot-based
+**Add ▸ Plot Panel** opens a signal plot (Phase 4): a uPlot-based
 oscilloscope-style view, docked like any other panel. It's backed by a
 **trace element**, like the trace panels — same windowed view over the
 session buffer with **Start / Stop / Pause / Clear** — it just renders
@@ -1773,7 +1784,7 @@ CSV/image export.)
 
 ### Transmit panel + enum signals
 
-**Add transmit panel** opens the transmit panel: a single column of
+**Add ▸ Transmit Panel** opens the transmit panel: a single column of
 collapsible frame-tiles, each composing one CAN / CAN FD message that
 can be sent on demand or scheduled cyclically.
 
@@ -1980,7 +1991,7 @@ within about a second.
 
 ### Rest-of-bus simulation + calculated fields
 
-**Add RBS panel** opens a rest-of-bus simulation (ADR 0028): cannet
+**Add ▸ RBS Panel** opens a rest-of-bus simulation (ADR 0028): cannet
 transmits a configured set of DBC messages on their cadence with
 live, editable signal values — playing every node except the device
 under test.
@@ -2108,7 +2119,7 @@ an unrecognised key or value.
 
 ### Signal value→color maps
 
-**Add color map** opens a value→color map config panel (ADR 0029).
+**Add ▸ Color Map** opens a value→color map config panel (ADR 0029).
 A color map is a standalone, DBC-informed project element that targets
 one signal and assigns colors to its values — enum states each get a
 color (seeded from the DBC `VAL_` table), or a numeric band can be
@@ -2123,7 +2134,7 @@ numeric-signal plot rendering will grow.
 
 ### Generator rules (signal colors from the name)
 
-**Add generator** opens the generator-rules editor (ADR 0026). A
+**Add ▸ Generator** opens the generator-rules editor (ADR 0026). A
 generator is an ambient project element — like a color map, not wired
 through the graph — holding an ordered list of regexes matched against
 signal **names**. The rule's first capture group, read as an integer,
@@ -2169,8 +2180,8 @@ with one of the project's buses. Each bus is allowed at most one
 binding (one interface per bus); a bus that already has a binding is
 hidden from the picker.
 
-The toolbar's **Connect** button (or **Connect all** in the project
-panel) iterates every unique server in `interface_bindings`, opens one
+The status bar's **connection chip** (or **Connect all** in the
+project panel) iterates every unique server in `interface_bindings`, opens one
 gRPC session per server, and subscribes only to the bound interfaces.
 The host's pump thread stamps every received frame with the chosen
 `bus_id`. **Disconnect** ends every session, and so does quitting the
@@ -2667,7 +2678,8 @@ for the LGPL analysis that motivates this layout.
 Phase 9 makes captures persistable and re-loadable, with user-placed
 notes round-tripping alongside.
 
-**Save Capture**. The toolbar grows a **Save capture…** action
+**Save Capture**. The toolbar grows a **Capture** chip (*Save
+capture…*)
 (disabled when the session buffer is empty). It writes the *entire*
 session buffer — every frame on every bus, classic / FD / error /
 remote — to a single `.blf` file via the new
@@ -2753,8 +2765,8 @@ the object type of the event each one is attached to. Which record a
 kind rides is a property of the kind, so the per-kind checklist names
 it and filtering by kind is filtering by record type.
 
-**Recent captures**. The toolbar grows a **Recent** dropdown next to
-**Import trace…** that lists the last 8 opened BLF and MDF paths
+**Recent captures**. The toolbar grows a **Recent** menu next to
+**Import** that lists the last 8 opened BLF and MDF paths
 alike, persisted host-side
 ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)).
 Picking one fast-paths through the standard Import-trace flow,
