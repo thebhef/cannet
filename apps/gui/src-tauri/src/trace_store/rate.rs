@@ -126,10 +126,10 @@ pub(super) struct RateSample {
 
 /// A rolling frames/second tracker: a running frame count plus its
 /// rate-sample history, sampled and pruned via [`sample_if_due`]. One per
-/// bucket — the aggregate ([`super::Inner::agg_rate`]), per-bus
-/// ([`TraceStore::frames_per_second_by_bus`]), and per-direction
-/// ([`TraceStore::frames_per_second_by_direction`]) throughput readouts all
-/// share this one shape, so each reads a scoped rate the same way.
+/// bucket — per-bus ([`TraceStore::frames_per_second_by_bus`]) and
+/// per-bus-within-direction ([`TraceStore::frames_per_second_by_direction`])
+/// — so each reads a scoped rate the same way, and the whole-store figure
+/// ([`agg_fps`]) is their sum rather than a bucket of its own.
 #[derive(Default)]
 pub(super) struct RateTrack {
     pub(super) count: usize,
@@ -205,9 +205,32 @@ fn rate_from_samples(samples: &VecDeque<RateSample>) -> f64 {
 // locking wrapper so [`TraceStore::status_snapshot`] can take all of
 // them in a single lock acquisition.
 
+/// The whole store's append rate: the sum of its per-bus rates.
+///
+/// **Summed rather than read off one deque of its own.** A rate here is a
+/// count over a span of *frame* timestamps, and each interface stamps on
+/// its own free-running crystal. A single bucket fed by every bus
+/// interleaves those clocks, so the span it measures is a difference
+/// between two unrelated timelines: it inflates by the offset between
+/// them — which grows with session length as the crystals drift, ~2.5 s
+/// after half a day on a two-PCAN bench — and goes *negative* whenever
+/// the bus that is ahead opens the window, saturating to zero and
+/// reporting a busy store as idle. A per-bus bucket holds one clock, so
+/// its span is a duration and the sum of them is the rate.
 pub(super) fn agg_fps(inner: &mut Inner, now: Instant) -> f64 {
-    prune_rate_samples(&mut inner.agg_rate.samples, now);
-    rate_from_samples(&inner.agg_rate.samples)
+    sum_track_rates(inner.per_bus.values_mut(), now)
+}
+
+/// Total rate over a set of per-bus buckets, pruning each to the window
+/// as it goes — the shared read behind the aggregate and both direction
+/// figures.
+fn sum_track_rates<'a>(tracks: impl Iterator<Item = &'a mut RateTrack>, now: Instant) -> f64 {
+    tracks
+        .map(|t| {
+            prune_rate_samples(&mut t.samples, now);
+            rate_from_samples(&t.samples)
+        })
+        .sum()
 }
 
 pub(super) fn by_bus_fps(inner: &mut Inner, now: Instant) -> Vec<(String, f64)> {
@@ -251,10 +274,8 @@ pub(super) fn by_bus_bits(inner: &mut Inner, now: Instant) -> Vec<(String, f64, 
 }
 
 pub(super) fn by_direction_fps(inner: &mut Inner, now: Instant) -> (f64, f64) {
-    prune_rate_samples(&mut inner.rx_rate.samples, now);
-    prune_rate_samples(&mut inner.tx_rate.samples, now);
-    let rx = rate_from_samples(&inner.rx_rate.samples);
-    let tx = rate_from_samples(&inner.tx_rate.samples);
+    let rx = sum_track_rates(inner.rx_rate.values_mut(), now);
+    let tx = sum_track_rates(inner.tx_rate.values_mut(), now);
     (rx, tx)
 }
 
@@ -402,6 +423,84 @@ mod tests {
         store.append(dummy(100_000_000, 2));
         let rate = store.frames_per_second();
         assert!((rate - 10.0).abs() < 1.0, "expected ~10/s, got {rate}");
+    }
+
+    /// How far apart the two buses' clocks have drifted in the three
+    /// tests below. Any value past [`RATE_WINDOW`] does it; five seconds
+    /// is the right order for a bench session of a few hours.
+    const AHEAD: u64 = 5_000_000_000;
+
+    /// Two dongles free-run on their own crystals, so their frame
+    /// timestamps drift apart over a session — measured at roughly 2.5 s
+    /// after half a day on a two-PCAN bench. These three pin what that
+    /// must not do to a rate.
+    ///
+    /// Each append is spaced past [`RATE_SAMPLE_INTERVAL`], which is what
+    /// makes both buses land in the window: without the gap the cadence
+    /// gate drops the second of any back-to-back pair and a bucket fed by
+    /// both never actually holds two clocks.
+    #[test]
+    fn the_aggregate_holds_up_when_two_buses_clocks_have_drifted_apart() {
+        // Bus B is stamped 5 s ahead of bus A. Both run at 10 frames/s,
+        // so the aggregate is 20/s whatever the offset between them.
+        let store = TraceStore::new();
+        let gap = || std::thread::sleep(Duration::from_millis(30));
+        store.append(dummy_on_bus(0, 1, "A"));
+        gap();
+        store.append(dummy_on_bus(AHEAD, 2, "B"));
+        gap();
+        store.append(dummy_on_bus(100_000_000, 1, "A"));
+        gap();
+        store.append(dummy_on_bus(AHEAD + 100_000_000, 2, "B"));
+        let rate = store.frames_per_second();
+        assert!(
+            (rate - 20.0).abs() < 4.0,
+            "expected ~20/s across the two buses, got {rate}"
+        );
+    }
+
+    #[test]
+    fn the_aggregate_is_not_zero_when_the_ahead_bus_lands_first() {
+        // The same drift, sampled in the order that collapsed the reading
+        // to exactly zero: the bus that is *ahead* opens the window and
+        // the one behind closes it, so a span taken across the pair went
+        // negative, saturated to 0 and tripped the "no duration" guard.
+        // On the bench this read 0 frames/s while the store was taking
+        // 3 225.
+        let store = TraceStore::new();
+        let gap = || std::thread::sleep(Duration::from_millis(30));
+        store.append(dummy_on_bus(AHEAD, 2, "B"));
+        gap();
+        store.append(dummy_on_bus(0, 1, "A"));
+        gap();
+        store.append(dummy_on_bus(AHEAD + 100_000_000, 2, "B"));
+        gap();
+        store.append(dummy_on_bus(100_000_000, 1, "A"));
+        let rate = store.frames_per_second();
+        assert!(rate > 0.0, "a store still taking frames must not read 0/s");
+        assert!(
+            (rate - 20.0).abs() < 4.0,
+            "expected ~20/s whichever bus opens the window, got {rate}"
+        );
+    }
+
+    #[test]
+    fn rx_and_tx_hold_up_across_the_same_drift() {
+        // The direction buckets mix buses exactly as the aggregate did,
+        // so they carry the same defect and need the same guarantee.
+        let store = TraceStore::new();
+        let gap = || std::thread::sleep(Duration::from_millis(30));
+        store.append(dummy_on_bus(AHEAD, 2, "B"));
+        gap();
+        store.append(dummy_on_bus(0, 1, "A"));
+        gap();
+        store.append(dummy_on_bus(AHEAD + 100_000_000, 2, "B"));
+        gap();
+        store.append(dummy_on_bus(100_000_000, 1, "A"));
+        let (rx, tx) = store.frames_per_second_by_direction();
+        assert!(rx > 0.0, "rx must not read 0/s while rx frames arrive");
+        assert!((rx - 20.0).abs() < 4.0, "expected ~20/s rx, got {rx}");
+        assert!(tx.abs() < f64::EPSILON, "no tx frames were appended");
     }
 
     #[test]
