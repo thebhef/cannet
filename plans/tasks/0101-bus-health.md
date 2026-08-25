@@ -525,3 +525,81 @@ test is reading "we cannot know" and not merely "there is no number".
 | A saved capture still contains every error frame that was received | **met** | the same test: all 10 000 read back from the written BLF with their exact timestamps, `marker_count == 0`, `exportable()` empty |
 | Controller state and TEC/REC are produced, carried and displayed for a bus that reports them | **met in code, unverified on hardware** | produced — the sidecar's state poll (read, not changed); carried — `controller.rs`'s five tests plus the client's `InterfaceState` arm; displayed — `busHealth.test.ts` "separates an error-passive bus and carries its counters" and `BusHealthPanel.dom.test.tsx`. No dongle was available to close it end to end; see Blockers |
 | Bus load is shown where it can be known and absent where it cannot; never estimated from an unknown bitrate | **met** | `load_is_absent_without_a_bitrate_and_zero_on_a_silent_configured_bus`, `a_configured_bus_reports_a_load_and_a_silent_one_reports_zero`, `a_row_carries_no_load_where_the_host_has_no_bitrate_for_the_bus` (bits on the wire with no bitrate is still not a load), and `BusHealthPanel.dom.test.tsx`'s em-dash pair |
+
+## Two follow-ups investigated and dropped (2026-08-24)
+
+Both were raised by the owner reviewing this task's shipped behaviour, and
+both were carried as owner-review-queue 1.16 and 1.18. **Neither is
+tractable on the hardware cannet supports**, so the owner dropped them
+rather than leaving them open. Recorded here, at the source, so the next
+person to have the same instinct finds the measurement instead of
+repeating it.
+
+Read out of the sidecar's own pinned python-can
+(`servers/cannet-python-can/.venv/…/can/interfaces/`), not from vendor
+documentation.
+
+### Bus load cannot be read from the controller
+
+The shipped percentage excludes bit stuffing — the model does not retain
+the transmitted pattern including the controller-computed CRC — so it is a
+documented floor, low by up to roughly a fifth on worst-case payloads. The
+owner asked the obvious question: can the dongle just tell us?
+
+| Vendor | Bus load bound? | What is there |
+|---|---|---|
+| **Kvaser** | **yes** | `canlib.py`'s `get_stats()` over `canRequestBusStatistics` / `canGetBusStatistics`, yielding `BusStatistics.bus_load` — *"an integer in the interval 0 - 10000 representing 0.00% - 100.00%"* |
+| **PCAN** | **no** | no bus-load parameter anywhere in `pcan/basic.py`'s `TPCANParameter` list |
+| **Vector** | **no** | `s_xl_chip_state` carries `busStatus`, `txErrorCounter`, `rxErrorCounter` and nothing else; no statistics function is bound in `xldriver.py` at all |
+
+**The coverage is exactly inverted from what ships.** Kvaser is the one
+vendor whose bus load python-can binds, and Kvaser is the vendor deferred
+by owner-review-queue ruling 2.7 — because its *error counters* are the
+ones python-can does not bind. PCAN and Vector, which do ship, expose
+nothing.
+
+So the computed floor stays. **What this does not establish:** what the
+vendor DLLs offer. PCAN-Basic or XL may expose bus load through calls
+python-can does not wrap; reaching them means hand-binding ctypes per
+vendor in the sidecar, which is far larger than the question implied.
+
+The one cheap thing left undone, if the floor ever misleads someone:
+the UI explains an *absent* load in its tooltip and does not explain that
+a *present* one is low.
+
+### There is no error class to carry
+
+`CanFramePayload::Error` is a unit variant, so error coalescing keys on the
+bus. The owner's reading was that this discards information. It does, in
+exactly one place, and that place turns out to be empty in practice.
+
+| Source | Class available? |
+|---|---|
+| **PCAN / Vector / Kvaser, live** | **no** — a bare `is_error_frame` boolean is all python-can sets (`pcan/pcan.py`, `vector/canlib.py`, `kvaser/canlib.py`) |
+| **Linux SocketCAN** | **yes** — the class rides in `arbitration_id`'s `CAN_ERR_*` bits plus `data`, and the sidecar forwards both; the Rust unit variant is where it stops |
+| **A BLF cannet wrote** | **no, and it says so** — `build_can_error_ext` sets `flags: 0, ecc: 0`, and `flags` bit 0 is the *"ecc valid"* bit, so the byte is correctly marked meaningless |
+| **A foreign BLF** (CANoe, CANalyzer) | **unknown** — depends on that writer setting the validity bit. No fixture, never observed |
+
+So the field would populate for Linux SocketCAN and *possibly* for foreign
+BLFs, and be empty for every dongle and every file cannet produces. The
+BLF reader does parse `ecc` and discard it
+(`can_error_ext_to_frame` reads four of `CanErrorExt`'s fields), which is
+the grain of truth in the original finding — but on every file we can
+produce, that byte is already declared invalid.
+
+**A design note worth keeping even though the item is closed.** If a class
+ever does become available, it should *not* key the coalescer's runs. A
+real fault burst mixes classes, and keying runs on `(bus, class)` would
+split one fault into several overlapping events — and, because the run
+matcher looks only at the most recent run on the bus, an alternating burst
+would break the run on every switch and could produce one event per frame,
+burning `MAX_RUNS` and evicting other buses' history. The shape that works
+is one run per burst with a per-class tally in the description, leaving the
+label — `"N bus errors over X s"` — identical whatever the source knows.
+
+**Settling it properly would take one experiment**, if anyone ever wants
+it: the BLF oracle harness (`crates/cannet-blf/tests/oracle`) builds
+against Vector's own library, so it can write a `CAN_ERROR_EXT` with the
+validity bit set and prove whether the reader would see a class if a real
+tool emitted one. That turns "unknown" into "known" without a CANoe
+licence.

@@ -16,492 +16,93 @@ when the owner decides, and the file shrinks as tasks are accepted. If
 it is growing faster than it drains, that is the signal to stop taking
 new work and hold a review.
 
+**§ 1 drained on 2026-08-24** and is the one section where the prose was
+*removed* rather than struck out, at the owner's instruction. The rulings
+survive as § 2.9 and the rulings as § 2.10; § 1 keeps a one-row index
+per item so the sixteen task files citing `owner-review-queue 1.N` still
+resolve, and each row names the task that now owns it. Do the same for §§ 3–5 only on the same instruction — striking
+out is still the default.
+
 ---
 
-## 1. Behaviour changes that need a yes or no
-
-These shipped. Each is a deliberate change the owner has not seen, and
-each reverses or extends something previously decided. Any of them can
-be revisited — none is expensive to undo *now*, and all get harder the
-longer the chain grows.
-
-### 1.1 `unified` y-axis mode no longer scales each unit group to fill
-[Task 98](tasks/0098-common-scale-wrong.md) · **reverses ADR 0026**
-
-Fixing the −200 A-drawn-as-−1.5 defect meant one range per axis, being
-the union of every visible series on it. The consequence: overlaying a
-0–1 SOC with a ±300 A current in `unified` now draws the SOC flat
-instead of scaling it to fill the canvas.
-
-The fix is right — an axis cannot carry a scale it does not label — but
-*which mode* pays for it is a judgement. `per-unit` and `individual`
-still cover the overlay case. ADR 0026 is amended with both rationales
-kept, so reversing is a documented flip, not an archaeology exercise.
-
-**Needed: keep, or restore per-group filling in `unified` some other
-way.**
-
-### 1.2 An unpicked collision's row now reports a signal only a later database defines
-[Task 92](tasks/0092-one-resolution-rule.md) · **overseer ruling, not an owner one**
-
-Phase 2 left an asymmetry: whether a row reported such a signal depended
-on whether some *other* signal in that message carried a pick. The
-overseer ruled it closed — a fast path that changes which signals appear
-is a second resolution rule, not an optimisation.
-
-This is user-visible **without** a pick, which is the part the owner did
-not rule on.
-
-**Needed: ratify or overturn.**
-
-### 1.3 A calculated field could be designated by a database that does not supply the message
-[Task 92](tasks/0092-one-resolution-rule.md) phase 3
-
-A sixth Shape A site the original sweep never listed:
-`rebuild_configs`'s default loop enumerated only messages that *declare*
-calculated fields, so a database behind the winner could designate a
-counter on a message it does not supply. Measured, fixed, pinned.
-
-The single place where an answer changes with **no pick involved**.
-Almost certainly wanted — flagged because it is a silent correction to
-data someone may have been reading.
-
-### 1.4 Reload all from disk now swaps each database in place
-[Task 88](tasks/0088-bus-assignment-governs-decode.md) phase 7
-
-Bus assignment and priority position now **survive** a reload where they
-used to be re-derived from the path list. Required to make the
-stop-on-reload rule reachable at all, and the reading ADR 0053 §1
-demands — but the brief only asked for a stop.
-
-### 1.5 A disclosed row's clickable width is the 32 rem line
-[Task 95](tasks/0095-grid-content-click-collapses.md)
-
-A click to the right of a disclosed row now does nothing, where it used
-to collapse the message. Small, but a real change in feel.
-
-### 1.6 Editor-face content stays a block rather than becoming rows
-[Task 95](tasks/0095-grid-content-click-collapses.md)
-
-The ruling was "content becomes real rows". Read narrowly: content that
-is a *list* becomes rows; content that is an *editor face* stays a
-Tab-reached block, kept safe by the toggle rule instead. ADR 0044
-amended to say so. A wider reading is possible and was not taken.
-
-### 1.8 `--no-tls` is now one flag from an unprotected routable listener
-[Task 94](tasks/0094-server-defaults-and-discovery.md) · **security posture**
-
-With the default bind moved to `0.0.0.0:50051`, `--no-tls` alone now
-serves the hardware in the clear on the LAN. It used to be a no-op by
-itself, because the default bind was loopback — putting the hardware on
-the wire unprotected took *two* flags and therefore two decisions.
-
-ADR 0041 names `--no-tls` as exactly this escape hatch, so the posture
-is unchanged **in kind** — the sentence just got shorter. The phase left
-it alone rather than narrow it, because requiring an explicit `--bind`
-alongside `--no-tls` would be rewriting the ADR's escape hatch, which is
-not a phase agent's call.
-
-**Needed: leave it, or narrow `--no-tls` to require an explicit
-`--bind`.** Worth a moment's thought — the flag's blast radius grew
-without its documentation changing.
-
-### 1.9 A bare launch now draws a second firewall prompt
-[Task 94](tasks/0094-server-defaults-and-discovery.md) · FYI
-
-A routable TCP listener on first bare run means a Windows Defender
-Firewall prompt, separate from the mDNS one and on a different port.
-Documented in the README; nothing in code can pre-empt it.
-
-### 1.13 The RBS chip does navigate to an individual RBS file, which the ruling said it would not
-[Task 103](tasks/0103-toolbar-status-chips.md) · **diverges from an owner ruling**
-
-The ruling: *"The RBS chip is for the RBS signal mapping and any
-notes/warnings there, not for RBS status, and it doesn't take us to any
-individual RBS file."*
-
-What shipped: the **reporting** half is exactly as ruled — the badge
-counts problems across every open `.cannet_rbs`. The **destination** is
-not. With exactly one configuration open the chip opens that
-configuration's signals grid, which is an individual RBS file. With none
-or several it reports, is disabled, and its tooltip says why.
-
-The phase could not do otherwise honestly: the combined problems view
-the ruling implies **does not exist**, and it declined to invent one.
-That was the right call — but it means a stated ruling is currently
-contradicted in the one-config case, which is the common case.
-
-**Needed: either accept the one-config shortcut, or scope the combined
-problems view as its own task.** Flagged rather than left to be
-discovered.
-
-### ~~1.14 Bus load has no source~~
-[Task 103](tasks/0103-toolbar-status-chips.md) · **RESOLVED 2026-08-22 by
-[task 101](tasks/0101-bus-health.md)** (`a0fb49fb`, `63c665c2`). Bit times
-per bus come from `TraceStore`'s existing windowed sampler
-(`rate.rs::by_bus_bits`), the denominator from `ConnectionStates`'
-applied `speed_bps`, and the division is host-side in
-`bus_health::load_percent`. The bar shows the **worst** bus, not the
-mean. See 1.16 for what the figure excludes.
-
-### 1.16 Bus load is a documented floor, not an exact figure
-[Task 101](tasks/0101-bus-health.md)
-
-The percentage **excludes bit stuffing**, because stuff bits depend on
-the transmitted pattern including the controller-computed CRC, which the
-model does not retain. So the number is always a little low — by up to
-roughly a fifth on worst-case payloads. The phase chose a documented
-floor over an estimate, which is the right instinct, but this is a
-number on screen that a reader will take literally.
-
-**Needed: accept the floor, or label it as one in the UI.**
-
-### 1.17 The virtual-bus adapter cell is blank where the mock drew text
-[Task 101](tasks/0101-bus-health.md) · flagged by the phase
-
-The bus-health mock drew "driver default (nothing sent)" for a Sim bus.
-That string is `describeAppliedConfig`'s answer for a *real* adapter
-sitting on its default; a vbus has no controller, so the formatter — which
-the ruling said to reuse — answers nothing and the cell is empty.
-Faithful to the ruling, different from the mock.
-
-**Needed: accept the blank, or give a vbus its own words.**
-
-### 1.18 Error coalescing keys on the bus, not on the error class
-[Task 101](tasks/0101-bus-health.md) · FYI
-
-The model carries no error class **anywhere**: `CanFramePayload::Error`
-is a unit variant, `FRAME_KIND_ERROR` has no field, the BLF reader
-discards `CAN_ERROR_EXT`'s `ecc`, and python-can does not expose one
-uniformly. Adding it is a core-payload field plus BLF / MDF / proto /
-sidecar round-trips *and* a live producer — otherwise an import and a
-live session would key differently. Closest faithful reading taken and
-annotated in place. A summary also cannot name its bus (bus *names* are
-the frontend's), so the label reads "1 284 bus errors over 4.1 s" with
-the bus riding the event's `tag`.
-
-### 1.15 Pressing the connection chip while connecting disconnects
-[Task 103](tasks/0103-toolbar-status-chips.md)
-
-The prototype's state table left this undecided. A connect that never
-lands has no other escape, so the phase chose cancel. Reasonable, and
-recorded because it was a choice rather than a ruling.
-
-### 1.19 A DBC-backed plot series naming no bus now resolves nothing
-[Task 106](tasks/0106-any-bus-series-and-sample-order.md) · **implemented on the overseer's recommendation, not an owner ruling**
-
-Task 88 phase 2 named this fix and declined to take it. The grooming
-recommended it, development proceeded on the recommendation rather than
-stopping, and it shipped in `e20bb41b` + `2158b9c7` — which are the
-whole diff to revert.
-
-What it means in practice: a project saved before per-bus signal binding
-keeps its plot series, but they decode nothing until re-pointed. They
-report `NotDecoded`, the most severe of the five mapping states, count
-toward the signal-mapping attention badge, and the panel's picker now
-offers every bus the loaded databases decode on. No migration, no silent
-emptying, no auto-binding to "the only bus".
-
-One consequence worth naming separately: **`restore` drops a busless
-persisted cache row and its segment files** rather than restoring or
-parking it. That is cache, not user data — the view's reference
-survives — but it is a deletion. The mutation test showed the
-alternative: without the guard the row is *parked*, holding disk for a
-series nothing can revive.
-
-**Needed: ratify, or revert the two commits.**
-
-### 1.20 An event row in the Events view is now selectable
-[task 107](tasks/0107-events-point-at-signals.md) phase 3
-
-The linking gesture is "multi-select + toolbar button" (owner ruling
-2026-08-21), and the selection it needs is the gridview's. ADR 0044
-leaves selectability to the adapter's declaration, so the Events view now
-declares its event rows selectable — clicking one selects it as well as
-putting the cursor on it, Ctrl/Cmd+click adds a second, and the row
-carries `aria-selected`. **Only that view.** An event interleaved into
-the chronological trace is still cursor-only, as before.
-
-**Needed: confirm that a click in the Events view now selecting is
-wanted**, or say the multi-select should be a control of its own.
-
-### 1.21 The Link Events chip also unlinks
-[task 107](tasks/0107-events-point-at-signals.md) phase 3
-
-The groomed scope named a "Link Events" control. Built as named, a link
-can be made and never unmade — the host's `unlink_events` would have no
-caller. The chip therefore has two faces: with two unlinked events
-selected it reads **Link Events**, and with two already-linked events
-selected it reads **Unlink Events** and drops the link.
-
-**Needed: ratify, or say unlink belongs somewhere else.**
-
-### 1.22 Shift+click on a plot now authors an event instead of placing a cursor
-[task 107](tasks/0107-events-point-at-signals.md) phase 4
-
-Shift was read nowhere in the plot canvas's mouse handling, so
-Shift+left-click has always been a plain left-click — cursor A in `x`
-mode, H1 in `y`, a note in `note`. It now creates an event about the
-area's selected signals, **and only when that area holds a selection**;
-with nothing selected it falls through to exactly the old behaviour. It
-is deliberately mode-independent, so it also fires in `off`, where a
-click used to do nothing at all.
-
-**Needed: confirm the modifier is the right home for it**, and that
-firing in every cursor mode (rather than only in `note` mode) is wanted.
-
-### 1.23 A right-click on a trace frame row now leads with an event action
-[task 107](tasks/0107-events-point-at-signals.md) phase 4
-
-The groomed gesture is "the trace row's context menu". The panel already
-opens the sources picker on any right-click, and rows are almost the
-whole panel, so a row-owned menu of its own would take that affordance
-away over most of the surface. Instead the row's right-click puts up the
-**same** menu with **Create event from &lt;message&gt;** above the picker.
-Nothing is lost; the menu has one more item on frame rows.
-
-**Needed: ratify the shared menu**, or say the row deserves a menu of
-its own with the picker dropped there.
-
-### 1.24 Acting on an event now dims the plot around it
-[task 107](tasks/0107-events-point-at-signals.md) phase 5
-
-The ruling says acting on an event highlights its subjects. The shipped
-reading also fades what the event says nothing about — the unnamed
-series on that axis, and the unnamed marker lines, to alpha 0.28. Faded,
-never hidden. It makes the highlight read at a glance, but it changes
-how a shipped plot looks during a hover rather than only adding a new
-mark, so it is not assumed.
-
-**Needed: keep the fade, or highlight without dimming.** Two
-conditionals either way.
-
-### 1.25 Hovering an event overrides a selection instead of adding to it
-[task 107](tasks/0107-events-point-at-signals.md) phase 5
-
-Nothing ruled on the interaction between the two ways of acting on an
-event. The reading taken is that pointing is the more immediate act, so
-a hover replaces the selection for as long as it lasts. The consequence:
-select a pair to see its extent band, then move the pointer across a
-third event, and the band goes until the pointer leaves.
-
-**Needed: confirm hover-wins, or make the two union.** One line.
-
-### 1.26 Space in the RBS signals grid toggles the whole message
-[task 109](tasks/0109-usage-feedback-chip-era.md) phase 3
-
-Grooming asked for Space as the row's primary action in both RBS panels
-but did not say what the action is where the row is a *field* rather
-than a message. The reading taken is the one that keeps a single idiom:
-Space activates / deactivates the message the field belongs to, which is
-exactly what the row's Muted status reports. Two consequences: one press
-moves every sibling field of that message, and where the mute comes from
-the bus or the ECU the press is deliberately inert.
-
-**Needed: confirm the message is the right subject, or name another.**
-
-### 1.27 The bus-health launcher now tints for the warning limit, not only for passive and worse
-[task 109](tasks/0109-usage-feedback-chip-era.md) phase 2c
-
-Grooming settled that `CONTROLLER_STATE_WARNING` joins the wire. It did
-not say whether a controller merely over the ISO warning limit is a
-*concern* the status-bar launcher lights up for. The reading taken is
-yes, with the warning tint rather than the fault tint: it is the reading
-a real fault produces on its way to error-passive, and a launcher that
-stayed neutral until 128 would go on saying nothing through the part of
-a fault an operator could still act on. The bus-health row reads
-`Error-warning` in the same palette as `Error-passive`; the words tell
-them apart.
-
-Consequence: a bus with occasional errors that crosses 96 and settles
-back will tint the launcher briefly where it used to stay neutral.
-
-**Needed: confirm the warning limit is worth a tint, or set the
-threshold at error-passive.**
-
-### 1.28 `project.close` is now `project.new`, and is no longer gated on a project file
-[task 109](tasks/0109-usage-feedback-chip-era.md) phase 4
-
-Grooming ruled the rename ("renaming a command id is a user-visible
-change to the palette — take it"). Two things ride with it that grooming
-did not name. The palette entry now reads **New project** where it read
-*Close project* — `Close project` is kept as a hidden keyword so muscle
-memory still lands on it — and the command is **ungated**: it used to
-disappear whenever no project *file* was open, which is exactly the
-session a user most wants to start over from. A stored keybinding on
-`project.close` no longer resolves and is reported as such on load.
-
-**Needed: confirm the ungating, and that "New project" is the wording
-wanted in the palette.**
-
-### 1.29 Every grid panel drops the browser focus ring once its cursor exists
-[task 109](tasks/0109-usage-feedback-chip-era.md) phase 5
-
-The reported whole-box highlight is the UA focus ring on the gridview
-container, which is what holds DOM focus for the whole grid. It is
-suppressed while the container names an active row, and kept while it
-names none — so the trace, by-id, signals, view-signals, transmit,
-database, RBS tree, RBS signals and BLF marker panels all stop drawing
-a ring round the viewport once the cursor is somewhere, and the row's
-own cursor styling is the only focus indication from then on.
-
-**Needed: confirm the row indicator alone is legible enough, on the
-panels where the cursor rides on the selection background rather than
-an outline.** The detail and the experiment are in the task's status
-log.
-
-### 1.30 A signal-generator rule's matches are still not pushed
-[task 109](tasks/0109-usage-feedback-chip-era.md) phase 6
-
-Ruling 2.4 put pattern-matched signals into the view-signals list, and
-they are: a plot area's patterns and the signals view's selection and
-section patterns now push their matches identity-only. The phase's
-brief named a third pattern case — a **signal-generator rule** — and
-that one was left out deliberately.
-
-A generator rule (ADR 0026) matches signal *names* across the whole
-catalog to assign a color-wheel slot. It puts nothing on screen, and
-wherever a matched signal is displayed the view displaying it already
-pushes it — so including generator matches would list signals no view
-shows. On the shipped example project a single rule like `Cell(\d+)`
-would add about a thousand such rows, all reading Decoded except
-whatever the databases happen to define twice, which would also enter
-the attention count.
-
-**Needed: yes or no.** The reasoning is in the task's status log; if
-the answer is yes it is a small builder plus a push from
-`GeneratorPanel`.
-
-### 1.31 Notes outside a selected import range are now dropped
-[Task 86](tasks/0086-usage-feedback-0.9.0.md)
-
-Applying ADR 0046's import range to a file's annotations as well as its
-frames is what stops an out-of-range marker dragging the session origin
-below the window the user asked for. The consequence: importing a
-sub-range of a BLF or MF4 discards every marker or note outside it,
-where before they all came in. Re-importing at full range brings them
-back, and BLF and MDF now behave the same way.
-
-The grooming did not rule on it, and task 86's own exit-criteria walk
-names it as the one item still needing an owner call.
-
-**Needed: ratify the drop, or require annotations to survive a range
-import.**
-
-### 1.32 A hand-typed transmit row that happens to match a DBC id stops when that database leaves the bus
-[Task 88](tasks/0088-bus-assignment-governs-decode.md) phase 4
-
-`TransmitFrame` carries no provenance, so "built from a database" is
-measured as "an assigned database on this bus defines this message". A
-CAN id the user typed by hand that *coincidentally* matches a DBC
-message therefore stops when that database is unassigned or removed.
-
-Judged the right side to err on — the transmit panel was showing that
-row the database's signal table, so from the user's side it *was* the
-DBC's message — and the alternative is stamping a DBC path on every
-transmit row, which is a persisted-model change for a case nobody has
-reported. Recorded so the reading is a decision.
-
-**Needed: ratify, or ask for real provenance on a transmit row.**
-
-### 1.33 A duplicate-id collision marks only the losing database
-[Task 88](tasks/0088-bus-assignment-governs-decode.md) phase 5
-
-Where two assigned databases on one bus define the same id, the Database
-panel marks the *loser* (`⚠ duplicate id — a.dbc wins A, B`); the
-database whose decode is actually in effect carries nothing, on the
-reasoning that correct behaviour needs no warning. The exit criteria
-asked only that the warning name a winner, not that every party to a
-collision be marked, so the quieter reading was taken.
-
-**Needed: keep the asymmetric warning, or mark both parties.**
-
-### 1.34 A project with no buses now captures nothing, and says nothing
-[Task 88](tasks/0088-bus-assignment-governs-decode.md) phase 1
-
-A channel can only be mapped to a bus and a frame on an unmapped channel
-is dropped, so a project whose bus list is empty routes no frames and
-its trace stays permanently empty. That is the model's intent ("frames
-enter the GUI via a bus"), but it bites before the user has loaded a
-single DBC, and nothing on screen explains it — discoverability was
-deliberately scoped to the Database panel's unassigned row, which talks
-about databases, not buses.
-
-**Needed: accept the silent empty trace, or ask for a message naming the
-missing bus.**
-
-### 1.35 The `comment-references` CI gate is an overseer decision the task invited the owner to overturn
-[Task 93](tasks/0093-source-comments-name-tasks.md) · **overseer ruling, not an owner one**
-
-The task added a CI job failing the build on any `task [0-9]` or
-`plans/` string under `apps/` or `crates/`. The evidence for it is that
-the rule was reintroduced 54 times while every diff was being reviewed,
-so review demonstrably does not enforce it. It went in CI rather than
-the pre-commit hook because the hook stashes unstaged changes and
-restores them minutes later, which has already destroyed concurrent
-edits in this engagement (see 3.48).
-
-The task's own words: *"Flagged for the owner to overturn if the tooling
-is unwanted."*
-
-**Needed: keep the gate, or drop it.**
-
-### 1.36 Every coloured event this build writes to a BLF carries different bytes from the last release's
-[Task 107](tasks/0107-events-point-at-signals.md) phase 2 · **interop**
-
-A `GLOBAL_MARKER` carries `foreground_color` and `background_color`.
-cannet used to write the event's colour as the *foreground* over a white
-background — coloured glyphs on a white chip. It now writes the colour
-as the **fill**, under white text, which is how python-can's independent
-BLF writer packs one and the only reading under which the two fields
-mean text-on-a-chip. cannet reads both conventions, so a cannet↔cannet
-round-trip is safe and old files still open correctly; another tool will
-draw a solid coloured block where it used to draw thin coloured glyphs.
-
-**Nobody has watched CANoe or CANalyzer draw either form.** The whole
-justification is python-can's literals as corroboration, not
-observation — and python-can's *reader* ignores marker objects
-entirely, which bounds what interop with tools built on it can mean.
-
-**Needed: accept the new byte layout, or revert it pending an empirical
-check on a machine with Vector tooling.**
-
-### 1.37 ADR 0055's "do not convert a command into a chip" was amended by an implementation phase
-[Task 108](tasks/0108-gui-chip-redesign.md) phase 3 · **amends an accepted ADR**
-
-Task 103 shipped that sentence with ADR 0055; task 108's whole design
-language contradicts it. Phase 3 amended the ADR rather than stopping —
-the owner's chip rulings are the newer decision — keeping and
-annotating the superseded rule rather than overwriting it (`45e7b559`,
-after overseer review). The reconciliation offered is that the
-silhouette is shared and the **dot**, present only on a chip with a
-state to report, is what keeps a status chip readable as one.
-
-The phase flagged it precisely because an accepted ADR was changed by an
-implementation phase and not by a ruling.
-
-**Needed: ratify the amendment and its dot-as-distinguisher rationale,
-or restore the original rule and rethink the command chip.**
-
-### 1.38 Three of task 108's grooming owner-calls shipped on the recommended reading, unruled
-[Task 108](tasks/0108-gui-chip-redesign.md)
-
-The grooming carried three `### Owner call` subsections, each naming
-"the reading implementation takes if no ruling arrives". No ruling
-arrived, and all three were implemented that way:
-
-1. **The registry's mechanism** — an in-repo SVG sprite of 36 icons,
-   rather than an icon dependency.
-2. **How far icons reach into the panels** — a bounded sweep of event
-   rows, the plot area, the signals panel and the RBS panel, not every
-   glyph in the app.
-3. **Whether Title Case re-casing reaches shipped strings** — it did.
-   Every toolbar label changed case, with the old sentence-case phrase
-   surviving only as the tooltip.
-
-Item 3 is the one a user sees on every launch.
-
-**Needed: ratify all three, or name which reading was wrong.**
+## 1. Behaviour changes, walked by the owner 2026-08-24
+
+**Nothing in this section is waiting on them any more.** All 33 items got
+a response:
+
+- **18 accepted.** The prose is gone at the owner's instruction; every
+  ruling is one row of [§ 2.9](#29-the-2026-08-24-queue-walk--eighteen-accepted),
+  so a task file citing `owner-review-queue 1.5` still resolves to its
+  verdict.
+- **15 sent back for rework** — **3 now closed** (1.2 ratified; 1.16 and
+  1.18 dropped as intractable), 2 answered with work or acceptance owed,
+  2 scoped, 6 open, one (1.33) split. **11 of the 15 still carry work.** The owner began walking them one at a time
+  on 2026-08-24 and 2026-08-25; every ruling is in
+  [§ 2.10](#210-the-rework-rulings). They were first grouped into seven
+  decisions rather than fifteen items, then **dispersed into eight tasks**
+  as each was settled:
+
+  | Task | Items |
+  |---|---|
+  | [112 — the signal reference registry](tasks/0112-signal-reference-registry.md) | 1.3's residual, 1.19, 1.30 |
+  | [113 — is RBS a grid?](tasks/0113-rbs-as-a-grid.md) | 1.6, 1.26, 1.13c |
+  | [114 — one name per thing](tasks/0114-one-name-per-thing.md) | 1.37, 1.33b, 1.17 |
+  | [115 — trace row menus](tasks/0115-trace-row-menu-scope.md) | 1.23 |
+  | [116 — RBS problems across configurations](tasks/0116-rbs-problems-across-configurations.md) | 1.13ab |
+  | [117 — refuse to connect](tasks/0117-refuse-to-connect-without-a-bound-bus.md) | 1.34 |
+  | [118 — `comment-references` leaves CI](tasks/0118-comment-references-out-of-ci.md) | 1.35 |
+  | [119 — duplicate-id example DBCs](tasks/0119-duplicate-id-example-dbcs.md) | 1.33a |
+
+  1.16 and 1.18 were dropped as intractable ([task
+  101](tasks/0101-bus-health.md)); 1.2 was ratified with no work left. **Four of the fifteen correct a premise something
+  rested on** — 1.17, 1.26, 1.35 and 1.13's third part — so those are
+  re-established before anything is changed.
+
+The index below is what keeps the numbers resolvable. Strike a row out as
+the task named in its last column closes its item.
+
+**Status** is where the item stands after the 2026-08-24 codebase
+investigation; each row carries what it found. Nothing has
+been implemented — an *answered* item still has to have its answer accepted,
+and a *scoped* one still has to be built.
+
+| Status | Means |
+|---|---|
+| **Answered** | the question has an answer, evidenced; only acceptance is left |
+| **Scoped** | still work, but its shape, cost and the code it touches are known |
+| **Open** | not investigated — the response was transcribed and nothing more |
+| **Owner** | waiting on the owner, not on us |
+
+**Two rows carry a correction rather than a verdict.** 1.17's finding
+described the wrong half of a two-part cell — the owner's reading was
+right — and 1.13's third part credits the prototype with removing row
+highlighting, which its own comments say it kept. Neither changes what was
+asked for; both change what has to be justified. **1.13c has since been
+ruled on other grounds entirely** (2026-08-25): row background belongs to
+the gridview layer, so a panel painting its own is the defect whatever the
+prototype did.
+
+| # | Status | Subject | Where it went |
+|---|---|---|---|
+| ~~1.2~~ | **Closed** | An unpicked collision's row reports a signal only a later database defines | **Ratified 2026-08-24**, no work left — [§ 2.10](#210-the-rework-rulings). |
+| 1.3 | Answered · work owed | Did the one resolution rule and its overrides actually land? | **Answered yes 2026-08-24**, with the tests run — but **not closed**: the ruling that settled it (a transmit row carries its own DBC) is unbuilt. [§ 2.10](#210-the-rework-rulings). The residual moved to [**task 112**](tasks/0112-signal-reference-registry.md) on 2026-08-25 — a transmit row is `bus + message id + which database`, the same shape the registry is built on, and it takes finding 3.1 with it |
+| 1.6 | Scoped | Editor-face content stays a block rather than becoming rows | [**task 113**](tasks/0113-rbs-as-a-grid.md) § 1 — **the dev asked for was not done**. `gridviewContentRows.ts` is adopted by the two trace views and by neither RBS nor transmit, so this is adoption, not new machinery |
+| 1.13 | Open · premise corrected · **split** | The RBS chip navigates to an individual RBS file | **a and b:** [**task 116**](tasks/0116-rbs-problems-across-configurations.md) — build the all-configurations view and its per-file filter. **The steps-to-reproduce leg is dropped**, ruled 2026-08-25: *"I'm not looking at it, I don't even remember what was claimed."* **c:** [**task 113**](tasks/0113-rbs-as-a-grid.md) § 3 — **ruled 2026-08-25**: *"row highlighting is a gridview behavior."* The wash comes out on both signal-mapping surfaces, and the Row Highlights chip and its persisted `washesOn` param with it. The prototype was never the argument — it kept row highlighting and only omitted drawing it |
+| ~~1.16~~ | **Dropped** | Bus load is a documented floor, not an exact figure | **Dropped 2026-08-24 — not tractable.** PCAN and Vector expose no bus load through python-can; only Kvaser does, and Kvaser is the deferred vendor. Recorded at [task 101](tasks/0101-bus-health.md). |
+| 1.17 | Answered | The virtual-bus adapter cell is blank where the mock drew text | [**task 114**](tasks/0114-one-name-per-thing.md) § 3 — **the cell is not blank**; it shows `LOCAL_VBUS_INTERFACE`, a wire id falling through the display-name lookup. **Ruled 2026-08-25**: the generic `virtual bus`, not the vbus's name — *"this is the hardware column. We already have the user's bus name on the same row"* |
+| ~~1.18~~ | **Dropped** | Error coalescing keys on the bus, not on the error class | **Dropped 2026-08-24 — nothing to carry.** Every dongle reports a bare boolean, and the one byte BLF holds is marked invalid on every file cannet writes. Recorded at [task 101](tasks/0101-bus-health.md). |
+| 1.19 | Answered · **look owed, not work** | A DBC-backed plot series naming no bus resolves nothing | The re-point was built for this case: one pick, no apply step, every view rewritten at once. **No task carries this** — its one remaining leg is that the attention badge actually leads a user there from an empty plot, which is a *look* at a running build, owed when the signal-mapping panel is accepted. [Task 112](tasks/0112-signal-reference-registry.md) eases the repair's internals and leaves this leg untouched |
+| 1.23 | **Ruled** | A right-click on a trace frame row leads with an event action | [**task 115**](tasks/0115-trace-row-menu-scope.md) — the event item is accepted; the sources picker comes off row menus. **Ruled 2026-08-25**, settling where it lives instead: *"the button bar portion of the view is the only place I ever wanted those items to appear in the trace view."* |
+| 1.26 | Open | Space in the RBS signals grid toggles the whole message | [**task 113**](tasks/0113-rbs-as-a-grid.md) § 2 — Space on a signal row does nothing |
+| 1.30 | Open · reshaped | A signal-generator rule's matches are still not pushed | **Moved to [task 112](tasks/0112-signal-reference-registry.md) 2026-08-25.** The ask stands; the mechanism was the question. This is a **push model's failure mode**, so fixing it as scoped means writing another pusher the registry deletes |
+| 1.33 | Answered (b) · Owner (a) · **split** | A duplicate-id collision marks only the losing database | **a:** [**task 119**](tasks/0119-duplicate-id-example-dbcs.md) — the warning awaits the owner's review, and reviewing needs material: *"I need example DBCs to test with."* **b:** [**task 114**](tasks/0114-one-name-per-thing.md) § 2 — the toolbar chip is `dbc.add`, and the DBC → Database rename was already made everywhere else, migration included |
+| 1.34 | **Ruled** | A project with no buses captures nothing, and says nothing | [**task 117**](tasks/0117-refuse-to-connect-without-a-bound-bus.md) — the empty-project case is **already refused**, by a guard naming the wrong thing. The real gap is per-bus: any unbound bus in a multi-bus project is silently dead. **Ruled 2026-08-25:** *"loud fail. capture new task."* |
+| 1.35 | **Ruled** | The `comment-references` CI gate | [**task 118**](tasks/0118-comment-references-out-of-ci.md) — keep the check, drop the CI job. **Ruled 2026-08-25:** *"Put it in the subagent and overseer. this is a dumb check to put in CI IMO."* Every phase's CI table becomes five jobs |
+| 1.37 | Answered | ADR 0055's "do not convert a command into a chip" was amended | [**task 114**](tasks/0114-one-name-per-thing.md) § 1 — **the code is what the owner described**: a 50-command registry every chip dispatches from. The divergence is a second label per command, declared in `Toolbar.tsx` |
+
+Items **1.7** and **1.10** were resolved earlier; **1.11** and **1.12**
+were filed under § 2 when they were recorded. All four sit there rather
+than here.
 
 ---
 
@@ -678,15 +279,148 @@ Recorded here because task 110 reached neither the roadmap nor § 4 until
 2026-08-23, and this is its one user-facing consequence: anyone scripting
 against the `.msi` has to switch.
 
----
+### 2.10 The rework rulings
 
+The owner walked the fifteen sent-back items one at a time, from
+2026-08-24. Each ruling landed here as it was given, so § 1's index can
+strike the row and the reasoning survives the conversation. The item's
+detail lives in whichever task now owns it — see § 1's index.
+
+#### 1.2 — a signal only one database defines is always shown · **ratified**
+
+**Owner ruling 2026-08-24:** *"agree. If we have a def, there's no problem,
+we just apply it."*
+
+Ratifies the phase-3 fix (`866df603`) and the behaviour change it carried
+for a user who has picked nothing. Where two databases on one bus define
+the same message and only the *losing* one defines some signal, that signal
+now appears in the row unconditionally. It used to appear only if the
+message carried a pick — so pinning one signal made a *different* one
+materialise, and unpinning it made it vanish.
+
+The owner's reasoning is the general rule and reaches further than this
+item: **a single definition is not a conflict, so it is applied.** Load
+order and picks decide between competing definitions; they have no business
+deciding whether an uncontested one is shown at all.
+
+One caveat was raised and not treated as blocking: the extra signal is
+decoded through the losing database's bit layout, so a file that places it
+over bytes the winner reads differently would show two numbers describing
+the same bytes, each right by its own file. No test covers that overlap.
+
+#### 1.3 — the resolution rule landed; a transmit row gains its own DBC · **answered, with two rulings**
+
+Walked with the owner 2026-08-24. **The answer is yes**: one rule in
+`DecodeModel`, thirteen hand-rolled copies down to four `dbc_applies`
+sites of which only one is resolution, and overrides that now reach the
+value, the `VAL_` labels, the counter/CRC designation, the encode and the
+mux selector. Confirmed by running the pinning tests on the current tree
+(2 passed, 0 failed), not by reading.
+
+**Ruling 1 — queue 3.1 was mis-titled.** The owner: *"it's encoding a
+message and handling signals so it needs both. It doesn't seem like
+divergence to me — am I overlooking any duplicated code?"* No duplicated
+code exists, and a test asserts describe and encode cannot drift. Encode
+must choose one message entry; decode resolves one value at a time. 3.1 is
+struck and reframed.
+
+**Ruling 2 — a transmit row carries its own DBC.** *"the tx message pick
+should include the dbc. Make the default decision about which one and let
+the user change it."* Default is the current answer; the user can change
+it. A transmit row is an encode target rather than a decoded series, so
+ADR 0054 part 1 does not govern it.
+
+**This supersedes the reasoning behind accepted item 1.32**, which was
+accepted precisely because *"the alternative is stamping a DBC path on
+every transmit row, which is a persisted-model change for a case nobody
+has reported."* The stamp is now wanted, so 1.32's heuristic — "an
+assigned database on this bus defines this message" — stops being needed.
+The acceptance stands; its justification does not.
+
+**And the generalisation became [task 112](tasks/0112-signal-reference-registry.md).** The owner: *"I wonder
+if storing the live message mapping in every view is a good idea after
+all. A centralized place would feel like a better place to apply this. The
+per-signal vs per-reference seems like a decision we shouldn't have to be
+making."* That task carries the model, the precedent already in
+`AppState`, and the questions the walk settled.
+
+### 2.9 The 2026-08-24 queue walk — eighteen accepted
+
+**Owner ruling 2026-08-24**, walking § 1 end to end. These eighteen shipped
+behaviour changes are accepted as they stand; their prose was removed from
+§ 1 on the owner's instruction. Each ruling is quoted so the record does not
+depend on the conversation, and the numbers are kept because sixteen task
+files cite them.
+
+| # | The change | Ruled |
+|---|---|---|
+| 1.1 | `unified` y-axis mode no longer scales each unit group to fill (reverses ADR 0026) | *"accepted. rm this item"* |
+| 1.4 | Reload all from disk swaps each database in place, so bus assignment and priority survive | *"not a question."* |
+| 1.5 | A disclosed row's clickable width is the 32 rem line | *"feels fine"* |
+| 1.8 | `--no-tls` is now one flag from an unprotected routable listener | *"it's fine. `cannet-server --no-tls` is a pretty clear signal from the user about what they're trying to do."* |
+| 1.9 | A bare launch draws a second firewall prompt | *"ok"* |
+| 1.15 | Pressing the connection chip while connecting cancels the connect | *"approved."* |
+| 1.20 | An event row in the Events view is selectable | *"working fine."* |
+| 1.21 | The Link Events chip also unlinks | *"fine"* |
+| 1.22 | Shift+click on a plot authors an event instead of placing a cursor | *"this is the behavior I specified."* |
+| 1.24 | Acting on an event dims the plot around it | *"iterated on this already, accepted in current state."* |
+| 1.25 | Hovering an event overrides a selection instead of adding to it | *"accepted"* |
+| 1.27 | The bus-health launcher tints for the ISO warning limit, not only for passive and worse | *"accepted."* |
+| 1.28 | `project.close` is now `project.new`, ungated, and relabelled in the palette | *"accepted"* |
+| 1.29 | Every grid panel drops the browser focus ring once its cursor exists | *"accepted"* |
+| 1.31 | Notes outside a selected import range are dropped | *"accepted. I'm pretty sure you already asked abotu this one."* |
+| 1.32 | A hand-typed transmit row matching a DBC id stops when that database leaves the bus | *"accepted. We already otherwise assume they meant that message from the DBC. We show the signals and format from the DBC when the message ID matches."* |
+| 1.36 | Every coloured event now writes the colour as the BLF marker's fill rather than its foreground | *"expected and implicit in the ask to handle bg color and fg color. accepted."* |
+| 1.38 | Three of task 108's grooming owner-calls shipped on the recommended reading, unruled — the icon sprite, the bounded icon sweep, and Title Case reaching every toolbar label | *"I'm ok with this for today,"* |
+
+Two of these carry more than a yes:
+
+- **1.32** states a general rule, not just a verdict on the transmit panel:
+  where a hand-entered CAN id matches a DBC message, the tool already
+  assumes the user meant that message and shows the database's signals and
+  format. The behaviour flagged is that rule applied consistently.
+- **1.38** is accepted *"for today"*. Item 3 of it — every toolbar label
+  re-cased, with the old sentence-case phrase surviving only as a tooltip —
+  is what a user sees on every launch, so this is the one acceptance in the
+  table that may not be permanent.
+
+The other fifteen items were sent back; they are indexed in § 1, and each
+row names the task that now carries it.
+
+---
 ## 3. Open findings nobody has dispositioned
 
-Recorded by the phases that found them, not yet decided.
+Recorded by the phases that found them, not yet decided. **62 findings,
+61 open.**
+
+### The nine groups
+
+Grouped 2026-08-25 by the decision that settles them, not by the task
+that filed them. The rows below are unchanged and stay in number order —
+this index is how the section is walked. **Strike a row as its group is
+ruled on.**
+
+| # | Group | Findings | The decision |
+|---|---|---|---|
+| A | **Can the record be trusted?** | 3.4, 3.17, 3.26, 3.27, 3.34, 3.44, 3.45, 3.62 | What acceptance requires before this chain merges. § 4 says every task was walked criterion by criterion; **3.45 says five were not walked at all** and three more are not clean, and **3.44 says nothing in the chain has been seen running**. Two findings are worse than "unverified": 3.34 and 3.62 are cases where a *broken check passed*. |
+| B | **The perf gate is not believable yet** | 3.35, 3.36, 3.46 | Fix the harness before the close-out run, then rule on two metrics that can fail with no code change. 3.35 makes memory unreadable while your own cannet runs; 3.36 is a phase that could not measure because of it. Related: § 5's gesture-tally item. |
+| C | **What you saw on the bench** | 3.37, 3.39, 3.42, 3.43, 3.53 | How many become tasks now. **These are the only findings in this section that came from real use** — your 2026-08-23 session. 3.37 and 3.43 are one root: a tx-confirm row is a local echo, never a wire confirmation. 3.39 is 5,200 error frames/s reaching the trace unfiltered. |
+| D | **What we cannot see from here** | 3.14, 3.38, 3.40, 3.49, 3.52, 3.54 | Accept as unverified, or schedule. Each needs a device or an OS an agent does not have — your dongles (3.14, 3.38), Vector hardware (3.40), a Vector tool (3.49), a Mac (3.54). 3.52 is different: the protocol itself cannot carry what the panel promised, so it is accept-the-reduced-cell or open protocol work. |
+| E | **Frontend shared-layer drift** | 3.13, 3.18, 3.19, 3.23, 3.24, 3.25, 3.51 | One cleanup task, or leave. All are copies, bypasses or two-models-for-one-thing — the shape `CLAUDE.md` § GUI architecture tells us to watch for. 3.18 and 3.51 are keyboard and ARIA, so they overlap [113](tasks/0113-rbs-as-a-grid.md)'s gridview work. |
+| F | **What a file loses** | 3.9, 3.10, 3.15, 3.28, 3.29, 3.30, 3.56, 3.58, 3.59 | Which losses are accepted and recorded in ADR 0057's table, and which are fixed. **3.28 is the sharpest: every MDF cannet has written names its events the wrong `ev_type`**, and nothing rewrites the existing files. 3.58 is a task the grooming already promised once its precondition was met — which it now is. |
+| G | **Calculated fields cannot say "none"** | 3.2, 3.7, 3.8, 3.50 | Whether ADR 0027's model changes. There is no value meaning *"the DBC says counter, this project says none"*, and task 100 made that gap newly reachable from the UI. 3.50 writes an override from a keystroke that changed nothing. |
+| H | **Where the app and the approved prototype disagree** | 3.20, 3.21, 3.22, 3.32, 3.60 | A yes or no per deviation. Each is a deliberate departure from what you approved, taken for a stated reason. 3.60 is two places where the prototype's own numbers do not match what shipped. |
+| I | **Process, and things needing no decision** | 3.3, 3.5, 3.6, 3.11, 3.12, 3.16, 3.33, 3.48, 3.55, 3.57, 3.61 | Mostly FYI. **3.48 is the one with teeth** — `pre-commit` overwrites any file edited while a commit runs, which is why `--no-verify` is the de facto workflow here. 3.61 is struck. |
+
+**Four findings already have a home:** 3.1 (struck), 3.31, 3.41 and 3.47
+all point at [task 112](tasks/0112-signal-reference-registry.md).
+
+**Groups A and B gate the close-out**, and nothing else in this section
+does — the rest can be dispositioned in any order.
 
 | # | Finding | Where |
 |---|---|---|
-| 3.1 | `decode_frame` (per signal) and `encode_frame` (per message) can disagree in one narrow collision-plus-pick case. Closing it is not cheap. | [task 92](tasks/0092-one-resolution-rule.md) |
+| ~~3.1~~ | **Reframed 2026-08-24 — the title was wrong and the owner said so.** There is no duplicated code and describe/encode cannot drift (`the_transmit_panels_message_queries_follow_the_pick`); encode resolves per message because it must choose one message entry, decode per value. What remains is one panel where the readback decodes per signal, biting only an *unpicked signal on a picked message* — closed by the owner's ruling that a transmit row carries its own DBC. See [task 112](tasks/0112-signal-reference-registry.md), which carries that ruling as of 2026-08-25. | [task 92](tasks/0092-one-resolution-rule.md) |
 | 3.2 | Calculated-field resolution stays **per message**, decided explicitly rather than inherited — so a pick on any signal of a message moves the whole designation. | [task 92](tasks/0092-one-resolution-rule.md) |
 | 3.3 | Bare "Phase N" labels survive in `index.css` (5 sites) and `crates/cannet-blf/Cargo.toml` (1). They name no task and point at no `plans/` path, so both the rule and the new CI lint pass. An older numbering scheme; left rather than invent a meaning. | [task 93](tasks/0093-source-comments-name-tasks.md) |
 | 3.4 | Nothing in the 2421-test suite caught task 98's defect, and the two tests nearest it asserted the very rule that produced it. Worth asking what else is pinned that way. | [task 98](tasks/0098-common-scale-wrong.md) |
@@ -716,7 +450,7 @@ Recorded by the phases that found them, not yet decided.
 | 3.28 | **Every MDF file cannet has written names its events the wrong `ev_type`.** `mdf4-rs` numbers `Marker` 2; ASAM MDF 4.x puts `EV_T_MARKER` at 6 and reads 2 as `EV_T_ACQUISITION_INTERRUPT` (confirmed against asammdf). Fixed at the write boundary; existing files stay mislabelled to conformant readers and nothing rewrites them. The crate's `from_u8` also rejects types 3–6, so a foreign file using them parses as a marker — worth an upstream issue. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.29 | **`ev_scope` is not written, because a cannet MDF has nothing for a subject to point at.** The grooming expected subjects to scope to a `##CN`/`##CG`; the writer emits three bus-logging groups by frame *structure* and no DBC-decoded signal channels, so a message subject has no referent and scoping one to `CAN_DataFrame` would be false. Becomes writable if per-message channel groups are ever written. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.30 | **A later schema version's unknown block keys survive a parse but not a model round-trip.** The groomed rule says they are preserved on rewrite; the parser does preserve them, but `Note` has no field to hold one, so opening and saving a file written by a future build drops what this build does not understand. Closing it means a passthrough field on the durable schema. | [task 107](tasks/0107-events-point-at-signals.md) |
-| 3.31 | **A file-backed series cannot be an event's subject.** Its `messageId` is a signal channel group index rather than an arbitration id, so `EventSubject`'s structural form (ADR 0056) has nothing true to say about it — Shift+click over a selection of nothing but file-backed rows names nothing and falls through. Closing it means a fourth referent kind, which is a model change. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.31 | **[Same root as task 112](tasks/0112-signal-reference-registry.md) — a typed reference that carries the data source as well as the definition covers both provenances.** **A file-backed series cannot be an event's subject.** Its `messageId` is a signal channel group index rather than an arbitration id, so `EventSubject`'s structural form (ADR 0056) has nothing true to say about it — Shift+click over a selection of nothing but file-backed rows names nothing and falls through. Closing it means a fourth referent kind, which is a model change. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.32 | **The plot's Shift+click gesture is undiscoverable.** Nothing on the plot says it exists; the README does. The prototype showed a hint line in the plot bar that the shipped chip toolbar has no room for, and the chip language has no hint-text element. Recorded rather than invented. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.33 | **`NotesStore::linked_events` has now gone two phases without a caller.** Phase 3 nominated phase 4; authoring writes rather than reads, and phase 5's highlight work reads links in the frontend through the TS twin, so it will not be the caller either. Probably resolved by deleting the wrapper — the free `linked_event_ids` it delegates to has a production caller and states the same contract. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.34 | **The perf-capture recipe in `README.md` had been wrong since the render tier shipped**, omitting `--rbs-run-on-start` and claiming the RBS Run flag was "already in the saved project". Two phases followed it and measured an idle bus that *passed* every gate. Fixed in task 107 phase 4 and verified against three live captures. Worth knowing that any frontend perf number taken before this fix may have been measured on no load. | [task 107](tasks/0107-events-point-at-signals.md) |
@@ -726,13 +460,13 @@ Recorded by the phases that found them, not yet decided.
 | 3.39 | **Error frames are trace rows, one each, and that is most likely the owner's third symptom.** During the bench fault the adapter emitted 115,136 error frames in 22 s (~5,200/s), and nothing filters them out of the ingest path: `session.rs`'s only error branch *adds* the health-coalescer fold and the `trace_store.append` below it is unconditional, `trace_store/flush.rs` persists the kind like any other, and `trace_query.rs` spells it for the paged view. So the pack bus trace kept growing at ~5,200 rows/s during the fault. Phase 2 attributed "the trace continued getting updates" to tx-confirm rows and closed that case; this is a second, larger contributor it did not see. **Not fixed:** `bus_health.rs` records the opposite decision in its module doc ("The frames themselves are stored like any other frame ... so a saved capture is not a lossy restatement of what was received"), so suppressing or coalescing them changes what a save contains. Drop them, coalesce them into one row, or keep them and filter at the view - a behavioural choice, and a separate phase. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 | 3.38 | **The bus-health readout was structurally inert on the only hardware there is.** python-can's `PcanBus.state` getter returns `self._state`, written only by the setter `__init__` calls — a stored echo of the configured value, never a device read — so bus-off and error-passive could not surface on PEAK no matter what the controller did. Task 109 phase 2 switches a PCAN bus onto the live `status()` read (`CAN_GetStatus`), matched against exact vendor status codes. That makes task 101's controller state work for the first time on this rig, and it is a behaviour change on a live data path that **has never met hardware** — worth knowing before the confirmation run. **Superseded in part by phase 2c:** the bench run showed `CAN_GetStatus` itself under-reports (it stops at `BUSWARNING` on a transmitter driving an open circuit), so the state is now derived from the error frames' TEC/REC and the status word only floors it. The exact match survives for the no-hardware code family alone. **Owner hardware verification 2026-08-23: the PCAN fix is confirmed working.** Unplugging the CAN link now surfaces the fault. Two follow-ups came out of that session and are filed as 3.42 and 3.43. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 | 3.40 | **The Vector controller-state path has never met Vector hardware, and cannot here.** Task 109 phase 2d subclasses `VectorBus` to read the chip-state events its XL driver reports (`busStatus`, `txErrorCounter`, `rxErrorCounter`) and feeds them to the same derivation PEAK uses, polling with `xlCanRequestChipState` on the existing 500 ms cadence. The vxlapi64 DLL is absent in an agent's environment, so the backend cannot even load - the tests exercise the seam against faked chip-state events built from python-can 4.6.1's own struct definitions. Implemented and untested, not working. The re-test script is in the task file's blockers section, and it asks for a classic **and** an FD run, since the two event queues are different structs read through different hooks. It also asks whether Vector floods the trace with error frames the way PEAK does (3.39). | [task 109](tasks/0109-usage-feedback-chip-era.md) |
-| 3.41 | **The view-signals panel is unvirtualized, and pattern rows move its bound.** Its row list renders one DOM subtree per row, on the recorded grounds that "the row count is bounded (the signals the open views reference)". Task 109 phase 6 keeps that literally true but widens it: a view selecting by pattern now contributes every signal its pattern matches. On the shipped `examples/ev-zonal` databases (2,203 signals) a signals view with the pattern `Cell` would put **1,074** rows in the panel. Measured in jsdom, mount-to-first-row scales roughly linearly - 100 rows 224 ms, 500 rows 482 ms, 2,000 rows 1,679 ms - which is a shape, not a browser figure; no real-browser number was taken (perf capture skipped by ruling 2.5). Recorded rather than fixed: virtualizing this panel is its own piece of work. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
+| 3.41 | **[Task 112](tasks/0112-signal-reference-registry.md) names paging this panel as an exit criterion — it is unpaged because it is fed by pushes rather than backed by a model.** **The view-signals panel is unvirtualized, and pattern rows move its bound.** Its row list renders one DOM subtree per row, on the recorded grounds that "the row count is bounded (the signals the open views reference)". Task 109 phase 6 keeps that literally true but widens it: a view selecting by pattern now contributes every signal its pattern matches. On the shipped `examples/ev-zonal` databases (2,203 signals) a signals view with the pattern `Cell` would put **1,074** rows in the panel. Measured in jsdom, mount-to-first-row scales roughly linearly - 100 rows 224 ms, 500 rows 482 ms, 2,000 rows 1,679 ms - which is a shape, not a browser figure; no real-browser number was taken (perf capture skipped by ruling 2.5). Recorded rather than fixed: virtualizing this panel is its own piece of work. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 | 3.42 | **"Error-active" does not read as healthy.** Owner feedback 2026-08-23, after verifying the bus-health fix on hardware. `Error-active` is the correct ISO 11898-1 name for a node in normal operation — errors are *active* meaning the node still asserts dominant error flags — but to a reader it looks like a fault is in progress, which is the opposite of what it means. The other three states (`Error-warning`, `Error-passive`, `Bus-off`) read correctly as degrees of trouble, so the healthy state is the only one whose label misleads. Wants a label the panel can show without teaching the standard first; whether the ISO name survives as a tooltip is part of the decision. | owner feedback |
 | 3.43 | **Transmit frames still present as though they reached a wire.** Owner feedback 2026-08-23, on the same session. A tx-confirm row is appended by `build_and_confirm` before any wire attempt and unconditionally, so a frame the bus never carried is indistinguishable in the trace from one it did. Task 109 phase 2 fixed the special case where the *interface* is unreachable, by parking the route; this is the general case, where the interface is fine and the frame still went nowhere — an open CAN link, a listen-only bus, FD on a classic bus. Overlaps 3.37 (the wire-level `TX_REJECTED` is received and discarded) and 3.39 (error frames arrive as trace rows at ~5,200/s during a fault); the three are most likely one piece of work. | owner feedback |
 | 3.44 | **Nothing in this chain has been seen running.** Across every task from 86 onward, not one claim rests on looking at the app: the standing rule against UI automation on the owner's machine means no phase launched the GUI, and jsdom does no layout, so no frontend test proves that anything fits, lines up, or is legible. The phases that say so explicitly are 86 (three phases, "the owner-visible confirmation is opening `examples/time-origins/` by hand"), 27 (two disk-change notices asserted only through the DOM), 108 (ten restyled toolbars, `### What is not verified` twice: "jsdom does no layout"), 107 phase 5 (the extent wash and the series fade — `EXTENT_WASH_ALPHA` 0.16, `UNLIT_ALPHA` 0.28 — asserted as values, never as an appearance), 109 phase 5 (the focus ring was never photographed) and 109 phase 6 (the view-signals panel was never opened with a real project). The ADR-0031 capture cannot substitute: its script never hovers an event row and `ev-zonal` carries no events. **The installer is the first look anyone gets at most of this chain**, and several items above (1.29, 1.24, 1.25) are asking the owner to confirm exactly what only a look can answer. | the chain |
 | 3.45 | **Not every task's exit criteria were walked, though § 4 says they were.** § 4's preamble and the roadmap both state that each implemented task "met its documented exit criteria, walked criterion by criterion against a named test or artefact". Five do not match that: **89** (six phases, no per-criterion verdict anywhere in the file), **90** (three of four criteria unverdicted, the fourth struck as retired into task 91), **93** (no verdict, only the sweep's counts), **105** (three phases landed, the criteria addressed in prose but never mapped) and **110** (no exit criteria at all — its verification is a table of CI jobs run by hand). Three more are walked but not clean: **27** criterion 4 is *partially met* (the functions stitching both watches together are covered by inspection, because Tauri's mock runtime will not load on Windows), **102** has one criterion *partly met* and one *not met*, and **106**'s criteria are met *on a ruling the owner has not confirmed* (1.19). 107's two unmet criteria are already declared in its own status. Not a defect in any task — a claim in the index that is wider than the evidence. | the chain |
 | 3.46 | **Two perf metrics can fail the close-out gate with no code change, and a ruling is owed before it is run.** `lag_ms_max` spanned 2.8–37.6 ms against a 41 ms limit across eight captures of one *unchanged* binary, with `lag_ms` mean ~0 in every one — it is a single-sample scheduler tail. `rx_gap_short_frac_worst` behaves the same way: task 88 phase 2's pre-inversion control read 0.194 against a 0.166 limit on a GUI byte-identical to phase 1's, and task 89 phase 4 took twelve captures of which run 3 breached both it (0.2362) and `rx_gap_p95_ratio_worst` (3.307 vs 2.898). That phase explicitly declined to rule: *"It is **not** discarded and it is **not** ruled harmless by me."* ADR 0031's limits ratchet down only, so widening one needs an owner ruling recorded there — and § 5's close-out gate run will hit this. **Make the ruling on the evidence rather than mid-gate.** | [task 88](tasks/0088-bus-assignment-governs-decode.md), [task 89](tasks/0089-signal-mapping-panel.md) |
-| 3.47 | **Three surfaces compute in the frontend what `CLAUDE.md` says the model owns, each for a stated reason.** (a) `useViewSignalsAttentionCount` calls `list_view_signals` and keeps only its `attentionCount`, discarding every row, on mount and on each change event — judged cheap when the row count was bounded by open views, which 3.41 has since widened to over a thousand rows for one pattern-selecting view. (b) The RBS chip's badge (`rbsAttention.ts`) re-runs the frontend's own `rbsSignalsFilter` over the host's rows, because *Out of Range* is a frontend decision, so a host-side count would legitimately be a different number from the panel's. (c) The RBS signals grid sorts client-side (`rbsSignalsColumns.ts::sortRbsSignalRows`) although task 89's own grooming resolved that a paged view passes `sortKey`/`sortDir` to the host — same cause as (b). Each trade is defensible in isolation; together they are one question. **Ratify the exception, or move the display-status rule host-side so one answer serves all three.** | [task 89](tasks/0089-signal-mapping-panel.md), [task 103](tasks/0103-toolbar-status-chips.md) |
+| 3.47 | **[Task 112](tasks/0112-signal-reference-registry.md) asks this question from the other end; (a) in particular is answered by a registry the host can count.** **Three surfaces compute in the frontend what `CLAUDE.md` says the model owns, each for a stated reason.** (a) `useViewSignalsAttentionCount` calls `list_view_signals` and keeps only its `attentionCount`, discarding every row, on mount and on each change event — judged cheap when the row count was bounded by open views, which 3.41 has since widened to over a thousand rows for one pattern-selecting view. (b) The RBS chip's badge (`rbsAttention.ts`) re-runs the frontend's own `rbsSignalsFilter` over the host's rows, because *Out of Range* is a frontend decision, so a host-side count would legitimately be a different number from the panel's. (c) The RBS signals grid sorts client-side (`rbsSignalsColumns.ts::sortRbsSignalRows`) although task 89's own grooming resolved that a paged view passes `sortKey`/`sortDir` to the host — same cause as (b). Each trade is defensible in isolation; together they are one question. **Ratify the exception, or move the display-status rule host-side so one answer serves all three.** | [task 89](tasks/0089-signal-mapping-panel.md), [task 103](tasks/0103-toolbar-status-chips.md) |
 | 3.48 | **`pre-commit` overwrites any file edited while a commit is running, and `--no-verify` has become the de facto workflow.** Every hooked commit stashes the unstaged working tree to `~/.cache/pre-commit/patch<n>`, runs the workspace clippy and test gates (a couple of minutes), then restores the pre-edit copy — so an edit made *during* the run is silently reverted. That is the diagnosed mechanism behind planning-doc edits disappearing while an implementation agent commits alongside a live grooming session; no agent ran `git checkout`, `restore` or `stash`. The workaround every phase from task 88 onward adopted is `--no-verify` with the gates run by hand, which means the hooks have been effectively disabled across most of this chain. Stashed copies survive in `~/.cache/pre-commit/patch*` if anything needs recovering. **Fix the hook, or bless the hand-run gates as the workflow.** | [task 88](tasks/0088-bus-assignment-governs-decode.md) |
 | 3.49 | **No Vector tool has been watched reading a cannet BLF that carries a descending object timestamp, and this chain makes them more likely.** Task 87 established that BLF permits non-monotonic object timestamps *by silence* — there is no published spec, and Technica's `vector_blf`, Wireshark and python-can all read descents without complaint, python-can's writer emitting them. But CANoe/CANalyzer were unavailable, and Vector's `BLSeekTime` API ("seek forward to the first object with a certain time stamp") implicitly assumes ascent. Task 87's fix means a dip *below* the first appended frame is now preserved rather than flattened, so a cannet-written BLF is measurably more likely to carry a descent than any previous release's. The stated residual is "a time-seeking Vector consumer landing somewhere surprising, not an unreadable file". **Accept the exposure, or fund a `vector-blf-oracle` / a CANoe check before these files leave the tool.** | [task 87](tasks/0087-blf-writer-timestamp-fidelity.md) |
 | 3.50 | **A calculated-fields section counts as edited from the first keystroke, not from a changed value.** The editor decides whether to write an override on Apply by asking whether the section has been touched since the modal opened. Type into a section showing a DBC `Default`, type the original value straight back, and it is now an `Override` — the project's `.cannet_rbs` gains an override that is a byte-for-byte restatement of what the DBC already says, and that field will no longer follow the DBC if the designation later changes. The phase declined the fix because a structural comparison needs a second definition of "these two specs are the same" (the numeric fields live as strings in the controls and as numbers or `0x…` strings on the wire). Newly reachable because task 100 is what turns those checkboxes into live controls over DBC-declared fields. **Accept, or ask for the value comparison.** | [task 100](tasks/0100-calc-fields-dbc-config.md) |
