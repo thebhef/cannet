@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::anchor::TsAnchorIndex;
-use super::rate::{RateEstimate, RateTrack};
+use super::rate::RateEstimate;
 use super::scratch::dir_footprint;
 use super::{FrameKey, Inner, PerKey, RawTraceFrame, TraceStore};
 
@@ -571,7 +571,6 @@ impl Inner {
     fn reset_derived(&mut self) {
         self.session_start_ns = 0;
         self.session_started = false;
-        self.agg_rate = RateTrack::default();
         // The sampled prefix maxima describe rows that are gone; a fold
         // outliving its capture would anchor events against it.
         self.ts_anchor = TsAnchorIndex::default();
@@ -584,8 +583,8 @@ impl Inner {
         self.mux_rates = HashMap::new();
         self.mux_index_from = 0;
         self.per_bus = HashMap::new();
-        self.rx_rate = RateTrack::default();
-        self.tx_rate = RateTrack::default();
+        self.rx_rate = HashMap::new();
+        self.tx_rate = HashMap::new();
         self.dropped_before_session = 0;
     }
 }
