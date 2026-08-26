@@ -731,7 +731,7 @@ impl CanFrameSource for RemoteCanFrameSource {
 /// for a fatal in-band server error or transport failure. Per-frame
 /// server errors (`TX_REJECTED`, `NOT_SUBSCRIBED`, `NO_ACKNOWLEDGER`)
 /// are logged via `tracing` and do not interrupt the stream — see
-/// [`is_per_frame_error_code`].
+/// `is_per_frame_error_code`.
 pub struct FrameReceiver {
     rx: mpsc::Receiver<Result<CanFrame, ConnectionError>>,
     subscriptions: Vec<ResolvedSubscription>,

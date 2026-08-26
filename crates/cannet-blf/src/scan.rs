@@ -183,7 +183,7 @@ pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
 
 /// [`scan_blf`], but interruptible and reporting how far it has got.
 ///
-/// Every [`CHECKPOINT_OBJECTS`] objects the walk reads `cancel` and
+/// Every `CHECKPOINT_OBJECTS` objects the walk reads `cancel` and
 /// calls `on_progress`. Raising `cancel` stops the walk at the next
 /// checkpoint and yields [`ScanOutcome::Cancelled`]; the walk has
 /// written nothing anywhere, so stopping it costs nothing to undo.

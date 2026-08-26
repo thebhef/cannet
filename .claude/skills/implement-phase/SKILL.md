@@ -90,7 +90,7 @@ fast:
 | python | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` — all via `uv run` |
 | rust | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` |
 | mdf-export-oracle | the `cannet-mdf` sample export, then the asammdf validation |
-| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc -p cannet-gui --no-deps` |
+| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
 | sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` |
 
 **A job that was already red when you branched is still yours to

@@ -54,7 +54,7 @@ pub struct MdfEvent {
 /// link — and never the storage form.
 ///
 /// The index is a position in the same list: the order events were added
-/// to the writer, and the order [`read_events`] returns them in.
+/// to the writer, and the order `read_events` returns them in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MdfEventRange {
     /// This event begins a range that the event at this index ends.

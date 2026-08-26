@@ -14,7 +14,7 @@ use crate::model::{canid_to_message_id, Database, MessageEntry};
 /// not mutate `data`) if any required bit lies past the end of `data`,
 /// or if `size` is `0` / `> 64`.
 ///
-/// See [`bitwalk::walk`] for the DBC bit numbering convention (shared
+/// See `bitwalk::walk` for the DBC bit numbering convention (shared
 /// with [`crate::decode_signal_bits`]).
 pub fn encode_signal_bits(
     data: &mut [u8],

@@ -183,7 +183,7 @@ pub struct Project {
     /// Like `transmit_frames`, this is host-managed and the frontend
     /// doesn't carry it: it's an additive field with a generating default
     /// (so an older file with no id gains one on read, no schema bump),
-    /// and [`save_project`] anchors it to the target file — preserving the
+    /// and `save_project` anchors it to the target file — preserving the
     /// id already on disk and writing a fresh one only for a brand-new
     /// file. That keeps it stable across saves even though the frontend's
     /// save payload omits it.
@@ -213,14 +213,14 @@ pub struct Project {
     pub remote_address: Option<String>,
     /// In-process virtual buses owned by the project (ADR 0021).
     /// Each entry is instantiated once on project open;
-    /// [`InterfaceBinding`]s with `kind = local-virtual-bus`
-    /// reference one by [`LocalVirtualBusDef::id`].
+    /// `InterfaceBinding`s with `kind = local-virtual-bus`
+    /// reference one by `LocalVirtualBusDef::id`.
     #[serde(default)]
     pub local_virtual_buses: Vec<LocalVirtualBusDef>,
     /// The TX-message pool. A flat, global list of
     /// transmit messages the project owns; each transmit panel groups
     /// a subset for display via its element's `frame_ids`. The host
-    /// registry ([`crate::transmit_frames::TransmitFrameRegistry`]) is
+    /// registry (`crate::transmit_frames::TransmitFrameRegistry`) is
     /// the runtime source of truth — `open_project` loads it from this
     /// list (all periodics stopped), `save_project` snapshots it back.
     /// Additive; no schema-version bump.

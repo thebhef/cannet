@@ -10,7 +10,7 @@
 //! Two things about this module are load-bearing and easy to get wrong:
 //!
 //! - **Pinning replaces path validation, not signature verification.**
-//!   [`PinVerifier`] short-circuits chain building, expiry and hostname
+//!   `PinVerifier` short-circuits chain building, expiry and hostname
 //!   checks, but the TLS handshake signature is still verified by the
 //!   crypto provider. Skipping it would let anyone who has seen the
 //!   server's (public) certificate replay it and impersonate the server
@@ -112,7 +112,7 @@ pub struct PinObservation {
     pub observed: CertPin,
 }
 
-/// The slot a [`PinVerifier`] writes its [`PinObservation`] into.
+/// The slot a `PinVerifier` writes its [`PinObservation`] into.
 ///
 /// A handshake failure surfaces as an opaque transport error several
 /// layers above the verifier, with nothing certificate-shaped left in

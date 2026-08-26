@@ -103,7 +103,7 @@ pub struct DbcScope<'a> {
 }
 
 /// Per-signal choices of *which* assigned database decodes a signal:
-/// signal identity ([`signal_identity`], ADR 0038) → the loaded path of
+/// signal identity (`signal_identity`, ADR 0038) → the loaded path of
 /// the chosen database.
 ///
 /// A signal is in here only when the user has made a choice for it, so
@@ -165,7 +165,7 @@ pub struct DecodeModel<'a> {
 /// defines — see [`DecodeModel::message_spans_databases`] for what it
 /// gates. A pure function of the loaded set, so it is cached against
 /// that set rather than rebuilt per serve
-/// ([`AppState::split_message_index`](crate::app_state::AppState::split_message_index)).
+/// (`AppState::split_message_index`).
 pub type SplitMessages = HashSet<(u32, bool)>;
 
 /// The messages more than one of `dbcs` defines. One walk of each
@@ -334,7 +334,7 @@ impl<'a> DecodeModel<'a> {
     /// load order — the first half of ADR 0054's resolution rule, and
     /// the one scan every "which database supplies this" question
     /// starts from. A database assigned to no bus, or to other buses
-    /// only, decodes nothing here ([`filter::dbc_applies`]).
+    /// only, decodes nothing here (`filter::dbc_applies`).
     pub fn eligible<'s, 'b>(
         &'s self,
         bus_id: Option<&'b str>,
@@ -593,7 +593,7 @@ fn mix_spec(h: &mut Fnv, spec: &SignalDecodeSpec) {
 /// - **A database assigned elsewhere, or to nothing, is not eligible.**
 ///   A series on a bus takes only that bus's frames, and the decode path
 ///   judges every database against the bus a frame arrived on
-///   ([`filter::dbc_applies`]). A series that names no bus is admitted
+///   (`filter::dbc_applies`). A series that names no bus is admitted
 ///   by no assignment either, and so has no definition at all.
 /// - **What the winner is *also* assigned to is not part of its decode.**
 ///   It decodes a frame on this bus the same way whatever other buses it
