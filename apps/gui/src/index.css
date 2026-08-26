@@ -1763,7 +1763,7 @@ ul.status-bar-menu .status-chip {
   font-style: italic;
 }
 
-/* Phase-6 modal overlay variant (BLF channel-map). Same look as
+/* Modal overlay variant (BLF channel-map). Same look as
    `.modal-backdrop` but the modal is wider and the rows scroll. */
 .modal-overlay {
   position: fixed;
@@ -3784,7 +3784,7 @@ button.color-chip {
   font-style: italic;
 }
 
-/* Phase 12 filter-defined plot area (ADR 0020). */
+/* Filter-defined plot area (ADR 0020). */
 .plot-area-filter {
   background: none;
   border: 1px solid var(--border-strong);
@@ -4796,7 +4796,7 @@ button.color-chip {
   color: var(--text-primary);
 }
 
-/* Phase 10 Track 2 transmit panel. Single column of collapsible
+/* Transmit panel. Single column of collapsible
  * frame-tiles; each tile carries its own send / cyclic controls,
  * identity strip, and bytes editor. Expanded view (steps 5-8) adds
  * the frame-shape strip + signals table inline. */
@@ -5243,7 +5243,7 @@ button.color-chip {
   border-color: var(--field-focus-border);
 }
 
-/* Phase 7 — System Messages panel + unread badge */
+/* System Messages panel + unread badge */
 .system-messages-panel {
   display: flex;
   flex-direction: column;
@@ -5327,7 +5327,7 @@ button.color-chip {
   text-align: center;
 }
 
-/* Phase 12: Database panel — tree-with-fuzzy-search over loaded DBCs. */
+/* Database panel — tree-with-fuzzy-search over loaded DBCs. */
 .dbc-panel {
   display: flex;
   flex-direction: column;

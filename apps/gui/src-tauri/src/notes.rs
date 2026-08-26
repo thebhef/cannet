@@ -569,7 +569,7 @@ impl NotesStore {
 
     /// Link two events (ADR 0056). The link is **stored once**, as an
     /// [`EventSubject::Event`] on `a`, and read from either end by
-    /// [`Self::linked_events`]; storing both sides would be a two-place
+    /// [`linked_event_ids`]; storing both sides would be a two-place
     /// invariant with no user-visible gain.
     ///
     /// `None` — a no-op — when either id is unknown, when they are the same
@@ -624,14 +624,6 @@ impl NotesStore {
         Some(Applied {
             notes: self.events(),
         })
-    }
-
-    /// Every event linked to `id`, read in both directions over the merged
-    /// event set (ADR 0056) — see [`linked_event_ids`].
-    // As above: no host-side caller yet.
-    #[allow(dead_code)]
-    pub fn linked_events(&self, id: &str) -> Vec<String> {
-        linked_event_ids(&self.events(), id)
     }
 
     /// Remove a note, and sweep every remaining note's subject list for
@@ -1347,8 +1339,12 @@ mod subject_tests {
         let held: Vec<usize> = s.snapshot().iter().map(|n| n.subjects.len()).collect();
         assert_eq!(held, vec![1, 0], "the link is stored on one side only");
 
-        assert_eq!(ids(&s.linked_events("a")), vec!["b"]);
-        assert_eq!(ids(&s.linked_events("b")), vec!["a"], "read symmetrically");
+        assert_eq!(ids(&linked_event_ids(&s.events(), "a")), vec!["b"]);
+        assert_eq!(
+            ids(&linked_event_ids(&s.events(), "b")),
+            vec!["a"],
+            "read symmetrically"
+        );
 
         // Linking again, from either direction, is a no-op.
         assert!(s.link_events("a", "b").is_none());
@@ -1367,7 +1363,7 @@ mod subject_tests {
         // Asked from the side that does *not* hold the entry.
         let applied = s.unlink_events("b", "a").unwrap();
         assert!(applied.notes.iter().all(|n| n.subjects.is_empty()));
-        assert!(s.linked_events("a").is_empty());
+        assert!(linked_event_ids(&s.events(), "a").is_empty());
         assert!(s.unlink_events("a", "b").is_none());
     }
 
@@ -1382,9 +1378,9 @@ mod subject_tests {
         s.link_events("b", "a").unwrap();
         s.link_events("c", "b").unwrap();
 
-        assert_eq!(ids(&s.linked_events("a")), vec!["b"]);
-        assert_eq!(ids(&s.linked_events("b")), vec!["a", "c"]);
-        assert_eq!(ids(&s.linked_events("c")), vec!["b"]);
+        assert_eq!(ids(&linked_event_ids(&s.events(), "a")), vec!["b"]);
+        assert_eq!(ids(&linked_event_ids(&s.events(), "b")), vec!["a", "c"]);
+        assert_eq!(ids(&linked_event_ids(&s.events(), "c")), vec!["b"]);
     }
 
     #[test]
@@ -1473,7 +1469,7 @@ mod subject_tests {
         s.link_events("a", "b").unwrap();
         s.clear().unwrap();
         assert!(s.events().is_empty());
-        assert!(s.linked_events("a").is_empty());
+        assert!(linked_event_ids(&s.events(), "a").is_empty());
     }
 
     #[test]
@@ -1493,7 +1489,7 @@ mod subject_tests {
             }],
         );
         assert!(
-            s.linked_events("a").is_empty(),
+            linked_event_ids(&s.events(), "a").is_empty(),
             "an unresolved reference names no event in this store"
         );
     }
@@ -1529,7 +1525,7 @@ mod subject_tests {
         s.add(note("a", 1_000)).unwrap();
         s.set_subjects("a", vec![EventSubject::Event { id: "e1".into() }])
             .unwrap();
-        assert_eq!(ids(&s.linked_events("e1")), vec!["a"]);
-        assert_eq!(ids(&s.linked_events("a")), vec!["e1"]);
+        assert_eq!(ids(&linked_event_ids(&s.events(), "e1")), vec!["a"]);
+        assert_eq!(ids(&linked_event_ids(&s.events(), "a")), vec!["e1"]);
     }
 }

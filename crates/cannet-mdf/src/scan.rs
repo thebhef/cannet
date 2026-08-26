@@ -128,9 +128,12 @@ pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
 /// checkpoint and yields [`ScanOutcome::Cancelled`]; the walk has
 /// written nothing anywhere, so stopping it costs nothing to undo.
 ///
-/// The flag is only read once the record walk has started: reading the
-/// file in and parsing its block graph is a single call that cannot be
-/// interrupted, so a cancel raised during it lands when that finishes.
+/// Reading the file in and parsing its block graph is a single call
+/// that cannot be interrupted, so a cancel raised during it cannot stop
+/// it — but it **is** honoured the moment that call returns, before any
+/// record is walked. The flag outlives the uninterruptible window
+/// because the caller publishes it before calling in, so the press is
+/// already recorded by the time there is somewhere to read it.
 ///
 /// `on_progress` runs inside the walk and must be cheap; a caller
 /// publishing to a UI throttles there.
@@ -144,6 +147,21 @@ pub fn scan_mdf_cancellable<P: AsRef<Path>>(
     on_progress: &mut dyn FnMut(ScanProgress),
 ) -> Result<ScanOutcome, MdfSourceError> {
     let file = Mdf4File::open(path.as_ref())?;
+    // The open above is one uninterruptible call, and it is most of a
+    // large file's scan time — so a cancel pressed during it would
+    // otherwise wait for the walk's first checkpoint, which on a file
+    // holding fewer than `CHECKPOINT_RECORDS` records never arrives at
+    // all. Read it here instead: nothing has been produced yet, so
+    // stopping costs nothing to undo.
+    // The open above is one uninterruptible call, and it is most of a
+    // large file's scan time — so a cancel pressed during it would
+    // otherwise wait for the walk's first checkpoint, which on a file
+    // holding fewer than `CHECKPOINT_RECORDS` records never arrives at
+    // all. Read it here instead: nothing has been produced yet, so
+    // stopping costs nothing to undo.
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(ScanOutcome::Cancelled);
+    }
     let decoded_message_groups = collect_decoded(&file);
 
     let bus_groups: Vec<usize> = (0..file.groups.len())

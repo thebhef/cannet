@@ -148,7 +148,7 @@ impl TraceStore {
     /// — backing buffers resident. Replacing the containers returns the
     /// memory to the allocator so a small session after a large one
     /// doesn't carry the previous footprint. The raw store does the same
-    /// in its own [`RawStore::clear`](cannet_spill::RawStore::clear).)
+    /// in its own [`cannet_spill::RawStore::clear`].)
     pub fn start_session(&self, session_start_ns: u64) {
         let mut inner = self.lock_inner();
         inner.raw.clear();

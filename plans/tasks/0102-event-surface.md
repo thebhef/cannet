@@ -4,10 +4,13 @@
 > phases landed 2026-08-21 on the chain (nothing has merged). **This task
 > was listed on neither `roadmap.md` nor the owner-review queue until
 > 2026-08-23**, so none of its findings had ever reached the owner. Its
-> five exit criteria are walked at `### Exit criteria — verdict`: three
-> met, one **partly met** (the graph-view clause) and one **not met** (the
-> macOS check, which needs a Mac). Findings still owed a verdict:
-> owner-review-queue **3.54**, **3.55**, **3.56**, **3.57**.
+> five exit criteria are walked at `### Exit criteria — verdict`: **four
+> met** and one **not met** (the macOS check, which needs a Mac). The
+> graph-view clause was struck from ADR 0035 by owner ruling 2026-08-26,
+> which takes its criterion to met. Findings still owed a verdict:
+> owner-review-queue **3.54** and **3.56**. (**3.55** struck 2026-08-26;
+> **3.57** closed the same day — import-only is sufficient now that task
+> 107's *Create event from &lt;message&gt;* gesture exists.)
 
 Promoted from `plans/backlog.md` § "Cursors and markers" by owner
 instruction 2026-08-20, while grooming bus health (task 101): *"I think
@@ -78,8 +81,11 @@ error event must be a kind, and must default to hidden.
   prefix and renders `<user-string>`. Use cases: fault detections,
   contactor open/close, specific commands sent. **UI design needed**
   for picking the source message and authoring the text.
-- `EVENT_COMMENT` markers render in the **graph view** when enabled in
-  the filter.
+- ~~`EVENT_COMMENT` markers render in the **graph view** when enabled in
+  the filter.~~ **Struck 2026-08-26** — there is no timeseries graph
+  view, and never was. They render in the **plot** and in both trace
+  modes, which is what the clause was reaching for. ADR 0035's decision
+  point 3 was amended to match.
 - `GLOBAL_MARKER` and `EVENT_COMMENT` items appear in **historical-mode
   trace views**.
 
@@ -324,7 +330,8 @@ still one place away rather than unreachable (`gotoEvent.test.ts`,
 Two of the four scope items no longer fit the code, and one of them is
 an exit criterion.
 
-1. **"`EVENT_COMMENT` markers render in the graph view."** There is no
+1. **"`EVENT_COMMENT` markers render in the graph view."** **Struck
+   2026-08-26 by owner ruling**, in ADR 0035 and here. There is no
    timeseries graph view. The only graph view is `ProjectGraphPanel` —
    a topology of gateways, buses and filters, no time axis — and the
    backlog section this item was promoted from sits two headings above
@@ -351,7 +358,7 @@ Everything else in the scope held up.
 | `EventKind` carries more than one variant and every event surface filters by kind | **met** | four variants (`note`, `messageBound`, `busError`, `truncation`); `notes.test.ts` "gives every kind a category, and the category fixes the lifecycle"; per surface — `TracePanel.dom.test.tsx` "keeps a hidden-by-default kind out of the trace until this trace enables it", `plotEvents.test.ts` "leaves out the kinds this panel is not showing", `EventsPanel.dom.test.tsx` "lists both BLF annotation records and filters them apart" |
 | A kind can declare itself hidden by default, and is then absent from the trace, the plot and the event view until enabled | **met** | `notes.test.ts` "declares which kinds are noise until asked for" plus the three per-surface tests above; `gotoEvent.test.ts` "leaves out a kind that is hidden by default" extends it to the palette. Control: flipping `busError.visibleByDefault` to `true` fails all of them |
 | The event view is top-level, filters by kind / record type / tag, and shows an expandable description per marker | **met** | top-level already — `useCommands.tsx` registers `singleton(EVENTS_PANEL_ID, "Events", …)` beside Project / Graph / System messages. Kind **is** record type (`EVENT_KIND_META[kind].blfRecord`), asserted in `EventsPanel.dom.test.tsx` "lists both BLF annotation records and filters them apart"; tag — "narrows to the events carrying a matching tag"; description — "keeps the body collapsed until the row is disclosed" and "edits the description in place and commits it to the host" |
-| `GLOBAL_MARKER` and `EVENT_COMMENT` round-trip and appear in historical trace views and (for `EVENT_COMMENT`) the graph view | **partly met** | round-trip: `both_blf_annotation_records_round_trip`, with a third-party comment as the control. Historical trace views: both kinds are visible by default and splice into the chronological trace (`TracePanel.dom.test.tsx`). **Graph view: not done** — the clause is stale, see the finding above |
+| `GLOBAL_MARKER` and `EVENT_COMMENT` round-trip and appear in historical trace views | **met** | round-trip: `both_blf_annotation_records_round_trip`, with a third-party comment as the control. Historical trace views: both kinds are visible by default and splice into the chronological trace (`TracePanel.dom.test.tsx`). The graph-view half of this criterion was **struck 2026-08-26** — no such view exists; see the finding above |
 | The macOS picker item is closed by a verdict from a Mac | **not met** | no Mac available to this session; see Blockers |
 
 ### Blockers / side effects
