@@ -378,7 +378,7 @@ pub fn init_tracing_subscriber() {
 }
 
 /// Emit at debug level — the app's own chatter, not something the user
-/// asked for. Same plumbing as [`sys_info!`]; the panel filters it out
+/// asked for. Same plumbing as [`crate::sys_info!`]; the panel filters it out
 /// by default, but it still lands in the rolling log file.
 #[macro_export]
 macro_rules! sys_debug {
@@ -405,7 +405,7 @@ macro_rules! sys_info {
     }};
 }
 
-/// Emit at warn level. See [`sys_info!`].
+/// Emit at warn level. See [`crate::sys_info!`].
 #[macro_export]
 macro_rules! sys_warn {
     ($app:expr, $source:expr, $($arg:tt)*) => {{
@@ -415,7 +415,7 @@ macro_rules! sys_warn {
     }};
 }
 
-/// Emit at error level. See [`sys_info!`].
+/// Emit at error level. See [`crate::sys_info!`].
 #[macro_export]
 macro_rules! sys_error {
     ($app:expr, $source:expr, $($arg:tt)*) => {{

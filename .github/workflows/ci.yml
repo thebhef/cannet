@@ -46,6 +46,30 @@ jobs:
             exit 1
           fi
 
+  rustdoc:
+    name: rustdoc links (cannet-gui)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+
+      # A broken rustdoc link renders as literal text rather than
+      # failing anything, so nothing catches one at review: 41 had
+      # accumulated before this job existed. The crate root allows
+      # `private_intra_doc_links` with its reason (cannet-gui is an
+      # application crate, so a `pub` item pointing at a private sibling
+      # is the useful link), which leaves this catching links that do
+      # not resolve at all.
+      #
+      # Scoped to cannet-gui. The library crates carry 34 warnings of
+      # their own and that allow is an app-crate argument that does not
+      # transfer to a library, so widening this to --workspace is a
+      # separate decision.
+      - name: cargo doc -p cannet-gui
+        run: cargo doc -p cannet-gui --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   rust:
     name: Rust (test + clippy)
     runs-on: ubuntu-latest

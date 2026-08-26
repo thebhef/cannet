@@ -51,9 +51,9 @@
 //!
 //! The store keeps a rolling window of
 //! `(Instant, last_frame_ts_ns, total_count)` samples, one taken at
-//! most every [`RATE_SAMPLE_INTERVAL`] — a sample *per appended frame*
+//! most every [`rate::RATE_SAMPLE_INTERVAL`] — a sample *per appended frame*
 //! would balloon the deque at high replay rates for no extra signal,
-//! since [`Self::frames_per_second`] only reads the window's endpoints.
+//! since [`TraceStore::frames_per_second`] only reads the window's endpoints.
 //! The window is pruned to [`RATE_WINDOW`](rate::RATE_WINDOW) on each touch; the rate is
 //! the count delta over the frame-time the surviving samples span,
 //! falling back to `0.0` if there isn't yet enough signal to estimate.
@@ -445,7 +445,7 @@ impl TraceStore {
 
     /// Append a frame to the tail of the trace. Updates the
     /// latest-by-key index and the per-id rate estimate, and records a
-    /// rate sample if at least [`RATE_SAMPLE_INTERVAL`] has passed.
+    /// rate sample if at least [`rate::RATE_SAMPLE_INTERVAL`] has passed.
     ///
     /// Frames whose timestamp predates the current
     /// [`Self::start_session`] are silently dropped (returning

@@ -90,6 +90,7 @@ fast:
 | python | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` — all via `uv run` |
 | rust | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` |
 | mdf-export-oracle | the `cannet-mdf` sample export, then the asammdf validation |
+| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc -p cannet-gui --no-deps` |
 | sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` |
 
 **A job that was already red when you branched is still yours to
@@ -271,7 +272,7 @@ One commit, green, then report — short, in this order:
 - the commit message you composed
 - perf readings, anything over § 4's thresholds first
 - **one row per CI job, with its result and the command you ran** —
-  all six, every phase. "Green" without the table is not a report,
+  all seven, every phase. "Green" without the table is not a report,
   and a job you did not run is a red job.
 - the NSIS installer's path
 - status-log, blockers, and queue entries you added

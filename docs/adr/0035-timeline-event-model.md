@@ -18,8 +18,8 @@ Several pending capabilities want more of the same shape:
   oldest history, shown in both the plot and the trace;
 - message-bound markers (`EVENT_COMMENT`) created from a source message,
   colored and described, filterable by a user tag;
-- those same markers rendered in the chronological/filtered trace and the
-  graph view, not just the plot;
+- those same markers rendered in the chronological/filtered trace, not
+  just the plot;
 - a global panel for browsing, filtering, and editing markers;
 - utilities/extensions that scan the stream and emit markers for
   detected conditions (faults, contactor open/close, specific
@@ -146,8 +146,8 @@ Visibility is still view-local, so a view that wants quiet can have it.
 - Scratch persistence of durable events is the first persistence instance
   of this model; the BLF path remains the export/import home.
 - Colored/described markers, message-bound `EVENT_COMMENT`, rendering in
-  the trace and graph views, and the markers panel are all consequences
-  of this decision, sequenced separately.
+  the trace views, and the markers panel are all consequences of this
+  decision, sequenced separately.
 - **Events are a separate sparse channel**, not paged through the
   windowed row-page contract ([ADR 0025](0025-frontend-windowed-source-contract.md)).
   The collection is small and bounded by user/detector activity and held
@@ -221,15 +221,15 @@ persisted" reading to host-derived for the same reason `busError` is: the
 host owns the detection, and the frames that caused it are what the file
 records.
 
-### An observation this amendment does not settle: "the graph view"
+### Struck 2026-08-26: "the graph view"
 
-Decision point 3 lists "the graph view" among the timeseries views that
-render events, alongside the plot and the trace. There is no such view in
-the code and there was none when this was written: the only graph view is
-the **project graph**, a topology of gateways, buses and filters with no
-time axis, so a timeline event has no coordinate to land on there. The
-timeseries views that render events are the plot and the chronological /
-filtered trace, and both do.
+Decision point 3 used to list "the graph view" among the timeseries views
+that render events, alongside the plot and the trace. **There was never
+such a view** — not when this was written and not since. cannet's only
+graph view is the **project graph**, a topology of gateways, buses and
+filters with no time axis, so a timeline event has no coordinate to land
+on there.
 
-Recorded rather than struck, because removing a decision point is the
-owner's call and not a consequence of the change this amendment makes.
+The clause is removed from decision point 3 rather than left standing,
+by owner ruling. What ships is what the decision should have said: events
+render in the plot and in both trace modes, and both do.
