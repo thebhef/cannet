@@ -214,7 +214,13 @@ power loss, which is why row B has to be built by truncation.
 cleanly at a trailing fragment and keep everything before it
 (hypothesis 3); the stub header must not be treated as authoritative
 for counts (it never was); and the lost wall clock must be named in
-the log rather than passed off as a 1970 capture.
+the log rather than passed off as a 1970 capture. **Ruled 2026-08-26**
+(owner-review-queue 3.9, now
+[task 122](0122-a-file-keeps-what-you-wrote.md) § 2): the anchor will
+be persisted to the header the moment it is known instead of only at
+`finish()`, so future `.part` files carry a real start and recovery
+honours it with no heuristic. Files already on disk stay undated —
+the absolute time was never written.
 
 ### 2026-08-21 — Phase 2: read a stub-header capture (branch `task-105-unfinalized-blf`)
 

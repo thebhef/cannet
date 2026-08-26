@@ -282,9 +282,10 @@ None. Two things worth the overseer's eye, neither blocking:
 
 - The grooming note asked the owner be **shown both** axes before the
   lanes axis changed. No comparison was produced because the lanes
-  axis has no y-gutter labels to compare — see the status log. If the
-  owner meant the lane *tiles*, that is a different request and
-  contradicts the stated reason for this one.
+  axis has no y-gutter labels to compare — see the status log.
+  **Closed 2026-08-25 by owner ruling** (owner-review-queue 3.6): the
+  owner did not mean the lane tiles, so there was nothing to show and
+  nothing is owed.
 - `plans/owner-review-queue.md` is untracked in the working tree and is
   not this task's; left alone, along with the `Cargo.toml` line-ending
   noise and the two `scratch-perf*` directories.

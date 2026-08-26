@@ -1296,7 +1296,9 @@ the phase that satisfied it.
 | 20 | Both reference kinds carry `extended`, since message identity here is the id and that flag together | **Met** | The enum's shape; tests in phases 1, 3 and 5 each distinguish an extended reference from the standard id of the same number. |
 | 21 | Roadmap position — confirm or move the provisional slot after 108 | **Met** | Confirmed at grooming and honoured: 107 ran last, after 108 shipped. |
 | 22 | The prototype is a design artefact, deleted by the last phase that consumes it | **Met** | Maintained through phases 3 and 4 wherever implementation diverged; deleted in this commit. |
-| 23 | Unknown block keys are preserved verbatim on rewrite | **Partially met — and said so plainly** | True at the text layer: parse → serialize keeps unknown keys, malformed lines and unknown kinds, with tests (phase 2). **Not** true through file → `Note` → file: `Note` has no passthrough field, so opening and saving a file written by a future build drops what this build does not understand. Closing it is a durable-schema change. ADR 0057's loss table records it; queued 3.30. |
+| 23 | Unknown block keys are preserved verbatim on rewrite | **Partially met — and said so plainly** | True at the text layer: parse → serialize keeps unknown keys, malformed lines and unknown kinds, with tests (phase 2). **Not** true through file → `Note` → file: `Note` has no passthrough field, so opening and saving a file written by a future build drops what this build does not understand. Closing it is a durable-schema change. ADR 0057's loss table records it; queued 3.30 — **ruled 2026-08-26,
+*"preserve them"***: `Note` gains a passthrough field, now
+[task 122](0122-a-file-keeps-what-you-wrote.md) § 4. |
 | 24 | A subject can name anything a plot row can | **Not met — bounded, and recorded** | A **file-backed** series cannot be an event's subject: its `messageId` is a signal channel-group index, not an arbitration id, so `EventSubject`'s structural form has nothing true to say about it. Shift+click over a selection of nothing but file-backed rows names nothing and falls through. Closing it means a fourth referent kind — a model change to ADR 0056. Queued 3.31. |
 
 Criteria 23 and 24 are the two that are not fully met; both are recorded
@@ -1336,11 +1338,13 @@ are clean.
 
 ### Phase 2 (2026-08-22)
 
-- **Every `##EV` block cannet has ever written carries `ev_type = 2`**,
-  which ASAM MDF 4.x reads as `EV_T_ACQUISITION_INTERRUPT`. New files are
-  correct; files already on disk are mislabelled to any conformant reader,
-  and nothing rewrites them. Ours read them fine — `cannet-mdf` does not
-  consult `ev_type`.
+- ~~**Every `##EV` block cannet has ever written carries `ev_type = 2`**,
+  which ASAM MDF 4.x reads as `EV_T_ACQUISITION_INTERRUPT`.~~ **Closed
+  2026-08-26 by owner ruling** — *"i don't care about existing exported
+  files."* The write-boundary fix is the whole of the work: new files are
+  correct, files already on disk stay mislabelled to a conformant reader,
+  and nothing will rewrite them. Ours read them fine either way —
+  `cannet-mdf` does not consult `ev_type`. (owner-review-queue 3.28)
 - **`mdf4-rs 0.6.0`'s `EventType` is wrong and `from_u8` rejects 3–6**, so
   a foreign file using those types parses as `Marker` rather than being
   reported. The write side is worked around here; the read side is
@@ -1352,8 +1356,20 @@ are clean.
   watched CANoe draw either, so the reading is still corroboration rather
   than observation.
 - **A `#000000` event loses its colour through BLF** (§ ADR 0057's loss
-  table). Pre-existing — the packed `0` has always meant both black and
-  uncoloured — and now pinned by a test rather than left implicit.
+  table). **Owner ruling 2026-08-26 settled half of it and corrected the
+  other half.** Settled: *"the text block is for fields that don't exist in
+  the marker format"* — the marker has colour fields, so this is not the
+  block's job and no schema change is on the table. Corrected: a
+  `GLOBAL_MARKER` carries **two** colours, `foreground_color` and
+  `background_color`, so black and uncoloured are distinguishable as a
+  pair — *"BLF supports two colors for markers."* The loss is this
+  writer's, not the format's: `append_marker` guards on
+  `color & 0x00FF_FFFF != 0`, so `#000000` skips the fill branch and keeps
+  the black-on-white default, and `marker_color`'s closing `rgb != 0`
+  discards a black fill on read. Both are one-line changes.
+  **Ruled 2026-08-26 — fix it**: now
+  [task 122](0122-a-file-keeps-what-you-wrote.md) § 1.
+  (owner-review-queue 3.59)
 
 ### Phase 3 (2026-08-22)
 
@@ -1368,8 +1384,11 @@ are clean.
   already gone. What remains dead is the one-line `NotesStore` wrapper,
   exercised only by its own tests. Left in place rather than deleted: it
   states the model's contract beside the model, and phase 4's authoring
-  gestures are the next plausible host-side caller. Worth a decision if
-  they turn out not to be.
+  gestures are the next plausible host-side caller. **Decided and
+  shipped 2026-08-25/26** (owner-review-queue 3.33): phase 4 was not the
+  caller either, the owner ruled *"agree, delete"*, and the wrapper is
+  gone — its ten test call sites moved to the free `linked_event_ids`,
+  so the coverage is unchanged.
 - **The `…` opens the row's body instead of a menu.** The prototype and
   the status bar both drop an absolutely-positioned list. `.trace-rows`
   is `overflow: auto; contain: strict` and the row stack inside it is

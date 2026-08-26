@@ -152,17 +152,26 @@ In order of work, first at the top. None started.
    Placed first: two of its findings are the owner's own observations
    from hardware, and it is the only group of findings sourced from real
    use.
-2. [Task 115 — Trace Row Menus Keep Only the Event Action](0115-trace-row-menu-scope.md)
+2. [Task 122 — A File Keeps What You Wrote](0122-a-file-keeps-what-you-wrote.md)
+   — five small capture-format fixes, all ruled 2026-08-26 from the
+   queue's § 3A walk, no open questions: a black event survives BLF
+   (two colour guards of ours, not a format limit); the BLF anchor
+   reaches disk on first append so a killed session's `.part` stops
+   dating from 1970; foreign MDF sample order is sorted at the
+   boundary instead of trusted into a wrong plot; a future build's
+   unknown block keys round-trip; `commented_event_type` rides the
+   `cannet-event/1` block on every carrier. One phase, test-first.
+3. [Task 115 — Trace Row Menus Keep Only the Event Action](0115-trace-row-menu-scope.md)
    — a right-click on a trace frame row stops offering the sources
    picker; the button bar is where those items live and always was.
    Create event stays. From queue item 1.23; fully ruled 2026-08-25.
 
-3. [Task 117 — Refuse to Connect Without a Bound Bus](0117-refuse-to-connect-without-a-bound-bus.md)
+4. [Task 117 — Refuse to Connect Without a Bound Bus](0117-refuse-to-connect-without-a-bound-bus.md)
    — connecting with any unbound bus fails loudly and names it; the
    empty-project refusal names the bus rather than a binding; a new
    project starts with one bus called `Bus 1`. From queue item 1.34,
    captured at the owner's instruction 2026-08-25. No open questions.
-4. [Task 114 — One Name Per Thing](0114-one-name-per-thing.md)
+5. [Task 114 — One Name Per Thing](0114-one-name-per-thing.md)
    — the chrome says one thing where the model says another. ADR 0055
    is amended to say what the code does (the command registry is the
    model, the chip bar one rendering of it); the toolbar's last `DBC`
@@ -170,7 +179,7 @@ In order of work, first at the top. None started.
    in the bus-health adapter cell, reading `virtual bus` instead. Split
    out of the owner review walk and fully groomed on 2026-08-25.
    **No open questions**, no phases yet.
-5. [Task 113 — Is RBS a Grid?](0113-rbs-as-a-grid.md)
+6. [Task 113 — Is RBS a Grid?](0113-rbs-as-a-grid.md)
    — `RbsPanel` and `TransmitPanel` adopt `gridviewContentRows`, so a
    message's signals are grid rows the cursor reaches. Plus Space on a
    signal row going inert, and **a layer-wide Escape defect grooming
@@ -182,13 +191,13 @@ In order of work, first at the top. None started.
    the owner review walk and fully groomed on 2026-08-25; ADR 0044
    takes three amendments, including deleting the editor-face carve-out.
    **No open questions**, no phases yet.
-6. [Task 116 — RBS Problems Across Every Configuration](0116-rbs-problems-across-configurations.md)
+7. [Task 116 — RBS Problems Across Every Configuration](0116-rbs-problems-across-configurations.md)
    — one view over problems from every open `.cannet_rbs`, filterable by
    file, host-computed and paged. The RBS chip opens that instead of a
    single configuration. From queue item 1.13ab; the steps-to-reproduce
    leg was dropped by owner ruling 2026-08-25. **Depends on task 113**,
    which settles what an RBS grid row is. Two open questions.
-7. [Task 112 — The Signal Reference Registry](0112-signal-reference-registry.md)
+8. [Task 112 — The Signal Reference Registry](0112-signal-reference-registry.md)
    — every persisted signal reference moves onto one host-side registry,
    the way `NotesStore` and `TransmitFrameRegistry` already hold theirs.
    The `elements` blob stays opaque for presentation and stops carrying
@@ -201,87 +210,87 @@ In order of work, first at the top. None started.
    and five open design questions. Bears on queue findings 3.1, 3.31,
    3.41 and 3.47.
 
-8. [Task 118 — The `comment-references` Check Leaves CI](0118-comment-references-out-of-ci.md)
+9. [Task 118 — The `comment-references` Check Leaves CI](0118-comment-references-out-of-ci.md)
    — the check moves to the `implement-phase` and `oversee-roadmap`
    skills and the CI job goes, so every phase's CI table becomes five
    jobs. **Process, not product.** From queue item 1.35; ruled
    2026-08-25. The risk being accepted — instruction-level enforcement
    is what failed before — is recorded in the task, not argued.
-9. [Task 119 — Example DBCs for the Duplicate-Id Collision](0119-duplicate-id-example-dbcs.md)
+10. [Task 119 — Example DBCs for the Duplicate-Id Collision](0119-duplicate-id-example-dbcs.md)
    — two DBCs that collide on one bus plus a project assigning both, so
    the owner can review what the Database panel marks. **A deliverable
    to review against, not a behaviour change.** From queue item 1.33a;
    ruled 2026-08-25. Two open questions.
-10. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
+11. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
    — the user-reachable empty-view defect Task 78 phase 1 attributed
    (restore a prior capture, then import: the view stays empty while
    the store refills), plus making `--app-data-dir` isolate the
    capture scratch as ADR 0031 claims. Opened by owner ruling
    2026-08-15; kept as scoped, both halves, by owner ruling
    2026-08-19.
-11. [Task 80 — Plot Resample Churn Over a Stopped Capture](0080-stopped-capture-resample.md)
+12. [Task 80 — Plot Resample Churn Over a Stopped Capture](0080-stopped-capture-resample.md)
    — investigation-first: ~30 Hz resample + follow-slide held over a
    stopped, fully imported capture (trace still reads RUNNING after
    import). Opened by owner ruling 2026-08-15.
-12. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
+13. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
    — the health sampler's process-family metrics move to the web
    engine's own bookkeeping (WebView2 `GetProcessInfos`) as the
    de-jure source; per-platform matrix (the macOS ppid walk silently
    excludes WKWebView's launchd-parented helpers), the
    `unsafe`/`webview2-com` adoption rulings, costs re-measured.
    Opened by owner ruling 2026-08-15.
-13. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
+14. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
    — the small findings the retiring 70–78 task files recorded in
    passing, collected as one groomable pass: the project-command test
    harness gap, the rebuild-chip rough edges, the unattributed
    launch-hang lead, frameless-import time ranges, and the
    untrusted-row token editor. Opened by owner ruling 2026-08-16.
-14. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
+15. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
    — an imported MDF's embedded DBC decodes for the session but
    survives no reopen; make it durable (extraction or a durable
    project reference), then revisit name-matching file-backed
    signals on top. **Needs grilling before implementation.** Opened by
    owner ruling 2026-08-16.
-15. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
+16. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
    — shape 3 of Task 72 phase 3's attributed enum-lag fix (owner
    ruling 2026-08-15): decode cursors advance independently of view
    fetches, serves read what the cursors reached. Amends ADR 0049.
-16. [Task 69 — Extension Architecture](0069-extension-architecture.md)
+17. [Task 69 — Extension Architecture](0069-extension-architecture.md)
    — implement ADR 0051: out-of-process, GUI-host-supervised
    extensions on a new `ExtensionHost` service in `cannet.proto`
    (filtered frame subscription, manifest-gated transmit, sandboxed
    contributed webviews, `.cannet-extension` packaging) plus an
    in-repo Python reference extension. Design groomed 2026-08-13.
-17. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
+18. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
     — the two data-named cuts from the 2026-08-08 ingest profiling: the
     disk-spill segment write (43 % of the release per-frame budget)
     and `bus_id: Option<String>` interning (~15 %). Opened by owner
     ruling 2026-08-09.
-18. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+19. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
     — crash on exit (wry/WebKit layer-tree teardown race) and missing
     Spotlight bundle metadata. Independently-shippable macOS fixes.
-19. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+20. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
     — the hardware/virtual-bus verify-and-fix pass (post-clear negative
     timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
     plot-color bug and the `decimatePoints` dead-code removal.
-20. [Task 22 — CANopen](0022-canopen.md)
+21. [Task 22 — CANopen](0022-canopen.md)
     — EDS ingestion and SDO / PDO decoding.
-21. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+22. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
     — triggers, math channels, per-series offset / gain, export.
     (Drag-a-plot-area-between-panels shipped separately, 2026-08-08.)
     Inherits the measurement strip's rework, which task 108 phase 4
     suppressed rather than removed.
-22. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+23. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
     — cannet connects out to a value-source server that streams sparse
     `(signal, value)` updates by name; RBS applies them as overrides and
     keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
     (e.g. an EV drive cycle) drive the RBS.
-23. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+24. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
     — staged: pcapng import (CAN linktypes, no model change), step/hold
     plot semantics for on-change series, then the multi-protocol trace
     model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
     Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-24. [Task 40 — bridge_client / cannet-client Session-Machinery
+25. [Task 40 — bridge_client / cannet-client Session-Machinery
     Consolidation](0040-bridge-client-consolidation.md) — gated on
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else

@@ -1,7 +1,7 @@
 # 0121 — The Trace Tells the Truth About the Wire
 
 > **Opened 2026-08-26** from the owner's walk of
-> [`owner-review-queue.md`](../owner-review-queue.md) § 3 group C —
+> [`owner-review-queue.md`](../owner-review-queue.md) § 3B —
 > findings **3.37, 3.39, 3.42, 3.43, 3.53**. Two of them (3.42, 3.43) are
 > the owner's own observations from the 2026-08-23 hardware session; two
 > more came from investigating that report; 3.53 predates it.

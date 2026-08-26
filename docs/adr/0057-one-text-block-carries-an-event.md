@@ -167,7 +167,8 @@ in prose.
 | --- | --- | --- |
 | id, kind, tag, description | kept (block) | kept (block) |
 | label | kept (`ev_tx_name`) | kept (`marker_name`; block, for a comment) |
-| colour | kept (block) | kept (fill) — **except `#000000`** |
+| colour | kept (block) | kept (fill) — **except `#000000`**, on a
+limitation of this writer rather than of the format: see below |
 | message / signal / event subjects | kept (block) | kept (block) |
 | the record a comment is attached to | kept (block) | kept (`mCommentedEventType`) |
 | a link to an event the file does not carry | kept, unresolved | kept, unresolved |

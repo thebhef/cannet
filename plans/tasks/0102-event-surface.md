@@ -372,11 +372,15 @@ Everything else in the scope held up.
   0035 decision point 3 and from this task's exit criteria, or restate
   it against a view that has a time axis. Recorded in the ADR
   amendment.
-- **An MDF round-trip drops a comment's `commented_event_type`.** MDF
-  `##EV` has no analogue for "the object type of the event this comment
-  is attached to", so a message-bound event saved to MDF and reimported
-  comes back freestanding. Documented at `note_from_event`; BLF is the
-  interchange home for annotations and round-trips it exactly.
+- ~~**An MDF round-trip drops a comment's `commented_event_type`.**~~
+  **Closed 2026-08-26 — task 107 fixed it and nobody noticed.** MDF `##EV`
+  still has no native analogue, but `d94262e1` gave the field a slot in
+  the `cannet-event/1` block: `events_from_notes` writes it and
+  `note_from_event` reads it back. Pinned by
+  `every_subject_kind_survives_an_mdf_round_trip`, which round-trips a
+  note carrying `commented_event_type: Some(86)` and asserts the model
+  comes back exactly; ADR 0057's loss table already records it as kept.
+  (owner-review-queue 3.56)
 - **`NotesStore::replace_derived` is `#[allow(dead_code)]`** until a
   host-side detector calls it. It is the host-derived category's only
   entry point, so the category is unreachable without it; the bus-health

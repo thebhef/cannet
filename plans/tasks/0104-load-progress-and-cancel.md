@@ -313,7 +313,9 @@ not as clean as "today's `cancel_import` has an answer" implied.
 - **`scan_blf_channels` and `scan_mdf_channels` now return `null` for a
   cancelled census.** A wire-shape change: the frontend reads `null` as
   "the gesture was dropped" rather than as an error, since a cancelled
-  census is neither a result nor a failure.
+  census is neither a result nor a failure. **Closed 2026-08-25 by owner
+  ruling** (owner-review-queue 3.12, covering all three wire-shape
+  changes below as well): internal shapes, no out-of-tree consumers.
 - **`open_log` and `import_mdf` gained a `totalFrames` argument.** The
   census's own count, handed back so the pump has a denominator. It is
   optional; without it the import runs and reports no progress.
@@ -325,4 +327,11 @@ not as clean as "today's `cancel_import` has an answer" implied.
   when that finishes. Recorded rather than fixed: interrupting it means
   restructuring the reader around a chunked read, which is a change to
   how every MDF is read for the benefit of a fraction of one phase's
-  wait.
+  wait. **Ruled and shipped 2026-08-25/26** (owner-review-queue 3.11):
+  the cancel flag is now read once immediately after the open, so a
+  press during the prologue lands the moment it finishes — worse than
+  recorded before the fix, since a file smaller than one checkpoint
+  stride never read the flag at all and completed despite the cancel.
+  Pinned by `a_cancel_raised_before_the_walk_starts_is_honoured`,
+  watched failing first. The prologue itself stays uninterruptible,
+  accepted.

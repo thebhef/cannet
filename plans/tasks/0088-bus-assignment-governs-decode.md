@@ -1809,6 +1809,10 @@ Recorded by phase 1, 2026-08-19.
   (no code, so the gates prove nothing), and a code commit is safer
   when nothing under `plans/` is left dirty. The stashed copies survive
   in `~/.cache/pre-commit/patch*` if something needs recovering.
+  **Closed 2026-08-25 by owner ruling** (owner-review-queue 3.48): the
+  hook stays as it is, and `--no-verify` with the gates run by hand —
+  already blessed in the subagent skill — is the workflow, not a
+  workaround.
 
 Recorded by phase 2, 2026-08-19.
 

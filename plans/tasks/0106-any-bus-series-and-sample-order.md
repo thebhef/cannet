@@ -6,8 +6,15 @@
 > unconfirmed ruling, met, met after one correction, and one not
 > applicable. **The ruling the whole task implements is the overseer's and
 > the owner has not confirmed it** — owner-review-queue 1.19, which also
-> names the two commits that are the whole diff to revert. Findings still
-> owed a verdict: owner-review-queue 3.15, 3.16.
+> names the two commits that are the whole diff to revert. 3.15 (the
+> unenforced "ascending" on `FileSignal::timestamps_ns`) was **ruled
+> 2026-08-26**: normalise at the boundary — an `is_sorted` check per
+> channel with a stable sort only on failure, since a signal series has
+> no arrival identity to preserve (unlike the trace, ADR 0024). Now
+> [task 122](0122-a-file-keeps-what-you-wrote.md) § 3. (3.16, the `statsOver`
+> tied-sample undercount, was **closed 2026-08-25 by owner ruling**:
+> fixed in `3b8fd808`, and the measurement strip it feeds was hidden
+> throughout, so the wrong numbers were never on screen.)
 
 Opened by the overseer 2026-08-21, out of [task 91](0091-frame-index-at-ns-unsorted.md)'s
 audit. Task 91 fixed the trace store's time→index anchor, which
