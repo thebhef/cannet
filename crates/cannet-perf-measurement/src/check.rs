@@ -85,7 +85,7 @@ pub mod tol {
     /// … plus this floor (ms), so tiny baselines don't false-trip.
     pub const LATENCY_FLOOR_MS: f64 = 5.0;
     /// Half-width of the band a measured rate must stay inside, around
-    /// the operator-supplied *expected* rate ([`Expected`]). The sim emits
+    /// the operator-supplied *expected* rate ([`super::Expected`]). The sim emits
     /// a deterministic schedule, so the steady-state average is known:
     /// **too few _or_ too many frames is wrong**, so this gates both sides,
     /// not just a floor. ±15 % absorbs connect ramp-up and rate-estimator

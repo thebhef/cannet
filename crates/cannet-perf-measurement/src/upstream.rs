@@ -92,7 +92,7 @@ impl ServerProcess {
     ///
     /// # Errors
     /// Returns a message if the binary can't be spawned, exits early, or
-    /// never answers within [`SERVER_READY_BUDGET`].
+    /// never answers within `SERVER_READY_BUDGET`.
     pub fn spawn(binary: &Path) -> Result<Self, String> {
         let bind = free_local_port()?;
         let child = server_command(binary, bind)

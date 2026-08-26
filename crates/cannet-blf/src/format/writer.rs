@@ -93,7 +93,7 @@ impl BlfFileWriter {
     /// that; otherwise return the existing value. The
     /// caller is responsible for ms-flooring `candidate` so the
     /// SYSTEMTIME-encoded start round-trips losslessly (see
-    /// [`BlfCaptureWriter::append`] for that detail).
+    /// [`Self::append_object`] for that detail).
     pub fn set_start_if_unset(&mut self, candidate: u64) -> u64 {
         *self.start_unix_nanos.get_or_insert(candidate)
     }

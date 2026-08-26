@@ -33,7 +33,7 @@ use crate::seg_chain::{
 /// Bytes per entry: two `f64`s (`t_seconds`, `value`).
 const ENTRY_BYTES: usize = 16;
 
-/// [`ENTRY_BYTES`], published — what one stored sample costs.
+/// `ENTRY_BYTES`, published — what one stored sample costs.
 ///
 /// A caller that keeps sample runs has to be able to say how much disk
 /// they are worth: how much a set it reused was spared producing, how
@@ -102,7 +102,7 @@ impl SampleSeq {
     /// the caller recorded when it last wrote the run.
     ///
     /// No manifest of its own is read or needed. The chain's geometry is
-    /// deterministic in the run's length ([`geometric_seg_capacity`]), so
+    /// deterministic in the run's length (`geometric_seg_capacity`), so
     /// `len` alone names every segment file the run ever created, and
     /// `first_slot` says how many leading ones eviction has since deleted —
     /// exactly the two numbers [`Self::evict_below`] and [`Self::push`]
@@ -132,7 +132,7 @@ impl SampleSeq {
     ///
     /// That is the difference between a fast reopen and a slow one, and it
     /// is not a micro-optimization: mapping an existing segment is latency-
-    /// bound (see [`open_segments`]), so the useful width is how many opens
+    /// bound (see `open_segments`), so the useful width is how many opens
     /// are in flight. A pyramid's levels hold a handful of segments each, so
     /// reopening level by level runs the parallel open at a width of about
     /// four; a restore of dozens of pyramids is thousands of files that

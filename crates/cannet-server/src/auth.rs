@@ -115,8 +115,8 @@ pub struct AccessToken(String);
 
 impl AccessToken {
     /// Mint a fresh passphrase token from the OS CSPRNG:
-    /// [`PASSPHRASE_WORDS`] words drawn uniformly (no modulo bias — see
-    /// [`uniform_index`]) from the embedded EFF large wordlist,
+    /// `PASSPHRASE_WORDS` words drawn uniformly (no modulo bias — see
+    /// `uniform_index`) from the embedded EFF large wordlist,
     /// lowercase, joined with `-`.
     ///
     /// Entropy: 5 × log2(7776) ≈ 64.6 bits. That is far below the 256

@@ -217,7 +217,8 @@ pub fn is_raw_field(value_is_raw_integer: bool, unit: &str, is_enum: bool) -> bo
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueTableEntry {
     /// Raw value (the same domain as
-    /// [`DecodedSignal::raw_unsigned`] / [`DecodedSignal::raw_signed`]).
+    /// [`crate::DecodedSignal::raw_unsigned`] /
+    /// [`crate::DecodedSignal::raw_signed`]).
     /// Stored as `i64` to match `can-dbc`'s API; signed signals use
     /// negative entries, unsigned signals re-cast at the call site.
     pub raw: i64,
