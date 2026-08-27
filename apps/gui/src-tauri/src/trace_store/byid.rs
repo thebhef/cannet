@@ -8,6 +8,7 @@
 //! (paused / scrolled into history) or a late-installed mux extractor
 //! falls back to a chunked backward scan over the raw store.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -19,10 +20,10 @@ use super::{FrameKey, MuxKey, MuxSelectorFn, RawTraceFrame, TraceStore};
 /// keeping a cold-index page fetch bounded.
 const MUX_SCAN_BOUND: usize = 262_144;
 
-/// Chunk size for that backward scan — the unit over which the inner
-/// mutex is held, mirroring the filtered-trace scan's chunking so a
+/// Chunk size for this module's backward scans — the unit over which the
+/// inner mutex is held, mirroring the filtered-trace scan's chunking so a
 /// history walk never starves `append`.
-const MUX_SCAN_CHUNK: usize = 65_536;
+const SCAN_CHUNK: usize = 65_536;
 
 /// A row of the latest-by-id snapshot: the frame's index in the buffer,
 /// the frame, the id's current message rate, and the total number of
@@ -63,8 +64,10 @@ impl TraceStore {
     /// When `end` covers the buffer tip (the running, follow-live case)
     /// the maintained `latest` map already holds each key's last index,
     /// all in-window, so this takes that O(keys) fast path. A bounded
-    /// window (paused / scrolled into history) costs one O(end - start)
-    /// pass — paid on a status change, not on the live refresh tick.
+    /// window (paused / scrolled into history) walks instead — backward
+    /// from `end`, in chunks, stopping as soon as every key the store has
+    /// seen at or above `start` has turned up, and never holding the
+    /// append mutex across the walk.
     #[must_use]
     pub fn latest_in_window(&self, start: usize, end: usize) -> Vec<LatestById> {
         self.latest_in_window_where(start, end, |_| true)
@@ -95,52 +98,50 @@ impl TraceStore {
         keep: impl Fn(&FrameKey) -> bool,
     ) -> Vec<LatestById> {
         let now = Instant::now();
-        let inner = self.lock_inner();
-        let len = inner.raw.len();
-        let end = end.min(len);
-        if start >= end {
-            return Vec::new();
-        }
         // (key, last-in-window index, frame). When the window reaches the
         // tip (the running follow-live case), the maintained `latest` index
         // and the eager overlay already hold each key's newest frame — serve
         // the frame from the overlay, not a raw read, so a row whose index
         // has evicted below the low-water mark still resolves (ADR 0002
-        // DS-8). A bounded window (paused / scrolled into history) scans the
-        // window once and materialises its frames by index — that path only
-        // addresses live rows.
-        let mut rows: Vec<(FrameKey, usize, RawTraceFrame)> = if end == len {
-            inner
+        // DS-8).
+        let (end, tip_rows, candidates) = {
+            let inner = self.lock_inner();
+            let len = inner.raw.len();
+            let end = end.min(len);
+            if start >= end {
+                return Vec::new();
+            }
+            let live = inner
                 .per_key
                 .iter()
-                .filter(|(key, e)| e.last_index >= start && keep(key))
-                .map(|(key, e)| (key.clone(), e.last_index, e.last_frame.clone()))
-                .collect()
-        } else {
-            let mut last: HashMap<FrameKey, usize> = HashMap::new();
-            for (offset, f) in inner.raw.slice(start, end).iter().enumerate() {
-                // Every stored frame carries a bus (`TraceStore::append`
-                // drops one that does not), so this is not a filter.
-                let Some(bus) = f.bus_id.clone() else {
-                    continue;
-                };
-                let key: FrameKey = (bus, f.channel, f.id, f.extended);
-                if !keep(&key) {
-                    continue;
-                }
-                last.insert(key, start + offset);
+                .filter(|(key, e)| e.last_index >= start && keep(key));
+            if end == len {
+                let rows: Vec<(FrameKey, usize, RawTraceFrame)> = live
+                    .map(|(key, e)| (key.clone(), e.last_index, e.last_frame.clone()))
+                    .collect();
+                (end, Some(rows), 0)
+            } else {
+                // A key present in the window has an occurrence at some
+                // index at or above `start`, so its *global* last index is
+                // at or above `start` too: this count is an upper bound on
+                // the distinct keys the window can hold, and so the backward
+                // scan's stopping condition.
+                (end, None, live.count())
             }
-            let mut keyed: Vec<(FrameKey, usize)> = last.into_iter().collect();
-            keyed.sort_unstable();
-            let idxs: Vec<usize> = keyed.iter().map(|(_, idx)| *idx).collect();
-            let frames = inner.raw.frames_at(&idxs);
-            keyed
-                .into_iter()
-                .zip(frames)
-                .map(|((key, idx), (_, frame))| (key, idx, frame))
-                .collect()
+        };
+        let mut rows = match tip_rows {
+            Some(rows) => rows,
+            // A bounded window (paused / scrolled into history) has no
+            // maintained answer and must walk. Chunked, so the append mutex
+            // is taken per chunk and never across the walk — the
+            // whole-buffer lock-hold that starves `append` and every other
+            // command with it — and backward, so a snapshot over a long
+            // stopped capture stops at the suffix that holds every id
+            // instead of reading the capture out.
+            None => self.scan_last_by_key(start, end, candidates, &keep),
         };
         rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        let inner = self.lock_inner();
         rows.into_iter()
             .map(|(key, idx, frame)| {
                 let est = inner.per_key.get(&key).map(|e| &e.rate);
@@ -151,6 +152,64 @@ impl TraceStore {
                     count: est.map_or(0, |r| r.count),
                 }
             })
+            .collect()
+    }
+
+    /// The chunked backward walk behind [`Self::latest_in_window_where`]'s
+    /// bounded-window path: for each key `keep` accepts, its last
+    /// occurrence within `[start, end)`, materialised.
+    ///
+    /// Walks back a chunk at a time — the inner mutex is held per chunk,
+    /// never across the walk (see [`TraceStore::scan_chunk`]) — taking the
+    /// first occurrence it meets of each key, which going backward is the
+    /// last one in the window. Stops early once `candidates` distinct keys
+    /// have turned up: that bounds the keys the store has seen at or above
+    /// `start`, so nothing new can appear further back.
+    fn scan_last_by_key(
+        &self,
+        start: usize,
+        end: usize,
+        candidates: usize,
+        keep: &impl Fn(&FrameKey) -> bool,
+    ) -> Vec<(FrameKey, usize, RawTraceFrame)> {
+        let mut last: HashMap<FrameKey, usize> = HashMap::new();
+        let mut chunk_end = end;
+        while chunk_end > start && last.len() < candidates {
+            let chunk_start = chunk_end.saturating_sub(SCAN_CHUNK).max(start);
+            // The scan reports the indices it accepted; this collects the
+            // key read at each one, in the same order, so the two zip. Every
+            // stored frame carries a bus (`TraceStore::append` drops one
+            // that does not), so the `None` arm is not a filter.
+            let keys: RefCell<Vec<FrameKey>> = RefCell::new(Vec::new());
+            let idxs = self.scan_chunk(chunk_start, chunk_end, |f| {
+                let Some(bus) = f.bus_id.clone() else {
+                    return false;
+                };
+                let key: FrameKey = (bus, f.channel, f.id, f.extended);
+                if !keep(&key) {
+                    return false;
+                }
+                keys.borrow_mut().push(key);
+                true
+            });
+            for (idx, key) in idxs.into_iter().zip(keys.into_inner()).rev() {
+                last.entry(key).or_insert(idx);
+            }
+            chunk_end = chunk_start;
+        }
+        let mut keyed: Vec<(FrameKey, usize)> = last.into_iter().collect();
+        keyed.sort_unstable();
+        let idxs: Vec<usize> = keyed.iter().map(|(_, idx)| *idx).collect();
+        // Matched by index, not by position. The walk released the lock
+        // between chunks, so eviction may have front-trimmed a row out
+        // from under it (ADR 0002 DS-8) — `frames_at` then returns fewer
+        // frames than indices, and a positional pairing would hand every
+        // key after the gap the wrong frame. A row that has gone is
+        // dropped; a frame has exactly one key, so no index repeats here.
+        let mut frames: HashMap<usize, RawTraceFrame> = self.frames_at(&idxs).into_iter().collect();
+        keyed
+            .into_iter()
+            .filter_map(|(key, idx)| frames.remove(&idx).map(|frame| (key, idx, frame)))
             .collect()
     }
 
@@ -279,7 +338,7 @@ impl TraceStore {
         let floor = start.max(end.saturating_sub(MUX_SCAN_BOUND));
         let mut chunk_end = end;
         while chunk_end > floor && !wanted.is_empty() {
-            let chunk_start = chunk_end.saturating_sub(MUX_SCAN_CHUNK).max(floor);
+            let chunk_start = chunk_end.saturating_sub(SCAN_CHUNK).max(floor);
             let want = wanted.clone();
             let ext = extractor.clone();
             let hits = self.scan_chunk(chunk_start, chunk_end, move |f| {
@@ -354,6 +413,9 @@ impl TraceStore {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use super::*;
     use crate::trace_store::test_support::{dummy, dummy_on_bus, TEST_BUS};
     use cannet_core::CanFramePayload;
@@ -425,6 +487,88 @@ mod tests {
                 .map(|l| (l.index, l.frame.id))
                 .collect::<Vec<_>>(),
             vec![(3, 2)],
+        );
+    }
+
+    /// A window that spans several [`SCAN_CHUNK`]s, with one key whose
+    /// only occurrence is at the very start (so the walk cannot stop
+    /// early) and one that exists only past the window's end.
+    fn multi_chunk_store(n: usize) -> Arc<TraceStore> {
+        let store = Arc::new(TraceStore::new());
+        store.append(dummy(0, 7));
+        for _ in 1..n {
+            store.append(dummy(0, 1));
+        }
+        store.append(dummy(0, 9));
+        store
+    }
+
+    #[test]
+    fn latest_in_window_walks_a_multi_chunk_window_backwards() {
+        // The bounded-window path walks in chunks from the end. A key
+        // whose last in-window occurrence sits chunks back from that end
+        // must still be found, and a key that exists only past the end
+        // must not leak in.
+        let n = SCAN_CHUNK * 2 + 1_000;
+        let store = multi_chunk_store(n);
+        assert_eq!(
+            store
+                .latest_in_window_where(0, n, |_| true)
+                .iter()
+                .map(|l| (l.frame.id, l.index))
+                .collect::<Vec<_>>(),
+            vec![(1, n - 1), (7, 0)],
+        );
+    }
+
+    #[test]
+    fn a_bounded_window_scan_leaves_append_free_to_run() {
+        // The lock-hold this exists to prevent: the bounded-window
+        // snapshot used to clone and walk the whole window under the
+        // inner mutex, so over a long stopped capture every command —
+        // and the health sampler — queued behind one descriptor change.
+        // Chunked, appends land *during* the walk rather than after it.
+        let n = SCAN_CHUNK * 3;
+        let store = multi_chunk_store(n);
+
+        let started = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let landed = Arc::new(AtomicUsize::new(0));
+        let appender = {
+            let (store, started, done, landed) = (
+                Arc::clone(&store),
+                Arc::clone(&started),
+                Arc::clone(&done),
+                Arc::clone(&landed),
+            );
+            std::thread::spawn(move || {
+                while !started.load(Ordering::Relaxed) {
+                    std::thread::yield_now();
+                }
+                while !done.load(Ordering::Relaxed) {
+                    store.append(dummy(0, 1));
+                    // Only an append that *returned* before the walk
+                    // finished counts: one that blocked on the mutex for
+                    // the whole walk is exactly the starvation under test.
+                    if !done.load(Ordering::Relaxed) {
+                        landed.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            })
+        };
+
+        let signal = Arc::clone(&started);
+        let rows = store.latest_in_window_where(0, n, move |_| {
+            signal.store(true, Ordering::Relaxed);
+            true
+        });
+        done.store(true, Ordering::Relaxed);
+        appender.join().unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert!(
+            landed.load(Ordering::Relaxed) > 0,
+            "no append completed while the window scan was walking",
         );
     }
 

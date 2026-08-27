@@ -118,8 +118,14 @@ export interface TraceGrew {
   tail: TraceFrameRecord[];
 }
 
+/// The load-is-over event (`ipc.rs::LogFinished`). `total` is what the
+/// pump appended; `count` is the whole session buffer's length at the
+/// moment it stopped — the count an ended import's trace windows freeze
+/// at, carried on the event because the periodic `trace-grew` sampler is
+/// up to a tick behind and a window frozen at a stale count truncates
+/// the tail the pump had just appended.
 export type LogFinished =
-  | { status: "ok"; total: number }
+  | { status: "ok"; total: number; count: number }
   | { status: "error"; message: string };
 
 /// How far the trace load in flight has got (`load-progress`, mirrors

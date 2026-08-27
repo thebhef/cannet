@@ -74,12 +74,12 @@ export function useByIdView(
       diagCount("invoke.fetch_by_id_page"); // DIAG
       // While running, snapshot to the live tip: pass a past-the-end
       // `scanEnd` so the host clamps it to the buffer length and takes the
-      // O(keys) fast path. Bounding to the lagging `winEnd` (the frontend's
-      // throttled frame count) instead forces the host's non-chunked
-      // window scan — an O(buffer) pass holding the append mutex every
-      // refresh tick, which starved rx/tx as the buffer grew. The window
-      // bound only matters for a frozen paused/stopped snapshot, where it
-      // is scanned once per descriptor change, not on a live tick.
+      // O(keys) fast path off its maintained newest-per-key map. Bounding
+      // to the lagging `winEnd` (the frontend's throttled frame count)
+      // instead puts the host on its window walk every refresh tick — far
+      // more work than the map read, whatever it costs in lock time. The
+      // window bound only matters for a frozen paused/stopped snapshot,
+      // where it is walked once per descriptor change, not on a live tick.
       const scanEnd = running ? Number.MAX_SAFE_INTEGER : winEnd;
       const res = await invoke<ByIdPage>("fetch_by_id_page", {
         filter,

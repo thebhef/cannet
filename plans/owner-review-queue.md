@@ -79,6 +79,11 @@ their criterion-by-criterion verdicts to
       **Open:** `serverList.ts`'s two hooks carry the same launch race
       and need a ruling on what a malformed payload does — see that
       task's Blockers.
+- [ ] 80 — a stopped capture costs nothing: an import that reaches its
+      end freezes every trace element at the count the pump reports, and
+      the by-id / signal window snapshot walks a bounded window in
+      chunks instead of cloning it whole under the append mutex — see
+      [task 80](tasks/0080-stopped-capture-resample.md)'s status log
 
 ## Close-out chores
 

@@ -580,10 +580,19 @@ pub struct ByIdSnapshot {
 }
 
 /// Emitted when the log finishes (cleanly or with an error).
+///
+/// `total` is what this pump appended; `count` is the whole session
+/// buffer's length at the moment it stopped. They differ whenever the
+/// buffer already held frames (a second pump, a restored capture), and
+/// it is `count` — not `total` — that a view needs to freeze its window
+/// at the end of an import. Carrying it on the event is what makes that
+/// freeze exact: the periodic `trace-grew` sampler is up to a tick
+/// behind, and a window frozen at a stale count truncates the tail the
+/// pump had just appended.
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum LogFinished {
-    Ok { total: u64 },
+    Ok { total: u64, count: u64 },
     Error { message: String },
 }
 

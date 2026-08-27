@@ -1662,7 +1662,9 @@ pub(crate) async fn import_mdf(
                 } else {
                     // The frontend's load state ends on this event
                     // whichever contents were asked for.
-                    let _ = app_for_thread.emit("log-finished", LogFinished::Ok { total: 0 });
+                    let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
+                    let _ =
+                        app_for_thread.emit("log-finished", LogFinished::Ok { total: 0, count });
                     None
                 };
                 // Abandoned: the frames are being cleared right now, so
