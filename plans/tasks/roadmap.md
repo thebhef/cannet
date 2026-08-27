@@ -47,14 +47,17 @@ In order of work, first at the top. None started.
    owner's bench fault. One defect from three sides. **Ruled 2026-08-26:**
    error frames stay in the saved capture and coalesce in the frontend,
    so nothing is dropped at ingest. Carries two smaller findings — the
-   "Error-active" label and a dropped-frame counter — neither yet ruled.
+   "Error-active" label (ruled: `Connected` plus the ISO name on hover)
+   and a dropped-frame counter (ruled: build it here).
    Widened 2026-08-26 to carry all the hardware-truth work as one task
    (split into PRs as convenient, all before next release): the
    `Connected` relabel, the rx-loss counter reading the per-vendor
    status the ingest discards, and the adapter-identity fields shipped
    across from the sidecar (queue 3.52). Placed first: two of its
    findings are the owner's own observations from hardware, and it is
-   the only group of findings sourced from real use.
+   the only group of findings sourced from real use. **§§ 1-2 landed
+   2026-08-27** (`task-121-trace-truth`); §§ 3-4 — the rx-loss counter
+   and the adapter-identity fields — are what remains.
 3. [Task 125 — The Suite Is Green](0125-the-suite-is-green.md)
    — `PlotPanel.dom.test.tsx`'s panel-local-state test fails in two of
    three full runs (`expected 1 to be +0`, one extra render), so the

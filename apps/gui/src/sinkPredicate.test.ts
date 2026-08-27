@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSinkPredicate } from "./sinkPredicate";
+import { buildSinkPredicate, withoutErrorFrames } from "./sinkPredicate";
 import type { ProjectElement } from "./types";
 
 function lookup(elements: ProjectElement[]) {
@@ -115,6 +115,33 @@ describe("buildSinkPredicate", () => {
     };
     expect(buildSinkPredicate(sink, lookup([sink]))).toEqual({
       bus: "deleted-bus",
+    });
+  });
+});
+
+describe("withoutErrorFrames", () => {
+  it("is the whole predicate when the panel had none", () => {
+    // The `sources=["*"]` common case: no constraint, so excluding the
+    // error frames is the only thing the host is asked to do.
+    expect(withoutErrorFrames(null)).toEqual({ error_frame: false });
+  });
+
+  it("ANDs onto a panel predicate without nesting it", () => {
+    // The host resolves its by-id candidate set over the tree it is
+    // handed, so the narrowable leaves stay at the top level.
+    expect(withoutErrorFrames({ bus: "b1" })).toEqual({
+      all: [{ bus: "b1" }, { error_frame: false }],
+    });
+    expect(withoutErrorFrames({ all: [{ bus: "b1" }, { id_list: [1] }] })).toEqual({
+      all: [{ bus: "b1" }, { id_list: [1] }, { error_frame: false }],
+    });
+  });
+
+  it("does not disturb an any-predicate's meaning", () => {
+    // An `any` is one leaf as far as the AND is concerned; flattening
+    // it would turn "b1 or b2" into "b1 and b2".
+    expect(withoutErrorFrames({ any: [{ bus: "b1" }, { bus: "b2" }] })).toEqual({
+      all: [{ any: [{ bus: "b1" }, { bus: "b2" }] }, { error_frame: false }],
     });
   });
 });

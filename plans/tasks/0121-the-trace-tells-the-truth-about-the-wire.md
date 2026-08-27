@@ -131,3 +131,181 @@ owner follows up independently).
    (ruled: ship the identity data) and 3.53 (ruled: the rx-loss counter
    is built here) reaches a terminal state**, recorded in this file.
 6. **Full CI green** — seven jobs, each named with its command.
+
+## Status log
+
+### 2026-08-27 — §§ 1-2, the trace tells the truth about transmit and error frames
+
+Branch `task-121-trace-truth` off `task-126-verdicts-audit` (94450007).
+Scope: § 1 (3.43, 3.37, 3.39) and § 2 (3.42). §§ 3-4 are a later phase
+and were not started.
+
+**3.43 — a transmit row is a local echo.** The order was the whole
+defect, so the order is the fix. `build_and_confirm` is gone, split into
+`build_frame` (compose) and `append_tx_row` (append, after the answer).
+Both transmit paths now attempt the wire *first* and append the row with
+the outcome in hand — the single-frame `transmit_frame_inner` per frame,
+the scheduler's tick per batch after `transmit_batch` returns.
+
+A row whose frame reached no wire is recorded in `UndeliveredTx` and
+reaches the view as `TraceFrameRecord::tx_delivery`, decorating the row
+the way the ingest-time violation index already does. The direction cell
+reads `Tx ✗` and the row says why on hover.
+
+- *Why a side table and not a field on the frame.* ADR 0039's rejected
+  alternative — "mark the tx-confirm row instead of parking" — objected
+  that the flag would be something "every reader, exporter and file
+  format then has to understand". Host-side state read at fetch time has
+  none of that: the stored `RawTraceFrame` is unchanged, the spill format
+  is unchanged, and a saved capture is byte-for-byte what it was. The
+  ADR's bullet now records that boundary; the park still stands for the
+  periodic-on-a-gone-route case it was written about.
+- *Why it is bounded.* The marks are inclusive index **runs**, not one
+  entry per row. The case that produces them in bulk is a bus that is
+  down, which is one run however long it lasts; the realistic driver of
+  growth is a bus that flaps, and the run list is capped at 4,096 with
+  the oldest dropped — the windowed-ring answer the store gives its own
+  rows. Pinned by `undelivered_marks_do_not_grow_without_bound`
+  (100,000 marks → 1 run).
+- *What the mark means.* The **enqueue** answer: no route, or a session
+  that refused the frame. A frame the session accepted and the far end
+  then rejected is 3.37's signal, not this one — it arrives
+  asynchronously and belongs to no single row.
+
+**3.37 — `TX_REJECTED` is received and discarded.** `cannet-client`
+gained `rejections::PerFrameErrors`, shaped like `ControllerStates`: a
+cheap-clone handle the session worker writes and anything holding the
+session reads. The rx loop still logs the `tracing::warn!`, and now also
+records the code and the peer's message. `RemoteSession` carries the
+handle; `bus_health`'s existing 1 Hz poll reads every session's tally and
+emits at most one `transmit` system message per session per poll, with
+the delta, the session total and the peer's own words.
+
+- *Why a tally and not a stream.* The owner's bench regime produces
+  thousands a second. A message each would be the flood rather than the
+  report of it; the code space is fixed and each code holds one message,
+  so nothing grows with session length.
+- *A bug the tests caught before the code shipped.*
+  `a_reconnect_on_the_same_address_is_not_a_negative_delta` failed on the
+  first run: a reconnect restarts the peer's count, and
+  `saturating_sub` reported the fresh session's first few thousand
+  refusals as zero. A fallen total is now read as a new session and its
+  whole count is reported.
+
+**3.39 — error frames reach the trace one row each.** The ruling is that
+nothing is dropped at ingest and the coalescing is a view concern, and
+that is what landed. `session.rs` is untouched: every error frame is
+still appended, and `bus_health`'s coalescer still folds the run into the
+one `busError` timeline event (ADR 0035) that the trace already draws.
+
+What was missing was the other half — the individual rows. The
+chronological trace gained a **Collapse Errors** toggle (view-local,
+persisted with the panel's other view state, default on) that ANDs
+`{"error_frame": false}` onto the panel's fetch predicate, so the trace
+shows the summary event where the run was.
+
+- *Where the collapse lives.* In the view, per the ruling. The predicate
+  is composed frontend-side (`withoutErrorFrames`) and the paging is the
+  host-side filtered path the panel already uses for a filter element —
+  no new paging machinery, and the row elision is not re-derived in JS,
+  which the GUI architecture rules forbid.
+- *Why the predicate is not id-narrowable.* An error frame's arbitration
+  id says nothing about it, so `resolve_candidates` returns `None` for
+  the leaf and the filter index (ADR 0002 DS-3) visits the window. That
+  is still `O(delta)` to maintain and `O(log n + page)` to serve — the
+  index is incremental, so this is not a per-page scan.
+- *Why it is gated on the host's error count.* The collapse engages only
+  once a bus has reported an error frame (`anyBusHasErrors` over the
+  bus-health map the panel already subscribes to). A clean capture keeps
+  the plain unfiltered window and its live-tail overlay rather than
+  paying for a filtered view of a category of row that never occurs.
+- *Pinned both ways*, because the ruling is precisely that they differ:
+  `the_capture_keeps_every_error_frame_the_view_collapses` appends 5,000
+  error frames interleaved with data frames, asserts the store holds all
+  10,000 and that the predicate holds back exactly the 5,000; and
+  `brings every row back when the collapse is switched off` asserts the
+  panel returns to the unfiltered window.
+
+**3.42 — "Error-active" does not read as healthy.** The panel's healthy
+state reads `Connected`, with `Error-active — ISO 11898-1's name for a
+controller in normal operation` on hover. Only the healthy state gets a
+tooltip: the other three already read as what they are, and
+`Bus-off (ISO 11898-1: Bus-off)` would be noise. The launcher's concern
+filter is keyed on tone, not on the words, so it is unaffected.
+
+**Terminal states.** 3.37, 3.39, 3.42, 3.43 — done. 3.52 and 3.53 remain
+open, in §§ 4 and 3, for the later phase.
+
+**Tests.** 963 Rust host tests (10 new), `cannet-client` 5 new,
+frontend 3,083 (16 new).
+
+**CI, run locally in full** — seven jobs, each with the command run.
+
+| Job | Command | Result |
+|---|---|---|
+| comment-references | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | pass (no match) |
+| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+| rust | `cargo test --workspace` then `cargo clippy --workspace --all-targets -- -D warnings` | pass — 52 suites ok, 0 failed; clippy clean |
+| mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass — 30 frames, 3 signals, 3 events, 1 attachment |
+| frontend | `pnpm --dir apps/gui test` then `pnpm --dir apps/gui build` | pass — 225 files, 3,083 tests |
+| python | `uv sync --extra dev --frozen`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy`, `uv run pytest` | pass — 200 tests |
+| sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass — freeze + smoke ok |
+
+Two clippy lints and one rustfmt pass were fixed on the way
+(`map_unwrap_or`, `format_push_string`, `type_complexity`); nothing else
+in the workspace was red at the branch point.
+
+**Render-tier capture**, three 60 s `scrub` runs on the release build of
+this commit against `ev-zonal`, reported not judged. Load sanity first:
+`ids_measured` 174, rx 1,609-1,611 f/s, tx 1,614-1,616 f/s, `interact`
+performed 266 / missing 0 on every run — a real load, not a silent bus.
+
+| | run1 | run2 | run3 |
+|---|---|---|---|
+| `lag_ms` max | 13.70 | 9.90 | 3.90 |
+| `longtask_ms_per_s` p95 | 0.0 | 0.0 | 0.0 |
+| `jank_fraction` | 0.0 | 0.0 | 0.0 |
+| `mem.webview_mb` max | 605.9 | 608.3 | 603.7 |
+| `mem.host_mb` max | 59.4 | 59.0 | 60.2 |
+| `mem.tree_mb` max | 724.6 | 726.6 | 722.5 |
+| `jsheap_mb` peak | 90.5 | 95.3 | 81.7 |
+| `flush_ms` max | 10.52 | 10.36 | 11.03 |
+| `rx_gap` worst p95 ratio | 1.1930 | 1.1605 | 1.1606 |
+| `rx_gap` worst short frac | 0.002832 | 0.003001 | 0.002834 |
+
+`lag_ms` max spans 3.9-13.7 within this one binary, which is the spread
+finding 3.46 is about; it is not over 10 ms on every run. The webview
+process sits at 604-608 MB, the same level the seven most recent stored
+reports show on builds before this branch (587.6-609.9), so it is the
+chain's standing reading rather than anything this phase moved. No
+baseline was promoted and no limit widened.
+
+Reports: `docs/performance-measurements/frontend/2026-08-27-3bf1a147-trace-truth{,-run2,-run3}.json`.
+The `3bf1a147` in those names is the commit the measured release binary
+was built from; the commit that carries them adds only the reports and
+this log entry on top of it, so the code is the same tree.
+
+## Blockers / side effects
+
+### 2026-08-27 — from the §§ 1-2 phase
+
+- **The Collapse Errors default is a behaviour change nobody has seen on
+  hardware.** On by default, so the first fault an operator meets after
+  this lands shows one summary row where it used to show a wall of `Bus
+  error` rows. That is the ruling's stated outcome, and the toggle is one
+  click away, but it also switches the panel from the unfiltered window
+  (with its live-tail overlay) to the host's filtered paging the moment
+  the first error frame arrives. That switch has been exercised in tests
+  and against the virtual bus, **not against a real fault at 5,200
+  frames a second**. Worth a look on the PEAK bench before release.
+- **The undelivered-transmit mark is the enqueue answer, not a wire
+  confirmation.** A frame the session accepted is unmarked even if the
+  far end refuses it a moment later. That is deliberate — the rejection
+  belongs to no single row and is § 1's separate coalesced signal — but
+  it means a row reading plain `Tx` is "we handed it over", not "a bus
+  carried it". If the owner wants per-row confirmation, the wire would
+  have to correlate a rejection back to a frame, which it currently
+  cannot.
+- **§ 3's rx-loss counter and § 4's adapter identity are untouched.**
+  Left for the later phase as instructed; nothing in this phase forecloses
+  either.

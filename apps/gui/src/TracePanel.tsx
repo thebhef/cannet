@@ -19,7 +19,8 @@ import { buildEventMerge } from "./eventMerge";
 import { useFilteredTrace } from "./useFilteredTrace";
 import { useByIdView } from "./useByIdView";
 import { useProjectContext } from "./projectContext";
-import { buildSinkPredicate } from "./sinkPredicate";
+import { buildSinkPredicate, withoutErrorFrames } from "./sinkPredicate";
+import { anyBusHasErrors, useBusHealth } from "./busHealth";
 import { buildColorResolver } from "./colorMap";
 import { SourcesContextMenu } from "./SourcesPicker";
 import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
@@ -61,6 +62,7 @@ interface TraceConfig {
   autoScroll?: unknown;
   columns?: unknown;
   showEvents?: unknown;
+  collapseErrorFrames?: unknown;
   expanded?: unknown;
 }
 
@@ -81,6 +83,12 @@ const autoScrollFromConfig = (c: TraceConfig | undefined): boolean =>
   typeof c?.autoScroll === "boolean" ? c.autoScroll : hostSettings().trace_auto_scroll;
 const showEventsFromConfig = (c: TraceConfig | undefined): boolean =>
   typeof c?.showEvents === "boolean" ? c.showEvents : hostSettings().trace_show_events;
+/// Collapsing a fault's error frames is on unless this panel says
+/// otherwise: a bench fault produces them at bus frame rate — the
+/// owner's produced about 5,200 a second — and a trace that draws one
+/// row each has buried everything else on the bus.
+const collapseErrorFramesFromConfig = (c: TraceConfig | undefined): boolean =>
+  typeof c?.collapseErrorFrames === "boolean" ? c.collapseErrorFrames : true;
 
 /// A frame row's right-click menu: just the create-event action about
 /// that message (ADR 0056). Panel-scoped filtering (the sources
@@ -161,6 +169,13 @@ export function TracePanel(props: IDockviewPanelProps) {
   // View-local: whether timeline events (ADR 0035) interleave into this
   // chronological trace. Persisted with the rest of the config.
   const [showEvents, setShowEvents] = useState(() => showEventsFromConfig(savedConfig));
+  // View-local: whether a run of bus error frames reads as the host's
+  // one coalesced `busError` event row instead of one row per frame.
+  // The frames are in the capture either way — this is a view
+  // predicate, and turning it off brings every row straight back.
+  const [collapseErrorFrames, setCollapseErrorFrames] = useState(() =>
+    collapseErrorFramesFromConfig(savedConfig),
+  );
   const [columns, setColumns] = useState<ColumnState[]>(() => columnsFromParams(savedConfig?.columns));
   const handleColumnResize = useCallback(
     (key: ColumnKey, width: number) => setColumns((cs) => resizeColumn(cs, key, width)),
@@ -200,6 +215,7 @@ export function TracePanel(props: IDockviewPanelProps) {
     setMode(modeFromConfig(config));
     setAutoScroll(autoScrollFromConfig(config));
     setShowEvents(showEventsFromConfig(config));
+    setCollapseErrorFrames(collapseErrorFramesFromConfig(config));
     setColumns(columnsFromParams(config.columns));
     setExpanded(expandedFromConfig(config.expanded));
   });
@@ -208,16 +224,32 @@ export function TracePanel(props: IDockviewPanelProps) {
   // column layout, events toggle, the open by-id rows) onto the element
   // and into the dockview params — see `useElementPanel`'s `persist`.
   useEffect(() => {
-    persist({ mode, autoScroll, columns, showEvents, expanded: [...expanded] });
-  }, [persist, mode, autoScroll, columns, showEvents, expanded]);
+    persist({
+      mode,
+      autoScroll,
+      columns,
+      showEvents,
+      collapseErrorFrames,
+      expanded: [...expanded],
+    });
+  }, [persist, mode, autoScroll, columns, showEvents, collapseErrorFrames, expanded]);
 
   // The fetch predicate the host applies before returning rows. Built
   // from the element's `sources` (and any upstream filter's predicate).
   // `null` means "no constraint" — the common case for `sources=["*"]`.
+  // Whether this capture has any error frames to collapse. Asked of
+  // the host's bus-health map, which already counts them per bus — a
+  // clean capture keeps the plain unfiltered window and its live tail
+  // rather than paying for a filtered view of a category of row that
+  // never occurs.
+  const health = useBusHealth();
+  const collapsing = collapseErrorFrames && anyBusHasErrors(health);
   const fetchFilter = useMemo(() => {
-    if (!element) return null;
-    return buildSinkPredicate(element, (id) => registry.get(id)?.element);
-  }, [element, registry]);
+    const sinkFilter = element
+      ? buildSinkPredicate(element, (id) => registry.get(id)?.element)
+      : null;
+    return collapsing ? withoutErrorFrames(sinkFilter) : sinkFilter;
+  }, [element, registry, collapsing]);
   const { currentSources, availableFilters, handleSourcesChange } = useElementSources(
     registry,
     elementId,
@@ -542,6 +574,14 @@ export function TracePanel(props: IDockviewPanelProps) {
             title="interleave timeline events"
             pressed={showEvents}
             onPress={() => setShowEvents((v) => !v)}
+          />
+        )}
+        {mode === "chronological" && (
+          <ChipButton
+            label="Collapse Errors"
+            title="show a run of bus error frames as the one summary event the host coalesced it into; the capture keeps every frame"
+            pressed={collapseErrorFrames}
+            onPress={() => setCollapseErrorFrames((v) => !v)}
           />
         )}
         {mode === "chronological" && showEvents && (

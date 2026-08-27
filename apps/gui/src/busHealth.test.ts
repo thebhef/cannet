@@ -5,7 +5,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { busHealthConcerns, busHealthRows, type BusHealthInputs } from "./busHealth";
+import {
+  anyBusHasErrors,
+  busHealthConcerns,
+  busHealthRows,
+  type BusHealthInputs,
+} from "./busHealth";
 import type { Bus, BusConnStates, BusHealthMap, InterfaceBinding } from "./types";
 
 const buses: Bus[] = [
@@ -69,7 +74,10 @@ describe("busHealthRows", () => {
 
   it("reads a healthy bus's state, load, counters and adapter", () => {
     const r = row("b1");
-    expect(r.stateText).toBe("Error-active");
+    // A healthy controller reads as connected. "Error-active" is the
+    // ISO 11898-1 name for exactly this state, and it reads to anyone
+    // who is not holding the standard as though a fault were running.
+    expect(r.stateText).toBe("Connected");
     expect(r.tone).toBe("active");
     expect(r.loadPercent).toBe(34);
     expect(r.tec).toBe(0);
@@ -78,6 +86,23 @@ describe("busHealthRows", () => {
     // The applied configuration is the project panel's own formatter's
     // output, so one bitrate has exactly one spelling in the app.
     expect(r.applied).toBe("500k · FD data 2M");
+  });
+
+  it("keeps the ISO name for a healthy controller in the tooltip", () => {
+    // The relabel drops a word a CAN engineer looks for, so the
+    // standard's own name has to stay reachable — the cell says
+    // Connected, the hover says which ISO state that is.
+    const r = row("b1");
+    expect(r.stateTitle).toContain("Error-active");
+    expect(r.stateTitle).toContain("ISO 11898-1");
+  });
+
+  it("gives a state that already reads as trouble no second spelling", () => {
+    // The control for the test above: only the healthy state was
+    // misread, so only it gets a tooltip. A bus-off row saying
+    // "Bus-off (ISO 11898-1: Bus-off)" would be noise.
+    expect(row("b2").stateTitle).toBeNull();
+    expect(row("b3").stateTitle).toBeNull();
   });
 
   it("separates an error-passive bus and carries its counters", () => {
@@ -246,5 +271,29 @@ describe("busHealthConcerns", () => {
       }),
     );
     expect(concerns).toEqual([{ bus: "Powertrain", state: "bus-off", busOff: true }]);
+  });
+});
+
+describe("anyBusHasErrors", () => {
+  it("says no for an empty map and for a capture with clean buses", () => {
+    // The gate the trace view's error-frame collapse asks before it
+    // engages. A clean capture must not be routed through the host's
+    // filtered paging to exclude rows that never occur.
+    expect(anyBusHasErrors({})).toBe(false);
+    expect(
+      anyBusHasErrors({
+        b1: { errorCount: 0, errorRate: 0 },
+        b2: { errorCount: 0, errorRate: 0 },
+      }),
+    ).toBe(false);
+  });
+
+  it("says yes on the first error frame, on any bus", () => {
+    expect(
+      anyBusHasErrors({
+        b1: { errorCount: 0, errorRate: 0 },
+        b2: { errorCount: 1, errorRate: 0 },
+      }),
+    ).toBe(true);
   });
 });

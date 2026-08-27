@@ -16,8 +16,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_client::{
-    clock::SessionClock, controller::ControllerStates, ConnectionError, PreSubscribeConfig,
-    SessionHandle, SessionTransmitter, Subscription,
+    clock::SessionClock, controller::ControllerStates, rejections::PerFrameErrors, ConnectionError,
+    PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription,
 };
 use cannet_core::CanFrameSource;
 
@@ -75,6 +75,13 @@ pub(crate) struct RemoteSession {
     /// option rather than an empty map. Polled by
     /// [`crate::bus_health`] the same way the clock status is.
     pub(crate) controllers: Option<ControllerStates>,
+    /// What this peer said about frames it would not carry — the
+    /// per-frame error codes, tallied by code. `None` for the
+    /// in-process backend, which has no peer to refuse anything.
+    /// Polled by [`crate::bus_health`] alongside the controller states,
+    /// and reported coalesced: a peer refusing at bus rate produces
+    /// thousands a second.
+    pub(crate) rejections: Option<PerFrameErrors>,
 }
 
 /// Backend-specific transmit machinery for a [`RemoteSession`].
@@ -513,6 +520,7 @@ pub(crate) async fn connect_remote_server(
     let (handle, receiver, transmitter) = source.into_parts();
     let clock = receiver.clock().clone();
     let controllers = receiver.controllers().clone();
+    let rejections = receiver.rejections().clone();
     let stop = Arc::new(AtomicBool::new(false));
 
     // Build the channel-to-bus mapping from the per-server
@@ -550,6 +558,7 @@ pub(crate) async fn connect_remote_server(
             stop: Arc::clone(&stop),
             clock: Some(clock),
             controllers: Some(controllers),
+            rejections: Some(rejections),
         },
     )
     .inspect_err(|e| fail_subscribed(&app, e))?;
@@ -705,6 +714,7 @@ fn connect_local_vbus(
             // measure and no controller to report a state.
             clock: None,
             controllers: None,
+            rejections: None,
         },
     )?;
 

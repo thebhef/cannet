@@ -111,7 +111,11 @@ function Row({ row }: { row: BusHealthRow }) {
     <tr>
       <td className="bus-health-bus">{row.name}</td>
       <td>
-        <span className="bus-health-state" data-tone={row.tone}>
+        <span
+          className="bus-health-state"
+          data-tone={row.tone}
+          title={row.stateTitle ?? undefined}
+        >
           <span className="bus-health-dot" />
           {row.stateText}
         </span>

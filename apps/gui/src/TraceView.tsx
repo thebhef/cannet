@@ -61,7 +61,10 @@ import {
   ERROR_FRAME_ROW_CLASS,
   ERROR_FRAME_TITLE,
   TraceTimeCell,
+  UNDELIVERED_TX_ROW_CLASS,
+  UNDELIVERED_TX_TITLE,
   cellContent,
+  isUndeliveredTx,
 } from "./traceTable";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import { useEditorFocusRecovery, useGridview } from "./useGridview";
@@ -1141,6 +1144,7 @@ const Row = memo(function Row({
   }
   const rowId = frame ? frameRowId(frame) : null;
   const isErrorFrame = frame?.kind.kind === "error";
+  const undeliveredTx = isUndeliveredTx(frame);
   // The row is the disclosure control (matching ByIdTable's settled
   // call): a row with no decode has nothing to open, so it reports no
   // expanded state at all rather than a permanent `false`.
@@ -1162,15 +1166,19 @@ const Row = memo(function Row({
       }
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
         frame?.violation ? " trace-row-violation" : ""
-      }${isErrorFrame ? ` ${ERROR_FRAME_ROW_CLASS}` : ""}${selected ? " selected" : ""}${
+      }${isErrorFrame ? ` ${ERROR_FRAME_ROW_CLASS}` : ""}${
+        undeliveredTx ? ` ${UNDELIVERED_TX_ROW_CLASS}` : ""
+      }${selected ? " selected" : ""}${
         subject ? ` ${SUBJECT_ROW_CLASS}` : ""
       }`}
       title={
         frame?.violation
           ? `calculated-field check failed: ${frame.violation}`
-          : isErrorFrame
-            ? ERROR_FRAME_TITLE
-            : undefined
+          : undeliveredTx
+            ? UNDELIVERED_TX_TITLE
+            : isErrorFrame
+              ? ERROR_FRAME_TITLE
+              : undefined
       }
       style={{ position: "absolute", top, left: 0, right: 0, height }}
       onClick={(e) => {

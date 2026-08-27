@@ -64,6 +64,7 @@
 
 pub mod clock;
 pub mod controller;
+pub mod rejections;
 pub mod tls;
 
 use std::sync::mpsc;
@@ -627,6 +628,7 @@ pub fn connect_and_subscribe(
                 subscriptions: ready.resolved,
                 clock: ready.clock,
                 controllers: ready.controllers,
+                rejections: ready.rejections,
             },
             handle: SessionHandle {
                 shutdown_tx: Some(shutdown_tx),
@@ -659,6 +661,9 @@ struct SessionReady {
     /// that has not reported yet -- which is not the same as healthy, so
     /// a reader gets `None` rather than "error-active".
     controllers: ControllerStates,
+    /// Per-frame server errors, tallied by the worker as `Error`
+    /// envelopes with a per-frame code arrive.
+    rejections: rejections::PerFrameErrors,
 }
 
 /// The combined receive + shutdown handle returned by
@@ -701,6 +706,13 @@ impl RemoteCanFrameSource {
         self.receiver.controllers()
     }
 
+    /// Per-frame errors the peer reported. See
+    /// [`FrameReceiver::rejections`].
+    #[must_use]
+    pub fn rejections(&self) -> &rejections::PerFrameErrors {
+        self.receiver.rejections()
+    }
+
     /// Split into the shutdown handle, the receive half, and the
     /// transmit half. Drop the [`SessionHandle`] to disconnect; the
     /// [`FrameReceiver`] will observe end-of-stream on its next
@@ -737,6 +749,7 @@ pub struct FrameReceiver {
     subscriptions: Vec<ResolvedSubscription>,
     clock: SessionClock,
     controllers: ControllerStates,
+    rejections: rejections::PerFrameErrors,
 }
 
 impl FrameReceiver {
@@ -784,6 +797,20 @@ impl FrameReceiver {
     #[must_use]
     pub fn controllers(&self) -> &ControllerStates {
         &self.controllers
+    }
+
+    /// What the peer said about frames it would not carry — the
+    /// per-frame error codes, tallied by code (see
+    /// [`crate::rejections`]).
+    ///
+    /// Read-only and non-blocking, like [`Self::controllers`]. These do
+    /// not end the session and are not frames, so they have nowhere
+    /// else to go; before this they were logged to `tracing` and
+    /// discarded, which is how a rejected transmit could look
+    /// identical to one the bus carried.
+    #[must_use]
+    pub fn rejections(&self) -> &rejections::PerFrameErrors {
+        &self.rejections
     }
 }
 
@@ -1114,6 +1141,9 @@ async fn run_session(
     // Filled in by the `InterfaceState` arm below and read through the
     // session handle; the clone handed to the caller shares this map.
     let controllers = ControllerStates::new();
+    // Same shape, same reason: written by the `Error` arm below, read
+    // through the session handle by whatever reports it.
+    let rejections = rejections::PerFrameErrors::new();
     let mut slew = OffsetSlew::default();
     let mut clock_samples: Vec<ClockSample> = Vec::with_capacity(CLOCK_PROBE_COUNT);
     let mut probes_sent = 0usize;
@@ -1141,6 +1171,7 @@ async fn run_session(
                 resolved: resolved.clone(),
                 clock: clock.clone(),
                 controllers: controllers.clone(),
+                rejections: rejections.clone(),
             }));
         }
         ready_sent = true;
@@ -1252,6 +1283,7 @@ async fn run_session(
                                         resolved: resolved.clone(),
                                         clock: clock.clone(),
                                         controllers: controllers.clone(),
+                                        rejections: rejections.clone(),
                                     }));
                                 }
                                 ready_sent = true;
@@ -1287,6 +1319,12 @@ async fn run_session(
                                 "server reported per-frame error: {}",
                                 err.message,
                             );
+                            // …and, unlike the log line, somewhere a
+                            // reader can reach. A peer refusing
+                            // transmits at bus rate produces thousands
+                            // of these a second, so this is a tally,
+                            // not a stream.
+                            rejections.record(err.code, &err.message);
                             continue;
                         }
                         let _ = frame_tx.send(Err(ConnectionError::Server {

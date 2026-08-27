@@ -66,11 +66,22 @@ export function useBusHealth(): BusHealthMap {
 /// controller that took itself off the wire and comes back on its own,
 /// and this one comes back when someone plugs the cable in.
 const CONTROLLER_STATE_TEXT: Record<string, string> = {
-  active: "Error-active",
+  active: "Connected",
   warning: "Error-warning",
   passive: "Error-passive",
   busOff: "Bus-off",
   unavailable: "Adapter unavailable",
+};
+
+/// The hover text for a state whose displayed name is not the
+/// standard's. Only the healthy one qualifies: `Error-active` is ISO
+/// 11898-1's name for a controller in normal operation, and it is the
+/// one state whose own name reads as the opposite of what it means —
+/// the other three read as degrees of trouble, which is what they are.
+/// The standard's name is what a CAN engineer looks for, so it survives
+/// here rather than being dropped.
+const CONTROLLER_STATE_TITLE: Record<string, string> = {
+  active: "Error-active — ISO 11898-1's name for a controller in normal operation",
 };
 
 /// The indicator style each controller state paints with. Absent from
@@ -94,9 +105,12 @@ export interface BusHealthRow {
   busId: string;
   /// The project's name for the bus.
   name: string;
-  /// `Error-active` / `Error-warning` / `Error-passive` / `Bus-off` /
+  /// `Connected` / `Error-warning` / `Error-passive` / `Bus-off` /
   /// `Adapter unavailable` / `Not connected`.
   stateText: string;
+  /// Hover text for the state cell, or `null` where the displayed name
+  /// is already the standard's and a tooltip would only repeat it.
+  stateTitle: string | null;
   /// The style key the row's indicator paints with.
   tone: "active" | "warning" | "passive" | "busoff" | "unavailable" | "off";
   /// Percentage of the wire in use, or `null` where it cannot be known.
@@ -162,6 +176,7 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
         : connected
           ? "Connected"
           : "Not connected",
+      stateTitle: controller ? (CONTROLLER_STATE_TITLE[controller.state] ?? null) : null,
       tone: controller
         ? (CONTROLLER_STATE_TONE[controller.state] ?? "active")
         : connected
@@ -184,6 +199,18 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
       applied: connected ? describeAppliedConfig(applied) : null,
     };
   });
+}
+
+/// Whether any bus has reported an error frame this capture.
+///
+/// The trace view's error-frame collapse asks this before it engages:
+/// a capture with no error frames has nothing to collapse, and routing
+/// its trace through the host's filtered paging to exclude a category
+/// of row that never occurs would buy nothing. A fault switches it on
+/// the moment the first error frame lands, which is when the rows it
+/// hides start arriving.
+export function anyBusHasErrors(health: BusHealthMap): boolean {
+  return Object.values(health).some((r) => (r?.errorCount ?? 0) > 0);
 }
 
 /// The buses the status-bar launcher reports on: every one whose

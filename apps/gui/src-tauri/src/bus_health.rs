@@ -23,6 +23,12 @@
 //!   adapter fills the trace with frames no wire carried.
 //! - **Bus load.** Computed where the bitrate is known and reported as
 //!   absent where it is not; see [`load_percent`].
+//! - **Per-frame rejections.** What the peer said about frames it would
+//!   not carry (`TX_REJECTED` and its two siblings). The session tallies
+//!   them by code; this polls the tally and reports the movement as one
+//!   system message per session per poll, because a peer refusing at bus
+//!   rate produces thousands a second and a message each would be the
+//!   flood rather than the report of it. See [`rejection_reports`].
 //!
 //! The frontend joins these rows against the project's buses, which it
 //! owns: a bus the host has nothing to say about is absent from the map
@@ -181,6 +187,86 @@ pub(crate) fn runs_as_events(runs: &[ErrorRun]) -> Vec<Note> {
             unknown_block_lines: Vec::new(),
         })
         .collect()
+}
+
+/// One coalesced report of what a peer refused since the last poll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RejectionReport {
+    /// The session's address, so a reader knows which peer refused.
+    pub(crate) address: String,
+    /// How many arrived since the previous report.
+    pub(crate) since_last: u64,
+    /// How many this session has seen in total.
+    pub(crate) total: u64,
+    /// The codes and the newest message each carried, already worded.
+    pub(crate) detail: String,
+}
+
+impl RejectionReport {
+    /// The system message this report reads as.
+    pub(crate) fn message(&self) -> String {
+        format!(
+            "{address}: {detail} — {since_last} since the last report, {total} this session",
+            address = self.address,
+            detail = self.detail,
+            since_last = self.since_last,
+            total = self.total,
+        )
+    }
+}
+
+/// Coalesce each session's per-frame-error tally into at most one
+/// report, and remember what has been reported.
+///
+/// `reported` is the caller's running record of each session's last
+/// reported total; it is updated in place, and sessions that have gone
+/// are forgotten so it stays bounded by the number of open sessions
+/// rather than by how many have ever been opened. A session whose total
+/// has not moved produces nothing — silence means the peer is carrying
+/// what it is given, which is the case that must not generate traffic.
+pub(crate) fn rejection_reports(
+    current: &BTreeMap<String, Vec<cannet_client::rejections::RejectionTally>>,
+    reported: &mut BTreeMap<String, u64>,
+) -> Vec<RejectionReport> {
+    reported.retain(|address, _| current.contains_key(address));
+    let mut out = Vec::new();
+    for (address, tallies) in current {
+        let total: u64 = tallies.iter().map(|t| t.count).sum();
+        let last = reported.get(address).copied().unwrap_or(0);
+        // A reconnect restarts the peer's count, so a total that fell
+        // is a new session on the same address and the whole of it is
+        // new — not a negative delta, and not something to sit on until
+        // the fresh session passes the old one's tally.
+        let since_last = if total < last { total } else { total - last };
+        reported.insert(address.clone(), total);
+        if since_last == 0 {
+            continue;
+        }
+        out.push(RejectionReport {
+            address: address.clone(),
+            since_last,
+            total,
+            detail: describe_tallies(tallies),
+        });
+    }
+    out
+}
+
+/// The codes a session reported, worded for a reader: each code named
+/// as it means rather than as the proto spells it, with its count and
+/// the newest message the peer sent with it.
+fn describe_tallies(tallies: &[cannet_client::rejections::RejectionTally]) -> String {
+    tallies
+        .iter()
+        .map(|t| {
+            if t.last_message.is_empty() {
+                format!("{} ×{}", t.code.as_str(), t.count)
+            } else {
+                format!("{} ×{} ({})", t.code.as_str(), t.count, t.last_message)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn label_for(run: &ErrorRun) -> String {
@@ -467,8 +553,16 @@ pub(crate) fn spawn_bus_health_emitter(app: AppHandle) {
         let mut interval = tokio::time::interval(BUS_HEALTH_POLL);
         let mut published: Vec<Note> = Vec::new();
         let mut published_rows: BTreeMap<String, BusHealthRecord> = BTreeMap::new();
+        let mut reported_rejections: BTreeMap<String, u64> = BTreeMap::new();
         loop {
             interval.tick().await;
+            let state_for_rejections: State<'_, AppState> = app.state();
+            for report in rejection_reports(
+                &rejections_by_session(&state_for_rejections),
+                &mut reported_rejections,
+            ) {
+                crate::sys_warn!(&app, "transmit", "{}", report.message());
+            }
             let Some(health) = app.try_state::<BusHealth>() else {
                 continue;
             };
@@ -508,6 +602,22 @@ pub(crate) fn get_bus_health(
     collect_health_rows(&app, &state, &health, &bits)
 }
 
+/// One read of every open session's per-frame-error tally, by address.
+/// A session with no peer (the in-process virtual bus) contributes
+/// nothing — there is nobody there to refuse anything.
+fn rejections_by_session(
+    state: &AppState,
+) -> BTreeMap<String, Vec<cannet_client::rejections::RejectionTally>> {
+    state
+        .remote_sessions()
+        .iter()
+        .filter_map(|(address, session)| {
+            let tallies = session.rejections.as_ref()?.snapshot();
+            Some((address.clone(), tallies))
+        })
+        .collect()
+}
+
 /// Gather one instant's worth of every input the rows are built from —
 /// the sessions' controller reports and bus mapping, the connection
 /// states' applied bitrates, and the store's per-bus bit rates.
@@ -544,6 +654,126 @@ mod tests {
     /// Frame time in ns, for readability.
     fn ms(n: u64) -> u64 {
         n * 1_000_000
+    }
+
+    fn tally(
+        code: cannet_client::rejections::PerFrameError,
+        count: u64,
+        last: &str,
+    ) -> cannet_client::rejections::RejectionTally {
+        cannet_client::rejections::RejectionTally {
+            code,
+            count,
+            last_message: last.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_peer_refusing_at_bus_rate_reports_once_a_poll() {
+        // The defect this pins: `TX_REJECTED` was logged to `tracing`
+        // and discarded, so a peer refusing every transmit told the
+        // user nothing. It reaches them now — and as a count, because
+        // the owner's bench regime produces thousands a second and a
+        // message each would be the flood, not the report of it.
+        use cannet_client::rejections::PerFrameError::TxRejected;
+        let mut reported = BTreeMap::new();
+        let mut current = BTreeMap::new();
+        current.insert(
+            "tcp://host:1".to_string(),
+            vec![tally(TxRejected, 5_120, "bus is listen-only")],
+        );
+        let reports = rejection_reports(&current, &mut reported);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].since_last, 5_120);
+        assert_eq!(reports[0].total, 5_120);
+        let text = reports[0].message();
+        assert!(text.contains("tcp://host:1"), "{text}");
+        assert!(text.contains("transmit rejected"), "{text}");
+        assert!(text.contains("bus is listen-only"), "{text}");
+
+        // The next poll reports only what moved since.
+        current.insert(
+            "tcp://host:1".to_string(),
+            vec![tally(TxRejected, 9_000, "bus is listen-only")],
+        );
+        let reports = rejection_reports(&current, &mut reported);
+        assert_eq!(reports[0].since_last, 3_880);
+        assert_eq!(reports[0].total, 9_000);
+    }
+
+    #[test]
+    fn a_peer_carrying_what_it_is_given_says_nothing() {
+        // The control. A session with no rejections, and one whose
+        // count has not moved since the last poll, must both be silent
+        // — a readout that repeated itself every second would be worse
+        // than the discarded log line it replaces.
+        use cannet_client::rejections::PerFrameError::TxRejected;
+        let mut reported = BTreeMap::new();
+        let mut current = BTreeMap::new();
+        current.insert("tcp://host:1".to_string(), Vec::new());
+        assert!(rejection_reports(&current, &mut reported).is_empty());
+        current.insert("tcp://host:1".to_string(), vec![tally(TxRejected, 3, "x")]);
+        assert_eq!(rejection_reports(&current, &mut reported).len(), 1);
+        assert!(
+            rejection_reports(&current, &mut reported).is_empty(),
+            "an unmoved count is not news",
+        );
+    }
+
+    #[test]
+    fn a_reconnect_on_the_same_address_is_not_a_negative_delta() {
+        // A fresh session restarts the peer's count at zero. Reporting
+        // the difference would underflow, and reporting nothing until
+        // it passed the old total would hide the new session's first
+        // few thousand refusals.
+        use cannet_client::rejections::PerFrameError::TxRejected;
+        let mut reported = BTreeMap::new();
+        let mut current = BTreeMap::new();
+        current.insert(
+            "tcp://host:1".to_string(),
+            vec![tally(TxRejected, 900, "x")],
+        );
+        rejection_reports(&current, &mut reported);
+        current.insert("tcp://host:1".to_string(), vec![tally(TxRejected, 4, "x")]);
+        let reports = rejection_reports(&current, &mut reported);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].total, 4);
+    }
+
+    #[test]
+    fn a_session_that_has_gone_is_forgotten() {
+        // The record of what has been reported is keyed by address, so
+        // it has to shrink with the session map rather than grow with
+        // every connection the app has ever opened.
+        use cannet_client::rejections::PerFrameError::TxRejected;
+        let mut reported = BTreeMap::new();
+        let mut current = BTreeMap::new();
+        current.insert("tcp://a:1".to_string(), vec![tally(TxRejected, 5, "x")]);
+        current.insert("tcp://b:1".to_string(), vec![tally(TxRejected, 5, "x")]);
+        rejection_reports(&current, &mut reported);
+        assert_eq!(reported.len(), 2);
+        current.remove("tcp://b:1");
+        rejection_reports(&current, &mut reported);
+        assert_eq!(reported.len(), 1);
+    }
+
+    #[test]
+    fn each_code_keeps_its_own_words_in_the_report() {
+        // The three per-frame codes mean different things, and a report
+        // that summed them would name the wrong fault.
+        use cannet_client::rejections::PerFrameError::{NoAcknowledger, TxRejected};
+        let mut reported = BTreeMap::new();
+        let mut current = BTreeMap::new();
+        current.insert(
+            "tcp://host:1".to_string(),
+            vec![
+                tally(TxRejected, 2, "listen-only"),
+                tally(NoAcknowledger, 7, "nobody on the bus"),
+            ],
+        );
+        let text = rejection_reports(&current, &mut reported)[0].message();
+        assert!(text.contains("transmit rejected ×2"), "{text}");
+        assert!(text.contains("no listener on the bus ×7"), "{text}");
     }
 
     #[test]

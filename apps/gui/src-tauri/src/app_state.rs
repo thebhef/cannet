@@ -149,6 +149,11 @@ pub(crate) struct AppState {
     /// violation index the trace fetch decorates rows from, and the
     /// validity map. Owns its own lock.
     pub(crate) verifier: verification::VerificationState,
+    /// Which tx-confirm rows describe a frame no wire took (see
+    /// [`crate::transmit_commands::UndeliveredTx`]). Written by the transmit
+    /// path once the wire has answered, read by the trace fetch, and
+    /// cleared with the capture. Owns its own lock.
+    pub(crate) undelivered_tx: crate::transmit_commands::UndeliveredTx,
     /// Directory the live filter index roots in (a `filter/` subdir of the
     /// disk-spill scratch). The materialized filtered-trace index
     /// ([`ActiveFilterIndex`]) writes its segment files here. Behind a lock

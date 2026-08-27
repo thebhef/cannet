@@ -2,9 +2,9 @@
 //!
 //! The host owns the TX-message pool; every transmit panel is a thin
 //! view onto it (mutations go through these commands, each emitting
-//! `transmit-frames-changed`). `transmit_frame_inner` / `build_and_confirm`
-//! are the single transmit primitive (append a tx-confirm row, forward to
-//! the wire if a session carries the bus), shared by the manual send and
+//! `transmit-frames-changed`). `transmit_frame_inner` / `build_frame` +
+//! `append_tx_row` are the single transmit primitive (attempt the wire,
+//! then append the tx-confirm row saying what it answered), shared by the manual send and
 //! the single `run_transmit_scheduler` thread that drives every running
 //! periodic (fixed-rate grid, ADR 0039). `resolve_effective_calc` layers a
 //! message's calculated-field overrides over the DBC defaults (ADR 0027).
@@ -26,6 +26,100 @@ use crate::{diag, transmit_frames, transmit_scheduler, verification};
 /// common resume (reconnect) immediate; this probe bounds the resume
 /// latency if a route-up path ever misses the hint.
 const PARKED_ROUTE_PROBE: Duration = Duration::from_secs(1);
+
+/// Where a tick's frame is going: `(session address, wire channel,
+/// interface id)`. The scheduler groups its due frames by this so a
+/// tick costs one `FrameBatch` per destination rather than one envelope
+/// per frame.
+type WireDestination = (String, u8, String);
+
+/// One due frame plus the request that composed it, carried together so
+/// the tx-confirm row can be appended after the batch has been offered
+/// to the wire.
+type DueFrame<'a> = (&'a ipc::TransmitRequest, cannet_core::CanFrame);
+
+/// Ceiling on the number of undelivered runs [`UndeliveredTx`] holds.
+/// A bus that is down stays down, so an outage is one run however long
+/// it lasts and the realistic driver of growth is a bus that flaps.
+/// Past the cap the oldest run is dropped — the same windowed-ring
+/// answer the frame store gives its rows
+/// ([ADR 0002](../../../docs/adr/0002-disk-spill-store.md) DS-8), and by
+/// then the rows it described are the ones nearest eviction.
+pub(crate) const MAX_UNDELIVERED_RUNS: usize = 4096;
+
+/// Which tx-confirm rows describe a frame **no wire took**.
+///
+/// A tx row is provisional until the transmit path has an answer: the
+/// bus has to route to an open session and that session has to accept
+/// the frame. Only then is the row appended, and only rows whose answer
+/// was "no" are recorded here — the ordinary case costs nothing and the
+/// mark keeps its meaning. The trace fetch reads this the way it reads
+/// the ingest-time violation index, decorating the row it names.
+///
+/// Rows are held as inclusive index runs rather than one entry each:
+/// the case that produces them in bulk is a bus that is down, which is
+/// one run.
+///
+/// This is the *enqueue* answer. A frame the session accepted and the
+/// far end then rejected is not marked here — that rejection arrives
+/// asynchronously, belongs to no single row, and is reported as its own
+/// coalesced count (see [`crate::bus_health`]).
+#[derive(Debug, Default)]
+pub(crate) struct UndeliveredTx {
+    /// Inclusive `(first, last)` runs, ascending and non-overlapping.
+    runs: std::sync::Mutex<std::collections::VecDeque<(u64, u64)>>,
+}
+
+impl UndeliveredTx {
+    /// Record that the row at `index` describes a frame no wire took.
+    /// Indices arrive in append order, so this extends the newest run
+    /// when it is contiguous and opens a new one otherwise.
+    pub(crate) fn mark(&self, index: u64) {
+        let Ok(mut runs) = self.runs.lock() else {
+            return;
+        };
+        match runs.back_mut() {
+            Some((_, last)) if *last + 1 == index => *last = index,
+            Some((_, last)) if *last >= index => {}
+            _ => {
+                if runs.len() >= MAX_UNDELIVERED_RUNS {
+                    runs.pop_front();
+                }
+                runs.push_back((index, index));
+            }
+        }
+    }
+
+    /// Whether the row at `index` is marked.
+    pub(crate) fn contains(&self, index: u64) -> bool {
+        self.runs.lock().is_ok_and(|runs| {
+            runs.binary_search_by(|(first, last)| {
+                if index < *first {
+                    std::cmp::Ordering::Greater
+                } else if index > *last {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .is_ok()
+        })
+    }
+
+    /// How many runs are held — the bound this type exists to keep.
+    #[cfg(test)]
+    pub(crate) fn runs(&self) -> usize {
+        self.runs.lock().map_or(0, |runs| runs.len())
+    }
+
+    /// Forget every mark. The marks address rows by index, so a new
+    /// capture has to start with none.
+    pub(crate) fn clear(&self) {
+        if let Ok(mut runs) = self.runs.lock() {
+            runs.clear();
+        }
+    }
+}
 // ---- host-side TX-message registry IPC surface ----
 //
 // Every transmit panel is a thin view onto the host pool. Mutations go
@@ -618,25 +712,43 @@ pub(crate) fn run_transmit_scheduler(
         // tick per destination. A request whose bus route is down is
         // skipped entirely — no emission and no tx-confirm — matching
         // the single-frame path's connected gate. The tx-confirm rows
-        // still append per frame (the trace shows every transmit).
+        // append per frame (the trace shows every transmit) and, as on
+        // the single-frame path, only *after* the batch has been
+        // offered to the wire, carrying what it answered.
         if !due.is_empty() {
             let sessions = state.remote_sessions();
-            let mut routed: Vec<((String, u8, String), cannet_core::CanFrame)> = Vec::new();
+            let mut routed: Vec<(WireDestination, DueFrame<'_>)> = Vec::new();
             for request in &due {
                 let Some(route) = resolve_bus_route(&sessions, &request.bus_id) else {
                     continue;
                 };
                 // A malformed request (invalid id / frame) is dropped,
                 // as the single-frame path's discarded error did.
-                let Ok((frame, _)) = build_and_confirm(state.inner(), request, route.channel)
-                else {
+                let Ok(frame) = build_frame(request, route.channel) else {
                     continue;
                 };
-                routed.push(((route.address, route.channel, route.interface_id), frame));
+                routed.push((
+                    (route.address, route.channel, route.interface_id),
+                    (request, frame),
+                ));
             }
-            for ((address, channel, interface_id), frames) in group_wire_batches(routed) {
-                if let Some(session) = sessions.get(&address) {
-                    let _ = session.tx.transmit_batch(channel, &interface_id, &frames);
+            // Batch order is the row order: `group_wire_batches`
+            // preserves per-destination frame order, and the batches
+            // are appended in the order they were sent.
+            for ((address, channel, interface_id), pairs) in group_wire_batches(routed) {
+                let frames: Vec<cannet_core::CanFrame> =
+                    pairs.iter().map(|(_, f)| f.clone()).collect();
+                let delivered = match sessions.get(&address) {
+                    Some(session) => session
+                        .tx
+                        .transmit_batch(channel, &interface_id, &frames)
+                        .is_ok(),
+                    // The route resolved a moment ago and the session
+                    // has since gone: nothing carried these frames.
+                    None => false,
+                };
+                for (request, frame) in &pairs {
+                    append_tx_row(state.inner(), request, frame, delivered);
                 }
             }
         }
@@ -700,17 +812,23 @@ fn resume_parked_routes(state: &AppState, schedule: &mut transmit_scheduler::Per
     }
 }
 
-/// The one transmit primitive: compose a frame from a request, append
-/// it to the trace as a `Tx`-direction tx-confirm row (always, even
-/// with no remote session — that's what a real analyzer shows for its
-/// own transmits), and — if a remote session is open — forward it onto
-/// the wire too. Both the manual `transmit_frame_once` command and the
-/// scheduler thread (`run_transmit_scheduler`) route through here, so
-/// there's no special-casing for the periodic case.
+/// The one transmit primitive: compose a frame from a request, offer it
+/// to the wire if a session carries its bus, and *then* append the
+/// `Tx`-direction tx-confirm row — always, even when nothing carried it
+/// (that's what a real analyzer shows for its own transmits), but
+/// carrying the wire's answer. Both the manual `transmit_frame_once`
+/// command and the scheduler thread (`run_transmit_scheduler`) route
+/// through here, so there's no special-casing for the periodic case.
+///
+/// The order is the point. Appending first made a frame nothing carried
+/// indistinguishable from one a bus took, which is what an analyzer
+/// exists not to do. A row whose frame reached no wire is recorded in
+/// [`UndeliveredTx`] and reads as such.
+///
+/// `wire_status` — and the mark — report the *enqueue* outcome.
 /// Server-side rejection (e.g. the BLF replay server's
-/// `Error::TX_REJECTED`) surfaces inline through the receive pump as a
-/// `ConnectionError::Server`; the returned `wire_status` only reports
-/// the *enqueue* outcome.
+/// `Error::TX_REJECTED`) arrives later on the receive stream and is
+/// reported as its own coalesced count, not against a row.
 pub(crate) fn transmit_frame_inner(
     state: &AppState,
     request: &ipc::TransmitRequest,
@@ -724,7 +842,7 @@ pub(crate) fn transmit_frame_inner(
     let routing = resolve_bus_route(&sessions_guard, &request.bus_id);
     let wire_channel = routing.as_ref().map_or(0u8, |r| r.channel);
 
-    let (frame, tx_confirm_index) = build_and_confirm(state, request, wire_channel)?;
+    let frame = build_frame(request, wire_channel)?;
 
     let wire_status = match routing {
         None if sessions_guard.is_empty() => ipc::TransmitWireStatus::NotConnected,
@@ -761,23 +879,23 @@ pub(crate) fn transmit_frame_inner(
     };
     drop(sessions_guard);
 
+    let delivered = matches!(wire_status, ipc::TransmitWireStatus::Sent { .. });
+    let tx_confirm_index = append_tx_row(state, request, &frame, delivered);
+
     Ok(ipc::TransmitResult {
         tx_confirm_index,
         wire_status,
     })
 }
 
-/// Compose the wire [`cannet_core::CanFrame`] for `request` and append
-/// its `Tx`-direction tx-confirm row to the trace (stamped with the
-/// target `bus_id`, so the local trace shows it on the right bus even
-/// with no session carrying it). Shared by the single-frame path
-/// ([`transmit_frame_inner`]) and the scheduler's batched tick — one
-/// place owns frame composition and the confirm-append.
-fn build_and_confirm(
-    state: &AppState,
+/// Compose the wire [`cannet_core::CanFrame`] for `request`. Shared by
+/// the single-frame path ([`transmit_frame_inner`]) and the scheduler's
+/// batched tick, so one place owns frame composition — and neither
+/// touches the trace until the wire has answered.
+fn build_frame(
     request: &ipc::TransmitRequest,
     wire_channel: u8,
-) -> Result<(cannet_core::CanFrame, u64), String> {
+) -> Result<cannet_core::CanFrame, String> {
     let mode = if request.extended {
         "extended"
     } else {
@@ -824,10 +942,26 @@ fn build_and_confirm(
         }
     };
 
+    Ok(frame)
+}
+
+/// Append `frame`'s `Tx`-direction tx-confirm row to the trace, stamped
+/// with the target `bus_id` so the local trace shows it on the right bus
+/// even when no session carried it, and record the row in
+/// [`UndeliveredTx`] when `delivered` is false. Returns the row's index.
+fn append_tx_row(
+    state: &AppState,
+    request: &ipc::TransmitRequest,
+    frame: &cannet_core::CanFrame,
+    delivered: bool,
+) -> u64 {
     let mut raw = RawTraceFrame::from(frame.clone());
     raw.bus_id = Some(request.bus_id.clone());
-    let tx_confirm_index = state.trace_store.append(raw).unwrap_or(u64::MAX);
-    Ok((frame, tx_confirm_index))
+    let index = state.trace_store.append(raw).unwrap_or(u64::MAX);
+    if !delivered {
+        state.undelivered_tx.mark(index);
+    }
+    index
 }
 
 /// Group `(destination, frame)` pairs into per-destination batches,
