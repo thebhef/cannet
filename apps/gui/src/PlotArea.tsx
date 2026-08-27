@@ -621,6 +621,10 @@ interface PlotAreaProps {
    * event marker labels. That is the *highest axis with a canvas*, not
    * the first one positionally: a collapsed axis has nowhere to draw
    * them. */
+  /** True for the axis that carries the top-of-column chrome — the
+   * event marker labels. That is the *topmost axis with a canvas*, not
+   * the first one positionally: a collapsed axis is a heading row with
+   * nowhere to draw them. The mirror of {@link isLast}. */
   isFirst: boolean;
   /** True for the axis that carries the bottom-of-column chrome — the
    * x-axis time label and the A/B cursor delta. That is the *lowest
@@ -1721,6 +1725,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     cursorYh1,
     cursorYh2,
     hoverX,
+    isFirst,
     events,
     eventExtents,
     litEventIds,
@@ -1745,6 +1750,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       cursorYh1,
       cursorYh2,
       hoverX,
+      isFirst,
       events,
       eventExtents,
       litEventIds,
@@ -2836,7 +2842,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // opposite things at once.
             for (const ev of litLast(lr.events, lr.litEventIds)) {
               ctx.globalAlpha = dimLines && !lr.litEventIds.has(ev.id) ? UNLIT_ALPHA : 1;
-              vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
+              // `lr.isFirst`, not the prop: the draw hook is registered
+              // once per uPlot instance and keeps the closure it was
+              // built with, so a plain read goes stale the moment the
+              // area above this one collapses — which is exactly when
+              // this axis is supposed to start drawing the labels.
+              vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3], lr.isFirst ? ev.label : null, true);
             }
             ctx.globalAlpha = 1;
             // The A/B cursors are panel-level, so their *lines* cross
