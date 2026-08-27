@@ -157,6 +157,16 @@ trip over it.
 
 ### Plot panel
 
+- `[ux]` **The plot's Shift+click gesture is undiscoverable.** Nothing
+  on the plot says it exists; the README does. The prototype's hint
+  line has no home in the chip toolbar and the chip language has no
+  hint-text element. Backlogged by owner ruling 2026-08-26
+  (owner-review-queue 3.32).
+- `[cleanup]` **Persist the plot perf-readout visibility.** Ruled
+  2026-08-26 (owner-review-queue 3.23): *"both persist in project
+  state"* — the perf readout joins its menu sibling `showDiag` in
+  `plotPanelConfig` instead of staying view-local. One line plus a
+  test.
 - `[feat]` **Measurements strip rework.** Owner ruling 2026-08-21
   (task 108 grooming): the strip needs rework and stays hidden — the
   chip-language pass removes its toolbar toggle and no replacement
@@ -199,6 +209,35 @@ trip over it.
   on top.
 
 ### GUI chrome and cross-cutting
+
+- `[model]` **Calc-field overrides vs the DBC: suppression and
+  no-op edits.** Two halves of one gap, backlogged together by owner
+  ruling 2026-08-26 (owner-review-queue 3.7, 3.50): *"it's a similar
+  thing: the DBC says something, but we've customized it in an unusual
+  way."* (a) A DBC-declared calculated field cannot be suppressed —
+  `merge_calc_override` is `o.counter.or(default)`, so unchecking a
+  section showing a DBC default writes nothing and the field returns on
+  reopen; expressing suppression is an ADR 0027 / `.cannet_rbs` change.
+  (b) The calc-field editor should write an override only when Apply's
+  value actually differs — *"when editing is complete, if the value
+  isn't changed from before, nothing should happen"* — while an
+  override that merely coincides with the DBC (e.g. a DBC reload landed
+  on the same value) is legitimate and remains.
+- `[arch]` **Three surfaces compute display status in the frontend**
+  (owner-review-queue 3.47, backlogged 2026-08-26): the view-signals
+  attention count, the RBS chip badge re-running `rbsSignalsFilter`,
+  and client-side sorting of the RBS grid. Owner's skepticism recorded:
+  *"the signal mapping and sorting feel defensibly frontend/display
+  concerns. RBS maybe not as much, but it's also more of an online
+  check than a report."* Note: task 112's registry answers the
+  attention count host-side anyway (it names paging the panel as an
+  exit criterion), so revisit this after 112 lands.
+- `[model]` **A file-backed series cannot be an event's subject**
+  (owner-review-queue 3.31, backlogged 2026-08-26): its `messageId` is
+  a channel-group index, so `EventSubject`'s structural form (ADR 0056)
+  has nothing true to say about it — Shift+click over only file-backed
+  rows names nothing. Closing it means a fourth referent kind, a model
+  change.
 
 - `[feat]` **"Save current layout as my default" is a default
   *project*, not a default layout.** Task 45 Stage 5 listed a seed
@@ -920,7 +959,7 @@ next planning pass.
   reads instantly in dark mode is close to invisible in light. That
   affects anywhere the app tints a row to mean something. Found while
   prototyping the signal mapping panel
-  ([task 89](tasks/0089-signal-mapping-panel.md)), but not scoped to it;
+  (task 89, retired to git history), but not scoped to it;
   needs grooming before it becomes a task. (Owner, 2026-08-19.)
 - `[model]` **Review and revise how event kinds encode their BLF
   relationship.** `messageBound` exists as an `EventKind` because it
