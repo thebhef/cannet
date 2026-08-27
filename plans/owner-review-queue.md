@@ -90,9 +90,9 @@ that task's status log.
 - [ ] 110 — chain CI repair; Windows MSI bundle target dropped **§**.
       It carried no criteria; its "Every job, green" table is
       **ratified as them**, plus the three fixes it made — **all 4
-      met**. Note the job count moves: 110 measured six, CI defines
-      seven today (`rustdoc` joined), and task 118 takes
-      `comment-references` back out
+      met**. Note the job count moves: 110 measured six, CI defined
+      seven once `rustdoc` joined, and task 118 took
+      `comment-references` back out — CI is six again (see below)
 - [ ] 108 — the chip language (prototype durable, maintained in-repo)
 - [ ] 107 — events point at signals (both open criteria dispositioned:
       unknown-key round-trip closed by task 122, which added the
@@ -153,6 +153,12 @@ that task's status log.
       [task 80](tasks/0080-stopped-capture-resample.md)'s status log.
       **No furnished file**: needs a multi-million-frame capture,
       generated locally (`examples/capture-features/README.md`)
+- [ ] 118 — the `comment-references` check leaves `ci.yml` and moves
+      into the `implement-phase` and `oversee-roadmap` skills as a
+      hand-run grep; CI is six jobs, not seven (queue item 1.35 no
+      longer exists post-reframe; its closure is in
+      [task 118](tasks/0118-comment-references-out-of-ci.md)'s status
+      log). Process, not product — no example file
 
 ## Close-out chores
 

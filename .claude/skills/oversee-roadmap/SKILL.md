@@ -102,12 +102,13 @@ own build, which is not free here.
 When an agent reports back, before launching the next:
 
 1. **Verify the branch landed as contracted** — one commit on its
-   base, tree clean, a **seven-row CI table** with every job named and
-   its command shown, and a commit message that reads as a PR
-   description rather than a changelog. A missing row is a red job,
-   not an oversight: `implement-phase` § 3 makes the full local CI
-   run an exit criterion, because a phase trusting the pre-commit
-   hook can report green while CI is red — and did, for 24 tasks.
+   base, tree clean, a **six-row CI table** with every job named and
+   its command shown, plus the hand-run `comment-references` grep
+   (below), and a commit message that reads as a PR description
+   rather than a changelog. A missing row is a red job, not an
+   oversight: `implement-phase` § 3 makes the full local CI run an
+   exit criterion, because a phase trusting the pre-commit hook can
+   report green while CI is red — and did, for 24 tasks.
    Still a chain of commits?
    Have the agent squash first. **Keep the pre-squash HEAD hash** —
    orphaned but reflog-reachable, and the step-by-step history
@@ -135,6 +136,18 @@ the **diff**, not just the report.
   frontend accumulation.
 - **Deviations in the status log** — faithful reading, or scope
   drift that needs the owner?
+- **Comment references** — the `comment-references` check does not
+  run in CI; run its grep over the phase's diff yourself before
+  accepting it (`--untracked` so a file the phase just wrote is still
+  seen):
+
+  ```sh
+  git grep --untracked -Ein "task [0-9]|plans/" -- apps/ crates/
+  ```
+
+  A hit means a source comment under `apps/` or `crates/` names a
+  task number or a `plans/` path (`CLAUDE.md` § Documentation forbids
+  both) — send it back rather than accepting the branch.
 
 Found something? Feed it to the next phase's prompt, spawn a fix
 phase, or surface it. Never let it ride silently.
