@@ -53,6 +53,9 @@ their criterion-by-criterion verdicts to
 - [ ] 115 — trace row menu keeps only the event action (queue item
       1.23 no longer exists post-reframe; recorded here instead — see
       [task 115](tasks/0115-trace-row-menu-scope.md))
+- [ ] 117 — refuse to connect without a bound bus (queue item 1.34 no
+      longer exists post-reframe; recorded here instead — see
+      [task 117](tasks/0117-refuse-to-connect-without-a-bound-bus.md))
 
 ## Close-out chores
 
