@@ -773,6 +773,16 @@ crate retained long-term).
 
 ### Testing / Profiling
 
+- **Git LFS** — `adopted` 2026-08-26 by owner ruling (task
+  0126): example/demo files for every frontend surface (captures,
+  databases, projects) are carried in the repository via LFS pointers,
+  each kept small. Requires `git lfs` in the contributor toolchain
+  (README § Prerequisites) and one `.gitattributes` pattern per tracked
+  format. Chosen over committing binaries raw (bloats every clone
+  forever) and over generating fixtures at build time (a demo file's
+  value is that it is curated, stable, and openable by hand).
+
+
 - **`tempfile`** crate — `adopted` in Phase 1 (dev-dependency only). Used by
   `cannet-blf` tests to round-trip BLF fixtures through a real file. MIT /
   Apache-2.0.

@@ -4,8 +4,9 @@
 > phases landed 2026-08-20 on the chain (nothing has merged) and both
 > prototypes are deleted. **The exit criteria below were never walked** —
 > this file carries no per-criterion verdict anywhere (owner-review-queue
-> 3.45). Findings still owed a verdict: owner-review-queue 1.13,
-> **3.46**, **3.47**.
+> 3.45). Queue item 1.13 was split 2026-08-25: parts a/b became task
+> 116, part c was ruled (row highlighting is a gridview behaviour, task
+> 113). Still owed a verdict: **3.46**, **3.47**.
 
 Opened by owner ruling 2026-08-19, groomed the same day out of a
 prototyping session. A live status panel over the signals the open

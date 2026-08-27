@@ -5,8 +5,15 @@
 > neither `roadmap.md` nor the owner-review queue until 2026-08-23.** It
 > carries **no exit criteria and no status log**; its verification is the
 > `## Every job, green` table, which is every CI job run by hand on one
-> commit. Findings still owed a verdict: owner-review-queue 2.8 (the MSI
-> drop, ruled), 3.27, **3.61**, **3.62**.
+> commit. The MSI bundle drop was ruled 2026-08-22 (NSIS is the Windows
+> installer; WiX never entered the tree); 3.61 was ruled 2026-08-25 —
+> only the merged tip needs to be green; 3.27 was closed 2026-08-26 on
+> the owner's condition — *"if there's no loss in actual behavioral
+> coverage I'm fine"* — verified: the toolbar became commands-only, every
+> former toolbar step reaches the identical dispatch through `command`,
+> and `window.__shot.toolbar` stays defined with zero scenario callers
+> (`screenshot.rs`, "the_scenarios_drive_labels..." doc). Still owed a
+> verdict: **3.62**.
 
 ## Why this task exists
 

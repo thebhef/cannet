@@ -5,8 +5,11 @@
 > exit criteria are walked at `## Exit criteria — verdicts`: met on an
 > unconfirmed ruling, met, met after one correction, and one not
 > applicable. **The ruling the whole task implements is the overseer's and
-> the owner has not confirmed it** — owner-review-queue 1.19, which also
-> names the two commits that are the whole diff to revert. 3.15 (the
+> the owner has not confirmed it** — queue item 1.19, whose remaining leg
+> (a look at the attention badge on a running build) is eased but not
+> settled by [task 112](0112-signal-reference-registry.md); the status
+> log below names phase 1's two commits as the whole diff to revert if
+> the ruling is reversed. 3.15 (the
 > unenforced "ascending" on `FileSignal::timestamps_ns`) was **ruled
 > 2026-08-26**: normalise at the boundary — an `is_sorted` check per
 > channel with a stable sort only on failure, since a signal series has

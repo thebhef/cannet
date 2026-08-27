@@ -4,8 +4,15 @@
 > phases landed 2026-08-19 to 2026-08-21 on the chain (nothing has
 > merged). Fifteen exit criteria are walked across two walk sections, all
 > met, and the ADR-0031 gate the task owed was run and passed four for
-> four. Findings still owed a verdict: owner-review-queue 1.4, **1.32**,
-> **1.33**, **1.34**, 2.1 (ruled), 3.1, 3.2, **3.48**.
+> four. The 2026-08-24 walk settled the queue items: 1.4 accepted
+> (*"not a question"*); 1.32 accepted, stating the general rule — where a
+> hand-entered CAN id matches a DBC message, the tool assumes the user
+> meant that message; 1.33 split into tasks 114/119; 1.34 became task
+> 117; 3.48 declined (recorded below). Shape D's fall-through stays open
+> by owner ruling 2026-08-21 (*"a special case on mux arm is pretty
+> esoteric and I'm ok with it being wrong given you can just fix it"*) —
+> with the correction that phase 3 made the cure real everywhere, not at
+> one site in four. Still owed a verdict: 3.2.
 
 Opened by owner ruling 2026-08-19, from task 86 phase 3's finding that
 a replacement DBC inherits neither the bus scoping nor the priority

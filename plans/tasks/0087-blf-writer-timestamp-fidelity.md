@@ -2,10 +2,14 @@
 
 > **Status 2026-08-23 — code-complete, awaiting acceptance.** Both phases
 > landed 2026-08-19 on the chain (nothing has merged). The four exit
-> criteria are walked in phase 2's entry, all met. Finding still owed a
-> verdict: owner-review-queue **3.49** — no Vector tool has been watched
-> reading a cannet BLF that carries a descending object timestamp, which
-> this task's fix makes more likely to occur.
+> criteria are walked in phase 2's entry, all met. Queue finding 3.49 —
+> no Vector tool has been watched reading a cannet BLF carrying a
+> descending object timestamp — was **accepted 2026-08-26**: no
+> published spec orders objects, every reader examined (`vector_blf`,
+> python-can, Wireshark) walks file order without a check, python-can's
+> own writer emits descents, and the residual is one seek API
+> (`BLSeekTime`) whose worst case is a surprising landing, not an
+> unreadable file. Nothing is owed.
 
 Opened by owner ruling 2026-08-19, from a side finding of task 86
 phase 1. `BlfCaptureWriter` **silently clamps a frame that precedes the

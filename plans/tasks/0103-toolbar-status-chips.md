@@ -3,9 +3,12 @@
 > **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
 > 2026-08-21 on the chain (nothing has merged); both accepted prototypes
 > are deleted. The five exit criteria are walked at
-> `## Exit criteria — verdicts`, all met, one qualified. Findings still
-> owed a verdict: owner-review-queue 1.13, 1.15, 1.16, **3.53**, and the
-> frontend-summed RBS count in **3.47**.
+> `## Exit criteria — verdicts`, all met, one qualified. The 2026-08-24
+> walk settled the 1.N items: 1.13 split (a/b → task 116, c ruled into
+> task 113); 1.15 (pressing the connection chip while connecting cancels
+> the connect) accepted (*"approved."*); 1.16 dropped as intractable
+> (recorded at task 101). Still owed a verdict: **3.53** (task 121's),
+> and the frontend-summed RBS count in **3.47**.
 
 Opened by owner instruction 2026-08-20, while grooming bus health:
 

@@ -3,7 +3,7 @@
 > **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
 > 2026-08-21 on the chain (nothing has merged); sixteen surfaces fixed,
 > each with a test. The three exit criteria are walked in the status log,
-> all met. The perf gate was not run in-task; owner-review-queue 1.7
+> all met. The perf gate was not run in-task; ADR 0031's amendment
 > records that the baseline was re-measured against the grown `ev-zonal`
 > on 2026-08-22, which closes it. No finding of this task is left
 > undispositioned.

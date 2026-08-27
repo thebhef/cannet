@@ -2,9 +2,11 @@
 
 > **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
 > 2026-08-21 on the chain (nothing has merged). The four exit criteria are
-> walked in the status log, all met. Findings still owed a verdict:
-> owner-review-queue 1.8 (the `--no-tls` blast radius) and 1.9 (the second
-> firewall prompt, FYI).
+> walked in the status log, all met. Both queue items were accepted
+> 2026-08-24: 1.8, the `--no-tls` blast radius (*"it's fine.
+> `cannet-server --no-tls` is a pretty clear signal from the user about
+> what they're trying to do"*), and 1.9, the second firewall prompt
+> (*"ok"*). Nothing is owed.
 
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback.
 Three observations, one theme: **getting a server reachable is harder

@@ -5,7 +5,8 @@
 > was listed on neither `roadmap.md` nor the owner-review queue until
 > 2026-08-23**, so none of its findings had ever reached the owner. Its
 > five exit criteria are walked at `### Exit criteria — verdict`: **four
-> met** and one **not met** (the macOS check, which needs a Mac). The
+> met** and one **waived** (the macOS check — owner ruling 2026-08-26,
+> queue 3.54: closed, follow up only if it is a problem). The
 > graph-view clause was struck from ADR 0035 by owner ruling 2026-08-26,
 > which takes its criterion to met. Findings still owed a verdict:
 > owner-review-queue **3.54** and **3.56**. (**3.55** struck 2026-08-26;
@@ -359,7 +360,7 @@ Everything else in the scope held up.
 | A kind can declare itself hidden by default, and is then absent from the trace, the plot and the event view until enabled | **met** | `notes.test.ts` "declares which kinds are noise until asked for" plus the three per-surface tests above; `gotoEvent.test.ts` "leaves out a kind that is hidden by default" extends it to the palette. Control: flipping `busError.visibleByDefault` to `true` fails all of them |
 | The event view is top-level, filters by kind / record type / tag, and shows an expandable description per marker | **met** | top-level already — `useCommands.tsx` registers `singleton(EVENTS_PANEL_ID, "Events", …)` beside Project / Graph / System messages. Kind **is** record type (`EVENT_KIND_META[kind].blfRecord`), asserted in `EventsPanel.dom.test.tsx` "lists both BLF annotation records and filters them apart"; tag — "narrows to the events carrying a matching tag"; description — "keeps the body collapsed until the row is disclosed" and "edits the description in place and commits it to the host" |
 | `GLOBAL_MARKER` and `EVENT_COMMENT` round-trip and appear in historical trace views | **met** | round-trip: `both_blf_annotation_records_round_trip`, with a third-party comment as the control. Historical trace views: both kinds are visible by default and splice into the chronological trace (`TracePanel.dom.test.tsx`). The graph-view half of this criterion was **struck 2026-08-26** — no such view exists; see the finding above |
-| The macOS picker item is closed by a verdict from a Mac | **not met** | no Mac available to this session; see Blockers |
+| The macOS picker item is closed by a verdict from a Mac | **waived 2026-08-26** | owner ruling on queue 3.54: *"closed, i'll follow up if it's a problem"* — the candidate CSS fix ships, unverified on a Mac |
 
 ### Blockers / side effects
 

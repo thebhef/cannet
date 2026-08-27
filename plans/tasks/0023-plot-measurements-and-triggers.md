@@ -26,6 +26,17 @@ all three are "control this axis myself."
 
 - integrate between cursors
 - measurements panel doesn't do anything right now; needs overhaul, probably should include a panel view to avoid overloading plot areas
+- **Inherited from task 108's suppression of the measurement strip**
+  (owner 2026-08-26, queue 3.22: *"make sure the measurement rework
+  task mentions it"*): the strip is gated off by
+  `MEASUREMENT_STRIP_DRAWS = false` with stored `measEnabled` left
+  intact, so this rework inherits real user preferences. Two things it
+  must pick up: `MeasurementMenu` is a deliberate orphan (delete or
+  revive, not ignore), and the panel-tier test that guarded the
+  strip-to-derivation seam (a derived-axis id mismatch) was removed —
+  the derivation is covered at unit tier by `plotAxisDerivation.test.ts`
+  but the seam is unguarded and this task writes that test again,
+  failing first.
 - duty cycle
 - amplitude
 - period

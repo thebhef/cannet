@@ -114,7 +114,12 @@ that mattered was that *cannet writes files it then truncates*.
 - **`<dest>.part` discovery is out of scope**, and becomes its own task
   once this one establishes such a file is readable at all. Surfacing a
   crashed session's leftovers is startup crash-recovery: a different
-  feature, a different moment, its own UX.
+  feature, a different moment, its own UX. **Ruled 2026-08-26
+  (owner-review-queue 3.58): it stays out** — *"I'm OK to leave this
+  untested beyond where it's at."* The readable-at-all precondition was
+  met (phase 2 read 16,387 frames from a hard-killed writer's
+  leftovers), and no discovery task is opened; the leftovers are
+  reachable by opening the `.part` by name.
 
 ## Phases
 
@@ -316,7 +321,12 @@ mid-file damage and is correctly loud.
   writer change, not a reader one, and only becomes reachable through
   the UI once `<dest>.part` discovery exists — explicitly out of scope
   here. Recorded rather than fixed; the silent zero is the part worth
-  fixing first if it is picked up.
+  fixing first if it is picked up. **Closed 2026-08-26
+  (owner-review-queue 3.10), conditional on the no-discovery ruling
+  above standing**: the failure sits behind a door nothing opens. If
+  `.part` discovery is ever asked for, this is a blocker for that work
+  — discovery without the `UnFinMF` marker would offer the user a file
+  that opens empty.
 - **A recovered capture's wall clock cannot be restored.** Named in the
   log line, not repaired: BLF per-event timestamps are unsigned offsets
   from a `measurement_start_time` the writer never wrote, so the

@@ -2,9 +2,17 @@
 
 > **Status 2026-08-23 — code-complete, awaiting acceptance.** All three
 > phases landed 2026-08-21 on the chain (nothing has merged). The five
-> exit criteria are walked in phase 3's entry, all met; Shape D stays open
-> by owner ruling (owner-review-queue 2.1). Findings still owed a verdict:
-> owner-review-queue 1.2, 1.3, 3.1, 3.2.
+> exit criteria are walked in phase 3's entry, all met; Shape D stays
+> open by owner ruling 2026-08-21 (*"a special case on mux arm is pretty
+> esoteric and I'm ok with it being wrong given you can just fix it"*).
+> The 2026-08-24 walk ratified 1.2 (a signal only one database defines is
+> always shown) and answered 1.3 — the resolution rule landed, and its
+> residual (a transmit row carries its own DBC) moved to task 112, which
+> also carries the reframed 3.1. 3.2 (calculated-field resolution is per message, decided explicitly)
+> was **closed 2026-08-26** — the owner confirmed per-message is the
+> obviously right grain: *"calculated fields are to do with the
+> message; crc calc'd over a section of it, counter is each instance
+> of send."* Nothing esoteric hides behind it. Nothing is owed.
 
 Opened by owner instruction 2026-08-20 ("sweep, with findings as
 cleanup task"), immediately after

@@ -3,9 +3,13 @@
 > **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
 > 2026-08-21 on the chain (nothing has merged), investigation-first as
 > instructed: one hypothesis confirmed, three refuted. The four exit
-> criteria are walked in the status log, all met. Findings still owed a
-> verdict: owner-review-queue 1.1 (the fix reverses an ADR 0026 decision)
-> and 3.4.
+> criteria are walked in the status log, all met. Queue item 1.1 — the
+> fix reverses an ADR 0026 decision — was accepted 2026-08-24
+> (*"accepted. rm this item"*). 3.4 (the suite pinned the rule that
+> produced this defect) was routed 2026-08-26 into
+> [task 126](0126-test-and-example-cleanup.md) § 3 — the wrong-rule-pin
+> audit, plus a manual-y-limits row for this task's verification
+> matrix. Nothing is owed here.
 
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback:
 

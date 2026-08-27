@@ -877,7 +877,8 @@ mute comes from the bus or the ECU, deriving makes the press inert,
 while reading the message flag would flip it under a mute with nothing
 on screen to show the change. Inert-and-honest beats invisible-and-
 effective. Filed for a ruling as owner-review-queue 1.26 — grooming
-named the key, not its subject.
+named the key, not its subject. (Ruled 2026-08-25 into task 113, with
+the rest of the gridview keyboard contract.)
 
 **Tests.** `RbsPanel.gridview.dom.test.tsx` +4 (the three-level toggle,
 re-enabling a disabled message, the inert row, the focused checkbox);
@@ -1387,7 +1388,8 @@ protects the accessible case.
 `.tx-panel-list`, `.view-signals-rows`, `.blf-map-markers-list`) carry
 the same artefact and are fixed by the one rule; so is any panel that
 adopts the layer later. Filed as owner-review-queue 1.29, since it is a
-visible change to focus indication in every grid panel.
+visible change to focus indication in every grid panel. (Accepted
+2026-08-24.)
 
 **The panels were surveyed for what the rule leans on.** Six declare
 `isSelectable: () => true`, so the cursor collapsing the selection onto
@@ -1608,8 +1610,11 @@ python-can 4.6.1's own field definitions and tested against faked
 chip-state events. No Vector adapter exists in an agent's environment
 and neither does the XL library, so the backend cannot even load there -
 python-can logs *"Could not import vxlapi: Vector XL library not found:
-vxlapi64"*. **This path has never met Vector hardware.** Treat a Vector
-bus-health reading as unconfirmed until this script has been run.
+vxlapi64"*. **Closed 2026-08-26 by the owner: it has since been tested
+with Vector hardware** (queue finding 3.40). Known limitation recorded
+with the same ruling: the path does **not** work with Kvaser as
+currently implemented — it requires CANLIB — and the owner follows that
+up independently; no task is opened here.
 
 **What to do.** A Vector device on a 500 kbit/s bus with a second node
 that ACKs (a second channel on the same card is enough - bind both as

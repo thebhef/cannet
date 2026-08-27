@@ -3,10 +3,12 @@
 > **Status 2026-08-23 — code-complete, awaiting acceptance.** The single
 > phase landed 2026-08-21 on the chain (nothing has merged). The four exit
 > criteria are walked in the status log, all met. The render-tier perf
-> gate was not run here; it is deferred to the close-out by
-> owner-review-queue 2.2 / 2.3. `partition_by_t`, this task's one
-> recorded blocker, was swept by task 106 — see owner-review-queue 1.19
-> and 3.15.
+> gate was not run here; it is deferred to the chain close-out by owner
+> ruling (2026-08-21/22: no gate run until development is done and the
+> owner has looked). `partition_by_t`, this task's one recorded blocker,
+> was swept by task 106 — whose governing ruling awaits owner
+> confirmation as part of task 112 (queue item 1.19); 3.15 is ruled and
+> is task 122 § 3.
 
 Opened 2026-08-20 by task 90 phase 2, which was scoped to *correct a
 doc comment* and found the code was wrong instead. Shelved as its own

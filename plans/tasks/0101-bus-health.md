@@ -7,9 +7,20 @@
 > verification was run by the owner on 2026-08-22 and failed** — which is
 > what opened task 109 item 2 — and, after task 109 phases 2 and 2c fixed
 > what it exposed, **was re-run on 2026-08-23 and confirmed working**
-> (owner-review-queue 3.38). Findings still owed a verdict:
-> owner-review-queue 1.17, 1.18, 1.27, 3.13, **3.52**, and the Vector leg
-> of the same work (3.40), which no agent can test.
+> (owner-review-queue 3.38); with that, the owner closed 3.14 on
+> 2026-08-26 — the hardware verification this header once owed is done
+> for PCAN, and PEAK hardware remains available for future runs. The
+> 2026-08-24 walk settled the 1.N items:
+> 1.17 (the virtual bus's blank adapter cell) is task 114's; 1.18 was
+> dropped as intractable (recorded below); 1.27 (the launcher tints at
+> the ISO warning limit) was accepted. 3.13 was closed 2026-08-26 as **already
+> done** — task 108 phase 2 (`02f9b877`) moved `useBusHealth` onto
+> `useHostMirror`; the finding outlived its fix. 3.52
+> (adapter identity is a display name and nothing else) was ruled
+> 2026-08-26 — *"ship that data across from the sidecar"* — and lands in
+> [task 121](0121-the-trace-tells-the-truth-about-the-wire.md) § 4 with
+> the rest of the hardware-truth work; 3.40 was closed
+> the same day (tested with Vector).
 
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback. The
 list item read "error frame handling"; grooming widened it to what the

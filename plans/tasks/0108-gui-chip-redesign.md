@@ -983,6 +983,21 @@ per control (a distinct invoke call, a distinct row set, a distinct
 registry field) rather than "something changed", so they carry the
 same discriminating power without a fresh mutation run.
 
+**Static review of the seven un-proved bars, 2026-08-26
+(owner-review-queue 3.26, at the owner's request): clean — nothing
+needs hand-testing.** Every handler line across the seven restyle
+commits (`62b4b282`, `d582b85d`, `1190598b`, `d44f83a2`, `649fb0b0`,
+`470512ff`, `07ac9a80`) keeps its exact callback through the
+`onClick`→`onPress` conversion; no `disabled` condition changed in any
+of them; the only semantic conversions are four checkbox→toggle-chip
+swaps (RBS Run, both washes toggles, database Details/Values), each
+toggling the same state variable it did before. Combined with the three
+mutation proofs (trace Pause/Stop, system messages Copy All/Clear,
+signals view Selection), the sweep is control-preserving. **Closed
+2026-08-26 on that review**, with the owner's read of why it held:
+*"a well-defined command infrastructure is at least part of the reason
+this is the case."*
+
 ### What is **not** verified
 
 - **Nothing here proves any bar fits, wraps, or lines up in a
@@ -1172,7 +1187,11 @@ ruling, `MeasurementMenu` kept as its orphan).
   prototype documents. Flagging the "42" discrepancy rather than
   silently reconciling it — if a wider or different set was intended,
   say so and a later phase can add to the registry (additive, not a
-  rework of phase 1's shape).
+  rework of phase 1's shape). **Closed 2026-08-26 (owner-review-queue
+  3.60): 36 confirmed, and the mock correction confirmed** — the 42 was
+  a grooming miscount (no source ever listed 42 names), the sprite's
+  37th (`i-reload`) serves a retired command, and the live-pattern
+  chipfield the mock drew stays unbuilt.
 
 - **The import chip no longer relabels itself to "Loading trace…"**
   (phase 3). The shipped button swapped its own label mid-load; the chip
@@ -1183,7 +1202,8 @@ ruling, `MeasurementMenu` kept as its orphan).
   `ChipButton` has a `busy` prop at all — but it is still a change to a
   shipped, user-visible string, taken deliberately rather than drifted
   into. `App.importTraceGuard` / `App.traceOpenCancel` now pin the
-  tooltip and the state instead of the label.
+  tooltip and the state instead of the label. **Accepted as is,
+  2026-08-26** (owner-review-queue 3.20).
 
 - **ADR 0055 §1 said "Do not convert a command into a chip"**
   (phase 3). That sentence and this task's chip language cannot both
@@ -1283,7 +1303,7 @@ ruling, `MeasurementMenu` kept as its orphan).
   `pressed` was the closer fit of the two existing props and is what
   shipped; a dedicated "disclosure" affordance on `ChipButton`, if more
   bars turn out to need one, is a question for whichever phase hits it
-  next.
+  next. **Accepted 2026-08-26** (owner-review-queue 3.25: *"fine"*).
 
 - **The signals-view toolbar's live control diverges from the
   prototype's own earlier sketch** (phase 5). The mock (`plans/prototypes/gui-chip-redesign.html`

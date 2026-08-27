@@ -6,8 +6,14 @@
 > blocked** by task 109 item 7: this task took "Space already works in the
 > RBS panel" as a premise, and the premise was false. Task 109 phase 3
 > landed the fix and the regression test on 2026-08-23, so the block is
-> lifted. Findings still owed a verdict: owner-review-queue 1.10
-> (resolved), 1.11, 1.12.
+> lifted. Queue item 1.10 was resolved 2026-08-22 (`--rbs-run-on-start`
+> is part of ADR 0031's documented invocation). Two shipped behaviour
+> changes stand recorded from the 2026-08-24 walk, neither reversed:
+> 1.11, unassigning now clears a running RBS element's Run (the
+> persistence change removed the reason for the old asymmetry), and
+> 1.12, `start` on a transmit row is no longer disabled by a
+> disconnected bus (the no-guard ruling applied consistently; `send`
+> stays locked).
 
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback.
 Three observations that are one question wearing three hats — **what

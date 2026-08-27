@@ -118,7 +118,19 @@ current behaviour and names `view.exitFullscreen` in its comment. **It is
 inverted by this change**, and its comment rewritten to say why the grid
 now wins.
 
-## 5. ADR 0044
+## 5. A Default column on the RBS signals grid · 3.8
+
+**Ruled 2026-08-26**: *"add default value column. 'none' where we're
+currently adding 'detail' saying 'no start value...'"* The RBS feed
+collapses the DBC and override layers, so an overridden field's "DBC
+default" is invisible and the undefaulted case rides the free-text
+detail (`rbs/signals.rs:193` — *"no start value in the DBC — bits are
+the file's fill"*). Instead: a **Default** column on the grid
+(`rbsSignalsColumns.ts`), showing the DBC's start value where one
+exists and `none` where it does not; the detail cell stops carrying
+that sentence.
+
+## 6. ADR 0044
 
 Two amendments, in the same commit as the code:
 
@@ -150,6 +162,10 @@ Two amendments, in the same commit as the code:
 5. **Neither signal-mapping surface paints a row background**, and
    neither ships a Row Highlights chip or a `washesOn` param. Pinned by a
    test that the status is still legible with the wash gone.
-6. **ADR 0044 carries all three amendments**, dated, in the same commit.
-7. **Queue rows 1.6, 1.26 and 1.13c struck** with the date.
-8. **Full CI green** — six jobs, each named with its command.
+6. **The RBS signals grid carries a Default column** — the DBC start
+   value where one exists, `none` where not — and the detail cell no
+   longer says "no start value…". Pinned by a test each way.
+7. **ADR 0044 carries all three amendments**, dated, in the same commit.
+8. **Queue rows 1.6, 1.26, 1.13c and 3.8 are recorded closed** with the
+   date.
+9. **Full CI green** — seven jobs, each named with its command.
