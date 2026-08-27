@@ -119,6 +119,9 @@ describe("BusHealthPanel", () => {
     expect(sim[2]).toBe("—");
     expect(sim[3]).toBe("—");
     expect(sim[4]).toBe("—");
+    // Its Adapter cell says there is no hardware, rather than showing
+    // the canonical wire id every virtual binding carries.
+    expect(sim[6]).toBe("virtual bus");
 
     // And the healthy one, with the adapter column in the project
     // panel's own words.

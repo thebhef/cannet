@@ -14,7 +14,7 @@ import { fireEvent } from "@testing-library/react";
 import { flushSync } from "react-dom";
 
 /// The chip on the bar with this accessible name — "Open", "Import",
-/// "Database panel". Throws rather than returning null: a test that has
+/// "Graph panel". Throws rather than returning null: a test that has
 /// lost a control should say so where it happened.
 export function toolbarChip(name: string): HTMLButtonElement {
   // Every button on the bar itself, however deeply the chip sits — a

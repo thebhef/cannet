@@ -9,14 +9,30 @@
 /// and the keyboard. Nothing here reaches past the command layer except
 /// the two menus, which are view-local open/closed state.
 ///
-/// Three things about the shape, each of them a decision rather than a
-/// style:
+/// Things about the shape, each of them a decision rather than a style:
 ///
+/// - **The bar is a rendering of the command registry, not a second
+///   declaration of it** (ADR 0055 §4). What sits here is a command id,
+///   an icon and an order; the words come from that command's own
+///   `bar` entry in `commands.ts`, beside its palette label. A chip
+///   that spelled its own label is how the Database rename (ADR 0052)
+///   reached every surface except this one — the two strings still
+///   differ, but a rename now has both under one hand.
 /// - **The words are short and the tooltip is long.** A chip's label is
 ///   a Title Case word or two beside an icon; the full phrase ("Open
 ///   project…") is the sentence-case tooltip. Where an icon is
-///   unambiguous on its own — the four panel launchers — the chip is
-///   the icon and the tooltip is the whole of its words.
+///   unambiguous on its own — the panel launchers — the chip is the
+///   icon and the tooltip is the whole of its words. The Database
+///   launcher is the exception and keeps its word, because the name is
+///   what it exists to settle: the view is "Database" everywhere a
+///   user meets it (ADR 0052), and a bar that said "DBC" was the last
+///   place still saying otherwise.
+/// - **Showing the Database view is a command; opening a database file
+///   is not one of the bar's.** Adding a file to the project is
+///   project membership, and it is offered where the project's
+///   databases are listed — the project panel — rather than from a
+///   second place up here. The palette keeps both: it is the whole
+///   command list, and the bar a curated rendering of it.
 /// - **The seven "Add X" commands are one menu.** They differ only in
 ///   which panel they open, and seven near-identical phrases across the
 ///   bar is where the eye stops reading.
@@ -37,18 +53,31 @@ import { useState } from "react";
 
 import { ChipButton } from "./ChipButton";
 import { ChipSegment } from "./ChipSegment";
+import { COMMANDS } from "./commands";
 import { useDismissableMenu } from "./useDismissableMenu";
 import type { IconName } from "./Icon";
 
-/// One chip: the command it dispatches and how it is drawn. A chip with
-/// no `label` is the icon-only form, named by its `title`.
+/// The words each command is drawn with here, taken from the registry
+/// rather than restated — see the module doc. A `label` of `undefined`
+/// is the icon-only form, named by its title; the title falls back to
+/// the command's palette label where the bar wants the same phrase.
+const BAR_WORDS = new Map(
+  COMMANDS.filter((c) => c.bar !== undefined).map(
+    (c) => [c.id, { label: c.bar?.label, title: c.bar?.title ?? c.label }] as const,
+  ),
+);
+
+/// One chip: the command it dispatches, the icon beside its words, and
+/// whatever its current state adds. The words themselves are the
+/// command's, not the chip's.
 interface ToolbarChip {
   command: string;
   icon: IconName;
-  label?: string;
-  /// Sentence case, and the long form: it is what a short label leaves
-  /// out.
-  title: string;
+  /// Overrides the command's bar tooltip while the chip's own state
+  /// changes what it should say — the import chip mid-load is the only
+  /// case, and the sentence is about *this* press rather than about the
+  /// command.
+  title?: string;
   disabled?: boolean;
   /// The chip's own command is running. Pulses the hairline rather than
   /// greying out, so "working" does not read as "unavailable".
@@ -60,14 +89,14 @@ interface ToolbarChip {
 type ToolbarItem = ToolbarChip | "sep" | "save" | "recentProjects" | "recent" | "add";
 
 /// The panels the Add menu opens, in the order they are listed.
-const ADD_PANEL_CHIPS: readonly { command: string; icon: IconName; label: string }[] = [
-  { command: "panel.add.trace", icon: "rows", label: "Trace" },
-  { command: "panel.add.plot", icon: "chart", label: "Plot Panel" },
-  { command: "panel.add.signals", icon: "signals", label: "Signal View" },
-  { command: "panel.add.transmit", icon: "send", label: "Transmit Panel" },
-  { command: "panel.add.rbs", icon: "loop", label: "RBS Panel" },
-  { command: "panel.add.colormap", icon: "palette", label: "Color Map" },
-  { command: "panel.add.generator", icon: "wave", label: "Generator" },
+const ADD_PANEL_CHIPS: readonly { command: string; icon: IconName }[] = [
+  { command: "panel.add.trace", icon: "rows" },
+  { command: "panel.add.plot", icon: "chart" },
+  { command: "panel.add.signals", icon: "signals" },
+  { command: "panel.add.transmit", icon: "send" },
+  { command: "panel.add.rbs", icon: "loop" },
+  { command: "panel.add.colormap", icon: "palette" },
+  { command: "panel.add.generator", icon: "wave" },
 ];
 
 export interface ToolbarProps {
@@ -113,8 +142,8 @@ export function Toolbar({
   const saveRef = useDismissableMenu<HTMLDivElement>(saveOpen, () => setSaveOpen(false));
 
   const items: ToolbarItem[] = [
-    { command: "project.new", icon: "plus", label: "New", title: "New project" },
-    { command: "project.open", icon: "folder", label: "Open", title: "Open project…" },
+    { command: "project.new", icon: "plus" },
+    { command: "project.open", icon: "folder" },
     "recentProjects",
     "save",
     "sep",
@@ -126,37 +155,23 @@ export function Toolbar({
     {
       command: "trace.import",
       icon: "import",
-      label: "Import",
       title: importing
         ? "Loading a capture. Stop it with Cancel in the status bar below."
-        : "Import trace… (BLF / MDF)",
+        : undefined,
       disabled: importing,
       busy: importing,
     },
     "recent",
-    { command: "dbc.add", icon: "db-add", label: "DBC", title: "Add DBC…" },
     "sep",
-    {
-      command: "capture.clear",
-      icon: "clear",
-      label: "Clear",
-      title: "Clear capture",
-      disabled: captureEmpty,
-    },
-    {
-      command: "capture.save",
-      icon: "save",
-      label: "Capture",
-      title: "Save capture…",
-      disabled: captureEmpty,
-    },
+    { command: "capture.clear", icon: "clear", disabled: captureEmpty },
+    { command: "capture.save", icon: "save", disabled: captureEmpty },
     "sep",
     "add",
     "sep",
-    { command: "panel.show.dbc", icon: "db", title: "Database panel" },
-    { command: "panel.show.projectGraph", icon: "graph", title: "Graph panel" },
-    { command: "panel.show.events", icon: "flag", title: "Events panel" },
-    { command: "panel.show.project", icon: "tree", title: "Project panel" },
+    { command: "panel.show.dbc", icon: "db" },
+    { command: "panel.show.projectGraph", icon: "graph" },
+    { command: "panel.show.events", icon: "flag" },
+    { command: "panel.show.project", icon: "tree" },
   ];
 
   const renderItem = (item: ToolbarItem, i: number) => {
@@ -172,8 +187,8 @@ export function Toolbar({
           <ChipSegment label="Save" className="save-split">
             <ChipButton
               icon="save"
-              label="Save"
-              title="Save project"
+              label={BAR_WORDS.get("project.save")?.label}
+              title={BAR_WORDS.get("project.save")?.title}
               onPress={() => onRun("project.save")}
             />
             <ChipButton
@@ -189,8 +204,8 @@ export function Toolbar({
               <li role="menuitem">
                 <ChipButton
                   icon="save"
-                  label="Save As…"
-                  title="Save project as…"
+                  label={BAR_WORDS.get("project.saveAs")?.label}
+                  title={BAR_WORDS.get("project.saveAs")?.title}
                   onPress={() => {
                     setSaveOpen(false);
                     onRun("project.saveAs");
@@ -252,7 +267,7 @@ export function Toolbar({
                 <li key={chip.command} role="menuitem">
                   <ChipButton
                     icon={chip.icon}
-                    label={chip.label}
+                    label={BAR_WORDS.get(chip.command)?.label}
                     onPress={() => {
                       setAddOpen(false);
                       onRun(chip.command);
@@ -298,12 +313,13 @@ export function Toolbar({
         </div>
       );
     }
+    const words = BAR_WORDS.get(item.command);
     return (
       <ChipButton
         key={item.command}
         icon={item.icon}
-        label={item.label}
-        title={item.title}
+        label={words?.label}
+        title={item.title ?? words?.title}
         disabled={item.disabled}
         busy={item.busy}
         onPress={() => onRun(item.command)}

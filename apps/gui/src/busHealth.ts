@@ -123,11 +123,20 @@ export interface BusHealthInputs {
   bindings: readonly InterfaceBinding[];
   /// Every interface the app knows about, by wire id, for the display
   /// name. A binding to an interface the app has not enumerated falls
-  /// back to the wire id, which is what the project panel shows too.
+  /// back to the wire id — except a virtual-bus binding, which has no
+  /// hardware to name at all (see {@link VIRTUAL_BUS_ADAPTER}).
   interfaces: readonly InterfaceRecord[];
   connStates: BusConnStates;
   health: BusHealthMap;
 }
+
+/// What the Adapter column says for a bus bound to an in-process
+/// virtual bus. Every such binding carries the same canonical
+/// interface name, which is a wire id and not a thing to show anyone;
+/// and the column asks what hardware is behind the bus, whose honest
+/// answer here is that there is none. The bus's own name is not
+/// repeated — column 1 already carries it.
+const VIRTUAL_BUS_ADAPTER = "virtual bus";
 
 /// Build one row per project bus, in project order.
 export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
@@ -142,7 +151,9 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
       binding === undefined
         ? null
         : (inp.interfaces.find((i) => i.id === binding.interface)?.display_name ??
-          binding.interface);
+          (binding.kind === "local-virtual-bus"
+            ? VIRTUAL_BUS_ADAPTER
+            : binding.interface));
     return {
       busId: bus.id,
       name: bus.name,

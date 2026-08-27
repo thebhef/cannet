@@ -14,6 +14,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 
 import { Toolbar } from "./Toolbar";
+import { COMMANDS } from "./commands";
 
 afterEach(cleanup);
 
@@ -28,11 +29,10 @@ const BAR: readonly [string, string | null, string | null][] = [
   ["More save actions", "▾", null],
   ["Import trace… (BLF / MDF)", "Import", "trace.import"],
   ["Recent captures", "Recent", null],
-  ["Add DBC…", "DBC", "dbc.add"],
   ["Clear capture", "Clear", "capture.clear"],
   ["Save capture…", "Capture", "capture.save"],
   ["Add a panel", "Add\u00a0\u25be", null],
-  ["Database panel", null, "panel.show.dbc"],
+  ["Database panel", "Database", "panel.show.dbc"],
   ["Graph panel", null, "panel.show.projectGraph"],
   ["Events panel", null, "panel.show.events"],
   ["Project panel", null, "panel.show.project"],
@@ -147,6 +147,43 @@ describe("Toolbar", () => {
     ]) {
       expect(dispatched).not.toContain(forbidden);
     }
+  });
+
+  it("draws each chip with the words its command declares, not words of its own", () => {
+    // ADR 0055 §4: the registry is the model and the bar one rendering
+    // of it. A chip that declared its own label beside the palette's is
+    // how the Database rename reached every surface except this one —
+    // so the words a chip shows have to be the words the command
+    // carries, and the table above is the third party that says which.
+    for (const [title, label, command] of BAR) {
+      if (command === null) continue;
+      const spec = COMMANDS.find((c) => c.id === command);
+      expect(spec?.bar, `${command} declares no toolbar words`).toBeDefined();
+      expect(spec!.bar!.label ?? null, command).toBe(label);
+      expect(spec!.bar!.title ?? spec!.label, command).toBe(title);
+    }
+  });
+
+  it("takes the Add menu's words from the registry too", () => {
+    for (const [label, command] of ADD_MENU) {
+      const spec = COMMANDS.find((c) => c.id === command);
+      expect(spec?.bar?.label, command).toBe(label);
+    }
+  });
+
+  it("shows the Database view from the bar, and opens no database file from it", () => {
+    // The bar's one database control is the view launcher: it says
+    // `Database` and it dispatches the show command. Opening a file is
+    // a project-membership action and lives in the project panel — the
+    // palette keeps `dbc.add`, the bar does not.
+    const { onRun } = renderBar();
+    const database = barChips().filter((c) => labelOf(c) === "Database");
+    expect(database).toHaveLength(1);
+    fireEvent.click(database[0]);
+    expect(onRun.mock.calls).toEqual([["panel.show.dbc"]]);
+
+    for (const chip of barChips()) fireEvent.click(chip);
+    expect(onRun.mock.calls.map(([id]) => id as string)).not.toContain("dbc.add");
   });
 
   it("offers nothing to clear or save while nothing has been captured", () => {

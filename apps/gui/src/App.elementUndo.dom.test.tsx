@@ -858,7 +858,7 @@ describe("element undo", () => {
     // history scrubs `params`.
     await mountApp();
     await act(async () => {
-      fireEvent.click(toolbarChip("Database panel"));
+      fireEvent.click(toolbarChip("Database"));
     });
     await waitFor(() => {
       if (!document.querySelector(".dbc-panel")) throw new Error("no Database panel yet");

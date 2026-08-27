@@ -181,6 +181,19 @@ describe("busHealthRows", () => {
   it("falls back to the wire id for an interface the app has not enumerated", () => {
     expect(row("b1", { interfaces: [] }).adapter).toBe("pcan:PCAN_USBBUS1(SN:1)");
   });
+
+  it("says a virtual bus has no hardware rather than leaking its wire id", () => {
+    // Every local-vbus binding carries the same canonical interface
+    // name, which is a wire id and not something to show anyone. This
+    // is the Adapter column — the honest answer for a bus with no
+    // hardware behind it is that there is none.
+    const r = row("b4");
+    expect(r.adapter).toBe("virtual bus");
+    // And not the bus's own name: column 1 already carries that, so
+    // repeating it here would say nothing.
+    expect(r.name).toBe("Sim");
+    expect(r.adapter).not.toBe(r.name);
+  });
 });
 
 describe("busHealthConcerns", () => {
