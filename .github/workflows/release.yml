@@ -29,9 +29,18 @@ name: Release
 # onedir beside the binary, which is where the server's own probe
 # looks. None of them starts anything.
 #
+# Tick **Dry run** to build every one of those artifacts while touching
+# nothing outside the run: no remote tag, no draft release. That is how
+# you get an installable test build of a branch — the way to exercise
+# hardware CI cannot reach (a multi-channel Kvaser card, say) is to
+# download the installer onto the machine the device is plugged into.
+# Artifacts attach to the workflow run in *both* modes, so a real
+# release is downloadable straight off the run too, without opening the
+# draft.
+#
 # CI builds on every push to main are cheap (Linux); the expensive
-# cross-platform bundle build runs only here, when you actually release.
-# The committed version stays 0.0.0.
+# cross-platform bundle build runs only here, when you actually release
+# or ask for a test build. The committed version stays 0.0.0.
 #
 # Signing / notarization is a deliberate follow-up — see
 # plans/tasks/0026-distribution-and-ci.md.
@@ -43,12 +52,26 @@ on:
         description: "Release version, e.g. 0.1.0 (no leading v)"
         required: true
         type: string
+      # A dry run still takes a version above: it names the artifacts,
+      # and the local (never-pushed) tag stamps it into the binaries, so
+      # a test build reports its version like any other build. Nothing
+      # is published, so reusing one version across dry runs is fine.
+      dry_run:
+        description: "Dry run — build the artifacts, create no tag and no release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+# A real release takes one shared lock, so two can never interleave. A
+# dry run takes a per-ref lock instead: a test build neither blocks a
+# release nor queues behind another branch's test build. Spelled through
+# `github.event.inputs` (a string) rather than the `inputs` context
+# because this key is evaluated before any job starts; the step-level
+# `if:` conditions below use the typed boolean.
 concurrency:
-  group: release
+  group: ${{ github.event.inputs.dry_run == 'true' && format('release-dry-{0}', github.ref) || 'release' }}
   cancel-in-progress: false
 
 jobs:
@@ -75,10 +98,15 @@ jobs:
             label: macOS arm64
             rust-target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
+            # `args` names an explicit --target, so the bundle lands
+            # under that triple's directory.
+            bundle-glob: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - platform: windows-latest
             label: Windows x64
             rust-target: x86_64-pc-windows-msvc
             args: ""
+            # No --target, so the bundle lands in the host default's.
+            bundle-glob: target/release/bundle/nsis/*-setup.exe
     runs-on: ${{ matrix.platform }}
     # Job-wide so both this leg's explicit staging step and the bundle
     # step's beforeBuildCommand (which runs the same script) build for —
@@ -225,6 +253,7 @@ jobs:
         run: uv run --no-project scripts/stage-server.py
 
       - name: Build and publish bundle
+        if: ${{ !inputs.dry_run }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -236,6 +265,17 @@ jobs:
           releaseName: cannet ${{ steps.ver.outputs.tag }}
           releaseDraft: true
           prerelease: true
+          args: ${{ matrix.args }}
+
+      # The same build, minus `tagName` — withholding it is precisely
+      # what stops tauri-action creating a tag or a release, so this
+      # step needs no token either. The bundle it leaves on disk is
+      # collected by the upload step below.
+      - name: Build bundle (dry run)
+        if: ${{ inputs.dry_run }}
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: apps/gui
           args: ${{ matrix.args }}
 
       # The Tauri build above just froze this runner's
@@ -338,13 +378,45 @@ jobs:
           [ -f "$SETUP" ] || { echo "::error::cargo-packager did not produce $SETUP"; ls -l target/packager || true; exit 1; }
           echo "SERVER_INSTALLER_PATH=$SETUP" >> "$GITHUB_ENV"
 
+      # Stage into one workspace directory before uploading. The bundle
+      # sits under `target/`, the server archive and installer under
+      # RUNNER_TEMP — handing an upload those roots at once buries every
+      # file under their deep shared prefix inside the artifact zip. A
+      # flat directory keeps the download obvious. `set -e` plus an
+      # unquoted glob also means a bundle that didn't get built fails
+      # here, by name, rather than as a vague empty-artifact warning.
+      - name: Stage this leg's artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-artifacts
+          cp ${{ matrix.bundle-glob }} dist-artifacts/
+          cp "$SERVER_ARCHIVE_PATH" "$SERVER_INSTALLER_PATH" dist-artifacts/
+          ls -l dist-artifacts
+
+      # Everything this leg produced, attached to the run itself. In a
+      # dry run this is the only copy that exists; in a real release it
+      # is a second, reviewable one. Every staged file is already a
+      # compressed format, so re-compressing costs upload time and
+      # saves nothing.
+      - name: Upload artifacts to the workflow run
+        uses: actions/upload-artifact@v7
+        with:
+          name: cannet-${{ steps.ver.outputs.tag }}-${{ matrix.rust-target }}
+          path: dist-artifacts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
       - name: Upload server archive to the draft release
+        if: ${{ !inputs.dry_run }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ steps.ver.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
 
       - name: Upload server installer to the draft release
+        if: ${{ !inputs.dry_run }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -353,9 +425,9 @@ jobs:
   # cannet's Linux support is server-only for now: no Tauri bundle, no
   # WebView host libraries, no frontend build — just the server binary
   # and the sidecar it supervises. Depends on `bundle` (which already
-  # depends on `verify`) because it uploads to the tag/draft release
-  # that job creates and reads the tag string it computed, rather than
-  # re-deriving it.
+  # depends on `verify`) because it reads the tag string that job
+  # computed rather than re-deriving it — and, in publish mode, uploads
+  # to the tag/draft release that job creates.
   server-only:
     name: Server archive (Linux x64)
     needs: bundle
@@ -450,12 +522,32 @@ jobs:
           [ -f "$DEB" ] || { echo "::error::cargo-deb did not produce $DEB"; ls -l target/debian || true; exit 1; }
           echo "SERVER_INSTALLER_PATH=$DEB" >> "$GITHUB_ENV"
 
+      # As on the bundle legs: onto the run in both modes, into the
+      # draft release only when publishing.
+      - name: Stage this job's artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-artifacts
+          cp "$SERVER_ARCHIVE_PATH" "$SERVER_INSTALLER_PATH" dist-artifacts/
+          ls -l dist-artifacts
+
+      - name: Upload artifacts to the workflow run
+        uses: actions/upload-artifact@v7
+        with:
+          name: cannet-server-${{ needs.bundle.outputs.tag }}-${{ env.RUST_TARGET }}
+          path: dist-artifacts
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
       - name: Upload server archive to the draft release
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ needs.bundle.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
 
       - name: Upload server installer to the draft release
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ needs.bundle.outputs.tag }}" "$SERVER_INSTALLER_PATH" --clobber --repo "${{ github.repository }}"

@@ -650,6 +650,15 @@ crate retained long-term).
   `release.yml` is dispatched manually and builds bundles on
   `macos-latest` (Apple Silicon) and `windows-latest` (x64). Tauri
   cannot cross-compile, so each target builds on its native runner.
+  `release.yml` also takes a **dry-run** input: the same build, no
+  remote tag and no release. Every artifact attaches to the workflow
+  run in both modes (`actions/upload-artifact`), which is how an
+  installable test build reaches a machine with no toolchain on it —
+  the only way to exercise vendor hardware CI cannot reach. Kept as one
+  mode of the release workflow rather than a second per-PR workflow: a
+  test build and a release must be the same build to be worth
+  anything, and a cross-platform bundle on every PR would undo the
+  cheap-Linux-CI split.
 - **Pinned toolchains** — `adopted` so local and CI run identical
   versions (the workspace opts into `clippy::pedantic`, so a floating
   stable would keep breaking the `-D warnings` gate as new lints land).
