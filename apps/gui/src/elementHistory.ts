@@ -280,7 +280,10 @@ function equalExceptConfig(a: MaskedElement, b: MaskedElement): boolean {
 /// Which stack a step lives on. The two are recorded and replayed
 /// through one log so a chord always reverses the most recent change,
 /// whichever kind it was.
-export type UndoStack = "layout" | "element";
+/// The stacks one gesture can step. `events` is the event-link stack
+/// (`eventLinkHistory.ts`) — steps rather than snapshots, but ordered
+/// against the other two by the same log.
+export type UndoStack = "layout" | "element" | "events";
 
 /// One entry in the order log: the stacks a single user gesture stepped,
 /// in the order they stepped. Most gestures touch one stack; the ones
