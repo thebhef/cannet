@@ -594,10 +594,16 @@ below:
   once per area is the same number written N times over the data.
   "Bottom drawing axis", not "last axis": a collapsed area is a heading
   row with no canvas, so the chrome falls back up the stack to the
-  lowest axis that still has a plot (`bottomDrawingAxis`), and the
-  marker labels fall the same way down to `topDrawingAxis`. Tick
-  spacing is label-width-aware so zoomed-in elapsed-time labels (more
+  lowest axis that still has a plot (`bottomDrawingAxis`). Tick spacing
+  is label-width-aware so zoomed-in elapsed-time labels (more
   fractional digits) don't overlap.
+- **A marker's label wraps and then truncates**, to two lines inside a
+  third of the plot width (`wrapMarkerLabel`). An event label is free
+  text, and one drawn as a single chip runs across the area and over
+  its neighbours' markers.
+- **The marker being acted on draws last.** Lighting one event, fading
+  the rest, and then painting a quiet neighbour's chip over the lit one
+  says two opposite things at once (`litLast`).
 - **Enum-lanes axis.** Per-unit mode collects an area's enums onto one
   shared axis (`deriveAxesForArea` kind `enum-lanes`), fed by a
   panel-level `list_value_tables` fetch (`useValueTables`) reduced to
