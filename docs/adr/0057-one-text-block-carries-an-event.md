@@ -107,6 +107,14 @@ The consequence worth stating: renaming a cannet marker in another tool
 renames the event, because the tool edited the field that holds the name.
 That is the right outcome, and it is why the block does not duplicate it.
 
+**One exception, and it is deliberate: `commentedEventType`.** The BLF
+`EVENT_COMMENT` record has its own `mCommentedEventType`, and that field
+is still written, because it is what makes a foreign reader tie the
+comment to its message. The block carries the value as well, so the
+grammar reads the same on every carrier rather than being one key short
+on exactly one record type. Reading takes the record's field where there
+is one.
+
 ### 3. A format's own event fields are populated as interop, never as storage
 
 MDF's native fields say as much about our events as they honestly can, and
@@ -158,6 +166,11 @@ is the foreground. That reads the neutral default as "uncoloured" and, for
 free, reads every marker cannet wrote before this convention, which put
 the colour in the foreground.
 
+Because it is a *pair* of fields, "no colour chosen" and `#000000` are
+distinct records — white-on-black is a chosen black chip, black-on-white
+is the untouched default — so no colour is lost and the format needs no
+help from the block.
+
 ## What a round-trip loses, per format
 
 Everything below is exercised by tests over generated files, not asserted
@@ -167,32 +180,27 @@ in prose.
 | --- | --- | --- |
 | id, kind, tag, description | kept (block) | kept (block) |
 | label | kept (`ev_tx_name`) | kept (`marker_name`; block, for a comment) |
-| colour | kept (block) | kept (fill) — **except `#000000`**, on a
-limitation of this writer rather than of the format: see below |
+| colour | kept (block) | kept (fill) |
 | message / signal / event subjects | kept (block) | kept (block) |
-| the record a comment is attached to | kept (block) | kept (`mCommentedEventType`) |
+| the record a comment is attached to | kept (block) | kept (`mCommentedEventType`, and the block) |
 | a link to an event the file does not carry | kept, unresolved | kept, unresolved |
 | **visible to another tool** | yes — name, marker type, cause, and a span as a real range pair | as a text block under the user's own words |
 | **subjects visible to another tool** | no — nothing in the file to scope to | no |
 | **survives a foreign tool's rewrite** | with the comment | with the marker |
-| **a key from a later schema version** | lost | lost |
+| **a key from a later schema version** | kept (passthrough) | kept (passthrough) |
 
-Three of those want a sentence each.
+Two of those want a sentence each.
 
-- **`#000000` in BLF.** A packed `0x000000` is both "black" and "no colour
-  chosen", and the record has no third state, so a black event comes back
-  uncoloured. MDF keeps black, because the block carries the colour as
-  text. The asymmetry is BLF's, not the model's.
 - **A dangling link.** Saving is not deleting. ADR 0056 sweeps event
   references when an event is *removed*; an event kept out of a file by the
   export boundary leaves a reference behind, and that reference is written,
   read back, and resolves to nothing — a state, not a fault.
-- **A key from a later schema version.** The parser preserves an unknown
-  key through a parse and a re-serialize, but `Note` has no field to hold
-  one, so a file written by a later version, opened and saved by this one,
-  loses the fields this one does not understand. Closing that would mean a
-  passthrough field on the durable schema, which is a model change and not
-  one anything has yet needed.
+- **A key from a later schema version.** The parser keeps an unrecognised
+  line verbatim, and `Note` carries those lines through as a passthrough
+  field, so a file written by a later version — opened and saved by this
+  one — comes out still carrying the fields this one cannot read. They are
+  written back after the keys this version does know, in the order the file
+  had them.
 
 ## Consequences
 

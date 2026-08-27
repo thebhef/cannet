@@ -48,7 +48,8 @@ their criterion-by-criterion verdicts to
 - [ ] 110 — chain CI repair; Windows MSI bundle target dropped **§**
 - [ ] 108 — the chip language (prototype durable, maintained in-repo)
 - [ ] 107 — events point at signals (both open criteria dispositioned:
-      unknown-key round-trip → task 122, file-backed subject → backlog)
+      unknown-key round-trip closed by task 122, which added the
+      passthrough field on `Note`; file-backed subject → backlog)
 - [ ] 109 — usage feedback from the chip-era build
 - [ ] 115 — trace row menu keeps only the event action (queue item
       1.23 no longer exists post-reframe; recorded here instead — see
@@ -61,6 +62,13 @@ their criterion-by-criterion verdicts to
       `virtual bus` in the Adapter column (queue items 1.37, 1.33b and
       1.17 no longer exist post-reframe; their closures are in
       [task 114](tasks/0114-one-name-per-thing.md)'s status log)
+- [ ] 122 — a file keeps what you wrote: black survives BLF, the BLF
+      anchor reaches disk at latch rather than at `finish`, a foreign
+      MDF's sample order is sorted at the reader's boundary, unknown
+      `cannet-event/1` keys round-trip, and `commentedEventType` rides
+      the block on every carrier (findings 3.9, 3.15, 3.30 and 3.59 no
+      longer exist post-reframe; their closures are in
+      [task 122](tasks/0122-a-file-keeps-what-you-wrote.md)'s status log)
 
 ## Close-out chores
 

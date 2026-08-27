@@ -101,7 +101,7 @@ fn write_relative_zero(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             writer.append(&frame(t + 1_000_000, STATUS_ID, status_payload(i)))?;
         }
     }
-    writer.append_marker(1_000_000_000, "halfway", "", 0)?;
+    writer.append_marker(1_000_000_000, "halfway", "", None)?;
     writer.finish()?;
     Ok(())
 }
@@ -143,7 +143,7 @@ fn write_wall_clock_out_of_order(path: &Path) -> Result<(), Box<dyn std::error::
     // The stated measurement start. Set explicitly (rather than
     // inferred from the first object) because that *is* the fixture:
     // the file states a wall clock and the objects are offsets from it.
-    let start = writer.set_start_if_unset(WALL_CLOCK_NS);
+    let start = writer.set_start_if_unset(WALL_CLOCK_NS)?;
     assert_eq!(start, WALL_CLOCK_NS);
 
     for i in 0..99u64 {

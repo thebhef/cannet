@@ -39,7 +39,9 @@ pub struct FileSignal {
     /// a signal decoded here; for one decoded before the file was
     /// written, the conversion block is the only place it exists.
     pub value_table: Vec<(i64, String)>,
-    /// Absolute sample times (ns since the UNIX epoch), ascending.
+    /// Absolute sample times (ns since the UNIX epoch), ascending — the
+    /// reader sorts a foreign file's samples into that order rather than
+    /// trusting its record order (see `sort_by_time`).
     pub timestamps_ns: Vec<u64>,
     /// Physical values, one per timestamp — with one exception the
     /// channel's own conversion forces: where that conversion maps values
@@ -149,6 +151,7 @@ pub(crate) fn signal_groups(file: &Mdf4File) -> Vec<SignalChannelGroup> {
                 timestamps_ns.push(absolute_ns(file.start_time_ns, seconds));
                 values.push(value);
             }
+            sort_by_time(&mut timestamps_ns, &mut values);
             signals.push(FileSignal {
                 name: channel.name.clone(),
                 unit: channel.unit.clone(),
@@ -172,6 +175,33 @@ pub(crate) fn signal_groups(file: &Mdf4File) -> Vec<SignalChannelGroup> {
         }
     }
     out
+}
+
+/// Put a channel's samples in ascending time order, keeping each value
+/// with its own timestamp. A no-op — one comparison per sample — when the
+/// file was already in order, which is every file cannet itself writes.
+///
+/// `FileSignal::timestamps_ns` is documented ascending and its consumers
+/// rely on it: the paged window lookup binary-searches, the plot's
+/// pyramid folds index-adjacent points into time-span envelopes, and
+/// uPlot's contract is an ascending x axis. Nothing in MDF forbids a
+/// descending master, and [`absolute_ns`]'s clamp can manufacture a
+/// descent from a file with one pre-start sample late in record order, so
+/// the guarantee is made good here rather than assumed downstream.
+///
+/// A series may be reordered where a trace may not: its samples are
+/// `(time, value)` pairs with no arrival identity of their own, which is
+/// the difference between the two timing models of
+/// [ADR 0024](../../../docs/adr/0024-trace-like-view-timing.md). The sort
+/// is stable, so samples stamped alike keep the file's order.
+fn sort_by_time(timestamps_ns: &mut Vec<u64>, values: &mut Vec<f64>) {
+    if timestamps_ns.is_sorted() {
+        return;
+    }
+    let mut pairs: Vec<(u64, f64)> = timestamps_ns.drain(..).zip(values.drain(..)).collect();
+    pairs.sort_by_key(|(ts, _)| *ts);
+    timestamps_ns.extend(pairs.iter().map(|(ts, _)| *ts));
+    values.extend(pairs.iter().map(|(_, value)| *value));
 }
 
 /// Master seconds → absolute nanoseconds, per ADR 0024.

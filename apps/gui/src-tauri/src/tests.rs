@@ -1871,6 +1871,7 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         },
         notes::Note {
             id: "b".into(),
@@ -1882,6 +1883,7 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         },
     ];
 
@@ -2257,6 +2259,7 @@ fn a_marker_outside_the_import_range_is_dropped_and_does_not_move_the_origin() {
         tag: None,
         commented_event_type: None,
         subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
     };
     crate::session::anchor_replay_session(&state, &mut anchor, 2_000_000_000);
 
@@ -3112,6 +3115,7 @@ fn both_blf_annotation_records_round_trip() {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         },
         notes::Note {
             id: "c1".into(),
@@ -3124,6 +3128,7 @@ fn both_blf_annotation_records_round_trip() {
             // CAN_MESSAGE2 — the comment is on a classic CAN frame.
             commented_event_type: Some(86),
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         },
     ];
 
@@ -3133,6 +3138,15 @@ fn both_blf_annotation_records_round_trip() {
     assert_eq!(
         back, notes_in,
         "both records come back as the events that wrote them"
+    );
+    // The record's own `mCommentedEventType` is what a foreign reader
+    // looks at, and it is still written — but the block says it too, so
+    // the grammar reads the same on every carrier (ADR 0057).
+    let (native_type, comment) = event_comments(&dest).remove(0);
+    assert_eq!(native_type, 86, "the record's own field is still written");
+    assert!(
+        comment.contains("\ncommentedEventType: 86"),
+        "and the block says it too: {comment}"
     );
 
     // The control: another tool's comment, unpacked prose.
@@ -3182,6 +3196,7 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
         tag: Some("fault".into()),
         commented_event_type: None,
         subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
     };
     let plain = notes::Note {
         id: "n-plain".into(),
@@ -3193,6 +3208,7 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
         tag: None,
         commented_event_type: None,
         subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
     };
 
     let dest = dir.path().join("marked.blf");
@@ -3271,6 +3287,7 @@ fn subject_bearing_notes(ts: u64) -> Vec<notes::Note> {
                     id: "n-other".into(),
                 },
             ],
+            unknown_block_lines: Vec::new(),
         },
         notes::Note {
             id: "n-other".into(),
@@ -3282,6 +3299,7 @@ fn subject_bearing_notes(ts: u64) -> Vec<notes::Note> {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         },
     ]
 }
@@ -3313,6 +3331,7 @@ fn every_subject_kind_survives_a_blf_round_trip() {
             message_id: 0x2A1,
             extended: false,
         }],
+        unknown_block_lines: Vec::new(),
     });
 
     capture::write_blf_capture(dest.to_str().unwrap(), &one_frame(ts), &notes_in, &[]).unwrap();
@@ -3352,6 +3371,7 @@ fn every_subject_kind_survives_an_mdf_round_trip() {
             message_id: 0x2A1,
             extended: false,
         }],
+        unknown_block_lines: Vec::new(),
     });
 
     capture::write_mdf_capture(dest.to_str().unwrap(), &state, &notes_in, &[]).unwrap();
@@ -3410,6 +3430,7 @@ fn an_unambiguous_pair_also_gets_mdfs_native_range_and_a_fan_out_does_not() {
         tag: None,
         commented_event_type: None,
         subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
     });
     let dest = dir.path().join("fanout.mf4");
     capture::write_mdf_capture(dest.to_str().unwrap(), &state, &fan_out, &[]).unwrap();
@@ -3503,6 +3524,7 @@ fn a_link_to_an_unexported_event_survives_the_round_trip_unresolved() {
         subjects: vec![notes::EventSubject::Event {
             id: "bus-error-0".into(),
         }],
+        unknown_block_lines: Vec::new(),
     }];
 
     let dest = dir.path().join("dangling.blf");
@@ -3515,33 +3537,55 @@ fn a_link_to_an_unexported_event_survives_the_round_trip_unresolved() {
     );
 }
 
-/// The one thing a BLF marker's colour field cannot say.
+/// Black is a colour, in both formats.
 ///
-/// A packed `0x000000` is both "black" and "no colour chosen", and the
-/// record has no third state, so a black event comes back uncoloured.
-/// MDF has no colour field at all — the block carries it — so black
-/// survives there. The asymmetry is BLF's, not the model's, and the honest
-/// place to pin it is a test rather than a paragraph.
+/// A `GLOBAL_MARKER` carries a *pair* of colours, so "black" and "no
+/// colour chosen" are distinguishable records: black is a black chip
+/// under white text, the same text-on-a-chip reading every other colour
+/// gets, while uncoloured keeps the build's black-on-white default. MDF
+/// has no colour field at all — the block carries it as text — so black
+/// survives there for a different reason. The uncoloured control beside
+/// it is what keeps the two apart.
 #[test]
-fn a_black_event_colour_reads_back_uncoloured_from_a_blf_marker_and_survives_in_mdf() {
+fn a_black_event_colour_survives_a_blf_marker_and_an_mdf_event() {
     let dir = tempfile::tempdir().unwrap();
     let ts = 1_700_000_000_000_000_000u64;
-    let notes_in = vec![notes::Note {
-        id: "n-black".into(),
-        timestamp_ns: ts + 1_000,
-        label: "black".into(),
-        kind: notes::EventKind::Note,
-        color: Some("#000000".into()),
-        description: None,
-        tag: None,
-        commented_event_type: None,
-        subjects: Vec::new(),
-    }];
+    let notes_in = vec![
+        notes::Note {
+            id: "n-black".into(),
+            timestamp_ns: ts + 1_000,
+            label: "black".into(),
+            kind: notes::EventKind::Note,
+            color: Some("#000000".into()),
+            description: None,
+            tag: None,
+            commented_event_type: None,
+            subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
+        },
+        notes::Note {
+            id: "n-plain".into(),
+            timestamp_ns: ts + 2_000,
+            label: "plain".into(),
+            kind: notes::EventKind::Note,
+            color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
+            subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
+        },
+    ];
 
     let dest = dir.path().join("black.blf");
     capture::write_blf_capture(dest.to_str().unwrap(), &one_frame(ts), &notes_in, &[]).unwrap();
-    let back = notes_via_import_walk(dest.to_str().unwrap());
-    assert_eq!(back[0].color, None, "BLF's packed 0 is also 'uncoloured'");
+    let mut back = notes_via_import_walk(dest.to_str().unwrap());
+    back.sort_by_key(|n| n.timestamp_ns);
+    assert_eq!(back[0].color.as_deref(), Some("#000000"));
+    assert_eq!(
+        back[1].color, None,
+        "the uncoloured control stays uncoloured"
+    );
 
     let dest = dir.path().join("black.mf4");
     let state = test_state();
@@ -3552,6 +3596,80 @@ fn a_black_event_colour_reads_back_uncoloured_from_a_blf_marker_and_survives_in_
     let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
     let back = capture::notes_from_mdf_events(&source.events().unwrap());
     assert_eq!(back[0].color.as_deref(), Some("#000000"));
+    assert_eq!(back[1].color, None);
+}
+
+/// A key this build does not understand survives file → `Note` → file.
+///
+/// The `cannet-event/1` grammar keeps an unrecognised line verbatim
+/// through a parse, but that only reaches disk again if the model has
+/// somewhere to hold it (ADR 0057). A file written by a later build,
+/// opened and saved by this one, must come out carrying the fields this
+/// one cannot read.
+#[test]
+fn a_block_key_from_a_later_schema_version_survives_a_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let ts = 1_700_000_000_000_000_000u64;
+    let from_the_future = concat!(
+        "the body\n\ncannet-event/1\nid: n-future\nkind: note\n",
+        "severity: critical\nsignal: 0x180 PackCurrent\nacknowledgedBy: dana",
+    );
+
+    let first = dir.path().join("future.blf");
+    {
+        let mut w = cannet_blf::BlfCaptureWriter::create_with_start(&first, ts).unwrap();
+        w.append_marker(ts + 1_000, "from the future", from_the_future, None)
+            .unwrap();
+        w.finish().unwrap();
+    }
+    let notes = notes_via_import_walk(first.to_str().unwrap());
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id, "n-future");
+
+    let second = dir.path().join("resaved.blf");
+    capture::write_blf_capture(second.to_str().unwrap(), &one_frame(ts), &notes, &[]).unwrap();
+    let text = marker_descriptions(&second).remove(0);
+    assert!(
+        text.contains("\nseverity: critical"),
+        "an unknown key is written back: {text}"
+    );
+    assert!(
+        text.contains("\nacknowledgedBy: dana"),
+        "and so is the one after the subjects: {text}"
+    );
+    assert_eq!(
+        notes_via_import_walk(second.to_str().unwrap()),
+        notes,
+        "and the event is otherwise the same event"
+    );
+}
+
+/// Every `GLOBAL_MARKER` description in `path`, as text, in file order.
+fn marker_descriptions(path: &std::path::Path) -> Vec<String> {
+    let mut reader = cannet_blf::format::reader::BlfReader::open(path).unwrap();
+    let mut out = Vec::new();
+    while let Some(obj) = reader.next_object().unwrap() {
+        if let cannet_blf::format::reader::BlfObject::GlobalMarker(m) = obj {
+            out.push(String::from_utf8_lossy(&m.description).into_owned());
+        }
+    }
+    out
+}
+
+/// Every `EVENT_COMMENT` in `path` as `(commented_event_type, text)`, in
+/// file order — the record's own field beside the block's copy of it.
+fn event_comments(path: &std::path::Path) -> Vec<(u32, String)> {
+    let mut reader = cannet_blf::format::reader::BlfReader::open(path).unwrap();
+    let mut out = Vec::new();
+    while let Some(obj) = reader.next_object().unwrap() {
+        if let cannet_blf::format::reader::BlfObject::EventComment(c) = obj {
+            out.push((
+                c.commented_event_type,
+                String::from_utf8_lossy(&c.text).into_owned(),
+            ));
+        }
+    }
+    out
 }
 
 /// A capture written by an earlier build still opens with its events
@@ -3571,10 +3689,10 @@ fn the_forms_written_before_the_event_block_are_still_read() {
             ts + 1_000,
             "packed",
             "cannet:event:fault\nold-1\nthe body",
-            0,
+            None,
         )
         .unwrap();
-        w.append_marker(ts + 2_000, "bare", "old-2", 0).unwrap();
+        w.append_marker(ts + 2_000, "bare", "old-2", None).unwrap();
         w.append_comment(ts + 3_000, "cannet:event:t\nold-3\nlabel\nbody", 86)
             .unwrap();
         w.finish().unwrap();
@@ -3678,6 +3796,7 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         })
         .unwrap();
     store.replace_derived(vec![notes::Note {
@@ -3690,6 +3809,7 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
         tag: None,
         commented_event_type: None,
         subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
     }]);
     // Both are on the timeline the views render...
     assert_eq!(store.events().len(), 2);
@@ -3888,6 +4008,7 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             tag: Some("fault".into()),
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         },
         notes::Note {
             id: "note-b".into(),
@@ -3899,6 +4020,7 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         },
     ];
 
@@ -4106,7 +4228,9 @@ fn a_recovered_capture_says_what_it_recovered() {
             .unwrap();
     }
     // A hard kill: neither `finish` nor `Drop` runs, so the partial
-    // file keeps the placeholder header its writer stamped at open.
+    // file keeps the placeholder header its writer stamped at open —
+    // carrying the anchor, which the writer persists the moment it
+    // latches one.
     std::mem::forget(writer);
     let part = dir.path().join("killed.blf.part");
 
@@ -4118,11 +4242,30 @@ fn a_recovered_capture_says_what_it_recovered() {
         line.contains(&format!("{} frame(s)", scan.frame_count)),
         "{line}"
     );
-    assert!(line.contains("wall clock"), "{line}");
+    assert_eq!(
+        scan.start_unix_nanos,
+        1_700_000_000_u64 * 1_000_000_000,
+        "the kill did not take the wall clock with it",
+    );
+    assert!(
+        !line.contains("wall clock"),
+        "and there is nothing to say about it: {line}"
+    );
     assert!(
         !line.contains("incomplete record"),
         "our writer's containers go out whole: {line}"
     );
+
+    // A `.part` from a build that wrote the anchor only at `finish` has
+    // the unset sentinel in those header bytes, and nothing can recover
+    // it — that file still earns the line.
+    let mut undated = std::fs::read(&part).unwrap();
+    undated[40..56].fill(0);
+    let older = dir.path().join("older.blf");
+    std::fs::write(&older, &undated).unwrap();
+    let scan = cannet_blf::scan_blf(&older).unwrap();
+    let line = capture::recovered_capture_warning(&scan).expect("an undated capture warns");
+    assert!(line.contains("wall clock"), "{line}");
 
     // Truncate it the way a buffered writer's death does, and the same
     // line names the fragment too.
@@ -4885,6 +5028,7 @@ fn write_blf_capture_preserves_every_timestamp_of_an_out_of_order_capture() {
         tag: None,
         commented_event_type: None,
         subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
     }];
 
     let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();
@@ -4971,7 +5115,7 @@ fn the_import_walk_mints_synthetic_ids_for_third_party_markers() {
     let dest = dir.path().join("third-party.blf");
     let mut w = BlfFileWriter::create(&dest).unwrap();
     let abs = 1_700_000_000_000_000_000u64;
-    let start = w.set_start_if_unset((abs / 1_000_000) * 1_000_000);
+    let start = w.set_start_if_unset((abs / 1_000_000) * 1_000_000).unwrap();
     // Two markers with no description (third-party shape).
     let m1 = marker::build(
         abs - start,
@@ -5568,7 +5712,7 @@ fn synth_import_blf(
         writer.append(&frame).unwrap();
         if marker_every != usize::MAX && i > 0 && i % marker_every == 0 {
             writer
-                .append_marker(ts, &format!("mark {i}"), &format!("m-{i}"), 0)
+                .append_marker(ts, &format!("mark {i}"), &format!("m-{i}"), None)
                 .unwrap();
         }
     }

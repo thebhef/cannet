@@ -338,7 +338,9 @@ mod tests {
         let abs_ns = 1_700_000_000_u64 * 1_000_000_000 + 12_345_678;
         // Ms-floor the start (matches what BlfCaptureWriter does)
         // so the per-event rel preserves sub-ms precision.
-        let start = w.set_start_if_unset((abs_ns / 1_000_000) * 1_000_000);
+        let start = w
+            .set_start_if_unset((abs_ns / 1_000_000) * 1_000_000)
+            .unwrap();
         let rel = abs_ns - start;
 
         let m = build(

@@ -178,6 +178,7 @@ pub(crate) fn runs_as_events(runs: &[ErrorRun]) -> Vec<Note> {
             tag: Some(run.bus_id.clone()),
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         })
         .collect()
 }
