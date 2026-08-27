@@ -607,6 +607,56 @@ mod tests {
         }
     }
 
+    /// The two rest-of-bus files that ride the shared demo database must
+    /// resolve against it the same way: every entry names a real message,
+    /// filed under the ECU the database says transmits it, with overrides
+    /// that encode warning-free. Both are the payload source for a
+    /// hardware-free demo — an entry that stopped resolving would leave a
+    /// virtual bus silent with nothing to say why.
+    #[test]
+    fn the_demo_database_rbs_fixtures_resolve_against_it() {
+        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples");
+        let read = |p: std::path::PathBuf| {
+            std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+        };
+        let db = cannet_dbc::Database::parse(&read(examples.join("cannet-demo.dbc"))).unwrap();
+
+        for relative in [
+            "capture-features/capture-features.cannet_rbs",
+            "legacy-project/legacy.cannet_rbs",
+        ] {
+            let file = RbsFile::parse(&read(examples.join(relative))).unwrap();
+            for (bus_key, bus) in &file.buses {
+                for (ecu_key, ecu) in &bus.ecus {
+                    for (msg_key, msg) in &ecu.messages {
+                        let (id, ext) = parse_message_key(msg_key)
+                            .unwrap_or_else(|e| panic!("{relative} {bus_key}/{msg_key}: {e}"));
+                        let can_id = if ext {
+                            cannet_core::CanId::extended(id)
+                        } else {
+                            cannet_core::CanId::standard(id)
+                        }
+                        .unwrap();
+                        let desc = db.describe_message(can_id).unwrap_or_else(|| {
+                            panic!("{relative} {bus_key}/{msg_key}: no such message")
+                        });
+                        assert_eq!(
+                            desc.transmitter.as_deref(),
+                            Some(ecu_key.as_str()),
+                            "{relative} {bus_key}/{ecu_key}/{msg_key}: filed under the wrong ECU",
+                        );
+                        let (_, warnings) =
+                            reconstruct_payload(&db, can_id, &desc, msg, file.fill_bit);
+                        assert!(
+                            warnings.is_empty(),
+                            "{relative} {bus_key}/{ecu_key}/{msg_key}: {warnings:?}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Fixture DBC for the runtime tests: `BMS` transmits `Status`
     /// (counter + CRC attributes, `GenSigStartValue` defaults, an
     /// enum signal, `GenMsgCycleTime` 100); 0x200 has no cycle time.

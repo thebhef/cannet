@@ -18,50 +18,76 @@ files are retired; detail is in git history. Rows marked **§** owe
 their criterion-by-criterion verdicts to
 [task 126 § 3](tasks/0126-test-and-example-cleanup.md).
 
-- [ ] 86 — import time origins, enum overlays, events-panel width
-- [ ] 27 — live disk-watch for project and RBS files **§**
-- [ ] 87 — BLF writer timestamp fidelity
-- [ ] 89 — signal mapping panel **§**
-- [ ] 90 — follow-ups from the 86 / 27 / 87 cycle **§**
-- [ ] 88 — bus assignment governs decode
-- [ ] 92 — one resolution rule
-- [ ] 91 — `frame_index_at_ns` on an unsorted store
+- [ ] 86 — import time origins, enum overlays, events-panel width —
+      `examples/time-origins/`, `examples/cannet-demo.mf4`
+- [ ] 27 — live disk-watch for project and RBS files **§** —
+      `examples/ev-demo/`
+- [ ] 87 — BLF writer timestamp fidelity —
+      `examples/time-origins/wall-clock-out-of-order.blf`
+- [ ] 89 — signal mapping panel **§** — `examples/colliding-dbcs/`,
+      `examples/ev-zonal/`
+- [ ] 90 — follow-ups from the 86 / 27 / 87 cycle **§** —
+      `examples/time-origins/wall-clock-out-of-order.blf`
+- [ ] 88 — bus assignment governs decode — `examples/legacy-project/`,
+      `examples/colliding-dbcs/`, `examples/capture-features/`
+- [ ] 92 — one resolution rule — `examples/colliding-dbcs/`
+- [ ] 91 — `frame_index_at_ns` on an unsorted store —
+      `examples/time-origins/wall-clock-out-of-order.blf`
 - [ ] 93 — source comments naming tasks, plus the CI lint **§**
-- [ ] 98 — signals rendering wrong on a common scale
-- [ ] 95 — gridview content click collapsing the message
-- [ ] 97 — enum value labels on the plot's y axis
-- [ ] 96 — long signal and `VAL_` names rendering
+- [ ] 98 — signals rendering wrong on a common scale —
+      `examples/ev-demo/`
+- [ ] 95 — gridview content click collapsing the message —
+      `examples/cannet-demo.blf`, `examples/ev-demo/`
+- [ ] 97 — enum value labels on the plot's y axis —
+      `examples/ev-zonal/dbc/pack.dbc`, `examples/cannet-demo.mf4`
+- [ ] 96 — long signal and `VAL_` names rendering —
+      `examples/ev-demo/dbc/bms.dbc`, `examples/ev-zonal/dbc/zonal.dbc`
 - [ ] 94 — server bind defaults, mDNS honesty, servers panel
 - [ ] 99 — transmit controls (the false Space-in-RBS premise was fixed
-      by 109 phase 3, 2026-08-23)
-- [ ] 100 — counter/CRC declared in a DBC populates the editor
-- [ ] 105 — unfinalized-BLF recovery, read-only **§**
-- [ ] 104 — determinate load progress, discoverable cancel
+      by 109 phase 3, 2026-08-23) — `examples/capture-features/`,
+      `examples/legacy-project/`
+- [ ] 100 — counter/CRC declared in a DBC populates the editor —
+      `examples/cannet-demo.dbc`, `examples/ev-demo/`
+- [ ] 105 — unfinalized-BLF recovery, read-only **§** —
+      `examples/capture-features/interrupted.blf.part`,
+      `examples/capture-features/interrupted-tail.blf.part`
+- [ ] 104 — determinate load progress, discoverable cancel — **no
+      furnished file**: needs a multi-million-frame capture, generated
+      locally (`examples/capture-features/README.md`)
 - [ ] 102 — the event surface (macOS picker criterion waived
-      2026-08-26)
+      2026-08-26) — `examples/capture-features/annotated.blf`,
+      `examples/capture-features/annotated.mf4`
 - [ ] 103 — toolbar status bar, status chips, ADR 0055
 - [ ] 101 — bus health (PCAN fix confirmed on the bench 2026-08-23;
       Vector tested 2026-08-26; Kvaser needs CANLIB — owner follows up
       independently)
-- [ ] 106 — any-bus series ruling, sample-order sweep
-- [ ] 19 — typed palette prompts, `Mod+T`/`Mod+E`, event-row keys
+- [ ] 106 — any-bus series ruling, sample-order sweep —
+      `examples/legacy-project/legacy.cannet_prj`,
+      `examples/capture-features/annotated.mf4`
+- [ ] 19 — typed palette prompts, `Mod+T`/`Mod+E`, event-row keys —
+      `examples/capture-features/annotated.blf`
 - [ ] 110 — chain CI repair; Windows MSI bundle target dropped **§**
 - [ ] 108 — the chip language (prototype durable, maintained in-repo)
 - [ ] 107 — events point at signals (both open criteria dispositioned:
       unknown-key round-trip closed by task 122, which added the
-      passthrough field on `Note`; file-backed subject → backlog)
-- [ ] 109 — usage feedback from the chip-era build
-- [ ] 115 — trace row menu keeps only the event action (queue item
+      passthrough field on `Note`; file-backed subject → backlog) —
+      `examples/capture-features/`
+- [ ] 109 — usage feedback from the chip-era build — item 2 needs a
+      Vector adapter, not a file
+- [ ] 115 — trace row menu keeps only the event action —
+      `examples/cannet-demo.blf` (queue item
       1.23 no longer exists post-reframe; recorded here instead — see
       [task 115](tasks/0115-trace-row-menu-scope.md))
-- [ ] 117 — refuse to connect without a bound bus (queue item 1.34 no
-      longer exists post-reframe; recorded here instead — see
+- [ ] 117 — refuse to connect without a bound bus —
+      `examples/capture-features/` (its `Aux` bus is unbound) (queue item
+      1.34 no longer exists post-reframe; recorded here instead — see
       [task 117](tasks/0117-refuse-to-connect-without-a-bound-bus.md))
 - [ ] 114 — one name per thing: the bar draws the command registry's
       words, its Database chip shows the view, and a virtual bus reads
       `virtual bus` in the Adapter column (queue items 1.37, 1.33b and
       1.17 no longer exist post-reframe; their closures are in
-      [task 114](tasks/0114-one-name-per-thing.md)'s status log)
+      [task 114](tasks/0114-one-name-per-thing.md)'s status log) —
+      `examples/capture-features/`
 - [ ] 122 — a file keeps what you wrote: black survives BLF, the BLF
       anchor reaches disk at latch rather than at `finish`, a foreign
       MDF's sample order is sorted at the reader's boundary, unknown
@@ -69,6 +95,7 @@ their criterion-by-criterion verdicts to
       the block on every carrier (findings 3.9, 3.15, 3.30 and 3.59 no
       longer exist post-reframe; their closures are in
       [task 122](tasks/0122-a-file-keeps-what-you-wrote.md)'s status log)
+      — `examples/capture-features/`
 - [ ] 127 — the frontend's shared layer: the tag/description editors
       hand the keyboard back, `useConnectionStates` and
       `useSidecarStatus` sit on `useHostMirror`'s new `fromPayload`, and
@@ -83,7 +110,9 @@ their criterion-by-criterion verdicts to
       end freezes every trace element at the count the pump reports, and
       the by-id / signal window snapshot walks a bounded window in
       chunks instead of cloning it whole under the append mutex — see
-      [task 80](tasks/0080-stopped-capture-resample.md)'s status log
+      [task 80](tasks/0080-stopped-capture-resample.md)'s status log.
+      **No furnished file**: needs a multi-million-frame capture,
+      generated locally (`examples/capture-features/README.md`)
 
 ## Close-out chores
 
@@ -112,4 +141,5 @@ their criterion-by-criterion verdicts to
 - [ ] Normalise the two files that show modified with no content
       change all chain long: `examples/ev-zonal/dbc/pack.dbc` (LF vs
       CRLF) and `apps/gui/src-tauri/Cargo.toml` — a `.gitattributes`
-      entry or one normalising commit.
+      entry or one normalising commit. A `.gitattributes` now exists
+      (LFS patterns only, 2026-08-27); the `eol` entries are still owed.

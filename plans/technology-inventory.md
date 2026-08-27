@@ -793,13 +793,22 @@ crate retained long-term).
 ### Testing / Profiling
 
 - **Git LFS** — `adopted` 2026-08-26 by owner ruling (task
-  0126): example/demo files for every frontend surface (captures,
-  databases, projects) are carried in the repository via LFS pointers,
-  each kept small. Requires `git lfs` in the contributor toolchain
-  (README § Prerequisites) and one `.gitattributes` pattern per tracked
-  format. Chosen over committing binaries raw (bloats every clone
-  forever) and over generating fixtures at build time (a demo file's
-  value is that it is curated, stable, and openable by hand).
+  0126), wired 2026-08-27. The example **captures** under `examples/`
+  are carried as LFS pointers, each kept small; one `.gitattributes`
+  pattern per tracked format (`*.blf`, `*.part`, `*.mf4`), scoped to
+  `examples/`. Requires `git lfs` in the contributor toolchain (README §
+  Prerequisites) and `lfs: true` on the CI `rust` job's checkout, which
+  is the only job that reads them. Chosen over committing binaries raw
+  (bloats every clone forever) and over generating fixtures at build
+  time (a demo file's value is that it is curated, stable, and openable
+  by hand).
+
+  **Not** in LFS, deliberately: the databases, projects and RBS files
+  beside them are text and belong in plain git, where a diff is
+  readable; `crates/cannet-mdf/tests/fixtures/*.mf4` are read by
+  `cargo test --workspace`, so behind LFS they would make the default
+  suite fail in a clone that had not fetched the objects; the Tauri
+  icons must be real bytes at build time.
 
 
 - **`tempfile`** crate — `adopted` in Phase 1 (dev-dependency only). Used by

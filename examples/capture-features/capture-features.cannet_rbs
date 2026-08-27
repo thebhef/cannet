@@ -1,0 +1,36 @@
+{
+  "buses": {
+    "Main": {
+      "ecus": {
+        "ECU1": {
+          "enabled": true,
+          "messages": {
+            "0x100": {
+              "signals": {
+                "BrakePedal": 0.0,
+                "EngineRpm": 2100.0,
+                "GearLever": "D",
+                "VehSpeed": 64.0
+              }
+            }
+          }
+        },
+        "ECU2": {
+          "enabled": true,
+          "messages": {
+            "0x412": {
+              "signals": {
+                "CmdMode": 1.0,
+                "ContactorReq": "Closed",
+                "TargetCurrent": 85.0
+              }
+            }
+          }
+        }
+      },
+      "enabled": true
+    }
+  },
+  "fill_bit": 0,
+  "schema_version": 1
+}

@@ -1,0 +1,24 @@
+{
+  "buses": {
+    "Bus 1": {
+      "ecus": {
+        "ECU1": {
+          "enabled": true,
+          "messages": {
+            "0x100": {
+              "signals": {
+                "BrakePedal": 0.0,
+                "EngineRpm": 1800.0,
+                "GearLever": "D",
+                "VehSpeed": 55.0
+              }
+            }
+          }
+        }
+      },
+      "enabled": true
+    }
+  },
+  "fill_bit": 0,
+  "schema_version": 1
+}

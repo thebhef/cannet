@@ -263,6 +263,20 @@ All platforms need:
   on macOS/Linux, `iwr https://get.pnpm.io/install.ps1 -useb | iex` on Windows PowerShell),
   `npm install -g pnpm`, or your OS package manager (`brew install pnpm`,
   `winget install pnpm`, etc.). Verify with `pnpm --version`.
+- **[Git LFS](https://git-lfs.com/)**, which carries the example captures
+  under [`examples/`](examples/) — see
+  [`.gitattributes`](.gitattributes) for the tracked patterns. Install it
+  from the link, `brew install git-lfs`, `winget install GitHub.GitLFS`,
+  or your distribution's `git-lfs` package, then:
+
+  ```sh
+  git lfs install   # once per machine
+  git lfs pull      # once per clone
+  ```
+
+  Several Rust tests read those captures through the real reader, so
+  `cargo test --workspace` fails on a clone that has not fetched them —
+  the files are LFS pointer text until it has.
 
 **Required for `tauri build` (sidecar freeze) and Phase 8 vendor
 drivers (Vector / Kvaser / PEAK):**
