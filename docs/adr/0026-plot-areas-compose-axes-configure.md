@@ -585,10 +585,19 @@ below:
   host's compile error at entry time; the frontend caches the
   host-evaluated key→slot map (`signalGeneratorContext.tsx`) and never
   executes a pattern.
-- **X-axis cursor labels** render the cursor's letter + time on every
-  axis (used to only render on the bottom axis). Tick spacing is
-  label-width-aware so zoomed-in elapsed-time labels (more fractional
-  digits) don't overlap.
+- **Everything the panel says about *when* rides the bottom drawing
+  axis** — the x-axis time label, the A/B cursors' letter + time, and
+  the cursor delta chip. The cursors are panel-level, so their *lines*
+  cross every stacked area; that is what lines a reading in one area up
+  with a reading in another. Their timestamps are not repeated down the
+  stack: one x is one time however many areas it crosses, and saying it
+  once per area is the same number written N times over the data.
+  "Bottom drawing axis", not "last axis": a collapsed area is a heading
+  row with no canvas, so the chrome falls back up the stack to the
+  lowest axis that still has a plot (`bottomDrawingAxis`), and the
+  marker labels fall the same way down to `topDrawingAxis`. Tick
+  spacing is label-width-aware so zoomed-in elapsed-time labels (more
+  fractional digits) don't overlap.
 - **Enum-lanes axis.** Per-unit mode collects an area's enums onto one
   shared axis (`deriveAxesForArea` kind `enum-lanes`), fed by a
   panel-level `list_value_tables` fetch (`useValueTables`) reduced to

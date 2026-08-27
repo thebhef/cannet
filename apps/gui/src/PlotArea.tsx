@@ -602,7 +602,15 @@ interface PlotAreaProps {
   /** How many series the parent area holds — the count chip a collapsed
    * area's heading row carries. */
   areaSignalCount: number;
+  /** True for the axis that carries the top-of-column chrome — the
+   * event marker labels. That is the *highest axis with a canvas*, not
+   * the first one positionally: a collapsed axis has nowhere to draw
+   * them. */
   isFirst: boolean;
+  /** True for the axis that carries the bottom-of-column chrome — the
+   * x-axis time label and the A/B cursor delta. That is the *lowest
+   * axis with a canvas*, not the last one positionally: a collapsed
+   * axis has no uPlot to hang them on. */
   isLast: boolean;
   focused: boolean;
   removable: boolean;
@@ -2794,18 +2802,24 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }
             ctx.globalAlpha = 1;
-            // ADR 0026: the X cursor's time label appears on
-            // every axis (it used to render only on the last area, so
-            // adding a plot area visually hid the labels). Format as
-            // "<letter> <time>" so a glance at any axis tells you both
-            // which cursor and where — positions in the trace's
-            // elapsed-time format, at the axis ticks' adaptive precision.
+            // The A/B cursors are panel-level, so their *lines* cross
+            // every stacked area — that is what makes a reading in one
+            // area line up with a reading in another. Their timestamps
+            // are not: one x is one time however many areas it crosses,
+            // and repeating it down the stack is the same number said N
+            // times over the data. It rides the bottom drawing axis with
+            // the x-axis time label and the Δt chip, so everything the
+            // panel says about *when* is in one place (ADR 0026).
+            //
+            // Format as "<letter> <time>" so the chip says both which
+            // cursor and where — the trace's elapsed-time format, at the
+            // axis ticks' adaptive precision.
             const xDigits = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
             if (lr.cursorXa != null) {
-              vline(lr.cursorXa, theme().cursorA, [4, 3], `A ${formatElapsed(lr.cursorXa, xDigits)}`, false);
+              vline(lr.cursorXa, theme().cursorA, [4, 3], isLast ? `A ${formatElapsed(lr.cursorXa, xDigits)}` : null, false);
             }
             if (lr.cursorXb != null) {
-              vline(lr.cursorXb, theme().cursorB, [4, 3], `B ${formatElapsed(lr.cursorXb, xDigits)}`, false);
+              vline(lr.cursorXb, theme().cursorB, [4, 3], isLast ? `B ${formatElapsed(lr.cursorXb, xDigits)}` : null, false);
             }
             // The shared mouse crosshair (panel-level, like A/B): drawn
             // in *every* stacked area at the same x, so the hover in

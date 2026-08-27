@@ -6,6 +6,8 @@ import {
   axisCollapsedFromRaw,
   axisWeightsFromRaw,
   collapsedRunHeads,
+  bottomDrawingAxis,
+  topDrawingAxis,
   equalizePair,
   pruneAxisCollapsed,
   pruneAxisWeights,
@@ -69,6 +71,51 @@ describe("collapsedRunHeads", () => {
 
   it("marks one head for an all-collapsed stack", () => {
     expect(collapsedRunHeads([true, true, true])).toEqual([true, false, false]);
+  });
+});
+
+describe("bottomDrawingAxis", () => {
+  it("is the last axis when nothing is collapsed", () => {
+    expect(bottomDrawingAxis([false, false, false])).toBe(2);
+  });
+
+  it("skips collapsed axes at the bottom of the stack", () => {
+    // A collapsed axis draws no canvas, so the chrome that belongs to
+    // the bottom of the plot column (the x-axis time label, the cursor
+    // delta) has to land on the lowest axis that still has one.
+    expect(bottomDrawingAxis([false, false, true])).toBe(1);
+    expect(bottomDrawingAxis([false, true, true])).toBe(0);
+  });
+
+  it("ignores collapsed axes above a drawing one", () => {
+    expect(bottomDrawingAxis([true, false, true, false])).toBe(3);
+  });
+
+  it("is null when the whole stack is collapsed", () => {
+    expect(bottomDrawingAxis([true, true])).toBeNull();
+    expect(bottomDrawingAxis([])).toBeNull();
+  });
+});
+
+describe("topDrawingAxis", () => {
+  it("is the first axis when nothing is collapsed", () => {
+    expect(topDrawingAxis([false, false, false])).toBe(0);
+  });
+
+  it("skips collapsed axes at the top of the stack", () => {
+    // The marker labels sit at the top of the plot column, and a
+    // collapsed area is a heading row with no canvas to hang them on.
+    expect(topDrawingAxis([true, false, false])).toBe(1);
+    expect(topDrawingAxis([true, true, false])).toBe(2);
+  });
+
+  it("ignores collapsed axes below a drawing one", () => {
+    expect(topDrawingAxis([false, true, false, true])).toBe(0);
+  });
+
+  it("is null when the whole stack is collapsed", () => {
+    expect(topDrawingAxis([true, true])).toBeNull();
+    expect(topDrawingAxis([])).toBeNull();
   });
 });
 
