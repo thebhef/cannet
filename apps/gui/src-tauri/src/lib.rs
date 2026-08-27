@@ -13,7 +13,7 @@
 //!   spawns the same kind of worker thread to push frames into the
 //!   trace store. `disconnect_remote_server` ends the session.
 //!
-//! All three worker threads run [`session::run_pump`], which is generic over
+//! All three worker threads run `session::run_pump`, which is generic over
 //! `CanFrameSource` — it doesn't know or care which source it's
 //! draining; it just appends each frame to the shared [`TraceStore`]
 //! until the source ends or a stop flag is set (the latter is how
@@ -36,16 +36,6 @@
 //! association is a later step.) There is no retro-decode walk; adding
 //! or removing a DBC mid-stream just changes what subsequent fetches
 //! return.
-// `cannet-gui` is an application crate, not a library: its `pub` items
-// are public to its own binary target and to the test harness, and
-// nothing consumes them out of tree. Its rustdoc is therefore internal
-// documentation, where a `pub` item pointing at a private sibling is
-// the *useful* link — the alternative is widening visibility to satisfy
-// a lint, which makes the code worse to make the docs quieter. Every
-// other rustdoc lint is on and gated: `cargo doc` runs with
-// `-D warnings` in CI and in the commit hook, so a genuinely broken
-// link (one that renders as literal text) still fails the build.
-#![allow(rustdoc::private_intra_doc_links)]
 
 mod app_state;
 mod bus_health;
@@ -442,7 +432,7 @@ fn final_exit_code(requested: Option<i32>, event_loop_code: i32) -> i32 {
 }
 
 /// Boot the Tauri runtime. Never returns: the process exits with
-/// [`final_exit_code`] once the event loop is done.
+/// `final_exit_code` once the event loop is done.
 ///
 /// # Panics
 /// Panics if the platform runtime fails to start (no display, missing

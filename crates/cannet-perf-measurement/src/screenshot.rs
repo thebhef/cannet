@@ -273,7 +273,8 @@ pub struct Step {
     /// Script run before the shutter. Evaluated as an async expression.
     pub script: &'static str,
     /// Dock components this capture is claimed to show. Purely a
-    /// coverage ledger — [`scenario_covers_every_panel`] checks the union.
+    /// coverage ledger — the `scenario_covers_every_panel` test checks the
+    /// union.
     pub shows: &'static [&'static str],
 }
 
@@ -682,7 +683,7 @@ fn capture_with(cfg: &CaptureConfig) -> Result<CaptureOutcome, String> {
 /// sample is one of this scenario's own frames.
 const EMPTY_CAPTURE_STATUS: &str = "Open a BLF log or connect to a server to begin";
 
-/// Complain if `state` — one step's [`window.__shot.state()`] readout —
+/// Complain if `state` — one step's `window.__shot.state()` readout —
 /// shows the app reporting an empty buffer.
 ///
 /// Only meaningful for a scenario that was given a capture: those
@@ -733,7 +734,7 @@ fn first_duplicate(shots: &[(&str, Vec<u8>)]) -> Option<String> {
 }
 
 /// The command line a capture launches the app with. Split out from
-/// [`spawn_gui`] so the isolation is testable without running a GUI.
+/// `spawn_gui` so the isolation is testable without running a GUI.
 #[must_use]
 pub fn gui_args(cfg: &CaptureConfig) -> Vec<String> {
     vec![
@@ -748,7 +749,7 @@ pub fn gui_args(cfg: &CaptureConfig) -> Vec<String> {
 }
 
 /// The environment a capture launches the app with. Split out from
-/// [`spawn_gui`] for the same reason [`gui_args`] is: the isolation is
+/// `spawn_gui` for the same reason [`gui_args`] is: the isolation is
 /// the thing under test, and it is testable without running a GUI.
 ///
 /// Both variables are `WebView2`'s own, read by the runtime before the

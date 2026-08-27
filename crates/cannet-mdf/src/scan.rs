@@ -123,7 +123,7 @@ pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
 
 /// [`scan_mdf`], but interruptible and reporting how far it has got.
 ///
-/// Every [`CHECKPOINT_RECORDS`] records the walk reads `cancel` and
+/// Every `CHECKPOINT_RECORDS` records the walk reads `cancel` and
 /// calls `on_progress`. Raising `cancel` stops the walk at the next
 /// checkpoint and yields [`ScanOutcome::Cancelled`]; the walk has
 /// written nothing anywhere, so stopping it costs nothing to undo.

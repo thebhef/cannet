@@ -3,7 +3,7 @@
 //! [`cannet_core::CanFrame`]s back into a BLF file.
 //!
 //! Both the reader and the writer are native implementations
-//! rooted in [`format`] — they own the on-disk codec end-to-end
+//! rooted in [`mod@format`] — they own the on-disk codec end-to-end
 //! (`FileStatistics` header → top-level `LOG_CONTAINER` framing →
 //! zlib deflate/inflate → per-type CAN event decoders/encoders).
 //! The wire shape is hidden behind [`BlfCanFrameSource`] and
@@ -26,7 +26,7 @@
 //!
 //! Per [ADR 0009](../../../docs/adr/0009-dbc-blf-readers.md), the
 //! earlier `blf_asc` wrapper was retired. The native
-//! implementation in [`format`] covers reading and writing of
+//! implementation in [`mod@format`] covers reading and writing of
 //! `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86),
 //! `CAN_FD_MESSAGE` (100), `CAN_FD_MESSAGE_64` (101), and
 //! `CAN_ERROR_EXT` (73) — plus the `LOG_CONTAINER` (10) outer

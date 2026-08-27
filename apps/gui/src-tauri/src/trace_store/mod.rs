@@ -45,16 +45,16 @@
 //! every sample deque (aggregate and per-id alike) is pruned by wall
 //! time, and a per-id estimate whose window has emptied falls back to
 //! its last inter-frame delta, decaying on wall-clock silence
-//! ([`RateEstimate::rate`]). Without this, a stalled stream would show
+//! (`RateEstimate::rate`). Without this, a stalled stream would show
 //! its last rate forever (frame timestamps would have nothing to
 //! advance them).
 //!
 //! The store keeps a rolling window of
 //! `(Instant, last_frame_ts_ns, total_count)` samples, one taken at
-//! most every [`rate::RATE_SAMPLE_INTERVAL`] — a sample *per appended frame*
+//! most every `rate::RATE_SAMPLE_INTERVAL` — a sample *per appended frame*
 //! would balloon the deque at high replay rates for no extra signal,
 //! since [`TraceStore::frames_per_second`] only reads the window's endpoints.
-//! The window is pruned to [`RATE_WINDOW`](rate::RATE_WINDOW) on each touch; the rate is
+//! The window is pruned to `RATE_WINDOW` on each touch; the rate is
 //! the count delta over the frame-time the surviving samples span,
 //! falling back to `0.0` if there isn't yet enough signal to estimate.
 
@@ -445,7 +445,7 @@ impl TraceStore {
 
     /// Append a frame to the tail of the trace. Updates the
     /// latest-by-key index and the per-id rate estimate, and records a
-    /// rate sample if at least [`rate::RATE_SAMPLE_INTERVAL`] has passed.
+    /// rate sample if at least `rate::RATE_SAMPLE_INTERVAL` has passed.
     ///
     /// Frames whose timestamp predates the current
     /// [`Self::start_session`] are silently dropped (returning
@@ -628,7 +628,7 @@ impl TraceStore {
     /// tests check against, but it is `O(n)` with the append mutex held —
     /// ~10 ms per call at 1 M rows. So the search runs over sampled
     /// prefix maxima, which *are* monotone whatever the arrival order,
-    /// and finishes with a bounded scan; see [`anchor`].
+    /// and finishes with a bounded scan; see `anchor`.
     #[must_use]
     pub fn frame_index_at_ns(&self, ts: u64) -> usize {
         let mut inner = self.lock_inner();
@@ -688,7 +688,7 @@ impl TraceStore {
     /// in ascending order. Nothing is cloned — the result is cheap
     /// `usize`s.
     ///
-    /// This is the bounded unit of a filtered scan: the [`Inner`] mutex
+    /// This is the bounded unit of a filtered scan: the `Inner` mutex
     /// is held only for this range, so a caller scans a large window as
     /// a sequence of chunks, releasing the lock (and yielding) between
     /// them. That keeps a history scan from ever holding the append

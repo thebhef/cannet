@@ -2,13 +2,13 @@
 //! as the trace store grows so `sample_signals` doesn't re-decode the
 //! same matching frames on every call.
 //!
-//! Each decoded signal gets its own [`SignalCache`]: a **resolution
+//! Each decoded signal gets its own `SignalCache`: a **resolution
 //! pyramid** of its decoded samples plus the next trace-store frame
 //! index to scan from. The pyramid is a property of the signal, not of
 //! any one consumer — a plot fitting all data is the consumer today,
 //! but the multi-resolution view is the signal's. Level 0 is the raw
 //! decoded series in capture order; each higher level holds, per bucket
-//! of [`PYRAMID_BRANCH`] points of the level below, that bucket's min-
+//! of `PYRAMID_BRANCH` points of the level below, that bucket's min-
 //! and max-value points — so the pyramid is geometrically smaller going
 //! up and per-bucket extrema mean spikes survive (ADR 0002 DS-5). A
 //! call to [`SignalCacheStore::slice`] catches the cache up to the
@@ -62,12 +62,12 @@
 //! them and decode each frame once, then take their own signal's value
 //! out of the result. Bus scoping, decode provenance and the decode
 //! cursor stay per series through it
-//! ([`SignalCacheStore::catch_up_keys`]). The batch's groups advance
+//! (`SignalCacheStore::catch_up_keys`). The batch's groups advance
 //! **together**, a chunk each per round, so what the serve's budget buys
 //! does not divide by how many messages the batch covers.
 //!
 //! A serve is also **bounded in time** (ADR 0049): it catches up for at most
-//! [`CATCH_UP_SERVE_BUDGET`] and then answers with what has decoded,
+//! `CATCH_UP_SERVE_BUDGET` and then answers with what has decoded,
 //! saying so through [`ServedWindows::complete`]. So the first use of a
 //! signal over a long capture returns a growing prefix every time it is
 //! asked instead of one finished series minutes later, and the caller
@@ -76,7 +76,7 @@
 //!
 //! Concurrency and residency: one global mutex around the (small)
 //! `HashMap`, but **never held across a rebuild** (ADR 0048). The
-//! catch-up scans the unread frame range in [`CATCH_UP_CHUNK_FRAMES`]
+//! catch-up scans the unread frame range in `CATCH_UP_CHUNK_FRAMES`
 //! chunks, and each chunk is planned under the lock, fetched and decoded
 //! off it, then appended under it again — so the longest uninterrupted
 //! hold is one chunk's appends, not the minutes a cold rebuild takes.
@@ -196,7 +196,7 @@ pub struct FileSignalInfo {
     /// The channel's value→text table, when it carries one — a coded
     /// channel's enumerators, read from its conversion block at import.
     /// This is the file-backed counterpart of a DBC signal's `VAL_`
-    /// table, and it is served as one ([`crate::ipc::ValueTableEntryRecord`]),
+    /// table, and it is served as one (`crate::ipc::ValueTableEntryRecord`),
     /// so a view labels either kind the same way. Empty for a plain
     /// numeric series. `#[serde(default)]` so a manifest written before
     /// the table was carried still restores.
@@ -1406,7 +1406,7 @@ const MANIFEST_FILE: &str = "pyramids.json";
 ///   trimmed to one mark does not describe a capture retained to another.
 ///
 /// What a pyramid was *decoded with* is **not** here: that is a per-signal
-/// fact, carried by each [`PersistedSignal`]'s encoding fingerprint
+/// fact, carried by each `PersistedSignal`'s encoding fingerprint
 /// ([`crate::signal_fingerprint`]) and judged row by row on restore. A
 /// whole-set DBC stamp used to sit beside these two and discard every
 /// pyramid whenever any database's file metadata moved — a copy, a
@@ -2178,10 +2178,10 @@ impl SignalCacheStore {
     ///   session earlier, that the touched-DBC case was.)
     /// - **It moved** — the samples were decoded against a model that no
     ///   longer applies, so the cache goes; but the pyramid is *parked*
-    ///   ([`park`]) rather than deleted, against the definition coming
+    ///   (`park`) rather than deleted, against the definition coming
     ///   back. Which it then does, in the same call: anything in the pool
     ///   the new set decodes the way it was decoded is revived
-    ///   ([`revive_retained`]).
+    ///   (`revive_retained`).
     /// - **It carries no fingerprint** — created since the last manifest
     ///   write, so what it was decoded with was never recorded and cannot
     ///   be judged. It is discarded, which is the safe direction and the
@@ -2428,7 +2428,7 @@ impl SignalCacheStore {
     /// per signal: the rebuilt caches come back empty, so the next serve
     /// over their message groups walks each group's frames once for all of
     /// them, and the reopened caches sitting at the tip are skipped frame
-    /// by frame ([`scan_chunk`]).
+    /// by frame (`scan_chunk`).
     pub fn restore(
         &self,
         validity: &PyramidValidity,
@@ -2673,7 +2673,7 @@ impl SignalCacheStore {
     /// `points` are `(absolute nanoseconds, physical value)` in
     /// non-decreasing time order (ADR 0024 — a series' timestamps are
     /// absolute), which is the order the reader yields them in and the
-    /// order every pyramid level is searched by ([`partition_by_t`]).
+    /// order every pyramid level is searched by (`partition_by_t`).
     /// Unlike a DBC-backed series' frames, nothing here interleaves two
     /// sources: one channel group is one continuously-sampled channel of
     /// one file, so there is no second stream whose deliveries could
@@ -3044,7 +3044,7 @@ impl SignalCacheStore {
     /// host's "first DBC that decodes wins" semantics — among the
     /// databases whose bus scoping admits the frame in hand. `bus_id`
     /// scopes the catch-up to frames tagged with that bus; `None` names
-    /// no series and serves nothing ([`CacheQuery::key`]).
+    /// no series and serves nothing (`CacheQuery::key`).
     #[allow(clippy::too_many_arguments)]
     pub fn slice(
         &self,
@@ -3086,11 +3086,11 @@ impl SignalCacheStore {
     /// the catch-up rather than the serve: the queries sharing a
     /// `(message_id, extended)` are caught up in **one** pass over that
     /// message's frames, decoding each frame once for all of them
-    /// ([`Self::catch_up_keys`]). Sampling sixteen signals of one
+    /// (`Self::catch_up_keys`). Sampling sixteen signals of one
     /// message one at a time re-fetched and re-decoded the same frames
     /// sixteen times, throwing away fifteen values each pass.
     ///
-    /// The catch-up is bounded by [`CATCH_UP_SERVE_BUDGET`], so this
+    /// The catch-up is bounded by `CATCH_UP_SERVE_BUDGET`, so this
     /// returns in about that long however cold the caches are, and says
     /// through [`ServedWindows::complete`] whether the windows are the
     /// whole answer or a prefix of it. The bound is on the *serve*, not
@@ -3193,7 +3193,7 @@ impl SignalCacheStore {
     /// [`Self::min_max`] over a whole batch, index-parallel with
     /// `queries` — and, like [`Self::slice_many`], one catch-up pass per
     /// message rather than one per signal, bounded by
-    /// [`CATCH_UP_SERVE_BUDGET`].
+    /// `CATCH_UP_SERVE_BUDGET`.
     ///
     /// The extent of a series still catching up is the extent of what has
     /// decoded so far — it widens as the rebuild advances, exactly as it
@@ -3227,7 +3227,7 @@ impl SignalCacheStore {
 }
 
 /// One stretch of a served window across which the renderer draws
-/// something the data does not support — [`SignalCache::extrapolated_spans`]
+/// something the data does not support — `SignalCache::extrapolated_spans`
 /// computes them, and ADR 0026 says how they render.
 ///
 /// Half-open in intent but reported as a closed `[from, to]` interval in
@@ -3247,7 +3247,7 @@ pub struct ServedWindows {
     /// One list of extrapolated stretches per query, index-parallel with
     /// [`Self::series`] and in ascending time order. The model's answer
     /// to "which parts of this window is the view about to draw without
-    /// data behind them" — see [`SignalCache::extrapolated_spans`].
+    /// data behind them" — see `SignalCache::extrapolated_spans`.
     pub extrapolated: Vec<Vec<ExtrapolatedSpan>>,
     /// `true` when every queried signal's decode cursor reached the store
     /// tip this serve read — the windows are the whole answer for their

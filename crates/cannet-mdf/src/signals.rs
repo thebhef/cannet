@@ -70,7 +70,7 @@ pub struct SignalChannelGroup {
 /// One signal-shaped group's shape, without reading a single sample —
 /// what an import dialog needs to say what a file holds. Counting
 /// channels is a block-graph read; materialising the series is a walk per
-/// channel, so the census is the cheap half of [`signal_groups`].
+/// channel, so the census is the cheap half of `signal_groups`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalGroupCensus {
     /// Index of the channel group in the file, in link order.

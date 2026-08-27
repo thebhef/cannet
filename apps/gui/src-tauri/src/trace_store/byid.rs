@@ -36,7 +36,7 @@ pub struct LatestById {
 }
 
 impl TraceStore {
-    /// For each distinct [`FrameKey`] whose most recent occurrence is at
+    /// For each distinct `FrameKey` whose most recent occurrence is at
     /// index `>= since`: that index, a clone of the frame, and the id's
     /// current message rate — sorted by key (channel, then id, then
     /// standard-before-extended). A thin alias for
@@ -47,7 +47,7 @@ impl TraceStore {
     }
 
     /// Latest-by-id snapshot bounded to the window `[start, end)`: for
-    /// each distinct [`FrameKey`] with an occurrence in the window, its
+    /// each distinct `FrameKey` with an occurrence in the window, its
     /// *last* occurrence **within the window** — a clone of the frame
     /// paired with the id's current message rate and total session count,
     /// sorted by key (bus, then channel, then id, then
@@ -71,7 +71,7 @@ impl TraceStore {
     }
 
     /// The current key-set generation — bumped whenever a new
-    /// [`FrameKey`] is first seen, or the map is rebuilt (session start,
+    /// `FrameKey` is first seen, or the map is rebuilt (session start,
     /// scratch reopen). Callers that derive something from "which ids
     /// exist" memoise on it instead of recomputing per request.
     #[must_use]
@@ -158,7 +158,7 @@ impl TraceStore {
     /// extractor. Called whenever the loaded-DBC set changes; the mux
     /// index and its statistics reset — selector groups may mean
     /// something different under the new DBCs — and coverage restarts
-    /// at the current tip ([`super::Inner::mux_index_from`]); history below
+    /// at the current tip (`super::Inner::mux_index_from`); history below
     /// it is served by [`Self::latest_mux_in_window`]'s backward scan.
     pub fn set_mux_extractor(&self, extractor: Option<std::sync::Arc<MuxSelectorFn>>) {
         let mut inner = self.lock_inner();
@@ -178,7 +178,7 @@ impl TraceStore {
     /// the result (the caller renders a blank row). Served from the
     /// incrementally-maintained index where it covers the window;
     /// otherwise by a backward scan over the raw store bounded to
-    /// [`MUX_SCAN_BOUND`] frames — a group further back than that reads
+    /// `MUX_SCAN_BOUND` frames — a group further back than that reads
     /// as blank (the documented give-up). Scan hits at the buffer tip
     /// are backfilled into the index so repeated live queries converge
     /// to the O(groups) path. Returns empty with no extractor installed

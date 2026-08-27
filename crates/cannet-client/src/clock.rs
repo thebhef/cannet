@@ -62,7 +62,7 @@
 //! consumer tells a fresh number from an old one.
 //! ## Applying it: slewed, not stepped
 //!
-//! [`OffsetSlew`] is what actually corrects frames, and it deliberately
+//! `OffsetSlew` is what actually corrects frames, and it deliberately
 //! does not jump to each new measurement. See its documentation for the
 //! rate, the threshold at which it steps instead, and why the slew is
 //! driven by the frame timeline rather than by local elapsed time.
@@ -78,7 +78,7 @@ pub struct ClockSample {
     /// means the server is ahead.
     pub offset_ns: i64,
     /// δ — the round-trip delay in nanoseconds, never negative (see
-    /// [`sample`]).
+    /// `sample`).
     pub delay_ns: i64,
 }
 

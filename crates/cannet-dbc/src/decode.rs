@@ -17,7 +17,7 @@ use crate::view_builders::{
 /// the layout per `byte_order`. Returns `None` if any required bit lies
 /// past the end of `data`.
 ///
-/// See [`bitwalk::walk`] for the DBC bit numbering convention.
+/// See `bitwalk::walk` for the DBC bit numbering convention.
 pub fn decode_signal_bits(
     data: &[u8],
     start_bit: usize,
@@ -73,7 +73,7 @@ impl Database {
 
     /// Every **decode spec** this database offers for `signal_name` in
     /// the message `id` addresses, in `SG_` declaration order — the
-    /// inputs [`decode_signal`] reads, and nothing else.
+    /// inputs `decode_signal` reads, and nothing else.
     ///
     /// This is the question "would this signal decode differently?"
     /// asked without decoding: a consumer that caches decoded samples
@@ -89,7 +89,7 @@ impl Database {
     /// A **vector**, not an `Option`, for the two reasons resolution is
     /// not a single lookup: a message may declare the same signal name
     /// more than once (in different multiplexor arms), and
-    /// [`decode_message`] picks between them per payload. Empty when
+    /// `decode_message` picks between them per payload. Empty when
     /// this database has no such message, or the message has no such
     /// signal — the caller then knows this database contributes nothing
     /// to that signal's decode.
@@ -151,7 +151,7 @@ impl Database {
     /// a couple of bit operations, cheap enough for a per-frame append
     /// path. Returns `None` when no message matches `id`, the message
     /// has no multiplexor, or the payload is too short to carry it.
-    /// Pairs with [`SignalDescriptor::mux_selector`]: a frame carries a
+    /// Pairs with [`crate::SignalDescriptor::mux_selector`]: a frame carries a
     /// multiplexed signal iff this value equals the signal's group.
     #[must_use]
     pub fn decode_mux_selector(&self, id: cannet_core::CanId, data: &[u8]) -> Option<u64> {
@@ -268,7 +268,7 @@ fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSigna
 /// What one signal's decode reads, and nothing else — the output of
 /// [`Database::signal_decode_specs`].
 ///
-/// Every field here appears in [`decode_signal`]: the four that place and
+/// Every field here appears in `decode_signal`: the four that place and
 /// interpret the bits (`start_bit`, `size`, `big_endian`, `signed`), the
 /// two that scale them (`factor`, `offset`), the `SIG_VALTYPE_` override
 /// that replaces "scaled integer" with an IEEE bit pattern
@@ -278,7 +278,7 @@ fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSigna
 #[derive(Debug, Clone, PartialEq)]
 pub struct SignalDecodeSpec {
     /// `SG_` start bit, in the DBC's own bit numbering (see
-    /// [`bitwalk::walk`]).
+    /// `bitwalk::walk`).
     pub start_bit: u64,
     /// Signal width in bits.
     pub size: u64,
@@ -302,7 +302,7 @@ pub struct SignalDecodeSpec {
 
 /// The bits a multiplexed signal's gate is read from: what its owning
 /// message's multiplexor signal extracts, which is what
-/// [`decode_message`] compares the signal's selector against.
+/// `decode_message` compares the signal's selector against.
 ///
 /// Only the three extraction inputs, because the comparison is against
 /// the multiplexor's `raw_unsigned` — its scaling, sign and value table
@@ -323,7 +323,7 @@ pub struct DecodedMessage<'a> {
     pub name: &'a str,
     /// The owning message's `BO_` transmitting node, or `None` for the
     /// `Vector__XXX` "no sender" placeholder — same convention as
-    /// [`SignalDescriptor::transmitter`].
+    /// [`crate::SignalDescriptor::transmitter`].
     pub transmitter: Option<&'a str>,
     pub expected_len: usize,
     pub actual_len: usize,

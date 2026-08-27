@@ -198,7 +198,7 @@ impl TraceStore {
     /// reloadable as a stopped trace. Returns the raw store's I/O result.
     ///
     /// The raw store's manifest is written first (it is the authority on
-    /// frame count); then the facade's [`DERIVED_FILE`] is rewritten, so
+    /// frame count); then the facade's `DERIVED_FILE` is rewritten, so
     /// its newest-index/count entries never reference a frame past the
     /// just-persisted length.
     pub fn flush(&self) -> std::io::Result<()> {
@@ -223,7 +223,7 @@ impl TraceStore {
     /// take the same lock, so they observe the store either wholly before
     /// or wholly after the move, never mid-way. A flush whose directory
     /// walk straddled the swap is detected and dropped
-    /// ([`Self::commit_flush`]).
+    /// (`Self::commit_flush`).
     ///
     /// [`Carry::Contents`] is the Save As path (ADR 0042 §6): the capture
     /// is flushed, unmapped, moved, and remapped at its new home, and the
@@ -443,7 +443,7 @@ impl TraceStore {
 
     /// Identity of the capture currently in the scratch, or `None` for the
     /// in-RAM double, a scratch with no capture, or one written before
-    /// captures were identified. See [`ScratchIdentity::capture_id`].
+    /// captures were identified. See `ScratchIdentity::capture_id`.
     pub fn scratch_capture_id(&self) -> Option<Uuid> {
         let dir = self.lock_inner().scratch_dir.clone()?;
         read_json::<ScratchIdentity>(&dir.join(IDENTITY_FILE))?.capture_id
