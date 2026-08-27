@@ -19,7 +19,8 @@
 //! 10^8-frame capture reads `O(max_points)` points instead of
 //! materializing and decimating the whole raw series on every request.
 //!
-//! Coupled with the existing per-id index in [`TraceStore::by_id`],
+//! Coupled with the existing per-id index behind
+//! [`TraceStore::latest_in_window`],
 //! catch-up is `O(Σ new matches)`: at high rate the per-tick work
 //! is bounded by how much capture arrived since the last call, not by
 //! the total capture length — which is the whole point. The pyramid is
@@ -1212,8 +1213,8 @@ pub enum Harden {
     /// each file is waited on exactly once ever, and a live capture's hot
     /// tail is left alone instead of being re-flushed on every tick. The
     /// caller sets the budget because the caller is what knows whether
-    /// there is a receive cadence to protect: [`live_budget`] /
-    /// [`idle_budget`].
+    /// there is a receive cadence to protect: [`Harden::live_budget`] /
+    /// [`Harden::idle_budget`].
     Sealed { budget: usize },
     /// Every page, hot tails included — the shutdown path. Bounded by
     /// what the cadence left behind.

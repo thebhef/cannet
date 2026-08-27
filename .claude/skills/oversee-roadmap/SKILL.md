@@ -102,7 +102,7 @@ own build, which is not free here.
 When an agent reports back, before launching the next:
 
 1. **Verify the branch landed as contracted** — one commit on its
-   base, tree clean, a **six-row CI table** with every job named and
+   base, tree clean, a **seven-row CI table** with every job named and
    its command shown, and a commit message that reads as a PR
    description rather than a changelog. A missing row is a red job,
    not an oversight: `implement-phase` § 3 makes the full local CI

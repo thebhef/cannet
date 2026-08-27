@@ -206,3 +206,65 @@ fn census_reports_the_files_other_content() {
     assert!(scan.signal_groups.is_empty());
     assert!(scan.decoded_message_groups.is_empty());
 }
+
+/// A cancel pressed *before* the walk starts is honoured, and no record
+/// is walked.
+///
+/// This is the press that lands during `Mdf4File::open` — one
+/// uninterruptible call that is most of a large file's scan time. The
+/// caller publishes the flag before calling in, so the press is already
+/// recorded; the question is only whether anything reads it before the
+/// walk. Raising it up front is the same state the walk sees on entry.
+///
+/// **The checkpoint alone is not enough to cover this.** The first
+/// checkpoint arrives `CHECKPOINT_RECORDS` records in, so on a file
+/// holding fewer than that it never arrives at all and the scan would
+/// complete despite the cancel. This fixture is deliberately small
+/// enough to sit inside one checkpoint stride.
+#[test]
+fn a_cancel_raised_before_the_walk_starts_is_honoured() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cancel-before-walk.mf4");
+    write_small_fixture(&path);
+
+    let cancel = AtomicBool::new(true);
+    let mut checkpoints = 0usize;
+    let outcome = scan_mdf_cancellable(&path, &cancel, &mut |_| checkpoints += 1).unwrap();
+
+    assert!(
+        matches!(outcome, ScanOutcome::Cancelled),
+        "a census entered with the cancel already raised must report Cancelled"
+    );
+    assert_eq!(
+        checkpoints, 0,
+        "no record should have been walked, so no checkpoint should have fired"
+    );
+}
+
+/// Small enough that the walk never reaches its first checkpoint — the
+/// regime `a_cancel_raised_before_the_walk_starts_is_honoured` needs.
+fn write_small_fixture(path: &std::path::Path) {
+    let mut writer = MdfCaptureWriter::create(
+        path,
+        MdfCaptureLayout {
+            start_time_ns: BASE_NS,
+            max_payload_len: 8,
+        },
+    )
+    .unwrap();
+    for i in 0..8u64 {
+        writer
+            .append_frame(
+                &CanFrame::classic(
+                    BASE_NS + i * 1_000,
+                    0,
+                    CanId::standard(0x100).unwrap(),
+                    Direction::Rx,
+                    vec![1, 2, 3, 4, 5, 6, 7, 8],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    writer.finish().unwrap();
+}

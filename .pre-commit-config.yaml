@@ -91,6 +91,24 @@ repos:
         files: '\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
         pass_filenames: false
         entry: cargo clippy --workspace --all-targets -- -D warnings
+      # Broken rustdoc links render as literal text rather than failing
+      # anything, so nothing catches them at review: 41 accumulated
+      # before this hook existed. `--no-deps` keeps it to our own crates
+      # (documenting the dependency tree is minutes, not seconds), and
+      # the crate root allows `private_intra_doc_links` with its reason,
+      # so what -D warnings actually catches here is a link that does
+      # not resolve at all.
+      #
+      # Scoped to cannet-gui: the library crates carry 34 warnings of
+      # their own, equally pre-existing, and the allow above is an
+      # app-crate argument that does not transfer to a library. Widening
+      # this to --workspace is a separate decision.
+      - id: cargo-doc
+        name: cargo doc (rustdoc links)
+        language: system
+        files: '\.rs$|(^|/)Cargo\.(toml|lock)$'
+        pass_filenames: false
+        entry: bash -c 'RUSTDOCFLAGS="-D warnings" cargo doc -p cannet-gui --no-deps'
       # The test run is scoped to the crates a commit touches — the path
       # → package map is in scripts/cargo-test-touched.sh, and a root
       # manifest / toolchain change (or any Rust path with no rule) falls
