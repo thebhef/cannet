@@ -87,10 +87,16 @@ pub struct RbsSignalRow {
     pub size: u32,
     pub signed: bool,
     pub has_value_table: bool,
+    /// The DBC's start value for this signal, in physical units —
+    /// `None` where the DBC declares none and the bits are the file's
+    /// fill instead. The feed collapses the DBC and override layers
+    /// into one live `value`, so without this an overridden field's
+    /// DBC default has nowhere to show.
+    pub default_value: Option<f64>,
     /// A short "what happened" note for the detail column — empty for
     /// a clean Default/Override row, the prototype's phrasing
-    /// otherwise (e.g. "invalid hex value 0xZZ", "no start value in
-    /// the DBC — bits are the file's fill").
+    /// otherwise (e.g. "invalid hex value 0xZZ"). The undefaulted case
+    /// is the Default column's to say, not a sentence here.
     pub detail: String,
 }
 
@@ -188,10 +194,9 @@ fn build_rbs_signal_rows(state: &AppState, element_id: &str) -> Option<Vec<RbsSi
                     } else if s.start_value_raw.is_some() {
                         (RbsSignalStatus::Default, "DBC start value".to_string())
                     } else {
-                        (
-                            RbsSignalStatus::Default,
-                            "no start value in the DBC — bits are the file's fill".to_string(),
-                        )
+                        // No start value: the Default column already
+                        // says `none`, so the detail says nothing.
+                        (RbsSignalStatus::Default, String::new())
                     };
 
                     rows.push(RbsSignalRow {
@@ -218,6 +223,7 @@ fn build_rbs_signal_rows(state: &AppState, element_id: &str) -> Option<Vec<RbsSi
                         size: s.size,
                         signed: s.signed,
                         has_value_table: s.has_value_table,
+                        default_value: s.start_value_raw.map(|raw| raw.mul_add(s.factor, s.offset)),
                         detail,
                     });
                 }
@@ -319,6 +325,7 @@ fn not_encoded_row(
         size: 0,
         signed: false,
         has_value_table: false,
+        default_value: None,
         detail: "No mapped database encodes this field".to_string(),
     }
 }
@@ -359,6 +366,7 @@ fn not_encoded_row_raw(
         size: 0,
         signed: false,
         has_value_table: false,
+        default_value: None,
         detail: "No mapped database encodes this field".to_string(),
     }
 }
@@ -464,10 +472,13 @@ VAL_ 291 Mode 0 "Off" 1 "On" 2 "Auto";
 
         let level = row(&rows, "Powertrain", "0x123", "Level");
         assert_eq!(level.status, RbsSignalStatus::Default);
-        assert!(
-            level.detail.contains("fill"),
-            "an undefaulted signal's detail names the fill: {}",
-            level.detail
+        assert_eq!(
+            level.default_value, None,
+            "the DBC gives Level no start value — the grid's Default column says so"
+        );
+        assert_eq!(
+            level.detail, "",
+            "and the detail no longer carries the sentence the column replaced"
         );
 
         let ghost = row(&rows, "Powertrain", "0x123", "Ghost");
@@ -491,6 +502,32 @@ VAL_ 291 Mode 0 "Off" 1 "On" 2 "Auto";
         let whatever = row(&rows, "Sidecar", "0x1", "Whatever");
         assert_eq!(whatever.status, RbsSignalStatus::NotEncoded);
         assert_eq!(whatever.bus_id, None, "no project bus is named Sidecar");
+    }
+
+    /// The Default column is the DBC's start value in physical units —
+    /// what `reconstruct_payload` actually encodes before any override
+    /// — carried per row so the grid can show it beside the live value
+    /// the override collapsed on top of.
+    #[test]
+    fn a_dbc_start_value_reaches_the_row_even_under_an_override() {
+        let state = setup(
+            r#"{ "schema_version": 1, "buses": {
+                 "Powertrain": { "ecus": { "BMS": { "messages": {
+                     "0x123": { "signals": { "Mode": "On", "Ghost": 1 } }
+                 } } } } } }"#,
+        );
+        let rows = build_rbs_signal_rows(&state, "el1").unwrap();
+        let mode = row(&rows, "Powertrain", "0x123", "Mode");
+        assert_eq!(mode.status, RbsSignalStatus::Override);
+        assert_eq!(
+            mode.default_value,
+            Some(2.0),
+            "GenSigStartValue 2 = Auto, which the override hides from the value cell"
+        );
+        // A row with no descriptor to read a start value off carries
+        // none either.
+        let ghost = row(&rows, "Powertrain", "0x123", "Ghost");
+        assert_eq!(ghost.default_value, None);
     }
 
     #[test]

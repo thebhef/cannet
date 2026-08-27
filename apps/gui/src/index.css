@@ -4872,12 +4872,15 @@ button.color-chip {
 .tx-frame-row:hover {
   background: var(--surface-overlay);
 }
-/* The gridview's cursor and selection (ADR 0044). */
-.tx-frame-row[data-active] {
+/* The gridview's cursor and selection (ADR 0044) — the disclosed
+   signal lines included, since they are rows of the space too. */
+.tx-frame-row[data-active],
+.tx-signal-row[data-active] {
   outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
-.tx-frame-row-selected {
+.tx-frame-row-selected,
+.tx-signal-row-selected {
   background: var(--surface-row-selected);
 }
 .tx-drag-handle {
@@ -5627,10 +5630,12 @@ button.color-chip {
 .rbs-message { margin-left: 24px; }
 .rbs-message-row:hover { background: var(--surface-bus-row-hover); }
 .rbs-inert { opacity: 0.45; }
-/* The gridview's cursor and selection (ADR 0044). */
+/* The gridview's cursor and selection (ADR 0044) — the signal rows a
+   message discloses included, since they are rows of the space too. */
 .rbs-bus-row[data-active],
 .rbs-ecu-row[data-active],
-.rbs-message-row[data-active] {
+.rbs-message-row[data-active],
+.rbs-signal[data-active] {
   outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
@@ -6609,25 +6614,9 @@ button.color-chip {
   text-align: center;
 }
 
-/* The row wash: a translucent tint of the status colour over the row
-   background, toggleable — see `.view-signals-status-text` for the
-   fallback the status column carries when this is off. `color-mix`
-   reads the theme's live token values, so it needs no per-theme
-   duplicate the way a literal rgba() would. `decoded` gets no wash —
-   a clean row reads as a normal one. */
-.view-signals-row--wash-not-decoded {
-  background: color-mix(in srgb, var(--danger-text) 12%, var(--surface-row));
-}
-.view-signals-row--wash-scale {
-  background: color-mix(in srgb, var(--warn-border) 12%, var(--surface-row));
-}
-.view-signals-row--wash-ambiguous {
-  background: color-mix(in srgb, var(--accent-marker) 12%, var(--surface-row));
-}
-.view-signals-row--wash-stale {
-  background: color-mix(in srgb, var(--modified-marker) 12%, var(--surface-row));
-}
-
+/* The status column's own words. A row's background belongs to the
+   gridview — cursor and selection are what paint a row (ADR 0044) — so
+   per-row state is said in a cell, here as the chip plus this label. */
 .view-signals-status-text {
   margin-left: 0.35rem;
   font-size: 0.78rem;
@@ -6824,23 +6813,6 @@ button.color-chip {
   text-align: center;
 }
 
-/* The row wash: see the view-signals block's own comment — same
-   color-mix mechanism, this taxonomy's colours. Override and Default
-   get no wash: a value the file set and one it merely inherited both
-   read as normal rows, same as a clean Decoded row does there. */
-.rbs-signals-row--wash-not-encoded {
-  background: color-mix(in srgb, var(--danger-text) 12%, var(--surface-row));
-}
-.rbs-signals-row--wash-out-of-range {
-  background: color-mix(in srgb, var(--text-signal-value) 16%, var(--surface-row));
-}
-.rbs-signals-row--wash-unknown-value {
-  background: color-mix(in srgb, var(--warn-border) 12%, var(--surface-row));
-}
-.rbs-signals-row--wash-muted {
-  background: color-mix(in srgb, var(--text-muted) 10%, var(--surface-row));
-}
-
 /* The gridview's cursor (ADR 0044), the same outline the RBS tree's own
    rows carry — the container holds focus, so the cursor's row has to
    say so itself. The selection is `.trace-row.selected`, shared. */
@@ -6857,8 +6829,16 @@ button.color-chip {
 
 .col-rs-bus,
 .col-rs-signal,
-.col-rs-msg {
+.col-rs-msg,
+.col-rs-default {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* A field the DBC gives no start value: the word reads as an absence,
+   not as a value, so it is dimmed the way an empty cell would be. */
+.rbs-signals-no-default {
+  color: var(--text-faint);
+  font-style: italic;
 }
 .col-rs-bus {
   color: var(--scope-text);

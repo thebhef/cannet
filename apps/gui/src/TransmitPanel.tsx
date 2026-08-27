@@ -22,7 +22,8 @@ import {
   zeroDataHex,
 } from "./transmitFrameConfig";
 import { useGridview } from "./useGridview";
-import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
+import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";
+import { contentRowId } from "./gridviewContentRows";
 import { toggleInSet } from "./toggleSet";
 import { elementLabel } from "./elementLabel";
 import { transmitViewSignalRefs, usePushViewSignals } from "./viewSignalsPush";
@@ -49,9 +50,11 @@ import { transmitViewSignalRefs, usePushViewSignals } from "./viewSignalsPush";
  *
  * Interaction is the shared gridview's (ADR 0044): each frame is a leaf
  * whose expanded face is disclosed content, and Space is this panel's
- * primary action — send the cursor's frame once. Everything a frame row
- * can be edited through (byte cells, value cells, the bus picker) is
- * reached by Tab, not by the grid cursor.
+ * primary action — send the cursor's frame once. That face's DBC
+ * signals table is a *list*, so each of its lines is a row of the space
+ * the cursor reaches; the frame-shape and calculated-field strips
+ * beside it are not lists and stay controls the row carries, reached by
+ * Tab like the byte cells and the bus picker.
  */
 /// What PageUp / PageDown move by. Frame tiles vary in height with
 /// their disclosure, so there is no row count to derive; a handful of
@@ -325,8 +328,9 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   // --- the gridview (ADR 0044) ---
   // The element's frame group *is* the row space: each frame a leaf that
   // is always expandable, since its expanded face (frame shape,
-  // calculated fields, the DBC signals table) is disclosed content that
-  // grows the tile and adds no rows.
+  // calculated fields, the DBC signals table) is disclosed content —
+  // and the signals table half of it is a list, so those lines are rows
+  // of the space too.
   //
   // Expansion moves here from the row component: it is keyed by frame id
   // rather than by a per-component boolean, so reordering the list can no
@@ -334,16 +338,40 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   // panel's other view state.
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
-  const gridRows = useMemo(
-    () =>
-      frames.map((f) => ({
-        id: f.id,
-        kind: "leaf" as const,
-        expandable: true,
-        depth: 0,
-      })),
-    [frames],
-  );
+  // What each open tile's signals table actually put on screen, keyed
+  // by frame id. It reports rather than the panel deriving: the active
+  // mux arm depends on the decoded switch value, which only the table
+  // holds, and a row space that disagreed with the DOM would name rows
+  // the cursor cannot reach.
+  const [contentRowsById, setContentRowsById] = useState<
+    ReadonlyMap<string, readonly string[]>
+  >(() => new Map());
+  const reportContentRows = useCallback((frameId: string, names: readonly string[]) => {
+    setContentRowsById((prev) => {
+      const current = prev.get(frameId);
+      if (
+        current != null &&
+        current.length === names.length &&
+        current.every((n, i) => n === names[i])
+      ) {
+        return prev;
+      }
+      const next = new Map(prev);
+      next.set(frameId, names);
+      return next;
+    });
+  }, []);
+  const gridRows = useMemo(() => {
+    const out: GridviewRow[] = [];
+    for (const f of frames) {
+      out.push({ id: f.id, kind: "leaf", expandable: true, depth: 0 });
+      if (!expandedIds.has(f.id)) continue;
+      for (const name of contentRowsById.get(f.id) ?? []) {
+        out.push({ id: contentRowId(f.id, name), kind: "leaf", expandable: false, depth: 1 });
+      }
+    }
+    return out;
+  }, [frames, expandedIds, contentRowsById]);
   const setRowExpanded = useCallback((id: string, want: boolean) => {
     setExpandedIds((prev) => (prev.has(id) === want ? prev : toggleInSet(new Set(prev), id)));
   }, []);
@@ -383,6 +411,10 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   /// queued. A periodic still toggles — the scheduler is what parks a
   /// row whose bus has no route (ADR 0039), and its state is the
   /// user's intent, not a claim that frames are going out.
+  ///
+  /// A disclosed signal row finds no frame here, so the press is inert:
+  /// you cannot send part of a message, and redirecting it to the
+  /// message would be a second answer to what the key does.
   const onPrimaryAction = useCallback(
     (id: string) => {
       const f = framesRef.current.find((x) => x.id === id);
@@ -452,7 +484,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
       {/* The frame list is the gridview container: it holds focus and
           names the active row, and its marker keeps the global
           dispatcher off the keys the grid consumes (ADR 0044). */}
-      <div className="tx-panel-list" ref={listRef} {...grid.containerProps}>
+      <div className="tx-panel-list" role="tree" ref={listRef} {...grid.containerProps}>
         {frames.length === 0 && (
           <div className="tx-empty">
             No frames yet. Click "Frame" to add one.
@@ -478,6 +510,21 @@ export function TransmitPanel(props: IDockviewPanelProps) {
             }}
             expanded={expandedIds.has(f.id)}
             onSetExpanded={(want) => setRowExpanded(f.id, want)}
+            contentRows={{
+              domId: (name) => grid.rowDomId(contentRowId(f.id, name)),
+              active: (name) => grid.cursor === contentRowId(f.id, name),
+              selected: (name) => grid.selection.has(contentRowId(f.id, name)),
+              onClick: (name, e) => {
+                e.stopPropagation();
+                grid.onRowClick(contentRowId(f.id, name), {
+                  mod: e.metaKey || e.ctrlKey,
+                  shift: e.shiftKey,
+                });
+                const target = e.target as HTMLElement | null;
+                if (target?.closest("button, input") == null) listRef.current?.focus();
+              },
+              onRows: (names) => reportContentRows(f.id, names),
+            }}
             messageName={
               messageNameByKey.get(`${f.extended ? "x" : "s"}:${f.canId}`) ?? null
             }

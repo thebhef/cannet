@@ -10,12 +10,13 @@
 
 /// A row either structures other rows or it doesn't. A **branch**'s
 /// children appear in and disappear from the space as it opens. A
-/// **leaf**'s content is rows too wherever that content is a list — a
-/// trace row's decoded signals are rows of the space, each with an id
-/// and a place in the order (`gridviewContentRows.ts` is the arithmetic
-/// that splices them in); content that is an editor face instead stays
-/// a block reached by Tab. Either way the toggle is the row's own line,
-/// never the footprint of what it disclosed (ADR 0044).
+/// **leaf**'s content is rows too — a trace row's decoded signals, an
+/// RBS message's signals, a transmit tile's DBC signals table — each
+/// with an id and a place in the order (`gridviewContentRows.ts` is
+/// the arithmetic that splices them into a host-paged space; a panel
+/// that holds its whole row set builds them into its array directly).
+/// Either way the toggle is the row's own line, never the footprint of
+/// what it disclosed (ADR 0044).
 export type GridviewRowKind = "branch" | "leaf";
 
 /// One row of the space. `kind` and `expandable` are orthogonal: a

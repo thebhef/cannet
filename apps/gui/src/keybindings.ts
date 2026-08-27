@@ -164,17 +164,27 @@ export interface DispatchResult {
 /// contentEditable) plain-key bindings are suppressed so typing
 /// doesn't trigger hotkeys; chords with `Mod` or `Alt` still fire.
 /// While the target is inside a gridview the keys that layer consumes
-/// are suppressed the same way — see [`isGridviewKey`].
+/// are suppressed the same way — see [`isGridviewKey`], and
+/// [`isGridviewContentKey`] for the one key that is suppressed only
+/// from inside a row.
 export function dispatchStroke(
   pending: readonly KeyStroke[],
   stroke: KeyStroke,
   bindings: readonly ParsedBinding[],
-  opts: { isMac: boolean; inEditable: boolean; inGridview?: boolean },
+  opts: {
+    isMac: boolean;
+    inEditable: boolean;
+    inGridview?: boolean;
+    inGridviewContent?: boolean;
+  },
 ): DispatchResult {
   if (opts.inEditable && !stroke.ctrl && !stroke.meta && !stroke.alt) {
     return { pending: [], commandId: null, handled: false };
   }
   if (opts.inGridview && isGridviewKey(stroke)) {
+    return { pending: [], commandId: null, handled: false };
+  }
+  if (opts.inGridviewContent && isGridviewContentKey(stroke)) {
     return { pending: [], commandId: null, handled: false };
   }
   const usable = opts.inEditable ? bindings.filter((b) => !b.skipEditable) : bindings;
@@ -317,6 +327,39 @@ export function chordSuppressedInGridview(chord: KeyChord): boolean {
 export function isGridviewTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return target.closest(`[${GRIDVIEW_ATTR}]`) != null;
+}
+
+/// Is the keydown target inside a gridview *row* rather than the
+/// container itself? The container is the one element of a gridview
+/// that holds focus (ADR 0044), so anything else under the marker is
+/// content a row disclosed or a control the row carries — which is
+/// exactly where Escape means "back to the container".
+export function isGridviewContentTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.closest(`[${GRIDVIEW_ATTR}]`) != null && !target.hasAttribute(GRIDVIEW_ATTR)
+  );
+}
+
+/// The key a gridview consumes only from inside a row: plain Escape,
+/// the way back out to the container (ADR 0044). Suppressed for the
+/// dispatcher there and only there — a press that reaches the
+/// container has nothing to come back from and belongs to whatever
+/// global binding claims it, which is what makes the two-press
+/// layering work on a fullscreened panel.
+///
+/// Kept apart from [`isGridviewKey`] because the grid's claim on
+/// Escape is weaker than its claim on the navigation keys: content
+/// still keeps first claim on it, through the container handler's own
+/// `defaultPrevented` check.
+export function isGridviewContentKey(stroke: KeyStroke): boolean {
+  return (
+    stroke.key === "Escape" &&
+    !stroke.ctrl &&
+    !stroke.meta &&
+    !stroke.alt &&
+    !stroke.shift
+  );
 }
 
 /// Cmd-as-Mod platform detection for the dispatcher and the palette's

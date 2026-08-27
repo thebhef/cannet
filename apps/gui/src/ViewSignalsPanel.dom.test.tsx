@@ -309,13 +309,18 @@ describe("ViewSignalsPanel", () => {
     expect(lastListCall()?.args).toEqual(before);
   });
 
-  it("row washes are on by default, and the status column falls back to text when off", async () => {
+  it("paints no row background, and names every row's status in the status cell", async () => {
+    // Row background belongs to the gridview — cursor and selection are
+    // what paint a row (ADR 0044). A panel says per-row state in a
+    // *cell*, so the status text is unconditional and there is no
+    // toggle for turning it into a wash.
     renderPanel();
     await waitFor(() => expect(screen.getByText("VehicleSpeed", { selector: ".col-vs-signal" })).toBeInTheDocument());
-    // Off by default: no textual status label rendered, only the chip.
-    expect(screen.queryByText("Scale")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Row Highlights" }));
-    await waitFor(() => expect(screen.getByText("Scale")).toBeInTheDocument());
+    expect(screen.getByText("Scale")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Row Highlights" })).toBeNull();
+    for (const el of document.querySelectorAll(".view-signals-row")) {
+      expect(el.className).not.toMatch(/wash/);
+    }
   });
 
   it("refetches on view-signals-changed", async () => {

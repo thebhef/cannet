@@ -34,6 +34,7 @@ function row(over: Partial<RbsSignalRow> = {}): RbsSignalRow {
     size: 16,
     signed: false,
     hasValueTable: false,
+    defaultValue: null,
     detail: "",
     ...over,
   };

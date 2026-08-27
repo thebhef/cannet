@@ -17,6 +17,7 @@ import {
   makeRbsRowSpace,
   messageRowId,
 } from "./rbsRowIdentity";
+import { contentRowId } from "./gridviewContentRows";
 import type { RbsView } from "./types";
 
 function view(): RbsView {
@@ -32,8 +33,20 @@ function view(): RbsView {
             name: "BMS",
             enabled: true,
             messages: [
-              { key: "0x100", name: "PackStatus", enabled: true, running: true },
-              { key: "0x102", name: "CellExtremes", enabled: true, running: true },
+              {
+                key: "0x100",
+                name: "PackStatus",
+                enabled: true,
+                running: true,
+                signals: [{ name: "PackVoltage" }, { name: "PackCurrent" }],
+              },
+              {
+                key: "0x102",
+                name: "CellExtremes",
+                enabled: true,
+                running: true,
+                signals: [{ name: "CellMax" }],
+              },
             ],
           },
         ],
@@ -87,12 +100,18 @@ describe("buildVisibleTree", () => {
 });
 
 describe("makeRbsRowSpace", () => {
+  /// Buses and ECUs are open; no message is, which is the panel's own
+  /// default (a message's signal table starts shut).
+  const treeOpen = (ids: ReturnType<typeof makeRbsRowIds>) =>
+    buildVisibleTree(view(), ids, (id) => !id.startsWith("m:"), null);
+
   it("hands back the same array when nothing structural moved", () => {
     const ids = makeRbsRowIds();
     const space = makeRbsRowSpace();
-    const first = space(buildVisibleTree(view(), ids, () => true, null), ids);
+    const shut = (id: string) => !id.startsWith("m:");
+    const first = space(treeOpen(ids), ids, shut);
     // A fresh view object with the same shape — what the value poll does.
-    const second = space(buildVisibleTree(view(), ids, () => true, null), ids);
+    const second = space(treeOpen(ids), ids, shut);
     expect(second).toBe(first);
     expect(first.map((r) => r.id)).toEqual([
       "b:pack",
@@ -105,10 +124,49 @@ describe("makeRbsRowSpace", () => {
   it("rebuilds when the shape does move", () => {
     const ids = makeRbsRowIds();
     const space = makeRbsRowSpace();
-    const open = space(buildVisibleTree(view(), ids, () => true, null), ids);
-    const shut = space(buildVisibleTree(view(), ids, (id) => id !== "e:pack/BMS", null), ids);
-    expect(shut).not.toBe(open);
-    expect(shut.map((r) => r.id)).toEqual(["b:pack", "e:pack/BMS"]);
+    const shut = (id: string) => !id.startsWith("m:");
+    const open = space(treeOpen(ids), ids, shut);
+    const closed = space(
+      buildVisibleTree(view(), ids, (id) => id !== "e:pack/BMS" && shut(id), null),
+      ids,
+      shut,
+    );
+    expect(closed).not.toBe(open);
+    expect(closed.map((r) => r.id)).toEqual(["b:pack", "e:pack/BMS"]);
+  });
+
+  it("splices an open message's signals in as rows one level deeper", () => {
+    // ADR 0044's node model: a leaf whose content is a *list* discloses
+    // rows, not a block — so the cursor reaches each signal.
+    const ids = makeRbsRowIds();
+    const space = makeRbsRowSpace();
+    const rows = space(treeOpen(ids), ids, (id) => id !== "m:pack/0x102");
+    expect(rows.map((r) => r.id)).toEqual([
+      "b:pack",
+      "e:pack/BMS",
+      "m:pack/0x100",
+      "m:pack/0x100/PackVoltage",
+      "m:pack/0x100/PackCurrent",
+      "m:pack/0x102",
+    ]);
+    const sig = rows.find((r) => r.id === "m:pack/0x100/PackVoltage");
+    expect(sig).toEqual({
+      id: "m:pack/0x100/PackVoltage",
+      kind: "leaf",
+      expandable: false,
+      depth: 3,
+    });
+    // …and the message that disclosed them is one shallower, which is
+    // what makes Left walk out of a signal onto it.
+    expect(rows.find((r) => r.id === "m:pack/0x100")?.depth).toBe(2);
+  });
+
+  it("spells a signal row's id through the shared content-row naming", () => {
+    const ids = makeRbsRowIds();
+    const rows = makeRbsRowSpace()(treeOpen(ids), ids, (id) => id === "m:pack/0x100");
+    expect(rows.map((r) => r.id)).toContain(
+      contentRowId(messageRowId("pack", "0x100"), "PackVoltage"),
+    );
   });
 });
 

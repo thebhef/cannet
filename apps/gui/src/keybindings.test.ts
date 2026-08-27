@@ -294,6 +294,39 @@ describe("gridview key suppression", () => {
     }
   });
 
+  it("holds plain Escape back from inside a row, but not from the container", () => {
+    // ADR 0044's Escape precedence: the grid's way out of a row's
+    // content beats a global binding, and a press that reaches the
+    // container is the global binding's. `view.exitFullscreen` is the
+    // binding that made this matter — before it, Escape from a
+    // fullscreened panel's row control left fullscreen and stranded
+    // focus on the control.
+    const escapeBinding = [{ chord: parseChord("Escape"), commandId: "view.exitFullscreen" }];
+    const inRow = dispatchStroke([], plain("Escape"), escapeBinding, {
+      isMac: false,
+      inEditable: false,
+      inGridview: true,
+      inGridviewContent: true,
+    });
+    expect(inRow.commandId).toBeNull();
+    expect(inRow.handled).toBe(false);
+    const onContainer = dispatchStroke([], plain("Escape"), escapeBinding, {
+      isMac: false,
+      inEditable: false,
+      inGridview: true,
+      inGridviewContent: false,
+    });
+    expect(onContainer.commandId).toBe("view.exitFullscreen");
+    // Only plain Escape: a modified one is nobody's way out of a row.
+    const shifted = dispatchStroke(
+      [],
+      { ...plain("Escape"), shift: true },
+      [{ chord: parseChord("Shift+Escape"), commandId: "x" }],
+      { isMac: false, inEditable: false, inGridview: true, inGridviewContent: true },
+    );
+    expect(shifted.commandId).toBe("x");
+  });
+
   it("passes every other chord through from inside a grid", () => {
     const r = dispatchStroke([], plain("f"), fitBinding, {
       isMac: false,

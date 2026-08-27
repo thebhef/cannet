@@ -64,6 +64,7 @@ import {
   dispatchStroke,
   formatChord,
   isEditableTarget,
+  isGridviewContentTarget,
   isGridviewTarget,
   isMacPlatform,
   type KeyStroke,
@@ -739,6 +740,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
           isMac,
           inEditable: isEditableTarget(e.target),
           inGridview: isGridviewTarget(e.target),
+          inGridviewContent: isGridviewContentTarget(e.target),
         },
       );
       pending = result.pending;

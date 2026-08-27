@@ -5,7 +5,7 @@
 /// whole difference the grooming names ("same
 /// component, opposite scoping rule"): both panels are thin views over
 /// `GridviewHeader`/`GridviewRow`/`useGridview`/`arrayRowSpace`, a
-/// status-chip taxonomy with toggleable row washes, and a status +
+/// status-chip taxonomy said in the status cell, and a status +
 /// bus toolbar filter on the nothing-selected-is-no-filter model —
 /// this one is simply not a singleton, and its rows never merge across
 /// two `.cannet_rbs` files, because two RBS sims are meant to hold
@@ -29,7 +29,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { RbsSignalRow } from "./types";
 import { useHostMirror } from "./useHostMirror";
-import { RbsValueCell } from "./rbsValueCell";
+import { RbsValueCell, formatValue } from "./rbsValueCell";
 import { nextSort, resizeColumn, toggleColumn, reorderColumn } from "./traceColumns";
 import {
   RBS_SIGNAL_UNSORTABLE,
@@ -67,7 +67,6 @@ interface RbsSignalsPanelParams {
   sort?: unknown;
   statusFilter?: unknown;
   busFilter?: unknown;
-  washesOn?: unknown;
 }
 
 function elementIdFromParams(params: unknown): string {
@@ -134,10 +133,6 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
   const [busFilter, setBusFilter] = useState<ReadonlySet<string>>(
     () => new Set(Array.isArray(params?.busFilter) ? params.busFilter.filter((v): v is string => typeof v === "string") : []),
   );
-  const [washesOn, setWashesOn] = useState<boolean>(() =>
-    typeof params?.washesOn === "boolean" ? params.washesOn : true,
-  );
-
   useMemo(() => {
     api.updateParameters({
       elementId,
@@ -145,11 +140,10 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
       sort,
       statusFilter: [...statusFilter],
       busFilter: [...busFilter],
-      washesOn,
     });
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, elementId, columns, sort, statusFilter, busFilter, washesOn]);
+  }, [api, elementId, columns, sort, statusFilter, busFilter]);
 
   // --- the host model ---
   const fetchRows = useCallback(
@@ -354,12 +348,6 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
             </div>
           )}
         </span>
-        <ChipButton
-          label="Row Highlights"
-          title="highlight each row's background by its status; the status column always names it"
-          pressed={washesOn}
-          onPress={() => setWashesOn((v) => !v)}
-        />
         <span className="spacer" />
         <ChipButton
           label={countsLabel}
@@ -388,7 +376,6 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
               row={r}
               columns={visible}
               gridTemplate={gridTemplate}
-              washesOn={washesOn}
               gridProps={rowProps(r.id)}
               onCommit={onCommit}
               onClear={onClear}
@@ -409,7 +396,6 @@ interface RbsSignalRowLineProps {
   row: RbsSignalRow;
   columns: readonly RbsSignalColumnState[];
   gridTemplate: string;
-  washesOn: boolean;
   gridProps: RowGridProps;
   onCommit: (row: RbsSignalRow, value: string | number) => void;
   onClear: (row: RbsSignalRow) => void;
@@ -422,7 +408,6 @@ function RbsSignalRowLine({
   row,
   columns,
   gridTemplate,
-  washesOn,
   gridProps,
   onCommit,
   onClear,
@@ -437,7 +422,7 @@ function RbsSignalRowLine({
       columns={columns}
       gridTemplate={gridTemplate}
       {...gridProps}
-      className={`trace-row rbs-signals-row${washesOn ? ` rbs-signals-row--wash-${STATUS_CLASS[status]}` : ""}${selected ? " selected" : ""}`}
+      className={`trace-row rbs-signals-row${selected ? " selected" : ""}`}
       aria-selected={selected}
       data-active={active || undefined}
       renderCell={(key, className) => {
@@ -450,7 +435,7 @@ function RbsSignalRowLine({
                   title={STATUS_LABEL[status]}
                   aria-hidden="true"
                 />
-                {!washesOn && <span className="rbs-signals-status-text">{STATUS_LABEL[status]}</span>}
+                <span className="rbs-signals-status-text">{STATUS_LABEL[status]}</span>
               </span>
             );
           case "bus":
@@ -494,6 +479,20 @@ function RbsSignalRowLine({
                   onCommit={(value) => onCommit(row, value)}
                   onClear={() => onClear(row)}
                 />
+              </span>
+            );
+          case "default":
+            // The DBC's start value, or `none` — the fill-bit case,
+            // which is a fact about the field rather than something
+            // that happened to it, so it reads as a value here instead
+            // of as a sentence in the detail column.
+            return (
+              <span className={className}>
+                {row.defaultValue == null ? (
+                  <span className="rbs-signals-no-default">none</span>
+                ) : (
+                  formatValue(row.defaultValue)
+                )}
               </span>
             );
           case "unit":

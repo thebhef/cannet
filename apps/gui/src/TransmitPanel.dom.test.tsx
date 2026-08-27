@@ -764,6 +764,7 @@ describe("TransmitPanel as a drop target", () => {
 /// action, and expansion keyed by frame id.
 describe("TransmitPanel on the gridview", () => {
   const tiles = () => Array.from(document.querySelectorAll(".tx-frame-row"));
+  const signalRows = () => Array.from(document.querySelectorAll(".tx-signal-row"));
   const list = () => document.querySelector(".tx-panel-list") as HTMLElement;
 
   it("moves the cursor over the frame tiles and carries the selection with it", async () => {
@@ -860,17 +861,59 @@ describe("TransmitPanel on the gridview", () => {
     );
   });
 
-  it("Right discloses a tile's expanded face in place, adding no rows", async () => {
+  it("Right discloses a tile's expanded face, and its signals are rows of the space", async () => {
     POOL = [frame("a")];
+    DESCRIBE = twoSignalDescriptor();
     renderPanel("el", ["a"]);
     await waitFor(() => expect(tiles()).toHaveLength(1));
     fireEvent.keyDown(list(), { key: "ArrowDown" });
     fireEvent.keyDown(list(), { key: "ArrowRight" });
     expect(document.querySelector(".tx-expanded")).toBeInTheDocument();
-    // A leaf's content grows the row; it does not add rows.
-    expect(tiles()).toHaveLength(1);
+    // The DBC signals table is a *list*, so each line is a row of the
+    // space the cursor reaches (ADR 0044) — the frame-shape and
+    // calculated-field strips beside it are not, and stay Tab's.
+    await waitFor(() => expect(signalRows()).toHaveLength(2));
+    fireEvent.keyDown(list(), { key: "ArrowRight" });
+    expect(signalRows()[0]).toHaveAttribute("data-active");
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    expect(signalRows()[1]).toHaveAttribute("data-active");
+    // Left walks out of a signal onto the tile that disclosed it.
+    fireEvent.keyDown(list(), { key: "ArrowLeft" });
+    expect(tiles()[0]).toHaveAttribute("data-active");
     fireEvent.keyDown(list(), { key: "ArrowLeft" });
     expect(document.querySelector(".tx-expanded")).not.toBeInTheDocument();
+    expect(signalRows()).toHaveLength(0);
+  });
+
+  it("Tab from a signal row lands in that signal's own value cell", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = twoSignalDescriptor();
+    renderPanel("el", ["a"]);
+    await waitFor(() => expect(tiles()).toHaveLength(1));
+    list().focus();
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: "ArrowRight" });
+    await waitFor(() => expect(signalRows()).toHaveLength(2));
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    expect(signalRows()[1]).toHaveAttribute("data-active");
+    fireEvent.keyDown(list(), { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByLabelText("RollCtr value"));
+  });
+
+  it("marks its list as a tree, with the tiles and their signals as its items", async () => {
+    // The container and its rows carry real ARIA roles, so
+    // `aria-activedescendant` names something an assistive technology
+    // can report (ADR 0044).
+    POOL = [frame("a")];
+    DESCRIBE = twoSignalDescriptor();
+    renderPanel("el", ["a"]);
+    await waitFor(() => expect(tiles()).toHaveLength(1));
+    expect(list()).toHaveAttribute("role", "tree");
+    expect(tiles()[0]).toHaveAttribute("role", "treeitem");
+    fireEvent.click(await screen.findByTitle("expand"));
+    await waitFor(() => expect(signalRows()).toHaveLength(2));
+    for (const r of signalRows()) expect(r).toHaveAttribute("role", "treeitem");
   });
 
   it("a click on the tile's background both moves the cursor and toggles the face; a click on a control only moves the cursor", async () => {

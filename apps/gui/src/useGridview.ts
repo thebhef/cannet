@@ -188,9 +188,12 @@ export function useGridview({
       // still where it was, so the arrows navigate again. Content keeps
       // first claim — a control that consumed the press either stopped
       // it reaching here (a combobox closing its dropdown) or marked it
-      // handled, and a global Escape command's capture-phase
-      // `preventDefault` counts the same way. A press on the container
-      // itself has nothing to come back from and is left alone.
+      // handled. A *global* binding does not: the dispatcher stands
+      // down on Escape while focus is inside a row
+      // (`isGridviewContentKey`), so a fullscreened panel's Escape
+      // command cannot take the press and strand focus on the control.
+      // A press on the container itself has nothing to come back from
+      // and is left alone — that one is the global binding's.
       if (
         e.key === "Escape" &&
         !e.ctrlKey &&

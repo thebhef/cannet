@@ -2,10 +2,10 @@
 //
 // The RBS panel on the shared gridview (ADR 0044). The tree is a
 // headless single-column instance: buses and ECUs are branches, a
-// message row is a leaf whose signal table is disclosed content — an
-// editor face rather than a list of rows, so it is a block below the
-// row and not rows of the space (ADR 0044). Search runs through the
-// layer's filter slot, which replaced the panel's own fzf copy.
+// message row is a leaf whose signals are **rows of the space** — each
+// with its own id, a place in the order, and a share of the cursor and
+// the selection. Search runs through the layer's filter slot, which
+// replaced the panel's own fzf copy.
 //
 // `RbsPanel.dom.test.tsx` remains the panel's contract net (the host
 // commands, the value cells, the menus); this file covers only what the
@@ -201,7 +201,7 @@ describe("RbsPanel on the gridview", () => {
     expect(screen.getByText("BMS")).toBeInTheDocument();
   });
 
-  it("Right on a message row discloses its signal table in place, adding no rows", async () => {
+  it("Right on a message row discloses its signals as rows the cursor reaches", async () => {
     renderPanel();
     await screen.findByText("PackStatus");
     const tree = screen.getByRole("tree");
@@ -209,13 +209,56 @@ describe("RbsPanel on the gridview", () => {
     for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
     expect(rowOf("PackStatus")).toHaveAttribute("data-active");
     fireEvent.keyDown(tree, { key: "ArrowRight" });
-    // The content block appears…
+    // The signals appear, and each is a row of the space (ADR 0044).
     expect(screen.getByLabelText("PackVoltage value")).toBeInTheDocument();
-    // …and the row space is unchanged: this content is an editor face,
-    // reached by Tab, so it is a block rather than rows (ADR 0044).
-    expect(document.querySelectorAll("[role=treeitem]").length).toBe(rowsBefore);
+    expect(document.querySelectorAll("[role=treeitem]").length).toBe(rowsBefore + 1);
+    // Right again steps onto the first of them; Left walks back out to
+    // the message that disclosed it.
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
+    fireEvent.keyDown(tree, { key: "ArrowLeft" });
+    expect(rowOf("PackStatus")).toHaveAttribute("data-active");
+    // Down from the message walks into the signal, not past it.
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(rowOf("Inverter")).toHaveAttribute("data-active");
+
+    fireEvent.keyDown(tree, { key: "Home" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
     fireEvent.keyDown(tree, { key: "ArrowLeft" });
     expect(screen.queryByLabelText("PackVoltage value")).not.toBeInTheDocument();
+    expect(document.querySelectorAll("[role=treeitem]").length).toBe(rowsBefore);
+  });
+
+  it("Tab from a signal row lands in that signal's own cell", async () => {
+    // The cursor reaching a signal row is only half of it: Tab has to
+    // go into *that* row's controls, not the message's (ADR 0044).
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    tree.focus();
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
+    fireEvent.keyDown(tree, { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByLabelText("PackVoltage value"));
+  });
+
+  it("Space on a signal row does nothing — you cannot send part of a message", async () => {
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
+    fireEvent.keyDown(tree, { key: " " });
+    // Not the message's toggle either: the press is inert, not
+    // redirected upward.
+    expect(calls.filter((c) => c.cmd === "rbs_set_enabled")).toEqual([]);
   });
 
   it("clicking inside a disclosed signal table leaves the message open", async () => {
@@ -280,9 +323,10 @@ describe("RbsPanel on the gridview", () => {
     fireEvent.change(input, { target: { value: "42" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(document.activeElement).toBe(tree);
-    // …and the cursor is still where it was, so the arrows work again.
+    // …and the cursor is still where it was, so the arrows work again —
+    // onto the first of the signal rows the message disclosed.
     fireEvent.keyDown(tree, { key: "ArrowDown" });
-    expect(rowOf("Inverter")).toHaveAttribute("data-active");
+    expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
   });
 
   it("takes the keyboard when a row is clicked, and leaves it to a control", async () => {
