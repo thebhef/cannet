@@ -500,6 +500,16 @@ without reshaping callers.
 - **Vector XL Driver Library** / **Kvaser CANlib** /
   **PEAK PCAN-Basic** — `adopted` as runtime, user-installed
   vendor dependencies; not bundled. See ADR 0008.
+- **`canlib`** (Python, Kvaser's own PyPI wrapper around CANlib) —
+  `rejected`. It was never declared as a dependency, yet the sidecar's
+  Kvaser enumeration imported it, so Kvaser adapters were silently
+  undiscoverable in every shipped build (the frozen sidecar carries
+  only what the freeze collects). python-can's bundled `kvaser`
+  backend already binds the CANlib calls we need through `ctypes` and
+  implements `_detect_available_configs`, so discovery goes through
+  `can.detect_available_configs` — the same delegation PEAK uses. One
+  backend, no extra wheel to freeze, and the vendor DLL stays
+  user-installed as ADR 0008 intends.
 - **`windows-sys` (job objects)** / **`libc` (`setpgid` + `killpg`)** —
   `rejected` as the way a host kills a wedged sidecar's whole process
   tree (the backstop when the graceful stdin-EOF stop times out). Both

@@ -702,40 +702,49 @@ def _list_vector() -> List[Channel]:
 def _list_kvaser() -> List[Channel]:
     """Kvaser CANlib channels.
 
-    ``ChannelData(i)`` exposes ``card_serial_no`` (the card's hardware
-    serial) and ``channel_no_on_card`` (the per-card channel number).
-    The id body is the global index ``i`` python-can's kvaser backend
-    takes as its ``channel`` kwarg; the paren metadata carries the
-    card serial (when known) and the per-card channel the user reads
-    off the device, so two identical cards always produce distinct
-    ids and the label shows the per-card channel number.
+    Channel *discovery* is delegated to python-can's own detector
+    (:func:`can.detect_available_configs`), whose kvaser backend binds
+    CANlib through ``ctypes`` and reports, per channel, the
+    ``device_name``, the card's ``serial``, and ``dongle_channel`` — the
+    per-card channel counted from 1. Reaching instead for Kvaser's
+    separate ``canlib`` PyPI wrapper is what previously made Kvaser
+    adapters invisible: it is not a dependency of this sidecar, so it is
+    absent from the frozen build, and the failed import enumerated zero
+    channels silently. Delegating keeps discovery on the same bundled
+    backend that opening already uses.
+
+    The id body is the global index ``channel`` python-can's kvaser
+    backend takes as its ``channel`` kwarg; the paren metadata carries
+    the card serial (when known) and the per-card channel the user reads
+    off the device, so two identical cards always produce distinct ids
+    and the label shows the per-card channel number.
     """
-    try:
-        from canlib import canlib as kvaser  # type: ignore[import-untyped]
-    except Exception:  # noqa: BLE001
+    if not _HAVE_PYTHON_CAN:
         return []
     try:
-        n = kvaser.getNumberOfChannels()
+        detected = can.detect_available_configs(interfaces=["kvaser"])
     except Exception as e:  # noqa: BLE001
         _log.info("kvaser enumeration failed (%s); skipping", e)
         return []
     out: List[Channel] = []
-    for i in range(int(n)):
-        try:
-            data = kvaser.ChannelData(i)
-            device_name = getattr(data, "device_name", None) or f"ch{i}"
-            sn = getattr(data, "card_serial_no", None)
-            per_card = getattr(data, "channel_no_on_card", i)
-        except Exception:  # noqa: BLE001
-            device_name = f"ch{i}"
-            sn = None
-            per_card = i
+    for cfg in detected:
+        # The global index is what an open takes; an entry without one
+        # can't be opened, so it isn't offered.
+        index = cfg.get("channel")
+        if not isinstance(index, int):
+            continue
+        device_name = cfg.get("device_name") or f"ch{index}"
+        sn = cfg.get("serial")
+        # python-can counts `dongle_channel` from 1; the id and the label
+        # carry the raw per-card channel, as they always have.
+        dongle = cfg.get("dongle_channel")
+        per_card = int(dongle) - 1 if isinstance(dongle, int) else index
         meta = []
         if sn:
             meta.append(f"SN:{sn}")
         meta.append(f"ch:{per_card}")
         meta_str = ", ".join(meta)
-        cid = f"kvaser:{i}({meta_str})"
+        cid = f"kvaser:{index}({meta_str})"
         label = f"Kvaser {device_name} ({meta_str})"
         out.append(Channel(id=cid, display_name=label, fd_capable=True))
     return out

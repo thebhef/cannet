@@ -62,11 +62,22 @@ simply skips that vendor and the others still work.
 
 - **SDK**: [Kvaser CANlib SDK](https://www.kvaser.com/downloads/) (the
   "Drivers, library, SDK" bundle).
-- **python-can backend**: `kvaser`.
-- **Channel id format**: `kvaser:<n>` (zero-based channel index).
+- **python-can backend**: `kvaser` — used for *both* opening and
+  discovery. Kvaser's separate `canlib` PyPI wrapper is **not**
+  required and must not be needed: it isn't a dependency of this
+  sidecar and isn't in the frozen build, so relying on it made Kvaser
+  hardware invisible in shipped builds.
+- **Channel id format**: `kvaser:<n>(SN:<card_serial>, ch:<per_card_channel>)`,
+  where `<n>` is the zero-based global channel index.
 - **Smoke**: same shape as Vector. The Kvaser tool to confirm the
   install is `Kvaser Hardware`; on Linux, `lsusb` plus the
   `canlib` udev rules.
+- **Verify `ch:` against the hardware**: python-can reports the
+  per-card channel counted from 1 and we render it from 0, so on a
+  multi-channel card (e.g. a Memorator Pro 2xHS) confirm the two
+  listed channels read `ch:0` and `ch:1` and that they correspond to
+  the connectors labelled 1 and 2 — untested against a real device so
+  far.
 - **Loopback option**: Kvaser's `kvVirtualBus` virtual channels are
   visible to `python-can`'s `kvaser` backend and are a viable
   hardware-free smoke if installed.
