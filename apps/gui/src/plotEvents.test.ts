@@ -24,13 +24,13 @@ describe("plotTimelineEvents", () => {
   });
 
   it("leaves out the kinds this panel is not showing", () => {
-    // A bus error is hidden by default, so it draws no cursor at all until
-    // this panel is told to show it (ADR 0035).
-    const shown = plotTimelineEvents(notes, null, 1, defaultVisibleKinds(), KIND_COLOR);
+    // A panel that has turned the Diagnostics row off draws no cursor
+    // for a bus error (ADR 0035).
+    const notesOnly = new Set<EventKind>(["note", "messageBound"]);
+    const shown = plotTimelineEvents(notes, null, 1, notesOnly, KIND_COLOR);
     expect(shown.map((e) => e.id)).toEqual(["n1"]);
 
-    const withErrors = new Set<EventKind>([...defaultVisibleKinds(), "busError"]);
-    const all = plotTimelineEvents(notes, null, 1, withErrors, KIND_COLOR);
+    const all = plotTimelineEvents(notes, null, 1, defaultVisibleKinds(), KIND_COLOR);
     expect(all.map((e) => e.id)).toEqual(["e1", "n1"]);
     // ...in display-relative seconds against the origin, colored by kind.
     expect(all[0]).toEqual({ id: "e1", t: 0, label: "bus error x40", color: "#red" });

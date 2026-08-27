@@ -40,9 +40,9 @@ describe("gotoEventItems", () => {
 });
 
 describe("gotoEventItems and hidden kinds", () => {
-  it("leaves out a kind that is hidden by default", () => {
-    // "By default not shown anywhere" reaches the palette too; the events
-    // view is where a bus error is found, and it offers its own goto.
+  it("offers every kind a view shows by default, bus errors included", () => {
+    // The palette goes where the views go. Nothing is filtered out until
+    // a view says so, so a coalesced bus error is reachable from here.
     const items = gotoEventItems(
       [
         { id: "n", timestampNs: 1_000_000_000, label: "brake" },
@@ -51,7 +51,7 @@ describe("gotoEventItems and hidden kinds", () => {
       null,
       0,
     );
-    expect(items.map((i) => i.label)).toEqual(["brake"]);
+    expect(items.map((i) => i.label)).toEqual(["brake", "bus error x40"]);
   });
 });
 

@@ -322,23 +322,35 @@ describe("EventsPanel kind filter", () => {
   const labels = () =>
     Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
 
-  it("hides a kind that declares itself hidden, and shows it when asked", () => {
-    // "By default not shown anywhere" — but findable: the checklist lists
-    // the kind with its count even while it is off (ADR 0035).
+  it("shows what the tool found without being asked, and hides it on request", () => {
+    // Bus errors were once filtered out by default as noise. The host
+    // coalesces a run of error frames into one summary event, so a fault
+    // costs one row however many frames it produced — and a fault is
+    // what a reader most wants surfaced without going looking.
     renderPanel([busError, note]);
-    expect(labels()).toEqual(["boom"]);
+    expect(labels()).toEqual(["bus error x40", "boom"]);
 
-    const box = screen.getByLabelText("Bus Errors") as HTMLInputElement;
-    expect(box.checked).toBe(false);
-    expect(screen.getByLabelText("Bus Errors").closest("label")?.textContent).toContain("1");
+    const box = screen.getByLabelText("Diagnostics") as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(box.closest("label")?.textContent).toContain("1");
 
     fireEvent.click(box);
-    expect(labels()).toEqual(["bus error x40", "boom"]);
+    expect(labels()).toEqual(["boom"]);
+  });
+
+  it("counts every kind a row covers, not just the first", () => {
+    // One row, two kinds: the number beside it has to be their sum, or
+    // it under-reports what the checkbox is hiding.
+    renderPanel([
+      busError,
+      { id: "t1", timestampNs: 3_000_000_000, label: "another run", kind: "busError" },
+      note,
+    ]);
+    expect(screen.getByLabelText("Diagnostics").closest("label")?.textContent).toContain("2");
   });
 
   it("offers no edit controls on a host-derived event", () => {
     renderPanel([busError]);
-    fireEvent.click(screen.getByLabelText("Bus Errors") as HTMLInputElement);
     expect(labels()).toEqual(["bus error x40"]);
     expect(screen.queryByLabelText("rename event")).toBeNull();
     expect(screen.queryByLabelText("remove event")).toBeNull();
@@ -400,7 +412,6 @@ describe("EventsPanel event body", () => {
         description: "bit errors on powertrain over 1.2 s",
       },
     ]);
-    fireEvent.click(screen.getByLabelText("Bus Errors") as HTMLInputElement);
     fireEvent.click(screen.getByLabelText("show event details"));
     expect(screen.getByText("bit errors on powertrain over 1.2 s")).toBeInTheDocument();
     fireEvent.click(screen.getByText("bit errors on powertrain over 1.2 s"));
@@ -515,9 +526,11 @@ describe("EventsPanel tag filter", () => {
 });
 
 describe("EventsPanel record types", () => {
-  it("lists both BLF annotation records and filters them apart", () => {
-    // The record a kind rides is a property of the kind, so the kind
-    // checklist is the record-type filter — and it names the record.
+  it("files a comment beside the notes, with no row of its own", () => {
+    // A `messageBound` event differs from a note only in the BLF record
+    // it is written as, and nothing in the application can author one.
+    // A checkbox for it offered the reader a category they cannot
+    // produce and cannot tell apart on the row.
     renderPanel([
       { id: "n1", timestampNs: 1_000_000_000, label: "a marker", kind: "note" },
       { id: "c1", timestampNs: 2_000_000_000, label: "a comment", kind: "messageBound" },
@@ -525,10 +538,11 @@ describe("EventsPanel record types", () => {
     const labels = () =>
       Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
     expect(labels()).toEqual(["a marker", "a comment"]);
-    expect(screen.getByLabelText("Notes").closest("label")?.title).toContain("GLOBAL_MARKER");
-    expect(screen.getByLabelText("Comments").closest("label")?.title).toContain("EVENT_COMMENT");
+    expect(screen.queryByLabelText("Comments")).toBeNull();
+    // Both counted on the one row, and both hidden by it.
+    expect(screen.getByLabelText("Notes").closest("label")?.textContent).toContain("2");
 
     fireEvent.click(screen.getByLabelText("Notes"));
-    expect(labels()).toEqual(["a comment"]);
+    expect(labels()).toEqual([]);
   });
 });
