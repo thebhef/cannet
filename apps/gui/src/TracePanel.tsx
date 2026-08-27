@@ -12,7 +12,7 @@ import { ChipSegment } from "./ChipSegment";
 import { useTraceModel } from "./traceData";
 import { LIVE_TAIL_ROWS, useLiveTailDemand } from "./liveTailDemand";
 import { useTrace, type TraceRow } from "./trace";
-import { useNotes } from "./notesContext";
+import { useNotes, useRemoveChip } from "./notesContext";
 import { authorEvent, timelineEvents, visibleEvents } from "./notes";
 import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import { buildEventMerge } from "./eventMerge";
@@ -267,6 +267,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   // among the frame rows by timestamp.
   const { notes, addNote, renameNote, recolorNote, describeNote, retagNote, removeNote } =
     useNotes();
+  const removeChip = useRemoveChip();
   const allEvents = useMemo(
     () => timelineEvents(notes, model.truncationTsNs),
     [notes, model.truncationTsNs],
@@ -406,8 +407,9 @@ export function TracePanel(props: IDockviewPanelProps) {
       onRetag: retagNote,
       onRemove: removeNote,
       onGoto: (timestampNs) => void emit(GOTO_EVENT, timestampNs),
+      onRemoveChip: removeChip,
     }),
-    [renameNote, recolorNote, describeNote, retagNote, removeNote],
+    [renameNote, recolorNote, describeNote, retagNote, removeNote, removeChip],
   );
 
   // Cross-panel "goto" (ADR 0035): a broadcast carries an event's absolute

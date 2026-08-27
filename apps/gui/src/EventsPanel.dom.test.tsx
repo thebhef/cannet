@@ -50,6 +50,7 @@ const notesCtx = (notes: Note[]): NotesContextValue => ({
   removeNote: vi.fn(),
   linkEvents: vi.fn(),
   unlinkEvents: vi.fn(),
+  setNoteSubjects: vi.fn(),
 });
 
 function renderPanel(notes: Note[], data: TraceData = traceData) {

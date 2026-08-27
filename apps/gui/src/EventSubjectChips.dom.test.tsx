@@ -71,6 +71,11 @@ function chip(n: number): SubjectChip {
     label: `Sig${n}`,
     title: `signal s:1A2 BMS_Status.Sig${n}`,
     resolved: true,
+    color: null,
+    remove: {
+      kind: "subject",
+      subject: { kind: "signal", messageId: 0x1a2, extended: false, signalName: `Sig${n}` },
+    },
   };
 }
 
@@ -84,6 +89,18 @@ function labels(): string[] {
 
 function renderChips(onExpand = () => {}, expanded = false) {
   return render(<EventSubjectChips chips={CHIPS} expanded={expanded} onExpand={onExpand} />);
+}
+
+function link(label: string, color: string | null): SubjectChip {
+  return {
+    key: `event:${label}`,
+    kind: "event",
+    label,
+    title: `linked event — ${label}`,
+    resolved: true,
+    color,
+    remove: { kind: "unlink", otherId: label },
+  };
 }
 
 describe("EventSubjectChips", () => {
@@ -172,5 +189,86 @@ describe("EventSubjectChips", () => {
       "aria-expanded",
       "true",
     );
+  });
+});
+
+describe("SubjectChipView — the chip's remove control", () => {
+  function renderOne(chip: SubjectChip, onRemove?: () => void) {
+    layout[chip.key] = 60;
+    layout.bar = 1000;
+    return render(
+      <EventSubjectChips
+        chips={[chip]}
+        expanded={false}
+        onExpand={() => {}}
+        onRemoveChip={onRemove === undefined ? undefined : () => onRemove()}
+      />,
+    );
+  }
+
+  it("draws no × in a view that cannot remove", () => {
+    renderOne(chip(1));
+    expect(document.querySelector(".event-subject-chip-remove")).toBeNull();
+  });
+
+  it("removes the subject the chip names", () => {
+    const onRemove = vi.fn();
+    renderOne(chip(1), onRemove);
+    fireEvent.click(screen.getByLabelText("remove Sig1"));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls a link chip's control an unlink, so the act is not mistaken for a delete", () => {
+    const onRemove = vi.fn();
+    renderOne(link("fault", null), onRemove);
+    fireEvent.click(screen.getByLabelText("unlink fault"));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not put the grid cursor on the row it was pressed in", () => {
+    // The row's own click selects it; the chip's × has its own job.
+    const onRemove = vi.fn();
+    const onRowClick = vi.fn();
+    layout[CHIPS[0].key] = 60;
+    layout.bar = 1000;
+    render(
+      <div onClick={onRowClick}>
+        <EventSubjectChips
+          chips={[CHIPS[0]]}
+          expanded={false}
+          onExpand={() => {}}
+          onRemoveChip={() => onRemove()}
+        />
+      </div>,
+    );
+    fireEvent.click(screen.getByLabelText("remove Sig1"));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    expect(onRowClick).not.toHaveBeenCalled();
+  });
+
+  it("stays out of the tab order — Tab must not walk a chip at a time", () => {
+    renderOne(chip(1), vi.fn());
+    expect(screen.getByLabelText("remove Sig1")).toHaveAttribute("tabindex", "-1");
+  });
+});
+
+describe("SubjectChipView — link chip colour", () => {
+  it("inks a link chip in the linked event's colour", () => {
+    layout["event:fault"] = 60;
+    layout.bar = 1000;
+    render(
+      <EventSubjectChips chips={[link("fault", "#ff8800")]} expanded={false} onExpand={() => {}} />,
+    );
+    const el = document.querySelector<HTMLElement>(".event-subject-chip--event");
+    expect(el).not.toBeNull();
+    expect(el!.style.color).toBe("rgb(255, 136, 0)");
+  });
+
+  it("leaves a colourless link on the stylesheet's default", () => {
+    layout["event:fault"] = 60;
+    layout.bar = 1000;
+    render(<EventSubjectChips chips={[link("fault", null)]} expanded={false} onExpand={() => {}} />);
+    const el = document.querySelector<HTMLElement>(".event-subject-chip--event");
+    expect(el!.style.color).toBe("");
   });
 });

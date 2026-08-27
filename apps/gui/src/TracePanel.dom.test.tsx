@@ -535,6 +535,7 @@ describe("TracePanel event kinds", () => {
     removeNote: vi.fn(),
     linkEvents: vi.fn(),
     unlinkEvents: vi.fn(),
+    setNoteSubjects: vi.fn(),
   });
 
   function renderWithNotes(notes: Note[], ctx: NotesContextValue = notesCtx(notes)) {
@@ -604,6 +605,7 @@ describe("TracePanel event rows: the same interactions as the events view", () =
     removeNote: vi.fn(),
     linkEvents: vi.fn(),
     unlinkEvents: vi.fn(),
+    setNoteSubjects: vi.fn(),
   });
 
   function renderWithNotes(notes: Note[], ctx: NotesContextValue = notesCtx(notes)) {
@@ -742,6 +744,7 @@ describe("TracePanel authoring an event from a trace row (ADR 0056)", () => {
     removeNote: vi.fn(),
     linkEvents: vi.fn(),
     unlinkEvents: vi.fn(),
+    setNoteSubjects: vi.fn(),
   });
 
   function frame(index: number, id: number, extended: boolean, name: string | null) {

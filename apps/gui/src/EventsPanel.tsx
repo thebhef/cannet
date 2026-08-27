@@ -6,7 +6,7 @@ import { ChipButton } from "./ChipButton";
 import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT } from "./gotoEvent";
 import { useTraceModel } from "./traceData";
-import { useNotes } from "./notesContext";
+import { useNotes, useRemoveChip } from "./notesContext";
 import {
   linkedEventIds,
   matchesTagQuery,
@@ -54,6 +54,7 @@ export function EventsPanel(_props: IDockviewPanelProps) {
     linkEvents,
     unlinkEvents,
   } = useNotes();
+  const removeChip = useRemoveChip();
   const allEvents = useMemo(
     () => timelineEvents(notes, model.truncationTsNs),
     [notes, model.truncationTsNs],
@@ -118,8 +119,9 @@ export function EventsPanel(_props: IDockviewPanelProps) {
       onRetag: retagNote,
       onRemove: removeNote,
       onGoto: (timestampNs) => void emit(GOTO_EVENT, timestampNs),
+      onRemoveChip: removeChip,
     }),
-    [renameNote, recolorNote, describeNote, retagNote, removeNote],
+    [renameNote, recolorNote, describeNote, retagNote, removeNote, removeChip],
   );
 
   return (

@@ -22,7 +22,7 @@
 /// this returns.
 
 import { formatArbitrationId, type CanIdFormat } from "./format";
-import { linkedEventIds, type TimelineEvent } from "./notes";
+import { linkedEventIds, type EventSubject, type TimelineEvent } from "./notes";
 import type { SignalDescriptorRecord } from "./types";
 
 /// One chip on an event row.
@@ -39,6 +39,50 @@ export interface SubjectChip {
   /// Whether an assigned database names it (an event link: whether the
   /// event set holds the other end).
   resolved: boolean;
+  /// `#RRGGBB` to ink the chip with, or `null` for its kind's default.
+  ///
+  /// Only a link chip carries one, and it is the *linked event's* own
+  /// color — the chip and the marker it points at are then the same
+  /// thing said twice, which is the whole use of a link chip. A
+  /// structural reference has no color to borrow: a message id is not
+  /// an event.
+  color: string | null;
+  /// What the chip's remove control drops.
+  remove: ChipRemoval;
+}
+
+/// What removing a chip does. A structural reference comes off the
+/// event's own subject list; a link is a pair, and dropping it is the
+/// same act from either end (ADR 0056) — so the descriptor names the
+/// *other* event, not a position in a list this event may not even hold
+/// the reference in.
+export type ChipRemoval =
+  | { kind: "subject"; subject: EventSubject }
+  | { kind: "unlink"; otherId: string };
+
+/// `subjects` without the first structurally-equal match — what a
+/// chip's remove control hands to `set_note_subjects`.
+///
+/// Matched by value rather than by index: a subject *is* its structure
+/// (ADR 0056), it carries no identity of its own, and two identical
+/// entries on one event are indistinguishable by construction. Value
+/// matching also survives a click landing on a render whose subject
+/// order has since changed.
+export function withoutSubject(
+  subjects: readonly EventSubject[],
+  subject: EventSubject,
+): EventSubject[] {
+  const at = subjects.findIndex((s) => sameSubject(s, subject));
+  if (at < 0) return [...subjects];
+  return [...subjects.slice(0, at), ...subjects.slice(at + 1)];
+}
+
+function sameSubject(a: EventSubject, b: EventSubject): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "event") return a.id === (b as { id: string }).id;
+  const o = b as { messageId: number; extended: boolean; signalName?: string };
+  if (a.messageId !== o.messageId || a.extended !== o.extended) return false;
+  return a.kind !== "signal" || a.signalName === o.signalName;
 }
 
 /// What the assigned databases can name right now, in the two shapes a
@@ -113,6 +157,8 @@ export function subjectChips(
         label: name === null ? id : `${id} ${name}`,
         title: name === null ? `message ${id} — ${UNRESOLVED}` : `message ${id} ${name}`,
         resolved: name !== null,
+        color: null,
+        remove: { kind: "subject", subject: s },
       });
       continue;
     }
@@ -126,6 +172,8 @@ export function subjectChips(
         ? `signal ${where}.${s.signalName}`
         : `signal ${where}.${s.signalName} — ${UNRESOLVED}`,
       resolved,
+      color: null,
+      remove: { kind: "subject", subject: s },
     });
   }
   // Links last, and from both directions. An id the set does not hold is
@@ -140,6 +188,8 @@ export function subjectChips(
       label: other.label,
       title: `linked event — ${other.label}`,
       resolved: true,
+      color: other.color,
+      remove: { kind: "unlink", otherId: id },
     });
   }
   return chips;

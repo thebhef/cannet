@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { subjectChips, subjectIndexFor } from "./eventSubjects";
+import { subjectChips, subjectIndexFor, withoutSubject } from "./eventSubjects";
 import { noteToEvent, type Note, type TimelineEvent } from "./notes";
 import type { SignalDescriptorRecord } from "./types";
 
@@ -56,6 +56,8 @@ describe("subjectChips — messages", () => {
         label: "s:1A2 BMS_Status",
         title: "message s:1A2 BMS_Status",
         resolved: true,
+        color: null,
+        remove: { kind: "subject", subject: { kind: "message", messageId: 0x1a2, extended: false } },
       },
     ]);
   });
@@ -105,6 +107,16 @@ describe("subjectChips — signals", () => {
         label: "PackCurrent",
         title: "signal s:1A2 BMS_Status.PackCurrent",
         resolved: true,
+        color: null,
+        remove: {
+          kind: "subject",
+          subject: {
+            kind: "signal",
+            messageId: 0x1a2,
+            extended: false,
+            signalName: "PackCurrent",
+          },
+        },
       },
     ]);
   });
@@ -129,7 +141,15 @@ describe("subjectChips — event links", () => {
     const a = event({ id: "a", label: "fault" });
     const b = event({ id: "b", label: "contactor open", subjects: [{ kind: "event", id: "a" }] });
     expect(subjectChips(b, [a, b], index(), "hex")).toEqual([
-      { key: "event:a", kind: "event", label: "fault", title: "linked event — fault", resolved: true },
+      {
+        key: "event:a",
+        kind: "event",
+        label: "fault",
+        title: "linked event — fault",
+        resolved: true,
+        color: null,
+        remove: { kind: "unlink", otherId: "a" },
+      },
     ]);
   });
 
@@ -182,5 +202,77 @@ describe("subjectChips — order", () => {
   it("has nothing to say about an event with no subjects", () => {
     const e = event({ id: "a" });
     expect(subjectChips(e, [e], index(), "hex")).toEqual([]);
+  });
+});
+
+describe("subjectChips — removal descriptors", () => {
+  it("says which subject a structural chip's × drops", () => {
+    const sig = { kind: "signal", messageId: 0x1a2, extended: false, signalName: "PackCurrent" } as const;
+    const msg = { kind: "message", messageId: 0x1a2, extended: false } as const;
+    const e = event({ id: "a", subjects: [sig, msg] });
+    expect(subjectChips(e, [e], index(), "hex").map((c) => c.remove)).toEqual([
+      { kind: "subject", subject: sig },
+      { kind: "subject", subject: msg },
+    ]);
+  });
+
+  it("names the other end for a link chip, from whichever side stores it", () => {
+    const a = event({ id: "a", label: "fault" });
+    const b = event({ id: "b", label: "open", subjects: [{ kind: "event", id: "a" }] });
+    // The chip on `a` — which stores nothing — still knows to unlink `b`.
+    expect(subjectChips(a, [a, b], index(), "hex")[0].remove).toEqual({
+      kind: "unlink",
+      otherId: "b",
+    });
+    expect(subjectChips(b, [a, b], index(), "hex")[0].remove).toEqual({
+      kind: "unlink",
+      otherId: "a",
+    });
+  });
+});
+
+describe("subjectChips — link chip colour", () => {
+  it("takes the linked event's own colour, so chip and marker read as one", () => {
+    const a = event({ id: "a", label: "fault", color: "#ff8800" });
+    const b = event({ id: "b", label: "open", subjects: [{ kind: "event", id: "a" }] });
+    expect(subjectChips(b, [a, b], index(), "hex")[0].color).toBe("#ff8800");
+  });
+
+  it("leaves a colourless linked event on the kind's default", () => {
+    const a = event({ id: "a", label: "fault" });
+    const b = event({ id: "b", label: "open", subjects: [{ kind: "event", id: "a" }] });
+    expect(subjectChips(b, [a, b], index(), "hex")[0].color).toBeNull();
+  });
+
+  it("gives a structural chip no colour of its own", () => {
+    const e = event({ id: "a", subjects: [{ kind: "message", messageId: 0x1a2, extended: false }] });
+    expect(subjectChips(e, [e], index(), "hex")[0].color).toBeNull();
+  });
+});
+
+describe("withoutSubject", () => {
+  const sig = { kind: "signal", messageId: 0x1a2, extended: false, signalName: "PackCurrent" } as const;
+  const msg = { kind: "message", messageId: 0x1a2, extended: false } as const;
+  const other = { kind: "message", messageId: 0x1a2, extended: true } as const;
+
+  it("drops the matching subject and keeps the rest in order", () => {
+    expect(withoutSubject([sig, msg, other], msg)).toEqual([sig, other]);
+  });
+
+  it("matches structurally, not by reference", () => {
+    expect(withoutSubject([msg], { ...msg })).toEqual([]);
+  });
+
+  it("distinguishes standard from extended, and one signal from another", () => {
+    expect(withoutSubject([msg, other], other)).toEqual([msg]);
+    expect(withoutSubject([sig], { ...sig, signalName: "ContactorState" })).toEqual([sig]);
+  });
+
+  it("drops only the first of a duplicated pair", () => {
+    expect(withoutSubject([msg, msg], msg)).toEqual([msg]);
+  });
+
+  it("leaves the list alone when nothing matches", () => {
+    expect(withoutSubject([sig], msg)).toEqual([sig]);
   });
 });
