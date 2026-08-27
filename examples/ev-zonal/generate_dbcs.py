@@ -61,6 +61,11 @@ class Msg:
     comment: str = ""
     # As `Sig.long_name`, rendered as `SystemMessageLongSymbol`.
     long_name: str = ""
+    # Extended multiplexing (`SG_MUL_VAL_`): (signal, switch, ranges)
+    # per multiplexed signal, e.g. ("Leaf", "Inner", "1-1"). The `m<N>`
+    # marker in the SG_ line is ambiguous on its own -- these records
+    # are what tie each signal to *its* multiplexor.
+    mux_ranges: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 def fmt_num(x: float) -> str:
@@ -108,6 +113,7 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
     vals: list[str] = []
     valtypes: list[str] = []
     long_bas: list[str] = []
+    mul_vals: list[str] = []
 
     for m in messages:
         auto_pack(m)
@@ -147,6 +153,8 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
             long_bas.append(
                 f'BA_ "SystemMessageLongSymbol" BO_ {raw_id} "{m.long_name}";'
             )
+        for sig_name, switch, ranges in m.mux_ranges:
+            mul_vals.append(f"SG_MUL_VAL_ {raw_id} {sig_name} {switch} {ranges};")
 
     has_long_msg = any(m.long_name for m in messages)
     has_long_sig = any(s.long_name for m in messages for s in m.signals)
@@ -169,6 +177,7 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
     out += cannet_bas
     out += vals
     out += valtypes
+    out += mul_vals
     out.append("")
     return "\n".join(out)
 
@@ -192,9 +201,12 @@ def cell_detail_message() -> Msg:
     """The scale stress case: one FD message multiplexing per-cell
     voltage, temperature, and balancing state for the whole pack --
     200 cells x 3 = 600 multiplexed signals behind one selector."""
-    sigs = [Sig("CellPage", 8, start=0, mux="M",
-                comment="Multiplex selector -- which block of 8 cells this frame carries.")]
     pages = CELL_COUNT // CELLS_PER_PAGE
+    sigs = [Sig("CellPage", 8, start=0, mux="M",
+                comment="Multiplex selector -- which block of 8 cells this frame carries.",
+                values={page: f"Cells{page * CELLS_PER_PAGE + 1:03d}To"
+                              f"{(page + 1) * CELLS_PER_PAGE:03d}"
+                        for page in range(pages)})]
     for page in range(pages):
         for k in range(CELLS_PER_PAGE):
             cell = page * CELLS_PER_PAGE + k + 1
@@ -216,6 +228,25 @@ def cell_detail_message() -> Msg:
         "BmsCellDetail", 0x18F00001, "BMS", sigs, length=64, extended=True,
         cycle_ms=100,
         comment="Per-cell measurement page -- cycles CellPage over the full pack.",
+    )
+
+
+def module_delta_soc_message() -> Msg:
+    """The indexed-series mux shape: one self-named signal per selector
+    value, no VAL_ on the selector. Every arm is single-signal, so the
+    GUI renders this flat -- the counterpart to BmsCellDetail's
+    bundle-per-selector shape."""
+    sigs = [Sig("ModuleIndex", 8, start=0, mux="M",
+                comment="Multiplex selector -- which module this frame carries.")]
+    for mi in range(MODULE_COUNT):
+        sigs.append(Sig(
+            f"Module{mi + 1:02d}_DeltaSoc", 16, start=8, mux=f"m{mi}",
+            signed=True, factor=0.01, minimum=-50, maximum=50, unit="%",
+        ))
+    return Msg(
+        "BmsModuleDeltaSoc", 0x18F00002, "BMS", sigs, extended=True,
+        cycle_ms=500,
+        comment="Per-module SoC deviation from pack mean -- cycles ModuleIndex over all modules.",
     )
 
 
@@ -542,6 +573,7 @@ def pack_messages() -> list[Msg]:
         ], cycle_ms=5000)
 
     msgs.append(cell_detail_message())
+    msgs.append(module_delta_soc_message())
     return msgs
 
 
@@ -743,6 +775,36 @@ def thermal_derate_advisory() -> Msg:
     )
 
 
+def adas_diag_event_message() -> Msg:
+    """Extended multiplexing (`SG_MUL_VAL_`): a two-stage diagnostic
+    event. DiagChannel selects the domain; inside the Fusion domain,
+    FusionStage (`m1M`) selects again. Note the two `m0` signals --
+    each `m<N>` lives in its own multiplexor's namespace, which is why
+    the GUI renders extended-mux messages flat until the host models
+    the SG_MUL_VAL_ table."""
+    sigs = [
+        Sig("DiagChannel", 4, start=0, mux="M",
+            values={0: "Tracker", 1: "Fusion"},
+            comment="Top-level multiplex selector."),
+        Sig("TrackerFaultCode", 16, start=8, mux="m0"),
+        Sig("FusionStage", 4, start=4, mux="m1M",
+            values={0: "Ingest", 1: "Associate"},
+            comment="Second-stage selector -- multiplexed (rides DiagChannel==1) and itself a multiplexor."),
+        Sig("IngestDropCount", 8, start=8, mux="m0"),
+        Sig("AssociateMissCount", 8, start=8, mux="m1"),
+    ]
+    return Msg(
+        "AdasDiagEvent", 0x6F4, "AdasDomain", sigs, cycle_ms=100,
+        comment="Two-stage extended-multiplexed diagnostic event (SG_MUL_VAL_).",
+        mux_ranges=[
+            ("TrackerFaultCode", "DiagChannel", "0-0"),
+            ("FusionStage", "DiagChannel", "1-1"),
+            ("IngestDropCount", "FusionStage", "0-0"),
+            ("AssociateMissCount", "FusionStage", "1-1"),
+        ],
+    )
+
+
 def zonal_messages() -> list[Msg]:
     msgs: list[Msg] = []
 
@@ -846,6 +908,7 @@ def zonal_messages() -> list[Msg]:
     for i, (name, sigs) in enumerate(adas):
         msgs.append(Msg(name, 0x320 + i, "AdasDomain", sigs, cycle_ms=40))
     msgs.append(adas_object_list())
+    msgs.append(adas_diag_event_message())
 
     body = [
         ("ExteriorLightingStatus", [u("LowBeamOn", 1), u("HighBeamOn", 1), u("DrlOn", 1),

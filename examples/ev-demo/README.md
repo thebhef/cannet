@@ -30,10 +30,10 @@ Seven ECUs, four DBCs (one per ECU group), scoped per bus:
 
 | Bus | ECUs | DBC | Messages (id, cadence) |
 | --- | --- | --- | --- |
-| Powertrain | VCU | `dbc/vcu.dbc` | VcuStatus (0x100, 10 ms), VcuTorqueCmd (0x110, 10 ms), VcuBmsCommand (0x18FF50A3 ext, 50 ms) |
+| Powertrain | VCU | `dbc/vcu.dbc` | VcuStatus (0x100, 10 ms), VcuTorqueCmd (0x110, 10 ms), VcuDiagEvent (0x120, 100 ms, two-stage extended mux), VcuBmsCommand (0x18FF50A3 ext, 50 ms) |
 | Powertrain | MotorFront, MotorRear | `dbc/traction-motor.dbc` | MotorFrontStatus (0x200, 10 ms), MotorRearStatus (0x201, 10 ms) |
-| Battery | BMS | `dbc/bms.dbc` | BmsState (0x300, 20 ms), BmsCellSummary (0x301, 100 ms), BmsLimits (0x302, 100 ms), BmsThermDerateAdv (0x303, 200 ms) |
-| Battery | ThermalMgr, DCDC, OBC | `dbc/thermal.dbc` | ThermalState (0x400, 100 ms), DcdcState (0x410, 100 ms), ObcState (0x420, 200 ms) |
+| Battery | BMS | `dbc/bms.dbc` | BmsState (0x300, 20 ms), BmsCellSummary (0x301, 100 ms), BmsLimits (0x302, 100 ms), BmsThermDerateAdv (0x303, 200 ms), BmsServiceEvent (0x304, 100 ms, multiplexed), BmsCellVoltages (0x305, 100 ms, indexed mux series) |
+| Battery | ThermalMgr, DCDC, OBC | `dbc/thermal.dbc` | ThermalState (0x400, 100 ms), DcdcState (0x410, 100 ms), ObcState (0x420, 200 ms), ThermalZoneReport (0x430, 200 ms, multiplexed) |
 
 Send/receive is explicit in each DBC (the `BO_` transmitter and the
 per-signal receiver lists), and crosses the bridge where it should — the
@@ -41,6 +41,15 @@ VCU on the powertrain bus commands the BMS on the battery bus
 (`VcuBmsCommand`) and reads `BmsState` back; the BMS publishes current
 limits the inverters clamp torque to. Aggregate steady-state rate is
 **~515 frames/s** (≈420 on Powertrain, ≈95 on Battery).
+
+The DBCs deliberately cover every multiplexing shape the GUI renders
+distinctly: `BmsServiceEvent` (enum-style selector with a `VAL_` table
+— named arms nest under the multiplexor; its single-signal arms render
+flat), `ThermalZoneReport` (index-style selector, multi-signal arms —
+unnamed `m<N>` arm rows at message level), `BmsCellVoltages` (one
+signal per selector value — fully flat), and `VcuDiagEvent` (two-stage
+extended multiplexing via `SG_MUL_VAL_` — rendered flat with the
+message's extended-mux caveat).
 
 `VcuBmsCommand` is the extended-id, end-to-end-protected frame: `AliveCtr`
 is a rolling counter and `Crc8` a CRC-8/SAE-J1850 over the payload

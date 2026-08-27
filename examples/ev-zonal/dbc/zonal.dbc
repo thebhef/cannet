@@ -788,6 +788,13 @@ BO_ 784 AdasObjectList: 16 AdasDomain
  SG_ Obj15Class m15 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
  SG_ Obj15Confidence m15 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
 
+BO_ 1780 AdasDiagEvent: 8 AdasDomain
+ SG_ DiagChannel M : 0|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TrackerFaultCode m0 : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ FusionStage m1M : 4|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ IngestDropCount m0 : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AssociateMissCount m1 : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+
 BO_ 1632 ExteriorLightingStatus: 8 BodyGateway
  SG_ LowBeamOn : 0|1@1+ (1,0) [0|0] "" Vector__XXX
  SG_ HighBeamOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
@@ -926,6 +933,9 @@ CM_ SG_ 784 Obj13DistX "Object 13 longitudinal distance.";
 CM_ SG_ 784 Obj14DistX "Object 14 longitudinal distance.";
 CM_ SG_ 784 Obj15DistX "Object 15 longitudinal distance.";
 CM_ BO_ 784 "Fused front object list -- cycles ObjectIndex over active tracks.";
+CM_ SG_ 1780 DiagChannel "Top-level multiplex selector.";
+CM_ SG_ 1780 FusionStage "Second-stage selector -- multiplexed (rides DiagChannel==1) and itself a multiplexor.";
+CM_ BO_ 1780 "Two-stage extended-multiplexed diagnostic event (SG_MUL_VAL_).";
 CM_ SG_ 1776 HighVoltageBatteryPackCoolantInl "Coolant inlet temperature at the pack, the derate input.";
 CM_ BO_ 1776 "Thermal derate advisory -- the long-name example.";
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
@@ -1073,6 +1083,7 @@ BA_ "GenMsgCycleTime" BO_ 810 40;
 BA_ "GenMsgCycleTime" BO_ 811 40;
 BA_ "GenMsgCycleTime" BO_ 812 40;
 BA_ "GenMsgCycleTime" BO_ 784 40;
+BA_ "GenMsgCycleTime" BO_ 1780 100;
 BA_ "GenMsgCycleTime" BO_ 1632 200;
 BA_ "GenMsgCycleTime" BO_ 1633 200;
 BA_ "GenMsgCycleTime" BO_ 1634 200;
@@ -1149,6 +1160,8 @@ VAL_ 784 Obj12Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "
 VAL_ 784 Obj13Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
 VAL_ 784 Obj14Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
 VAL_ 784 Obj15Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 1780 DiagChannel 0 "Tracker" 1 "Fusion" ;
+VAL_ 1780 FusionStage 0 "Ingest" 1 "Associate" ;
 VAL_ 1634 WiperSpeedActual 0 "Off" 1 "Intermittent" 2 "Low" 3 "High" ;
 VAL_ 1638 TriggerSource 0 "None" 1 "Door" 2 "Motion" 3 "Tilt" 4 "Glass" ;
 VAL_ 1640 ButtonPressed 0 "None" 1 "Lock" 2 "Unlock" 3 "Trunk" 4 "Panic" ;
@@ -1159,3 +1172,7 @@ SIG_VALTYPE_ 800 LaneLeftC0 : 1;
 SIG_VALTYPE_ 800 LaneLeftC1 : 1;
 SIG_VALTYPE_ 801 LaneRightC0 : 1;
 SIG_VALTYPE_ 801 LaneRightC1 : 1;
+SG_MUL_VAL_ 1780 TrackerFaultCode DiagChannel 0-0;
+SG_MUL_VAL_ 1780 FusionStage DiagChannel 1-1;
+SG_MUL_VAL_ 1780 IngestDropCount FusionStage 0-0;
+SG_MUL_VAL_ 1780 AssociateMissCount FusionStage 1-1;

@@ -30,3 +30,6 @@ __pycache__/
 
 # vitest/vite cache from repo-root runs
 .vite/
+
+# Workdir
+projects

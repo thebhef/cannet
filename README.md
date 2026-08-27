@@ -329,6 +329,8 @@ From the repo root:
 
 ```sh
 pnpm --dir apps/gui install        # once, to fetch frontend deps
+uv run --project servers/cannet-python-can --frozen \
+    python scripts/gen-licenses.py # once, generate the bundled license manifest
 pnpm --dir apps/gui tauri dev      # development build with hot reload
 pnpm --dir apps/gui tauri build    # release bundle
 ```
@@ -341,6 +343,17 @@ stages the release `cannet-server` the bundle ships
 either are incremental: an unchanged sidecar refreezes, and an
 unchanged server restages, in seconds. `tauri dev` does neither — a
 development build has no bundle to fill.
+
+The `gen-licenses.py` step writes `apps/gui/src-tauri/licenses.json`, the
+third-party attribution manifest that `tauri.conf.json` bundles as a
+resource (ADR 0036). It is **generated, not committed** (it's in
+`.gitignore`), so a fresh clone must produce it before the first
+`tauri dev` / `tauri build` — otherwise the Tauri build script fails with
+`resource path ``licenses.json`` doesn't exist`. It needs
+[`uv`](https://docs.astral.sh/uv/) (see the optional prerequisites above)
+and only has to be re-run when the sidecar's Python dependencies change.
+`scripts/build-sidecar.py` also regenerates it as part of a full sidecar
+build, so Phase-8 hardware users get it for free.
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
 cannet window. Use the toolbar's **Import** chip to pick a log (a
@@ -1187,7 +1200,19 @@ by design. Two databases assigned to the same bus that define the same
 message/signal id is a rare mistake the panel warns about, naming
 which one wins the decode — by project load order, unless the signal
 has been given a database of its own in the view-signals panel, in
-which case that is the one named and the one that decodes). Type any fragment of a signal
+which case that is the one named and the one that decodes). A
+**multiplexed** message groups
+each mux arm that carries two or more signals, labelled from the
+multiplexor's own `VAL_` table (bare `m<N>` when the DBC names none).
+Named arms nest under the multiplexor's row; unnamed ones sit directly
+under the message. A single-signal arm adds no level — its signal
+stays in the flat list with its arm noted in the details line — so an
+index-style multiplexed message (one self-named signal per selector)
+reads as flat as it is. Extended-multiplexing (`SG_MUL_VAL_`) messages
+stay flat too: their selector namespaces aren't representable yet, and
+the message details row carries the caveat. The multiplexor and any
+always-present signals stay directly under the message.
+Type any fragment of a signal
 name, ECU, comment, value-table label, message id (hex or decimal),
 or attribute, and the tree filters to the matches: ancestors of a
 match auto-expand and everything else is hidden, so a filtered
@@ -1202,7 +1227,9 @@ per-message detail (length, FD/BRS, mux flag, attributes). Drag a
 signal or message row onto a plot panel to add it as a series, or onto
 the transmit panel to create a new TX frame for that message;
 multi-select (click / Shift-click / Cmd-Ctrl-click, or Shift+↑/↓ from
-the keyboard) drags the whole selection at once.
+the keyboard) drags the whole selection at once. A mux-arm row drags
+every signal in that arm — one gesture to plot a whole multiplexed
+event.
 
 Beside the DBC branches, a capture that carried its own signal
 definitions gets **one branch per source file**, named for the file and
