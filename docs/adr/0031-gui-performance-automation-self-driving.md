@@ -402,3 +402,62 @@ there, because another cannet instance held the PCAN dongles; promoting
 it would have set a zero limit and killed the metric silently. A metric
 that reads zero where it previously read a rate is a failed capture,
 never a result.
+
+## Amendment (2026-08-27) — a capture says whether it measured anything
+
+Three of this harness's checks passed while measuring nothing, in three
+different ways. Each is now reported rather than absorbed.
+
+**Memory is attributed against creation time, and an impossible zero
+fails the capture.** The memory tier walked the OS's parent links to
+decide which processes were ours. Windows recycles PIDs and never clears
+a dead parent's `ParentProcessId`, so an unrelated orphan could claim
+the PID this process now holds and be billed to us whole — a 4 GB
+foreign app was once measured as ours. And when a second cannet already
+owns the shared `WebView2` browser process, our own renderer descends
+from *its* host, not ours: the whole `WebView` family falls outside our
+subtree, `webview_mb` reads `0.0`, and every memory gate passes on a
+reading of nothing.
+
+Both are now handled in the walk. A parent link counts only when the
+child's creation time is known and not earlier than the parent's — the
+one fact a stale link cannot fake. (An unreadable creation time counts
+as *not ours*: on Windows it is unreadable only for a process we cannot
+open a handle to, which never applies to our own family, while a
+stranger we cannot open still reports memory. Excluding it is the cheap
+mistake.) And a family that ends up containing no `WebView` process at
+all — impossible for a running window, on the platforms where the
+`WebView` is our descendant — **fails the capture** with the reason,
+writing no report. Absence is the one signal no consumer can misread as
+a healthy number. macOS is exempt: its `WebKit` helpers are
+launchd-owned XPC services and are never our descendants, which is the
+documented normal there.
+
+**The interaction script's gestures are counted, and the tally rides in
+the report.** Every gesture function names what it did, and a gesture
+whose target is not on screen is skipped — deliberately, since a layout
+with no plot is a legitimate capture. But nothing recorded how often
+that happened, so a run that gestured at *nothing* produced a report
+structurally identical to a hard-scrubbed one, and read as "interaction
+is free". A target has gone missing before: the follow-live chip spills
+into the plot toolbar's overflow menu at narrow widths, where the script
+cannot reach it.
+
+The render report now carries an `interact` block — the script, the tick
+count, and how many gestures were performed, went missing, or were
+deliberate idle slots, each broken down by gesture label. `performed: 0`
+is the disarmed signature; `missing_by_gesture` names the control that
+moved. `check` and `baseline` print a warning for any report with a
+missed gesture in it. It does not gate: a quiet layout is a legitimate
+capture, and what the tally supplies is the evidence a reader needs to
+tell the two apart.
+
+**The screenshot walk's `__shot` helpers have a guard test.** They are
+JS the harness injects into the page, so every selector in them is a
+claim about the app's markup that only a full capture run exercised —
+`importIdle()` once returned true mid-import because the label it polled
+for had been restyled away. The helpers now live in their own file
+(`shot-prelude.js`, embedded with `include_str!`) and the frontend suite
+loads that exact file, evaluates it, and drives each helper against
+markup rendered by the real components. Breaking a selector fails a test
+rather than a capture nobody re-reads.

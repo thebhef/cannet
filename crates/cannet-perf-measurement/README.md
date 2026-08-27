@@ -255,6 +255,19 @@ regeneration. Drift only reads as signal over a representative-length
 capture (a multi-minute `--perf-capture-secs`, not the smoke-test span), so
 capture a memory baseline at scenario length.
 
+**A report that measured nothing is warned about, not gated.** Both
+`baseline` and `check` print a `WARNING` for any `--frontend-report`
+whose `interact` tally shows a gesture that found no target — naming the
+gesture, and saying outright when *nothing* was driven. A gestureless
+run is a legitimate capture (a layout with no plot, no
+`--perf-interact`), so this is evidence for the reader rather than a
+limit; what it prevents is a run whose script reached none of its
+targets reading as clean data. The other half of the same problem is
+handled in the GUI: a capture whose memory readings cannot be attributed
+to the host process — another cannet holding the shared `WebView2`
+browser process, so `webview_mb` would read `0.0` — fails and writes no
+report at all.
+
 **The three `*_drift_per_min` rows gate the median across the given
 reports, not each report's own worst run** (ADR 0031). A least-squares
 slope over a 60 s window is a property of where in a memory ramp the

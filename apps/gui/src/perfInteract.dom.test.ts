@@ -6,14 +6,16 @@
 // listeners are looking for, and that a cycle leaves the views where it
 // found them.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   INTERACT_WARMUP_MS,
   INTERACT_STEP_MS,
   parseInteractScript,
   perfInteractTick,
+  startPerfInteraction,
 } from "./perfInteract";
+import type { TickOutcome } from "./perfInteract";
 
 /** A stand-in for the panels the script gestures at: uPlot's overlay
  * element, the trace rows pane, and the plot toolbar's follow-live chip
@@ -46,14 +48,24 @@ function mountTargets(): { wheels: WheelEvent[]; rows: HTMLElement; follow: HTML
   return { wheels, rows, follow };
 }
 
-/** Run ticks `[from, to)` and collect the labels of what happened. */
+/** Run ticks `[from, to)` and collect the labels of the gestures that
+ * actually landed — an idle slot and a missing target both contribute
+ * nothing here; `driveOutcomes` is what tells those apart. */
 function drive(from: number, to: number, script: "scrub" | "follow" = "scrub"): string[] {
-  const done: string[] = [];
-  for (let t = from; t < to; t++) {
-    const what = perfInteractTick(document, t, script);
-    if (what) done.push(what);
-  }
-  return done;
+  return driveOutcomes(from, to, script)
+    .filter((o) => o.kind === "gesture")
+    .map((o) => (o.kind === "gesture" ? o.label : ""));
+}
+
+/** Run ticks `[from, to)` and collect every outcome, idle slots included. */
+function driveOutcomes(
+  from: number,
+  to: number,
+  script: "scrub" | "follow" = "scrub",
+): TickOutcome[] {
+  const out: TickOutcome[] = [];
+  for (let t = from; t < to; t++) out.push(perfInteractTick(document, t, script));
+  return out;
 }
 
 const WARMUP_TICKS = INTERACT_WARMUP_MS / INTERACT_STEP_MS;
@@ -135,6 +147,21 @@ describe("perfInteractTick", () => {
     // legitimate capture — quieter, not broken.
     expect(() => drive(0, WARMUP_TICKS + 16)).not.toThrow();
     expect(drive(0, WARMUP_TICKS + 16)).toEqual([]);
+    // But it is not the same as an idle slot, and the outcome says so:
+    // every gesture reports the target it could not find.
+    const missed = driveOutcomes(0, WARMUP_TICKS + 16).filter((o) => o.kind === "missing");
+    expect(missed).toHaveLength(WARMUP_TICKS + 9);
+    expect(new Set(missed.map((o) => (o.kind === "missing" ? o.label : "")))).toEqual(
+      new Set([
+        "plot.zoom-in",
+        "plot.zoom-out",
+        "plot.pan-back",
+        "plot.pan-forward",
+        "trace.scroll-up",
+        "trace.scroll-down",
+        "plot.follow-live",
+      ]),
+    );
   });
 
   it("falls back to the scrubbing script for an unknown name", () => {
@@ -144,5 +171,66 @@ describe("perfInteractTick", () => {
     // interaction in it — that would read as "interaction is free".
     expect(parseInteractScript("srub")).toBe("scrub");
     expect(parseInteractScript(null)).toBe("scrub");
+  });
+});
+
+describe("startPerfInteraction's tally", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Advance the interaction timer by `ticks` steps. */
+  const run = (ticks: number) => vi.advanceTimersByTime(ticks * INTERACT_STEP_MS);
+
+  it("counts what the script drove, gesture by gesture", () => {
+    mountTargets();
+    const run1 = startPerfInteraction(document, "scrub");
+    run(WARMUP_TICKS + 16);
+    const t = run1.tally();
+    run1.stop();
+    expect(t.script).toBe("scrub");
+    expect(t.ticks).toBe(WARMUP_TICKS + 16);
+    // The warm-up's zoom-ins plus the cycle's eight gestures. The chip
+    // starts pressed, so resuming follow-live is an idle slot, not a
+    // gesture — and the seven `null` slots are idle too.
+    expect(t.performed).toBe(WARMUP_TICKS + 8);
+    expect(t.missing).toBe(0);
+    expect(t.idle).toBe(8);
+    expect(t.by_gesture["plot.zoom-in"]).toBe(WARMUP_TICKS + 1);
+    expect(t.by_gesture["trace.scroll-down"]).toBe(2);
+    expect(t.missing_by_gesture).toEqual({});
+    expect(t.performed + t.missing + t.idle).toBe(t.ticks);
+  });
+
+  it("shows a disarmed run as disarmed instead of as clean data", () => {
+    // Nothing mounted: every gesture goes missing. This is the shape a
+    // capture takes when the script's targets have moved — a report that
+    // otherwise reads exactly like a hard-scrubbed one.
+    const run1 = startPerfInteraction(document, "scrub");
+    run(WARMUP_TICKS + 16);
+    const t = run1.tally();
+    run1.stop();
+    expect(t.performed).toBe(0);
+    expect(t.missing).toBe(WARMUP_TICKS + 9);
+    // And it names the control, so "the follow-live chip moved into the
+    // overflow menu" is readable off the report rather than guessed at.
+    expect(t.missing_by_gesture["plot.follow-live"]).toBe(1);
+  });
+
+  it("stops counting once stopped, and hands out a snapshot", () => {
+    mountTargets();
+    const run1 = startPerfInteraction(document, "scrub");
+    run(4);
+    const snapshot = run1.tally();
+    run(4);
+    expect(snapshot.ticks).toBe(4);
+    expect(run1.tally().ticks).toBe(8);
+    run1.stop();
+    run(4);
+    expect(run1.tally().ticks).toBe(8);
   });
 });

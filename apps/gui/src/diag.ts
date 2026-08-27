@@ -31,6 +31,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import type { InteractTally } from "./perfInteract";
+
 // Armed state for everything above. Off until the host says otherwise.
 let enabled = false;
 
@@ -157,10 +159,19 @@ export async function beginDiagCapture(label: string): Promise<void> {
 
 /// Stop pushing and finish the host-side capture, returning its
 /// `FinishedCapture` ({ report, path }). When `path` is given the host
-/// also writes the report there as JSON.
-export async function endDiagCapture(path?: string): Promise<unknown> {
+/// also writes the report there as JSON. `interact` is the synthetic
+/// interaction script's tally of what it drove; it rides into the report
+/// so a run whose script found none of its targets is visible in the
+/// data rather than indistinguishable from a clean one.
+export async function endDiagCapture(
+  path?: string,
+  interact?: InteractTally,
+): Promise<unknown> {
   capturing = false;
-  return invoke("diag_capture_finish", { path: path ?? null });
+  return invoke("diag_capture_finish", {
+    path: path ?? null,
+    interact: interact ?? null,
+  });
 }
 
 // Scriptable entry point so an operator (or automation) can bracket a

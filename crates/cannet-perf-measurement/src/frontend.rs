@@ -98,6 +98,61 @@ pub struct FrontendReport {
     /// `None`/absent on sim-only runs and reports predating the field.
     #[serde(default)]
     rx_gap: Option<RxGapFields>,
+    /// What the synthetic interaction script drove. `None` on an
+    /// operator-driven capture and on reports predating the tally.
+    #[serde(default)]
+    interact: Option<InteractFields>,
+}
+
+/// The interaction tally as `check` reads it — how many gestures landed,
+/// how many found nothing, and which. Not gated: it is the evidence that
+/// says whether the rest of the report describes an app being driven or
+/// one sitting idle, which is a question for the reader, not a limit.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct InteractFields {
+    #[serde(default)]
+    performed: usize,
+    #[serde(default)]
+    missing: usize,
+    #[serde(default)]
+    missing_by_gesture: BTreeMap<String, usize>,
+}
+
+/// What is wrong with a report's interaction record, or `None` when
+/// nothing is.
+///
+/// The failure this exists for: a capture whose script found none of its
+/// targets produces a report structurally identical to a good one — same
+/// metrics, same shape — and reads as "interaction is free". A gestureless
+/// run is a legitimate capture (a layout with no plot, or no
+/// `--perf-interact` at all); a run that *tried* and reached nothing is
+/// not, and neither is one that lost a single control to a layout change.
+#[must_use]
+pub fn interaction_complaint(report: &FrontendReport) -> Option<String> {
+    let i = report.interact.as_ref()?;
+    if i.missing == 0 {
+        return None;
+    }
+    let which = i
+        .missing_by_gesture
+        .iter()
+        .map(|(k, n)| format!("{k}×{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(if i.performed == 0 {
+        format!(
+            "the interaction script drove NOTHING ({} gestures found no target: {which}) \
+             — this report measures a resting app, not an interacting one",
+            i.missing
+        )
+    } else {
+        format!(
+            "the interaction script missed {} of {} gestures ({which}) — a target has \
+             moved out of its reach",
+            i.missing,
+            i.missing + i.performed
+        )
+    })
 }
 
 /// The render-tier metrics persisted in a baseline and compared by
@@ -743,6 +798,58 @@ mod tests {
         approx(m.rx_fps_retention, 0.82);
         approx(m.tx_fps_overall, 500.0);
         approx(m.tx_fps_retention, 1.0);
+    }
+
+    /// `SAMPLE` with an `interact` block spliced in.
+    fn with_interact(json: &str) -> FrontendReport {
+        let body = format!(
+            "{}, \"interact\": {json} }}",
+            SAMPLE.trim_end().trim_end_matches('}')
+        );
+        serde_json::from_str(&body).expect("parses with an interact block")
+    }
+
+    #[test]
+    fn a_report_whose_script_drove_nothing_says_so() {
+        // The silent-disarm shape: every metric present and healthy, and
+        // not one gesture landed. Without the tally this is
+        // indistinguishable from a hard-scrubbed run.
+        let r = with_interact(
+            r#"{ "script": "scrub", "ticks": 400, "performed": 0, "missing": 250,
+                 "idle": 150, "by_gesture": {},
+                 "missing_by_gesture": { "plot.zoom-in": 200, "plot.follow-live": 50 } }"#,
+        );
+        let why = interaction_complaint(&r).expect("a disarmed run must complain");
+        assert!(why.contains("NOTHING"), "{why}");
+        assert!(why.contains("plot.follow-live×50"), "{why}");
+    }
+
+    #[test]
+    fn one_unreachable_control_is_complained_about_too() {
+        // The measured near-miss: the follow-live chip spilled into the
+        // toolbar overflow, so the plot spent the run parked while every
+        // other gesture kept landing.
+        let r = with_interact(
+            r#"{ "script": "scrub", "ticks": 400, "performed": 200, "missing": 50,
+                 "idle": 150, "by_gesture": { "plot.zoom-in": 200 },
+                 "missing_by_gesture": { "plot.follow-live": 50 } }"#,
+        );
+        let why = interaction_complaint(&r).expect("a missed target must complain");
+        assert!(why.contains("missed 50 of 250"), "{why}");
+    }
+
+    #[test]
+    fn a_healthy_or_absent_tally_is_quiet() {
+        let healthy = with_interact(
+            r#"{ "script": "scrub", "ticks": 400, "performed": 250, "missing": 0,
+                 "idle": 150, "by_gesture": { "plot.zoom-in": 250 },
+                 "missing_by_gesture": {} }"#,
+        );
+        assert!(interaction_complaint(&healthy).is_none());
+        // An operator-driven capture (no script at all) carries no tally,
+        // and is not a disarmed run.
+        let none: FrontendReport = serde_json::from_str(SAMPLE).expect("parses");
+        assert!(interaction_complaint(&none).is_none());
     }
 
     #[test]
