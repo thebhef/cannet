@@ -23,6 +23,7 @@ import { buildSinkPredicate } from "./sinkPredicate";
 import { buildColorResolver } from "./colorMap";
 import { SourcesContextMenu } from "./SourcesPicker";
 import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
+import { useDismissableMenu } from "./useDismissableMenu";
 import { hostSettings, useSetting } from "./hostSettings";
 import { toggleInSet } from "./toggleSet";
 import {
@@ -80,6 +81,40 @@ const autoScrollFromConfig = (c: TraceConfig | undefined): boolean =>
   typeof c?.autoScroll === "boolean" ? c.autoScroll : hostSettings().trace_auto_scroll;
 const showEventsFromConfig = (c: TraceConfig | undefined): boolean =>
   typeof c?.showEvents === "boolean" ? c.showEvents : hostSettings().trace_show_events;
+
+/// A frame row's right-click menu: just the create-event action about
+/// that message (ADR 0056). Panel-scoped filtering (the sources
+/// picker) is not a message-level command, so it never appears here —
+/// it stays reachable only from the button bar. Closes on Escape or a
+/// click outside, like every other floating menu.
+function FrameRowMenu(props: {
+  position: { x: number; y: number };
+  action: { label: string; title?: string; onInvoke: () => void };
+  onClose: () => void;
+}) {
+  const { position, action, onClose } = props;
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
+  return (
+    <div
+      ref={menuRef}
+      className="trace-row-menu"
+      style={{ left: position.x, top: position.y }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <button
+        type="button"
+        className="trace-row-menu-action"
+        title={action.title}
+        onClick={() => {
+          action.onInvoke();
+          onClose();
+        }}
+      >
+        {action.label}
+      </button>
+    </div>
+  );
+}
 
 /**
  * One trace-style panel: a view of one trace *element* (`useTrace`),
@@ -449,25 +484,27 @@ export function TracePanel(props: IDockviewPanelProps) {
 
   return (
     <div className="trace-panel" onContextMenu={handleContextMenu}>
-      {sourcesMenu && (
-        <SourcesContextMenu
-          position={sourcesMenu}
-          value={currentSources}
-          buses={buses}
-          filters={availableFilters}
-          onChange={handleSourcesChange}
-          onClose={() => setSourcesMenu(null)}
-          rowAction={
-            sourcesMenu.frame
-              ? {
-                  label: `Create event from ${messageLabel(sourcesMenu.frame)}`,
-                  title: "add a timeline event at this frame's time, about this message",
-                  onInvoke: () => createEventFromFrame(sourcesMenu.frame!),
-                }
-              : undefined
-          }
-        />
-      )}
+      {sourcesMenu &&
+        (sourcesMenu.frame ? (
+          <FrameRowMenu
+            position={sourcesMenu}
+            action={{
+              label: `Create event from ${messageLabel(sourcesMenu.frame)}`,
+              title: "add a timeline event at this frame's time, about this message",
+              onInvoke: () => createEventFromFrame(sourcesMenu.frame!),
+            }}
+            onClose={() => setSourcesMenu(null)}
+          />
+        ) : (
+          <SourcesContextMenu
+            position={sourcesMenu}
+            value={currentSources}
+            buses={buses}
+            filters={availableFilters}
+            onChange={handleSourcesChange}
+            onClose={() => setSourcesMenu(null)}
+          />
+        ))}
       <div className="trace-panel-toolbar">
         <TraceControls
           status={trace.status}

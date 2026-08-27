@@ -124,13 +124,8 @@ export function SourcesContextMenu(props: {
   onChange: (next: string[]) => void;
   onClose: () => void;
   onInsertFilter?: () => void;
-  /// An action about the *row* the right-click landed on, above the
-  /// picker: the more specific target's command comes first, and the
-  /// view-wide sources stay where they have always been. Absent when
-  /// the click hit no row.
-  rowAction?: { label: string; title?: string; onInvoke: () => void };
 }) {
-  const { position, value, buses, filters, onChange, onClose, onInsertFilter, rowAction } = props;
+  const { position, value, buses, filters, onChange, onClose, onInsertFilter } = props;
   const helpers = useSourcesHelpers(value, buses, filters, onChange);
   const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
 
@@ -141,19 +136,6 @@ export function SourcesContextMenu(props: {
       style={{ left: position.x, top: position.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {rowAction && (
-        <button
-          type="button"
-          className="sources-context-menu-action sources-context-menu-action--leading"
-          title={rowAction.title}
-          onClick={() => {
-            rowAction.onInvoke();
-            onClose();
-          }}
-        >
-          {rowAction.label}
-        </button>
-      )}
       <SourcesChecklist
         buses={buses}
         filters={filters}

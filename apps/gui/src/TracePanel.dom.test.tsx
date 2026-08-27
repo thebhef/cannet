@@ -719,10 +719,11 @@ describe("TracePanel event rows: the same interactions as the events view", () =
 });
 
 describe("TracePanel authoring an event from a trace row (ADR 0056)", () => {
-  // The trace row's context menu creates an event subjected to that
-  // message. It rides the panel's existing right-click menu rather than
-  // opening a second one, so the sources picker every right-click has
-  // always offered is still there.
+  // The trace row's context menu offers only the create-event action
+  // (ADR 0056): the sources picker is panel-scoped filtering, not
+  // something about the one message the click landed on, and the
+  // owner ruled it belongs only in the button bar. A right-click that
+  // hits no row still opens the panel-wide sources menu.
   const FRAME_TS_S = 12.5;
 
   const notesCtx = (addNote: NotesContextValue["addNote"]): NotesContextValue => ({
@@ -790,17 +791,19 @@ describe("TracePanel authoring an event from a trace row (ADR 0056)", () => {
   };
 
   const createItem = () =>
-    Array.from(document.querySelectorAll(".sources-context-menu-action")).find((b) =>
+    Array.from(document.querySelectorAll(".trace-row-menu-action")).find((b) =>
       (b.textContent ?? "").startsWith("Create event from"),
     ) as HTMLElement | undefined;
 
-  it("offers the create action, and keeps the sources picker with it", async () => {
+  it("offers only the create action — no sources picker on a row", async () => {
     const { restore } = renderFrames([frame(0, 0x1a2, false, "BMS_Status")]);
     fireEvent.contextMenu(await frameRowEl());
-    expect(document.querySelector(".sources-context-menu")).toBeInTheDocument();
+    expect(document.querySelector(".trace-row-menu")).toBeInTheDocument();
     expect(createItem()?.textContent).toBe("Create event from BMS_Status");
-    // The checklist the panel has always shown is still on the menu.
-    expect(document.querySelector(".sources-picker-header")).toBeInTheDocument();
+    // Panel-scoped filtering stays out of the row menu; the owner
+    // ruled it belongs only in the button bar.
+    expect(document.querySelector(".sources-context-menu")).not.toBeInTheDocument();
+    expect(document.querySelector(".sources-picker-header")).not.toBeInTheDocument();
     restore();
   });
 
@@ -823,7 +826,7 @@ describe("TracePanel authoring an event from a trace row (ADR 0056)", () => {
     // Provenance-agnostic: the same shape the plot's gesture produces.
     expect(Object.keys(note).sort()).toEqual(["color", "id", "label", "subjects", "timestampNs"]);
     // Acting on it closes the menu.
-    expect(document.querySelector(".sources-context-menu")).not.toBeInTheDocument();
+    expect(document.querySelector(".trace-row-menu")).not.toBeInTheDocument();
     restore();
   });
 

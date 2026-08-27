@@ -50,6 +50,9 @@ their criterion-by-criterion verdicts to
 - [ ] 107 — events point at signals (both open criteria dispositioned:
       unknown-key round-trip → task 122, file-backed subject → backlog)
 - [ ] 109 — usage feedback from the chip-era build
+- [ ] 115 — trace row menu keeps only the event action (queue item
+      1.23 no longer exists post-reframe; recorded here instead — see
+      [task 115](tasks/0115-trace-row-menu-scope.md))
 
 ## Close-out chores
 
