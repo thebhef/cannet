@@ -227,11 +227,6 @@ struct Inner {
     /// that arrival order leaves unsorted. Folded lazily from the
     /// `[through, len)` delta on query, not on append; see [`anchor`].
     ts_anchor: TsAnchorIndex,
-    /// Aggregate append-rate tracker: the running total-frame count and its
-    /// rolling rate-sample window, folded in by [`Self::append`] and read by
-    /// [`Self::frames_per_second`]. A [`RateTrack`] like the per-bus and
-    /// per-direction buckets, so all four share one sampling path.
-    agg_rate: RateTrack,
     /// The newest-per-[`FrameKey`] state — index, frame, and rate estimate —
     /// maintained `O(1)` on append and bounded by id-space, not capture
     /// length. See [`PerKey`]; the by-id view reads it instead of walking the
@@ -284,8 +279,14 @@ struct Inner {
     /// direction is visible even when the aggregate looks healthy.
     /// Maintained `O(1)` on append; backs
     /// [`TraceStore::frames_per_second_by_direction`].
-    rx_rate: RateTrack,
-    tx_rate: RateTrack,
+    ///
+    /// Bucketed **per bus within each direction**, for the reason
+    /// [`rate::agg_fps`] gives: a rate is read off frame timestamps, and
+    /// two interfaces stamp on their own free-running clocks, so a deque
+    /// fed by both is not a timeline. Each direction's figure is the sum
+    /// over its buses.
+    rx_rate: HashMap<String, RateTrack>,
+    tx_rate: HashMap<String, RateTrack>,
     /// Frames rejected by the session-start guard ([`Self::append`]
     /// returning `None`). Counted so that silent path is visible in the
     /// diagnostic readout.
@@ -348,7 +349,6 @@ impl TraceStore {
                 session_started: false,
                 raw,
                 ts_anchor: TsAnchorIndex::default(),
-                agg_rate: RateTrack::default(),
                 per_key: HashMap::new(),
                 key_generation: 0,
                 mux_selector_of: None,
@@ -358,8 +358,8 @@ impl TraceStore {
                 per_bus: HashMap::new(),
                 per_bus_arb_bits: HashMap::new(),
                 per_bus_data_bits: HashMap::new(),
-                rx_rate: RateTrack::default(),
-                tx_rate: RateTrack::default(),
+                rx_rate: HashMap::new(),
+                tx_rate: HashMap::new(),
                 dropped_before_session: 0,
                 scratch_dir,
                 scratch_cap_bytes: None,
@@ -514,14 +514,14 @@ impl TraceStore {
             );
             inner.key_generation = inner.key_generation.wrapping_add(1);
         }
-        // The aggregate, per-bus, and per-direction throughput trackers all
-        // fold in this frame the same way (bump the count, sample on the
-        // shared cadence gate) — the aggregate is a `RateTrack` like the
-        // others rather than a bypassing bare deque. The per-bus bucket
-        // takes the key's own bus id, so `entry` gets an owned value with
-        // no second clone per frame (it drops it when the bucket exists,
-        // which is every frame after the first on that bus).
-        inner.agg_rate.observe(ts_ns, now);
+        // Every throughput tracker folds this frame in the same way (bump
+        // the count, sample on the shared cadence gate), and every one is
+        // bucketed **per bus** — the aggregate and the two direction
+        // figures are sums over those buckets rather than deques of their
+        // own, because a bucket may only ever hold one interface's clock
+        // (see [`rate::agg_fps`]). The last write takes the key's own bus
+        // id, so `entry` gets an owned value with no extra clone.
+        //
         // Bit times alongside the frame count, so bus load reads off the
         // same window as the frame rate does. Stuff bits are not in the
         // model (`CanFramePayload::on_wire_bits`), so this is a floor.
@@ -538,12 +538,23 @@ impl TraceStore {
                 .or_default()
                 .observe_weighted(ts_ns, now, bits.data);
         }
-        inner.per_bus.entry(key.0).or_default().observe(ts_ns, now);
-        match direction {
+        // `get_mut` before `entry`, unlike the two bit buckets above: this
+        // is on the per-frame path and `entry` would take an owned key on
+        // every frame, where a bucket that already exists — every frame
+        // after a bus's first — needs no allocation at all.
+        let by_direction = match direction {
             Direction::Rx => &mut inner.rx_rate,
             Direction::Tx => &mut inner.tx_rate,
+        };
+        if let Some(track) = by_direction.get_mut(key.0.as_str()) {
+            track.observe(ts_ns, now);
+        } else {
+            by_direction
+                .entry(key.0.clone())
+                .or_default()
+                .observe(ts_ns, now);
         }
-        .observe(ts_ns, now);
+        inner.per_bus.entry(key.0).or_default().observe(ts_ns, now);
         Some(u64::try_from(idx).unwrap_or(u64::MAX))
     }
 
