@@ -419,9 +419,27 @@ worth knowing when one is. It stays neutral while every controller that
 reports is healthy, and tints with a count when one is not, naming
 the bus in its tooltip. Pressing it opens the **Bus health** panel: one
 row per logical bus with its ISO 11898-1 fault-confinement state, the
-transmit and receive error counters, the bus load, the error-frame tally
-and rate, and the adapter with the configuration the host actually put
-on the wire for it.
+transmit and receive error counters, the bus load, the receive-overrun
+count, the error-frame tally and rate, and the adapter with the
+configuration the host actually put on the wire for it.
+
+**Overruns** is the column that says whether the rest of the panel — and
+the trace behind it — is the whole story. It counts occasions on which
+the adapter's driver reported that received frames were lost before they
+reached the tool: PEAK sets two bits in its channel status word, Vector
+sets a queue-overflow flag on an event. It counts *reports, not frames*,
+because no adapter says how many an overrun swallowed. A zero is
+therefore a real answer — this capture is everything the bus sent — and
+an em dash is a different one: this driver does not watch for receive
+loss, so nobody checked. They are never drawn alike.
+
+Under the adapter's name sits whatever its driver said about the
+hardware — the driver stack and its version, the device firmware, the
+serial. Each slot shows an em dash where the driver reported nothing,
+and the line is absent entirely for an adapter that reported none of it,
+so a virtual bus reads exactly as it always did. Nothing in it is
+inferred: a field the driver would not answer for stays blank rather
+than acquiring a plausible-looking value.
 
 The healthy state reads **Connected**. `Error-active` is the standard's
 own name for a controller in normal operation, and it is the one state

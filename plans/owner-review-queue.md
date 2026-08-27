@@ -151,6 +151,16 @@ that task's status log.
       the two other findings from that phase are in
       [task 121](tasks/0121-the-trace-tells-the-truth-about-the-wire.md)'s
       Blockers.
+- [ ] **Check the two new hardware-truth readouts on the PEAK bench.**
+      The bus-health panel now carries an **Overruns** column and an
+      adapter-identity line, both fed from vendor status the ingest used
+      to discard, and both written entirely against faked vendor
+      responses — no PEAK adapter and no Vector card was involved. What
+      to look for (a healthy bus reading `0` rather than an em dash; the
+      PCAN-Basic and firmware versions looking right; whether the column
+      moves during the open-circuit fault) is in
+      [task 121](tasks/0121-the-trace-tells-the-truth-about-the-wire.md)'''s
+      Blockers, with the Vector and Kvaser gaps.
 - [ ] Render-tier gate on the final tree: four 60 s captures with
       `--rbs-run-on-start` against the 2026-08-22 baseline, read as a
       band — only after

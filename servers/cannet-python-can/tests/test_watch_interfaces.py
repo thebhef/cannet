@@ -191,3 +191,82 @@ def test_watch_exits_on_context_cancel() -> None:
     time.sleep(0.1)
     ctx.cancel()
     assert done.wait(timeout=1.0), "watcher did not exit on context cancel"
+
+
+# ---- Adapter identity on the wire -------------------------------------------
+
+
+def test_identity_a_backend_did_not_read_is_left_unset_on_the_wire() -> None:
+    """The four identity fields are ``optional`` on the wire precisely so
+    absent can survive the encoding. A producer that sent an empty string
+    for a field it never read would hand the reader a present-and-blank
+    value, which renders as a value; the reader would then have to guess
+    which blanks meant "no answer", and guessing is what these fields
+    exist to stop."""
+    from cannet_python_can.server.enumeration import enumerate_interfaces
+
+    driver = _StubDriver(
+        [
+            drv.Channel(
+                id="pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:0)",
+                display_name="PEAK PCAN-USB FD",
+                fd_capable=True,
+                driver_name="PCAN-Basic",
+                driver_version="4.9.0.942",
+                firmware_version="3.3.0",
+            ),
+            drv.Channel(
+                id="kvaser:0(ch:0)",
+                display_name="Kvaser Leaf",
+                fd_capable=True,
+            ),
+        ]
+    )
+    peak, kvaser = enumerate_interfaces(driver)
+
+    assert peak.HasField("driver_name")
+    assert peak.driver_version == "4.9.0.942"
+    assert peak.firmware_version == "3.3.0"
+    assert not peak.HasField("serial_number")
+
+    # The control: a backend that reports no identity at all encodes
+    # exactly as it did before the fields existed.
+    for field in ("driver_name", "driver_version", "firmware_version", "serial_number"):
+        assert not kvaser.HasField(field), field
+    assert kvaser.id == "kvaser:0(ch:0)"
+    assert kvaser.display_name == "Kvaser Leaf"
+    assert kvaser.fd_capable is True
+
+
+def test_rx_overruns_absent_and_zero_are_different_on_the_wire() -> None:
+    """Zero is a backend that watches for receive loss and has seen
+    none; absent is a backend that does not watch. Only one of them
+    licenses reading a capture as the whole of what the bus sent."""
+    from cannet_python_can.server.helpers import _interface_state
+
+    watched = _interface_state(
+        channel_id="ch0", state=pb.CONTROLLER_STATE_ACTIVE, tec=0, rec=0, rx_overruns=0
+    )
+    assert watched.HasField("rx_overruns")
+    assert watched.rx_overruns == 0
+
+    unwatched = _interface_state(
+        channel_id="ch0",
+        state=pb.CONTROLLER_STATE_ACTIVE,
+        tec=0,
+        rec=0,
+        rx_overruns=None,
+    )
+    assert not unwatched.HasField("rx_overruns")
+
+    # And a count survives a round trip rather than being clipped to the
+    # 32-bit counters beside it.
+    lots = _interface_state(
+        channel_id="ch0",
+        state=pb.CONTROLLER_STATE_BUS_OFF,
+        tec=255,
+        rec=0,
+        rx_overruns=5_000_000_000,
+    )
+    decoded = pb.InterfaceState.FromString(lots.SerializeToString())
+    assert decoded.rx_overruns == 5_000_000_000

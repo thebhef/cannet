@@ -355,10 +355,52 @@ fn update_cache_and_emit(app: &AppHandle, address: &str, records: &[InterfaceRec
 }
 
 fn interfaces_equal(a: &[InterfaceRecord], b: &[InterfaceRecord]) -> bool {
-    if a.len() != b.len() {
-        return false;
+    // Whole-record equality, so a re-enumeration that picks up an
+    // identity field the first one could not read counts as a change
+    // and reaches the panel. `InterfaceRecord` derives `Eq`, which
+    // keeps this from silently going stale the next time a field is
+    // added.
+    a == b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(id: &str) -> InterfaceRecord {
+        InterfaceRecord {
+            id: id.to_string(),
+            display_name: format!("Adapter {id}"),
+            fd_capable: true,
+            driver_name: None,
+            driver_version: None,
+            firmware_version: None,
+            serial_number: None,
+        }
     }
-    a.iter().zip(b.iter()).all(|(x, y)| {
-        x.id == y.id && x.display_name == y.display_name && x.fd_capable == y.fd_capable
-    })
+
+    #[test]
+    fn a_re_enumeration_that_learns_an_identity_field_counts_as_a_change() {
+        // The identity reads can fail on one enumeration and succeed on
+        // the next — a PCAN handle the driver would not answer for, an
+        // XL library that was not loaded yet. A comparison that only
+        // looked at id / name / FD would swallow that, and the adapter
+        // cell would keep showing an em dash until something else about
+        // the interface moved.
+        let before = [record("pcan:1")];
+        let mut after = before.clone();
+        after[0].firmware_version = Some("3.3.0".to_string());
+        assert!(interfaces_equal(&before, &before));
+        assert!(!interfaces_equal(&before, &after));
+    }
+
+    #[test]
+    fn an_unchanged_interface_set_stays_unchanged() {
+        // The control: the comparison exists to keep an unchanged
+        // enumeration from firing a change event at every poll.
+        let a = [record("pcan:1"), record("pcan:2")];
+        let b = a.clone();
+        assert!(interfaces_equal(&a, &b));
+        assert!(!interfaces_equal(&a, &a[..1]));
+    }
 }

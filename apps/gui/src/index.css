@@ -821,6 +821,22 @@ ul.status-bar-menu .status-chip {
 .bus-health-rate {
   color: var(--text-faint);
 }
+/* The adapter's identity sits under its name as a second, quieter line,
+   so the column still reads as "which adapter" at a glance and the
+   driver / firmware / serial detail is there when it is wanted. */
+.bus-health-identity {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--text-faint);
+  font-size: 0.85em;
+}
+.bus-health-identity-slot + .bus-health-identity-slot::before {
+  content: " · ";
+  color: var(--text-dim);
+}
+.bus-health-identity-label {
+  color: var(--text-dim);
+}
 
 .bus-health-state {
   display: inline-flex;

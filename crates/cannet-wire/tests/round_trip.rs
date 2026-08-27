@@ -236,6 +236,7 @@ fn interface_state_envelope_round_trips_every_controller_state() {
             state: state.into(),
             tec: 0x80,
             rec: 0x40,
+            rx_overruns: None,
         };
         let envelope = proto::Envelope {
             body: Some(proto::envelope::Body::InterfaceState(s.clone())),
@@ -414,4 +415,71 @@ fn an_envelope_variant_this_build_does_not_know_decodes_as_no_body() {
         decoded.body.is_none(),
         "an unknown variant is ignored, not misread as a known one"
     );
+}
+
+#[test]
+fn an_absent_receive_overrun_count_does_not_round_trip_as_zero() {
+    use prost::Message;
+    // The field is `optional` precisely so these two survive the
+    // encoding apart. Zero is a driver that watches for receive loss
+    // and has seen none — the reading that licenses treating a capture
+    // as the whole of what the bus sent — and absent is a driver that
+    // does not watch. A wire that flattened them would hand every
+    // reader a completeness nobody measured.
+    let unwatched = proto::InterfaceState {
+        interface_id: "virtual:bus0".into(),
+        state: proto::ControllerState::Active.into(),
+        tec: 0,
+        rec: 0,
+        rx_overruns: None,
+    };
+    let watched = proto::InterfaceState {
+        rx_overruns: Some(0),
+        ..unwatched.clone()
+    };
+    assert_ne!(unwatched.encode_to_vec(), watched.encode_to_vec());
+    for msg in [&unwatched, &watched] {
+        let decoded =
+            proto::InterfaceState::decode(msg.encode_to_vec().as_slice()).expect("decodes");
+        assert_eq!(&decoded, msg);
+    }
+}
+
+#[test]
+fn an_interface_carries_only_the_identity_fields_its_backend_read() {
+    use prost::Message;
+    // Absent means absent, all the way down the wire: a peer that read
+    // no firmware version sends no field, rather than an empty string a
+    // reader would have to guess about.
+    let peak = proto::Interface {
+        id: "pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:0)".into(),
+        display_name: "PEAK PCAN-USB FD".into(),
+        fd_capable: true,
+        driver_name: Some("PCAN-Basic".into()),
+        driver_version: Some("4.9.0.942".into()),
+        firmware_version: Some("3.3.0".into()),
+        serial_number: None,
+    };
+    let decoded = proto::Interface::decode(peak.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded, peak);
+    assert!(decoded.serial_number.is_none());
+
+    // The control: a backend that reports nothing encodes exactly as it
+    // did before the fields existed.
+    let bare = proto::Interface {
+        id: "virtual:bus".into(),
+        display_name: "Virtual bus".into(),
+        fd_capable: false,
+        ..proto::Interface::default()
+    };
+    let legacy = proto::Interface {
+        id: bare.id.clone(),
+        display_name: bare.display_name.clone(),
+        fd_capable: false,
+        driver_name: None,
+        driver_version: None,
+        firmware_version: None,
+        serial_number: None,
+    };
+    assert_eq!(bare.encode_to_vec(), legacy.encode_to_vec());
 }

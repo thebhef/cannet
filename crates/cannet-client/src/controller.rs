@@ -23,6 +23,17 @@
 //! to read them, because the session's only outward channel is the
 //! frame stream and a controller state is not a frame.
 //!
+//! The same message carries one reading that is not about fault
+//! confinement at all: **receive overruns**, the count of occasions on
+//! which the peer's driver told it that frames reached the controller
+//! and did not reach the peer. It rides here because it answers the
+//! same question — what the driver has to say about this interface —
+//! and because it is the one number that says whether a capture is the
+//! whole of what the bus sent. Every other number in the readout is
+//! read as though it were. It is `Option` throughout: a backend that
+//! does not watch for loss reports nothing, which is a different answer
+//! from a backend that watches and has seen none.
+//!
 //! One state here is **not** ISO 11898-1's: `Unavailable`, which a
 //! peer sends when its driver can no longer reach the interface at all
 //! (the device was removed). It rides the same message because it
@@ -102,6 +113,19 @@ pub struct ControllerStatus {
     pub tec: u32,
     /// Receive error counter (REC).
     pub rec: u32,
+    /// Receive overruns the peer's driver has reported since it opened
+    /// the interface: occasions on which frames reached the controller
+    /// and did not reach the peer. `None` for a backend that reports no
+    /// such thing at all.
+    ///
+    /// **`None` is not zero.** Zero is a driver that watches for
+    /// receive loss and has seen none — the reading that licenses
+    /// treating a capture as the whole of what the bus sent. `None` is
+    /// a driver that does not watch, and a readout that rendered the
+    /// two alike would claim a completeness nobody measured. It counts
+    /// **reports, not lost frames**: no vendor says how many frames an
+    /// overrun swallowed.
+    pub rx_overruns: Option<u64>,
 }
 
 /// Per-interface controller state for one session. Cheap to clone; the
@@ -118,14 +142,26 @@ impl ControllerStates {
 
     /// Record what a peer reported for `interface_id`. A state this
     /// build cannot name is dropped rather than stored as a guess.
-    pub fn record(&self, interface_id: &str, state: i32, tec: u32, rec: u32) {
+    pub fn record(
+        &self,
+        interface_id: &str,
+        state: i32,
+        tec: u32,
+        rec: u32,
+        rx_overruns: Option<u64>,
+    ) {
         let Some(state) = ControllerState::from_wire(state) else {
             return;
         };
         if let Ok(mut guard) = self.0.lock() {
             guard.insert(
                 interface_id.to_string(),
-                ControllerStatus { state, tec, rec },
+                ControllerStatus {
+                    state,
+                    tec,
+                    rec,
+                    rx_overruns,
+                },
             );
         }
     }
@@ -156,13 +192,14 @@ mod tests {
         let writer = ControllerStates::new();
         let reader = writer.clone();
         assert_eq!(reader.get("PCAN_USBBUS1"), None);
-        writer.record("PCAN_USBBUS1", 2, 142, 9);
+        writer.record("PCAN_USBBUS1", 2, 142, 9, None);
         assert_eq!(
             reader.get("PCAN_USBBUS1"),
             Some(ControllerStatus {
                 state: ControllerState::Passive,
                 tec: 142,
                 rec: 9,
+                rx_overruns: None,
             }),
         );
     }
@@ -170,8 +207,8 @@ mod tests {
     #[test]
     fn the_newest_report_replaces_the_last_one() {
         let states = ControllerStates::new();
-        states.record("i1", 1, 0, 0);
-        states.record("i1", 3, 256, 0);
+        states.record("i1", 1, 0, 0, None);
+        states.record("i1", 3, 256, 0, None);
         assert_eq!(states.get("i1").unwrap().state, ControllerState::BusOff);
         assert_eq!(states.get("i1").unwrap().tec, 256);
     }
@@ -182,10 +219,10 @@ mod tests {
         // state must leave the map untouched rather than land as a
         // guess, and must not wipe what a real report put there.
         let states = ControllerStates::new();
-        states.record("i1", 0, 7, 7);
+        states.record("i1", 0, 7, 7, None);
         assert_eq!(states.get("i1"), None, "unspecified reports nothing");
-        states.record("i1", 2, 130, 4);
-        states.record("i1", 99, 0, 0);
+        states.record("i1", 2, 130, 4, None);
+        states.record("i1", 99, 0, 0, None);
         assert_eq!(
             states.get("i1").unwrap().state,
             ControllerState::Passive,
@@ -196,8 +233,8 @@ mod tests {
     #[test]
     fn interfaces_are_reported_independently() {
         let states = ControllerStates::new();
-        states.record("i1", 3, 256, 0);
-        states.record("i2", 1, 0, 0);
+        states.record("i1", 3, 256, 0, None);
+        states.record("i2", 1, 0, 0, None);
         assert_eq!(states.get("i1").unwrap().state, ControllerState::BusOff);
         assert_eq!(states.get("i2").unwrap().state, ControllerState::Active);
         assert_eq!(states.snapshot().len(), 2);
@@ -220,12 +257,37 @@ mod tests {
         // them — and flattening it into active is what made an
         // unplugged cable look like a healthy bus.
         let states = ControllerStates::new();
-        states.record("PCAN_USBBUS1", 5, 104, 0);
+        states.record("PCAN_USBBUS1", 5, 104, 0, None);
         let got = states.get("PCAN_USBBUS1").unwrap();
         assert_eq!(got.state, ControllerState::Warning);
         assert_ne!(got.state, ControllerState::Active);
         assert_ne!(got.state, ControllerState::Passive);
         assert_eq!(got.tec, 104);
+    }
+
+    #[test]
+    fn a_driver_that_does_not_watch_for_loss_is_not_a_driver_that_saw_none() {
+        // The distinction the whole field exists for. `None` is "nobody
+        // looked"; `Some(0)` is "we looked and the capture is whole".
+        // Collapsing them would have every backend python-can offers
+        // vouch for a completeness it never measured.
+        let states = ControllerStates::new();
+        states.record("virtual", 1, 0, 0, None);
+        states.record("PCAN_USBBUS1", 1, 0, 0, Some(0));
+        assert_eq!(states.get("virtual").unwrap().rx_overruns, None);
+        assert_eq!(states.get("PCAN_USBBUS1").unwrap().rx_overruns, Some(0));
+    }
+
+    #[test]
+    fn a_reported_overrun_count_replaces_the_last_one() {
+        // The count is cumulative at the peer, so what is stored is the
+        // newest total rather than a sum of the reports.
+        let states = ControllerStates::new();
+        states.record("PCAN_USBBUS1", 1, 0, 0, Some(1));
+        states.record("PCAN_USBBUS1", 5, 104, 0, Some(4));
+        let got = states.get("PCAN_USBBUS1").unwrap();
+        assert_eq!(got.rx_overruns, Some(4));
+        assert_eq!(got.state, ControllerState::Warning);
     }
 
     #[test]
@@ -235,7 +297,7 @@ mod tests {
         // come back, and reporting one as the other would have the
         // panel promise a recovery that cannot happen.
         let states = ControllerStates::new();
-        states.record("PCAN_USBBUS1", 4, 0, 0);
+        states.record("PCAN_USBBUS1", 4, 0, 0, None);
         assert_eq!(
             states.get("PCAN_USBBUS1").unwrap().state,
             ControllerState::Unavailable,

@@ -47,11 +47,29 @@ class Channel:
 
     ``display_name`` is the user-facing label, e.g.
     ``"Vector VN1640A (SN:12345) ch0"``.
+
+    The four identity fields carry what the vendor's own enumeration
+    says about the hardware, for the wire ``Interface`` message of the
+    same names. **Every one of them is optional and absent means
+    absent**: each backend exposes a different subset and some expose
+    none at all, so a backend fills in what it read and leaves the rest
+    ``None`` rather than substituting a placeholder. A readout that
+    invents a firmware version is worse than one that admits it does
+    not know.
+
+    ``driver_name`` is the odd one out: it names the driver stack the
+    channel was enumerated *through*, which is a fact about this
+    sidecar's own path to the device rather than a device readback, so
+    it can be present where all three of the others are absent.
     """
 
     id: str
     display_name: str
     fd_capable: bool = False
+    driver_name: Optional[str] = None
+    driver_version: Optional[str] = None
+    firmware_version: Optional[str] = None
+    serial_number: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -263,6 +281,28 @@ class OpenChannel(Protocol):
         vendor's status word says on its own: the counters are what ISO
         11898-1 defines confinement on, and a status word that
         under-reports cannot be told apart from a healthy bus.
+        """
+
+    def rx_loss(self) -> Optional[int]:
+        """Receive overruns the backend has reported since this channel
+        was opened, or ``None`` where the backend reports no such thing.
+
+        A count of **reports, not of lost frames**. No vendor says how
+        many frames an overrun swallowed — PEAK sets a bit in its status
+        word, Vector sets a flag on an event — so a backend that
+        returned anything else would be inventing a quantity. What the
+        number answers is whether the trace is the whole of what the bus
+        sent: zero says yes, and any other value says no by an amount
+        nobody measured.
+
+        ``None`` is not zero, and the two must not be conflated: zero is
+        a backend that watches for loss and has seen none, ``None`` is a
+        backend that does not watch. A reader that rendered the second
+        as the first would claim a completeness nobody measured.
+
+        Called by the state poll immediately after :meth:`state`, so a
+        backend may derive the answer from the same device read rather
+        than making a second one.
         """
 
     def close(self) -> None:
