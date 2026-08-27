@@ -51,7 +51,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      # cargo doc builds every workspace crate's dependency graph, and
+      # cannet-gui's includes the GTK/WebKit -sys crates on Linux —
+      # without their native libraries glib-sys's build script fails
+      # before a single doc is rendered.
+      - name: Install WebView host libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             libwebkit2gtk-4.1-dev             libxdo-dev             libssl-dev             libsoup-3.0-dev             libjavascriptcoregtk-4.1-dev
+
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
       # A broken rustdoc link renders as literal text rather than
       # failing anything, so nothing catches one at review: 75 had
