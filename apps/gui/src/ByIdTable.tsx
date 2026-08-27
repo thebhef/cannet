@@ -356,14 +356,12 @@ export function ByIdTable({
   const handleRowClick = useCallback(
     (rowKey: string, e: React.MouseEvent) => {
       gridRef.current.onRowClick(rowKey, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey });
-      // A row with something to disclose is its own focus target, so it
-      // keeps the keyboard (its Enter / Space still toggle it, and the
-      // grid's keys reach the container by bubbling). A row that isn't
-      // one would leave the keyboard nowhere, so hand it to the grid.
+      // The container is the only thing in a gridview that holds focus
+      // (ADR 0044), so every row's click hands it the keyboard —
+      // …unless the click was aimed at a control that wants focus
+      // itself, which would then lose it on the way in.
       const target = e.target as HTMLElement | null;
-      if (target?.closest(".trace-row[tabindex], button, input") == null) {
-        containerRef.current?.focus();
-      }
+      if (target?.closest("button, input") == null) containerRef.current?.focus();
     },
     [containerRef],
   );
@@ -427,10 +425,14 @@ export function ByIdTable({
       />
       {/* The rows viewport is the gridview container: it holds focus and
           names the active row, because the rows themselves are recycled
-          by the paged viewport (ADR 0044). */}
+          by the paged viewport (ADR 0044). The role is what makes
+          `aria-activedescendant` mean anything — a plain `div` naming a
+          row says nothing to a screen reader. `tree`, because a row
+          discloses rows: the message's decoded signals. */}
       <div
         ref={containerRef}
         className="trace-rows"
+        role="tree"
         onScroll={handleScroll}
         {...grid.containerProps}
       >
@@ -441,11 +443,13 @@ export function ByIdTable({
             viewport with no scroll position that reaches them. */}
         <div
           className="trace-scroll-content"
+          role="presentation"
           style={{ height: spacerHeight, position: "relative", ...contentWidthVar }}
         >
           {/* Sticky viewport: the compositor keeps this pinned so the rows
               never lag the scrollbar — React only swaps their content. */}
           <div
+            role="presentation"
             style={{
               position: "sticky",
               top: 0,
@@ -550,10 +554,11 @@ const ByIdRow = memo(function ByIdRow({
 }: ByIdRowProps) {
   const frame = row?.frame ?? null;
   const rowKey = frame ? byIdRowKey(frame) : undefined;
-  // The row *is* the disclosure control: it toggles on click, it is a
-  // focus target, and Enter / Space toggle it from the keyboard. A row
-  // with no decode has nothing to open, so it claims neither — it is
-  // not a tab stop and does not report an expanded state.
+  // The row *is* the disclosure control: it toggles on click, and from
+  // the keyboard it is Left / Right on the container, like every other
+  // gridview (ADR 0044). A row with no decode has nothing to open, so
+  // it reports no expanded state at all rather than a permanent
+  // `false`.
   const expandable = frame?.decoded != null && rowKey != null;
   const toggle = () => {
     if (expandable) onToggle(rowKey);
@@ -568,19 +573,14 @@ const ByIdRow = memo(function ByIdRow({
         selected ? " selected" : ""
       }`}
       style={{ position: "absolute", top, left: 0, right: 0, height }}
-      tabIndex={expandable ? 0 : undefined}
+      role="treeitem"
+      aria-level={1}
       aria-expanded={expandable ? isExpanded : undefined}
       aria-selected={rowKey == null ? undefined : selected}
       draggable={rowKey != null}
       onDragStart={rowKey == null ? undefined : (e) => onDragStart(rowKey, e)}
       onClick={(e) => {
         if (rowKey != null) onSelect(rowKey, e);
-        toggle();
-      }}
-      onKeyDown={(e) => {
-        if (!expandable || (e.key !== "Enter" && e.key !== " ")) return;
-        // Space would scroll the rows container out from under the row.
-        e.preventDefault();
         toggle();
       }}
       renderCell={(key, className) => {

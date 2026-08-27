@@ -200,10 +200,10 @@ describe("ByIdTable scroll extent", () => {
 });
 
 // A message's decoded signals fold under its ID row, and the *row* is
-// the control: click it, or focus it and press Enter / Space. There is
-// no caret — a glyph mid-row, beside the message name, said nothing
-// about what it did. A row with nothing to expand claims nothing: no
-// tab stop, no `aria-expanded`.
+// the control: click it, or move the cursor onto it and press
+// Right / Left. There is no caret — a glyph mid-row, beside the message
+// name, said nothing about what it did. A row with nothing to expand
+// reports no expanded state.
 describe("ByIdTable row disclosure", () => {
   function renderRow(
     expanded: boolean,
@@ -246,10 +246,17 @@ describe("ByIdTable row disclosure", () => {
     expect(container.querySelector(".trace-row button")).toBeNull();
   });
 
-  it("makes the row itself the focusable control, with aria-expanded on it", () => {
+  it("makes the row the disclosure control, with aria-expanded on it", () => {
+    // Turned around: the row used to be a tab stop with its own
+    // Enter / Space handler, which was a second focus model beside the
+    // container-plus-`aria-activedescendant` one every gridview uses,
+    // and it put every decoded message in the page's tab order. The
+    // expanded state stays on the row — that is what the cursor names —
+    // and the keys are the layer's Right / Left (ADR 0044).
     const collapsed = renderRow(false, () => {});
     const shut = collapsed.container.querySelector(".trace-row") as HTMLElement;
-    expect(shut).toHaveAttribute("tabindex", "0");
+    expect(shut).not.toHaveAttribute("tabindex");
+    expect(shut).toHaveAttribute("role", "treeitem");
     expect(shut).toHaveAttribute("aria-expanded", "false");
     cleanup();
     const open = renderRow(true, () => {});
@@ -259,16 +266,18 @@ describe("ByIdTable row disclosure", () => {
     );
   });
 
-  it("toggles from the keyboard on Enter and on Space", () => {
+  it("toggles from the keyboard on the layer's Right and Left", () => {
     const onToggle = vi.fn();
     const { container } = renderRow(false, onToggle);
+    const grid = container.querySelector(".trace-rows") as HTMLElement;
+    fireEvent.keyDown(grid, { key: "ArrowDown" });
+    fireEvent.keyDown(grid, { key: "ArrowRight" });
+    expect(onToggle.mock.calls).toEqual([[byIdRowKey(frame)]]);
+    // The row's own Enter / Space are gone with its tab stop: the press
+    // that reached it directly does nothing now.
     const el = container.querySelector(".trace-row") as HTMLElement;
     fireEvent.keyDown(el, { key: "Enter" });
-    fireEvent.keyDown(el, { key: " " });
-    expect(onToggle.mock.calls).toEqual([[byIdRowKey(frame)], [byIdRowKey(frame)]]);
-    // Something the row does not answer for leaves it alone.
-    fireEvent.keyDown(el, { key: "a" });
-    expect(onToggle).toHaveBeenCalledTimes(2);
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the mouse path unchanged", () => {
@@ -287,9 +296,10 @@ describe("ByIdTable row disclosure", () => {
     const onToggle = vi.fn();
     const { container } = renderRow(false, onToggle, undecoded);
     const el = container.querySelector(".trace-row") as HTMLElement;
-    expect(el).not.toHaveAttribute("tabindex");
     expect(el).not.toHaveAttribute("aria-expanded");
-    fireEvent.keyDown(el, { key: "Enter" });
+    const grid = container.querySelector(".trace-rows") as HTMLElement;
+    fireEvent.keyDown(grid, { key: "ArrowDown" });
+    fireEvent.keyDown(grid, { key: "ArrowRight" });
     fireEvent.click(el);
     expect(onToggle).not.toHaveBeenCalled();
   });

@@ -61,6 +61,10 @@ export const DecodedSignalCell = memo(function DecodedSignalCell({
     <div
       className={selected ? "signal trace-content-row selected" : "signal trace-content-row"}
       id={domId}
+      // A row of the tree the container declares, one level down from
+      // the message that disclosed it (ADR 0044).
+      role="treeitem"
+      aria-level={2}
       aria-selected={selected}
       style={{ position: "absolute", top, left: 0, right: 0, height: SIGNAL_LINE_HEIGHT }}
       draggable

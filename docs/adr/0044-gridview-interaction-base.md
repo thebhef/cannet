@@ -67,6 +67,17 @@ mouse-then-keyboard session leaves focus on the document body and the
 grid's keys point at nothing. There is no active cell: interactive
 content inside a row is reached by Tab, not by the grid cursor.
 
+*(Amended 2026-08-27. The container and its rows carry **real ARIA
+roles** — `tree` on the container, `treeitem` on every row of the space
+including a row's disclosed content rows, `presentation` on the
+scroll/spacer elements between them. `aria-activedescendant` names an
+element; without a role on either end it names nothing an assistive
+technology can report, so the attribute was inert wherever the markup
+was plain `div`s. It follows that **no row is a tab stop**: a row with
+`tabindex` is a second focus model beside the container's, it puts
+grid rows in the page's tab order, and its own key handlers duplicate
+keys the layer already owns.)*
+
 *(Amended 2026-08-23. The container being what holds focus means the
 UA's focus ring goes round the whole scroll viewport, which reads as
 the entire panel lighting up — loudest on a press that moves nothing,

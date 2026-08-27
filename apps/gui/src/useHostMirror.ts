@@ -4,6 +4,11 @@
 /// holds (calculated fields the host mutates without emitting the
 /// change-event, e.g. counter/CRC ticks).
 ///
+/// A consumer whose event carries the whole new state rather than a
+/// nudge to re-read it passes `fromPayload`: the listener then applies
+/// the payload directly and the fetches are only the snapshot pair
+/// around registration.
+///
 /// `listen` (Tauri) is async, so a change the host emits in the gap
 /// between the initial snapshot fetch and the listener actually being
 /// registered would otherwise be lost until the next event or poll
@@ -30,6 +35,13 @@ export interface UseHostMirrorOptions<T, P = unknown> {
   /// element-scoped event: `payload === elementId || payload === "*"`).
   /// Omit to always refetch on `event`.
   matches?: (payload: P) => boolean;
+  /// Read the new snapshot straight out of the event instead of
+  /// re-fetching it. For the host events that publish the whole state
+  /// rather than a nudge to re-read — the per-bus connection map, the
+  /// sidecar's status. The snapshot pair around listener registration
+  /// still runs: a payload only reaches a listener that exists, so it
+  /// is the fetches, not the event, that close the launch race.
+  fromPayload?: (payload: P) => T;
   /// Re-fetch every poll interval while this returns true for the
   /// latest snapshot (e.g. "some entry is running"). Evaluated fresh
   /// each render but only its boolean *result* gates the poll
@@ -53,6 +65,7 @@ export function useHostMirror<T, P = unknown>({
   fallback,
   event,
   matches,
+  fromPayload,
   pollWhile,
   pollIntervalMs,
 }: UseHostMirrorOptions<T, P>): UseHostMirrorResult<T> {
@@ -68,6 +81,8 @@ export function useHostMirror<T, P = unknown>({
   fallbackRef.current = fallback;
   const matchesRef = useRef(matches);
   matchesRef.current = matches;
+  const fromPayloadRef = useRef(fromPayload);
+  fromPayloadRef.current = fromPayload;
 
   const refresh = useCallback(() => {
     void fetch()
@@ -80,7 +95,10 @@ export function useHostMirror<T, P = unknown>({
     // Paint fast from whatever the host already has…
     refresh();
     const un = listen<P>(event, (e) => {
-      if (!matchesRef.current || matchesRef.current(e.payload)) refresh();
+      if (matchesRef.current && !matchesRef.current(e.payload)) return;
+      const read = fromPayloadRef.current;
+      if (read) setValue(read(e.payload));
+      else refresh();
     });
     // …and fetch again once the listener is attached: `listen` is
     // async, so a change emitted in the gap before registration would

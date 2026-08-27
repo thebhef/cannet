@@ -341,6 +341,8 @@ describe("event rows on the gridview action keys (ADR 0044)", () => {
       onRecolor: vi.fn(),
       onRemove: vi.fn(),
       onGoto: vi.fn(),
+      onRetag: vi.fn(),
+      onDescribe: vi.fn(),
     } as EventActions & { onGoto: ReturnType<typeof vi.fn> };
   }
 
@@ -449,6 +451,54 @@ describe("event rows on the gridview action keys (ADR 0044)", () => {
     // it again rather than nothing.
     fireEvent.keyDown(grid(), { key: "F2" });
     expect(screen.getByLabelText("event label")).toBeInTheDocument();
+  });
+
+  it("hands the keyboard back to the grid when a body field's edit ends", () => {
+    // Same defect the rename field above had, one level down: the tag
+    // and description editors unmount on Enter / Escape while they are
+    // still the focused element, so the layer's own recovery — which
+    // looks for `body` during the press — cannot see it, and focus
+    // lands nowhere. The arrows are then dead until the user clicks.
+    const a = actions();
+    withEvent(a);
+    cursorToEvent();
+    fireEvent.keyDown(grid(), { key: "ArrowRight" });
+
+    for (const [field, key] of [
+      ["event tag", "Escape"],
+      ["event description", "Enter"],
+    ] as const) {
+      const label = field === "event tag" ? "tag" : "description";
+      fireEvent.click(screen.getByTitle(`click to edit the ${label}`));
+      const input = screen.getByLabelText(field) as HTMLInputElement;
+      input.focus();
+      fireEvent.keyDown(input, { key });
+      expect(screen.queryByLabelText(field)).toBeNull();
+      expect(document.activeElement).toBe(grid());
+    }
+
+    // …and the cursor never left the event row, so its keys still act
+    // on it rather than on nothing.
+    expect(activeRow()).toHaveClass("trace-event-row");
+    fireEvent.keyDown(grid(), { key: "F2" });
+    expect(screen.getByLabelText("event label")).toBeInTheDocument();
+  });
+
+  it("leaves focus where the user put it when a body edit ends elsewhere", () => {
+    // A click into another control ends the edit too, and that focus is
+    // the user's — the recovery is only for the press that dropped it.
+    const a = actions();
+    withEvent(a);
+    cursorToEvent();
+    fireEvent.keyDown(grid(), { key: "ArrowRight" });
+    fireEvent.click(screen.getByTitle("click to edit the tag"));
+    const input = screen.getByLabelText("event tag") as HTMLInputElement;
+    input.focus();
+    const elsewhere = screen.getByLabelText("go to this event");
+    elsewhere.focus();
+    fireEvent.blur(input);
+    expect(screen.queryByLabelText("event tag")).toBeNull();
+    expect(document.activeElement).toBe(elsewhere);
   });
 
   it("leaves the keys alone where the view supplies no event actions", () => {
