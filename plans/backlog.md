@@ -959,7 +959,7 @@ next planning pass.
   reads instantly in dark mode is close to invisible in light. That
   affects anywhere the app tints a row to mean something. Found while
   prototyping the signal mapping panel
-  ([task 89](tasks/0089-signal-mapping-panel.md)), but not scoped to it;
+  (task 89, retired to git history), but not scoped to it;
   needs grooming before it becomes a task. (Owner, 2026-08-19.)
 - `[model]` **Review and revise how event kinds encode their BLF
   relationship.** `messageBound` exists as an `EventKind` because it

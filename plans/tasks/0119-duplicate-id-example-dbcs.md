@@ -29,7 +29,7 @@ and this is what is not.
 - **Does this get its own example set, or extend an existing one?**
   Recommend its own small set — extending `ev-zonal` would change the
   project the perf harness measures ([ADR
-  0031](../../docs/adr/0031-frontend-perf-harness.md)), and a baseline can
+  0031](../../docs/adr/0031-gui-performance-automation-self-driving.md)), and a baseline can
   outlive the project it describes.
 - **How much of a real bus should the DBCs carry?** Recommend the minimum
   that shows a collision and a non-collision side by side, so the marking

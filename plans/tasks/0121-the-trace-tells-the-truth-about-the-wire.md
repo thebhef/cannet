@@ -83,7 +83,7 @@ rejection is § 1's separate, already-named signal.
 
 ## 4. Adapter identity is a display name and nothing else · 3.52
 
-Raised by [task 101](0101-bus-health.md): the wire's `Interface`
+Raised by task 101 (retired to git history): the wire's `Interface`
 (`crates/cannet-wire/proto/cannet.proto`) carries exactly `id`,
 `display_name`, `fd_capable`, so the bus-health adapter cell can never
 show driver name/version, firmware version, or serial — the fields the
