@@ -580,9 +580,14 @@ describe("enumSegments", () => {
     ]);
   });
 
-  it("tolerates mismatched array lengths by walking the shorter one", () => {
-    // Defensive: the renderer reads u.data[0] and u.data[1] which
-    // should always align, but a corrupt frame shouldn't crash.
+  it("a timestamp with no value behind it ends the run instead of extending it", () => {
+    // The renderer reads u.data[0] and u.data[1], which should always
+    // align — but if they ever do not, the boxes must describe the
+    // values that exist rather than the timestamps that do. Two values
+    // against four timestamps is one run of `1`, closed by the last
+    // timestamp that *has* a value (the same final-segment rule as a
+    // run that reaches the end of the data), not carried out to t=3
+    // where nothing was sampled.
     expect(enumSegments([0, 1, 2, 3], [1, 1])).toEqual([{ t0: 0, tEnd: 1, v: 1 }]);
   });
 });

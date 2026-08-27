@@ -232,10 +232,59 @@ fn file_backed_signals_come_back_verbatim() {
         assert_eq!(group.signals.len(), 1);
         let got = &group.signals[0];
         assert_eq!(got.name, signal.name);
-        assert_eq!(got.unit, signal.unit.clone().filter(|u| !u.is_empty()));
+        assert_eq!(
+            got.unit, signal.unit,
+            "the unit is the one that was written"
+        );
         assert_eq!(got.timestamps_ns, signal.timestamps_ns);
         assert_eq!(got.values, signal.values);
     }
+}
+
+/// MDF4 says "this channel has no unit" by leaving the channel block's
+/// unit address at zero, and an empty unit string means the same thing —
+/// there is nothing to label the axis with either way. So an empty unit
+/// is written as *no* unit and reads back absent, rather than as a
+/// zero-length text block a reader would have to special-case.
+///
+/// The rule is here rather than folded into the round-trip above because
+/// that test asserts a unit comes back exactly as it went in; this is the
+/// one input for which that is deliberately not true, and it says so.
+#[test]
+fn an_empty_unit_is_written_as_no_unit() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let dest = dir.path().join("empty-unit.mf4");
+    let signal = FileSignal {
+        name: "Unitless".to_owned(),
+        unit: Some(String::new()),
+        conversion: None,
+        value_table: Vec::new(),
+        timestamps_ns: (0..4u64).map(|i| START_NS + i * 1_000_000).collect(),
+        values: (0..4).map(f64::from).collect(),
+    };
+
+    let mut writer = MdfCaptureWriter::create(
+        &dest,
+        MdfCaptureLayout {
+            start_time_ns: START_NS,
+            max_payload_len: 8,
+        },
+    )
+    .expect("writer opens");
+    writer
+        .append_frame(&classic(START_NS, 0, 0x100, false, &[1]))
+        .expect("frame appends");
+    writer.add_signal(None, signal.clone());
+    writer.finish().expect("writer finishes");
+
+    let source = MdfCanFrameSource::open(&dest).expect("opens");
+    let groups = source.signal_groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(
+        groups[0].signals[0].unit, None,
+        "an empty unit reads as absent"
+    );
+    assert_eq!(groups[0].signals[0].values, signal.values);
 }
 
 /// A coded signal is its codes plus the table that labels them, and the

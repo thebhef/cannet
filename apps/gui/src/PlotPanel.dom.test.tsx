@@ -2524,14 +2524,27 @@ describe("plot.setVisibleRange", () => {
   });
 });
 
-// Characterisation of the y-normalisation pipeline: the exact array
-// `PlotArea` hands uPlot via `setData` in each axis mode.
+// The y-normalisation pipeline, asserted on the array `PlotArea` hands
+// uPlot via `setData` in each axis mode.
 //
-// The plot's core data path — per-signal normalise, then `mergeSeries`
-// onto a shared time axis — had no assertions on its *output*, so a
-// refactor there was flying blind. These pin current behaviour with
-// literal expected values (not recomputed from the lane helpers), so a
-// change in which transform lands on which series is caught.
+// Two rules are protected here, and every expectation below should be
+// traceable to one of them (ADR 0026):
+//
+//  1. **An axis draws one scale.** Every series on an axis is
+//     normalised against the range that axis labels, so what a viewer
+//     reads off the ticks is what each row was drawn against. An axis
+//     carrying a second, unlabelled scale is what once drew a -200..0 A
+//     current as -1.5..0.
+//  2. **A lane is a band, and the bands are the visible lanes' to
+//     share.** An enum's codes map into its own slice of the axis, and
+//     a hidden lane's slice goes back to the rest rather than staying
+//     reserved.
+//
+// Expected values are written as literals rather than recomputed from
+// the lane helpers, so a change in the helpers cannot quietly move the
+// expectation with the code — but each literal is derived in its own
+// comment from the rule above it, not transcribed from a run. An
+// assertion that cannot be justified that way does not belong here.
 //
 // uPlot needs aligned data: one x column and parallel y columns. Each
 // signal arrives with its own timestamps (its own message, its own
@@ -3574,6 +3587,62 @@ describe("PlotArea y-normalisation", () => {
         restore();
       }
     });
+
+    // The combination the rest of the matrix leaves out: manual bounds
+    // on an axis carrying *more than one* series. Every case above puts
+    // one signal on the axis, where "the manual range won" and "the
+    // series was normalised against its own extent" are the same
+    // arithmetic and cannot be told apart.
+    //
+    // The rule pinned here is the one an axis exists to keep: an axis
+    // draws exactly one scale, and every series on it is normalised
+    // against that scale, so what a viewer reads off the tick labels is
+    // what each row was drawn against (ADR 0026). A manual bound
+    // replaces the derived side of that scale for the *axis*, not for
+    // each series in turn — so a small companion must sit low on a
+    // large manual range instead of filling the canvas.
+    //
+    // Two `A` signals share one axis in both `unified` and `per-unit`;
+    // `individual` gives each its own axis, which the single-signal
+    // cases above already cover.
+    for (const [mode, axisId] of [
+      ["unified", "a1"],
+      ["per-unit", "a1/u:unit:A"],
+    ] as const) {
+      it(`${mode} mode: a manual range scales every series on the axis, not each series' own extent`, async () => {
+        // Auto would union these to 0..500. The manual range is 0..1000
+        // and is neither signal's own extent, so a row normalised
+        // against the auto union, or against itself, reads differently
+        // from a row normalised against the manual range.
+        mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
+        mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+        mockSignalExtents.LimitNominal = { lo: 0, hi: 10 };
+        mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [0, 5, 10] };
+        const restore = stubSize();
+        try {
+          renderSeeded({
+            signals: ["LimitEffective", "LimitNominal"],
+            ...(mode === "unified" ? {} : { mode }),
+            axisScales: { [axisId]: { min: 0, max: 1000 } },
+          });
+          await waitForData((data) => {
+            // Both rows on 0..1000. Normalised against their own
+            // extents each row would run 0 -> 1; against the 0..500
+            // auto union the big row would run 0.8 -> 1.
+            expect(data[1]?.[0]).toBeCloseTo(0.4, 6);
+            expect(data[1]?.[1]).toBeCloseTo(0.45, 6);
+            expect(data[1]?.[2]).toBeCloseTo(0.5, 6);
+            expect(data[2]?.[0]).toBeCloseTo(0, 6);
+            expect(data[2]?.[1]).toBeCloseTo(0.005, 6);
+            expect(data[2]?.[2]).toBeCloseTo(0.01, 6);
+          });
+          // And the labels state that scale, so the reading is honest.
+          await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1000 A"]));
+        } finally {
+          restore();
+        }
+      });
+    }
   });
 });
 

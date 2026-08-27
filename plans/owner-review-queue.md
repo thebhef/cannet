@@ -14,26 +14,44 @@ seen-running checks required.
 One tick per implemented task, in the order they landed. All on one
 linear branch chain off `main`, tip `task-109-phase-6-pattern-signals`;
 nothing merged — merging the last branch takes all of it. The task
-files are retired; detail is in git history. Rows marked **§** owe
+files are retired; detail is in git history. Rows marked **§** owed
 their criterion-by-criterion verdicts to
-[task 126 § 3](tasks/0126-test-and-example-cleanup.md).
+[task 126 § 3](tasks/0126-test-and-example-cleanup.md); **all six were
+walked 2026-08-27** and each row now carries its outcome. The verdict
+tables, with a named test or `file:line` behind every criterion, are in
+that task's status log.
 
 - [ ] 86 — import time origins, enum overlays, events-panel width —
       `examples/time-origins/`, `examples/cannet-demo.mf4`
 - [ ] 27 — live disk-watch for project and RBS files **§** —
-      `examples/ev-demo/`
+      `examples/ev-demo/`. **2 of 4 met, 2 partial.** The watch's
+      *decisions* are tested (safety rules, event classification,
+      watch bookkeeping, frontend reaction); the functions that
+      *execute* them are not — `load_into_element` and `write_element`
+      hold the run-flag carry and the notice clear. The recorded Tauri
+      mock-runtime blocker is real but is **not** what stands in the
+      way: the decision lifts out into a pure function the way
+      `outcome_for` already did. Owner's call whether that ships as is
 - [ ] 87 — BLF writer timestamp fidelity —
       `examples/time-origins/wall-clock-out-of-order.blf`
 - [ ] 89 — signal mapping panel **§** — `examples/colliding-dbcs/`,
-      `examples/ev-zonal/`
+      `examples/ev-zonal/`. **7 of 8 met, 1 partial**: the host-side
+      half of criterion 2 is done, but the panel holds every row
+      unpaged (~1 074 on `ev-zonal`) and re-derives its counts in JS.
+      Paging is task 112's exit criterion 4
 - [ ] 90 — follow-ups from the 86 / 27 / 87 cycle **§** —
-      `examples/time-origins/wall-clock-out-of-order.blf`
+      `examples/time-origins/wall-clock-out-of-order.blf`. **All 3 live
+      criteria met** (the fourth was retired into task 91 at the time)
 - [ ] 88 — bus assignment governs decode — `examples/legacy-project/`,
       `examples/colliding-dbcs/`, `examples/capture-features/`
 - [ ] 92 — one resolution rule — `examples/colliding-dbcs/`
 - [ ] 91 — `frame_index_at_ns` on an unsorted store —
       `examples/time-origins/wall-clock-out-of-order.blf`
-- [ ] 93 — source comments naming tasks, plus the CI lint **§**
+- [ ] 93 — source comments naming tasks, plus the CI lint **§**.
+      **All 3 met**; the lint's own command returns no matches today.
+      One correction: the residual bare-`Phase N` sites the task
+      recorded are gone, and a different five remain in
+      `apps/gui/src-tauri/Cargo.toml` — none of which the lint catches
 - [ ] 98 — signals rendering wrong on a common scale —
       `examples/ev-demo/`
 - [ ] 95 — gridview content click collapsing the message —
@@ -50,7 +68,10 @@ their criterion-by-criterion verdicts to
       `examples/cannet-demo.dbc`, `examples/ev-demo/`
 - [ ] 105 — unfinalized-BLF recovery, read-only **§** —
       `examples/capture-features/interrupted.blf.part`,
-      `examples/capture-features/interrupted-tail.blf.part`
+      `examples/capture-features/interrupted-tail.blf.part`. **All 5
+      met.** Criterion 4's confirming experiment now lives in git
+      history with the retired task file; today's tree carries its
+      conclusion in `cannet-blf`'s reader and header docs
 - [ ] 104 — determinate load progress, discoverable cancel — **no
       furnished file**: needs a multi-million-frame capture, generated
       locally (`examples/capture-features/README.md`)
@@ -66,7 +87,12 @@ their criterion-by-criterion verdicts to
       `examples/capture-features/annotated.mf4`
 - [ ] 19 — typed palette prompts, `Mod+T`/`Mod+E`, event-row keys —
       `examples/capture-features/annotated.blf`
-- [ ] 110 — chain CI repair; Windows MSI bundle target dropped **§**
+- [ ] 110 — chain CI repair; Windows MSI bundle target dropped **§**.
+      It carried no criteria; its "Every job, green" table is
+      **ratified as them**, plus the three fixes it made — **all 4
+      met**. Note the job count moves: 110 measured six, CI defines
+      seven today (`rustdoc` joined), and task 118 takes
+      `comment-references` back out
 - [ ] 108 — the chip language (prototype durable, maintained in-repo)
 - [ ] 107 — events point at signals (both open criteria dispositioned:
       unknown-key round-trip closed by task 122, which added the
@@ -136,6 +162,17 @@ their criterion-by-criterion verdicts to
       machine to itself, so it needs the owner. Task 107 phase 5's
       memory question is unanswerable until then; see
       [task 126 § 1](tasks/0126-test-and-example-cleanup.md).
+- [ ] **Ruling needed: an MDF save silently clamps a pre-origin sample.**
+      A sample stamped before the header's start time lands *at* the
+      start time — a saturating `u64` subtraction, not an MDF
+      constraint, since the master channel is an `f64` — and the save
+      report states no drift and no clamped timestamps unconditionally,
+      where the BLF path reports the same clamp. Found by the
+      wrong-rule-pin audit; the test that asserted the clamp was
+      *correct* has been split so it no longer ratifies it, and the
+      writer is unchanged pending the ruling. Detail in
+      [task 126](tasks/0126-test-and-example-cleanup.md)'s status log
+      and Blockers.
 - [ ] Replace the ignored mDNS round-trip test that advertises a real
       `_cannet._tcp` instance on the LAN.
 - [ ] Normalise the two files that show modified with no content

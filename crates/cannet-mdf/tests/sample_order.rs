@@ -81,13 +81,12 @@ fn a_descending_master_comes_back_ascending() {
     assert_eq!(pairs(&got), want, "every sample keeps its own value");
 }
 
-#[test]
-fn a_pre_start_sample_late_in_record_order_leaves_no_descent() {
-    // The master axis is seconds since `hd_start_time_ns`, and a sample
-    // before that origin has no representation on it — it lands *at* the
-    // origin. One of those in the middle of an otherwise ascending file
-    // is enough to manufacture a descent the reader would then hand on.
-    let got = round_trip(
+/// The timestamps this file puts a pre-origin sample among. Its third
+/// entry is 5 ms *before* the header's start time, arriving after two
+/// later ones — enough to manufacture a descent the reader would then
+/// hand on if nothing sorted.
+fn pre_origin_record_order() -> (Vec<u64>, Vec<f64>) {
+    (
         vec![
             START_NS + 10_000_000,
             START_NS + 20_000_000,
@@ -95,13 +94,53 @@ fn a_pre_start_sample_late_in_record_order_leaves_no_descent() {
             START_NS + 30_000_000,
         ],
         vec![1.0, 2.0, 3.0, 4.0],
-    );
+    )
+}
+
+#[test]
+fn a_pre_start_sample_late_in_record_order_leaves_no_descent() {
+    // The rule: however a sample's time is represented, the series the
+    // reader hands on ascends and every sample keeps the value it was
+    // written with. Nothing here says *where* the pre-origin sample
+    // lands — that is a separate, unsettled question, pinned on its own
+    // below so this test cannot be read as ratifying it.
+    let (ts, vs) = pre_origin_record_order();
+    let got = round_trip(ts, vs.clone());
 
     assert!(
         got.timestamps_ns.windows(2).all(|w| w[0] <= w[1]),
         "timestamps ascend: {:?}",
         got.timestamps_ns
     );
+    let mut got_values: Vec<f64> = pairs(&got).into_iter().map(|(_, v)| v).collect();
+    let mut want_values = vs;
+    got_values.sort_by(f64::total_cmp);
+    want_values.sort_by(f64::total_cmp);
+    assert_eq!(
+        got_values, want_values,
+        "no sample is dropped or duplicated"
+    );
+}
+
+/// **What the writer does today, not a rule anyone decided.** A sample
+/// stamped before the header's start time lands *at* the start time, so
+/// its own instant is lost and it can tie with a sample that genuinely
+/// sits there.
+///
+/// The clamp comes from the arithmetic, not from the format: the offset
+/// is computed with a saturating `u64` subtraction, while the master
+/// channel it is written into is an `f64` and can carry a negative
+/// offset perfectly well. The capture writer for the other format
+/// reports the same clamp to the user; this path does not, and its save
+/// report states no drift and no clamped timestamps unconditionally.
+///
+/// Pinned so the behaviour cannot change unnoticed while it is being
+/// ruled on, and named so nobody mistakes the pin for the ruling.
+#[test]
+fn a_pre_start_sample_currently_lands_on_the_origin_unreported() {
+    let (ts, vs) = pre_origin_record_order();
+    let got = round_trip(ts, vs);
+
     assert_eq!(
         pairs(&got),
         vec![
