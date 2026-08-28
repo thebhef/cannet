@@ -186,10 +186,10 @@ pub struct ChannelBusMapping {
 /// Cancellable: `cancel_import` flips a stop flag this command installs
 /// into [`AppState::import_cancel`] before spawning the pump, and the
 /// pump loop (`run_pump`) checks it every frame — the same cooperative
-/// shape a live session's disconnect uses. A cancelled pump still ends
-/// through its normal clean-exit path (`log-finished: Ok`); the
-/// frontend is what tells a cancellation apart from a natural finish,
-/// since it is the one that asked for it.
+/// shape a live session's disconnect uses. A cancelled pump ends
+/// through its normal clean-exit path (`log-finished: Ok`) and the
+/// frames it appended are kept: cancelling means "stop here", so the
+/// capture is simply finished at that point, markers included.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
@@ -267,9 +267,6 @@ pub(crate) async fn open_log(
     // whichever way.
     let cancel = Arc::new(AtomicBool::new(false));
     *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
-    // Read back after the pump: it is what tells a cancellation apart
-    // from an end of file on this side (see `import_was_cancelled`).
-    let cancelled_probe = Arc::clone(&cancel);
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
@@ -305,17 +302,13 @@ pub(crate) async fn open_log(
                     return;
                 }
             };
-            // Abandoned: the frames this walk appended are being
-            // cleared right now, so its markers have no capture to
-            // belong to. Stop before applying them.
-            if import_was_cancelled(&cancelled_probe) {
-                return;
-            }
             // The markers the pump walked past. Applied once the pass is
             // over — the file's annotations are only fully known when
-            // its last object has been read. A marker can precede the
-            // first frame, so it is folded into the session origin (ADR
-            // 0024) and dropped if the import range excludes it.
+            // its last object has been read. A cancelled walk applies
+            // the ones it reached: they belong to frames the capture
+            // keeps. A marker can precede the first frame, so it is
+            // folded into the session origin (ADR 0024) and dropped if
+            // the import range excludes it.
             let notes =
                 std::mem::take(&mut *collected.lock().unwrap_or_else(PoisonError::into_inner));
             let app_state: State<'_, AppState> = app_for_thread.state();
@@ -338,19 +331,19 @@ pub(crate) async fn open_log(
 }
 
 /// Whether the import that has just ended was cancelled rather than
-/// finishing, and so must apply none of what its walk collected.
+/// finishing, and so should start no further expensive work.
 ///
-/// A pump exits through the same clean path whichever way it stopped,
-/// and everything an import gathers *alongside* the frames — a BLF's
-/// `GLOBAL_MARKER` notes, an MDF's file-backed signal series — is
-/// applied after it, because none of it is fully known until the walk
-/// is over. The frontend, meanwhile, has seen `log-finished` and is
-/// already clearing the partial capture. Applying afterwards would put
-/// content into a session whose frames are gone.
+/// A cancelled pump keeps the frames it appended — the capture is
+/// simply finished where it stopped — and cheap companions collected
+/// on the walk (a BLF's `GLOBAL_MARKER` notes, an MDF's events) still
+/// apply. What a cancellation *does* veto is work that has not begun
+/// yet: an MDF's file-backed signal fill takes as long as the content
+/// is big and starts only after the pump has announced it finished, so
+/// running it would keep the machine busy long after the user asked
+/// the load to stop.
 ///
-/// For an MDF this is not a race but a certainty: filling the file's
-/// signal series takes as long as the content is big, and it starts
-/// after the pump has already announced it finished.
+/// The pump clears [`AppState::import_cancel`] the moment its loop
+/// ends, so the thread asks the clone it kept, not the slot.
 pub(crate) fn import_was_cancelled(cancel: &AtomicBool) -> bool {
     cancel.load(Ordering::Relaxed)
 }
@@ -379,13 +372,11 @@ pub(crate) fn cancel_import_now(state: &AppState) {
 /// The two phases end differently, and the difference is what they have
 /// produced. A cancelled census has produced nothing: its command
 /// returns `None` and there is nothing to undo. A cancelled pump has
-/// frames in the store, and exits through its ordinary clean-exit path
-/// — the same `log-finished: Ok` a natural end-of-file emits, since the
-/// loop itself cannot tell "stopped because EOF" from "stopped because
-/// asked to". The frontend is the one that knows it asked, and treats
-/// the next `log-finished` as an abandonment: it clears the partial
-/// frames the pump already appended rather than presenting them as a
-/// finished capture.
+/// frames in the store and keeps them — it exits through its ordinary
+/// clean-exit path (the same `log-finished: Ok` a natural end-of-file
+/// emits), and the capture is presented as finished at the count the
+/// cancel stopped at. Only work that has not started yet is vetoed
+/// (see [`import_was_cancelled`]).
 ///
 /// A no-op, not an error, when nothing is loading — the Cancel button
 /// this backs isn't perfectly synchronized with the pump's own lifetime
@@ -1667,46 +1658,55 @@ pub(crate) async fn import_mdf(
                         app_for_thread.emit("log-finished", LogFinished::Ok { total: 0, count });
                     None
                 };
-                // Abandoned: the frames are being cleared right now, so
-                // the file's signals and events have no capture to
-                // belong to. Stop before the fill, which is the
-                // expensive part and would otherwise run to completion
-                // long after the user asked for it to stop.
-                if import_was_cancelled(&cancelled_probe) {
-                    return;
-                }
+                // A cancelled import keeps the frames the pump already
+                // appended — the capture is finished where it stopped —
+                // but starts no *new* expensive work: the file-backed
+                // signal fill takes as long as the content is big, and
+                // it would otherwise run to completion long after the
+                // user asked the load to stop. The cheap parts — origin
+                // settling and the file's events — still apply to the
+                // kept frames.
+                let cancelled = import_was_cancelled(&cancelled_probe);
                 // The file's signals and events are on the capture's
                 // timeline too, and either can start before its first
                 // frame — an MDF's earliest content routinely does. Fold
                 // both into the origin before the fill: minting one wipes
                 // the signal caches, so a fill ahead of it would be eaten.
+                // A cancelled import fills no signals, so their origin
+                // must not stretch the session either.
                 let notes = settle_import_origin(
                     &state,
                     &mut anchor,
                     notes,
-                    signal_origin_ns(&signal_groups, start_ns, end_ns),
+                    if cancelled {
+                        None
+                    } else {
+                        signal_origin_ns(&signal_groups, start_ns, end_ns)
+                    },
                     start_ns,
                     end_ns,
                 );
-                let (signals, samples) = fill_file_backed_signals(
-                    &state.signal_caches,
-                    &signal_groups,
-                    start_ns,
-                    end_ns,
-                    &mdf_path,
-                );
-                // The capture's file-backed set just changed — say so, so a
-                // catalog over it (the Database view's per-file branches,
-                // ADR 0052) refreshes without polling.
-                let _ = app_for_thread.emit(FILE_SIGNALS_CHANGED, ());
-                if signals > 0 {
-                    sys_info!(
-                        &app_for_thread,
-                        "mdf-import",
-                        "imported {signals} file-backed signal(s) \
-                         ({samples} sample(s)) from {groups} signal channel group(s)",
-                        groups = signal_groups.len(),
+                if !cancelled {
+                    let (signals, samples) = fill_file_backed_signals(
+                        &state.signal_caches,
+                        &signal_groups,
+                        start_ns,
+                        end_ns,
+                        &mdf_path,
                     );
+                    // The capture's file-backed set just changed — say so, so a
+                    // catalog over it (the Database view's per-file branches,
+                    // ADR 0052) refreshes without polling.
+                    let _ = app_for_thread.emit(FILE_SIGNALS_CHANGED, ());
+                    if signals > 0 {
+                        sys_info!(
+                            &app_for_thread,
+                            "mdf-import",
+                            "imported {signals} file-backed signal(s) \
+                             ({samples} sample(s)) from {groups} signal channel group(s)",
+                            groups = signal_groups.len(),
+                        );
+                    }
                 }
                 // The file's events, applied after the pass — same point
                 // in the flow as `open_log`'s BLF markers, and after the

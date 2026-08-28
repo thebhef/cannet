@@ -16,6 +16,47 @@
 // would miss.
 import { beforeAll } from "vitest";
 
+// Node ≥22 defines its own experimental `localStorage` / `sessionStorage`
+// on `globalThis` — getters that return `undefined` unless Node was
+// started with `--localstorage-file`. When vitest populates the jsdom
+// globals it skips any key the Node global already has, so jsdom's
+// working storages never land and every test touching `localStorage`
+// throws "Cannot read properties of undefined". jsdom's own storages
+// are unreachable from here (the env aliases `window` to `globalThis`,
+// whose getter is Node's), so substitute a minimal in-memory Storage.
+// Fresh per test file (setup files run per worker file), and a no-op on
+// Node versions without the shadowing getter.
+class MemoryStorage implements Storage {
+  #map = new Map<string, string>();
+  get length(): number {
+    return this.#map.size;
+  }
+  clear(): void {
+    this.#map.clear();
+  }
+  key(index: number): string | null {
+    return [...this.#map.keys()][index] ?? null;
+  }
+  getItem(key: string): string | null {
+    return this.#map.get(key) ?? null;
+  }
+  setItem(key: string, value: string): void {
+    this.#map.set(String(key), String(value));
+  }
+  removeItem(key: string): void {
+    this.#map.delete(key);
+  }
+}
+for (const key of ["localStorage", "sessionStorage"] as const) {
+  if (globalThis[key] === undefined) {
+    Object.defineProperty(globalThis, key, {
+      value: new MemoryStorage(),
+      configurable: true,
+      writable: true,
+    });
+  }
+}
+
 beforeAll(async () => {
   const { setDiagEnabled } = await import("./src/diag");
   setDiagEnabled(true);

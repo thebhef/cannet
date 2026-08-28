@@ -21,7 +21,7 @@ walked 2026-08-27** and each row now carries its outcome. The verdict
 tables, with a named test or `file:line` behind every criterion, are in
 that task's status log.
 
-- [ ] 86 — import time origins, enum overlays, events-panel width —
+- [x] 86 — import time origins, enum overlays, events-panel width —
       `examples/time-origins/`, `examples/cannet-demo.mf4`
 - [ ] 27 — live disk-watch for project and RBS files **§** —
       `examples/ev-demo/`. **2 of 4 met, 2 partial.** The watch's
@@ -39,13 +39,13 @@ that task's status log.
       half of criterion 2 is done, but the panel holds every row
       unpaged (~1 074 on `ev-zonal`) and re-derives its counts in JS.
       Paging is task 112's exit criterion 4
-- [ ] 90 — follow-ups from the 86 / 27 / 87 cycle **§** —
+- [x] 90 — follow-ups from the 86 / 27 / 87 cycle **§** —
       `examples/time-origins/wall-clock-out-of-order.blf`. **All 3 live
       criteria met** (the fourth was retired into task 91 at the time)
 - [ ] 88 — bus assignment governs decode — `examples/legacy-project/`,
       `examples/colliding-dbcs/`, `examples/capture-features/`
 - [ ] 92 — one resolution rule — `examples/colliding-dbcs/`
-- [ ] 91 — `frame_index_at_ns` on an unsorted store —
+- [x] 91 — `frame_index_at_ns` on an unsorted store —
       `examples/time-origins/wall-clock-out-of-order.blf`
 - [ ] 93 — source comments naming tasks, plus the CI lint **§**.
       **All 3 met**; the lint's own command returns no matches today.
@@ -72,7 +72,7 @@ that task's status log.
       met.** Criterion 4's confirming experiment now lives in git
       history with the retired task file; today's tree carries its
       conclusion in `cannet-blf`'s reader and header docs
-- [ ] 104 — determinate load progress, discoverable cancel — **no
+- [x] 104 — determinate load progress, discoverable cancel — **no
       furnished file**: needs a multi-million-frame capture, generated
       locally (`examples/capture-features/README.md`)
 - [ ] 102 — the event surface (macOS picker criterion waived
@@ -146,7 +146,7 @@ that task's status log.
       through a portal, so it is outside the container the fix keys
       on), and the two columned gridviews still carry no ARIA roles —
       both in that task's Blockers.
-- [ ] 80 — a stopped capture costs nothing: an import that reaches its
+- [x] 80 — a stopped capture costs nothing: an import that reaches its
       end freezes every trace element at the count the pump reports, and
       the by-id / signal window snapshot walks a bounded window in
       chunks instead of cloning it whole under the append mutex — see

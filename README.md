@@ -548,8 +548,8 @@ the channel-mapping dialog can be shown — as a percentage of the file's
 length, and the import that follows it as frames against the count the
 census returned. A **Cancel** button beside the bar stops whichever
 pass is running. A cancelled census produced nothing and simply goes
-away; a cancelled import's frames are discarded rather than presented
-as a finished capture. The same bar reports the signal-cache rebuild a
+away; a cancelled import keeps the frames loaded so far — the capture
+is simply finished where it stopped. The same bar reports the signal-cache rebuild a
 restored capture can owe, which shows its own **Discard** offramp
 instead of Cancel.
 

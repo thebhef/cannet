@@ -293,7 +293,7 @@ describe("import busy feedback persists past first data", () => {
 });
 
 describe("cancelling the import phase", () => {
-  it("cancels the running import from the Cancel button, cleans up, and leaves a later open working", async () => {
+  it("cancels the running import from the Cancel button, keeps the partial capture, and leaves a later open working", async () => {
     await mountAndSeed();
     await openThroughToLoading();
     await fireTraceGrew(200);
@@ -314,24 +314,21 @@ describe("cancelling the import phase", () => {
     // A second import must not have started from the same click.
     expect(invokeCalls.filter((c) => c.cmd === "open_log").length).toBe(1);
 
-    // The host's pump ends through its ordinary clean-exit path even
-    // when cancelled (`log-finished: Ok`) — the frontend is what tells
-    // the cancellation apart, since it's the one that asked for it.
+    // The host's pump ends through its ordinary clean-exit path when
+    // cancelled (`log-finished: Ok`), and a cancelled import *is* a
+    // finished one: it stopped where it was told to.
     await fireLogFinished({ status: "ok", total: 137, count: 137 });
 
-    // Partial state cleaned up: the host trace store gets cleared again
-    // (on top of the clear that ran before the pump started), and the
-    // UI reads idle, not "Done: 137 frames".
-    await waitFor(() => {
-      const clearedAgain =
-        invokeCalls.filter((c) => c.cmd === "clear_trace_store").length > clearCallsBeforeCancel;
-      if (!clearedAgain) throw new Error("cancelled import never cleared the partial trace store");
-    });
+    // The partial capture is kept, not cleared: the frames the pump
+    // already appended are the capture now, reported as done at the
+    // count the cancel stopped at.
+    expect(invokeCalls.filter((c) => c.cmd === "clear_trace_store").length).toBe(
+      clearCallsBeforeCancel,
+    );
     const idle = importButton();
     expect(idle.getAttribute("title")).toMatch(/^Import trace…/);
     expect(idle).not.toHaveAttribute("aria-busy");
-    expect(statusText()).not.toContain("Done:");
-    expect(statusText()).toMatch(/Open a BLF log/);
+    expect(statusText()).toContain("Done:");
     expect(document.querySelector(".trace-load-cancel")).toBeNull();
 
     // A subsequent open works: the guard isn't left wedged by the
