@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Combobox } from "./Combobox";
 import { DisclosureToggle } from "./DisclosureToggle";
@@ -200,8 +200,62 @@ export function BlfChannelMapModal(props: {
   const rowDomIdRef = useRef(markersGrid.rowDomId);
   rowDomIdRef.current = markersGrid.rowDomId;
 
+  // --- focus and dismissal ---
+  // The dialog appears seconds after the click that caused it (the
+  // census walks the file in between), so focus is still on the
+  // launcher behind the overlay when it mounts — without management,
+  // Tab walks the toolbar and never reaches the dialog. Focus the
+  // first control on mount, keep Tab cycling inside, and let Escape
+  // dismiss (the same "Escape means Cancel" the other modals speak).
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const focusables = (): HTMLElement[] => {
+    const root = overlayRef.current;
+    if (root === null) return [];
+    return Array.from(
+      root.querySelectorAll<HTMLElement>(
+        'button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((el) => !el.hasAttribute("disabled"));
+  };
+  useEffect(() => {
+    focusables()[0]?.focus();
+    // Once, on mount: the dialog claims focus when it appears, and
+    // never again — the user's later focus moves are their own.
+  }, []);
+  const onOverlayKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      // Consumed here: a global Escape binding (fullscreen exit, grid
+      // focus return) must not also act on the same press.
+      e.stopPropagation();
+      e.preventDefault();
+      onCancel();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const order = focusables();
+    if (order.length === 0) return;
+    const first = order[0];
+    const last = order[order.length - 1];
+    // Wrap at the ends so Tab stays inside the dialog instead of
+    // walking out into the inert app behind the overlay.
+    if (!e.shiftKey && e.target === last) {
+      e.preventDefault();
+      first.focus();
+    } else if (e.shiftKey && e.target === first) {
+      e.preventDefault();
+      last.focus();
+    }
+  };
+
   return (
-    <div className="modal-overlay" role="dialog" aria-labelledby="blf-map-title">
+    <div
+      className="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="blf-map-title"
+      ref={overlayRef}
+      onKeyDown={onOverlayKeyDown}
+    >
       <div className="modal">
         <h3 id="blf-map-title">Map {format} channels to logical buses</h3>
         <p className="modal-subtitle" title={blfPath}>
