@@ -505,7 +505,7 @@ fn an_embedded_attachment_comes_back_byte_for_byte() {
 }
 
 #[test]
-fn an_abandoned_write_leaves_the_destination_alone() {
+fn the_capture_is_written_at_its_own_name_start_to_finish() {
     let dir = tempfile::tempdir().expect("temp dir");
     let dest = dir.path().join("abandoned.mf4");
     {
@@ -520,11 +520,15 @@ fn an_abandoned_write_leaves_the_destination_alone() {
         writer
             .append_frame(&classic(START_NS, 0, 0x100, false, &[1]))
             .expect("frame appends");
+        assert!(dest.exists(), "the capture is at its destination mid-write");
+        assert!(
+            !dest.with_extension("mf4.part").exists(),
+            "nothing is written beside the destination"
+        );
     }
-    assert!(!dest.exists(), "the destination is only created by finish");
     assert!(
-        !dest.with_extension("mf4.part").exists(),
-        "the temp file goes with the abandoned writer"
+        dest.exists(),
+        "an abandoned write leaves the unfinalized file rather than deleting it"
     );
 }
 

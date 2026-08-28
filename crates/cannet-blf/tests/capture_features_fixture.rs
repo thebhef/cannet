@@ -124,7 +124,7 @@ fn the_annotated_fixture_carries_two_channels_and_every_payload_kind() {
 /// kill still recoverable.
 #[test]
 fn the_interrupted_fixture_recovers_with_its_anchor() {
-    let scan = scan("interrupted.blf.part");
+    let scan = scan("interrupted.blf");
     assert!(scan.unfinalized, "the header must still be the placeholder");
     assert_ne!(
         scan.start_unix_nanos, 0,
@@ -147,8 +147,8 @@ fn the_interrupted_fixture_recovers_with_its_anchor() {
 /// reader stops at the last complete object rather than refusing the file.
 #[test]
 fn the_cut_fixture_reports_its_incomplete_tail() {
-    let whole = scan("interrupted.blf.part");
-    let cut = scan("interrupted-tail.blf.part");
+    let whole = scan("interrupted.blf");
+    let cut = scan("interrupted-tail.blf");
 
     assert!(cut.unfinalized);
     assert!(

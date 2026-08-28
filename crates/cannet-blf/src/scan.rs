@@ -54,8 +54,9 @@ pub struct BlfScan {
     pub comments: Vec<ScannedComment>,
     /// The file's measurement start time (ns since the UNIX epoch) —
     /// the wall clock the per-event timestamps are relative to. Zero
-    /// when the file states none: a `.part` from a build that wrote the
-    /// anchor only at `finish`, which no capture this build writes is.
+    /// when the file states none: an unfinalized capture from a build
+    /// that wrote the anchor only at `finish`, which no capture this
+    /// build writes is.
     pub start_unix_nanos: u64,
     /// True when the file still carries the placeholder header its
     /// writer stamped at open — the writer never finished. Everything

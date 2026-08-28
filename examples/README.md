@@ -23,8 +23,8 @@ Three example *projects* live alongside this trace fixture:
   capture file can carry beyond ordinary traffic: coloured and
   uncoloured events, a message-bound comment, a `cannet-event/1` block
   from a later schema version, error and remote frames, file-backed and
-  coded signal series, a descending master, and two `.part` files left
-  by a capture that was killed mid-run. Its project runs on an
+  coded signal series, a descending master, and two files left by a
+  capture that was killed mid-run. Its project runs on an
   in-process virtual bus, so it demos with no hardware attached.
 - [`colliding-dbcs/`](colliding-dbcs/README.md) — two databases assigned
   to one bus that disagree about arbitration id `0x100` in every way two
@@ -45,8 +45,9 @@ One more fixture set sits alongside them, without a project:
 
 ## Git LFS
 
-Every capture in this directory — `.blf`, `.mf4`, and the `.blf.part`
-recovery fixtures — is stored as a **Git LFS** object; see
+Every capture in this directory — `.blf` and `.mf4` alike, the
+unfinalized recovery fixtures among them — is stored as a **Git LFS**
+object; see
 [`.gitattributes`](../.gitattributes). A fresh clone needs
 
 ```sh

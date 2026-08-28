@@ -795,7 +795,7 @@ crate retained long-term).
 - **Git LFS** — `adopted` 2026-08-26 by owner ruling (task
   0126), wired 2026-08-27. The example **captures** under `examples/`
   are carried as LFS pointers, each kept small; one `.gitattributes`
-  pattern per tracked format (`*.blf`, `*.part`, `*.mf4`), scoped to
+  pattern per tracked format (`*.blf`, `*.mf4`), scoped to
   `examples/`. Requires `git lfs` in the contributor toolchain (README §
   Prerequisites) and `lfs: true` on the CI `rust` job's checkout, which
   is the only job that reads them. Chosen over committing binaries raw

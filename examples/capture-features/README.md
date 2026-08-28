@@ -15,8 +15,8 @@ the demo trace uses — so the set needs no database of its own.
 | --- | --- |
 | `annotated.blf` | 2 s, ~200 frames, ~2.4 KB. Every annotation record a BLF has, on two channels. |
 | `annotated.mf4` | The same two seconds as ASAM MDF 4.10, ~19 KB, plus the things MDF has a place for and BLF does not. |
-| `interrupted.blf.part` | ~57 KB. A capture whose writer was killed mid-run: real data, placeholder header. |
-| `interrupted-tail.blf.part` | The same file with its last 4 KB cut away, so the final container ends mid-object. |
+| `interrupted.blf` | ~57 KB. A capture whose writer was killed mid-run: real data, placeholder header. |
+| `interrupted-tail.blf` | The same file with its last 4 KB cut away, so the final container ends mid-object. |
 | `capture-features.cannet_prj` | Project: two buses — one on an in-process virtual bus, one deliberately unbound — with the demo database scoped to both. |
 | `capture-features.cannet_rbs` | A rest-of-bus simulation for the virtual bus, so the project transmits with no adapter plugged in. |
 
@@ -46,20 +46,21 @@ the demo trace uses — so the set needs no database of its own.
 | Records out of order | Two data frames are written after frames that follow them in time. |
 | Error and remote frames | In `CAN_ErrorFrame` and `CAN_RemoteFrame` groups of their own. |
 
-## What the two `.part` files demonstrate
+## What the two interrupted captures demonstrate
 
-A `BlfCaptureWriter` streams to `<name>.blf.part` and renames into place
-when it finishes, so a crash never leaves a half-file at the destination
-— it leaves the `.part`. These are that state, produced the only way it
-can be: by not finishing.
+A `BlfCaptureWriter` writes straight to the file it was given and
+finalises its header there, so a capture killed mid-run is left as an
+ordinary `.blf` under the name it was asked for — findable, and openable,
+without knowing to look for another extension. These are that state,
+produced the only way it can be: by not finishing.
 
-- **`interrupted.blf.part`** carries the placeholder header its writer
+- **`interrupted.blf`** carries the placeholder header its writer
   stamped at open, with the measurement start time already in it (the
   anchor reaches disk the moment it is latched, not at `finish`).
   Everything the writer flushed is recoverable; the last buffer's worth,
   which never reached disk, is gone. Opening it must **not** rewrite it:
   the file is byte-identical afterwards.
-- **`interrupted-tail.blf.part`** is the same file cut mid-container. The
+- **`interrupted-tail.blf`** is the same file cut mid-container. The
   reader stops at the last complete object and says how much it lost,
   rather than refusing the file.
 
@@ -68,8 +69,8 @@ can be: by not finishing.
 Open `capture-features.cannet_prj`, then import `annotated.blf`
 (**Import trace…**). The BLF's channel 1 maps onto `Main`; channel 2 is
 the one to leave unmapped or to send to `Aux`. Repeat with
-`annotated.mf4` for the MDF side, and with either `.part` for the
-recovery case.
+`annotated.mf4` for the MDF side, and with either `interrupted*.blf` for
+the recovery case.
 
 `Main` is bound to an in-process virtual bus, so **Connect** and then
 running the `Loopback RBS` element transmits and receives with no
@@ -111,7 +112,7 @@ against `../cannet-demo.dbc` like everything else here.
 
 - `crates/cannet-blf/tests/capture_features_fixture.rs` — the colour
   pair, every annotation shape, both channels, every payload kind, and
-  both `.part` files' recovery.
+  both interrupted captures' recovery.
 - `crates/cannet-mdf/tests/capture_features_fixture.rs` — the coded
   series, the descending master read back ascending, the native range
   pair, and the payload kinds.

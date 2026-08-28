@@ -14,5 +14,4 @@
 # pointers back into files — see README § Prerequisites. Several Rust
 # tests read examples/ captures, so a clone without them fails the suite.
 examples/**/*.blf filter=lfs diff=lfs merge=lfs -text
-examples/**/*.part filter=lfs diff=lfs merge=lfs -text
 examples/**/*.mf4 filter=lfs diff=lfs merge=lfs -text
