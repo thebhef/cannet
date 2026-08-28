@@ -101,7 +101,7 @@ const FPS_SMOOTHING: f64 = 0.3;
 ///
 /// A raw `0.0` snaps straight to zero rather than decaying asymptotically:
 /// an idle session has to reach *exactly* zero for
-/// [`should_emit_trace_grew`] to stop waking the `WebView` 10×/second.
+/// [`trace_grew_changed`] to stop waking the `WebView` 10×/second.
 pub(crate) fn smooth_fps(last: Option<f64>, raw: f64) -> f64 {
     match last {
         Some(prev) if raw > 0.0 => prev + (raw - prev) * FPS_SMOOTHING,
@@ -109,18 +109,37 @@ pub(crate) fn smooth_fps(last: Option<f64>, raw: f64) -> f64 {
     }
 }
 
-/// Whether a `trace-grew` tick should emit, given the `(count, fps)` it
-/// last emitted and the values this tick. Skips only when both are
-/// byte-identical. An idle session settles there: the count is frozen
-/// and [`TraceStore::frames_per_second`] returns exactly `0.0` once a
-/// full second has elapsed since the last append — which [`smooth_fps`]
-/// passes through unfiltered — so after the rate has finished decaying the
-/// tuple stops changing and the emitter goes quiet. During that one-second
-/// decay each read differs, so the status line still slides to zero before
-/// the stream falls silent.
-pub(crate) fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f64)) -> bool {
+/// Whether a `trace-grew` tick should emit, given the
+/// `(count, fps, session_start_ns, session_generation)` it last emitted
+/// and the values this tick. Skips only when all four are byte-identical.
+/// An idle session settles there: the count is frozen and
+/// [`TraceStore::frames_per_second`] returns exactly `0.0` once a full
+/// second has elapsed since the last append — which [`smooth_fps`] passes
+/// through unfiltered — so after the rate has finished decaying the tuple
+/// stops changing and the emitter goes quiet. During that one-second
+/// decay each read differs, so the status line still slides to zero
+/// before the stream falls silent.
+///
+/// The origin is compared because an import lowers it after its pump has
+/// finished (a BLF marker below the first frame), when count and rate no
+/// longer move. The generation is compared because a re-import of the
+/// same small file repeats *every* other field exactly — the clear and
+/// refill both fit between two ticks, and a sub-20 ms burst records one
+/// rate sample so fps reads `0.0` throughout — and the frontend's
+/// session origin, nulled when the import began, only ever arrives on a
+/// `trace-grew`. Without the generation the emitter stayed silent and
+/// the trace rendered absolute epoch seconds as elapsed time.
+pub(crate) fn trace_grew_changed(
+    last: Option<(u64, f64, u64, u64)>,
+    current: (u64, f64, u64, u64),
+) -> bool {
     match last {
-        Some((count, fps)) => count != current.0 || fps.to_bits() != current.1.to_bits(),
+        Some((count, fps, start_ns, generation)) => {
+            count != current.0
+                || fps.to_bits() != current.1.to_bits()
+                || start_ns != current.2
+                || generation != current.3
+        }
         None => true,
     }
 }
@@ -130,7 +149,7 @@ pub(crate) fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f6
 /// thread. Each tick takes one
 /// [`TraceStore::status_snapshot`](crate::trace_store::TraceStore::status_snapshot)
 /// — the whole store-side readout under a single lock — and emits only
-/// when [`should_emit_trace_grew`] says something moved, so a connected
+/// when [`trace_grew_changed`] says something moved, so a connected
 /// but idle session stops collecting a tail, serializing it, and waking
 /// the `WebView` listener at 10 Hz for data that hasn't changed. The
 /// `collect_trace_records` tail decode (the expensive part) runs only on
@@ -140,7 +159,7 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut period = trace_grew_tick();
         let mut interval = tokio::time::interval(period);
-        let mut last_emitted: Option<(u64, f64, u64)> = None;
+        let mut last_emitted: Option<(u64, f64, u64, u64)> = None;
         loop {
             interval.tick().await;
             retune(&mut interval, &mut period, trace_grew_tick());
@@ -159,16 +178,18 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
             // filter state is the last *emitted* value — a skipped tick is
             // by definition one where nothing moved.
             let frames_per_second =
-                smooth_fps(last_emitted.map(|(_, fps, _)| fps), snap.frames_per_second);
+                smooth_fps(last_emitted.map(|(_, fps, _, _)| fps), snap.frames_per_second);
             let session_start_ns = snap.session_start_ns;
-            if !should_emit_trace_grew(
-                last_emitted.map(|(c, fps, _)| (c, fps)),
-                (count, frames_per_second),
-            ) && last_emitted.map(|(_, _, s)| s) == Some(session_start_ns)
-            {
+            let current = (
+                count,
+                frames_per_second,
+                session_start_ns,
+                snap.session_generation,
+            );
+            if !trace_grew_changed(last_emitted, current) {
                 continue;
             }
-            last_emitted = Some((count, frames_per_second, session_start_ns));
+            last_emitted = Some(current);
             // Only an auto-scrolling chronological view reads the tail, so
             // the decode runs only when one has said it wants it.
             let tail = match live_tail_range(

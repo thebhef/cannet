@@ -169,7 +169,7 @@ use emitters::{
     spawn_trace_flusher, spawn_trace_grew_emitter,
 };
 #[cfg(test)]
-use emitters::{live_tail_range, should_emit_trace_grew, smooth_fps, TRACE_GREW_TAIL};
+use emitters::{live_tail_range, smooth_fps, trace_grew_changed, TRACE_GREW_TAIL};
 #[cfg(test)]
 use filter::FilterPredicate;
 #[cfg(test)]

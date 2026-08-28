@@ -688,6 +688,18 @@ next pass on this surface can address them as one piece.
   stream-inflate the container body in bounded chunks rather than
   materialising the whole uncompressed payload.
 
+- `[cannet-gui]` **An MDF import reads "Done" while its signal fill is
+  still running.** `import_mdf`'s pump emits `log-finished` at its own
+  end, but the file-backed signal fill (`fill_file_backed_signals`)
+  runs *after* that emit — on a signal-heavy file the UI presents a
+  finished capture while the host is still minutes into filling
+  caches, and Cancel in that window is inert (the cancelled check
+  happens before the fill starts, deliberately, so a cancelled import
+  skips it — but a *running* fill can no longer be stopped). Either
+  the fill moves ahead of the completion event, or the load state
+  gains a "filling signals" phase with the same Cancel. Noticed
+  2026-08-27 during the cancel-keeps-the-capture change.
+
 - `[cannet-gui]` **Connect while already connected spins an error
   loop.** Clicking Connect (or `--connect-on-start` racing the
   project's auto-connect) with a live session to the same address
@@ -764,31 +776,22 @@ next pass on this surface can address them as one piece.
   `SignalCacheStore::slice`) showed a `[4.5, 10)` window **dropping the
   t=5 s sample it should contain** and every window serving
   non-ascending `t_seconds`, which uPlot renders as a line doubling
-  back. Same conclusion as above: order the ingest for replay imports,
-  don't patch the searches.
+  back.
 
-  **Owner ruling 2026-08-27: sort imports by timestamp, census-gated**
-  — a chronological session is the model's contract, and BLF not
-  guaranteeing file order is no reason for cannet to inherit the
-  disorder. Shape agreed with the owner: the census (which already
-  walks every object) detects non-monotonicity for free; an ordered
-  file — every real logger, every live capture — streams exactly as
-  today at zero cost; a disordered file takes a quarantined
-  collect-and-sort before append, after which every downstream
-  consumer (pyramids, time↔index searches, paging, eviction) works
-  unchanged because the ascending-timestamp invariant is simply true
-  again. Rejected alternatives, deliberately: a bounded reorder buffer
-  (disorder distance is unbounded — the fixture's earliest frames are
-  the file's last objects), presentation-only sorting via a rank
-  permutation (time order is consumed by the plot serve,
-  `frame_index_at_ns`, by-ID, filters and eviction, not just the
-  visible page), and pyramid insertion behavior (permanent complexity
-  in the hottest model path for files expected to be doctored
-  rarities). Disordered files are expected to be rare, so the rare
-  file pays — in-memory sort, with the census's frame count available
-  to warn on a huge one ("fix your weird BLF" is an acceptable
-  answer). `wall-clock-out-of-order.blf` is the regression fixture for
-  both the detection and the sorted result.
+  **Owner ruling 2026-08-27 (final, superseding a same-day sort-on-
+  import direction): out-of-order imports are accepted as-is.** A
+  disordered BLF imports in file order, must not choke anything, and
+  gets no special handling — no ingest sort, no reorder buffer, no
+  rank permutation, no pyramid insertion. The known consequences for
+  such a file (a plot window can drop an in-range sample, goto-time
+  lands approximately, the trace shows file order) are accepted:
+  disordered files are rare outside doctored fixtures, and "fix your
+  weird BLF" is the answer. Origin selection stays exact regardless
+  (the earliest timestamp anchors the session — ADR 0024, verified on
+  the fixture). What this item still owes is only its original live
+  half above: whether a *live multi-bus* capture genuinely appends
+  non-monotonically, which would put the same searches subtly wrong on
+  real captures nobody doctored.
 
 - `[cannet-gui]` **Turning auto-scroll off spins TracePanel and TraceView
   in a render loop.** Observed 2026-08-02 while adding the live-tail

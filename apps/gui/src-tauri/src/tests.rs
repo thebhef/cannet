@@ -1186,17 +1186,23 @@ fn panic_message_extracts_str_and_string_payloads() {
 }
 
 #[test]
-fn trace_grew_skips_only_when_count_and_rate_are_unchanged() {
+fn trace_grew_skips_only_when_nothing_moved() {
     // First tick (nothing emitted yet) always emits.
-    assert!(should_emit_trace_grew(None, (0, 0.0)));
-    // Idle: count frozen and the rate has fully decayed to 0.0 — skip.
-    assert!(!should_emit_trace_grew(Some((10, 0.0)), (10, 0.0)));
+    assert!(trace_grew_changed(None, (0, 0.0, 0, 0)));
+    // Idle: count frozen, rate fully decayed, same session — skip.
+    assert!(!trace_grew_changed(Some((10, 0.0, 7, 1)), (10, 0.0, 7, 1)));
     // New frames landed — emit.
-    assert!(should_emit_trace_grew(Some((10, 0.0)), (11, 0.0)));
+    assert!(trace_grew_changed(Some((10, 0.0, 7, 1)), (11, 0.0, 7, 1)));
     // Count steady but the rate is still decaying (a different read) — emit.
-    assert!(should_emit_trace_grew(Some((10, 5.0)), (10, 4.5)));
+    assert!(trace_grew_changed(Some((10, 5.0, 7, 1)), (10, 4.5, 7, 1)));
     // Capture cleared (count dropped) — emit.
-    assert!(should_emit_trace_grew(Some((10, 5.0)), (0, 0.0)));
+    assert!(trace_grew_changed(Some((10, 5.0, 7, 1)), (0, 0.0, 7, 2)));
+    // The origin moved with nothing else (a post-pump marker settle) — emit.
+    assert!(trace_grew_changed(Some((10, 0.0, 7, 1)), (10, 0.0, 5, 1)));
+    // A new session that repeats every visible field — emit (the
+    // re-import of the same small file; see
+    // `a_second_import_of_the_same_file_still_emits`).
+    assert!(trace_grew_changed(Some((10, 0.0, 7, 1)), (10, 0.0, 7, 2)));
 }
 
 #[test]
@@ -1268,6 +1274,80 @@ fn smooth_fps_filters_bursts_but_snaps_to_zero() {
     // Bit-compared, because that is exactly how `should_emit_trace_grew`
     // decides an idle session has stopped moving.
     assert_eq!(smooth_fps(Some(123.0), 0.0).to_bits(), 0.0f64.to_bits());
+}
+
+/// Re-importing the same small file must not leave the emitter silent.
+///
+/// The repro this pins: import a small capture, let the emitter settle,
+/// then import the same file again. The whole clear → pump fits between
+/// two emitter ticks, and a sub-20 ms burst records one rate sample so
+/// fps reads exactly 0.0 — every field the emitter compared (count, fps,
+/// session origin) repeats, the tick never fires, and the frontend —
+/// whose origin only ever arrives on `trace-grew` — renders absolute
+/// epoch seconds as elapsed (the 19783-day timestamp). A new session is
+/// a change by definition, so the store stamps each `start_session` with
+/// a generation and the emitter compares it too.
+#[test]
+fn a_second_import_of_the_same_file_still_emits() {
+    let state = test_state();
+    let frame = || trace_store::RawTraceFrame {
+        timestamp_ns: 1_709_294_400_120_000_000,
+        channel: 0,
+        id: 0x100,
+        extended: false,
+        direction: Direction::Rx,
+        payload: cannet_core::CanFramePayload::Classic(vec![0; 8]),
+        bus_id: Some("b".into()),
+    };
+
+    // Import A, settled: the emitter last spoke with this snapshot.
+    state.trace_store.start_session(1_709_294_400_120_000_000);
+    state.trace_store.lower_session_start(1_709_294_400_100_000_000);
+    state.trace_store.append(frame());
+    let settled = state.trace_store.status_snapshot();
+    let last = Some((
+        settled.len as u64,
+        0.0, // the smoothed fps an idle session settles at
+        settled.session_start_ns,
+        settled.session_generation,
+    ));
+
+    // Import B of the identical file: clear, re-append, same origin.
+    state.trace_store.start_session(1_709_294_400_120_000_000);
+    state.trace_store.lower_session_start(1_709_294_400_100_000_000);
+    state.trace_store.append(frame());
+    let refilled = state.trace_store.status_snapshot();
+    assert_eq!(refilled.len, settled.len);
+    assert_eq!(refilled.session_start_ns, settled.session_start_ns);
+
+    assert!(
+        trace_grew_changed(
+            last,
+            (
+                refilled.len as u64,
+                0.0,
+                refilled.session_start_ns,
+                refilled.session_generation,
+            ),
+        ),
+        "a cleared-and-refilled identical session is a new session, not a quiet one",
+    );
+}
+
+/// The control: with no clear in between, an identical tick is still
+/// suppressed — the generation must not turn the idle-session quiet
+/// period back into a 10 Hz drip.
+#[test]
+fn an_unchanged_settled_session_stays_quiet() {
+    let state = test_state();
+    state.trace_store.start_session(0);
+    let snap = state.trace_store.status_snapshot();
+    let tick = (snap.len as u64, 0.0, snap.session_start_ns, snap.session_generation);
+    assert!(trace_grew_changed(None, tick), "the first tick always emits");
+    assert!(
+        !trace_grew_changed(Some(tick), tick),
+        "an identical tick with no clear in between stays suppressed",
+    );
 }
 
 #[test]
