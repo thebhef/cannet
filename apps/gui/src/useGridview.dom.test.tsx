@@ -83,11 +83,15 @@ function Harness({
   rendered = 99,
   chips,
   selectionOrder,
+  enterIsPrimary,
+  shiftTabExitsRow,
 }: {
   pageRows?: number;
   rendered?: number;
   chips?: readonly string[];
   selectionOrder?: () => string[];
+  enterIsPrimary?: boolean;
+  shiftTabExitsRow?: boolean;
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const rows = flatten(TREE, expanded);
@@ -111,6 +115,8 @@ function Harness({
     onPrimaryAction: primaryAction,
     onRenameAction: renameAction,
     extraSelectableIds: chips,
+    enterIsPrimary,
+    shiftTabExitsRow,
   });
   return (
     <div data-testid="outside">
@@ -160,6 +166,8 @@ function setup(
     rendered?: number;
     chips?: readonly string[];
     selectionOrder?: () => string[];
+    enterIsPrimary?: boolean;
+    shiftTabExitsRow?: boolean;
   } = {},
 ) {
   scrolled.length = 0;
@@ -260,6 +268,22 @@ describe("keys the layer does not bind", () => {
     expect(primaryAction).not.toHaveBeenCalled();
     fireEvent.keyDown(view.grid, { key: " " });
     expect(primaryAction).toHaveBeenCalledWith("bus");
+  });
+
+  it("runs the primary action on Enter where the panel opts in", () => {
+    // The RBS tree's ruling: Enter and Space are the same press. The
+    // opt-in keeps the layer default — Enter unbound for the user's own
+    // keybindings — for every panel that doesn't ask.
+    const view = setup({ enterIsPrimary: true });
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "Enter" });
+    expect(primaryAction).toHaveBeenCalledWith("bus");
+    // A focused button still owns Enter — pressing it is how a button
+    // is activated, the same exemption Space makes.
+    primaryAction.mockClear();
+    const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
+    fireEvent.keyDown(button, { key: "Enter" });
+    expect(primaryAction).not.toHaveBeenCalled();
   });
 
   it("leaves Space to a focused button inside a row", () => {
@@ -432,6 +456,32 @@ describe("Escape out of the row's content", () => {
     combo.focus();
     fireEvent.keyDown(combo, { key: "Escape" });
     expect(document.activeElement).toBe(combo);
+  });
+
+  it("Shift+Tab hands the keyboard back too, where the panel opts in", () => {
+    // The RBS tree's pairing: Enter/Space/Tab step in, Escape and
+    // Shift+Tab step out. Opt-in, because it takes Shift+Tab away from
+    // walking backward between a row's own controls.
+    const view = setup({ shiftTabExitsRow: true });
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "Tab" });
+    const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
+    expect(document.activeElement).toBe(button);
+    expect(fireEvent.keyDown(button, { key: "Tab", shiftKey: true })).toBe(false);
+    expect(document.activeElement).toBe(view.grid);
+    // From the container itself there is nothing to come back from:
+    // Shift+Tab still enters the cursor row at its far end.
+    fireEvent.keyDown(view.grid, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(view.getByLabelText("rename bus"));
+  });
+
+  it("leaves Shift+Tab inside a row to the browser by default", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
+    button.focus();
+    expect(fireEvent.keyDown(button, { key: "Tab", shiftKey: true })).toBe(true);
+    expect(document.activeElement).toBe(button);
   });
 
   it("leaves Escape alone when the container itself has focus", () => {

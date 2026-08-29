@@ -56,13 +56,20 @@ import { RbsValueCell } from "./rbsValueCell";
 import { GridviewFilterBox, useGridviewFilter } from "./gridviewFilter";
 import { ChipButton } from "./ChipButton";
 import { Icon } from "./Icon";
-import { makeRowGridPropsCache, useGridview, type Gridview, type RowGridProps } from "./useGridview";
+import {
+  makeRowGridPropsCache,
+  rowTabbables,
+  useGridview,
+  type Gridview,
+  type RowGridProps,
+} from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
 import { contentRowId } from "./gridviewContentRows";
 import {
   buildRbsFilterEntries,
   buildVisibleTree,
   findRbsEnableToggle,
+  isRbsSignalRow,
   makeRbsRowSpace,
   makeRbsRowIds,
   type RbsRowIds,
@@ -298,18 +305,27 @@ export function RbsPanel(props: IDockviewPanelProps) {
       isSelectable: (row) => row.kind === "leaf",
     };
   }, [gridRows, effectiveExpanded, setRowExpanded]);
-  /// Space is the layer's primary action on the cursor's row
-  /// (ADR 0044), and in this tree that action is the row's own enable —
-  /// the checkbox the mouse presses. Read through a ref so the callback
-  /// keeps one identity across the 500 ms value poll that rebuilds the
-  /// tree.
+  /// Space and Enter are the layer's primary action on the cursor's
+  /// row (ADR 0044). On a bus / ECU / message the action is the row's
+  /// own enable — the checkbox the mouse presses; on a signal row it is
+  /// the value itself, so the press lands in the row's cell exactly as
+  /// Tab does (the edit or the enum combobox is then one keystroke
+  /// away). Read through refs so the callback keeps one identity across
+  /// the 500 ms value poll that rebuilds the tree.
   const treeDataRef = useRef(tree);
   treeDataRef.current = tree;
   const onPrimaryAction = useCallback(
     (id: string) => {
       const toggle = findRbsEnableToggle(treeDataRef.current, rowIds, id);
-      if (toggle == null) return;
-      void invoke("rbs_set_enabled", { elementId, ...toggle }).catch(() => {});
+      if (toggle != null) {
+        void invoke("rbs_set_enabled", { elementId, ...toggle }).catch(() => {});
+        return;
+      }
+      // A row whose checkbox the mouse cannot press stays inert; only
+      // a signal row redirects the press into its own cell.
+      if (!isRbsSignalRow(treeDataRef.current, rowIds, id)) return;
+      const row = document.getElementById(rowDomIdRef.current(id));
+      if (row != null) rowTabbables(row)[0]?.focus();
     },
     [elementId, rowIds],
   );
@@ -318,6 +334,8 @@ export function RbsPanel(props: IDockviewPanelProps) {
     pageRows: PAGE_ROWS,
     idPrefix: `rbs-${elementId}`,
     onPrimaryAction,
+    enterIsPrimary: true,
+    shiftTabExitsRow: true,
   });
   /// `scrollToRow` is built inside a memo that must not move with the
   /// hook's per-render identity, so it reads the mapping through a ref.

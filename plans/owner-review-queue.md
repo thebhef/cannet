@@ -78,7 +78,11 @@ that task's status log.
 - [x] 102 — the event surface (macOS picker criterion waived
       2026-08-26) — `examples/capture-features/annotated.blf`,
       `examples/capture-features/annotated.mf4`
-- [ ] 103 — toolbar status bar, status chips, ADR 0055
+- [x] 103 — toolbar status bar, status chips, ADR 0055. Signed off
+      2026-08-28 ("happy with the toolbar buttons at this point") after
+      a review pass reshaped the bar: Save is Save All, Export beside
+      Import, labels on the Graph / Events / Project chips, chip menus
+      and the connection chip no longer truncate
 - [ ] 101 — bus health (PCAN fix confirmed on the bench 2026-08-23;
       Vector tested 2026-08-26; Kvaser needs CANLIB — owner follows up
       independently)
@@ -138,7 +142,9 @@ that task's status log.
       task's Blockers.
 - [ ] 113 — RBS is a grid: an RBS message's and a transmit tile's
       signals are rows the cursor reaches, Space on a signal row is
-      inert, neither signal-mapping grid paints a row background or
+      inert (superseded 2026-08-28: Enter/Space on a signal row now
+      land in its value cell, Enter toggles a message like Space, and
+      Shift+Tab exits a row like Escape), neither signal-mapping grid paints a row background or
       ships a Row Highlights toggle, the RBS signals grid carries a
       **Default** column reading `none` where the DBC declares no start
       value, and Escape from a row control returns to the grid instead

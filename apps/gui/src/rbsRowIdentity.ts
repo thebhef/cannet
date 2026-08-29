@@ -179,6 +179,26 @@ export function findRbsEnableToggle(
   return null;
 }
 
+/// Whether `rowId` names a signal (content) row of the visible tree —
+/// the rows whose primary action is their own value cell rather than an
+/// enable toggle. Walked on the press, like `findRbsEnableToggle`, and
+/// for the same reason.
+export function isRbsSignalRow(
+  tree: readonly VisibleBus[],
+  ids: RbsRowIds,
+  rowId: string,
+): boolean {
+  for (const b of tree) {
+    for (const e of b.ecus) {
+      for (const m of e.messages) {
+        const mId = ids.message(b.bus.key, m.key);
+        if (m.signals.some((s) => contentRowId(mId, s.name) === rowId)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /// The visible tree as the gridview's ordered row space: buses and ECUs
 /// are branches, a message is a **leaf with content**, and that content
 /// is a list — so an open message's signals are rows of the space too,

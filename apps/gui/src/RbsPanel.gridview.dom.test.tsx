@@ -247,18 +247,57 @@ describe("RbsPanel on the gridview", () => {
     expect(document.activeElement).toBe(screen.getByLabelText("PackVoltage value"));
   });
 
-  it("Space on a signal row does nothing — you cannot send part of a message", async () => {
+  it("Space and Enter on a signal row land in its value cell — neither sends part of a message", async () => {
+    // A signal row's primary action is its value (owner ruling
+    // 2026-08-28, superseding "Space on a signal row is inert"): the
+    // press makes the same landing Tab makes, so the edit or the enum
+    // combobox is one keystroke away. It still toggles nothing — not
+    // the message's enable either.
     renderPanel();
     await screen.findByText("PackStatus");
     const tree = screen.getByRole("tree");
+    tree.focus();
     for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
     fireEvent.keyDown(tree, { key: "ArrowRight" });
     fireEvent.keyDown(tree, { key: "ArrowDown" });
     expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
     fireEvent.keyDown(tree, { key: " " });
-    // Not the message's toggle either: the press is inert, not
-    // redirected upward.
+    expect(document.activeElement).toBe(screen.getByLabelText("PackVoltage value"));
     expect(calls.filter((c) => c.cmd === "rbs_set_enabled")).toEqual([]);
+
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Enter" });
+    expect(document.activeElement).toBe(screen.getByLabelText("PackVoltage value"));
+    expect(calls.filter((c) => c.cmd === "rbs_set_enabled")).toEqual([]);
+  });
+
+  it("Enter toggles a message row exactly as Space does", async () => {
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(rowOf("PackStatus")).toHaveAttribute("data-active");
+    fireEvent.keyDown(tree, { key: "Enter" });
+    const toggles = calls.filter((c) => c.cmd === "rbs_set_enabled");
+    expect(toggles).toHaveLength(1);
+    expect(toggles[0].args).toMatchObject({ message: "0x100", enabled: false });
+  });
+
+  it("Shift+Tab from a signal's cell hands the keyboard back to the tree, like Escape", async () => {
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    tree.focus();
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "Tab" });
+    const cell = screen.getByLabelText("PackVoltage value");
+    expect(document.activeElement).toBe(cell);
+    fireEvent.keyDown(cell, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(tree);
+    // The cursor is where it was, so navigation resumes straight away.
+    expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
   });
 
   it("clicking inside a disclosed signal table leaves the message open", async () => {
