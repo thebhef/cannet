@@ -702,6 +702,13 @@ mod tests {
     /// The colliding-database project assigns two databases that disagree
     /// about one arbitration id to a single bus — the ambiguity the
     /// resolution rule settles. Both on the same bus is the whole fixture.
+    ///
+    /// Its views are also the signal-mapping panel's acceptance script
+    /// (the example README's repair walk): the plot references the
+    /// contested, renamed and legacy-only signals, and the watch-list
+    /// signals view shares `VehSpeed` with the plot — all recorded under
+    /// the legacy definitions, which is what every drift is measured
+    /// against once the legacy file is unassigned.
     #[test]
     fn parses_the_checked_in_colliding_dbcs_example_project() {
         let p = parse_example("colliding-dbcs/colliding-dbcs.cannet_prj");
@@ -710,6 +717,61 @@ mod tests {
         assert!(
             p.dbcs.iter().all(|d| d.buses == vec!["pack".to_string()]),
             "both must land on the same bus or they never collide",
+        );
+
+        let plot = p
+            .elements
+            .iter()
+            .find(|e| e.get("kind").and_then(serde_json::Value::as_str) == Some("plot"))
+            .expect("the fixture carries a plot element");
+        let signals = plot
+            .pointer("/config/areas/0/signals")
+            .and_then(serde_json::Value::as_array)
+            .expect("the plot area carries signals");
+        let name = |s: &serde_json::Value| {
+            s.get("signalName")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let names: Vec<_> = signals.iter().filter_map(&name).collect();
+        for expected in [
+            "VehSpeed",
+            "EngineRpm",
+            "GearLever",
+            "BrakePedal",
+            "LegacyHeartbeat",
+        ] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "the plot must reference {expected}"
+            );
+        }
+        let veh_speed = signals
+            .iter()
+            .find(|s| name(s).as_deref() == Some("VehSpeed"))
+            .expect("checked above");
+        assert_eq!(
+            veh_speed.get("unit").and_then(serde_json::Value::as_str),
+            Some("km/h"),
+            "recorded under the legacy definition, or the Scale drift never shows",
+        );
+
+        let watch = p
+            .elements
+            .iter()
+            .find(|e| e.get("kind").and_then(serde_json::Value::as_str) == Some("signals"))
+            .expect("the fixture carries the watch-list signals element");
+        let key = watch
+            .pointer("/config/selection/keys/0")
+            .expect("the watch list holds one manual key");
+        assert_eq!(
+            key.get("signalName").and_then(serde_json::Value::as_str),
+            Some("VehSpeed"),
+            "shared with the plot, so one repair demonstrably lands on both views",
+        );
+        assert_eq!(
+            key.get("unit").and_then(serde_json::Value::as_str),
+            Some("km/h")
         );
     }
 

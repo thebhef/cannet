@@ -754,6 +754,88 @@ describe("ViewSignalsPanel source picker", () => {
   });
 });
 
+/// A drifted row's one-click repair: adopt what now decodes by
+/// re-recording every view's mapped fields as the decoded values
+/// (`signalRemap.ts`'s `acceptSignalDrift`). Only Scale / Stale rows
+/// report a drift, so only they carry the action.
+describe("ViewSignalsPanel accept", () => {
+  /// A Scale row whose serving database renamed the message *and*
+  /// changed the unit — both recorded fields have drifted.
+  const DRIFTED = row({
+    id: "power|s:256:CoolantTemp",
+    signalName: "CoolantTemp",
+    messageName: "ChassisV2",
+    unit: "degF",
+    status: "scale",
+    usedBy: ["Plot 1", "Watch list"],
+    diffs: [
+      { field: "unit", mapped: "degC", decoded: "degF" },
+      { field: "message", mapped: "Chassis", decoded: "ChassisV2" },
+    ],
+  });
+  const recordedRef = {
+    busId: "power",
+    messageId: 0x100,
+    extended: false,
+    signalName: "CoolantTemp",
+    messageName: "Chassis",
+    unit: "degC",
+  };
+
+  it("offers Accept only on rows reporting a drift", async () => {
+    renderPanel(); // DEFAULT_ROWS: one Decoded, one Not Decoded, one Scale
+    await waitFor(() => expect(screen.getByText("CoolantTemp")).toBeInTheDocument());
+    expect(screen.getAllByRole("button", { name: "Accept" })).toHaveLength(1);
+  });
+
+  it("re-records every view's mapped fields as the decoded values, identity untouched", async () => {
+    ROWS = [DRIFTED];
+    ATTENTION_COUNT = 1;
+    const { registry, recorded } = renderPanel({}, [
+      {
+        kind: "plot",
+        id: "p1",
+        sources: ["*"],
+        config: { areas: [{ id: "a1", signals: [{ ...recordedRef, colorPick: "#abcdef" }] }] },
+      },
+      {
+        kind: "signals",
+        id: "s1",
+        sources: ["*"],
+        config: { selection: { keys: [recordedRef], patterns: [] } },
+      },
+    ]);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Accept" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    await waitFor(() => {
+      const plot = registry.entries().find((e) => e.element.id === "p1")?.element as unknown as {
+        config: { areas: { signals: Record<string, unknown>[] }[] };
+      };
+      expect(plot.config.areas[0].signals[0]).toEqual({
+        ...recordedRef,
+        messageName: "ChassisV2",
+        unit: "degF",
+        colorPick: "#abcdef",
+      });
+      const signals = registry.entries().find((e) => e.element.id === "s1")?.element as unknown as {
+        config: { selection: { keys: Record<string, unknown>[] } };
+      };
+      expect(signals.config.selection.keys[0]).toEqual({
+        ...recordedRef,
+        messageName: "ChassisV2",
+        unit: "degF",
+      });
+    });
+    // The identity never moves, so there is no host half: no pick to
+    // record or drop, and no host-op undo step — the element writes
+    // fold into the gesture's own history.
+    expect(calls.some((c) => c.cmd === "set_signal_dbc_pick")).toBe(false);
+    expect(recorded).toEqual([]);
+  });
+});
+
 describe("ViewSignalsPanel with long names", () => {
   it("splits the signal and message names, and leaves a short one alone", async () => {
     ROWS = [

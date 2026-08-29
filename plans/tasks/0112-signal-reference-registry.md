@@ -150,15 +150,31 @@ Then:
 ### Owner additions
 
 - **2026-08-29 — a Scale row gets an "accept the current scale"
-  repair.** Today the panel only reports scale drift: a pick changes
-  the definer without touching the view's recorded unit/factor/offset,
-  and the picker routes a same-signal choice to "pick", so re-recording
-  the decoder's present scale is unreachable short of re-selecting the
-  signal in every referencing view. Under the registry that repair is
-  one edit to one entry (and one undo step); building it under the
-  push model would be another five-store walk. Review against task
+  repair.** *The repair half landed the same day, ahead of this task*:
+  the `signal-drift-accept` branch gives Scale / Stale rows an
+  **Accept** that re-records every view's mapped fields as the decoded
+  values through the shared `signalRemap.ts` walk, as one undo step —
+  covering everything a view records today, which is the message name
+  and the unit. What remains is this task's, and it is **detection,
+  not repair: views record no factor or offset**, so a factor-only
+  database change (unit string unchanged) surfaces no drift at all.
+  The owner confirmed this live 2026-08-29 — a disk edit to a DBC
+  surfaces enum values, signal names, message names and units in the
+  signal view, but not scale changes — and ruled that closing it
+  belongs here: the registry's reference record carries the full scale
+  (unit, factor, offset), factor drift then reads as Scale like any
+  other, and the same Accept adopts it. That finishes the signal-view
+  repair set. Review against task
   [119](0119-duplicate-id-example-dbcs.md)'s fixtures, whose colliding
-  definitions disagree on scale.
+  definitions disagree on scale, and `examples/colliding-dbcs/`'s
+  repair walk, whose `VehSpeed` changes factor and unit together
+  precisely because only the unit half is detectable today.
+- The relationship between signal caches, and the signal panel findings
+  and fix actions presented to the user should be considered and documented.
+  The signal panel grew out of work on the signar caching by signal fingerprint
+  and in the process of developing and testing it, the fingerprint concept
+  has not been brought up in chat and I supsect it has not been as strong
+  a driver as I might have hoped.
 
 The rest of the sent-back items went elsewhere: 1.6, 1.26 and 1.13c to
 [113](0113-rbs-as-a-grid.md); 1.37, 1.33b and 1.17 to
@@ -253,6 +269,11 @@ they should take, so the next session does not start from nothing.
 5. Cache revival is unchanged across the whole change: a project reopened
    after it adopts nothing new and rebuilds nothing it did not before.
 6. An ADR records what `elements` now is and where a binding lives.
+7. The reference record carries the full scale — unit, factor, offset —
+   so a factor-only database change (unit string unchanged) reads as
+   Scale in the mapping panel, and its Accept re-records all three
+   (the owner addition above: today it surfaces nothing, because views
+   record only the message name and unit).
 
 ## Not in scope
 

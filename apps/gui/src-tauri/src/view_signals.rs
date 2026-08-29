@@ -44,7 +44,11 @@
 //!    series whose unit changed can no longer join the scale group it
 //!    shared and lands on an axis of its own. The factor case changes
 //!    nothing about how the view looks while changing every value it
-//!    shows, which is exactly why it needs reporting.
+//!    shows, which is exactly why it needs reporting. The repair is the
+//!    panel's **accept**: the views' recorded fields are rewritten to
+//!    what now decodes (`signalRemap.ts`'s `acceptSignalDrift`) —
+//!    like the rename repair, a rewrite of the references made where
+//!    they are owned, arriving back here through the views' re-push.
 //! 3. **Ambiguous** — more than one database assigned to the bus
 //!    defines the signal, so which one decodes it is settled silently by
 //!    project load order. Invisible everywhere else: the signal catalog
@@ -53,7 +57,13 @@
 //!    resolves **here**: recording a database for the signal
 //!    ([`set_signal_dbc_pick`]) settles the choice, and the row leaves
 //!    Ambiguous because there is no longer more than one candidate in
-//!    its chain. The other two repairs the panel offers — re-pointing
+//!    its chain. A **drifted row on a contested message id** reads
+//!    Ambiguous too, whatever the count of databases still defining
+//!    its name: when two databases claim the id and the serving
+//!    definition does not match what the view recorded, the record
+//!    names one contender while another serves — renaming a signal in
+//!    one of two colliding databases lands here, and must not slide
+//!    the row down to Stale and out of the attention view. The other two repairs the panel offers — re-pointing
 //!    the views at a signal that replaced a renamed one, and re-pointing
 //!    a reference that names no bus at one that decodes — are rewrites
 //!    of the references themselves, which live in the project's opaque
@@ -61,8 +71,10 @@
 //!    back here as an ordinary change to what the views push.
 //! 4. **Stale** — it decodes, on the scale the view expects, but the
 //!    decoder differs from the view's configuration in some other
-//!    recorded way — today, the message it belongs to has been renamed.
-//!    The value is right; the labelling has drifted.
+//!    recorded way — today, the message it belongs to has been renamed
+//!    — and nothing else contends for its message id (a contested id
+//!    reads Ambiguous, above). The value is right; the labelling has
+//!    drifted. Repaired by the same accept as Scale.
 //! 5. **Decoded** — the decoder matches the view's configuration in
 //!    every recorded field.
 //!
@@ -562,11 +574,18 @@ fn row(
         }
     }
 
+    // A drifted row on a contested message id is unresolved, not
+    // merely mislabelled: the record names one contender while another
+    // serves — renaming a signal in one of two colliding databases
+    // must not slide the row from Ambiguous to Stale and out of the
+    // attention view. Stale is reserved for drift with nothing else
+    // contending for the id.
+    let contested = own.len() > 1;
     let status = if serving.is_none() {
         ViewSignalStatus::NotDecoded
     } else if off_scale {
         ViewSignalStatus::Scale
-    } else if definers.len() > 1 {
+    } else if definers.len() > 1 || (renamed && contested) {
         ViewSignalStatus::Ambiguous
     } else if renamed {
         ViewSignalStatus::Stale
@@ -1202,6 +1221,48 @@ mod tests {
         );
         // Stale still decodes correctly, so it is not in the count.
         assert!(!rows[0].status.needs_attention());
+    }
+
+    #[test]
+    fn a_collision_survivor_with_drift_reads_ambiguous_not_stale() {
+        // Owner report, 2026-08-29: two databases defined the signal
+        // (Ambiguous, in the attention set); renaming the signal in
+        // one of them left the old name with a single definer, so the
+        // row silently rebound to the survivor — whose message name
+        // does not match what the view recorded — and dropped to
+        // Stale, out of the attention view. But the message id is
+        // still contested and the record names the *other* contender:
+        // that is an unresolved state, not a labelling drift. A
+        // drifted row on a contested id reads Ambiguous, whatever the
+        // count of databases still defining its name.
+        let a = dbc("PackStatus", "PackVolts2", "V", "0.1");
+        let b = dbc("BatteryStatus", "PackVolts", "V", "0.1");
+        let buses = power();
+        let reg = registry(&[(
+            "v1",
+            "Plot 1",
+            vec![recorded("PackVolts", "PackStatus", "V", 0.1)],
+        )]);
+        let rows = build(
+            &reg,
+            &[("a.dbc", &a, &buses), ("b.dbc", &b, &buses)],
+        );
+
+        assert_eq!(rows[0].status, ViewSignalStatus::Ambiguous);
+        assert!(
+            rows[0].status.needs_attention(),
+            "the row must not leave the attention view while the id is contested",
+        );
+        // The drift is still stated — the detail cell and its accept
+        // repair work exactly as they do on a Scale/Stale row.
+        assert_eq!(
+            rows[0].diffs,
+            vec![ViewSignalDiff {
+                field: "message".into(),
+                mapped: "PackStatus".into(),
+                decoded: "BatteryStatus".into(),
+            }]
+        );
     }
 
     #[test]

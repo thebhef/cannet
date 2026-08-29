@@ -17,7 +17,7 @@ here — import `../cannet-demo.blf` (1810 frames, `0x100` at 20 Hz) or
 | --- | --- |
 | `legacy-vehicle.dbc` | The outgoing database. `VehicleState` (`0x100`), plus `LegacyOnly` (`0x101`). |
 | `modern-vehicle.dbc` | Its replacement. `VehicleStateV2` — the same id under a new name — plus `ModernOnly` (`0x102`). |
-| `colliding-dbcs.cannet_prj` | One bus, both databases scoped to it, a by-id trace and a plot of the contested signals. |
+| `colliding-dbcs.cannet_prj` | One bus, both databases scoped to it, a by-id trace, a plot of the contested signals and a **Watch list** signals view — every signal reference recorded under the legacy definitions. |
 
 ## The disagreements
 
@@ -65,10 +65,49 @@ single channel maps onto `Pack`. The by-id table and the plot both draw
 The project binds no interface. It is an import fixture — there is
 nothing here to connect to.
 
+## Walking every signal-mapping repair
+
+The plot and the **Watch list** tab reference five signals, each
+recorded under `legacy-vehicle.dbc`'s definitions — which makes this
+project the acceptance script for the signal-mapping panel's status
+taxonomy and every repair it offers. Open the signal mapping panel and
+walk it in two stages.
+
+**Stage 1 — both databases assigned, as the project opens:**
+
+| Row | Status | Why |
+| --- | --- | --- |
+| `VehSpeed`, `EngineRpm`, `GearLever` | **Ambiguous** | both databases define `0x100`, and load order (the legacy file is listed first) settles it silently |
+| `BrakePedal`, `LegacyHeartbeat` | Decoded | only the legacy file defines them — no collision |
+
+**The ambiguity pick:** choose a database in an Ambiguous row's Source
+picker. The row leaves Ambiguous, and `Mod+Z` reverses the pick.
+
+**Stage 2 — unassign `legacy-vehicle.dbc` from `Pack`** (the upgrade,
+as a project that outlived its database experiences it):
+
+| Row | Status | Why | Repair |
+| --- | --- | --- | --- |
+| `VehSpeed` | **Scale** | mapped as `km/h`, decoded by `mph` | **Accept** — re-records every view's mapped fields as what now decodes |
+| `GearLever` | **Stale** | `VehicleState` is now `VehicleStateV2`; the value still decodes right | **Accept** |
+| `EngineRpm` | Decoded | identical in both files — the control | — |
+| `BrakePedal` | **Not Decoded** | the replacement calls those bits `DriveMode` | the **remap pick** — choose `DriveMode` in the Source picker and every stored reference moves |
+| `LegacyHeartbeat` | **Not Decoded** | `0x101` does not exist in the replacement | none — a truly missing signal; the picker reads "nothing available" |
+
+`VehSpeed` is referenced by the plot *and* the Watch list, so its row's
+**Used by** names both — one Accept (or one remap) lands on every view
+at once. Every repair is one undo step (`Mod+Z`).
+
+The remaining shape — a reference that names **no bus**, repaired by
+re-pointing it at a bus that decodes — needs a file saved before
+per-bus binding: `../legacy-project/` carries it.
+
 ## What checks it
 
 `crates/cannet-dbc/tests/colliding_dbcs_fixture.rs` pins every
 disagreement in the table above, and
 `project::tests::parses_the_checked_in_colliding_dbcs_example_project`
-(`cannet-gui`) keeps both databases on the same bus. A pair that quietly
-stopped colliding would still parse, still open, and demonstrate nothing.
+(`cannet-gui`) keeps both databases on the same bus and the five
+repair-walk references recorded under the legacy definitions. A pair
+that quietly stopped colliding would still parse, still open, and
+demonstrate nothing.
