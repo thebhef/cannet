@@ -34,6 +34,7 @@ describe("Icon registry", () => {
       "folder",
       "save",
       "import",
+      "export",
       "clock",
       "db",
       "db-add",

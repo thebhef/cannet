@@ -205,9 +205,11 @@ export function BlfChannelMapModal(props: {
   // census walks the file in between), so focus is still on the
   // launcher behind the overlay when it mounts — without management,
   // Tab walks the toolbar and never reaches the dialog. Focus the
-  // first control on mount, keep Tab cycling inside, and let Escape
+  // confirm button on mount — the defaults are usually right, so a
+  // bare Enter accepts them — keep Tab cycling inside, and let Escape
   // dismiss (the same "Escape means Cancel" the other modals speak).
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
   const focusables = (): HTMLElement[] => {
     const root = overlayRef.current;
     if (root === null) return [];
@@ -218,7 +220,7 @@ export function BlfChannelMapModal(props: {
     ).filter((el) => !el.hasAttribute("disabled"));
   };
   useEffect(() => {
-    focusables()[0]?.focus();
+    (confirmRef.current ?? focusables()[0])?.focus();
     // Once, on mount: the dialog claims focus when it appears, and
     // never again — the user's later focus moves are their own.
   }, []);
@@ -413,6 +415,7 @@ export function BlfChannelMapModal(props: {
           </button>
           <button
             type="button"
+            ref={confirmRef}
             onClick={() => onConfirm(choices, range, contents)}
             disabled={nothingSelected}
           >

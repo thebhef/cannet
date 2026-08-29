@@ -46,6 +46,7 @@ export const ICON_NAMES = [
   "folder",
   "save",
   "import",
+  "export",
   "clock",
   "db",
   "db-add",
@@ -93,6 +94,10 @@ export const ICON_REGISTRY: Readonly<Record<IconName, readonly IconShape[]>> = {
   ],
   import: [
     { tag: "path", d: "M7 1.5v7M4.5 6L7 8.5 9.5 6" },
+    { tag: "path", d: "M1.5 9.5v3h11v-3" },
+  ],
+  export: [
+    { tag: "path", d: "M7 8.5v-7M4.5 4L7 1.5 9.5 4" },
     { tag: "path", d: "M1.5 9.5v3h11v-3" },
   ],
   clock: [

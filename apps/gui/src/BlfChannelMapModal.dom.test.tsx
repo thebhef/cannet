@@ -416,7 +416,10 @@ describe("BlfChannelMapModal", () => {
   // launcher behind the overlay and Tab walks the toolbar, not the
   // dialog.
   describe("focus and dismissal", () => {
-    it("moves focus into the dialog when it opens", () => {
+    it("focuses the Open button when it opens, so Enter confirms as-is", () => {
+      // The common case is "the defaults are right, just open it" — so
+      // the confirm button holds focus from the first keystroke and a
+      // bare Enter accepts, while Tab still reaches every control.
       render(
         <BlfChannelMapModal
           blfPath="/tmp/cap.blf"
@@ -426,8 +429,7 @@ describe("BlfChannelMapModal", () => {
           onCancel={noop}
         />,
       );
-      const dialog = screen.getByRole("dialog");
-      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open" }));
     });
 
     it("dismisses on Escape", () => {

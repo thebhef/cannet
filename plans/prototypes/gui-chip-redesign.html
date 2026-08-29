@@ -298,6 +298,7 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <symbol id="i-folder" viewBox="0 0 14 14"><path d="M1.5 3.5h4l1.5 1.5h5.5v6h-11z"/></symbol>
   <symbol id="i-save" viewBox="0 0 14 14"><path d="M2 2h8l2 2v8H2z"/><path d="M4.5 2v3h5V2M4.5 12V8h5v4"/></symbol>
   <symbol id="i-import" viewBox="0 0 14 14"><path d="M7 1.5v7M4.5 6L7 8.5 9.5 6"/><path d="M1.5 9.5v3h11v-3"/></symbol>
+  <symbol id="i-export" viewBox="0 0 14 14"><path d="M7 8.5v-7M4.5 4L7 1.5 9.5 4"/><path d="M1.5 9.5v3h11v-3"/></symbol>
   <symbol id="i-clock" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5"/><path d="M7 4v3.2l2 1.4"/></symbol>
   <symbol id="i-db" viewBox="0 0 14 14"><ellipse cx="7" cy="3" rx="5" ry="1.8"/><path d="M2 3v8c0 1 2.2 1.8 5 1.8s5-.8 5-1.8V3"/><path d="M2 7c0 1 2.2 1.8 5 1.8s5-.8 5-1.8"/></symbol>
   <symbol id="i-clear" viewBox="0 0 14 14"><path d="M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.7 8h5.6l.7-8"/></symbol>
@@ -406,6 +407,7 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <button class="chip" title="Save project"><svg><use href="#i-save"/></svg>Save</button>
   <span class="sep"></span>
   <button class="chip" id="importChip" title="Import trace… (BLF / MDF)"><svg><use href="#i-import"/></svg>Import</button>
+  <button class="chip" title="Save capture…"><svg><use href="#i-export"/></svg>Export</button>
   <span class="menu-wrap">
     <button class="chip" data-menu="recentMenu" title="Recent captures"><svg><use href="#i-clock"/></svg>Recent</button>
     <ul class="drop" id="recentMenu" hidden>
@@ -416,7 +418,6 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <button class="chip" title="Add DBC…"><svg><use href="#i-db-add"/></svg>DBC</button>
   <span class="sep"></span>
   <button class="chip" title="Clear capture"><svg><use href="#i-clear"/></svg>Clear</button>
-  <button class="chip" title="Save capture…"><svg><use href="#i-save"/></svg>Capture</button>
   <span class="sep"></span>
   <span class="menu-wrap">
     <button class="chip" data-menu="addMenu" title="Add a panel"><svg><use href="#i-plus"/></svg>Add&nbsp;▾</button>
@@ -834,8 +835,9 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
 </p>
 <div class="icon-grid">
   <div class="icon-cell"><svg><use href="#i-folder"/></svg><span><b>folder</b><span class="caption">Open project</span></span></div>
-  <div class="icon-cell"><svg><use href="#i-save"/></svg><span><b>save</b><span class="caption">Save project / Save capture</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-save"/></svg><span><b>save</b><span class="caption">Save project</span></span></div>
   <div class="icon-cell"><svg><use href="#i-import"/></svg><span><b>import</b><span class="caption">Import trace</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-export"/></svg><span><b>export</b><span class="caption">Save capture</span></span></div>
   <div class="icon-cell"><svg><use href="#i-clock"/></svg><span><b>clock</b><span class="caption">Recent captures</span></span></div>
   <div class="icon-cell"><svg><use href="#i-db"/></svg><span><b>db</b><span class="caption">Database panel</span></span></div>
   <div class="icon-cell"><svg><use href="#i-db-add"/></svg><span><b>db-add</b><span class="caption">Add DBC</span></span></div>
