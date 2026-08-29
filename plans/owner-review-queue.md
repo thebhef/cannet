@@ -34,21 +34,28 @@ that task's status log.
       `outcome_for` already did. Owner's call whether that ships as is
 - [x] 87 — BLF writer timestamp fidelity —
       `examples/time-origins/wall-clock-out-of-order.blf`
-- [ ] 89 — signal mapping panel **§** — `examples/colliding-dbcs/`,
+- [x] 89 — signal mapping panel **§** — `examples/colliding-dbcs/`,
       `examples/ev-zonal/`. **7 of 8 met, 1 partial**: the host-side
       half of criterion 2 is done, but the panel holds every row
       unpaged (~1 074 on `ev-zonal`) and re-derives its counts in JS.
-      Paging is task 112's exit criterion 4
+      Paging is task 112's exit criterion 4. Ticked 2026-08-29 after
+      two review rounds on the panel (candidate offers, the
+      recordable default pick, the status swatch); the paging residual
+      is 112's, not open here
 - [x] 90 — follow-ups from the 86 / 27 / 87 cycle **§** —
       `examples/time-origins/wall-clock-out-of-order.blf`. **All 3 live
       criteria met** (the fourth was retired into task 91 at the time)
 - [ ] 88 — bus assignment governs decode — `examples/legacy-project/`,
       `examples/colliding-dbcs/`, `examples/capture-features/`
-- [ ] 92 — one resolution rule — `examples/colliding-dbcs/`. Reviewed
+- [x] 92 — one resolution rule — `examples/colliding-dbcs/`. Reviewed
       2026-08-28; the open ask — undo/redo over signal-mapping
       selections — landed 2026-08-29 as task 129 (picks, remaps and
-      every RBS edit are undo steps; ADR 0058). Re-check with
-      `Mod+Z` over a pick ticks it
+      every RBS edit are undo steps; ADR 0058). Checked 2026-08-29
+      ("the undo/redo seems like it works"), and the same night's
+      review round hardened the rule itself: an ambiguous row's picker
+      offers one entry per definer, opens unresolved, and records a
+      pick of the load-order winner like any other (undoing a first
+      pick returns the row to unresolved)
 - [x] 91 — `frame_index_at_ns` on an unsorted store —
       `examples/time-origins/wall-clock-out-of-order.blf`
 - [x] 93 — source comments naming tasks, plus the CI lint **§**.
@@ -171,7 +178,7 @@ that task's status log.
       **Open:** `serverList.ts`'s two hooks carry the same launch race
       and need a ruling on what a malformed payload does — see that
       task's Blockers.
-- [ ] 113 — RBS is a grid: an RBS message's and a transmit tile's
+- [x] 113 — RBS is a grid: an RBS message's and a transmit tile's
       signals are rows the cursor reaches, Space on a signal row is
       inert (superseded 2026-08-28: Enter/Space on a signal row now
       land in its value cell, Enter toggles a message like Space, and
@@ -182,11 +189,12 @@ that task's status log.
       of exiting a fullscreened panel (queue items 1.6, 1.26, 1.13c and
       3.8 no longer exist post-reframe; their closures are in
       [task 113](tasks/0113-rbs-as-a-grid.md)'s status log) —
-      `examples/ev-zonal/`, `examples/ev-demo/`. **Open:** a combobox
-      dropdown still loses Escape to a global binding (it renders
-      through a portal, so it is outside the container the fix keys
-      on), and the two columned gridviews still carry no ARIA roles —
-      both in that task's Blockers.
+      `examples/ev-zonal/`, `examples/ev-demo/`. Checked 2026-08-29
+      after the Enter/Space/Shift+Tab round ("navigated around,
+      toggled items"). The two residuals — the portalled combobox
+      losing Escape to a global binding, and the columned gridviews'
+      missing ARIA roles — are roadmapped as
+      [task 128](tasks/0128-shared-layer-holdouts.md), not open here.
 - [x] 80 — a stopped capture costs nothing: an import that reaches its
       end freezes every trace element at the count the pump reports, and
       the by-id / signal window snapshot walks a bounded window in

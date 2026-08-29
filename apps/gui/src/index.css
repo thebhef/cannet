@@ -6537,6 +6537,19 @@ button.color-chip {
   border: 1px solid var(--border-wash);
   border-radius: 2px;
 }
+
+/* The rows' status cells (this grid and the RBS signals grid, whose
+   chip block below mirrors this one). The row grid top-aligns cells,
+   so the cell must stretch itself for the chip's own stretch to give
+   it row height — without this the empty swatch collapses to a
+   sliver. */
+.col-vs-status,
+.col-rs-status {
+  display: flex;
+  align-self: stretch;
+  align-items: stretch;
+  padding: 0.15rem 0;
+}
 .view-signals-chip--not-decoded {
   background: var(--danger-text);
 }
@@ -6616,15 +6629,6 @@ button.color-chip {
   padding: 1rem;
   color: var(--text-faint);
   text-align: center;
-}
-
-/* The status column's own words. A row's background belongs to the
-   gridview — cursor and selection are what paint a row (ADR 0044) — so
-   per-row state is said in a cell, here as the chip plus this label. */
-.view-signals-status-text {
-  margin-left: 0.35rem;
-  font-size: 0.78rem;
-  color: var(--text-muted);
 }
 
 .col-vs-bus,
@@ -6823,12 +6827,6 @@ button.color-chip {
 .rbs-signals-row[data-active] {
   outline: 1px solid var(--select-outline);
   outline-offset: -1px;
-}
-
-.rbs-signals-status-text {
-  margin-left: 0.35rem;
-  font-size: 0.78rem;
-  color: var(--text-muted);
 }
 
 .col-rs-bus,
