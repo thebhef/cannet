@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
+import { usePanelEditRecorder } from "./panelEditRecorder";
 import { listen } from "@tauri-apps/api/event";
 
 import type { ViewSignalCandidate, ViewSignalRow, ViewSignalStatus } from "./types";
@@ -228,12 +229,25 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
 
   // A source pick. No apply step and no local state: the host records
   // the choice and announces it as a DBC change, which the fetch above
-  // already listens for.
-  const onPick = useCallback((signal: string, dbcPath: string) => {
-    void invoke("set_signal_dbc_pick", { signal, dbcPath }).catch(() => {
-      /* best effort — the panel keeps showing the host's last answer */
-    });
-  }, []);
+  // already listens for. The undo step is recorded here (task 129) —
+  // the inverse is the decoder in force right now, read before the
+  // write erases it. A row nothing decodes has no inverse to express
+  // (there is no "un-pick" op), so that write goes unrecorded.
+  const recordEdit = usePanelEditRecorder();
+  const onPick = useCallback(
+    (row: ViewSignalRow, dbcPath: string) => {
+      if (row.servingDbc !== null) {
+        recordEdit({
+          undo: [{ kind: "pick", signal: row.id, dbcPath: row.servingDbc }],
+          redo: [{ kind: "pick", signal: row.id, dbcPath }],
+        });
+      }
+      void invoke("set_signal_dbc_pick", { signal: row.id, dbcPath }).catch(() => {
+        /* best effort — the panel keeps showing the host's last answer */
+      });
+    },
+    [recordEdit],
+  );
 
   // A remap pick: the candidate names a *different* signal, so what
   // has to change is every view's stored reference rather than which
@@ -253,6 +267,9 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
         messageName: candidate.messageName,
         unit: candidate.unit,
         dbcPath: candidate.dbcPath,
+        // The undo step's inverse for the pick this rewrite drops —
+        // read from the row before the write erases it (task 129).
+        fromPickedDbc: row.pickedDbc,
       });
     },
     [remapSignal],
@@ -506,7 +523,7 @@ interface ViewSignalRowLineProps {
   columns: readonly ViewSignalColumnState[];
   gridTemplate: string;
   rowDomId: (id: string) => string;
-  onPick: (signal: string, dbcPath: string) => void;
+  onPick: (row: ViewSignalRow, dbcPath: string) => void;
   onRemap: (row: ViewSignalRow, candidate: ViewSignalCandidate) => void;
   selected: boolean;
   onSelect: (id: string, e: React.MouseEvent) => void;
@@ -593,7 +610,7 @@ function ViewSignalRowLine({
                   );
                   if (candidate === undefined) return;
                   if (candidate.busId === row.busId && candidate.signalName === row.signalName) {
-                    onPick(row.id, candidate.dbcPath);
+                    onPick(row, candidate.dbcPath);
                     return;
                   }
                   onRemap(row, candidate);

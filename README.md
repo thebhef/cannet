@@ -1414,14 +1414,20 @@ rebindable or removable from the shortcuts panel like any other — and
 while a text field has focus they fall through to the field's own text
 editing undo instead.
 
-Undo never touches the bus. It reverses what a view looks like and
-nothing else: an RBS element's Run flag, a transmit message's
-schedule, the connection, and the capture itself sit outside it by
-design ([ADR 0050](docs/adr/0050-undo-covers-view-state-only.md)) —
+The chords also cover the **document edits** the View Signals and RBS
+panels make ([ADR 0058](docs/adr/0058-panel-document-edits-are-undoable.md)):
+a mapping pick, a remap (one step, every store it touched), an RBS
+enable at any level, a value override or its clear, a period override.
+Undoing a disable re-enables — on a running element that resumes the
+message, exactly as its checkbox would.
+
+Undo never reaches the runtime. Run/Stop, the connection, and the
+capture itself sit outside it by design
+([ADR 0050](docs/adr/0050-undo-covers-view-state-only.md) as amended) —
 undoing the removal of an RBS or transmit element brings its view back
-without re-arming it or re-adding its messages to the host, and undo
-never re-runs a host side effect. Zoom, pan, and scroll aren't covered
-either — they were never persisted view state to begin with.
+without re-arming it, and no chord starts or stops anything. Zoom,
+pan, and scroll aren't covered either — they were never persisted view
+state to begin with.
 
 ### Indefinite-length capture
 

@@ -412,11 +412,6 @@ trip over it.
   ruling implies: a way to *disable* a bus, so a deliberately unbound
   bus stops blocking Connect rather than forcing a binding it doesn't
   want. (Owner, task-117 review 2026-08-28.)
-- `[feat]` **Undo/redo should cover signal-mapping selections** — the
-  colliding-dbcs resolution picks (task 92's surface) are edits like
-  any other and should ride the undo stack. Blocks ticking queue row
-  92; to be tackled right after the current review cycle. (Owner,
-  2026-08-28.)
 - `[cleanup]` **`App.tsx`'s `handleSaveProjectRef` is written but never
   read** — the close-on-quit handler it was mirrored for reads
   `handleSaveAllRef` now, and the comment beside `dirtyRef` (~line 598)

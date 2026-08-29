@@ -26,6 +26,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
+import { usePanelEditRecorder } from "./panelEditRecorder";
 
 import type { RbsSignalRow } from "./types";
 import { useHostMirror } from "./useHostMirror";
@@ -161,27 +162,33 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
   });
   const allRows = rows ?? [];
 
-  const onCommit = useCallback(
-    (row: RbsSignalRow, value: string | number) => {
-      void invoke("rbs_set_signal", {
-        elementId,
-        target: { bus: row.busKey, ecu: row.ecuName, message: row.messageKey },
-        signal: row.signalName,
-        value,
-      }).catch(() => {});
+  // Every edit records its undo step (task 129) with the inverse read
+  // from the row before the write: the previous override text, or the
+  // clear when there was none.
+  const recordEdit = usePanelEditRecorder();
+  const editSignal = useCallback(
+    (row: RbsSignalRow, value: string | number | null) => {
+      const target = { bus: row.busKey, ecu: row.ecuName, message: row.messageKey };
+      const prev = row.overridden ? (row.overrideText ?? row.value) : null;
+      const base = { kind: "rbsSignal" as const, elementId, target, signal: row.signalName };
+      recordEdit({ undo: [{ ...base, value: prev }], redo: [{ ...base, value }] });
+      void invoke("rbs_set_signal", { elementId, target, signal: row.signalName, value }).catch(
+        () => {},
+      );
     },
-    [elementId],
+    [elementId, recordEdit],
+  );
+  const onCommit = useCallback(
+    (row: RbsSignalRow, value: string | number) => editSignal(row, value),
+    [editSignal],
   );
   const onClear = useCallback(
     (row: RbsSignalRow) => {
-      void invoke("rbs_set_signal", {
-        elementId,
-        target: { bus: row.busKey, ecu: row.ecuName, message: row.messageKey },
-        signal: row.signalName,
-        value: null,
-      }).catch(() => {});
+      // Clearing a row with no override moves nothing — no step.
+      if (!row.overridden) return;
+      editSignal(row, null);
     },
-    [elementId],
+    [editSignal],
   );
 
   // --- toolbar filters (nothing selected is no filter) ---
@@ -266,15 +273,24 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
     (id: string) => {
       const row = rowsRef.current.find((r) => r.id === id);
       if (row == null) return;
+      const enabled = row.status === "muted";
+      const base = {
+        kind: "rbsEnable" as const,
+        elementId,
+        bus: row.busKey,
+        ecu: row.ecuName,
+        message: row.messageKey,
+      };
+      recordEdit({ undo: [{ ...base, enabled: !enabled }], redo: [{ ...base, enabled }] });
       void invoke("rbs_set_enabled", {
         elementId,
         bus: row.busKey,
         ecu: row.ecuName,
         message: row.messageKey,
-        enabled: row.status === "muted",
+        enabled,
       }).catch(() => {});
     },
-    [elementId],
+    [elementId, recordEdit],
   );
   const grid = useGridview({
     adapter,

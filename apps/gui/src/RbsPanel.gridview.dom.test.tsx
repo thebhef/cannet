@@ -37,6 +37,8 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 import { RbsPanel } from "./RbsPanel";
+import { PanelEditRecorderContext } from "./panelEditRecorder";
+import type { PanelEditStep } from "./panelEditHistory";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
   ElementRegistryContext,
@@ -147,13 +149,17 @@ function renderPanel() {
     params: { elementId: "el" },
     api: { updateParameters: vi.fn() },
   } as unknown as Parameters<typeof RbsPanel>[0];
+  const recorded: PanelEditStep[] = [];
   render(
     <ProjectContext.Provider value={projectCtx}>
       <ElementRegistryContext.Provider value={registry}>
-        <RbsPanel {...props} />
+        <PanelEditRecorderContext.Provider value={(step) => recorded.push(step)}>
+          <RbsPanel {...props} />
+        </PanelEditRecorderContext.Provider>
       </ElementRegistryContext.Provider>
     </ProjectContext.Provider>,
   );
+  return { recorded };
 }
 
 function rowOf(text: string): HTMLElement {
@@ -298,6 +304,57 @@ describe("RbsPanel on the gridview", () => {
     expect(document.activeElement).toBe(tree);
     // The cursor is where it was, so navigation resumes straight away.
     expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
+  });
+
+  // task 129: every edit the panel makes records an undo step whose
+  // inverse was read from the tree before the write.
+  it("records an enable toggle with its inverse (task 129)", async () => {
+    const { recorded } = renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: " " });
+    expect(recorded).toEqual([
+      {
+        undo: [
+          { kind: "rbsEnable", elementId: "el", bus: "Powertrain", ecu: "BMS", message: "0x100", enabled: true },
+        ],
+        redo: [
+          { kind: "rbsEnable", elementId: "el", bus: "Powertrain", ecu: "BMS", message: "0x100", enabled: false },
+        ],
+      },
+    ]);
+  });
+
+  it("records a value override whose inverse is the clear, and a clear on nothing not at all", async () => {
+    const { recorded } = renderPanel();
+    await screen.findByText("PackStatus");
+    fireEvent.click(screen.getByLabelText("toggle 0x100"));
+    const cell = (await screen.findByLabelText("PackVoltage value")) as HTMLInputElement;
+    fireEvent.change(cell, { target: { value: "42" } });
+    fireEvent.blur(cell); // ValidatedInput commits when the edit ends
+    expect(recorded).toEqual([
+      {
+        undo: [
+          {
+            kind: "rbsSignal",
+            elementId: "el",
+            target: { bus: "Powertrain", ecu: "BMS", message: "0x100" },
+            signal: "PackVoltage",
+            value: null,
+          },
+        ],
+        redo: [
+          {
+            kind: "rbsSignal",
+            elementId: "el",
+            target: { bus: "Powertrain", ecu: "BMS", message: "0x100" },
+            signal: "PackVoltage",
+            value: 42,
+          },
+        ],
+      },
+    ]);
   });
 
   it("clicking inside a disclosed signal table leaves the message open", async () => {
