@@ -86,7 +86,9 @@ describe("StatusChip", () => {
 
   it("gives the connection chip one width across every state", () => {
     // Uniform width is within one chip's state set, sized to its
-    // longest state rather than padded out.
-    expect(declarations(".status-chip--connection")).toMatch(/width:/);
+    // longest state rather than padded out. The longest is "Not
+    // connected" beside a "0 / 3" count — 8.75rem fit only
+    // "Connecting…" and ellipsised it to "Not connec…".
+    expect(declarations(".status-chip--connection")).toContain("width: 10rem");
   });
 });

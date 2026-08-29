@@ -1029,12 +1029,12 @@ ul.status-bar-menu .status-chip {
   }
 }
 /* Uniform width within one chip's state set, sized to its longest
-   state ("Connecting…" beside "1 / 3") rather than padded out — so the
-   bar does not shift as a connection progresses. Uniformity is per
+   state ("Not connected" beside "0 / 3") rather than padded out — so
+   the bar does not shift as a connection progresses. Uniformity is per
    chip: forcing every chip to one width would spend the bar on short
    labels. */
 .status-chip--connection {
-  width: 8.75rem;
+  width: 10rem;
 }
 /* === end shared status chip === */
 
@@ -1154,6 +1154,10 @@ ul.status-bar-menu .status-chip {
   position: absolute;
   top: 100%;
   left: 0;
+  /* Sized by the entries, not the launcher: an abspos menu otherwise
+     shrinks to its containing block — the chip that opened it — and the
+     narrow split-Save chip truncated "Save As…" to "Sav…". */
+  width: max-content;
   margin: 4px 0 0 0;
   padding: 4px;
   list-style: none;

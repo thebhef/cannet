@@ -164,7 +164,7 @@ describe("bus colors persist only when customized", () => {
     });
 
     await act(async () => {
-      fireEvent.click(toolbarChip("Project panel"));
+      fireEvent.click(toolbarChip("Project"));
     });
     await waitFor(() => {
       if (!document.querySelector(".project-panel")) throw new Error("no project panel yet");

@@ -135,7 +135,7 @@ const findablePanelFocused = (ctx: CommandContext) =>
 /// as a second access path — same handler, same behaviour.
 export const COMMANDS: readonly CommandSpec[] = [
   { id: "project.open", label: "Open project…", category: "Project", bar: { label: "Open" } },
-  { id: "project.save", label: "Save project", category: "Project", bar: { label: "Save" } },
+  { id: "project.save", label: "Save project", category: "Project" },
   {
     id: "project.saveAs",
     label: "Save project as…",
@@ -215,7 +215,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     category: "Panels",
     bar: { label: "Generator" },
   },
-  { id: "project.saveAll", label: "Save all", category: "Project" },
+  // The bar's Save is Save All (project plus every dirty RBS — ADR
+  // 0028); the project-only save stays a palette action above.
+  { id: "project.saveAll", label: "Save all", category: "Project", bar: { label: "Save" } },
   {
     id: "project.clearColors",
     label: "Clear project colors…",
@@ -225,14 +227,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     id: "panel.show.project",
     label: "Show project panel",
     category: "Panels",
-    bar: { title: "Project panel" },
+    bar: { label: "Project", title: "Project panel" },
   },
   { id: "panel.show.systemMessages", label: "Show system messages", category: "Panels" },
   {
     id: "panel.show.projectGraph",
     label: "Show project graph",
     category: "Panels",
-    bar: { title: "Graph panel" },
+    bar: { label: "Graph", title: "Graph panel" },
   },
   {
     id: "panel.show.dbc",
@@ -257,7 +259,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     id: "panel.show.events",
     label: "Show events",
     category: "Panels",
-    bar: { title: "Events panel" },
+    bar: { label: "Events", title: "Events panel" },
   },
   {
     id: "panel.show.busHealth",

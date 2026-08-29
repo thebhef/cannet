@@ -15,8 +15,20 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 
 import { Toolbar } from "./Toolbar";
 import { COMMANDS } from "./commands";
+import css from "./index.css?raw";
 
 afterEach(cleanup);
+
+/// The declarations of the first top-level rule for `selector` (the
+/// `index.css?raw` idiom `DisclosureToggle.dom.test.tsx` establishes —
+/// jsdom does no layout, so geometry is asserted against the declared
+/// CSS text rather than a rendered box).
+function declarations(selector: string): string {
+  const start = css.indexOf(`\n${selector} {`);
+  expect(start, `no \`${selector}\` rule in index.css`).toBeGreaterThan(-1);
+  const open = css.indexOf("{", start);
+  return css.slice(open + 1, css.indexOf("}", open));
+}
 
 /// `[tooltip, label, command]`, left to right. A `null` label is the
 /// icon-only form; a `null` command is a chip that opens a menu rather
@@ -25,7 +37,7 @@ const BAR: readonly [string, string | null, string | null][] = [
   ["New project", "New", "project.new"],
   ["Open project…", "Open", "project.open"],
   ["Recent projects", "Projects", null],
-  ["Save project", "Save", "project.save"],
+  ["Save all", "Save", "project.saveAll"],
   ["More save actions", "▾", null],
   ["Import trace… (BLF / MDF)", "Import", "trace.import"],
   ["Save capture…", "Export", "capture.save"],
@@ -33,9 +45,9 @@ const BAR: readonly [string, string | null, string | null][] = [
   ["Clear capture", "Clear", "capture.clear"],
   ["Add a panel", "Add\u00a0\u25be", null],
   ["Database panel", "Database", "panel.show.dbc"],
-  ["Graph panel", null, "panel.show.projectGraph"],
-  ["Events panel", null, "panel.show.events"],
-  ["Project panel", null, "panel.show.project"],
+  ["Graph panel", "Graph", "panel.show.projectGraph"],
+  ["Events panel", "Events", "panel.show.events"],
+  ["Project panel", "Project", "panel.show.project"],
 ];
 
 /// The Add menu, top to bottom: `[label, command]`.
@@ -261,14 +273,25 @@ describe("Toolbar", () => {
 
   it("saves when Save is pressed — the disclosure never swallows the press", () => {
     // The owner's rule for the split chip: "clicking on the save button
-    // should just save". Pressing Save must dispatch `project.save` and
-    // open nothing; only the caret beside it opens the menu.
+    // should just save" — and save means Save All (project plus dirty
+    // RBS files, ADR 0028). Pressing Save must dispatch
+    // `project.saveAll` and open nothing; only the caret beside it
+    // opens the menu.
     const { onRun } = renderBar();
-    const save = barChips().find((c) => c.getAttribute("title") === "Save project")!;
+    const save = barChips().find((c) => c.getAttribute("title") === "Save all")!;
     expect(save).not.toHaveAttribute("aria-haspopup");
     fireEvent.click(save);
-    expect(onRun.mock.calls).toEqual([["project.save"]]);
+    expect(onRun.mock.calls).toEqual([["project.saveAll"]]);
     expect(document.querySelector(".save-split-menu")).toBeNull();
+  });
+
+  it("gives a chip menu its content's width, not its launcher's", () => {
+    // jsdom does no layout, so this is pinned against the declared CSS
+    // (the `index.css?raw` idiom). Without `width: max-content` an
+    // absolutely-positioned menu shrinks to its containing block — the
+    // chip that opened it — and the narrow split-Save chip truncated
+    // its menu's one entry to "Sav…".
+    expect(declarations(".chip-menu-list")).toContain("width: max-content");
   });
 
   it("offers Save As from the disclosure beside Save, and only from there", () => {

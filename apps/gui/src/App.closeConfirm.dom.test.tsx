@@ -16,7 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 type Handler = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Handler[]>();
@@ -168,6 +168,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 import { App } from "./App";
 import { hydrateSettings } from "./hostSettings";
 import { hydrateState } from "./hostState";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -289,5 +290,25 @@ describe("autosave_on_exit", () => {
     expect(screen.getByText(/unsaved changes to the project/i)).toBeInTheDocument();
     expect(saveCalls).toHaveLength(0);
     expect(windowDestroy).not.toHaveBeenCalled();
+  });
+});
+
+describe("the toolbar's Save", () => {
+  // The owner's rule: the Save button saves *all* — the project plus
+  // every dirty `.cannet_rbs` (ADR 0028's Save All), not the project
+  // alone. `project.save` stays in the palette as the project-only
+  // action.
+  it("writes the project and every dirty RBS in one press", async () => {
+    knobs.lastProject = "C:/fake/project.cannet_prj"; // projectPath real — no picker
+    await hydrateState();
+    await boot();
+
+    await act(async () => {
+      fireEvent.click(toolbarChip("Save"));
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(saveCalls).toContain("save_project");
+    expect(saveCalls).toContain("rbs_save");
   });
 });

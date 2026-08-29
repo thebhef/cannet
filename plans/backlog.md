@@ -406,6 +406,11 @@ trip over it.
   other surfaces that default to "every bus" via a wildcard
   (sink/source selectors, transmit fan-out, etc.).
 
+- `[cleanup]` **`App.tsx`'s `handleSaveProjectRef` is written but never
+  read** — the close-on-quit handler it was mirrored for reads
+  `handleSaveAllRef` now, and the comment beside `dirtyRef` (~line 598)
+  still names it. Drop the ref and fix the comment. (Noticed 2026-08-28
+  while pointing the toolbar's Save at Save All.)
 - `[ux]` **The goto-time prompt (`Mod+T`) should parse richer input and
   preview what it understood.** Accept `dd:hh:mm:ss`-style durations
   (today it takes seconds), and date/times; while typing, show the
