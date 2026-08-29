@@ -848,6 +848,25 @@ describe("TracePanel authoring an event from a trace row (ADR 0056)", () => {
     restore();
   });
 
+  it("treats a disclosed signal line as its message — create action, no sources picker", async () => {
+    // The signal lines render as siblings of their row (the task-95
+    // restructure), so without their own handler a right-click fell
+    // through to the panel and opened the sources picker — the one
+    // menu the owner ruled off every row (2026-08-28).
+    const f = frame(0, 0x1a2, false, "BMS_Status");
+    f.decoded = {
+      name: "BMS_Status",
+      signals: [{ name: "SoC", value: 87, unit: "%" }],
+    } as unknown as (typeof f)["decoded"];
+    const { restore } = renderFrames([f]);
+    fireEvent.click(await frameRowEl()); // disclose the signals
+    await waitFor(() => expect(document.querySelector(".trace-content-row")).toBeTruthy());
+    fireEvent.contextMenu(document.querySelector(".trace-content-row")!);
+    expect(createItem()?.textContent).toBe("Create event from BMS_Status");
+    expect(document.querySelector(".sources-context-menu")).not.toBeInTheDocument();
+    restore();
+  });
+
   it("offers no create action on a right-click that hit no frame row", async () => {
     const { restore } = renderFrames([frame(0, 0x1a2, false, "BMS_Status")]);
     await frameRowEl();

@@ -7613,9 +7613,12 @@ describe("PlotPanel when the database behind a signal is unassigned", () => {
 // prints, the probe would be measuring the harness rather than the axis.
 //
 // Owner's 0.9.0 report: enum labels appeared down the y axis, which
-// blows the gutter out for long names and paints a tick per table row
-// for a table with hundreds of them. The overlay already names the
-// value at the point of interest, so the axis carries raw numbers only.
+// blew the gutter out for long names and painted a tick per table row
+// for a table with hundreds of them. The density fix (splits thinned to
+// uPlot's own increment) and the measured gutter solved both halves, so
+// the names came back by owner ruling 2026-08-28: the axis speaks the
+// table's words, sized only to the labels actually drawn — bare codes
+// on the gutter said nothing the table doesn't say better.
 describe("single-enum y axis", () => {
   const ENUM3 = [
     { raw: 0, label: "Idle" },
@@ -7715,16 +7718,16 @@ describe("single-enum y axis", () => {
     }
   });
 
-  it("labels its ticks with the raw number alone — no enum text", async () => {
+  it("labels its ticks with the table's names (owner ruling 2026-08-28)", async () => {
     const restore = stubSize();
     const unmeasure = stubMeasure();
     try {
       const { splits, values, gutter } = await enumAxis("EngineSpeed", ENUM3, 0.25);
       expect(splits).toEqual([0, 1, 2]);
-      expect(values).toEqual(["0", "1", "2"]);
-      // The gutter is measured from what is drawn, so a numeric tick
-      // set sits at the same floor a numeric axis does — not the fixed
-      // 80 px the labelled axis used to reserve.
+      expect(values).toEqual(["Idle", "Run", "Fault"]);
+      // The gutter is measured from what is drawn, so short names sit
+      // at the same floor a numeric axis does — not the fixed 80 px
+      // the pre-thinning labelled axis used to reserve.
       expect(gutter).toBe(52);
     } finally {
       unmeasure();
@@ -7741,10 +7744,11 @@ describe("single-enum y axis", () => {
       const { splits, values, gutter } = await enumAxis("LimitNominal", ENUM300, 25);
       expect(splits!.length).toBeLessThanOrEqual(13);
       expect(splits!.length).toBeGreaterThan(1);
-      // Every label a bare integer: no quotes, no name, whatever the
-      // table calls the value.
-      expect(values!.every((v) => /^\d+$/.test(v))).toBe(true);
-      expect(gutter).toBe(52);
+      // Every drawn tick reads the table's name for its code…
+      expect(values!.every((v) => /^LongishStateName_\d+$/.test(v))).toBe(true);
+      // …and the gutter pays only for the longest label *drawn* (20
+      // chars at the stub's 6 px + 18 px trim), not the whole table.
+      expect(gutter).toBe(138);
     } finally {
       unmeasure();
       restore();

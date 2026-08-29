@@ -262,6 +262,20 @@ export function logDecadeSplits(r: ResolvedAxisRange | null): number[] {
  * stacks three labels in the bottom 1 % of the axis, which is the
  * crowding this is here to prevent.
  */
+/// Labels for a single-enum axis's ticks: the `VAL_` name each drawn
+/// code decodes to, the bare code only where the table names none.
+/// The axis is the reader's key to the drawn codes, so it speaks the
+/// table's words rather than its numbers (owner ruling 2026-08-28) —
+/// the gutter is sized from what is actually drawn, so the width cost
+/// is only ever the labels that fit the current tick density.
+export function enumTickLabels(
+  splits: readonly number[],
+  table: readonly { raw: number; label: string }[],
+): string[] {
+  const byRaw = new Map(table.map((r) => [r.raw, r.label]));
+  return splits.map((v) => byRaw.get(v) ?? String(Math.round(v)));
+}
+
 export function enumTickSplits(
   raws: readonly number[],
   scaleMin: number,

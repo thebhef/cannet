@@ -10,7 +10,9 @@ import type { TransientStatus } from "./statusLine";
 /// after the bar has returned to rest (`transient` went `null`).
 ///
 /// `emit` is injected rather than calling Tauri directly so the hook is
-/// pure of the IPC and unit-testable.
+/// pure of the IPC and unit-testable. A notice's identity includes its
+/// `seq`, so a repeated attempt that produces the same words re-fires
+/// by bumping it.
 export function useTransientStatus(
   resting: string,
   transient: TransientStatus | null,
@@ -24,7 +26,8 @@ export function useTransientStatus(
   emitRef.current = emit;
   const transientRef = useRef(transient);
   transientRef.current = transient;
-  const key = transient != null ? `${transient.level} ${transient.text}` : null;
+  const key =
+    transient != null ? `${transient.level} ${transient.seq ?? 0} ${transient.text}` : null;
   useEffect(() => {
     if (key == null) {
       // At rest — let a later identical notice re-fire and re-log. Don't

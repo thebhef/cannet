@@ -30,6 +30,7 @@ import {
 } from "./plotData";
 import {
   denormalizeOnAxis,
+  enumTickLabels,
   enumTickSplits,
   logDecadeSplits,
   resolveAxisRange,
@@ -2417,16 +2418,17 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       ? {
           // Ticks sit on the table's raw codes — the only positions on
           // this axis that name anything — and are labelled with the
-          // code alone. The value's *name* is the tile overlay's job:
-          // it says what is held where the reader is looking, so
-          // repeating it down the gutter buys nothing and costs the
-          // width of the longest name in the table.
+          // `VAL_` names, not the codes (owner ruling 2026-08-28): the
+          // axis is the reader's key to what is drawn, and a bare
+          // number on the gutter says nothing the table doesn't say
+          // better. The gutter is sized from the labels drawn at the
+          // current tick density, so a long table costs only what fits.
           ...axisCommon,
           // Thinned to the density uPlot picked for this axis's height,
           // so a several-hundred-entry table draws the ticks that fit
           // rather than one per row.
           splits: (_u, _idx, min, max, incr) => enumTickSplits(enumRaws, min, max, incr),
-          values: (_u, splits) => splits.map((v) => String(Math.round(v))),
+          values: (_u, splits) => enumTickLabels(splits, valueTable ?? []),
           // Sized from the numbers actually drawn, like the numeric
           // branch below — the labelled axis reserved a fixed 80 px for
           // text it no longer draws.
