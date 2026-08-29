@@ -43,11 +43,11 @@ const BAR: readonly [string, string | null, string | null][] = [
   ["Save capture…", "Export", "capture.save"],
   ["Recent captures", "Recent", null],
   ["Clear capture", "Clear", "capture.clear"],
-  ["Add a panel", "Add\u00a0\u25be", null],
-  ["Database panel", "Database", "panel.show.dbc"],
-  ["Graph panel", "Graph", "panel.show.projectGraph"],
-  ["Events panel", "Events", "panel.show.events"],
   ["Project panel", "Project", "panel.show.project"],
+  ["Graph panel", "Graph", "panel.show.projectGraph"],
+  ["Database panel", "Database", "panel.show.dbc"],
+  ["Events panel", "Events", "panel.show.events"],
+  ["Add a panel", "Add\u00a0\u25be", null],
 ];
 
 /// The Add menu, top to bottom: `[label, command]`.

@@ -101,7 +101,11 @@ that task's status log.
       met**. Note the job count moves: 110 measured six, CI defined
       seven once `rustdoc` joined, and task 118 took
       `comment-references` back out — CI is six again (see below)
-- [ ] 108 — the chip language (prototype durable, maintained in-repo)
+- [x] 108 — the chip language (prototype durable, maintained in-repo).
+      Signed off with the toolbar 2026-08-28: the chip language is the
+      bar, and `plans/prototypes/gui-chip-redesign.html` has been
+      maintained in lockstep through every chip change of this review
+      cycle — the durability criterion demonstrated, not just promised
 - [ ] 107 — events point at signals (both open criteria dispositioned:
       unknown-key round-trip closed by task 122, which added the
       passthrough field on `Note`; file-backed subject → backlog) —
@@ -118,7 +122,9 @@ that task's status log.
       [task 117](tasks/0117-refuse-to-connect-without-a-bound-bus.md))
 - [ ] 114 — one name per thing: the bar draws the command registry's
       words, its Database chip shows the view, and a virtual bus reads
-      `virtual bus` in the Adapter column (queue items 1.37, 1.33b and
+      `virtual bus` in the Adapter column. **The two toolbar halves are
+      signed off with the bar (2026-08-28); only the Adapter-column
+      reading remains to eyeball** (queue items 1.37, 1.33b and
       1.17 no longer exist post-reframe; their closures are in
       [task 114](tasks/0114-one-name-per-thing.md)'s status log) —
       `examples/capture-features/`

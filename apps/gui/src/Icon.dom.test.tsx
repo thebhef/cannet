@@ -60,7 +60,7 @@ describe("Icon registry", () => {
       "fit-x",
       "fit-y",
       "search",
-      "cursors",
+      "cursors-clear",
       "cursor-x",
       "cursor-y",
       "note",

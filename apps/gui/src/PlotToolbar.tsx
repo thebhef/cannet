@@ -122,11 +122,10 @@ const POINTS_CYCLE: readonly { mode: ShowPointsMode; label: string }[] = [
   { mode: "on", label: "Points: On" },
 ];
 
-const POINTS_TITLE =
-  "draw sample points on every series: auto = let uPlot decide based on sample density; off = never draw points; on = always draw points";
+const POINTS_TITLE = "draw sample points: auto (by density), off, or on";
 
 const SOLO_TITLE =
-  "solo: show only the series whose bus/ecu/message/signal path matches this regex — the same dialect an area's pattern filter speaks (case-sensitive, partial, so a bare name matches too). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back. Right-click for the match list, and tick any subset of it to show exactly those.";
+  "solo: show only series whose bus/ecu/message/signal path matches this regex (the pattern-filter dialect). Clear or Escape restores; right-click for the match list.";
 
 /// The whole of what the read-out's numbers mean, in the order it
 /// prints them.
@@ -195,7 +194,7 @@ export function plotToolbarItems({
         <ChipButton
           icon="fit-y"
           ariaLabel="Fit Y"
-          title="fit each area's y-axis to its currently visible data — useful after zooming in"
+          title="fit each y axis to its visible data"
           onPress={onFitY}
         />
       ),
@@ -237,7 +236,7 @@ export function plotToolbarItems({
           <ChipButton
             label="‹"
             ariaLabel="previous solo match"
-            title="previous page (PgUp) — the cycle runs all → page 1 → … → page N → all"
+            title="previous page (PgUp)"
             // Nothing to step through: a pattern that captures nothing
             // filters flat, and one that matches nothing has no pages
             // either. Disabled rather than silently inert.
@@ -248,7 +247,7 @@ export function plotToolbarItems({
             className={`plot-solo-pos${solo.positionLabel === "no matches" ? " plot-solo-pos-empty" : ""}`}
             label={solo.positionLabel}
             ariaLabel="solo position"
-            title="what solo has on show — the whole matched set, a page of groups, or the subset you ticked — and how many of the matches that is; click for the match list"
+            title="what solo has on show; click for the match list"
             // The same list the control's own right-click opens:
             // left-click is the more discoverable gesture for "show me
             // what matched", so it opens it too.
@@ -258,7 +257,7 @@ export function plotToolbarItems({
           <ChipButton
             label="›"
             ariaLabel="next solo match"
-            title="next page (PgDn) — the cycle runs all → page 1 → … → page N → all"
+            title="next page (PgDn)"
             disabled={solo.pages === 0}
             onPress={() => solo.onStep(1)}
           />
@@ -274,7 +273,7 @@ export function plotToolbarItems({
         <ChipButton
           icon="x"
           ariaLabel="clear solo"
-          title="clear solo — every series goes back to its own visibility"
+          title="clear solo"
           onPress={solo.onClear}
         />
       ),
@@ -346,9 +345,9 @@ export function plotToolbarItems({
       key: "clear-cursors",
       node: (
         <ChipButton
-          icon="cursors"
+          icon="cursors-clear"
           ariaLabel="Clear Cursors"
-          title="remove all placed cursors"
+          title="clear measurement cursors"
           onPress={onClearCursors}
         />
       ),

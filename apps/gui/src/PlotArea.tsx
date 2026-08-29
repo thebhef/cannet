@@ -3860,7 +3860,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           {!headingOnly && (
             <button
               className="plot-area-fit-y"
-              title="fit y to the currently visible data — useful when zoomed in and you want the visible region to fill the canvas height"
+              title="fit y to the visible data"
               onClick={(e) => {
                 e.stopPropagation();
                 fitY();

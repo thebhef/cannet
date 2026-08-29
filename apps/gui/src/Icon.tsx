@@ -72,7 +72,7 @@ export const ICON_NAMES = [
   "fit-x",
   "fit-y",
   "search",
-  "cursors",
+  "cursors-clear",
   "cursor-x",
   "cursor-y",
   "note",
@@ -187,12 +187,18 @@ export const ICON_REGISTRY: Readonly<Record<IconName, readonly IconShape[]>> = {
     { tag: "circle", cx: 6, cy: 6, r: 4 },
     { tag: "path", d: "M9 9l3.5 3.5" },
   ],
-  cursors: [
-    { tag: "path", d: "M4.5 1.5v11M9.5 1.5v11" },
-    { tag: "path", d: "M2 7h11" },
+  // The cursor family is dashed — the oscilloscope idiom for a
+  // measurement cursor over the trace; clear crosses the pair out.
+  "cursors-clear": [
+    { tag: "path", d: "M4.5 1.5v2.6M4.5 5.7v2.6M4.5 9.9v2.6M9.5 1.5v2.6M9.5 5.7v2.6M9.5 9.9v2.6" },
+    { tag: "path", d: "M1.5 12.5L12.5 1.5" },
   ],
-  "cursor-x": [{ tag: "path", d: "M4.5 1.5v11M9.5 1.5v11" }],
-  "cursor-y": [{ tag: "path", d: "M1.5 4.5h11M1.5 9.5h11" }],
+  "cursor-x": [
+    { tag: "path", d: "M4.5 1.5v2.6M4.5 5.7v2.6M4.5 9.9v2.6M9.5 1.5v2.6M9.5 5.7v2.6M9.5 9.9v2.6" },
+  ],
+  "cursor-y": [
+    { tag: "path", d: "M1.5 4.5h2.6M5.7 4.5h2.6M9.9 4.5h2.6M1.5 9.5h2.6M5.7 9.5h2.6M9.9 9.5h2.6" },
+  ],
   note: [
     { tag: "path", d: "M2.5 1.5h9v8l-3 3h-6z" },
     { tag: "path", d: "M8.5 12.5v-3h3" },
