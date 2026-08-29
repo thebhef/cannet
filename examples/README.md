@@ -13,6 +13,10 @@ Three example *projects* live alongside this trace fixture:
   fixture (150+ messages each, one message with 600 multiplexed
   signals) for exercising DBC-view search and scaling. Both projects
   also carry the DBC long-name extension and over-long `VAL_` labels.
+- [`common-scale/`](common-scale/README.md) — a 10 s capture and project
+  that deterministically reproduce task 98's defect (a -200..0 A signal
+  rendered as -1.5..0 on a common y scale) on a pre-fix build, and show
+  the one-axis-one-scale behaviour on a fixed one.
 - [`extrapolation/`](extrapolation/README.md) — a 20 s synthetic capture
   and its project, carrying one series per *extrapolated* shape a plot
   can draw (ADR 0026): a dashed tail, a dashed interior stall, a

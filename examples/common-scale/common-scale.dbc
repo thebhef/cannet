@@ -1,0 +1,46 @@
+VERSION "cannet-common-scale 1.0"
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: FIXTURE
+
+BO_ 256 MixedPair: 8 FIXTURE
+ SG_ SmallVolts : 0|16@1+ (0.0001,-1.5) [-1.5|0] "V" FIXTURE
+ SG_ BigAmps : 16|16@1+ (0.01,-200) [-200|0] "A" FIXTURE
+
+BO_ 257 BarePair: 8 FIXTURE
+ SG_ SmallBare : 0|16@1+ (0.0001,-1.5) [-1.5|0] "" FIXTURE
+ SG_ BigBare : 16|16@1+ (0.01,-200) [-200|0] "" FIXTURE
+
+CM_ BO_ 256 "The owner's 0.9.0 observation, as data: a volts signal spanning -1.5..0 listed before an amps signal spanning -200..0. Pre-fix, unified mode drew BigAmps against SmallVolts's axis labels.";
+CM_ BO_ 257 "The same amplitudes with no units at all — the shape that also broke per-unit mode, and the likelier one in the wild (a DBC that declares no unit).";
