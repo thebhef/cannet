@@ -312,12 +312,20 @@ export function remapElementPatch(
   }
 }
 
+/// The slice of a remap the pool rewrite reads — also the undo op's
+/// own shape (`transmitCalcRetarget` carries exactly these fields plus
+/// nothing, so a chord can never carry frame content).
+export type TransmitCalcRetarget = Pick<
+  SignalRemap,
+  "messageId" | "extended" | "from" | "to"
+> & { busId: string | null };
+
 /// The transmit frames whose calculated fields (ADR 0027) name the old
 /// signal, rewritten — only the ones that actually changed, so the
 /// caller writes back exactly those.
 export function remapTransmitFrames(
   frames: readonly TransmitFrameConfig[],
-  remap: SignalRemap,
+  remap: TransmitCalcRetarget,
 ): TransmitFrameConfig[] {
   // A bus re-point moves no transmit frame: the frame sits on the bus
   // it transmits to, which is not the reference being repaired, and its
@@ -326,7 +334,7 @@ export function remapTransmitFrames(
   const out: TransmitFrameConfig[] = [];
   for (const frame of frames) {
     if (
-      (frame.busId ?? null) !== remap.fromBusId ||
+      (frame.busId ?? null) !== remap.busId ||
       frame.canId !== remap.messageId ||
       frame.extended !== remap.extended ||
       frame.calc == null
@@ -393,17 +401,36 @@ export async function remapSignal(
     undoOps.push({ kind: "signalColor", key: fromKey, color });
     undoOps.push({ kind: "signalColor", key: toKey, color: null });
   }
+  // The pool's calc-field retarget. Recorded as a *rename
+  // instruction*, never as frame snapshots: the restore re-reads the
+  // pool and moves only the calc target names, so the chord cannot
+  // carry payload bytes, modes or periods (ADR 0058 — undo never
+  // writes what goes on the wire), and transmit-panel edits made in
+  // between survive an undo.
+  const retarget: TransmitCalcRetarget = {
+    busId: remap.fromBusId,
+    messageId: remap.messageId,
+    extended: remap.extended,
+    from: remap.from,
+    to: remap.to,
+  };
   const pool = await invoke<TransmitFrameRecord[]>("list_transmit_frames").catch(
     () => [] as TransmitFrameRecord[],
   );
-  for (const frame of remapTransmitFrames(pool.map(recordToConfig), remap)) {
-    const before = pool.find((r) => r.id === frame.id);
-    const after = configToFrame(frame);
-    if (before !== undefined) {
-      undoOps.push({ kind: "transmitFrame", id: frame.id, frame: configToFrame(recordToConfig(before)) });
-      redoOps.push({ kind: "transmitFrame", id: frame.id, frame: after });
-    }
-    await invoke("set_transmit_frame", { id: frame.id, frame: after }).catch(() => {});
+  const retargeted = remapTransmitFrames(pool.map(recordToConfig), retarget);
+  for (const frame of retargeted) {
+    await invoke("set_transmit_frame", { id: frame.id, frame: configToFrame(frame) }).catch(
+      () => {},
+    );
+  }
+  if (retargeted.length > 0) {
+    redoOps.push({ kind: "transmitCalcRetarget", ...retarget });
+    undoOps.push({
+      kind: "transmitCalcRetarget",
+      ...retarget,
+      from: retarget.to,
+      to: retarget.from,
+    });
   }
 
   // The per-signal database choice: record the chosen definition's
@@ -420,6 +447,22 @@ export async function remapSignal(
   // One undo step for the whole host half; the element half coalesces
   // with it through the gesture the caller opened (task 129).
   stores.recordEdit?.({ undo: undoOps, redo: redoOps });
+}
+
+/// Apply a recorded calc-field retarget to the pool **as it is now** —
+/// the `transmitCalcRetarget` op's dispatch (`App.dispatchPanelEdit`).
+/// Reads the pool at restore time and rewrites only the calc target
+/// names; whatever bytes, modes and periods the rows hold today ride
+/// through untouched.
+export async function retargetTransmitCalc(op: TransmitCalcRetarget): Promise<void> {
+  const pool = await invoke<TransmitFrameRecord[]>("list_transmit_frames").catch(
+    () => [] as TransmitFrameRecord[],
+  );
+  for (const frame of remapTransmitFrames(pool.map(recordToConfig), op)) {
+    await invoke("set_transmit_frame", { id: frame.id, frame: configToFrame(frame) }).catch(
+      () => {},
+    );
+  }
 }
 
 /// **The accept**: adopting the decoded values as the new record — a

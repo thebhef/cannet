@@ -34,16 +34,10 @@ export type PanelEditOp =
       message: string | null;
       enabled: boolean;
     }
-  /// `rbs_set_signal` — a signal override (`value`) or its clear
-  /// (`value: null`). The inverse is the previous override text, or the
-  /// clear when there was none.
-  | {
-      kind: "rbsSignal";
-      elementId: string;
-      target: { bus: string; ecu: string; message: string };
-      signal: string;
-      value: string | number | null;
-    }
+  // No op for `rbs_set_signal`: a value override is deliberately
+  // outside undo — the boundary is project contents *except values*
+  // (ADR 0058; owner ruling 2026-08-29). A chord must never change
+  // what a message carries on the bus.
   /// `rbs_set_period` — a message's period override (`periodMs`) or its
   /// clear (`null`, back to `GenMsgCycleTime`).
   | {
@@ -52,10 +46,20 @@ export type PanelEditOp =
       target: { bus: string; ecu: string; message: string };
       periodMs: number | null;
     }
-  /// `set_transmit_frame` — one pool entry replaced whole (the remap's
-  /// rewrite). `frame` is the command's own wire shape, carried opaque:
-  /// the op is a dispatch, not a place to re-model the pool.
-  | { kind: "transmitFrame"; id: string; frame: unknown }
+  /// The remap's one reach into the transmit pool: rename which signal
+  /// the matching frames' calculated fields (counter / CRC) follow.
+  /// Deliberately a *rename instruction*, never a frame snapshot — the
+  /// restore reads the pool as it is then and rewrites only the calc
+  /// target names, so no chord can carry payload bytes, modes or
+  /// periods (ADR 0058: undo never writes what goes on the wire).
+  | {
+      kind: "transmitCalcRetarget";
+      busId: string | null;
+      messageId: number;
+      extended: boolean;
+      from: string;
+      to: string;
+    }
   /// The project-level signal-colour override (`null` clears) — the
   /// remap moves a colour with the rename, so its undo moves it back.
   | { kind: "signalColor"; key: string; color: string | null };

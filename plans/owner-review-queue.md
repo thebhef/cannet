@@ -49,8 +49,9 @@ that task's status log.
       `examples/colliding-dbcs/`, `examples/capture-features/`
 - [x] 92 — one resolution rule — `examples/colliding-dbcs/`. Reviewed
       2026-08-28; the open ask — undo/redo over signal-mapping
-      selections — landed 2026-08-29 as task 129 (picks, remaps and
-      every RBS edit are undo steps; ADR 0058). Checked 2026-08-29
+      selections — landed 2026-08-29 as task 129 (picks, remaps, RBS
+      enables and periods are undo steps; values are deliberately out,
+      per the same-day owner ruling — ADR 0058). Checked 2026-08-29
       ("the undo/redo seems like it works"), and the same night's
       review round hardened the rule itself: an ambiguous row's picker
       offers one entry per definer, opens unresolved, and records a

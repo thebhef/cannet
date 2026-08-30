@@ -3,8 +3,10 @@
 Status: accepted (2026-08-09); amended 2026-08-23 — an event's references are in;
 amended by [ADR 0058](0058-panel-document-edits-are-undoable.md)
 (2026-08-29) — the Signal and RBS panels' document edits are in, as
-step/inverse pairs; the boundary is now document edits vs runtime
-actions, not view state vs host state
+step/inverse pairs, **except values** (an RBS value override never
+records; no chord changes what a message carries on the bus); the
+boundary is now project contents minus values vs runtime actions, not
+view state vs host state
 
 ## Context
 

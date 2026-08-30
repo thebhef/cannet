@@ -162,21 +162,19 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
   });
   const allRows = rows ?? [];
 
-  // Every edit records its undo step (task 129) with the inverse read
-  // from the row before the write: the previous override text, or the
-  // clear when there was none.
+  // The recorder serves the *enable* toggle below; a value edit is
+  // deliberately unrecorded — undo covers project contents *except
+  // values* (ADR 0058), so no chord ever changes what a message
+  // carries on the bus.
   const recordEdit = usePanelEditRecorder();
   const editSignal = useCallback(
     (row: RbsSignalRow, value: string | number | null) => {
       const target = { bus: row.busKey, ecu: row.ecuName, message: row.messageKey };
-      const prev = row.overridden ? (row.overrideText ?? row.value) : null;
-      const base = { kind: "rbsSignal" as const, elementId, target, signal: row.signalName };
-      recordEdit({ undo: [{ ...base, value: prev }], redo: [{ ...base, value }] });
       void invoke("rbs_set_signal", { elementId, target, signal: row.signalName, value }).catch(
         () => {},
       );
     },
-    [elementId, recordEdit],
+    [elementId],
   );
   const onCommit = useCallback(
     (row: RbsSignalRow, value: string | number) => editSignal(row, value),
@@ -184,7 +182,7 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
   );
   const onClear = useCallback(
     (row: RbsSignalRow) => {
-      // Clearing a row with no override moves nothing — no step.
+      // Clearing a row with no override moves nothing.
       if (!row.overridden) return;
       editSignal(row, null);
     },

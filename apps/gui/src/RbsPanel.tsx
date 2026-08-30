@@ -932,11 +932,10 @@ function SignalRow({
   rowProps,
   onMenu,
 }: SignalRowProps) {
-  const recordEdit = usePanelEditRecorder();
+  // Deliberately unrecorded: undo covers project contents *except
+  // values* (ADR 0058) — a chord must never change what a message
+  // carries on the bus.
   const editSignal = (value: string | number | null) => {
-    const prev = s.overridden ? (s.overrideText ?? s.value) : null;
-    const base = { kind: "rbsSignal" as const, elementId, target, signal: s.name };
-    recordEdit({ undo: [{ ...base, value: prev }], redo: [{ ...base, value }] });
     void invoke("rbs_set_signal", {
       elementId,
       target,
