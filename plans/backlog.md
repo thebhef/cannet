@@ -1029,6 +1029,16 @@ next planning pass.
   designing before it is implemented. Stopgap already shipped: the kind
   no longer has its own filter row, and files under Notes.
   (Owner, 2026-08-24.)
+- `[gui]` **The project dirty flag counts view-state churn, so it is
+  almost always set.** Opening panels, moving columns, toggling filters
+  — all mark the project dirty, so the disk watch's silent-apply path
+  (clean + disconnected) is practically unreachable: every external
+  edit lands as the changed-on-disk notice, and the dirty marker
+  carries no signal about *document* changes. Wants a split between
+  view-state dirt and document dirt (or view churn excluded from the
+  flag) — task-112-adjacent, where view state and document state get
+  distinct owners. (Owner observation, 2026-08-30: "it pretty much
+  always is [dirty]".)
 - `[gui]` **Transmit add/remove may eventually join undo — disabled on
   re-add.** The transmit panel has no undo (ADR 0058: values never
   ride a chord). The owner's noted future direction: row / element add

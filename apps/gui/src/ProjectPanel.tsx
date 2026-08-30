@@ -31,6 +31,7 @@ import {
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_ID,
   elementPanelComponent,
+  elementPanelId,
   showServersPanel,
 } from "./dockLayout";
 import {
@@ -251,7 +252,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
       return;
     }
     containerApi.addPanel({
-      id: `${component}-${el.id}`,
+      id: elementPanelId(component, el.id, containerApi.panels.map((p) => p.id)),
       component,
       title: elementLabel(el),
       params:
