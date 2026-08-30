@@ -289,6 +289,43 @@ describe("logical-bus row marker", () => {
     expect(screen.queryByTestId("bus-applied-b1")).not.toBeInTheDocument();
   });
 
+  it("picks up a change emitted while the listener was still registering", async () => {
+    // `listen` is async. A bus that connects in the gap between the
+    // mount snapshot and the subscription going live emits into a
+    // webview nobody is subscribed in, and — since a settled bus then
+    // never transitions again — the row would read "connecting…" for
+    // the rest of the session. The mirror closes it by re-reading once
+    // the listener is attached.
+    seedHost({ b1: { kind: "connecting" } });
+    let register: (() => void) | undefined;
+    listenMock.mockImplementation((async (name: string) => {
+      if (name !== "connection-states-changed") return () => {};
+      await new Promise<void>((resolve) => {
+        register = resolve;
+      });
+      return () => {};
+    }) as never);
+
+    renderPanel({
+      buses: [{ id: "b1", name: "Powertrain" }],
+      bindings: [{ server: "local", interface: "can0", bus_id: "b1" }],
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("bus-conn-state-b1")).toHaveTextContent("connecting…"),
+    );
+    await waitFor(() => expect(register).toBeDefined());
+
+    // The host settles the bus while the registration is still in
+    // flight, so the event reaches nobody.
+    seedHost({ b1: { kind: "connected", applied: null } });
+    await act(async () => {
+      register!();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("bus-conn-state-b1")).toHaveTextContent("connected"),
+    );
+  });
+
   it("follows the host's change event without a refetch", async () => {
     seedHost({ b1: { kind: "connecting" } });
     let push: ((e: { payload: BusConnStates }) => void) | undefined;

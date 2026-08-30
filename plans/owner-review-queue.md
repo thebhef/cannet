@@ -69,6 +69,16 @@ their criterion-by-criterion verdicts to
       the block on every carrier (findings 3.9, 3.15, 3.30 and 3.59 no
       longer exist post-reframe; their closures are in
       [task 122](tasks/0122-a-file-keeps-what-you-wrote.md)'s status log)
+- [ ] 127 — the frontend's shared layer: the tag/description editors
+      hand the keyboard back, `useConnectionStates` and
+      `useSidecarStatus` sit on `useHostMirror`'s new `fromPayload`, and
+      the trace gridviews carry real ARIA roles with one focus model
+      (findings 3.51, 3.19 and 3.18 no longer exist post-reframe; their
+      closures are in
+      [task 127](tasks/0127-shared-layer-cleanups.md)'s status log).
+      **Open:** `serverList.ts`'s two hooks carry the same launch race
+      and need a ruling on what a malformed payload does — see that
+      task's Blockers.
 
 ## Close-out chores
 

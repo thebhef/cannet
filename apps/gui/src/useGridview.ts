@@ -9,7 +9,9 @@
 
 import {
   useCallback,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -386,4 +388,34 @@ export function makeRowGridPropsCache(
     }
     return props;
   };
+}
+
+/// Take the keyboard back when a row's inline editor ends its edit by
+/// unmounting.
+///
+/// The layer's own recovery lives in the container's key handler, and
+/// it cannot see this case: the field is still `document.activeElement`
+/// while the key is being handled and only goes away on the render
+/// after, so the check for a dropped focus runs too early. The panel
+/// therefore says when its editor is open, and the container takes
+/// focus back on the layout pass that removed it — leaving the cursor
+/// exactly where it was, so the arrows navigate again (ADR 0044).
+///
+/// Only where focus actually went nowhere: a click into another control
+/// ends an edit too, and that focus is the user's.
+export function useEditorFocusRecovery(
+  editing: boolean,
+  containerRef: { readonly current: HTMLElement | null },
+): void {
+  const wasEditing = useRef(false);
+  useLayoutEffect(() => {
+    if (
+      wasEditing.current &&
+      !editing &&
+      (document.activeElement == null || document.activeElement === document.body)
+    ) {
+      containerRef.current?.focus();
+    }
+    wasEditing.current = editing;
+  }, [editing, containerRef]);
 }

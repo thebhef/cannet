@@ -2812,12 +2812,6 @@ button.color-chip {
   background: var(--surface-row-focused);
   box-shadow: inset 2px 0 0 var(--focus-marker);
 }
-/* Focusable trace rows: the timeline event rows, and the by-id rows,
-   which are their own disclosure control. */
-.trace-row:focus-visible {
-  outline: 1px solid var(--focus-outline);
-  outline-offset: -1px;
-}
 /* A gridview-selected row (ADR 0044). The container holds focus, so
    the selection is the only thing the row itself shows. */
 .trace-row.selected {

@@ -64,7 +64,7 @@ import {
   cellContent,
 } from "./traceTable";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
-import { useGridview } from "./useGridview";
+import { useEditorFocusRecovery, useGridview } from "./useGridview";
 import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
 import {
   contentRowId,
@@ -798,24 +798,9 @@ export function TraceView({
   // Ending an inline rename unmounts the field, and focus with nowhere
   // to go lands on the document body — where the grid's keys are dead
   // and the next Tab restarts from the top of the page (ADR 0044). The
-  // layer's own recovery cannot see this one: the field is still the
-  // focused element while the key is being handled, and only goes away
-  // on the render after. So the view takes the keyboard back once the
-  // editor is gone, and only where the focus actually went nowhere — a
-  // click into another panel ends the edit too, and that focus is the
-  // user's.
-  const wasEditing = useRef(false);
-  useLayoutEffect(() => {
-    const editing = editingEvent != null;
-    if (
-      wasEditing.current &&
-      !editing &&
-      (document.activeElement == null || document.activeElement === document.body)
-    ) {
-      containerRef.current?.focus();
-    }
-    wasEditing.current = editing;
-  }, [editingEvent, containerRef]);
+  // recovery is the layer's, so the body's tag and description editors
+  // get the same one.
+  useEditorFocusRecovery(editingEvent != null, containerRef);
   // The rows are memoised and the hook hands back fresh callbacks every
   // render (its adapter moves with the window), so the row-facing
   // handlers read the live gridview through a ref instead — otherwise
@@ -825,13 +810,12 @@ export function TraceView({
   const handleRowClick = useCallback(
     (id: string, e: React.MouseEvent) => {
       gridRef.current.onRowClick(id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey });
-      // An event row is its own focus target and keeps the keyboard (the
-      // grid's keys still reach the container by bubbling); a frame row
-      // is not one, so the grid takes it.
+      // The container is the only thing in a gridview that holds focus
+      // (ADR 0044), so every row's click hands it the keyboard —
+      // …unless the click was aimed at a control that wants focus
+      // itself, which would then lose it on the way in.
       const target = e.target as HTMLElement | null;
-      if (target?.closest(".trace-row[tabindex], button, input") == null) {
-        containerRef.current?.focus();
-      }
+      if (target?.closest("button, input") == null) containerRef.current?.focus();
     },
     [containerRef],
   );
@@ -914,10 +898,14 @@ export function TraceView({
       )}
       {/* The rows viewport is the gridview container: it holds focus and
           names the active row, because the rows themselves are recycled
-          by the paged viewport (ADR 0044). */}
+          by the paged viewport (ADR 0044). The role is what makes
+          `aria-activedescendant` mean anything — a plain `div` naming a
+          row says nothing to a screen reader. `tree`, because a row
+          discloses rows: a message's decoded signals, an event's body. */}
       <div
         ref={containerRef}
         className="trace-rows"
+        role="tree"
         onScroll={handleScroll}
         {...grid.containerProps}
       >
@@ -928,12 +916,14 @@ export function TraceView({
             sticky viewport with no scroll position that reaches them. */}
         <div
           className="trace-scroll-content"
+          role="presentation"
           style={{ height: spacerHeight, position: "relative", ...contentWidthVar }}
         >
           {/* Sticky viewport: the compositor keeps this pinned to the
               top of the scroll area, so the rows never lag the
               scrollbar — React only swaps their content. */}
           <div
+            role="presentation"
             style={{
               position: "sticky",
               top: 0,
@@ -1008,6 +998,7 @@ export function TraceView({
                       top={top + ROW_HEIGHT}
                       actions={eventActions}
                       rowDomId={grid.rowDomId}
+                      containerRef={containerRef}
                     />
                   )}
                   {isExpanded &&
@@ -1160,6 +1151,8 @@ const Row = memo(function Row({
       columns={columns}
       gridTemplate={gridTemplate}
       id={rowId == null ? undefined : rowDomId(rowId)}
+      role="treeitem"
+      aria-level={1}
       aria-expanded={expandable ? isExpanded : undefined}
       aria-selected={rowId == null ? undefined : selected}
       draggable={rowId != null}
@@ -1226,14 +1219,15 @@ const EVENT_KIND_COLOR: Record<string, () => string> = {
 /// origin, like a frame's time cell), a full-height color swatch, and the
 /// label. Used for the truncation marker and for notes.
 ///
-/// **Clicking the row puts the grid's cursor on it** — it is a focus target
-/// in its own right, and the cursor's row is the one the action keys act on
-/// (Space goes to the event, F2 renames it — ADR 0044). Editable events
+/// **Clicking the row puts the grid's cursor on it** — and hands the
+/// keyboard to the container, which is the one thing in a gridview that
+/// holds focus (ADR 0044); the cursor's row is the one the action keys
+/// act on (Space goes to the event, F2 renames it). Editable events
 /// (notes, given `actions`) carry those controls inline: a rename button
 /// (which is what turns the label into a field), the swatch (click to recolor,
 /// the same native picker the plot uses), and a remove button. Double-clicking
 /// the label renames it too, as the direct-manipulation shortcut. Derived
-/// events (the truncation marker) render the same shape, focusable but inert.
+/// events (the truncation marker) render the same shape, but inert.
 function EventRow({
   top,
   event,
@@ -1342,9 +1336,10 @@ function EventRow({
       // `false`, where there is nothing to open. `aria-selected` is
       // absent unless this view declares event rows selectable — saying
       // "not selected" about a row that cannot be selected is a lie.
+      role="treeitem"
+      aria-level={1}
       aria-expanded={discloses ? isExpanded : undefined}
       aria-selected={selectable ? selected : undefined}
-      tabIndex={0}
       onClick={(e) => onSelect(`${EVENT_ROW_PREFIX}${event.id}`, e)}
     >
       {discloses ? (
@@ -1477,6 +1472,7 @@ function EventBody({
   top,
   actions,
   rowDomId,
+  containerRef,
 }: {
   event: TimelineEvent;
   /// The event's subject chips, already resolved — the same list the row
@@ -1485,6 +1481,9 @@ function EventBody({
   top: number;
   actions?: EventActions;
   rowDomId: (id: string) => string;
+  /// The gridview container, which an ending edit hands the keyboard
+  /// back to (ADR 0044).
+  containerRef: { readonly current: HTMLElement | null };
 }) {
   const rowId = `${EVENT_ROW_PREFIX}${event.id}`;
   // The label's rows lead, then the subject line when the event has one,
@@ -1498,6 +1497,8 @@ function EventBody({
       <div
         className="trace-event-body-row"
         id={rowDomId(contentRowId(rowId, "label"))}
+        role="treeitem"
+        aria-level={2}
         style={{ position: "absolute", top, left: 0, right: 0, height: labelHeight }}
       >
         <span className="trace-event-body-name">label</span>
@@ -1531,6 +1532,8 @@ function EventBody({
         <div
           className="trace-event-body-row"
           id={rowDomId(contentRowId(rowId, "subjects"))}
+          role="treeitem"
+          aria-level={2}
           style={{
             position: "absolute",
             top: top + labelHeight,
@@ -1558,6 +1561,7 @@ function EventBody({
       <EventBodyField
         top={top + lead * SIGNAL_LINE_HEIGHT}
         domId={rowDomId(contentRowId(rowId, "tag"))}
+        containerRef={containerRef}
         name="tag"
         value={event.tag ?? ""}
         placeholder="no tag"
@@ -1571,6 +1575,7 @@ function EventBody({
       <EventBodyField
         top={top + (lead + 1) * SIGNAL_LINE_HEIGHT}
         domId={rowDomId(contentRowId(rowId, "description"))}
+        containerRef={containerRef}
         name="description"
         value={event.description ?? ""}
         placeholder="no description"
@@ -1591,6 +1596,7 @@ function EventBody({
 function EventBodyField({
   top,
   domId,
+  containerRef,
   name,
   value,
   placeholder,
@@ -1599,6 +1605,7 @@ function EventBodyField({
 }: {
   top: number;
   domId: string;
+  containerRef: { readonly current: HTMLElement | null };
   name: string;
   value: string;
   placeholder: string;
@@ -1607,6 +1614,10 @@ function EventBodyField({
 }) {
   const [draft, setDraft] = useState(value);
   const [editing, setEditing] = useState(false);
+  // Enter and Escape end the edit by unmounting the input while it is
+  // still the focused element, so the keyboard has to be handed back
+  // once it is gone — the same recovery the row's label editor takes.
+  useEditorFocusRecovery(editing, containerRef);
   // A virtualized slot is reused for a different event as the view
   // scrolls, so the draft re-seeds whenever the value under it changes.
   useEffect(() => {
@@ -1622,6 +1633,8 @@ function EventBodyField({
     <div
       className="trace-event-body-row"
       id={domId}
+      role="treeitem"
+      aria-level={2}
       style={{ position: "absolute", top, left: 0, right: 0, height: SIGNAL_LINE_HEIGHT }}
     >
       <span className="trace-event-body-name">{name}</span>

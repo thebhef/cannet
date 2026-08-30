@@ -91,6 +91,51 @@ describe("useHostMirror", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
   });
 
+  it("takes the value from the payload where the event carries it, without refetching", async () => {
+    // Some host events publish the whole new state rather than a nudge
+    // to re-read it. Refetching would still be correct, but it costs a
+    // round trip and lands a render later — and a consumer that reads
+    // the payload is what kept this pattern hand-rolled.
+    const fetch = vi.fn(async () => 1);
+    const { result } = renderHook(() =>
+      useHostMirror<number, number>({
+        fetch,
+        fallback: 0,
+        event: "changed",
+        fromPayload: (p) => p,
+      }),
+    );
+    await waitFor(() => expect(result.current.value).toBe(1));
+    const fetches = fetch.mock.calls.length;
+
+    act(() => eventHandlers.forEach((h) => h({ payload: 7 })));
+    expect(result.current.value).toBe(7);
+    expect(fetch).toHaveBeenCalledTimes(fetches);
+  });
+
+  it("still closes the launch race when the value comes from the payload", async () => {
+    // The payload only reaches a listener that exists. The snapshot
+    // pair is what covers the gap before it does, so `fromPayload`
+    // must not replace it.
+    let snapshot = 1;
+    const fetch = vi.fn(async () => snapshot);
+    const { result } = renderHook(() =>
+      useHostMirror<number, number>({
+        fetch,
+        fallback: 0,
+        event: "changed",
+        fromPayload: (p) => p,
+      }),
+    );
+    await waitFor(() => expect(result.current.value).toBe(1));
+    snapshot = 5;
+    await act(async () => {
+      releaseListen?.();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.value).toBe(5));
+  });
+
   it("polls at pollIntervalMs while pollWhile(value) is true, and stops once it's false", async () => {
     vi.useFakeTimers();
     let snapshot = { running: true, n: 0 };

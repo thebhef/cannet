@@ -117,8 +117,17 @@ describe("event row focus and editing", () => {
 
     fireEvent.click(rows[1]);
     expect(rows.map((r) => r.classList.contains("trace-event-focused"))).toEqual([false, true]);
-    // The row is a focus target in its own right, not just a styled div.
-    expect(rows[1].tabIndex).toBe(0);
+    // Turned around: the row used to be a tab stop of its own, so that a
+    // click left the keyboard on it. That was a second focus model
+    // beside the one every other gridview uses — the container holds
+    // focus and *names* the active row — and it put an event row in the
+    // page's tab order, which no other trace row is in. The mark is the
+    // cursor's, and the keyboard is the container's (ADR 0044).
+    expect(rows[1]).not.toHaveAttribute("tabindex");
+    expect(rows[1].getAttribute("role")).toBe("treeitem");
+    const container = document.querySelector(".trace-rows") as HTMLElement;
+    expect(document.activeElement).toBe(container);
+    expect(container.getAttribute("aria-activedescendant")).toBe(rows[1].id);
 
     fireEvent.click(rows[0]);
     expect(rows.map((r) => r.classList.contains("trace-event-focused"))).toEqual([true, false]);

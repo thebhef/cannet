@@ -6,11 +6,11 @@
 // thing it adds is "this bus has no binding at all", which is a
 // project fact, not a connection fact.
 
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { formatBitrate } from "./busHardwareConfig";
+import { useHostMirror } from "./useHostMirror";
 import type { StatusChipState } from "./StatusChip";
 import type { Bus, BusConnState, BusConnStates, InterfaceBinding } from "./types";
 
@@ -19,45 +19,26 @@ import type { Bus, BusConnState, BusConnStates, InterfaceBinding } from "./types
 /// host-side.
 export const CONNECTION_STATES_CHANGED_EVENT = "connection-states-changed";
 
-/// Subscribe to the host's per-bus connection states. Same
-/// pull-then-follow shape as {@link useSidecarStatus} and the interface
-/// cache (ADR 0016): one `get_connection_states` snapshot on mount,
-/// then the change event. No polling, and nothing accumulates — the
-/// payload is the whole map, bounded by the project's bus count.
+/// The empty map a host that cannot answer leaves us on — an older
+/// build or a dev shell with no `get_connection_states`. Module-level
+/// so the mirror's fallback identity never changes.
+const NO_STATES: BusConnStates = {};
+
+const fetchConnectionStates = () =>
+  invoke<BusConnStates>("get_connection_states").then((s) => s ?? NO_STATES);
+
+/// Subscribe to the host's per-bus connection states: the shared
+/// host-mirror pattern, with the change event carrying the whole new
+/// map rather than a nudge to re-read it. No polling, and nothing
+/// accumulates — the payload is bounded by the project's bus count.
 export function useConnectionStates(): BusConnStates {
-  const [states, setStates] = useState<BusConnStates>({});
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: UnlistenFn | undefined;
-
-    void (async () => {
-      try {
-        const initial = await invoke<BusConnStates>("get_connection_states");
-        if (!cancelled && initial) setStates(initial);
-      } catch {
-        // Host without the command (older build, dev shell): fall
-        // through to the listener and stay empty if none comes.
-      }
-      try {
-        unlisten = await listen<BusConnStates>(
-          CONNECTION_STATES_CHANGED_EVENT,
-          (e) => {
-            if (!cancelled) setStates(e.payload ?? {});
-          },
-        );
-      } catch {
-        // Same fallback: stay on whatever snapshot we have.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
-
-  return states;
+  const fetch = useCallback(fetchConnectionStates, []);
+  return useHostMirror<BusConnStates, BusConnStates | null>({
+    fetch,
+    fallback: NO_STATES,
+    event: CONNECTION_STATES_CHANGED_EVENT,
+    fromPayload: (payload) => payload ?? NO_STATES,
+  }).value;
 }
 
 /// How a row should paint a connection state. `tone` maps onto the
