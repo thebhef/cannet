@@ -43,7 +43,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::connect_flow::{self, Attempt, Outcome};
 use crate::ipc::InterfaceRecord;
-use crate::{server_trust, sys_error, sys_warn};
+use crate::{server_trust, sys_error, sys_info, sys_warn};
 
 /// Tauri event emitted whenever the host's cached interface list for
 /// some address changes. Payload is [`InterfacesChangedPayload`]; the
@@ -173,6 +173,35 @@ pub(crate) fn rewatch(app: &AppHandle, address: &str) {
     });
 }
 
+/// Like [`rewatch`], but for an address nothing is watching: dial it
+/// once so the freshly stored decision is exercised at all. An answer
+/// that goes unverified is how a mistyped token sits silent — the
+/// accepted identity produced no attempt, no prompt, and no log line
+/// until the server was next needed (found the hard way, 2026-08-30).
+/// The one-shot goes through [`refresh_interfaces`], so a refusal is
+/// reported exactly as loudly as any other failed attempt, and a
+/// success lands in the cache and the system log.
+pub(crate) fn rewatch_or_verify(app: &AppHandle, address: &str) {
+    let watched = app.try_state::<InterfacesState>().is_some_and(|state| {
+        let inner = state.inner.lock().expect("interfaces state poisoned");
+        inner.entries.contains_key(address)
+    });
+    if watched {
+        rewatch(app, address);
+        return;
+    }
+    let app = app.clone();
+    let address = address.to_string();
+    tauri::async_runtime::spawn(async move {
+        // On Err, refresh_interfaces already reported: system log plus
+        // a raised prompt when it is a question for the user.
+        if let Ok(records) = refresh_interfaces(app.clone(), address.clone()).await {
+            let n = records.len();
+            sys_info!(&app, SOURCE, "{address}: trust decision verified — {n} interface(s)");
+        }
+    });
+}
+
 /// Tauri command — snapshot the host's cached interface list for an
 /// address. Returns an empty list when the address isn't being
 /// watched (caller should not block on this; the watch task pushes
@@ -224,7 +253,7 @@ pub async fn refresh_interfaces(
     let interfaces = match cannet_client::list_interfaces(&config).await {
         Ok(interfaces) => interfaces,
         Err(e) => {
-            report_failure(&app, &address, &attempt, &e);
+            report_failure(&app, &address, &attempt, &e, None);
             return Err(e.to_string());
         }
     };
@@ -241,6 +270,7 @@ pub async fn refresh_interfaces(
 /// fix (S13: a changed certificate or a refused token stops the loop
 /// and puts the question to the user).
 async fn run_watch(app: AppHandle, address: String) {
+    let mut gate = RetryWarnGate::new();
     loop {
         let attempt = connect_flow::plan(&address, &server_trust::trust_for(&app, &address));
         let config = match attempt.config(&address) {
@@ -255,6 +285,7 @@ async fn run_watch(app: AppHandle, address: String) {
                 // The connection stands, so whatever was being asked
                 // about this server has been answered.
                 connect_flow::resolved(&app, &address);
+                gate.reset();
                 loop {
                     match stream.next().await {
                         Ok(Some(interfaces)) => {
@@ -267,7 +298,7 @@ async fn run_watch(app: AppHandle, address: String) {
                         // mid-stream is as terminal as one refused at
                         // connect time.
                         Err(e) => {
-                            if report_failure(&app, &address, &attempt, &e) {
+                            if report_failure(&app, &address, &attempt, &e, Some(&mut gate)) {
                                 return;
                             }
                             break;
@@ -276,7 +307,7 @@ async fn run_watch(app: AppHandle, address: String) {
                 }
             }
             Err(e) => {
-                if report_failure(&app, &address, &attempt, &e) {
+                if report_failure(&app, &address, &attempt, &e, Some(&mut gate)) {
                     return;
                 }
             }
@@ -285,14 +316,45 @@ async fn run_watch(app: AppHandle, address: String) {
     }
 }
 
+/// Suppresses repeats of the same retry warning between successes, so
+/// a permanently-down server costs one log line, not one per backoff
+/// tick. One gate per watch task: a rewatch starts fresh, so the first
+/// failure under a new trust decision always logs.
+struct RetryWarnGate(Option<String>);
+
+impl RetryWarnGate {
+    fn new() -> Self {
+        Self(None)
+    }
+
+    /// Whether `msg` should be logged now. A message different from
+    /// the last admitted one always logs — the failure changed, and a
+    /// change is information.
+    fn admit(&mut self, msg: &str) -> bool {
+        if self.0.as_deref() == Some(msg) {
+            return false;
+        }
+        self.0 = Some(msg.to_string());
+        true
+    }
+
+    /// A successful connection: whatever failure comes next is news.
+    fn reset(&mut self) {
+        self.0 = None;
+    }
+}
+
 /// Put a failed attempt on the system log and, when it is a question
 /// only the user can answer, in front of them. Returns whether the
-/// caller must stop trying.
+/// caller must stop trying. `gate` (for the retrying watch loop)
+/// quiets repeats of one unchanged retry warning; a one-shot caller
+/// passes `None` and always logs.
 fn report_failure(
     app: &AppHandle,
     address: &str,
     attempt: &Attempt,
     error: &cannet_client::ConnectionError,
+    gate: Option<&mut RetryWarnGate>,
 ) -> bool {
     match connect_flow::classify(attempt, error) {
         Outcome::Ask(prompt) => {
@@ -308,11 +370,11 @@ fn report_failure(
             sys_error!(app, SOURCE, "{address}: {msg}");
             true
         }
-        // Log once at warn so the user sees something on a
-        // misconfigured remote; subsequent retries stay quiet to avoid
-        // log spam on a permanently-down server.
         Outcome::Retry(msg) => {
-            sys_warn!(app, SOURCE, "{address}: {msg}; retrying");
+            let line = format!("{address}: {msg}; retrying");
+            if gate.is_none_or(|gate| gate.admit(&line)) {
+                sys_warn!(app, SOURCE, "{line}");
+            }
             false
         }
     }
@@ -392,6 +454,23 @@ mod tests {
         after[0].firmware_version = Some("3.3.0".to_string());
         assert!(interfaces_equal(&before, &before));
         assert!(!interfaces_equal(&before, &after));
+    }
+
+    #[test]
+    fn a_repeated_retry_warning_logs_once_until_something_changes() {
+        // The gate exists so a permanently-down server costs one log
+        // line per distinct failure, not one every backoff tick.
+        let mut gate = RetryWarnGate::new();
+        assert!(gate.admit("addr: connect refused; retrying"));
+        assert!(!gate.admit("addr: connect refused; retrying"));
+        assert!(!gate.admit("addr: connect refused; retrying"));
+        // A different failure is information and logs immediately.
+        assert!(gate.admit("addr: dns error; retrying"));
+        assert!(!gate.admit("addr: dns error; retrying"));
+        // A success in between resets: the next failure is news again,
+        // even when it reads the same as the last one.
+        gate.reset();
+        assert!(gate.admit("addr: dns error; retrying"));
     }
 
     #[test]
