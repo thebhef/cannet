@@ -445,6 +445,9 @@ fn run_baseline(
     let frontend = if let Some(p) = frontend_reports.first() {
         eprintln!("capturing frontend from {}…", p.display());
         let report = frontend::load_report(p)?;
+        if let Some(why) = frontend::interaction_complaint(&report) {
+            eprintln!("WARNING {}: {why}", p.display());
+        }
         Some(FrontendBaseline {
             label: report.label.clone(),
             metrics: FrontendMetrics::from(&report),
@@ -538,7 +541,15 @@ fn run_check(
         } else {
             let mut currents = Vec::with_capacity(frontend_reports.len());
             for p in frontend_reports {
-                currents.push(FrontendMetrics::from(&frontend::load_report(p)?));
+                let report = frontend::load_report(p)?;
+                // Not a gate: a quiet layout is a legitimate capture. But
+                // a run that reached none of its targets measured a
+                // resting app, and that has to be said out loud rather
+                // than passing as clean data.
+                if let Some(why) = frontend::interaction_complaint(&report) {
+                    eprintln!("WARNING {}: {why}", p.display());
+                }
+                currents.push(FrontendMetrics::from(&report));
             }
             verdicts.extend(frontend::check_frontend_gate(
                 &fb.metrics,

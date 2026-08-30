@@ -212,6 +212,11 @@ pub struct RenderReport {
     /// hardware). Stamped by the capture-finish command, not
     /// [`summarize`] — it comes from the store, not the samples.
     pub rx_gap: Option<RxGapReport>,
+    /// What the synthetic interaction script drove, or `None` when the
+    /// run was gestureless (no `--perf-interact`, or an operator-driven
+    /// capture from the console). Stamped by the capture-finish command
+    /// from the webview's own count.
+    pub interact: Option<InteractTally>,
 }
 
 /// On-wire receive cadence over the capture (ADR 0031 / ADR 0039): the
@@ -233,6 +238,35 @@ pub struct RxGapReport {
     pub worst_short_frac: f64,
     /// `bus/0xID` that produced `worst_short_frac`.
     pub worst_short_frac_id: String,
+}
+
+/// What the synthetic interaction script actually did during the capture
+/// (ADR 0031), tallied by the webview and handed over at finish.
+///
+/// Skipping a gesture whose target is not on screen is deliberate — a
+/// project whose layout has no plot is a legitimate capture, just a
+/// quieter one — but a run where *every* gesture was skipped produces a
+/// report structurally identical to a good one, and reads as "interaction
+/// is free". This is what tells those apart in the data: a report whose
+/// `performed` is zero (or whose `missing` names the control that moved)
+/// was measuring a disarmed harness.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct InteractTally {
+    /// The script that ran (`scrub` / `follow`).
+    pub script: String,
+    /// Timer ticks the script was driven for.
+    pub ticks: usize,
+    /// Ticks that dispatched a gesture at a real element.
+    pub performed: usize,
+    /// Ticks whose gesture found no target on screen.
+    pub missing: usize,
+    /// Ticks that were deliberate idle slots — the gaps the app needs to
+    /// finish the work the previous gesture triggered.
+    pub idle: usize,
+    /// Per-label counts of the gestures that landed.
+    pub by_gesture: BTreeMap<String, usize>,
+    /// Per-label counts of the gestures that found nothing to drive.
+    pub missing_by_gesture: BTreeMap<String, usize>,
 }
 
 /// Gaps needed before an id's statistics are trusted.
@@ -388,6 +422,7 @@ pub fn summarize(label: &str, samples: &[DiagSample]) -> RenderReport {
         counters_per_s,
         gauges,
         rx_gap: None,
+        interact: None,
     }
 }
 
@@ -497,6 +532,11 @@ struct Capture {
     /// armed. The frontend can't read process RSS, so the host stamps the
     /// `mem.*_mb` split onto each pushed sample (ADR 0031).
     mem: Option<crate::crash::MemSampler>,
+    /// First reason a memory reading could not be attributed to this app,
+    /// if any. It fails the whole capture at finish: a memory metric that
+    /// reads `0.0` because the processes holding the memory were never
+    /// ours passes every gate it is checked against.
+    mem_fault: Option<&'static str>,
     /// Trace-store length when the capture armed — the finish walk reads
     /// only the frames appended during the capture (`rx_gap`).
     store_len_at_start: usize,
@@ -524,6 +564,7 @@ pub fn diag_capture_start(
     cap.label = label;
     cap.samples.clear();
     cap.mem = Some(crate::crash::MemSampler::new());
+    cap.mem_fault = None;
     cap.store_len_at_start = app_state.trace_store.len();
     // Discard any max accrued before the capture so the first sample isn't
     // inflated by a pre-capture flush / scheduler stall, then start
@@ -547,7 +588,10 @@ pub fn diag_push(
         // storing it, so the renderer/host gauges share the frontend's
         // 1 Hz timeline.
         if let Some(mem) = cap.mem.as_mut() {
-            mem.stamp_mb(&mut sample.gauges);
+            // Keep the first fault: the reason does not improve with
+            // repetition, and the capture is already void.
+            let fault = mem.stamp_mb(&mut sample.gauges);
+            cap.mem_fault = cap.mem_fault.or(fault);
         }
         // Drain the host jitter maxima into this second's sample.
         let (flush_ms, tx_late_ms) = metrics.drain();
@@ -558,10 +602,15 @@ pub fn diag_push(
 }
 
 /// Disarm, reduce the captured samples to a [`RenderReport`], and — when
-/// `path` is given — write it there as pretty JSON.
+/// `path` is given — write it there as pretty JSON. `interact` is the
+/// webview's tally of the gestures its script drove, carried into the
+/// report so a run that gestured at nothing is visible in the data.
 ///
 /// # Errors
-/// Returns an error if nothing was captured, or if writing `path` fails.
+/// Returns an error if nothing was captured, if the memory readings could
+/// not be attributed to this app, or if writing `path` fails. A capture
+/// that failed writes no report: absence is the one signal no consumer
+/// can misread as a healthy number.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn diag_capture_finish(
@@ -569,9 +618,10 @@ pub fn diag_capture_finish(
     metrics: State<'_, HostMetrics>,
     app_state: State<'_, crate::app_state::AppState>,
     path: Option<String>,
+    interact: Option<InteractTally>,
 ) -> Result<FinishedCapture, String> {
     metrics.set_armed(false);
-    let (label, samples, store_len_at_start) = {
+    let (label, samples, store_len_at_start, mem_fault) = {
         let mut cap = state.inner.lock().expect("diag mutex poisoned");
         cap.active = false;
         cap.mem = None;
@@ -579,12 +629,17 @@ pub fn diag_capture_finish(
             cap.label.clone(),
             std::mem::take(&mut cap.samples),
             cap.store_len_at_start,
+            cap.mem_fault.take(),
         )
     };
     if samples.is_empty() {
         return Err("no diagnostic samples were captured".into());
     }
+    if let Some(why) = mem_fault {
+        return Err(format!("memory attribution failed: {why}"));
+    }
     let mut report = summarize(&label, &samples);
+    report.interact = interact;
     report.rx_gap = rx_gap_stats(&capture_rx_series(
         &app_state.trace_store,
         store_len_at_start,

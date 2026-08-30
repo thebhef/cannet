@@ -1084,6 +1084,10 @@ report is written.
   does the zoom and then leaves the view alone, which is the scenario
   the scroll-smoothness gauges are meaningful in (a pan moves the window
   further in one step than a stall would). Omit it for a resting run.
+  The report carries an `interact` tally of what the script actually
+  drove — a gesture whose target is not on screen is skipped, and
+  `performed: 0` with a non-empty `missing_by_gesture` is a run that
+  measured a resting app while looking exactly like one that scrubbed.
 - `--diag` arms the frontend's diagnostic machinery: the per-event
   render / resample counters and gauges, their burst logger, the
   `longtask` observer, the once-a-second `[diag]` console line, and the
@@ -1092,6 +1096,18 @@ report is written.
   measurement run never needs it spelled out. Ask for it on its own to
   watch the console stream during an interactive session, or to bracket
   a capture by hand from the devtools console.
+
+**Read three things before believing a report.** Each names a way this
+harness has passed while measuring nothing:
+
+- `rx_gap.ids_measured` and the `rx_fps` / `tx_fps` rates — a run over a
+  silent bus writes a normal-shaped report every gate passes.
+- the `interact` tally — `performed: 0` means the gestures reached
+  nothing, so the numbers describe a resting app.
+- that the capture produced a report at all — a run whose memory
+  readings could not be attributed to this process (another cannet
+  holding the shared `WebView2` browser process) now fails and writes
+  nothing, rather than reporting `webview_mb: 0.0` and passing.
 
 Everything else the run needs is already in the saved project: the panel
 layout (the views under test) and the bus bindings (the frame source).

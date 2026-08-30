@@ -92,7 +92,21 @@ their criterion-by-criterion verdicts to
       band — only after
       [task 126 § 1](tasks/0126-test-and-example-cleanup.md) fixes the
       harness (gesture tally, memory attribution), or the numbers mean
-      nothing.
+      nothing. **The harness half landed 2026-08-27** (memory
+      attribution, the gesture tally, and the `__shot` guard test — see
+      that task's status log); two rulings below still stand in front of
+      the gate.
+- [ ] **Ruling needed: band vs worst-of-N for `lag_ms_max` and
+      `rx_gap_short_frac_worst`** (finding 3.46). The evidence is
+      charted — 206 stored render reports, and the spread *within one
+      unchanged binary* is 4.3× median / 27× worst for `lag_ms_max` and
+      2.3× median / 1163× worst for `rx_gap_short_frac_worst` — in
+      [task 126](tasks/0126-test-and-example-cleanup.md)'s status log.
+      ADR 0031 is amended per the ruling; limits still ratchet down only.
+- [ ] **One clean-machine capture set** (finding 3.36) — needs the
+      machine to itself, so it needs the owner. Task 107 phase 5's
+      memory question is unanswerable until then; see
+      [task 126 § 1](tasks/0126-test-and-example-cleanup.md).
 - [ ] Replace the ignored mDNS round-trip test that advertises a real
       `_cannet._tcp` instance on the LAN.
 - [ ] Normalise the two files that show modified with no content

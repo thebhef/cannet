@@ -217,6 +217,7 @@ import {
   parseInteractScript,
   startPerfInteraction,
 } from "./perfInteract";
+import type { PerfInteraction } from "./perfInteract";
 
 // BLF + global error state. Remote sessions are tracked separately
 // (multi-server: one entry per address in `remoteSessions`).
@@ -2365,7 +2366,7 @@ export function App() {
     if (automationRanRef.current) return; // one-shot (see the ref's docs)
     automationRanRef.current = true;
     let cancelled = false;
-    let stopInteraction: (() => void) | null = null;
+    let interaction: PerfInteraction | null = null;
     const sleep = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
     // Poll `pred` until it holds or `timeoutMs` elapses (returns whether
@@ -2472,7 +2473,7 @@ export function App() {
           // project was saved at down to a working one, and those 30-odd
           // zoom steps are setup, not the workload under measurement.
           if (automation.interact != null) {
-            stopInteraction = startPerfInteraction(
+            interaction = startPerfInteraction(
               document,
               parseInteractScript(automation.interact),
             );
@@ -2486,7 +2487,10 @@ export function App() {
           );
           await sleep(captureSecs * 1000);
           if (cancelled) return;
-          await endDiagCapture(automation.out ?? undefined);
+          // The tally rides with the report: a run whose script found
+          // none of its targets must be visible in the data, not just
+          // structurally identical to a good one.
+          await endDiagCapture(automation.out ?? undefined, interaction?.tally());
         }
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -2508,7 +2512,7 @@ export function App() {
           await invoke("exit_process", { code: 1 }).catch(() => {});
         }
       } finally {
-        stopInteraction?.();
+        interaction?.stop();
         // A capture run is unattended — exit so the launching CLI
         // returns. `destroy` skips the dirty-close prompt (applying the
         // project marks it dirty). A connect-only / project-only run
@@ -2521,7 +2525,7 @@ export function App() {
     })();
     return () => {
       cancelled = true;
-      stopInteraction?.();
+      interaction?.stop();
     };
   }, [automation]);
 

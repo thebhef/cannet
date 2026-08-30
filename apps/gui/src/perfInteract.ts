@@ -92,51 +92,75 @@ function wheelAtLeadingEdge(el: HTMLElement, init: WheelEventInit): void {
   );
 }
 
-function zoom(doc: Document, out: boolean): string | null {
+/**
+ * What one tick of the script did. A gesture that found no target is
+ * `missing` rather than `idle`: skipping is deliberate — a project whose
+ * layout has no plot is a legitimate capture — but the two produce
+ * identical reports unless they are counted apart, and a run where every
+ * gesture went missing is a disarmed harness reading as "interaction is
+ * free". `label` names the gesture either way, so the tally can say
+ * *which* control the script could not reach.
+ */
+export type TickOutcome =
+  | { kind: "gesture"; label: string }
+  | { kind: "missing"; label: string }
+  | { kind: "idle" };
+
+const IDLE: TickOutcome = { kind: "idle" };
+const did = (label: string): TickOutcome => ({ kind: "gesture", label });
+const missed = (label: string): TickOutcome => ({ kind: "missing", label });
+
+function zoom(doc: Document, out: boolean): TickOutcome {
+  const label = out ? "plot.zoom-out" : "plot.zoom-in";
   const el = plotOver(doc);
-  if (!el) return null;
+  if (!el) return missed(label);
   wheelAtLeadingEdge(el, { deltaY: out ? WHEEL_NOTCH : -WHEEL_NOTCH });
-  return out ? "plot.zoom-out" : "plot.zoom-in";
+  return did(label);
 }
 
-function pan(doc: Document, forward: boolean): string | null {
+function pan(doc: Document, forward: boolean): TickOutcome {
+  const label = forward ? "plot.pan-forward" : "plot.pan-back";
   const el = plotOver(doc);
-  if (!el) return null;
+  if (!el) return missed(label);
   // shift+wheel is the plot's x-pan gesture (~10 % of the window per
   // notch); it drops the panel out of follow-live, which the script's
   // `follow-live` slot puts back.
   wheelAtLeadingEdge(el, { deltaY: forward ? WHEEL_NOTCH : -WHEEL_NOTCH, shiftKey: true });
-  return forward ? "plot.pan-forward" : "plot.pan-back";
+  return did(label);
 }
 
-function scrollTrace(doc: Document, dy: number): string | null {
+function scrollTrace(doc: Document, dy: number): TickOutcome {
+  const label = dy < 0 ? "trace.scroll-up" : "trace.scroll-down";
   const el = traceRows(doc);
-  if (!el) return null;
+  if (!el) return missed(label);
   el.scrollTop = Math.max(0, el.scrollTop + dy);
-  return dy < 0 ? "trace.scroll-up" : "trace.scroll-down";
+  return did(label);
 }
 
-function resumeFollowLive(doc: Document): string | null {
+function resumeFollowLive(doc: Document): TickOutcome {
   // The plot toolbar's follow-live control is a chip toggle (ADR 0055):
   // its accessible name identifies it and `aria-pressed` is its
   // position. A gesture the app's own listener would not see is a
   // gesture the capture did not measure, so this has to track the
-  // control's real markup.
+  // control's real markup. At narrow widths the chip spills into the
+  // toolbar's overflow menu, out of the script's reach — a *missing*
+  // target, not an idle slot, and the tally has to say which.
   const chips = doc.querySelectorAll<HTMLButtonElement>(
     '.plot-panel-toolbar button[aria-label="Follow Live"]',
   );
   for (const chip of chips) {
-    if (chip.getAttribute("aria-pressed") === "true") return null;
+    // Already following: nothing to resume, and a click would leave it.
+    if (chip.getAttribute("aria-pressed") === "true") return IDLE;
     chip.click();
-    return "plot.follow-live";
+    return did("plot.follow-live");
   }
-  return null;
+  return missed("plot.follow-live");
 }
 
 /** The `scrub` cycle. `null` slots are deliberate idle time: the app has
  * to be left alone long enough between gestures to finish the work each
  * one triggered, or the capture measures a queue rather than a cost. */
-const SCRUB_CYCLE: Array<((doc: Document) => string | null) | null> = [
+const SCRUB_CYCLE: Array<((doc: Document) => TickOutcome) | null> = [
   (d) => scrollTrace(d, -TRACE_SCROLL_PX),
   (d) => pan(d, false),
   (d) => pan(d, true),
@@ -156,10 +180,7 @@ const SCRUB_CYCLE: Array<((doc: Document) => string | null) | null> = [
 ];
 
 /**
- * Perform tick `tick` of `script` against `doc`, returning what it did
- * (or `null` for an idle slot, or a gesture whose target isn't on
- * screen — a project whose layout has no plot or no trace panel is a
- * legitimate capture, just a quieter one).
+ * Perform tick `tick` of `script` against `doc`, returning what it did.
  *
  * Pure in the sense that matters for testing: the tick number is the
  * only state, so a test can drive the script forward deterministically
@@ -169,22 +190,84 @@ export function perfInteractTick(
   doc: Document,
   tick: number,
   script: PerfInteractScript,
-): string | null {
+): TickOutcome {
   if (tick < ZOOM_WARMUP_NOTCHES) return zoom(doc, false);
-  if (script === "follow") return null;
+  if (script === "follow") return IDLE;
   const slot = SCRUB_CYCLE[(tick - ZOOM_WARMUP_NOTCHES) % SCRUB_CYCLE.length];
-  return slot ? slot(doc) : null;
+  return slot ? slot(doc) : IDLE;
 }
 
 /**
- * Drive {@link perfInteractTick} on a timer until the returned function
- * is called. Thin glue — the schedule is the only thing it adds.
+ * What the script did over a whole run, as the render report carries it
+ * (ADR 0031). The field names are the wire names the host reads.
+ *
+ * A gestureless run's report is structurally identical to one that
+ * scrubbed hard — same metrics, same shape — so without this a harness
+ * that had lost its targets read as clean data. `performed: 0` is the
+ * disarmed signature, and `missing_by_gesture` names the control that
+ * moved out of reach.
  */
-export function startPerfInteraction(doc: Document, script: PerfInteractScript): () => void {
+export interface InteractTally {
+  script: PerfInteractScript;
+  ticks: number;
+  performed: number;
+  missing: number;
+  idle: number;
+  by_gesture: Record<string, number>;
+  missing_by_gesture: Record<string, number>;
+}
+
+/** A running interaction: its timer, and what it has done so far. */
+export interface PerfInteraction {
+  /** Stop the timer. */
+  stop: () => void;
+  /** The tally as it stands — read when the capture finishes. */
+  tally: () => InteractTally;
+}
+
+/**
+ * Drive {@link perfInteractTick} on a timer until {@link
+ * PerfInteraction.stop} is called, counting what each tick did.
+ */
+export function startPerfInteraction(
+  doc: Document,
+  script: PerfInteractScript,
+): PerfInteraction {
   let tick = 0;
+  const tally: InteractTally = {
+    script,
+    ticks: 0,
+    performed: 0,
+    missing: 0,
+    idle: 0,
+    by_gesture: {},
+    missing_by_gesture: {},
+  };
+  const bump = (into: Record<string, number>, label: string) => {
+    into[label] = (into[label] ?? 0) + 1;
+  };
   const id = window.setInterval(() => {
-    perfInteractTick(doc, tick, script);
+    const out = perfInteractTick(doc, tick, script);
     tick += 1;
+    tally.ticks += 1;
+    if (out.kind === "gesture") {
+      tally.performed += 1;
+      bump(tally.by_gesture, out.label);
+    } else if (out.kind === "missing") {
+      tally.missing += 1;
+      bump(tally.missing_by_gesture, out.label);
+    } else {
+      tally.idle += 1;
+    }
   }, INTERACT_STEP_MS);
-  return () => window.clearInterval(id);
+  return {
+    stop: () => window.clearInterval(id),
+    // A copy, so a caller holding the tally is not surprised by the
+    // timer mutating it under them.
+    tally: () => ({
+      ...tally,
+      by_gesture: { ...tally.by_gesture },
+      missing_by_gesture: { ...tally.missing_by_gesture },
+    }),
+  };
 }

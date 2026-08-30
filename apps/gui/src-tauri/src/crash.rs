@@ -62,6 +62,16 @@
 //! `WebKitGTK`). On macOS the `WebKit` helpers are launchd-owned XPC
 //! services, not our descendants, so `tree_mb` there counts the host
 //! only (attributing them needs a private API + `unsafe`).
+//!
+//! What counts as a descendant is not the OS's parent link on its own:
+//! Windows recycles PIDs and never clears a dead parent's
+//! `ParentProcessId`, so an unrelated orphan can claim us and be billed
+//! to us whole. Every link is checked against creation time
+//! ([`plausible_link`]), and a family that ends up with no `WebView`
+//! process in it at all is reported as a *broken attribution* rather
+//! than as zero megabytes ([`attribution_fault`]) — the signature of a
+//! second cannet owning the shared `WebView2` browser process, which
+//! would otherwise pass every memory gate by measuring nothing.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -439,6 +449,26 @@ struct MemorySample {
     sys_avail: Option<u64>,
     /// Total physical memory, for context on `sys_avail`.
     sys_total: Option<u64>,
+    /// How many `WebView` processes the family actually contained. Zero
+    /// with a resolved [`Self::host`] is the shared-browser-process
+    /// signature — see [`attribution_fault`].
+    webview_procs: usize,
+}
+
+/// One row of the OS process table, as the attribution walk needs it.
+/// Pure data — no `sysinfo` in the signature — so the walk can be tested
+/// against a faked table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcRow {
+    pid: u32,
+    /// What the OS says the parent is. On Windows this is a *claim*, not
+    /// a fact — see [`descendant_pids`].
+    parent: Option<u32>,
+    /// Process creation time, seconds since the epoch, or `0` when the OS
+    /// would not say (Windows: no handle could be opened for it).
+    started_s: u64,
+    mem_bytes: u64,
+    webview: Option<WebviewKind>,
 }
 
 /// Classify a process by name + command line into a [`WebviewKind`], or
@@ -479,17 +509,16 @@ fn read_memory(sys: &mut System, own_pid: Option<Pid>) -> MemorySample {
             .with_memory()
             .with_cmd(UpdateKind::OnlyIfNotSet),
     );
-    let mut sample = MemorySample {
-        sys_avail: Some(sys.available_memory()),
-        sys_total: Some(sys.total_memory()),
-        js_heap: js_heap_bytes(),
-        ..MemorySample::default()
+    let machine = |mut s: MemorySample| {
+        s.sys_avail = Some(sys.available_memory());
+        s.sys_total = Some(sys.total_memory());
+        s.js_heap = js_heap_bytes();
+        s
     };
     let Some(root) = own_pid.map(sysinfo::Pid::as_u32) else {
-        return sample;
+        return machine(MemorySample::default());
     };
-    // `(pid, parent, mem_bytes, webview-kind)` for every process.
-    let entries: Vec<(u32, Option<u32>, u64, Option<WebviewKind>)> = sys
+    let rows: Vec<ProcRow> = sys
         .processes()
         .values()
         .map(|p| {
@@ -500,45 +529,16 @@ fn read_memory(sys: &mut System, own_pid: Option<Pid>) -> MemorySample {
                 .map(|s| s.to_string_lossy())
                 .collect::<Vec<_>>()
                 .join(" ");
-            (
-                p.pid().as_u32(),
-                p.parent().map(sysinfo::Pid::as_u32),
-                p.memory(),
-                webview_kind(&name, &cmd),
-            )
+            ProcRow {
+                pid: p.pid().as_u32(),
+                parent: p.parent().map(sysinfo::Pid::as_u32),
+                started_s: p.start_time(),
+                mem_bytes: p.memory(),
+                webview: webview_kind(&name, &cmd),
+            }
         })
         .collect();
-    let links: Vec<(u32, Option<u32>)> = entries.iter().map(|(p, par, _, _)| (*p, *par)).collect();
-    let family = descendant_pids(&links, root);
-    sample.host = entries
-        .iter()
-        .find(|(pid, _, _, _)| *pid == root)
-        .map(|(_, _, mem, _)| *mem);
-    // Only report the tree if the root was actually found in the table.
-    if sample.host.is_some() {
-        let in_family = |pid: &u32| family.contains(pid);
-        sample.tree = Some(
-            entries
-                .iter()
-                .filter(|(pid, _, _, _)| in_family(pid))
-                .map(|(_, _, mem, _)| *mem)
-                .sum(),
-        );
-        let wv_sum = |want: Option<WebviewKind>| -> u64 {
-            entries
-                .iter()
-                .filter(|(pid, _, _, kind)| in_family(pid) && (want.is_none() || *kind == want))
-                .filter(|(_, _, _, kind)| kind.is_some())
-                .map(|(_, _, mem, _)| *mem)
-                .sum()
-        };
-        sample.webview = Some(wv_sum(None));
-        sample.webview_browser = Some(wv_sum(Some(WebviewKind::Browser)));
-        sample.webview_renderer = Some(wv_sum(Some(WebviewKind::Renderer)));
-        sample.webview_gpu = Some(wv_sum(Some(WebviewKind::Gpu)));
-        sample.webview_other = Some(wv_sum(Some(WebviewKind::Other)));
-    }
-    sample
+    machine(family_memory(&rows, root))
 }
 
 /// Reusable process-memory sampler for the ADR-0031 diag capture: one
@@ -563,7 +563,16 @@ impl MemSampler {
     /// (megabytes). Figures that couldn't be read (PID unresolved, or the
     /// per-process table missing the root) are skipped rather than zeroed,
     /// so the reduction's slope/peak see only real readings.
-    pub(crate) fn stamp_mb(&mut self, gauges: &mut std::collections::BTreeMap<String, f64>) {
+    ///
+    /// Returns [`attribution_fault`]'s reason when this reading cannot be
+    /// believed to describe *us*. The caller is expected to fail the
+    /// capture on it: a memory metric that reads `0.0` because the
+    /// processes holding the memory were never ours passes every gate it
+    /// is checked against, which is worse than no reading at all.
+    pub(crate) fn stamp_mb(
+        &mut self,
+        gauges: &mut std::collections::BTreeMap<String, f64>,
+    ) -> Option<&'static str> {
         let m = read_memory(&mut self.sys, self.own_pid);
         #[allow(clippy::cast_precision_loss)]
         let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
@@ -577,27 +586,117 @@ impl MemSampler {
                 gauges.insert(key.to_string(), mb(b));
             }
         }
+        attribution_fault(&m)
     }
 }
 
-/// The set of `root` plus every process reachable from it through the
-/// parent links in `links` (`(pid, parent_pid)`). Pure and unit-testable
-/// — no `sysinfo` in the signature. The visited set makes it robust to a
-/// malformed parent chain (a cycle).
-fn descendant_pids(links: &[(u32, Option<u32>)], root: u32) -> std::collections::HashSet<u32> {
+/// Is `child`'s claim to descend from `parent` credible?
+///
+/// A parent link alone is not evidence. Windows never clears a dead
+/// parent's `ParentProcessId`, and PIDs are recycled aggressively, so an
+/// orphan whose long-dead parent happened to hold the PID this process
+/// now holds still *claims* us — and it is billed to us at full size (a
+/// 4 GB foreign app was once measured as ours). Creation time is the
+/// ground truth the claim has to survive: a real child cannot have
+/// started before its parent.
+///
+/// Unknown (`0`) creation times are treated as *not* ours. On Windows
+/// the time is unreadable only when no handle can be opened for the
+/// process, which never applies to our own family — the host, the
+/// sidecar, and every `WebView2` process are ours to query (measured on
+/// the reference machine: every `msedgewebview2` process reports a
+/// creation time to an ordinary medium-integrity caller). Strangers we
+/// cannot open still report memory, so admitting them is the expensive
+/// mistake, and excluding them the cheap one.
+fn plausible_link(child: &ProcRow, parent: &ProcRow) -> bool {
+    child.started_s != 0 && parent.started_s != 0 && child.started_s >= parent.started_s
+}
+
+/// The set of `root` plus every process credibly descended from it
+/// ([`plausible_link`]). Pure and unit-testable — no `sysinfo` in the
+/// signature. The visited set makes it robust to a malformed parent
+/// chain (a cycle).
+fn descendant_pids(rows: &[ProcRow], root: u32) -> std::collections::HashSet<u32> {
     let mut set = std::collections::HashSet::new();
     let mut stack = vec![root];
     while let Some(pid) = stack.pop() {
         if !set.insert(pid) {
             continue;
         }
-        for (child, parent) in links {
-            if *parent == Some(pid) && !set.contains(child) {
-                stack.push(*child);
+        let Some(parent) = rows.iter().find(|r| r.pid == pid) else {
+            continue;
+        };
+        for child in rows {
+            if child.parent == Some(pid)
+                && !set.contains(&child.pid)
+                && plausible_link(child, parent)
+            {
+                stack.push(child.pid);
             }
         }
     }
     set
+}
+
+/// Why a memory sample cannot be believed to describe *this* app, or
+/// `None` when it can.
+///
+/// The failure this exists for is silent and passes every gate: when a
+/// second cannet already owns the shared `WebView2` browser process, our
+/// own renderer is that process's child, not ours, so the whole `WebView`
+/// family falls outside our subtree. `webview_mb` then reads `0.0` —
+/// which no gate can distinguish from a renderer that grew not at all.
+/// A running window always has `WebView` processes; a family with none is
+/// a broken attribution, not a healthy reading.
+///
+/// macOS is exempt: its `WebKit` helpers are launchd-owned XPC services
+/// and are never our descendants, so zero there is the documented normal
+/// (see the module docs).
+fn attribution_fault(sample: &MemorySample) -> Option<&'static str> {
+    if !WEBVIEW_IS_OUR_DESCENDANT || sample.host.is_none() || sample.webview_procs > 0 {
+        return None;
+    }
+    Some(
+        "no WebView process is attributed to this host — another cannet almost \
+         certainly owns the shared WebView2 browser process, so the renderer is \
+         not our descendant and every webview memory figure would read 0.0. \
+         Close the other instance and re-run.",
+    )
+}
+
+/// Whether this platform's `WebView` runs as our own descendant
+/// (`WebView2` on Windows, `WebKitGTK` on Linux). macOS's `WebKit`
+/// helpers are launchd-owned, so they are not.
+const WEBVIEW_IS_OUR_DESCENDANT: bool = !cfg!(target_os = "macos");
+
+/// Reduce one process table to the family memory split for `root`. Pure
+/// — the half of [`read_memory`] worth testing, and the only half a
+/// faked table can exercise.
+fn family_memory(rows: &[ProcRow], root: u32) -> MemorySample {
+    let mut sample = MemorySample {
+        host: rows.iter().find(|r| r.pid == root).map(|r| r.mem_bytes),
+        ..MemorySample::default()
+    };
+    // Only report the tree if the root was actually found in the table.
+    if sample.host.is_none() {
+        return sample;
+    }
+    let family = descendant_pids(rows, root);
+    let mine = rows.iter().filter(|r| family.contains(&r.pid));
+    sample.tree = Some(mine.clone().map(|r| r.mem_bytes).sum());
+    let wv = || mine.clone().filter(|r| r.webview.is_some());
+    let wv_sum = |want: Option<WebviewKind>| -> u64 {
+        wv().filter(|r| want.is_none() || r.webview == want)
+            .map(|r| r.mem_bytes)
+            .sum()
+    };
+    sample.webview_procs = wv().count();
+    sample.webview = Some(wv_sum(None));
+    sample.webview_browser = Some(wv_sum(Some(WebviewKind::Browser)));
+    sample.webview_renderer = Some(wv_sum(Some(WebviewKind::Renderer)));
+    sample.webview_gpu = Some(wv_sum(Some(WebviewKind::Gpu)));
+    sample.webview_other = Some(wv_sum(Some(WebviewKind::Other)));
+    sample
 }
 
 /// The health-sample message body. Pure so it's unit-testable. Memory is
@@ -761,6 +860,7 @@ mod tests {
             js_heap: Some(268_435_456),
             sys_avail: Some(1_073_741_824),
             sys_total: Some(34_359_738_368),
+            webview_procs: 4,
         };
         assert_eq!(
             format_health_message(
@@ -938,29 +1038,134 @@ mod tests {
         );
     }
 
+    /// A row of a faked process table. `mem` is in MB for readability;
+    /// the walk only ever sums it.
+    fn row(
+        pid: u32,
+        parent: Option<u32>,
+        started_s: u64,
+        mem_mb: u64,
+        webview: Option<WebviewKind>,
+    ) -> ProcRow {
+        ProcRow {
+            pid,
+            parent,
+            started_s,
+            mem_bytes: mem_mb * 1024 * 1024,
+            webview,
+        }
+    }
+
+    /// A healthy Windows table: the host, its `WebView2` browser and the
+    /// browser's renderer / GPU children, each started after its parent.
+    fn healthy_table() -> Vec<ProcRow> {
+        vec![
+            row(100, Some(4), 1_000, 200, None),
+            row(200, Some(100), 1_002, 300, Some(WebviewKind::Browser)),
+            row(300, Some(200), 1_003, 400, Some(WebviewKind::Renderer)),
+            row(400, Some(200), 1_003, 150, Some(WebviewKind::Gpu)),
+            row(500, Some(200), 1_004, 50, Some(WebviewKind::Other)),
+        ]
+    }
+
     #[test]
     fn descendant_pids_collects_subtree_and_excludes_unrelated() {
-        // host(1) → webview(2) → renderer(3); gpu(4) child of webview;
-        // unrelated(9) must be excluded.
-        let links = [
-            (1u32, None),
-            (2u32, Some(1)),
-            (3u32, Some(2)),
-            (4u32, Some(2)),
-            (9u32, None),
-        ];
-        let fam = descendant_pids(&links, 1);
-        assert_eq!(fam, [1, 2, 3, 4].into_iter().collect());
-        assert!(!fam.contains(&9));
+        let mut rows = healthy_table();
+        // Unrelated process, no relation to us.
+        rows.push(row(900, None, 900, 4_096, None));
+        let fam = descendant_pids(&rows, 100);
+        assert_eq!(fam, [100, 200, 300, 400, 500].into_iter().collect());
+        assert!(!fam.contains(&900));
         // A leaf is just itself.
-        assert_eq!(descendant_pids(&links, 3), [3].into_iter().collect());
+        assert_eq!(descendant_pids(&rows, 300), [300].into_iter().collect());
     }
 
     #[test]
     fn descendant_pids_tolerates_a_parent_cycle() {
         // Malformed: 2's parent is 3 and 3's parent is 2. Must terminate.
-        let links = [(1u32, None), (2u32, Some(3)), (3u32, Some(2))];
-        assert_eq!(descendant_pids(&links, 2), [2, 3].into_iter().collect());
+        let rows = [
+            row(1, None, 10, 1, None),
+            row(2, Some(3), 20, 1, None),
+            row(3, Some(2), 20, 1, None),
+        ];
+        assert_eq!(descendant_pids(&rows, 2), [2, 3].into_iter().collect());
+    }
+
+    #[test]
+    fn a_pid_reuse_orphan_is_not_adopted() {
+        // The measured failure: a foreign app started long before us
+        // still names the PID we now hold as its parent, because Windows
+        // never cleared the link when its real parent died. Billed to us
+        // whole, it read as 4 GB of "our" memory.
+        let mut rows = healthy_table();
+        rows.push(row(900, Some(100), 5, 4_096, None));
+        let fam = descendant_pids(&rows, 100);
+        assert!(
+            !fam.contains(&900),
+            "a process older than its claimed parent cannot be its child"
+        );
+        // And the memory it would have contributed stays out of the tree.
+        let m = family_memory(&rows, 100);
+        assert_eq!(m.tree, Some(1_100 * 1024 * 1024));
+    }
+
+    #[test]
+    fn an_unreadable_creation_time_is_not_ours() {
+        // A process we cannot open reports `0`. Our own family is always
+        // ours to open, so `0` means stranger — and strangers still
+        // report memory, so admitting one is the expensive mistake.
+        let mut rows = healthy_table();
+        rows.push(row(900, Some(100), 0, 4_096, None));
+        assert!(!descendant_pids(&rows, 100).contains(&900));
+    }
+
+    #[test]
+    fn family_memory_splits_the_webview_by_role() {
+        let m = family_memory(&healthy_table(), 100);
+        let mb = |n: u64| Some(n * 1024 * 1024);
+        assert_eq!(m.host, mb(200));
+        assert_eq!(m.tree, mb(1_100));
+        assert_eq!(m.webview, mb(900));
+        assert_eq!(m.webview_browser, mb(300));
+        assert_eq!(m.webview_renderer, mb(400));
+        assert_eq!(m.webview_gpu, mb(150));
+        assert_eq!(m.webview_other, mb(50));
+        assert_eq!(m.webview_procs, 4);
+        assert_eq!(attribution_fault(&m), None);
+    }
+
+    // macOS's `WebKit` helpers are launchd-owned, so a family with none
+    // in it is the documented normal there — nothing to report.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_shared_browser_process_fails_loudly_instead_of_reading_zero() {
+        // A second cannet already owns the `WebView2` browser process, so
+        // *our* renderer hangs off *its* host (pid 700), not ours. The
+        // old walk reported `webview_mb: 0.0` and every memory gate
+        // passed. The reading has to be rejected, not believed.
+        let rows = vec![
+            row(100, Some(4), 1_000, 200, None),
+            row(700, Some(4), 900, 200, None),
+            row(710, Some(700), 902, 300, Some(WebviewKind::Browser)),
+            row(720, Some(710), 1_001, 400, Some(WebviewKind::Renderer)),
+        ];
+        let m = family_memory(&rows, 100);
+        assert_eq!(m.webview, Some(0), "nothing webview-ish is ours");
+        assert_eq!(m.webview_procs, 0);
+        assert!(
+            attribution_fault(&m).is_some_and(|s| s.contains("WebView")),
+            "an impossible zero must be reported, not passed: {:?}",
+            attribution_fault(&m)
+        );
+    }
+
+    #[test]
+    fn an_unresolved_host_is_not_an_attribution_fault() {
+        // No PID, no family, no claim — the per-process figures are
+        // simply absent, which no gate reads as healthy.
+        let m = family_memory(&healthy_table(), 999);
+        assert_eq!(m.host, None);
+        assert_eq!(attribution_fault(&m), None);
     }
 
     #[test]
