@@ -44,6 +44,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
+import { useInterfaceDiscovery, type DiscoveryState } from "./ConnectionManagement";
 import {
   addressShapeError,
   browseNotice,
@@ -85,6 +86,23 @@ export function ServersPanel(_props: IDockviewPanelProps) {
   const [highlight, setHighlight] = useState<string | null>(null);
 
   const matches = useMemo(() => matchServerRows(servers, query), [servers, query]);
+
+  // Watch every server the store can actually reach — a pin or an
+  // explicit unprotected choice — so its row shows live interfaces and
+  // its connection is exercised (with backoff) while the panel is
+  // open, instead of failing silently until a bus needs it. Untrusted
+  // rows are left alone: a watch would dial them and raise a
+  // first-contact question nobody asked for. The host refcounts the
+  // watch tasks, so sharing an address with Connection Management is
+  // safe in both directions.
+  const watchable = useMemo(
+    () =>
+      servers
+        .filter((r) => r.fingerprint !== null || r.insecure)
+        .map((r) => r.address),
+    [servers],
+  );
+  const discovery = useInterfaceDiscovery(watchable);
 
   const run = useCallback(async (address: string, action: () => Promise<void>) => {
     setBusy(address);
@@ -258,6 +276,7 @@ export function ServersPanel(_props: IDockviewPanelProps) {
             <ServerRowView
               key={row.address}
               row={row}
+              discovery={discovery.entries[row.address]}
               busy={busy === row.address}
               highlighted={highlight === row.address}
               tokenOpen={tokenFor === row.address}
@@ -310,8 +329,29 @@ function tokenLabel(row: ServerRow): string {
   return row.hasToken ? "token stored" : "no token";
 }
 
+/// The row's live-interfaces line. Failures are deliberately not
+/// worded here: a terminal one surfaces as the row's trust prompt and
+/// badge, and a down server keeps its last snapshot (or "discovering…")
+/// rather than flashing transport errors at the panel.
+function interfacesLabel(state: DiscoveryState): string {
+  switch (state.status) {
+    case "pending":
+      return "interfaces: discovering…";
+    case "err":
+      return "interfaces: unreachable";
+    case "ok":
+      return state.interfaces.length === 0
+        ? "no interfaces"
+        : `interfaces: ${state.interfaces.map((i) => i.display_name).join(", ")}`;
+  }
+}
+
 interface ServerRowViewProps {
   row: ServerRow;
+  /// The host's live interface snapshot for this row's address —
+  /// present only for a row the panel watches (something is stored to
+  /// reach it with).
+  discovery: DiscoveryState | undefined;
   busy: boolean;
   /// The last add pointed at this row — either it was just added, or it
   /// was already here and the panel is saying so rather than adding it
@@ -326,6 +366,7 @@ interface ServerRowViewProps {
 
 function ServerRowView({
   row,
+  discovery,
   busy,
   highlighted,
   tokenOpen,
@@ -405,6 +446,9 @@ function ServerRowView({
       </span>
       {row.fingerprint !== null && (
         <code className="server-fingerprint">{row.fingerprint}</code>
+      )}
+      {discovery !== undefined && (
+        <span className="server-interfaces">{interfacesLabel(discovery)}</span>
       )}
       {row.insecure && (
         <span className="server-fingerprint unprotected">
