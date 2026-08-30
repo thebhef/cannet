@@ -75,9 +75,9 @@ have side effects that are easy to forget:
 report** — this is an exit criterion, not a nicety. The hook
 deliberately scopes checks down, and says so in its own comments:
 Rust tests cover only the crates you touched, never their dependents,
-and the sidecar freeze, the MDF export oracle and the source-comment
-check are left to CI entirely. A phase that trusts the hook can
-report green while CI is red, and has.
+and the sidecar freeze and the MDF export oracle are left to CI
+entirely. A phase that trusts the hook can report green while CI is
+red, and has.
 
 Read `.github/workflows/ci.yml` and match it — it is canonical, and
 this table only tells you the shape. Cheapest first, so you fail
@@ -85,13 +85,27 @@ fast:
 
 | Job | Roughly |
 |---|---|
-| comment-references | the workflow's `git grep --untracked`, verbatim |
 | frontend | `pnpm --dir apps/gui test`, then `pnpm --dir apps/gui build` |
 | python | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` — all via `uv run` |
 | rust | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` |
 | mdf-export-oracle | the `cannet-mdf` sample export, then the asammdf validation |
 | rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
 | sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` |
+
+The `comment-references` check no longer runs in CI — run its grep by
+hand before every commit, in addition to the six jobs above.
+`--untracked` is load-bearing — a file you just wrote is not yet
+tracked, so a plain `git grep` misses it and the violation surfaces
+only later:
+
+```sh
+git grep --untracked -Ein "task [0-9]|plans/" -- apps/ crates/
+```
+
+A hit means a source comment under `apps/` or `crates/` names a task
+number or a `plans/` path (`CLAUDE.md` § Documentation forbids both) —
+fix the comment to cite the governing ADR or state the reason inline,
+then re-run the grep clean before committing.
 
 **A job that was already red when you branched is still yours to
 report** — name it, name the commit that introduced it (`git log -S`
@@ -260,9 +274,9 @@ one; if it blocks your phase, stop and report.
   focus on the owner's machine. Verify by invoking commands
   directly, or hand the check to the overseer.
 - **No task numbers or `plans/` paths in source comments.** Cite
-  ADRs — the durable decision — never the roadmap, which churns. CI
-  enforces this (`comment-references`), and it searches untracked
-  files too.
+  ADRs — the durable decision — never the roadmap, which churns. You
+  enforce this yourself with the `comment-references` grep in § 3
+  (it searches untracked files too) — it no longer runs in CI.
 
 ## 8. Report back
 
@@ -272,8 +286,9 @@ One commit, green, then report — short, in this order:
 - the commit message you composed
 - perf readings, anything over § 4's thresholds first
 - **one row per CI job, with its result and the command you ran** —
-  all seven, every phase. "Green" without the table is not a report,
-  and a job you did not run is a red job.
+  all six, every phase, plus the hand-run `comment-references` grep.
+  "Green" without the table is not a report, and a job you did not
+  run is a red job.
 - the NSIS installer's path
 - status-log, blockers, and queue entries you added
 - what you deviated on, and why
