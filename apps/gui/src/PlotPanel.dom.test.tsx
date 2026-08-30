@@ -6521,8 +6521,10 @@ describe("PlotPanel diagnostic readouts", () => {
     // `PlotArea` could not benefit from `React.memo` while the panel
     // handed it a fresh inline arrow for every callback on every render.
     await withSizedCanvas(async () => {
-      // A *stopped* panel, so no self-paced resample can land between the
-      // baseline read and the click and be mistaken for a fan-out.
+      // A *stopped* panel, so the self-paced resample loop is off and
+      // cannot land a tick between the baseline read and the click. Its
+      // mount-time one-shots still can, though — see the quiet loop
+      // below.
       const registry = makeRegistry({
         id: "el-memo",
         trace: { start: 0, end: 60, isPaused: false },
@@ -6531,9 +6533,26 @@ describe("PlotPanel diagnostic readouts", () => {
       addFocusedSignal("EngineSpeed");
       fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
       await act(async () => dropSignal("Area 2", "EngineSpeed", "rpm"));
+      // Past every mount-time one-shot each area schedules: the
+      // first-sample gate (`useFirstSampleWait`) and the once-per-area
+      // post-mount uPlot rebuild, whose trailing `requestAnimationFrame`
+      // re-sample is the one that used to land *after* the baseline read
+      // and read as a fan-out. A fixed sleep cannot drain it — the
+      // rebuild's commit only flushes when this `act` scope closes, so
+      // the animation frame it schedules is still pending however long
+      // the sleep was. Sleep past the timers, then flush until a flush
+      // costs nothing, the way the per-area render-scoping tests below
+      // do.
       await act(async () => {
-        await new Promise((r) => setTimeout(r, 400));
+        await new Promise((r) => setTimeout(r, FIRST_SAMPLE_INDICATOR_MS + 100));
       });
+      for (let i = 0; i < 20; i++) {
+        const settled = counter("render.PlotArea");
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 60));
+        });
+        if (counter("render.PlotArea") === settled) break;
+      }
 
       const before = counter("render.PlotArea");
       // Purely panel-local: the toolbar context menu. No `PlotArea` prop
