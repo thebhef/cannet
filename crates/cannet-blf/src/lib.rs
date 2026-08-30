@@ -14,9 +14,10 @@
 //! into place on [`BlfCaptureWriter::finish`] — a mid-write crash
 //! therefore leaves no half-file behind at `<dest>`. A hard kill
 //! skips [`Drop`] and does leave the `<dest>.part`, carrying the
-//! placeholder header the writer stamped at open; the reader recovers
-//! what such a file holds rather than refusing it (see
-//! [`format::reader`]).
+//! placeholder header the writer stamped at open — statistics unfilled,
+//! but the capture's `measurement_start_time` already in it, written the
+//! moment the writer latched one. The reader recovers what such a file
+//! holds rather than refusing it (see [`format::reader`]).
 //!
 //! A third entry point, [`scan_blf`], walks a file header-only for a
 //! channel census, time span, and markers — everything the import
@@ -131,10 +132,14 @@ impl BlfCanFrameSource {
 
     /// True when the file still carries the placeholder header its
     /// writer stamped at open, i.e. the writer never finished. The
-    /// frames are read the same way either way; what the file cannot
-    /// supply is its wall clock, so
-    /// [`Self::file_statistics`]`().measurement_start_time` is the
-    /// unset sentinel and every frame's timestamp is an offset from
+    /// frames are read the same way either way, and what the header
+    /// cannot supply is its statistics — the object count, the sizes and
+    /// the span come from the walk instead.
+    ///
+    /// `measurement_start_time` is the exception: this writer persists
+    /// the anchor as soon as it has one, so a killed capture keeps its
+    /// wall clock. A `.part` from a build that wrote it only at `finish`
+    /// still carries the unset sentinel, and its timestamps run from
     /// zero.
     pub fn is_unfinalized(&self) -> bool {
         self.reader.file_statistics().is_unfinalized()
@@ -577,7 +582,7 @@ impl BlfCaptureWriter {
     ) -> Result<Self, BlfWriteError> {
         let mut writer = Self::create(dest)?;
         if let Some(inner) = writer.inner.as_mut() {
-            inner.set_start_if_unset((start_unix_nanos / 1_000_000) * 1_000_000);
+            inner.set_start_if_unset((start_unix_nanos / 1_000_000) * 1_000_000)?;
         }
         Ok(writer)
     }
@@ -593,7 +598,7 @@ impl BlfCaptureWriter {
         // (existing or just-set) so the encoder produces a relative
         // per-event timestamp that carries the sub-ms tail.
         let candidate = (frame.timestamp_ns / 1_000_000) * 1_000_000;
-        let start = inner.set_start_if_unset(candidate);
+        let start = inner.set_start_if_unset(candidate)?;
         let bytes = frame_to_object_bytes(frame, Some(start));
         inner.append_object(&bytes, frame.timestamp_ns)?;
         self.frame_count += 1;
@@ -634,8 +639,10 @@ impl BlfCaptureWriter {
     /// `0x00RRGGBB` color (ADR 0035) and becomes the marker's **fill** —
     /// `background_color`, under a white `foreground_color`, which is
     /// how python-can's independent BLF writer packs one and the only
-    /// reading under which the two fields mean text-on-a-chip. `0` is an
-    /// uncolored event and keeps the neutral black-on-white default.
+    /// reading under which the two fields mean text-on-a-chip.
+    /// `None` is an uncolored event and keeps the neutral
+    /// black-on-white default; the record's two color fields are what
+    /// make that distinct from a `Some(0x0000_0000)` black chip.
     ///
     /// Markers ride in the same `LOG_CONTAINER`s as CAN frames in
     /// timestamp order; intersperse them with `append` as the capture
@@ -645,13 +652,13 @@ impl BlfCaptureWriter {
         timestamp_ns: u64,
         marker_name: &str,
         description: &str,
-        color: u32,
+        color: Option<u32>,
     ) -> Result<(), BlfWriteError> {
         let inner = self.inner.as_mut().ok_or_else(|| {
             BlfWriteError::Io(io::Error::other("writer has already been finished"))
         })?;
         let candidate = (timestamp_ns / 1_000_000) * 1_000_000;
-        let start = inner.set_start_if_unset(candidate);
+        let start = inner.set_start_if_unset(candidate)?;
         let rel = timestamp_ns.saturating_sub(start);
         let mut marker = format::marker::build(
             rel,
@@ -662,8 +669,9 @@ impl BlfCaptureWriter {
         // The event's color (ADR 0035) is the chip, not the glyphs: fill
         // it and put white text over it. An uncolored event keeps
         // `build`'s neutral black-on-white, byte-identical to what one
-        // has always produced.
-        if color & 0x00FF_FFFF != 0 {
+        // has always produced — the pair of fields is what tells the two
+        // apart, so black gets a chip like any other color.
+        if let Some(color) = color {
             marker.background_color = color & 0x00FF_FFFF;
             marker.foreground_color = 0x00FF_FFFF;
         }
@@ -694,7 +702,7 @@ impl BlfCaptureWriter {
             BlfWriteError::Io(io::Error::other("writer has already been finished"))
         })?;
         let candidate = (timestamp_ns / 1_000_000) * 1_000_000;
-        let start = inner.set_start_if_unset(candidate);
+        let start = inner.set_start_if_unset(candidate)?;
         let rel = timestamp_ns.saturating_sub(start);
         let comment =
             format::text::build_event_comment(rel, commented_event_type, text.as_bytes().to_vec());
@@ -1067,14 +1075,14 @@ mod tests {
         };
         writer.append(&frame_at(TS_BASE_NS)).unwrap(); // before start: dropped, walk still passes it
         writer
-            .append_marker(TS_BASE_NS, "before", "note-before", 0)
+            .append_marker(TS_BASE_NS, "before", "note-before", None)
             .unwrap();
         writer.append(&frame_at(TS_BASE_NS + 1_000)).unwrap(); // == start: kept
         writer.append(&frame_at(TS_BASE_NS + 2_000)).unwrap(); // inside: kept
         writer.append(&frame_at(TS_BASE_NS + 3_000)).unwrap(); // == end: kept
         writer.append(&frame_at(TS_BASE_NS + 4_000)).unwrap(); // past end: skipped, walk continues
         writer
-            .append_marker(TS_BASE_NS + 4_000, "after", "note-after", 0)
+            .append_marker(TS_BASE_NS + 4_000, "after", "note-after", None)
             .unwrap();
         writer.append(&frame_at(TS_BASE_NS + 1_500)).unwrap(); // a dip back in range: must not be lost
         writer.finish().unwrap();
@@ -1221,7 +1229,7 @@ mod tests {
             TS_BASE_NS + 1_000_000,
             "stuck bit",
             "note-uuid-1",
-            0x00FF_8800,
+            Some(0x00FF_8800),
         )
         .unwrap();
         let outcome = w.finish().unwrap();
@@ -1279,7 +1287,7 @@ mod tests {
             )
             .unwrap();
             if i % 2 == 0 {
-                w.append_marker(ts, &format!("m{i}"), &format!("id-{i}"), 0)
+                w.append_marker(ts, &format!("m{i}"), &format!("id-{i}"), None)
                     .unwrap();
             }
         }
@@ -1316,15 +1324,19 @@ mod tests {
     ///
     /// The control is the uncoloured marker beside it: it keeps the
     /// neutral black-on-white default, byte-for-byte what an uncoloured
-    /// note has always produced.
+    /// note has always produced. Because that default lives in *both*
+    /// fields, black is not the same record as uncoloured, and the third
+    /// marker pins that.
     #[test]
     fn a_marker_carries_the_event_colour_as_its_fill_over_white_text() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("coloured.blf");
         let mut w = BlfCaptureWriter::create(&dest).unwrap();
-        w.append_marker(TS_BASE_NS, "coloured", "id-1", 0x00FF_8800)
+        w.append_marker(TS_BASE_NS, "coloured", "id-1", Some(0x00FF_8800))
             .unwrap();
-        w.append_marker(TS_BASE_NS + 1_000, "plain", "id-2", 0)
+        w.append_marker(TS_BASE_NS + 1_000, "plain", "id-2", None)
+            .unwrap();
+        w.append_marker(TS_BASE_NS + 2_000, "black", "id-3", Some(0x0000_0000))
             .unwrap();
         w.finish().unwrap();
 
@@ -1335,13 +1347,17 @@ mod tests {
                 seen.push(m);
             }
         }
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.len(), 3);
 
         assert_eq!(seen[0].background_color, 0x00FF_8800);
         assert_eq!(seen[0].foreground_color, 0x00FF_FFFF);
         // Uncoloured: the build default, black on white.
         assert_eq!(seen[1].background_color, 0x00FF_FFFF);
         assert_eq!(seen[1].foreground_color, 0x0000_0000);
+        // Black is a colour, and the pair says so: a black chip under
+        // white text, which is what every other colour gets.
+        assert_eq!(seen[2].background_color, 0x0000_0000);
+        assert_eq!(seen[2].foreground_color, 0x00FF_FFFF);
     }
 
     /// Without a sink, markers stay invisible to the frame adapter —
@@ -1352,7 +1368,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("unwatched.blf");
         let mut w = BlfCaptureWriter::create(&dest).unwrap();
-        w.append_marker(TS_BASE_NS, "m", "id", 0).unwrap();
+        w.append_marker(TS_BASE_NS, "m", "id", None).unwrap();
         w.append(
             &CanFrame::classic(
                 TS_BASE_NS,

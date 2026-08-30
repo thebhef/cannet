@@ -450,7 +450,9 @@ counted in the same report when they are.
 `group_name` is `cannet`, `marker_name` is the event's label, and the
 event's colour is the marker's **fill** — `background_color` under a white
 `foreground_color`, which is how python-can's independent BLF writer packs
-one. Everything else an event holds and the record has no field for — its
+one. An uncoloured event leaves both fields at the neutral black-on-white
+default, which is what keeps it distinct from a chosen `#000000`.
+Everything else an event holds and the record has no field for — its
 stable id, its kind, its tag, and the structural subject references of
 [ADR 0056](adr/0056-an-event-subject-is-a-structural-reference.md) — rides
 the `description` in a `cannet-event/1` text block under the user's own

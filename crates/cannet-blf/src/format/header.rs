@@ -266,11 +266,14 @@ impl FileStatistics {
     /// close, and even an empty BLF reports its 144 header bytes, so a
     /// header claiming a zero-byte file is one whose writer was killed
     /// mid-run. Its `object_count`, `uncompressed_file_size` and
-    /// `last_object_time` are placeholders too, and its
-    /// `measurement_start_time` is the unset sentinel — which means the
-    /// capture's wall clock is not in the file at all and cannot be
-    /// recovered from it, since per-event timestamps are offsets *from*
-    /// that anchor.
+    /// `last_object_time` are placeholders too.
+    ///
+    /// `measurement_start_time` need not be: per-event timestamps are
+    /// offsets *from* that anchor, so this writer puts it in the header
+    /// as soon as it latches one rather than at close. A file whose
+    /// anchor is still the unset sentinel — an older build's `.part` —
+    /// has timestamps that run from zero, and nothing can recover the
+    /// wall clock from it.
     pub fn is_unfinalized(&self) -> bool {
         self.file_size == 0
     }

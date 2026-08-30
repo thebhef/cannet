@@ -460,7 +460,9 @@ mod tests {
         let mut w = BlfFileWriter::create(&path).unwrap();
 
         let abs_ns = 1_700_000_000_u64 * 1_000_000_000 + 5_000_000;
-        let start = w.set_start_if_unset((abs_ns / 1_000_000) * 1_000_000);
+        let start = w
+            .set_start_if_unset((abs_ns / 1_000_000) * 1_000_000)
+            .unwrap();
         let rel = abs_ns - start;
 
         let c = build_event_comment(
@@ -491,7 +493,9 @@ mod tests {
         let mut w = BlfFileWriter::create(&path).unwrap();
 
         let abs_ns = 1_700_000_000_u64 * 1_000_000_000 + 5_000_000;
-        let start = w.set_start_if_unset((abs_ns / 1_000_000) * 1_000_000);
+        let start = w
+            .set_start_if_unset((abs_ns / 1_000_000) * 1_000_000)
+            .unwrap();
         let rel = abs_ns - start;
 
         let a = build_app_text(

@@ -156,7 +156,9 @@ fn oracle_lists_global_marker_written_by_our_writer() {
 
     let mut w = BlfFileWriter::create(&path).unwrap();
     let abs_ns = TS_BASE_NS + 12_345_678;
-    let start = w.set_start_if_unset((abs_ns / 1_000_000) * 1_000_000);
+    let start = w
+        .set_start_if_unset((abs_ns / 1_000_000) * 1_000_000)
+        .unwrap();
     let rel = abs_ns - start;
     let m = marker::build(
         rel,
@@ -191,7 +193,9 @@ fn oracle_lists_text_annotations_written_by_our_writer() {
 
     let mut w = BlfFileWriter::create(&path).unwrap();
     let abs_ns = TS_BASE_NS + 9_876_543;
-    let start = w.set_start_if_unset((abs_ns / 1_000_000) * 1_000_000);
+    let start = w
+        .set_start_if_unset((abs_ns / 1_000_000) * 1_000_000)
+        .unwrap();
     let rel = abs_ns - start;
 
     let comment = text::build_event_comment(
@@ -247,7 +251,9 @@ fn oracle_lists_diagnostics_written_by_our_writer() {
 
     let mut w = BlfFileWriter::create(&path).unwrap();
     let base_abs = TS_BASE_NS;
-    let start = w.set_start_if_unset((base_abs / 1_000_000) * 1_000_000);
+    let start = w
+        .set_start_if_unset((base_abs / 1_000_000) * 1_000_000)
+        .unwrap();
 
     let mut s = diagnostics::build_can_statistic(base_abs - start, 1, 1_500);
     s.standard_data_frames = 250;

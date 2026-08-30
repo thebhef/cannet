@@ -80,10 +80,17 @@ pub(crate) struct EventText {
 }
 
 impl EventText {
-    /// The parts of `note` that **no** capture-format field carries: its
-    /// id, kind, tag and subjects, under its own description. A caller
-    /// whose container has no name or colour field fills `label` /
-    /// `color` in afterwards.
+    /// The parts of `note` that ride the block on **every** carrier: its
+    /// id, kind, tag, subjects, and the object type a message-bound
+    /// event's comment is attached to, under its own description — plus
+    /// whatever a later schema version wrote that this build cannot read,
+    /// carried through verbatim. A caller whose container has no name or
+    /// colour field fills `label` / `color` in afterwards.
+    ///
+    /// `commentedEventType` is in the block even where the record has its
+    /// own field for it (BLF's `EVENT_COMMENT`, which still gets the
+    /// native field for a foreign reader): one grammar that says the same
+    /// thing whatever is carrying it.
     pub(crate) fn from_note(note: &Note) -> Self {
         Self {
             description: note.description.clone(),
@@ -92,9 +99,9 @@ impl EventText {
             label: None,
             color: None,
             tag: note.tag.clone(),
-            commented_event_type: None,
+            commented_event_type: note.commented_event_type,
             subjects: note.subjects.clone(),
-            extra: Vec::new(),
+            extra: note.unknown_block_lines.clone(),
         }
     }
 
@@ -340,6 +347,7 @@ mod tests {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         }
     }
 

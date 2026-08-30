@@ -432,7 +432,9 @@ mod tests {
         let mut writer = BlfFileWriter::create(&path).unwrap();
 
         let base_abs = 1_700_000_000_u64 * 1_000_000_000;
-        let start = writer.set_start_if_unset((base_abs / 1_000_000) * 1_000_000);
+        let start = writer
+            .set_start_if_unset((base_abs / 1_000_000) * 1_000_000)
+            .unwrap();
 
         // 1) CAN_STATISTIC at t=0
         let mut statistic = build_can_statistic(base_abs - start, 1, 2_500); // 25.00 %

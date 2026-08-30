@@ -144,8 +144,9 @@ pub struct Note {
     #[serde(default)]
     pub kind: EventKind,
     /// Optional `#RRGGBB` color (ADR 0035). `None` renders in the view's
-    /// default event color and round-trips through the BLF marker's
-    /// `foreground_color`. `#[serde(default)]` for back-compat.
+    /// default event color, and is a distinct state from a chosen
+    /// `#000000` in both capture formats (ADR 0057).
+    /// `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub color: Option<String>,
     /// Optional free-text body — the "why" behind the label, which the
@@ -175,6 +176,16 @@ pub struct Note {
     /// `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub subjects: Vec<EventSubject>,
+    /// Lines the event's `cannet-event/1` block carried that this build
+    /// cannot read, verbatim and in file order (ADR 0057). A file written
+    /// by a later schema version, opened and saved here, keeps the fields
+    /// this one does not understand instead of losing them.
+    ///
+    /// Empty for every event this build authored. The frontend never
+    /// reads it; `#[serde(default)]` keeps a stored session and the
+    /// frontend's own twin of this type valid without it.
+    #[serde(default)]
+    pub unknown_block_lines: Vec<String>,
 }
 
 impl Note {
@@ -852,6 +863,7 @@ mod tests {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         }
     }
 
@@ -1120,6 +1132,7 @@ mod category_tests {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         }
     }
 
@@ -1134,6 +1147,7 @@ mod category_tests {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         }
     }
 
@@ -1231,6 +1245,7 @@ mod subject_tests {
             tag: None,
             commented_event_type: None,
             subjects: Vec::new(),
+            unknown_block_lines: Vec::new(),
         }
     }
 

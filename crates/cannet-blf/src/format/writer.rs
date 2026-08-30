@@ -50,9 +50,8 @@ pub struct BlfFileWriter {
 impl BlfFileWriter {
     /// Create a new BLF at `path` and write a placeholder
     /// `FileStatistics` header. The header is overwritten with the
-    /// correct values on [`Self::finish`].
-    // `expect` is unreachable: 144 fits in u32 trivially.
-    #[allow(clippy::missing_panics_doc)]
+    /// correct values on [`Self::finish`], and with the anchor alone as
+    /// soon as [`Self::set_start_if_unset`] latches one.
     pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut file = OpenOptions::new()
             .create(true)
@@ -60,24 +59,7 @@ impl BlfFileWriter {
             .read(true)
             .write(true)
             .open(path)?;
-        // Placeholder FileStatistics: signature and statistics_size
-        // are correct; everything else is zero until finish.
-        let placeholder = FileStatistics {
-            statistics_size: u32::try_from(FILE_STATISTICS_MIN_BYTES).expect("144 fits in u32"),
-            api_number: 0,
-            application_id: 0,
-            compression_level: 0,
-            application_major: 0,
-            application_minor: 0,
-            file_size: 0,
-            uncompressed_file_size: 0,
-            object_count: 0,
-            application_build: 0,
-            measurement_start_time: SystemTime::default(),
-            last_object_time: SystemTime::default(),
-            restore_points_offset: 0,
-        };
-        file.write_all(&placeholder.encode())?;
+        file.write_all(&placeholder_header(SystemTime::default()).encode())?;
         Ok(Self {
             file,
             buffer: Vec::with_capacity(DEFAULT_CONTAINER_BUFFER_BYTES),
@@ -94,8 +76,24 @@ impl BlfFileWriter {
     /// caller is responsible for ms-flooring `candidate` so the
     /// SYSTEMTIME-encoded start round-trips losslessly (see
     /// [`Self::append_object`] for that detail).
-    pub fn set_start_if_unset(&mut self, candidate: u64) -> u64 {
-        *self.start_unix_nanos.get_or_insert(candidate)
+    ///
+    /// The latch also **writes the anchor into the header on disk**, once
+    /// per file. Every per-event timestamp is an offset from it, so a
+    /// header that carries it only after [`Self::finish`] leaves a
+    /// hard-killed capture dated from the epoch; paying one seek-write
+    /// the moment the value becomes known costs nothing per append and
+    /// makes recovery honour the start with no heuristic.
+    pub fn set_start_if_unset(&mut self, candidate: u64) -> io::Result<u64> {
+        if let Some(start) = self.start_unix_nanos {
+            return Ok(start);
+        }
+        self.start_unix_nanos = Some(candidate);
+        let resume = self.file.stream_position()?;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file
+            .write_all(&placeholder_header(SystemTime::from_unix_nanos(candidate)).encode())?;
+        self.file.seek(SeekFrom::Start(resume))?;
+        Ok(candidate)
     }
 
     /// Append one already-encoded inner object's bytes. Caller is
@@ -188,6 +186,31 @@ impl BlfFileWriter {
     }
 }
 
+/// The header a file carries before [`BlfFileWriter::finish`]: signature
+/// and `statistics_size` correct, `measurement_start_time` as far as it is
+/// known, and everything else zero. `file_size = 0` is what
+/// [`FileStatistics::is_unfinalized`] reads, so a file left in this state
+/// is recovered rather than trusted.
+// `expect` is unreachable: 144 fits in u32 trivially.
+#[allow(clippy::missing_panics_doc)]
+fn placeholder_header(measurement_start_time: SystemTime) -> FileStatistics {
+    FileStatistics {
+        statistics_size: u32::try_from(FILE_STATISTICS_MIN_BYTES).expect("144 fits in u32"),
+        api_number: 0,
+        application_id: 0,
+        compression_level: 0,
+        application_major: 0,
+        application_minor: 0,
+        file_size: 0,
+        uncompressed_file_size: 0,
+        object_count: 0,
+        application_build: 0,
+        measurement_start_time,
+        last_object_time: SystemTime::default(),
+        restore_points_offset: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,7 +246,9 @@ mod tests {
         for i in 0u32..32 {
             let abs_ns = base_ns + u64::from(i) * 1_000_000;
             // ms-floor the candidate so SYSTEMTIME round-trips.
-            let start = writer.set_start_if_unset((abs_ns / 1_000_000) * 1_000_000);
+            let start = writer
+                .set_start_if_unset((abs_ns / 1_000_000) * 1_000_000)
+                .unwrap();
             let rel_ns = abs_ns - start;
             let m = build_can_message2(
                 rel_ns,
@@ -258,5 +283,43 @@ mod tests {
             }
         }
         assert_eq!(count, 32);
+    }
+
+    /// The anchor reaches disk when it is latched, not when the file is
+    /// finished.
+    ///
+    /// A hard kill skips `finish` and every destructor with it, so a
+    /// header written only at `finish` leaves the recovered capture with
+    /// the unset sentinel and timestamps that run from 1970.
+    /// `mem::forget` is that kill, minus the process: the writer's
+    /// buffered objects never reach the file, and the header is the one
+    /// thing that must already be there.
+    #[test]
+    fn a_killed_writer_leaves_the_anchor_it_latched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("killed.blf");
+        let base_ns = 1_700_000_000_u64 * 1_000_000_000;
+        let mut writer = BlfFileWriter::create(&path).unwrap();
+        let start = writer.set_start_if_unset(base_ns).unwrap();
+        let m = build_can_message2(0, 1, 0, 2, 0x100, vec![1, 2]);
+        writer
+            .append_object(&encode_can_message2(&m), base_ns)
+            .unwrap();
+        std::mem::forget(writer);
+
+        let reader = BlfReader::open(&path).unwrap();
+        assert_eq!(start, base_ns);
+        assert_eq!(
+            reader
+                .file_statistics()
+                .measurement_start_time
+                .to_unix_nanos(),
+            base_ns,
+            "the header states the capture's wall clock before finish",
+        );
+        assert!(
+            reader.file_statistics().is_unfinalized(),
+            "and still reads as never finalised",
+        );
     }
 }

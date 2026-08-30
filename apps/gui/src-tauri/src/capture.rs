@@ -519,14 +519,17 @@ pub(crate) fn save_capture(
 /// A writer killed mid-run leaves the placeholder header it stamped at
 /// open, and — if it buffered its writes — a fragment of a record it
 /// never completed. The frames before that fragment are read normally,
-/// but two things about the capture are then not what they seem: the
-/// counts and span come from the walk rather than from a header that
-/// claims the file is empty, and the wall clock is gone, because
-/// per-event timestamps are offsets from a measurement start the writer
-/// never wrote. Both are worth exactly one line — enough that the
-/// numbers on screen are never unexplained, and not so much that the
-/// import stops to ask. The file itself is left alone (ADR 0010): there
-/// is no repair and no repaired copy.
+/// but the counts and span come from the walk rather than from a header
+/// that claims the file is empty. That is worth exactly one line —
+/// enough that the numbers on screen are never unexplained, and not so
+/// much that the import stops to ask. The file itself is left alone
+/// (ADR 0010): there is no repair and no repaired copy.
+///
+/// A second line joins it only for a capture that states no measurement
+/// start, whose timestamps therefore run from zero. Every `.part` this
+/// build leaves carries its anchor — the writer persists it the moment
+/// it latches one — so that line is for files an earlier build wrote,
+/// and nothing can date those.
 pub(crate) fn recovered_capture_warning(scan: &cannet_blf::BlfScan) -> Option<String> {
     if !scan.unfinalized && scan.truncated_tail_bytes.is_none() {
         return None;
@@ -636,32 +639,32 @@ pub struct SaveCaptureResult {
 }
 
 /// An event color (ADR 0035) as the BLF marker's `0x00RRGGBB` fill:
-/// `#RRGGBB` parses to the packed RGB; `None` (or an unparseable string)
-/// is `0`, which leaves the marker's neutral default. Inverse of
-/// [`marker_color`].
-fn color_to_rgb(color: Option<&str>) -> u32 {
+/// `#RRGGBB` parses to the packed RGB. `None` — an uncoloured event, or a
+/// string that does not parse — stays `None` and leaves the marker's
+/// neutral default, which is what keeps it distinct from a chosen
+/// `#000000`. Inverse of [`marker_color`].
+fn color_to_rgb(color: Option<&str>) -> Option<u32> {
     color
         .and_then(|c| u32::from_str_radix(c.trim_start_matches('#'), 16).ok())
-        .map_or(0, |rgb| rgb & 0x00FF_FFFF)
+        .map(|rgb| rgb & 0x00FF_FFFF)
 }
 
 /// A `GLOBAL_MARKER`'s two colours as one event colour (ADR 0035).
 ///
 /// The event's colour is the marker's **fill** — `background_color` under
 /// white text, which is how `BlfCaptureWriter::append_marker` and
-/// python-can's independent writer both pack one. A white background means
-/// the marker is not filled, and then the colour is the label's, which
-/// reads both the neutral black-on-white default (as `None`, so an
-/// uncoloured note stays uncoloured) and every marker cannet wrote before
-/// the fill convention.
+/// python-can's independent writer both pack one. Any fill but white is
+/// the colour, black included. A white background means the marker is not
+/// filled, and then the colour is the label's, which reads both the
+/// neutral black-on-white default (as `None`, so an uncoloured note stays
+/// uncoloured) and every marker cannet wrote before the fill convention.
 fn marker_color(marker: &cannet_blf::format::marker::GlobalMarker) -> Option<String> {
     let fill = marker.background_color & 0x00FF_FFFF;
-    let rgb = if fill == 0x00FF_FFFF {
-        marker.foreground_color & 0x00FF_FFFF
-    } else {
-        fill
-    };
-    (rgb != 0).then(|| format!("#{rgb:06X}"))
+    if fill != 0x00FF_FFFF {
+        return Some(format!("#{fill:06X}"));
+    }
+    let label = marker.foreground_color & 0x00FF_FFFF;
+    (label != 0).then(|| format!("#{label:06X}"))
 }
 
 /// Marks a BLF text field as cannet's *previous* structured event payload.
@@ -707,7 +710,8 @@ pub(crate) fn note_from_marker(
     let m = &scanned.marker;
     let raw = String::from_utf8_lossy(&m.description);
     let text = event_text::decode(&raw);
-    let (id, kind, tag, description, subjects) = if event_text::has_block(&raw) {
+    let (id, kind, tag, description, subjects, unknown_block_lines) = if event_text::has_block(&raw)
+    {
         (
             text.id
                 .unwrap_or_else(|| synthetic_id("blf-marker", synthetic_idx)),
@@ -715,6 +719,7 @@ pub(crate) fn note_from_marker(
             text.tag,
             text.description,
             text.subjects,
+            text.extra,
         )
     } else if m.description.is_empty() {
         (
@@ -723,10 +728,18 @@ pub(crate) fn note_from_marker(
             None,
             None,
             Vec::new(),
+            Vec::new(),
         )
     } else {
         let (id, tag, description) = legacy_marker_description(&raw);
-        (id, notes::EventKind::Note, tag, description, Vec::new())
+        (
+            id,
+            notes::EventKind::Note,
+            tag,
+            description,
+            Vec::new(),
+            Vec::new(),
+        )
     };
     Note {
         id,
@@ -738,6 +751,7 @@ pub(crate) fn note_from_marker(
         tag,
         commented_event_type: None,
         subjects,
+        unknown_block_lines,
     }
 }
 
@@ -793,30 +807,33 @@ pub(crate) fn note_from_comment(
     synthetic_idx: &mut u64,
 ) -> Note {
     let raw = String::from_utf8_lossy(&scanned.comment.text).into_owned();
-    let (id, kind, label, color, description, tag, subjects) = if event_text::has_block(&raw) {
-        let text = event_text::decode(&raw);
-        (
-            text.id
-                .unwrap_or_else(|| synthetic_id("blf-comment", synthetic_idx)),
-            text.kind.unwrap_or(notes::EventKind::MessageBound),
-            text.label.unwrap_or_default(),
-            text.color,
-            text.description,
-            text.tag,
-            text.subjects,
-        )
-    } else {
-        let (id, tag, label, description) = legacy_comment_text(&raw, synthetic_idx);
-        (
-            id,
-            notes::EventKind::MessageBound,
-            label,
-            None,
-            description,
-            tag,
-            Vec::new(),
-        )
-    };
+    let (id, kind, label, color, description, tag, subjects, unknown_block_lines) =
+        if event_text::has_block(&raw) {
+            let text = event_text::decode(&raw);
+            (
+                text.id
+                    .unwrap_or_else(|| synthetic_id("blf-comment", synthetic_idx)),
+                text.kind.unwrap_or(notes::EventKind::MessageBound),
+                text.label.unwrap_or_default(),
+                text.color,
+                text.description,
+                text.tag,
+                text.subjects,
+                text.extra,
+            )
+        } else {
+            let (id, tag, label, description) = legacy_comment_text(&raw, synthetic_idx);
+            (
+                id,
+                notes::EventKind::MessageBound,
+                label,
+                None,
+                description,
+                tag,
+                Vec::new(),
+                Vec::new(),
+            )
+        };
     Note {
         id,
         timestamp_ns: scanned.timestamp_ns,
@@ -827,13 +844,16 @@ pub(crate) fn note_from_comment(
         tag,
         commented_event_type: Some(scanned.comment.commented_event_type),
         subjects,
+        unknown_block_lines,
     }
 }
 
 /// Pack a message-bound event into an `EVENT_COMMENT`'s one text field.
 /// The record has nowhere to put a name or a colour, so those go in the
-/// block alongside everything else it carries; the object type the comment
-/// is attached to is the record's own field and stays there.
+/// block alongside everything else it carries. The object type the comment
+/// is attached to is written *both* ways — the record's own field, which
+/// is what a foreign reader looks at, and the block, so the grammar reads
+/// the same on every carrier (ADR 0057).
 fn comment_text(note: &Note) -> String {
     let mut text = event_text::EventText::from_note(note);
     text.label = Some(note.label.clone());
@@ -924,6 +944,7 @@ fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut u64) -> Not
             tag: text.tag,
             commented_event_type: text.commented_event_type,
             subjects: text.subjects,
+            unknown_block_lines: text.extra,
         };
     }
     // No block: either another tool's event, or one of ours from before
@@ -944,6 +965,7 @@ fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut u64) -> Not
         tag: event.property(EVENT_TAG_PROPERTY).map(ToOwned::to_owned),
         commented_event_type: None,
         subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
     }
 }
 
@@ -1207,10 +1229,9 @@ fn events_from_notes(notes: &[Note]) -> Vec<cannet_mdf::MdfEvent> {
         .zip(ranges)
         .map(|(note, range)| {
             let mut text = event_text::EventText::from_note(note);
-            // MDF's event has a name but no colour and no notion of the
-            // record a BLF comment is attached to, so those ride the block.
+            // MDF's event has a name, but no colour: that one rides the
+            // block here and nowhere else.
             text.color.clone_from(&note.color);
-            text.commented_event_type = note.commented_event_type;
             cannet_mdf::MdfEvent {
                 timestamp_ns: note.timestamp_ns,
                 name: note.label.clone(),

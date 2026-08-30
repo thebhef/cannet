@@ -130,3 +130,113 @@ Extend an existing round-trip test to read the value from the block.
    an extended round-trip test; the native field is still written.
 6. The full local CI table is green, and ADR 0057 matches the shipped
    behaviour.
+
+## Status log
+
+- 2026-08-27: All five fixes implemented on `task-122-file-keeps` off
+  `task-114-one-name` (98791283), each test-first (failing test watched
+  red, then green). Full local CI run, all seven jobs green.
+
+  **1. Black survives BLF.** `BlfCaptureWriter::append_marker`'s `color`
+  is now `Option<u32>`: `Some(rgb)` fills `background_color` under a
+  white `foreground_color` whatever the value, `None` leaves
+  `build`'s black-on-white default. The old `color & 0x00FF_FFFF != 0`
+  guard could not tell `#000000` from "uncoloured" because the argument
+  could not either. `capture::color_to_rgb` returns `Option<u32>` to
+  match, and `marker_color` reads any non-white fill as the colour —
+  black included — falling back to the foreground only when the fill is
+  white (which is still the neutral default and every pre-fill-convention
+  marker cannet wrote). The pinning test is flipped and renamed
+  (`a_black_event_colour_survives_a_blf_marker_and_an_mdf_event`), its
+  false "the record has no third state" rationale replaced, and an
+  uncoloured control note added beside the black one in both formats.
+  `cannet-blf`'s own writer test gained a third marker asserting the
+  `#000000` record shape.
+
+  **2. The anchor reaches disk at latch.** `BlfFileWriter::create` and
+  `set_start_if_unset` now share one `placeholder_header(start)` helper;
+  the latch does a seek-write of it at offset 0 and seeks back, once per
+  file. `set_start_if_unset` returns `io::Result<u64>` (11 call sites
+  updated). `finish` is untouched, so a finished file's header is
+  byte-identical to before. Pinned by
+  `a_killed_writer_leaves_the_anchor_it_latched`, which `mem::forget`s a
+  writer after one append and reads the anchor back out of the `.part`.
+  `recovered_capture_warning`'s wall-clock clause is now reached only by
+  a `.part` an older build left, so
+  `a_recovered_capture_says_what_it_recovered` was rewritten: it asserts
+  the kill *keeps* the wall clock and no longer says a word about it,
+  then zeroes header bytes 40..56 to reconstruct an older build's
+  undated `.part` and asserts the clause is still there for that.
+
+  **3. Foreign sample order.** New `signals::sort_by_time`, called per
+  channel at the end of `signal_groups`: `is_sorted` (one comparison per
+  sample) and, only when that fails, a stable sort of the
+  `(timestamp, value)` pairs. New `crates/cannet-mdf/tests/sample_order.rs`
+  — a descending master, a pre-start sample late in record order, and an
+  ascending control with a tie that pins both the no-op path and the
+  sort's stability.
+
+  **4. Unknown keys round-trip.** `Note::unknown_block_lines:
+  Vec<String>` (`#[serde(default)]`), filled from `EventText::extra` by
+  all three readers (`note_from_marker`, `note_from_comment`,
+  `note_from_event`) and written back by `EventText::from_note` after
+  the known keys. Pinned by
+  `a_block_key_from_a_later_schema_version_survives_a_round_trip`, which
+  puts two unknown keys — one before the subject lines, one after — into
+  a marker, opens it, resaves it, and reads them back out of the file.
+
+  **5. `commentedEventType` on every carrier.** Rather than the single
+  line in `comment_text` the task names, the field moved into
+  `EventText::from_note` itself, which is the one place that makes it
+  uniform for *every* carrier (the overseer's framing) rather than for
+  `EVENT_COMMENT` alone; `events_from_notes`'s now-redundant assignment
+  was dropped. Behaviour for the marker carrier is unchanged in practice
+  — a marker's note never carries the field — so the two readings differ
+  only in where the rule lives. The `EVENT_COMMENT` round-trip test now
+  reads the record's native `mCommentedEventType` *and* the block's copy
+  off the file.
+
+  Docs in the same commit: ADR 0057 (the colour row loses its `#000000`
+  exception and gains the pair-of-fields reason; the schema-version row
+  goes from "lost" to "kept (passthrough)"; a new paragraph in § 2 names
+  `commentedEventType` as the one deliberate duplicate),
+  `docs/blf-feature-support.md` § "What a cannet marker looks like", and
+  rustdoc on `cannet-blf`'s crate root, `is_unfinalized` (both), `BlfScan`,
+  `FileSignal::timestamps_ns`, `Note::color`, `Note::unknown_block_lines`
+  and `recovered_capture_warning`.
+
+  | CI job | Command | Result |
+  | --- | --- | --- |
+  | comment-references | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | no hits |
+  | frontend | `pnpm --dir apps/gui test`; `pnpm --dir apps/gui build` | 3043 passed / 223 files; built |
+  | python | `uv sync --extra dev --frozen`, `uv run ruff check .`, `ruff format --check .`, `mypy`, `pytest` | 200 passed, no findings |
+  | rust | `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings` | 49 binaries ok; clean |
+  | mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample`; `validate_export.py` | OK |
+  | rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | clean |
+  | sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | smoke ok |
+
+- 2026-08-27: Exit criteria 1-6 met. Task 107's exit criterion 23 has no
+  file left to update (the task file is retired); its closure is
+  recorded on the `107` row of the acceptance checklist instead — see
+  Blockers.
+
+## Blockers / side effects
+
+- **Task 107's exit criterion 23 could not be updated where it lives.**
+  `plans/tasks/0107-*.md` was removed when the task landed (the roadmap
+  lists only outstanding work), so there is no criterion 23 to mark met.
+  Closest faithful reading: the `107` row of
+  [`owner-review-queue.md`](../owner-review-queue.md) § Acceptance
+  already names "unknown-key round-trip → task 122" as one of its two
+  dispositioned criteria, and that row now says task 122 closed it.
+- **The queue rows the task's provenance cites (3.9, 3.15, 3.30, 3.59)
+  no longer exist.** Same reframe that tasks 115, 117 and 114 hit:
+  `owner-review-queue.md` became an acceptance checklist on 2026-08-26.
+  Followed their precedent — a `122` row in the `## Acceptance` list,
+  closures in this status log.
+- **`append_marker`'s signature changed** (`u32` → `Option<u32>`), as did
+  `set_start_if_unset`'s return (`u64` → `io::Result<u64>`). Both are
+  `cannet-blf` public API; every in-tree caller is updated, and there are
+  no out-of-tree consumers.
+- No perf capture taken (harness under repair) and no installer built —
+  both per the overseer's standing constraints for this phase.

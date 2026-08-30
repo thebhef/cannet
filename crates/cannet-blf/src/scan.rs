@@ -54,14 +54,15 @@ pub struct BlfScan {
     pub comments: Vec<ScannedComment>,
     /// The file's measurement start time (ns since the UNIX epoch) —
     /// the wall clock the per-event timestamps are relative to. Zero
-    /// when the file states none, which an `unfinalized` capture never
-    /// does.
+    /// when the file states none: a `.part` from a build that wrote the
+    /// anchor only at `finish`, which no capture this build writes is.
     pub start_unix_nanos: u64,
     /// True when the file still carries the placeholder header its
     /// writer stamped at open — the writer never finished. Everything
-    /// this scan reports was derived from the walk, so the counts hold;
-    /// what such a file cannot supply is its wall clock (see
-    /// `start_unix_nanos`).
+    /// this scan reports was derived from the walk, so the counts hold,
+    /// and `start_unix_nanos` holds too for any capture this build
+    /// wrote, since the anchor reaches the header the moment it is
+    /// latched.
     pub unfinalized: bool,
     /// Size of the incomplete record at the end of the file, when the
     /// walk met one. Everything before it is in the counts above; the
@@ -421,7 +422,7 @@ mod tests {
         let mut writer = BlfCaptureWriter::create(&path).unwrap();
         writer.append(&classic(BASE_NS, 0, 0x100)).unwrap();
         writer
-            .append_marker(BASE_NS + 5_000, "halfway", "note-1", 0x00FF_8800)
+            .append_marker(BASE_NS + 5_000, "halfway", "note-1", Some(0x00FF_8800))
             .unwrap();
         writer.append(&classic(BASE_NS + 10_000, 0, 0x101)).unwrap();
         writer.finish().unwrap();
