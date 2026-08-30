@@ -126,6 +126,14 @@ describe("resolveAxisRange (linear)", () => {
   });
 
   it("widens around the min when both manual bounds are inverted", () => {
+    // An inverted pair is not rejected the way the visible-range input
+    // rejects one, because the two fields of the y-axis menu commit
+    // independently: typing a new min above the old max leaves the pair
+    // inverted for as long as it takes to reach the other box. Refusing
+    // it would blank the axis mid-edit. So the axis anchors on the min —
+    // the bound the user just pinned — and takes the same ±10 % band a
+    // constant signal gets, which keeps a readable axis on screen and
+    // resolves itself the moment the max is typed.
     expect(resolveAxisRange(auto, { min: 10, max: 1 }, null)).toEqual({ lo: 9, hi: 11, log: false });
   });
 });
