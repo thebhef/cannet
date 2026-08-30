@@ -128,8 +128,16 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
     rbsSignalColumnsFromParams(params?.columns),
   );
   const [sort, setSort] = useState<RbsSignalSortState>(() => sortFromParams(params?.sort));
+  // A fresh panel opens with every status on except Default (owner
+  // ruling 2026-08-30): Default rows are DBC facts, not
+  // customizations, so a new grid shows what the file changes and what
+  // needs attention. Only when the params carry no filter at all — a
+  // persisted one, the explicitly cleared empty set included, is
+  // honored as saved.
   const [statusFilter, setStatusFilter] = useState<ReadonlySet<RbsSignalDisplayStatus>>(() =>
-    stringSetFromParams(params?.statusFilter, RBS_SIGNAL_STATUSES),
+    params?.statusFilter === undefined
+      ? new Set(RBS_SIGNAL_STATUSES.filter((s) => s !== "default"))
+      : stringSetFromParams(params.statusFilter, RBS_SIGNAL_STATUSES),
   );
   const [busFilter, setBusFilter] = useState<ReadonlySet<string>>(
     () => new Set(Array.isArray(params?.busFilter) ? params.busFilter.filter((v): v is string => typeof v === "string") : []),

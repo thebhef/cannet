@@ -63,7 +63,10 @@ function row(over: Partial<RbsSignalRow> = {}): RbsSignalRow {
 
 function renderPanel() {
   const api = { updateParameters: vi.fn() };
-  const props = { params: { elementId: "el1" }, api } as unknown as Parameters<
+  // `statusFilter: []` = a persisted no-filter state, so the rows are
+  // exactly ROWS whatever their statuses (a fresh panel defaults to
+  // all-but-Default).
+  const props = { params: { elementId: "el1", statusFilter: [] }, api } as unknown as Parameters<
     typeof RbsSignalsPanel
   >[0];
   return render(<RbsSignalsPanel {...props} />);
