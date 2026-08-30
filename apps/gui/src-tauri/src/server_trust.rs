@@ -197,6 +197,10 @@ fn answered(
     // The store just moved, whether or not a question went with it, so
     // the merged server list has to be pushed on its own account.
     crate::server_list::changed(app);
+    // The set of servers the host holds lifetime watches on follows
+    // the store: an accept starts one, a forget drops the host's share
+    // of it.
+    crate::interfaces::sync_stored_watches(app);
     if verify {
         crate::interfaces::rewatch_or_verify(app, address);
     } else {

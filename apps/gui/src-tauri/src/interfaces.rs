@@ -80,6 +80,11 @@ pub struct InterfacesState {
 #[derive(Default)]
 struct InterfacesInner {
     entries: HashMap<String, AddressEntry>,
+    /// The addresses the host itself is subscribed to on the trust
+    /// store's behalf ([`sync_stored_watches`]) — its share of the
+    /// refcounts, tracked so a reconcile can drop exactly the watches
+    /// it took out and no panel's.
+    host_watched: std::collections::BTreeSet<String>,
 }
 
 impl InterfacesInner {
@@ -105,6 +110,7 @@ impl InterfacesInner {
                 snapshot: Vec::new(),
                 task,
                 refs: 1,
+                connected: false,
             },
         );
     }
@@ -131,6 +137,11 @@ struct AddressEntry {
     /// How many [`watch`] calls this task is serving. [`unwatch`]
     /// decrements; the task and cache entry go when it reaches zero.
     refs: usize,
+    /// Whether the watch task currently holds an open stream — direct
+    /// evidence the server is up, which the server list folds into a
+    /// row's `online` (the only evidence there is for a server on
+    /// another subnet, where mDNS cannot reach this machine).
+    connected: bool,
 }
 
 /// Begin (or join) a `WatchInterfaces` subscription against `address`.
@@ -187,6 +198,11 @@ pub fn unwatch(app: &AppHandle, address: &str) {
                 interfaces: Vec::new(),
             },
         );
+        // The entry carried this row's `online` evidence; the list has
+        // to hear that it is gone.
+        if entry.connected {
+            crate::server_list::changed(app);
+        }
     }
 }
 
@@ -211,6 +227,90 @@ pub(crate) fn rewatch(app: &AppHandle, address: &str) {
     entry.task = tauri::async_runtime::spawn(async move {
         run_watch(app_for_task, address_for_task).await;
     });
+}
+
+/// The stored servers the host should hold a lifetime watch on: every
+/// entry the trust store can actually reach — a pin, or an explicit
+/// unprotected choice. A token alone can't dial (the plan is a probe),
+/// and a manual entry stores no way in at all, so watching either
+/// would raise first-contact questions on every launch.
+fn stored_watchable(
+    stored: &std::collections::BTreeMap<String, server_trust::TrustEntry>,
+) -> std::collections::BTreeSet<String> {
+    stored
+        .iter()
+        .filter(|(_, e)| e.fingerprint.is_some() || e.insecure)
+        .map(|(a, _)| a.clone())
+        .collect()
+}
+
+/// Reconcile the host's own lifetime watches with the trust store:
+/// watch every stored server that can be reached, drop the watch on
+/// any that no longer can. Called at startup and after every trust
+/// write, so a row's online state and interface list are live before
+/// any panel asks — the project view's interface picker included, not
+/// just the Servers panel. The host's subscription is one refcount
+/// like any other, so panels stack on top of it safely.
+pub(crate) fn sync_stored_watches(app: &AppHandle) {
+    let Ok(dir) = crate::persisted_json::config_dir(app) else {
+        return;
+    };
+    let desired = stored_watchable(&server_trust::read_servers(&dir).servers);
+    let Some(state) = app.try_state::<InterfacesState>() else {
+        return;
+    };
+    let (to_watch, to_drop) = {
+        let mut inner = state.inner.lock().expect("interfaces state poisoned");
+        let current = std::mem::take(&mut inner.host_watched);
+        let to_watch: Vec<String> = desired.difference(&current).cloned().collect();
+        let to_drop: Vec<String> = current.difference(&desired).cloned().collect();
+        inner.host_watched = desired;
+        (to_watch, to_drop)
+    };
+    for address in to_watch {
+        watch(app, address);
+    }
+    for address in &to_drop {
+        unwatch(app, address);
+    }
+}
+
+/// The addresses whose watch task currently holds an open stream, in
+/// the raw form the cache keys them by. The server list normalizes and
+/// folds these into each row's `online`.
+pub(crate) fn connected_addresses(app: &AppHandle) -> std::collections::BTreeSet<String> {
+    app.try_state::<InterfacesState>()
+        .map(|state| {
+            let inner = state.inner.lock().expect("interfaces state poisoned");
+            inner
+                .entries
+                .iter()
+                .filter(|(_, e)| e.connected)
+                .map(|(a, _)| a.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Record whether `address`'s watch stream is open, and push the
+/// server list when that fact moves — a row's `online` is riding on it.
+fn set_connected(app: &AppHandle, address: &str, connected: bool) {
+    let Some(state) = app.try_state::<InterfacesState>() else {
+        return;
+    };
+    let moved = {
+        let mut inner = state.inner.lock().expect("interfaces state poisoned");
+        match inner.entries.get_mut(address) {
+            Some(entry) if entry.connected != connected => {
+                entry.connected = connected;
+                true
+            }
+            _ => false,
+        }
+    };
+    if moved {
+        crate::server_list::changed(app);
+    }
 }
 
 /// Like [`rewatch`], but for an address nothing is watching: dial it
@@ -326,6 +426,7 @@ async fn run_watch(app: AppHandle, address: String) {
                 // about this server has been answered.
                 connect_flow::resolved(&app, &address);
                 gate.reset();
+                set_connected(&app, &address, true);
                 loop {
                     match stream.next().await {
                         Ok(Some(interfaces)) => {
@@ -339,12 +440,14 @@ async fn run_watch(app: AppHandle, address: String) {
                         // connect time.
                         Err(e) => {
                             if report_failure(&app, &address, &attempt, &e, Some(&mut gate)) {
+                                set_connected(&app, &address, false);
                                 return;
                             }
                             break;
                         }
                     }
                 }
+                set_connected(&app, &address, false);
             }
             Err(e) => {
                 if report_failure(&app, &address, &attempt, &e, Some(&mut gate)) {
@@ -494,6 +597,31 @@ mod tests {
         after[0].firmware_version = Some("3.3.0".to_string());
         assert!(interfaces_equal(&before, &before));
         assert!(!interfaces_equal(&before, &after));
+    }
+
+    #[test]
+    fn the_host_watches_exactly_the_stored_reachable_servers() {
+        // The host's own lifetime subscription: every server the trust
+        // store can reach — a pin or an explicit unprotected choice —
+        // and nothing else. A token alone can't dial (the plan is a
+        // probe), and a manual entry stores no way in at all, so
+        // watching either would raise first-contact questions on every
+        // launch.
+        use crate::server_trust::TrustEntry;
+        let entry = |f: Option<&str>, token: Option<&str>, insecure: bool| TrustEntry {
+            fingerprint: f.map(str::to_string),
+            token: token.map(str::to_string),
+            insecure,
+            manual: true,
+        };
+        let stored = std::collections::BTreeMap::from([
+            ("pinned:1".to_string(), entry(Some("SHA256:aaa"), Some("t"), false)),
+            ("plain:1".to_string(), entry(None, None, true)),
+            ("token-only:1".to_string(), entry(None, Some("t"), false)),
+            ("manual-only:1".to_string(), entry(None, None, false)),
+        ]);
+        let desired: Vec<String> = stored_watchable(&stored).into_iter().collect();
+        assert_eq!(desired, ["pinned:1", "plain:1"]);
     }
 
     #[test]
