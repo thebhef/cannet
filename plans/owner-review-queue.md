@@ -21,6 +21,33 @@ walked 2026-08-27** and each row now carries its outcome. The verdict
 tables, with a named test or `file:line` behind every criterion, are in
 that task's status log.
 
+Still open, collected first (owner request 2026-08-30); the
+ticked record follows in landing order.
+
+- [ ] 94 — server bind defaults, mDNS honesty, servers panel
+- [ ] 101 — bus health (PCAN fix confirmed on the bench 2026-08-23;
+      Vector tested 2026-08-26; Kvaser needs CANLIB — owner follows up
+      independently)
+- [ ] 106 — any-bus series ruling, sample-order sweep —
+      `examples/legacy-project/legacy.cannet_prj`,
+      `examples/capture-features/annotated.mf4`
+- [ ] 107 — events point at signals (both open criteria dispositioned:
+      unknown-key round-trip closed by task 122, which added the
+      passthrough field on `Note`; file-backed subject → backlog) —
+      `examples/capture-features/`
+- [ ] 109 — usage feedback from the chip-era build — item 2 needs a
+      Vector adapter, not a file
+- [ ] 122 — a file keeps what you wrote: black survives BLF, the BLF
+      anchor reaches disk at latch rather than at `finish`, a foreign
+      MDF's sample order is sorted at the reader's boundary, unknown
+      `cannet-event/1` keys round-trip, and `commentedEventType` rides
+      the block on every carrier (findings 3.9, 3.15, 3.30 and 3.59 no
+      longer exist post-reframe; their closures are in
+      [task 122](tasks/0122-a-file-keeps-what-you-wrote.md)'s status log)
+      — `examples/capture-features/`
+
+Ticked:
+
 - [x] 86 — import time origins, enum overlays, events-panel width —
       `examples/time-origins/`, `examples/cannet-demo.mf4`
 - [x] 27 — live disk-watch for project and RBS files **§** —
@@ -55,8 +82,6 @@ that task's status log.
 - [x] 90 — follow-ups from the 86 / 27 / 87 cycle **§** —
       `examples/time-origins/wall-clock-out-of-order.blf`. **All 3 live
       criteria met** (the fourth was retired into task 91 at the time)
-- [ ] 88 — bus assignment governs decode — `examples/legacy-project/`,
-      `examples/colliding-dbcs/`, `examples/capture-features/`
 - [x] 92 — one resolution rule — `examples/colliding-dbcs/`. Reviewed
       2026-08-28; the open ask — undo/redo over signal-mapping
       selections — landed 2026-08-29 as task 129 (picks, remaps, RBS
@@ -93,10 +118,6 @@ that task's status log.
 - [x] 96 — long signal and `VAL_` names rendering —
       `examples/ev-demo/dbc/bms.dbc`, `examples/ev-zonal/dbc/zonal.dbc`.
       Checked 2026-08-28 — looks good
-- [ ] 94 — server bind defaults, mDNS honesty, servers panel
-- [ ] 99 — transmit controls (the false Space-in-RBS premise was fixed
-      by 109 phase 3, 2026-08-23) — `examples/capture-features/`,
-      `examples/legacy-project/`
 - [x] 100 — counter/CRC declared in a DBC populates the editor —
       `examples/cannet-demo.dbc`, `examples/ev-demo/`. Checked
       2026-08-28 — looks good
@@ -117,12 +138,6 @@ that task's status log.
       a review pass reshaped the bar: Save is Save All, Export beside
       Import, labels on the Graph / Events / Project chips, chip menus
       and the connection chip no longer truncate
-- [ ] 101 — bus health (PCAN fix confirmed on the bench 2026-08-23;
-      Vector tested 2026-08-26; Kvaser needs CANLIB — owner follows up
-      independently)
-- [ ] 106 — any-bus series ruling, sample-order sweep —
-      `examples/legacy-project/legacy.cannet_prj`,
-      `examples/capture-features/annotated.mf4`
 - [x] 19 — typed palette prompts, `Mod+T`/`Mod+E`, event-row keys —
       `examples/capture-features/annotated.blf`. Checked 2026-08-28;
       two adjacent fixes landed with the review (the channel-map dialog
@@ -140,12 +155,6 @@ that task's status log.
       bar, and `plans/prototypes/gui-chip-redesign.html` has been
       maintained in lockstep through every chip change of this review
       cycle — the durability criterion demonstrated, not just promised
-- [ ] 107 — events point at signals (both open criteria dispositioned:
-      unknown-key round-trip closed by task 122, which added the
-      passthrough field on `Note`; file-backed subject → backlog) —
-      `examples/capture-features/`
-- [ ] 109 — usage feedback from the chip-era build — item 2 needs a
-      Vector adapter, not a file
 - [x] 115 — trace row menu keeps only the event action —
       `examples/cannet-demo.blf`. Checked 2026-08-28 after one rework:
       right-click on a disclosed signal line fell through to the
@@ -171,14 +180,6 @@ that task's status log.
       1.17 no longer exist post-reframe; their closures are in
       [task 114](tasks/0114-one-name-per-thing.md)'s status log) —
       `examples/capture-features/`
-- [ ] 122 — a file keeps what you wrote: black survives BLF, the BLF
-      anchor reaches disk at latch rather than at `finish`, a foreign
-      MDF's sample order is sorted at the reader's boundary, unknown
-      `cannet-event/1` keys round-trip, and `commentedEventType` rides
-      the block on every carrier (findings 3.9, 3.15, 3.30 and 3.59 no
-      longer exist post-reframe; their closures are in
-      [task 122](tasks/0122-a-file-keeps-what-you-wrote.md)'s status log)
-      — `examples/capture-features/`
 - [x] 127 — the frontend's shared layer: the tag/description editors
       hand the keyboard back, `useConnectionStates` and
       `useSidecarStatus` sit on `useHostMirror`'s new `fromPayload`, and
@@ -220,6 +221,21 @@ that task's status log.
       longer exists post-reframe; its closure is in
       [task 118](tasks/0118-comment-references-out-of-ci.md)'s status
       log). Process, not product — no example file
+- [x] 88 — bus assignment governs decode — `examples/legacy-project/`,
+      `examples/colliding-dbcs/`, `examples/capture-features/`. Checked
+      2026-08-30: assigning the DBC to the bus in `legacy-project`
+      turned its undecoded signals decoded, observed live; the per-bus
+      scoping half was exercised all session through the
+      `colliding-dbcs` resolution rounds, and the
+      unassigned-decodes-nothing half through the mapping panel's Not
+      Decoded rows and `capture-features`' unbound Aux bus
+- [x] 99 — transmit controls (the false Space-in-RBS premise was fixed
+      by 109 phase 3, 2026-08-23) — `examples/capture-features/`,
+      `examples/legacy-project/`. Checked 2026-08-30, all three items:
+      Space in the TX panel works (one-shot fires, periodic toggles),
+      the can't-run state reads clearly through the Muted status and
+      its tooltip, and the kill switch is gone — Run is the one global
+      stop
 
 ## Close-out chores
 

@@ -2220,8 +2220,25 @@ export function App() {
     void listen<string>("project-changed", (event) => {
       const path = typeof event.payload === "string" ? event.payload : projectPathRef.current;
       if (!path) return;
-      if (!dirtyRef.current && !sessionUpRef.current) void openProjectAt(path);
-      else setProjectChangedOnDisk(path);
+      // The outcome is logged here because it is decided here — the
+      // host's own line says the watch fired; this one says what came
+      // of it (owner's ask: applied or not, and why not).
+      const log = (message: string) =>
+        void invoke("gui_emit_system_log", {
+          level: "info",
+          source: "project-watch",
+          message,
+        }).catch(() => {});
+      if (!dirtyRef.current && !sessionUpRef.current) {
+        log(`project changed on disk — applied (project clean, nothing connected): ${path}`);
+        void openProjectAt(path);
+      } else {
+        const why = dirtyRef.current
+          ? "the open project has unsaved changes"
+          : "a session is connected";
+        log(`project changed on disk — not applied, ${why}; use the notice's Reload: ${path}`);
+        setProjectChangedOnDisk(path);
+      }
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;

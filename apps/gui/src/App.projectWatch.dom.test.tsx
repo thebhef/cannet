@@ -29,6 +29,9 @@ function emitTauri(event: string, payload: unknown) {
 const PROJECT = "C:/fake/last.cannet_prj";
 const SERVER = "1.2.3.4:9000";
 const openProjectCalls: string[] = [];
+/// What the frontend pushed into the System Messages log
+/// (`gui_emit_system_log`) — the applied / not-applied outcome lines.
+const logCalls: Array<{ level: string; message: string }> = [];
 /// Per-test knobs (the mock is hoisted, so config rides in mutable state).
 const knobs = {
   /// A bus bound to a remote server, so the test can put a session up.
@@ -39,6 +42,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
       case "diag_autostart":
+        return null;
+      case "gui_emit_system_log":
+        logCalls.push({ level: String(args?.level), message: String(args?.message) });
         return null;
       case "get_state":
         return {
@@ -164,6 +170,7 @@ async function bootWithProject(): Promise<void> {
   });
   await waitFor(() => expect(openProjectCalls).toEqual([PROJECT]));
   openProjectCalls.length = 0;
+  logCalls.length = 0;
 }
 
 /// The connection control: a status chip in the bar rather than a
@@ -240,6 +247,7 @@ beforeEach(async () => {
   listeners.clear();
   knobs.bound = false;
   openProjectCalls.length = 0;
+  logCalls.length = 0;
   await hydrateState();
   await hydrateSettings();
 });
@@ -255,6 +263,11 @@ describe("the project file changing on disk", () => {
     await announceDiskChange();
     expect(openProjectCalls).toEqual([PROJECT]);
     expect(document.body.textContent).not.toContain("changed on disk");
+    // The outcome is said where it is decided (owner: "it should say we
+    // applied it or that we didn't and why").
+    expect(logCalls.map((c) => c.message)).toEqual([
+      `project changed on disk — applied (project clean, nothing connected): ${PROJECT}`,
+    ]);
   });
 
   it("notifies instead of applying when the project has unsaved changes", async () => {
@@ -265,6 +278,9 @@ describe("the project file changing on disk", () => {
     expect(openProjectCalls).toEqual([]);
     expect(document.body.textContent).toContain("Project changed on disk");
     expect(button("Reload")).toBeInTheDocument();
+    expect(logCalls.map((c) => c.message)).toEqual([
+      `project changed on disk — not applied, the open project has unsaved changes; use the notice's Reload: ${PROJECT}`,
+    ]);
   });
 
   // ADR 0053 §1 states this as a precondition, not a weight against
@@ -278,6 +294,9 @@ describe("the project file changing on disk", () => {
     await announceDiskChange();
     expect(openProjectCalls).toEqual([]);
     expect(document.body.textContent).toContain("Project changed on disk");
+    expect(logCalls.map((c) => c.message)).toEqual([
+      `project changed on disk — not applied, a session is connected; use the notice's Reload: ${PROJECT}`,
+    ]);
   });
 
   it("applies on the notice's explicit Reload, and the notice goes", async () => {

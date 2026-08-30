@@ -165,6 +165,10 @@ fn announce_if_changed(app: &AppHandle, path: &Path) {
     }
     record.record(text);
     drop(record);
+    // Detection: the frontend decides apply-vs-notify and logs the
+    // *outcome* with its reason as its own line (owner: two messages
+    // are fine — this one says the watch fired, that one says what
+    // came of it).
     sys_info!(
         app,
         "project-watch",
