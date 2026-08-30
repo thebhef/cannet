@@ -134,10 +134,10 @@ Then:
 
 | # | Finding | How |
 |---|---|---|
-| [3.47](../owner-review-queue.md) | Three surfaces compute in the frontend what `CLAUDE.md` says the model owns | (a) `useViewSignalsAttentionCount` fetches every row to keep a count — a registry answers the count host-side. Its *"ratify the exception, or move the display-status rule host-side so one answer serves all three"* is this task's question asked from the other end. |
-| [3.41](../owner-review-queue.md) | The view-signals panel is unvirtualized, and pattern rows widen it to ~1,074 rows on `ev-zonal` | The panel is unpaged because it is fed by pushes rather than backed by a model. A registry makes it a paged view like every other, which is what `CLAUDE.md` requires of any view over a growing list. |
-| [3.1](../owner-review-queue.md) | `decode_frame` (per signal) and `encode_frame` (per message) can disagree | Addressed by the transmit row's own DBC — **now this task's**, as of 2026-08-25. A signal pick stops moving a transmit row, so the two cannot disagree. |
-| [3.31](../owner-review-queue.md) | A file-backed series cannot be an event's subject — its `messageId` is a channel group index | Same root: `EventSubject::Signal` carries `(message_id, extended, signal_name)` and cannot express the data-source half. A typed reference that carries source *and* definition covers both provenances. |
+| 3.47 | Three surfaces compute in the frontend what `CLAUDE.md` says the model owns | (a) `useViewSignalsAttentionCount` fetches every row to keep a count — a registry answers the count host-side. Its *"ratify the exception, or move the display-status rule host-side so one answer serves all three"* is this task's question asked from the other end. |
+| 3.41 | The view-signals panel is unvirtualized, and pattern rows widen it to ~1,074 rows on `ev-zonal` | The panel is unpaged because it is fed by pushes rather than backed by a model. A registry makes it a paged view like every other, which is what `CLAUDE.md` requires of any view over a growing list. |
+| 3.1 | `decode_frame` (per signal) and `encode_frame` (per message) can disagree | Addressed by the transmit row's own DBC — **now this task's**, as of 2026-08-25. A signal pick stops moving a transmit row, so the two cannot disagree. |
+| 3.31 | A file-backed series cannot be an event's subject — its `messageId` is a channel group index | Same root: `EventSubject::Signal` carries `(message_id, extended, signal_name)` and cannot express the data-source half. A typed reference that carries source *and* definition covers both provenances. |
 
 ### Sent-back items this obviates or modifies
 

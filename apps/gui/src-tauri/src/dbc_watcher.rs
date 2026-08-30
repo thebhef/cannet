@@ -423,8 +423,7 @@ mod tests {
             let Ok(e) = rx.recv_timeout(Duration::from_millis(250)) else {
                 continue;
             };
-            if e.paths.iter().any(|p| p == &file) && reaction_to(e.kind, true) == Reaction::Reload
-            {
+            if e.paths.iter().any(|p| p == &file) && reaction_to(e.kind, true) == Reaction::Reload {
                 return;
             }
         }
@@ -445,11 +444,11 @@ mod tests {
     fn an_event_on_the_canonical_path_names_a_dotted_stored_path() {
         assert!(event_touches(
             &[PathBuf::from("/repo/examples/cannet-demo.dbc")],
-            Path::new("/repo/examples/legacy-project/../cannet-demo.dbc"),
+            Path::new("/repo/examples/mapping-repair/../cannet-demo.dbc"),
         ));
         assert!(!event_touches(
             &[PathBuf::from("/repo/examples/other.dbc")],
-            Path::new("/repo/examples/legacy-project/../cannet-demo.dbc"),
+            Path::new("/repo/examples/mapping-repair/../cannet-demo.dbc"),
         ));
         // `.` segments collapse too; a genuinely different file never
         // matches however it is spelled.

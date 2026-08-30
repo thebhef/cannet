@@ -114,9 +114,10 @@ cargo run -p cannet-perf-measurement -- \
 # `--frontend-report` repeats: hand every run in a gate to one `check`
 # invocation (the canonical gate form) rather than checking each report
 # alone. Every metric keeps its per-report worst-run verdict except the
-# memory-drift family, which gates on the *median* across the given
-# reports instead (ADR 0031) — a single report still behaves exactly as
-# before.
+# median-gated family — the three memory-drift rows plus `lag_ms_max`
+# and `rx_gap_short_frac_worst` — which gates on the *median* across
+# the given reports instead (ADR 0031) — a single report still behaves
+# exactly as before.
 cargo run -p cannet-perf-measurement -- check \
     --frontend-report run1.json --frontend-report run2.json --frontend-report run3.json
 ```
@@ -228,7 +229,7 @@ rate gates below are what close that blind spot.
 | metric | gate |
 | --- | --- |
 | `longtask_ms_per_s_mean` / `_p95` | ≤ 2× baseline + floor (10 / 17 ms) |
-| `lag_ms_max` | ≤ 2× baseline + 20 ms |
+| `lag_ms_max` | ≤ 2× baseline + 20 ms, judged on the **median** across every `--frontend-report` given |
 | `jank_fraction` | ≤ 2× baseline + 0.05 |
 | `rx_fps_retention` / `tx_fps_retention` | ≥ 90 % of baseline, absolute floor 0.80 |
 | `rx_fps_expected` / `tx_fps_expected` | within ±15 % of `--expected-{rx,tx}-fps` |
@@ -238,7 +239,7 @@ rate gates below are what close that blind spot.
 | `tx_late_ms_mean` | ≤ 18 ms (absolute) |
 | `flush_ms_max` / `tx_late_ms_max` | ≤ 2× baseline + 25 ms (inert until a baseline carries them) |
 | `rx_gap_p95_ratio_worst` | ≤ 2× baseline + 0.5 (inert until a baseline carries it) |
-| `rx_gap_short_frac_worst` | ≤ 2× baseline + 0.15 (inert until a baseline carries it) |
+| `rx_gap_short_frac_worst` | ≤ 2× baseline + 0.15 (inert until a baseline carries it), judged on the **median** across every `--frontend-report` given |
 
 The memory rows (ADR 0031) gate the renderer's growth — the JS heap
 (`jsheap_mb`, reported by the frontend) and the WebView renderer process RSS
@@ -268,17 +269,21 @@ to the host process — another cannet holding the shared `WebView2`
 browser process, so `webview_mb` would read `0.0` — fails and writes no
 report at all.
 
-**The three `*_drift_per_min` rows gate the median across the given
-reports, not each report's own worst run** (ADR 0031). A least-squares
-slope over a 60 s window is a property of where in a memory ramp the
-window landed — measured swinging up to 5.6× on one unchanged binary
-between sessions, wider than the 2.1× margin a gate's limit leaves over
-its baseline, so the worst-run rule could fail an unchanged build and
-pass a regressed one. Pass `--frontend-report` once per run in the
-gate and `check` computes the median per drift metric before gating
-it; every other frontend metric is unaffected and still judged per
-report. With exactly one `--frontend-report`, the median of one run is
-that run, so single-report behavior is unchanged.
+**The three `*_drift_per_min` rows, `lag_ms_max` and
+`rx_gap_short_frac_worst` gate the median across the given reports, not
+each report's own worst run** (ADR 0031). A least-squares slope over a
+60 s window is a property of where in a memory ramp the window landed —
+measured swinging up to 5.6× on one unchanged binary between sessions,
+wider than the 2.1× margin a gate's limit leaves over its baseline, so
+the worst-run rule could fail an unchanged build and pass a regressed
+one. The two extreme-value metrics joined by owner ruling 2026-08-30 on
+the same evidence shape: within one unchanged binary `lag_ms_max`
+spread 4.3× its median (27× at the worst) and `rx_gap_short_frac_worst`
+2.3× (1163× at the worst). Pass `--frontend-report` once per run in the
+gate and `check` computes the median per metric before gating it; every
+other frontend metric is unaffected and still judged per report. With
+exactly one `--frontend-report`, the median of one run is that run, so
+single-report behavior is unchanged.
 
 The `flush_ms` / `tx_late_ms` rows gate **host append-lock contention** (ADR
 0031): the periodic `TraceStore::flush` holds the append lock, so its

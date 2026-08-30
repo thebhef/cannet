@@ -137,7 +137,7 @@
         "params": {
           "elementId": "legacy-rbs"
         },
-        "title": "Legacy RBS"
+        "title": "Demo RBS"
       },
       "trace-chrono": {
         "contentComponent": "trace",
@@ -340,8 +340,8 @@
     {
       "id": "legacy-rbs",
       "kind": "rbs",
-      "name": "Legacy RBS",
-      "path": "legacy.cannet_rbs",
+      "name": "Demo RBS",
+      "path": "mapping-repair.cannet_rbs",
       "run": true
     }
   ],
@@ -372,7 +372,7 @@
   "local_virtual_buses": [
     {
       "id": "legacy",
-      "name": "Legacy loopback"
+      "name": "Demo loopback"
     }
   ],
   "transmit_frames": [

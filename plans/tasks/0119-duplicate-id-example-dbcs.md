@@ -1,7 +1,7 @@
 # 0119 — Example DBCs for the Duplicate-Id Collision
 
 > **Opened 2026-08-25** from queue item **1.33a**, out of the 2026-08-24
-> owner walk of [`owner-review-queue.md`](../owner-review-queue.md) § 1.
+> owner walk of `owner-review-queue.md` (deleted 2026-08-30; git history) § 1.
 > **A deliverable for the owner to review against, not a behaviour
 > change.**
 

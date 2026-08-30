@@ -1,7 +1,7 @@
 # 0116 — RBS Problems Across Every Configuration
 
 > **Opened 2026-08-25** from queue item **1.13ab**, out of the 2026-08-24
-> owner walk of [`owner-review-queue.md`](../owner-review-queue.md) § 1.
+> owner walk of `owner-review-queue.md` (deleted 2026-08-30; git history) § 1.
 > **The largest thing that walk produced.**
 
 **Said:** *"I see the RBS mapping launches the signals mapping view … it

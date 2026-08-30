@@ -15,3 +15,10 @@
 # tests read examples/ captures, so a clone without them fails the suite.
 examples/**/*.blf filter=lfs diff=lfs merge=lfs -text
 examples/**/*.mf4 filter=lfs diff=lfs merge=lfs -text
+
+# Two files whose committed line endings disagreed with what autocrlf
+# checks out, so every clean tree showed them modified. `text` pins
+# repo-side normalization to LF (checkout still follows autocrlf like
+# the rest of the tree); renormalized once when this entry landed.
+examples/ev-zonal/dbc/pack.dbc text
+apps/gui/src-tauri/Cargo.toml text

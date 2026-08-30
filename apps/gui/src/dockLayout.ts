@@ -304,7 +304,7 @@ export function panelsForElementId<P extends { params?: unknown }>(
 /// element's derived name (the panel keys its element by
 /// `params.elementId`, never by id) — and dockview throws on a
 /// duplicate id, which silently ate the open (owner defect report,
-/// 2026-08-30: legacy-project's hand-authored `plot-unbound` /
+/// 2026-08-30: mapping-repair example's hand-authored `plot-unbound` /
 /// `trace-chrono` panels shadowed the `unbound` and `chrono`
 /// elements).
 export function elementPanelId(

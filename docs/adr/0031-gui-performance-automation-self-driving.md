@@ -461,3 +461,30 @@ for had been restyled away. The helpers now live in their own file
 loads that exact file, evaluates it, and drives each helper against
 markup rendered by the real components. Breaking a selector fails a test
 rather than a capture nobody re-reads.
+
+## Amendment (2026-08-30) — `lag_ms_max` and `rx_gap_short_frac_worst` gate on the median across a gate's runs
+
+Owner ruling, made on charted evidence: **both metrics move from
+worst-run to the median across a gate's reports**, on the same terms as
+the `_mb_drift_per_min` family. The limits are untouched — only the
+statistic judged against them changes — and limits still ratchet down
+only.
+
+The evidence (206 stored render reports across 91 commits; the full
+distributions are in the 2026-08-27 mining): within *one unchanged
+binary*, `lag_ms_max` spread 4.3× its median (27× at the worst — eight
+captures spanned 2.8–37.6 ms against a 41 ms limit) and
+`rx_gap_short_frac_worst` spread 2.3× (1163× at the worst, breaching on
+a byte-identical GUI). A worst-of-N rule over 3–4 runs therefore fails
+an unchanged build at a rate the medians do not support, while a median
+rule would have passed every cohort mined.
+
+Mechanically this is the `DRIFT_METRIC_NAMES`-shaped change this ADR's
+2026-08-19 amendment anticipated: the list is now `MEDIAN_METRIC_NAMES`
+(`crates/cannet-perf-measurement/src/frontend.rs`), carrying the three
+drift metrics plus these two. Arming is unchanged per metric —
+`rx_gap_short_frac_worst` stays baseline-armed (a sim-only baseline
+holds 0 ⇒ inert), `lag_ms_max` stays always-armed like the rest of the
+render tier. A single-report `check` is unchanged; the 3-run minimum
+for a meaningful median stands. Worst runs are still visible — every
+report's value is printed — they just no longer gate alone.

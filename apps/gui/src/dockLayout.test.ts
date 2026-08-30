@@ -64,7 +64,7 @@ describe("elementPanelId", () => {
   });
 
   it("steps past a layout panel whose id shadows another element's derived name", () => {
-    // The legacy-project defect: a persisted layout held a panel *id*
+    // The mapping-repair example defect: a persisted layout held a panel *id*
     // "plot-unbound" hosting a different element, and dockview's
     // duplicate-id throw silently ate Open for the element actually
     // named "unbound".

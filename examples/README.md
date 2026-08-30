@@ -34,10 +34,10 @@ Three example *projects* live alongside this trace fixture:
   to one bus that disagree about arbitration id `0x100` in every way two
   databases can: name, scale, unit, enum vocabulary, which signal owns a
   byte, and whether a counter and CRC exist at all.
-- [`legacy-project/`](legacy-project/README.md) — a project carrying
-  three shapes nothing writes any more (a database assigned to nothing,
-  plot series with no bus, a persisted `run` flag), so the rules that
-  replaced them can be demonstrated rather than described.
+- [`mapping-repair/`](mapping-repair/README.md) — a project with
+  nothing mapped (a database assigned to nothing, plot series with no
+  bus, a persisted `run` flag), so the signal-mapping and RBS-mapping
+  rules can be demonstrated rather than described.
 
 One more fixture set sits alongside them, without a project:
 
