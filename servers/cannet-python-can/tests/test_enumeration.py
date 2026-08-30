@@ -437,6 +437,8 @@ def _install_fake_pcan(devices, detected=None):
     PCAN_CONTROLLER_NUMBER = "controller_number"
     PCAN_DEVICE_ID = "device_id"
     PCAN_HARDWARE_NAME = "hardware_name"
+    PCAN_API_VERSION = "api_version"
+    PCAN_FIRMWARE_VERSION = "firmware_version"
 
     class _Api:
         def GetValue(self, handle, what):  # noqa: N802 - matches PCANBasic
@@ -450,6 +452,15 @@ def _install_fake_pcan(devices, detected=None):
                 return (0, dev.get("device_id", 0))
             if what == PCAN_HARDWARE_NAME:
                 return (0, dev.get("hardware_name", b"PCAN"))
+            # The identity reads. A device dict that does not carry
+            # them answers the way a driver that will not answer does
+            # -- PCAN_ERROR_ILLPARAMTYPE and no value -- which is what
+            # keeps the tests above a control for "the backend exposes
+            # nothing".
+            if what == PCAN_API_VERSION and "api_version" in dev:
+                return (0, dev["api_version"])
+            if what == PCAN_FIRMWARE_VERSION and "firmware" in dev:
+                return (0, dev["firmware"])
             return (1, None)
 
     mod_pcan = types.ModuleType("can.interfaces.pcan")
@@ -458,6 +469,8 @@ def _install_fake_pcan(devices, detected=None):
     mod_basic.PCAN_CONTROLLER_NUMBER = PCAN_CONTROLLER_NUMBER
     mod_basic.PCAN_DEVICE_ID = PCAN_DEVICE_ID
     mod_basic.PCAN_HARDWARE_NAME = PCAN_HARDWARE_NAME
+    mod_basic.PCAN_API_VERSION = PCAN_API_VERSION
+    mod_basic.PCAN_FIRMWARE_VERSION = PCAN_FIRMWARE_VERSION
     # Plant the standard USB bus handle constants so a channel name
     # ("PCAN_USBBUS1") reported by the detector resolves back to its
     # handle int.
@@ -803,3 +816,138 @@ def test_open_non_pcan_does_not_touch_pcan_basic() -> None:
         }
     finally:
         _uninstall_fake_vector()
+
+
+# ---- Adapter identity -------------------------------------------------------
+#
+# The wire's `Interface` carries four optional identity fields and every
+# one of them is absent-means-absent: a backend fills in what it read
+# and leaves the rest unset, because a readout that invents a firmware
+# version is worse than one that admits it does not know. What follows
+# pins each vendor's subset, and pins the absent half just as hard --
+# the two halves are the whole point.
+
+
+def test_pcan_reports_the_identity_the_driver_answers_for() -> None:
+    original = _install_fake_pcan(
+        {
+            0x51: {
+                "hardware_name": b"PCAN-USB FD",
+                "controller": 0,
+                "device_id": 0,
+                "api_version": b"4.9.0.942",
+                "firmware": b"3.3.0",
+            }
+        }
+    )
+    try:
+        m = _fresh_driver_module()
+        (chan,) = m._list_pcan()
+        # The driver stack is a fact about our own path to the device,
+        # so it is present even where every read fails.
+        assert chan.driver_name == "PCAN-Basic"
+        assert chan.driver_version == "4.9.0.942"
+        assert chan.firmware_version == "3.3.0"
+        # PCAN-Basic exposes no hardware serial: `PCAN_DEVICE_ID` is the
+        # user-settable PCAN-View id already carried as `uid:`, and
+        # passing it off as a serial would be exactly the fabrication
+        # this field exists to avoid.
+        assert chan.serial_number is None
+    finally:
+        _uninstall_fake_pcan(original)
+
+
+def test_pcan_leaves_identity_absent_where_the_driver_answers_nothing() -> None:
+    # The control. A handle the driver will not answer identity reads
+    # for yields no strings at all -- not empty ones, which would reach
+    # the wire as present-and-blank and render as a value.
+    original = _install_fake_pcan({0x51: {"hardware_name": b"PCAN-USB"}})
+    try:
+        m = _fresh_driver_module()
+        (chan,) = m._list_pcan()
+        assert chan.driver_name == "PCAN-Basic"
+        assert chan.driver_version is None
+        assert chan.firmware_version is None
+        assert chan.serial_number is None
+    finally:
+        _uninstall_fake_pcan(original)
+
+
+def _install_fake_driver_config(dll_version: int) -> None:
+    """Give the fake Vector canlib the ``xlGetDriverConfig`` wrapper
+    python-can offers, answering with one packed ``dllVersion``."""
+    import can.interfaces.vector.canlib as canlib  # noqa: WPS433
+
+    class _DriverConfig:
+        dllVersion = dll_version  # noqa: N815 - the XL field's own name
+
+    canlib._get_xl_driver_config = lambda: _DriverConfig()
+
+
+def test_vector_reports_the_driver_version_and_the_card_serial() -> None:
+    _install_fake_vector([_VectorCfg("VN1640A", 0, serial_number=12345)])
+    try:
+        # 11.4.32 packed the way every XL sample decodes it: major in
+        # bits 31-24, minor in 23-16, build in the low 16.
+        _install_fake_driver_config((11 << 24) | (4 << 16) | 32)
+        m = _fresh_driver_module()
+        (chan,) = m._list_vector()
+        assert chan.driver_name == "Vector XL Driver Library"
+        assert chan.driver_version == "11.4.32"
+        assert chan.serial_number == "12345"
+        # No XL call reports device firmware, so nothing is claimed.
+        assert chan.firmware_version is None
+    finally:
+        _uninstall_fake_vector()
+
+
+def test_vector_omits_the_serial_the_card_does_not_report() -> None:
+    # The same card that drops the `SN:` chunk from its id drops the
+    # identity field, rather than sending "None" or an empty string.
+    _install_fake_vector([_VectorCfg("VN1640A", 0, serial_number=None)])
+    try:
+        _install_fake_driver_config((11 << 24) | (4 << 16) | 32)
+        m = _fresh_driver_module()
+        (chan,) = m._list_vector()
+        assert chan.serial_number is None
+        assert chan.driver_version == "11.4.32"
+    finally:
+        _uninstall_fake_vector()
+
+
+def test_vector_driver_version_absent_when_the_xl_driver_will_not_say() -> None:
+    # A python-can without the helper, and an XL driver that raises,
+    # both leave the version absent. The rest of the identity survives:
+    # one unanswered read is not a reason to drop the serial too.
+    _install_fake_vector([_VectorCfg("VN1640A", 0, serial_number=999)])
+    try:
+        m = _fresh_driver_module()
+        (chan,) = m._list_vector()
+        assert chan.driver_version is None
+        assert chan.driver_name == "Vector XL Driver Library"
+        assert chan.serial_number == "999"
+
+        import can.interfaces.vector.canlib as canlib  # noqa: WPS433
+
+        def _boom():
+            raise OSError("XL library not found")
+
+        canlib._get_xl_driver_config = _boom
+        m = _fresh_driver_module()
+        (chan,) = m._list_vector()
+        assert chan.driver_version is None
+    finally:
+        _uninstall_fake_vector()
+
+
+def test_kvaser_claims_no_identity_at_all() -> None:
+    # Kvaser's leg is not built here, and a backend that reports nothing
+    # has to render exactly as it did before the fields existed. That is
+    # the control the virtual bus shares.
+    from cannet_python_can.driver import Channel
+
+    plain = Channel(id="kvaser:0(ch:0)", display_name="Kvaser", fd_capable=True)
+    assert plain.driver_name is None
+    assert plain.driver_version is None
+    assert plain.firmware_version is None
+    assert plain.serial_number is None

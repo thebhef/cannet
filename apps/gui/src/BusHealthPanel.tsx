@@ -15,11 +15,27 @@
 /// The adapter column shares its formats with the project panel —
 /// `describeAppliedConfig` renders the applied configuration there and
 /// here, so `500k · FD data 2M` means the same thing in both places.
+/// Under the adapter's name it carries whatever the peer's driver said
+/// about the hardware — driver stack and version, firmware, serial —
+/// and nothing at all where the driver said nothing, so a virtual bus
+/// reads exactly as it always did.
+///
+/// **The overruns column is the one that says whether the rest of the
+/// panel is the whole story.** It counts occasions on which the driver
+/// reported that received frames were lost before they reached us. A
+/// driver that does not watch for that reports nothing and the cell
+/// reads an em dash — which is not the same as the zero a driver that
+/// watches and has seen none reports, and must never be shown as one.
 
 import { useContext, useMemo } from "react";
 
 import { ProjectContext } from "./projectContext";
-import { busHealthRows, useBusHealth, type BusHealthRow } from "./busHealth";
+import {
+  busHealthRows,
+  useBusHealth,
+  type AdapterIdentity,
+  type BusHealthRow,
+} from "./busHealth";
 import { useConnectionStates } from "./connectionStates";
 import { useInterfaceDiscovery } from "./ConnectionManagement";
 import { useSidecarStatus } from "./sidecarStatus";
@@ -91,6 +107,12 @@ export function BusHealthPanel() {
               <th>Load</th>
               <th className="num">TEC</th>
               <th className="num">REC</th>
+              <th
+                className="num"
+                title="Occasions the driver reported that received frames were lost before reaching the capture. A count of reports, not of frames: no adapter says how many an overrun swallowed. An em dash means this driver does not report receive loss at all."
+              >
+                Overruns
+              </th>
               <th className="num">Errors</th>
               <th>Adapter</th>
             </tr>
@@ -125,6 +147,7 @@ function Row({ row }: { row: BusHealthRow }) {
       </td>
       <Num value={row.tec} />
       <Num value={row.rec} />
+      <Num value={row.rxOverruns} />
       <td className="num">
         {row.errorCount === null ? (
           <Absent />
@@ -144,10 +167,34 @@ function Row({ row }: { row: BusHealthRow }) {
           <>
             {row.adapter}
             {row.applied !== null && <span className="bus-health-applied"> {row.applied}</span>}
+            {row.adapterIdentity !== null && <Identity identity={row.adapterIdentity} />}
           </>
         )}
       </td>
     </tr>
+  );
+}
+
+/// The adapter's identity, rendered only once the driver has reported
+/// some of it. Each slot names itself and shows an em dash where the
+/// driver said nothing, so a reader can tell "this adapter has no
+/// serial to report" from "we never asked".
+function Identity({ identity }: { identity: AdapterIdentity }) {
+  return (
+    <span className="bus-health-identity">
+      <Slot label="Driver" value={identity.driver} />
+      <Slot label="Firmware" value={identity.firmware} />
+      <Slot label="Serial" value={identity.serial} />
+    </span>
+  );
+}
+
+function Slot({ label, value }: { label: string; value: string | null }) {
+  return (
+    <span className="bus-health-identity-slot">
+      <span className="bus-health-identity-label">{label}</span>{" "}
+      {value === null ? <Absent /> : value}
+    </span>
   );
 }
 

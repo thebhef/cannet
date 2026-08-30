@@ -1253,11 +1253,24 @@ pub struct SignalExtent {
 /// One CAN interface as exposed by a remote `cannet-server`. Mirrors
 /// `cannet_client::Interface`, kept here so the React side has a stable
 /// `snake_case` payload to deserialize against.
-#[derive(serde::Serialize, Clone)]
+///
+/// The four identity fields are omitted from the payload when the
+/// peer's driver did not report them, so the frontend sees a missing
+/// key rather than an empty string. That is what lets the adapter cell
+/// render absent as absent instead of as a blank value.
+#[derive(serde::Serialize, Clone, PartialEq, Eq)]
 pub struct InterfaceRecord {
     pub id: String,
     pub display_name: String,
     pub fd_capable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firmware_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
 }
 
 impl From<cannet_client::Interface> for InterfaceRecord {
@@ -1266,6 +1279,10 @@ impl From<cannet_client::Interface> for InterfaceRecord {
             id: value.id,
             display_name: value.display_name,
             fd_capable: value.fd_capable,
+            driver_name: value.driver_name,
+            driver_version: value.driver_version,
+            firmware_version: value.firmware_version,
+            serial_number: value.serial_number,
         }
     }
 }

@@ -52,6 +52,29 @@ message Interface {
   string display_name = 2;
   // Whether this interface accepts CAN FD frames.
   bool fd_capable = 3;
+
+  // ---- Adapter identity (all optional) ----
+  //
+  // What the vendor's own enumeration says about the hardware behind
+  // this interface. Every field is optional because every backend
+  // exposes a different subset and some expose none at all: a peer
+  // sends a field only when it read one, and a reader renders an
+  // absent field as absent. Never a placeholder, never a guess — a
+  // readout that invents a firmware version is worse than one that
+  // admits it does not know.
+
+  // The driver stack this interface was enumerated through, e.g.
+  // `PCAN-Basic` or `Vector XL Driver Library`. A fact about the
+  // producer's own path to the device rather than a device readback,
+  // which is why it can be present where every other field is absent.
+  optional string driver_name = 4;
+  // Version of that driver stack, as the driver itself reports it.
+  optional string driver_version = 5;
+  // Version of the firmware running on the device, where the driver
+  // exposes one.
+  optional string firmware_version = 6;
+  // Hardware serial number of the device, where the driver exposes one.
+  optional string serial_number = 7;
 }
 
 // A multiplexed message exchanged on the Session stream. Either peer
@@ -252,6 +275,23 @@ message InterfaceState {
   uint32 tec = 3;
   // ISO 11898-1 Receive Error Counter.
   uint32 rec = 4;
+  // Receive overruns the driver has reported on this interface since it
+  // was opened: occasions on which frames reached the controller and
+  // did not reach the producer. Not a fault-confinement reading — it
+  // rides this message because it answers the same question, what the
+  // driver has to say about this interface.
+  //
+  // A count of **reports, not of lost frames**. No vendor says how many
+  // frames an overrun swallowed; PEAK sets a bit in its status word and
+  // Vector sets a flag on an event, and neither carries a quantity. A
+  // producer that counted anything else here would be inventing one.
+  //
+  // Optional because zero and absent are different answers, and this is
+  // the one number that says whether a trace is the whole of what the
+  // bus sent. A backend that reports no such thing at all omits the
+  // field; a reader that rendered that as 0 would claim a completeness
+  // nobody measured.
+  optional uint64 rx_overruns = 5;
 }
 
 enum ControllerState {

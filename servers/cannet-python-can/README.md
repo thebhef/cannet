@@ -102,6 +102,18 @@ The sidecar implements the **hardware-server wire model** described in
   active transmits. A hot-plug while connected is picked up by the
   next `ListInterfaces` (the GUI's "Discover" button), which ADR 0016
   leaves to the server's discretion.
+
+  Each listed `Interface` carries optional **adapter identity** —
+  `driver_name`, `driver_version`, `firmware_version`,
+  `serial_number` — filled with what the vendor's enumeration exposes
+  and **left unset everywhere it does not**. PEAK reports the
+  PCAN-Basic API version and the device firmware version (PCAN-Basic
+  has no hardware-serial parameter; the PCAN-View device id in the
+  channel's `uid:` is not one). Vector reports the XL driver library's
+  version and the card serial. Kvaser and the virtual bus report none
+  of it, and encode exactly as they did before the fields existed. No
+  field is ever substituted with a placeholder: a reader renders absent
+  as absent.
 - A physical channel is **opened once and shared** across every
   subscribed session. A reference count on `Subscribe` /
   `Unsubscribe` drives start / stop; the first subscriber opens the
@@ -116,17 +128,29 @@ The sidecar implements the **hardware-server wire model** described in
   closed and reopened with the new config. Conflict semantics under
   concurrent clients are deliberately whatever python-can does
   (ADR 0022 § Known unknowns).
-- `Body::InterfaceState { interface_id, state, tec, rec }` is
-  pushed: a snapshot on each `Subscribe`, plus a fresh push whenever
-  the controller's fault-confinement state or its TEC / REC
-  counters change. The controller is read at ~2 Hz. On PEAK the
-  state comes from the error counters its error frames carry, on
-  Vector from the chip-state events its XL driver reports (both
-  floored by the vendor's own status word, neither able to talk the
-  other down); everything else falls back to python-can's
+- `Body::InterfaceState { interface_id, state, tec, rec,
+  rx_overruns? }` is pushed: a snapshot on each `Subscribe`, plus a
+  fresh push whenever any of them changes. The controller is read at
+  ~2 Hz. On PEAK the state comes from the error counters its error
+  frames carry, on Vector from the chip-state events its XL driver
+  reports (both floored by the vendor's own status word, neither able
+  to talk the other down); everything else falls back to python-can's
   `Bus.state`, which most backends do not implement. TEC / REC are
   reported as 0 wherever they are not exposed. The Vector path has
   not been run against Vector hardware.
+
+  `rx_overruns` counts occasions on which the driver reported that
+  received frames were lost before reaching the sidecar — **reports,
+  not frames**: PEAK sets two bits in its channel status word and
+  Vector sets a queue-overflow flag on an event, and neither says how
+  many went missing. PEAK counts an episode per rising edge of those
+  bits, since they stay set for as long as the condition lasts; Vector
+  counts each flagged event on the classic queue, and reports *nothing*
+  on an FD channel because the FD event's overflow flag is not among
+  python-can's own definitions. The field is **omitted entirely** for a
+  backend that does not watch for receive loss, which is a different
+  answer from zero: zero is the reading that says a capture is the
+  whole of what the bus sent.
 - `Body::ClockProbe { t1 }` is answered with
   `Body::ClockReply { t1, t2, t3 }` — the sidecar's own wall-clock
   receive and send stamps, from the same `time.time_ns()` clock that
@@ -138,8 +162,9 @@ The sidecar implements the **hardware-server wire model** described in
 ## Swap the driver library
 
 `driver.py` defines a small adapter protocol (`list_channels`,
-`open`, `recv`, `send`, `state`, `close`); the default implementation
-in `driver_python_can.py` wraps `python-can`. To use something else:
+`open`, `recv`, `send`, `state`, `rx_loss`, `close`); the default
+implementation in `driver_python_can.py` wraps `python-can`. To use
+something else:
 
 1. `uv pip install <your-driver>` into the sidecar's venv (or edit
    `pyproject.toml` and re-run `uv sync`).

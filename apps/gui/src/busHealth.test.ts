@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  adapterIdentity,
   anyBusHasErrors,
   busHealthConcerns,
   busHealthRows,
@@ -295,5 +296,94 @@ describe("anyBusHasErrors", () => {
         b2: { errorCount: 1, errorRate: 0 },
       }),
     ).toBe(true);
+  });
+});
+
+describe("adapterIdentity", () => {
+  it("reports nothing at all for an adapter whose driver reported nothing", () => {
+    // The control the whole feature is judged against: a backend that
+    // exposes no identity — an in-process virtual bus, a Kvaser channel
+    // today — has to look exactly as it did before the fields existed.
+    // A row of em dashes would be four claims about facts nobody has.
+    expect(adapterIdentity(interfaces[0])).toBeNull();
+    expect(adapterIdentity(undefined)).toBeNull();
+  });
+
+  it("folds the driver stack and its version into one phrase", () => {
+    // A version with no stack to attach it to says nothing, so the two
+    // are one slot rather than two.
+    expect(
+      adapterIdentity({
+        ...interfaces[0],
+        driver_name: "PCAN-Basic",
+        driver_version: "4.9.0.942",
+      }),
+    ).toEqual({ driver: "PCAN-Basic 4.9.0.942", firmware: null, serial: null });
+  });
+
+  it("keeps each slot the driver did not answer for absent, not blank", () => {
+    // PCAN-Basic exposes no hardware serial and no XL call reports
+    // device firmware, so these absences are the normal case rather
+    // than an error path — and neither may acquire a placeholder.
+    expect(
+      adapterIdentity({
+        ...interfaces[0],
+        driver_name: "Vector XL Driver Library",
+        driver_version: "11.4.32",
+        serial_number: "12345",
+      }),
+    ).toEqual({
+      driver: "Vector XL Driver Library 11.4.32",
+      firmware: null,
+      serial: "12345",
+    });
+  });
+
+  it("survives a driver that reported a version but not a name", () => {
+    expect(adapterIdentity({ ...interfaces[0], driver_version: "4.9.0.942" })).toEqual({
+      driver: "4.9.0.942",
+      firmware: null,
+      serial: null,
+    });
+  });
+});
+
+describe("busHealthRows receive overruns", () => {
+  const inputs = (h: BusHealthMap): BusHealthInputs => ({
+    buses,
+    bindings,
+    interfaces,
+    connStates,
+    health: h,
+  });
+
+  it("keeps a driver that saw no loss apart from one that never looked", () => {
+    // Zero is the reading that licenses treating the capture as the
+    // whole of what the bus sent. `null` is nobody having checked, and
+    // every other figure in the row is read as though the first were
+    // true — so collapsing them is the exact failure this counter was
+    // opened to close.
+    const rows = busHealthRows(
+      inputs({
+        b1: {
+          controller: { state: "active", tec: 0, rec: 0, rxOverruns: 0 },
+          errorCount: 0,
+          errorRate: 0,
+        },
+        b2: {
+          controller: { state: "warning", tec: 104, rec: 0, rxOverruns: 6 },
+          errorCount: 0,
+          errorRate: 0,
+        },
+        b3: { errorCount: 0, errorRate: 0 },
+      }),
+    );
+    const by = Object.fromEntries(rows.map((r) => [r.busId, r]));
+    expect(by.b1.rxOverruns).toBe(0);
+    expect(by.b2.rxOverruns).toBe(6);
+    // A bus whose driver does not report receive loss, and a bus the
+    // host has said nothing about at all: both `null`, both an em dash.
+    expect(by.b3.rxOverruns).toBeNull();
+    expect(by.b4.rxOverruns).toBeNull();
   });
 });

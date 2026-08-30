@@ -7524,7 +7524,7 @@ fn a_signal_the_picked_database_withholds_has_no_value_in_the_row() {
 fn session_with_controller(bus: &str, interface: &str, state: Option<i32>) -> RemoteSession {
     let controllers = cannet_client::controller::ControllerStates::new();
     if let Some(state) = state {
-        controllers.record(interface, state, 0, 0);
+        controllers.record(interface, state, 0, 0, None);
     }
     RemoteSession {
         handle: None,
@@ -7624,7 +7624,7 @@ fn an_interface_that_comes_back_gets_its_route_back() {
     // answering again the moment the peer reports a reachable
     // controller, and the probe is already re-asking.
     let controllers = cannet_client::controller::ControllerStates::new();
-    controllers.record("PCAN_USBBUS1", 4, 0, 0);
+    controllers.record("PCAN_USBBUS1", 4, 0, 0, None);
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(
         "tcp://host:1".to_string(),
@@ -7640,6 +7640,6 @@ fn an_interface_that_comes_back_gets_its_route_back() {
         },
     );
     assert!(crate::session::resolve_bus_route(&sessions, "p").is_none());
-    controllers.record("PCAN_USBBUS1", 1, 0, 0);
+    controllers.record("PCAN_USBBUS1", 1, 0, 0, None);
     assert!(crate::session::resolve_bus_route(&sessions, "p").is_some());
 }

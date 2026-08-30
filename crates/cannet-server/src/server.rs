@@ -103,6 +103,9 @@ impl CannetServerImpl {
                 id: iface.id.clone(),
                 display_name: iface.display_name.clone(),
                 fd_capable: iface.fd_capable,
+                // A replayed file has no adapter behind it, so it
+                // claims no adapter identity.
+                ..ProtoInterface::default()
             })
             .collect();
         InterfaceList { interfaces }

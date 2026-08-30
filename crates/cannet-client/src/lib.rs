@@ -506,11 +506,31 @@ impl ResolvedSubscription {
 /// One CAN interface the server exposes. Mirrors
 /// `cannet_wire::proto::Interface` so callers don't have to depend on
 /// the generated proto types directly.
+///
+/// The four identity fields are what the peer's own driver said about
+/// the hardware behind the interface, and every one of them is
+/// `Option` because **absent is an answer**: each backend exposes a
+/// different subset and some expose none at all. A caller renders what
+/// is there and nothing where it is not — a readout that substitutes a
+/// placeholder for a firmware version it never read is worse than one
+/// that admits it does not know.
 #[derive(Debug, Clone)]
 pub struct Interface {
     pub id: String,
     pub display_name: String,
     pub fd_capable: bool,
+    /// The driver stack the peer enumerated this interface through
+    /// (`PCAN-Basic`, `Vector XL Driver Library`). A fact about the
+    /// peer's own path to the device rather than a device readback,
+    /// which is why it can be present where the other three are not.
+    pub driver_name: Option<String>,
+    /// Version of that driver stack, as the driver itself reports it.
+    pub driver_version: Option<String>,
+    /// Version of the firmware on the device, where the driver exposes
+    /// one.
+    pub firmware_version: Option<String>,
+    /// Hardware serial of the device, where the driver exposes one.
+    pub serial_number: Option<String>,
 }
 
 impl From<cannet_wire::proto::Interface> for Interface {
@@ -519,6 +539,13 @@ impl From<cannet_wire::proto::Interface> for Interface {
             id: p.id,
             display_name: p.display_name,
             fd_capable: p.fd_capable,
+            // An empty string is not a value: a peer that sent one
+            // read nothing, and it must not reach a readout as a
+            // present-but-blank field.
+            driver_name: p.driver_name.filter(|s| !s.is_empty()),
+            driver_version: p.driver_version.filter(|s| !s.is_empty()),
+            firmware_version: p.firmware_version.filter(|s| !s.is_empty()),
+            serial_number: p.serial_number.filter(|s| !s.is_empty()),
         }
     }
 }
@@ -1363,6 +1390,7 @@ async fn run_session(
                             state.state,
                             state.tec,
                             state.rec,
+                            state.rx_overruns,
                         );
                     }
                     // Subscribe / Unsubscribe round-trips (a peer

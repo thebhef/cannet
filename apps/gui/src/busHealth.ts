@@ -120,12 +120,21 @@ export interface BusHealthRow {
   loadAbsentReason: string | null;
   tec: number | null;
   rec: number | null;
+  /// Receive overruns the driver has reported, or `null` where it
+  /// reports no such thing. `null` and `0` are different answers and
+  /// the panel must render them differently: `0` says this capture is
+  /// the whole of what the bus sent, `null` says nobody checked.
+  rxOverruns: number | null;
   /// Errors this session, or `null` for a bus the host has nothing to
   /// say about at all.
   errorCount: number | null;
   errorRate: number;
   /// The interface's display name, or `null` for an unbound bus.
   adapter: string | null;
+  /// What the peer's driver said about the adapter, or `null` when it
+  /// said nothing at all — in which case the cell reads exactly as it
+  /// did before the fields existed.
+  adapterIdentity: AdapterIdentity | null;
   /// The applied bus configuration in the project panel's own words —
   /// `describeAppliedConfig`, so a bitrate never acquires a second
   /// spelling. `null` when the bus is not connected.
@@ -151,6 +160,42 @@ export interface BusHealthInputs {
 /// answer here is that there is none. The bus's own name is not
 /// repeated — column 1 already carries it.
 const VIRTUAL_BUS_ADAPTER = "virtual bus";
+
+/// The adapter identity a cell renders, once **any** of it is known.
+///
+/// Each slot is `null` where the driver did not report it, and the cell
+/// shows an em dash there. `driver` folds the driver's name and version
+/// into the one phrase a reader wants — "PCAN-Basic 4.9.0.942" — since
+/// a version with no stack to attach it to says nothing on its own.
+export interface AdapterIdentity {
+  driver: string | null;
+  firmware: string | null;
+  serial: string | null;
+}
+
+/// Read the identity off an interface record, or `null` when the peer's
+/// driver reported none of it.
+///
+/// The `null` is what keeps the control honest: a backend that exposes
+/// nothing — an in-process virtual bus, a Kvaser channel today — has to
+/// render exactly as it did before these fields existed, not as a row
+/// of em dashes announcing four things nobody asked about. Once one
+/// field is known the rest are worth naming, because then the absences
+/// are answers rather than noise.
+export function adapterIdentity(
+  iface: InterfaceRecord | undefined,
+): AdapterIdentity | null {
+  if (iface === undefined) return null;
+  const { driver_name, driver_version, firmware_version, serial_number } = iface;
+  if (!driver_name && !driver_version && !firmware_version && !serial_number) {
+    return null;
+  }
+  return {
+    driver: [driver_name, driver_version].filter(Boolean).join(" ") || null,
+    firmware: firmware_version ?? null,
+    serial: serial_number ?? null,
+  };
+}
 
 /// Build one row per project bus, in project order.
 export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
@@ -193,9 +238,14 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
               : "no bitrate was sent for this bus, so there is nothing to divide by",
       tec: controller?.tec ?? null,
       rec: controller?.rec ?? null,
+      rxOverruns: controller?.rxOverruns ?? null,
       errorCount: record?.errorCount ?? null,
       errorRate: record?.errorRate ?? 0,
       adapter: adapterName,
+      adapterIdentity:
+        binding === undefined
+          ? null
+          : adapterIdentity(inp.interfaces.find((i) => i.id === binding.interface)),
       applied: connected ? describeAppliedConfig(applied) : null,
     };
   });

@@ -99,6 +99,17 @@ _PCAN_STATUS_UNREACHABLE = frozenset(
     {0x00100, 0x00200, 0x01400, 0x01800, 0x01C00, 0x4000000}
 )
 
+#: PCAN-Basic status bits that say received traffic was lost. The
+#: vendor header spells them out: ``PCAN_ERROR_OVERRUN`` (0x2) is "CAN
+#: controller was read too late" and ``PCAN_ERROR_QOVERRUN`` (0x40) is
+#: "Receive queue was read too late". Both mean frames reached the
+#: adapter and did not reach us; neither says how many. They are flags
+#: in the same word the fault-confinement bits live in, so they are
+#: masked, not compared for equality.
+_PCAN_ERROR_OVERRUN = 0x00002
+_PCAN_ERROR_QOVERRUN = 0x00040
+_PCAN_RX_OVERRUN_MASK = _PCAN_ERROR_OVERRUN | _PCAN_ERROR_QOVERRUN
+
 #: Byte offsets of the two error counters in a PEAK error frame's
 #: payload. Measured on a PCAN-USB FD at the bench: byte 3 stepped by
 #: exactly 8 per failed transmission and pinned at 128 — the transmit
@@ -122,6 +133,12 @@ _PCAN_ERR_TEC_OFFSET = 3
 _XL_CHIPSTAT_BUSOFF = 0x01
 _XL_CHIPSTAT_ERROR_PASSIVE = 0x02
 _XL_CHIPSTAT_ERROR_WARNING = 0x04
+#: ``XL_EventFlags.XL_EVENT_FLAG_OVERRUN`` — set on ``XLevent.flags``
+#: when the XL driver's event queue overflowed, i.e. events were lost
+#: before we could read them. Vector's own answer to the same question
+#: PEAK answers with the two status bits above, and like them it says
+#: that loss happened without saying how much.
+_XL_EVENT_FLAG_OVERRUN = 0x01
 #: ``XL_EventTags.XL_CHIP_STATE`` — the classic-CAN event queue's tag
 #: for a chip-state answer.
 _XL_EVENT_TAG_CHIP_STATE = 4
@@ -129,6 +146,15 @@ _XL_EVENT_TAG_CHIP_STATE = 4
 #: on the CAN FD queue, which is a different event struct with its own
 #: union member.
 _XL_CANFD_EVENT_TAG_CHIP_STATE = 1033
+
+
+#: What the ``driver_name`` identity field reports for each backend.
+#: These name the vendor API the sidecar enumerated and opened the
+#: channel through — a fact about our own path to the device, not a
+#: value read back off it — which is why they are constants here rather
+#: than reads that can come back absent.
+_PCAN_DRIVER_NAME = "PCAN-Basic"
+_VECTOR_DRIVER_NAME = "Vector XL Driver Library"
 
 
 def _pcan_status_state(status: int) -> str:
@@ -235,7 +261,23 @@ def _chip_state_vector_bus_class() -> type:
         #: anything has been received.
         chip_state: Optional[tuple[int, int, int]] = None
 
+        #: How many events the XL driver has handed us with its
+        #: queue-overflow flag set, i.e. how many times it has told us
+        #: that received events were lost. A class attribute for the
+        #: same reason ``chip_state`` is one: it has to read correctly
+        #: before anything has arrived.
+        #:
+        #: Only the classic queue is counted. The CAN FD event struct
+        #: carries its own overflow flag in a different field
+        #: (``flagsChip``), and python-can's ``xldefine`` does not
+        #: define the bit — so an FD channel reports *no* count rather
+        #: than a guessed one, and :meth:`PythonCanChannel.rx_loss`
+        #: answers ``None`` there.
+        overrun_events: int = 0
+
         def handle_can_event(self, event: object) -> None:
+            if int(getattr(event, "flags", 0) or 0) & _XL_EVENT_FLAG_OVERRUN:
+                self.overrun_events += 1
             if getattr(event, "tag", None) == _XL_EVENT_TAG_CHIP_STATE:
                 self.chip_state = _xl_chip_state_reading(event.tagData.chipState)  # type: ignore[attr-defined]
 
@@ -356,6 +398,12 @@ class PythonCanChannel:
         # from the rx thread's write. `(rec, tec)`, matching the payload
         # order they are decoded from.
         self._counters: tuple[int, int] = (0, 0)
+        # Rx-overrun episodes counted off PEAK's status word, and
+        # whether the last word we read was already inside one. The
+        # bits stay set for as long as the condition lasts, so an
+        # episode is a rising edge -- see `_note_pcan_overrun`.
+        self._pcan_overruns = 0
+        self._pcan_in_overrun = False
 
     def recv(self, timeout_s: float) -> Optional[Frame]:
         if self._closed:
@@ -530,8 +578,58 @@ class PythonCanChannel:
         if status in _PCAN_STATUS_UNREACHABLE:
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
+        self._note_pcan_overrun(status)
         state = worse_state(_pcan_status_state(status), from_counters)
         return ControllerState(state=state, tec=tec, rec=rec)
+
+    def _note_pcan_overrun(self, status: int) -> None:
+        """Count one receive-overrun *episode* off the status word.
+
+        Rising edge only. The overrun bits stay set for as long as the
+        condition lasts, so counting every poll that sees them would
+        report one bus stall as a number that climbs at the poll rate --
+        a figure about the poll, not about the wire. What an episode
+        counts is occasions, which is the most the word can support: it
+        is a flag, and no PCAN-Basic parameter reports how many frames
+        went missing behind it.
+
+        Fed from :meth:`_pcan_state`'s status read rather than one of
+        its own. ``CAN_GetStatus`` serialises against ``CAN_Write`` in
+        PEAK's driver -- the same contention that keeps interface
+        enumeration off a timer -- so the two readings share one word
+        per poll instead of racing each other for two.
+        """
+        in_overrun = bool(status & _PCAN_RX_OVERRUN_MASK)
+        if in_overrun and not self._pcan_in_overrun:
+            self._pcan_overruns += 1
+        self._pcan_in_overrun = in_overrun
+
+    def rx_loss(self) -> Optional[int]:
+        """Receive overruns reported since this channel was opened, or
+        ``None`` where the backend reports none of them.
+
+        Two backends answer. PEAK counts episodes of the two overrun
+        bits in the status word :meth:`_pcan_state` already reads.
+        Vector counts the events its XL driver hands us with the
+        queue-overflow flag set -- but only on the classic event queue:
+        the CAN FD struct carries its overflow flag in ``flagsChip``,
+        whose bit python-can's ``xldefine`` does not define, so an FD
+        channel answers ``None`` rather than a zero it has not earned.
+
+        Everything else answers ``None``. python-can's ``BusABC`` has no
+        notion of receive loss at all, so a backend not named here is
+        one that does not watch -- which is a different answer from a
+        backend that watches and has seen none.
+        """
+        if self._closed or can is None:
+            return None
+        if self._is_pcan:
+            return self._pcan_overruns
+        if self._is_vector:
+            if self._fd:
+                return None
+            return int(getattr(self._bus, "overrun_events", 0) or 0)
+        return None
 
     def _vector_state(self) -> ControllerState:
         """Vector's controller state, read off the chip state its XL
@@ -591,6 +689,35 @@ class PythonCanChannel:
 
 
 # ----- Vendor enumeration helpers --------------------------------------------
+
+
+def _vector_driver_version(vector_canlib) -> Optional[str]:
+    """The XL driver library's version, from ``xlGetDriverConfig``.
+
+    python-can already makes that call — ``_get_xl_driver_config`` opens
+    the driver, fills an ``XLdriverConfig`` and closes it again — and
+    ``get_channel_configs`` throws the ``dllVersion`` away when it
+    projects the struct onto its own NamedTuple. This reads the field
+    the projection drops.
+
+    ``dllVersion`` is packed the way every XL sample decodes it: major
+    in bits 31-24, minor in 23-16, build in the low 16.
+
+    **Unverified against hardware**, like the rest of this module's
+    Vector leg: no XL library exists where it was written. A python-can
+    that does not offer the helper, or an XL library that is not
+    installed, yields ``None`` — absent, never a placeholder.
+    """
+    read = getattr(vector_canlib, "_get_xl_driver_config", None)
+    if not callable(read):
+        return None
+    try:
+        packed = int(read().dllVersion)
+    except Exception:  # noqa: BLE001
+        return None
+    if packed <= 0:
+        return None
+    return f"{(packed >> 24) & 0xFF}.{(packed >> 16) & 0xFF}.{packed & 0xFFFF}"
 
 
 def _list_vector() -> List[Channel]:
@@ -663,6 +790,10 @@ def _list_vector() -> List[Channel]:
     except Exception as e:  # noqa: BLE001
         _log.info("vector enumeration failed (%s); skipping", e)
         return []
+    # One driver-config read for the whole enumeration: the version is
+    # the library's, not the channel's, and the call opens and closes
+    # the XL driver each time it is made.
+    driver_version = _vector_driver_version(vector_canlib)
     out: List[Channel] = []
     for cfg in configs or []:
         hw_type = getattr(cfg, "hw_type", None)
@@ -695,7 +826,23 @@ def _list_vector() -> List[Channel]:
         if fd_mask:
             caps = int(getattr(cfg, "channel_capabilities", 0) or 0)
             fd = bool(caps & fd_mask)
-        out.append(Channel(id=cid, display_name=label, fd_capable=fd))
+        out.append(
+            Channel(
+                id=cid,
+                display_name=label,
+                fd_capable=fd,
+                driver_name=_VECTOR_DRIVER_NAME,
+                driver_version=driver_version,
+                # The card serial the channel config already carries —
+                # the same value the id's `SN:` chunk is built from.
+                # Absent where the card does not report one, which the
+                # id grammar already has to handle.
+                serial_number=str(sn) if sn else None,
+                # No XL call reports device firmware, so nothing is
+                # claimed for it.
+                firmware_version=None,
+            )
+        )
     return out
 
 
@@ -846,6 +993,17 @@ def _list_pcan() -> List[Channel]:
             api, handle, pcan_basic, "PCAN_DEVICE_ID", "PCAN_DEVICE_NUMBER"
         )
         model = _pcan_read_str(api, handle, pcan_basic, "PCAN_HARDWARE_NAME") or "PCAN"
+        # Identity, read the same per-handle way as the metadata above.
+        # `PCAN_API_VERSION` is the PCAN-Basic library's own version and
+        # `PCAN_FIRMWARE_VERSION` the version running on the device;
+        # either can come back empty on a handle the driver will not
+        # answer for, and an empty read stays absent rather than
+        # becoming an empty string on the wire. PCAN-Basic exposes no
+        # serial number at all — `PCAN_DEVICE_ID` is the user-settable
+        # PCAN-View id already carried as `uid:`, not a hardware serial
+        # — so nothing is claimed for that field.
+        api_version = _pcan_read_str(api, handle, pcan_basic, "PCAN_API_VERSION")
+        firmware = _pcan_read_str(api, handle, pcan_basic, "PCAN_FIRMWARE_VERSION")
 
         # `uid:` is the user-settable PCAN-View device id. It's always
         # shown, including the factory-default 0 — having it always
@@ -866,6 +1024,10 @@ def _list_pcan() -> List[Channel]:
                 id=cid,
                 display_name=label,
                 fd_capable=bool(cfg.get("supports_fd", False)),
+                driver_name=_PCAN_DRIVER_NAME,
+                driver_version=api_version or None,
+                firmware_version=firmware or None,
+                serial_number=None,
             )
         )
     return out

@@ -808,3 +808,96 @@ def test_a_persistent_read_failure_is_logged_once_not_at_the_retry_rate(
         )
     finally:
         reg.unsubscribe("fake:0", a)
+
+
+# ---- receive-overrun reporting ---------------------------------------------
+
+
+class _CountingChannel(_FakeChannel):
+    """A backend that watches for receive loss, like PEAK and Vector do.
+    ``fail`` makes both device reads raise, which is what an unplugged
+    adapter looks like from the state poll."""
+
+    def __init__(self, channel_id: str = "fake:0") -> None:
+        super().__init__(channel_id=channel_id)
+        self.overruns = 0
+        self.fail = threading.Event()
+
+    def state(self) -> drv.ControllerState:
+        if self.fail.is_set():
+            raise OSError("device removed")
+        return super().state()
+
+    def rx_loss(self) -> Optional[int]:
+        if self.fail.is_set():
+            raise OSError("device removed")
+        return self.overruns
+
+
+def test_a_backend_that_watches_for_loss_reports_zero_from_the_first_snapshot() -> None:
+    # Zero is the number that licenses reading a capture as the whole of
+    # what the bus sent, so it has to be *sent*, not inferred from
+    # silence.
+    driver = _ChannelDriver(_CountingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        [snapshot] = _drain(a, kind="interface_state")
+        # The subscribe snapshot predates the first poll, so it carries
+        # the baseline; the first poll is what puts a real reading on
+        # the wire.
+        driver.opened[0].overruns = 3
+        [moved] = _drain(a, kind="interface_state", timeout_s=3.0)
+        assert moved.interface_state.HasField("rx_overruns")
+        assert moved.interface_state.rx_overruns == 3
+        assert snapshot.interface_state.interface_id == "fake:0"
+    finally:
+        reg.unsubscribe("fake:0", a)
+
+
+def test_a_backend_that_does_not_watch_sends_no_count_at_all() -> None:
+    """The control, and the one that matters: the plain fake channel has
+    no ``rx_loss`` at all, which is every backend python-can offers
+    except PEAK and Vector. Its envelopes must leave the field unset —
+    a zero there would tell the reader the capture is complete on the
+    authority of a backend that never looked."""
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        [snapshot] = _drain(a, kind="interface_state")
+        assert not snapshot.interface_state.HasField("rx_overruns")
+        driver.opened[0].set_state(
+            drv.ControllerState(state=drv.STATE_PASSIVE, tec=130, rec=0)
+        )
+        [moved] = _drain(a, kind="interface_state", timeout_s=3.0)
+        assert moved.interface_state.state == pb.CONTROLLER_STATE_PASSIVE
+        assert not moved.interface_state.HasField("rx_overruns")
+    finally:
+        reg.unsubscribe("fake:0", a)
+
+
+def test_a_count_already_reported_survives_the_adapter_going_away() -> None:
+    """The state and the count fail together and must not be treated
+    alike. A state is a reading of how the controller is *now*, so a
+    failed read replaces it with `unavailable`; a count is a record of
+    frames already lost, and losing sight of the adapter does not
+    un-lose them."""
+    driver = _ChannelDriver(_CountingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        _drain(a, kind="interface_state")
+        driver.opened[0].overruns = 12
+        [moved] = _drain(a, kind="interface_state", timeout_s=3.0)
+        assert moved.interface_state.rx_overruns == 12
+
+        driver.opened[0].fail.set()
+        [gone] = _drain(a, kind="interface_state", timeout_s=3.0)
+        assert gone.interface_state.state == pb.CONTROLLER_STATE_UNAVAILABLE
+        assert gone.interface_state.rx_overruns == 12
+    finally:
+        reg.unsubscribe("fake:0", a)

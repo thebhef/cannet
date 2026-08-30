@@ -420,6 +420,21 @@ export interface InterfaceRecord {
   id: string;
   display_name: string;
   fd_capable: boolean;
+  /// What the peer's own driver said about the hardware behind the
+  /// interface. Every field is optional and **absent means absent**:
+  /// each backend exposes a different subset and some expose none at
+  /// all, so the host omits the key rather than sending an empty
+  /// string. A cell renders what is there and an em dash where it is
+  /// not — never a placeholder standing in for something nobody read.
+  ///
+  /// `driver_name` is the odd one: it names the driver stack the peer
+  /// enumerated through, a fact about its own path to the device rather
+  /// than a device readback, so it can be present where the rest are
+  /// not.
+  driver_name?: string;
+  driver_version?: string;
+  firmware_version?: string;
+  serial_number?: string;
 }
 
 /// One bus's low-level health, as the host reports it. Mirrors
@@ -432,7 +447,18 @@ export interface InterfaceRecord {
 /// say about — a project bus with no entry reads as an em dash all the
 /// way across.
 export interface BusHealthRecord {
-  controller?: { state: string; tec: number; rec: number };
+  controller?: {
+    state: string;
+    tec: number;
+    rec: number;
+    /// Receive overruns the peer's driver has reported since it opened
+    /// the interface. Absent for a driver that does not watch for
+    /// receive loss, which is a different answer from zero: zero is the
+    /// reading that says the capture is the whole of what the bus sent.
+    /// Counts reports, not lost frames — no vendor says how many an
+    /// overrun swallowed.
+    rxOverruns?: number;
+  };
   loadPercent?: number;
   errorCount: number;
   errorRate: number;

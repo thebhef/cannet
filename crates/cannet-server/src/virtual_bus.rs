@@ -138,6 +138,9 @@ impl ServerInner {
             id: VIRTUAL_BUS_FACTORY_ID.to_string(),
             display_name: VIRTUAL_BUS_DISPLAY_NAME.to_string(),
             fd_capable: self.fd_capable,
+            // No adapter, so no adapter identity. Every field absent is
+            // the honest answer for a bus that is a data structure.
+            ..ProtoInterface::default()
         });
         // Deterministic order so tests and humans see a stable list.
         let mut names: Vec<&String> = bridges.keys().collect();
@@ -151,6 +154,10 @@ impl ServerInner {
                 // controller. For a virtual-bus-to-virtual-bus bridge,
                 // FD capability follows the local bus's FD-enable.
                 fd_capable: self.fd_capable,
+                // The remote's adapter identity is not forwarded: this
+                // interface is the bridge, and naming the far end's
+                // hardware here would attribute it to the wrong thing.
+                ..ProtoInterface::default()
             });
         }
         InterfaceList { interfaces }

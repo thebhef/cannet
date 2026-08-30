@@ -14,9 +14,14 @@
 //!   them, so a saved capture is not a lossy restatement of what was
 //!   received.
 //! - **Controller state.** `InterfaceState` — the ISO 11898-1
-//!   fault-confinement state plus the transmit and receive error
-//!   counters — arrives on the session stream and is cached here per
-//!   interface. One reported state is not a fault-confinement state:
+//!   fault-confinement state, the transmit and receive error counters,
+//!   and the driver's count of receive overruns — arrives on the
+//!   session stream and is cached here per interface. The overrun count
+//!   is not a fault-confinement reading; it is the one number that says
+//!   whether the capture is the whole of what the bus sent, and it is
+//!   optional because a backend that does not watch for receive loss
+//!   must not be read as one that watched and saw none.
+//!   One reported state is not a fault-confinement state:
 //!   `unavailable`, which says the peer's driver can no longer reach
 //!   the interface. It is also the one that takes the bus's transmit
 //!   route down (ADR 0039's park), because a route that survives the
@@ -303,6 +308,16 @@ pub(crate) struct ControllerHealth {
     pub(crate) state: &'static str,
     pub(crate) tec: u32,
     pub(crate) rec: u32,
+    /// Receive overruns the peer's driver has reported since it opened
+    /// the interface — occasions on which frames reached the controller
+    /// and did not reach the peer, and therefore did not reach this
+    /// capture. `None` for a driver that reports no such thing, which
+    /// is emphatically not zero: zero is the reading that licenses
+    /// treating the capture as complete, and absent is nobody having
+    /// looked. Counts **reports, not lost frames** — no vendor says how
+    /// many an overrun swallowed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rx_overruns: Option<u64>,
 }
 
 /// What one bus's row in the health panel is built from. Only buses the
@@ -430,6 +445,7 @@ pub(crate) fn controllers_by_bus(
                         state: status.state.as_str(),
                         tec: status.tec,
                         rec: status.rec,
+                        rx_overruns: status.rx_overruns,
                     },
                 );
             }
@@ -937,6 +953,30 @@ mod tests {
     }
 
     #[test]
+    fn a_driver_that_does_not_watch_for_receive_loss_sends_no_count_to_the_panel() {
+        // The panel's whole discipline: absent is not zero. A driver
+        // that watches and has seen none serialises `rxOverruns: 0`,
+        // which is what says the capture is the whole of what the bus
+        // sent; one that does not watch omits the key, and the panel
+        // renders an em dash for it. Serialising the second as 0 would
+        // have every backend without an overrun signal vouch for a
+        // completeness it never measured.
+        let watched = ControllerHealth {
+            state: "active",
+            tec: 0,
+            rec: 0,
+            rx_overruns: Some(0),
+        };
+        let unwatched = ControllerHealth {
+            rx_overruns: None,
+            ..watched
+        };
+        let json = |h: &ControllerHealth| serde_json::to_string(h).unwrap();
+        assert!(json(&watched).contains("\"rxOverruns\":0"));
+        assert!(!json(&unwatched).contains("rxOverruns"));
+    }
+
+    #[test]
     fn a_cleared_session_forgets_its_errors() {
         let health = BusHealth::default();
         health.observe_error("b1", 0);
@@ -956,6 +996,7 @@ mod tests {
                 state: "passive",
                 tec: 142,
                 rec: 9,
+                rx_overruns: None,
             },
         )]);
         let rows = health_rows(

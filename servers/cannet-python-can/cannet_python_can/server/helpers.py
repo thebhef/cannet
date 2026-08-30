@@ -13,6 +13,7 @@ import importlib
 import logging
 import os
 import time
+from typing import Optional
 
 from .. import driver as drv
 from .._proto import cannet_pb2 as pb
@@ -170,3 +171,30 @@ def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
     if name == drv.STATE_UNAVAILABLE:
         return pb.CONTROLLER_STATE_UNAVAILABLE
     return pb.CONTROLLER_STATE_ACTIVE
+
+
+def _interface_state(
+    *,
+    channel_id: str,
+    state: "pb.ControllerState.V",
+    tec: int,
+    rec: int,
+    rx_overruns: Optional[int],
+) -> pb.InterfaceState:
+    """One ``InterfaceState`` message, leaving ``rx_overruns`` **unset**
+    where the backend reports no receive loss at all.
+
+    Zero and absent are different answers there — a backend that watches
+    for loss and has seen none says zero, a backend that does not watch
+    says nothing — and the difference only survives the encoding if the
+    optional field is genuinely left unset.
+    """
+    msg = pb.InterfaceState(
+        interface_id=channel_id,
+        state=state,
+        tec=tec,
+        rec=rec,
+    )
+    if rx_overruns is not None:
+        msg.rx_overruns = rx_overruns
+    return msg

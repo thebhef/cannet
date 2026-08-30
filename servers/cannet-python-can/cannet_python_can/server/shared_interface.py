@@ -22,6 +22,7 @@ from .._proto import cannet_pb2 as pb
 from .helpers import (
     _error_envelope,
     _frame_to_proto,
+    _interface_state,
     _log_envelope,
     _state_name_to_proto,
 )
@@ -119,6 +120,12 @@ class _SharedInterface:
         self._last_state: pb.ControllerState.V = pb.CONTROLLER_STATE_ACTIVE
         self._last_tec: int = 0
         self._last_rec: int = 0
+        # Last rx-overrun count published, or ``None`` for a backend
+        # that does not report receive loss at all. The two are
+        # different answers -- a backend that watches and has seen none
+        # says 0 -- so this is tri-state on purpose and the wire field
+        # is left unset for ``None``.
+        self._last_rx_overruns: Optional[int] = None
         # Transmit-side counters, emitted alongside the rx stats on the
         # rx pump's periodic tick. `transmit` runs on gRPC handler
         # threads while the tick reads/resets on the rx thread, so a
@@ -177,13 +184,15 @@ class _SharedInterface:
             snapshot_state = self._last_state
             snapshot_tec = self._last_tec
             snapshot_rec = self._last_rec
+            snapshot_overruns = self._last_rx_overruns
         outbox.put(
             pb.Envelope(
-                interface_state=pb.InterfaceState(
-                    interface_id=self._channel_id,
+                interface_state=_interface_state(
+                    channel_id=self._channel_id,
                     state=snapshot_state,
                     tec=snapshot_tec,
                     rec=snapshot_rec,
+                    rx_overruns=snapshot_overruns,
                 )
             )
         )
@@ -397,6 +406,10 @@ class _SharedInterface:
         self._last_state = pb.CONTROLLER_STATE_ACTIVE
         self._last_tec = 0
         self._last_rec = 0
+        # A reopened channel counts overruns from zero, and the wire
+        # field says "since it was opened", so the baseline drops the
+        # previous channel's total rather than carrying it forward.
+        self._last_rx_overruns = None
 
     def _current_channel(self) -> Optional[drv.OpenChannel]:
         with self._lock:
@@ -587,30 +600,42 @@ class _SharedInterface:
             )
 
     def _publish_state(
-        self, mapped: "pb.ControllerState.V", tec: int, rec: int
+        self,
+        mapped: "pb.ControllerState.V",
+        tec: int,
+        rec: int,
+        rx_overruns: Optional[int] = None,
     ) -> None:
         """Broadcast an :class:`InterfaceState` if this differs from the
         last one published. The single place a controller state leaves
         the interface, so the state poll and any other discovery of the
         controller's condition cannot disagree about what subscribers
-        were last told."""
+        were last told.
+
+        ``rx_overruns`` rides the same envelope and the same
+        publish-on-change gate: it moves rarely (a bus that is losing
+        frames is a bus in trouble, not a bus at work), so a fresh
+        envelope per poll would be noise on every healthy interface."""
         with self._lock:
             if (
                 mapped == self._last_state
                 and tec == self._last_tec
                 and rec == self._last_rec
+                and rx_overruns == self._last_rx_overruns
             ):
                 return
             self._last_state = mapped
             self._last_tec = tec
             self._last_rec = rec
+            self._last_rx_overruns = rx_overruns
             outboxes = list(self._outboxes)
         env = pb.Envelope(
-            interface_state=pb.InterfaceState(
-                interface_id=self._channel_id,
+            interface_state=_interface_state(
+                channel_id=self._channel_id,
                 state=mapped,
                 tec=tec,
                 rec=rec,
+                rx_overruns=rx_overruns,
             )
         )
         for ob in outboxes:
@@ -632,9 +657,40 @@ class _SharedInterface:
                 # is the whole point of the poll — swallowing it left an
                 # unplugged adapter reading error-active forever.
                 _log.debug("state poll for %s failed: %s", cid, e)
-                self._publish_state(pb.CONTROLLER_STATE_UNAVAILABLE, 0, 0)
+                self._publish_state(
+                    pb.CONTROLLER_STATE_UNAVAILABLE,
+                    0,
+                    0,
+                    self._read_rx_overruns(ch),
+                )
                 continue
-            self._publish_state(_state_name_to_proto(st.state), st.tec, st.rec)
+            self._publish_state(
+                _state_name_to_proto(st.state),
+                st.tec,
+                st.rec,
+                self._read_rx_overruns(ch),
+            )
+
+    def _read_rx_overruns(self, ch: drv.OpenChannel) -> Optional[int]:
+        """The channel's rx-overrun count, or the last one published if
+        this read failed.
+
+        The counters are unlike the state beside them: the state is a
+        reading of how the controller is *now*, so a failed read must
+        replace it, while an overrun count is a record of frames already
+        lost. Losing sight of the channel does not un-lose them, so a
+        read that fails keeps the last figure rather than retracting it
+        to ``None``.
+
+        Read immediately after :meth:`~cannet_python_can.driver
+        .OpenChannel.state`, which is the contract that lets a backend
+        derive both from one device read.
+        """
+        try:
+            return ch.rx_loss()
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                return self._last_rx_overruns
 
 
 class _InterfaceRegistry:

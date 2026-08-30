@@ -9,21 +9,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
-import type { BusHealthMap, BusConnStates } from "./types";
+import type { BusHealthMap, BusConnStates, InterfaceRecord } from "./types";
+
+const PLAIN_INTERFACES: InterfaceRecord[] = [
+  { id: "pcan:1", display_name: "PEAK PCAN-USB FD (ch:1)", fd_capable: true },
+];
 
 let health: BusHealthMap = {};
 let connStates: BusConnStates = {};
+let interfaces: InterfaceRecord[] = PLAIN_INTERFACES;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
     if (cmd === "get_bus_health") return health;
     if (cmd === "get_connection_states") return connStates;
     if (cmd === "get_sidecar_status") return { phase: "ready", address: "127.0.0.1:1" };
-    if (cmd === "get_interfaces") {
-      return [
-        { id: "pcan:1", display_name: "PEAK PCAN-USB FD (ch:1)", fd_capable: true },
-      ];
-    }
+    if (cmd === "get_interfaces") return interfaces;
     return null;
   }),
 }));
@@ -34,7 +35,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 import { BusHealthPanel } from "./BusHealthPanel";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  interfaces = PLAIN_INTERFACES;
+});
 
 function projectCtx(): ProjectContextValue {
   return {
@@ -111,23 +115,28 @@ describe("BusHealthPanel", () => {
     const off = cellsOf("Body");
     expect(off[2]).toBe("0 %");
     expect(off[3]).toBe("256");
-    expect(off[5]).toContain("9,471");
-    expect(off[5]).toContain("2.1k/s");
+    // This peer's driver does not report receive loss, so the overruns
+    // cell is an em dash — not the zero that would vouch for the
+    // capture being the whole of what the bus sent.
+    expect(off[5]).toBe("—");
+    expect(off[6]).toContain("9,471");
+    expect(off[6]).toContain("2.1k/s");
 
     // The virtual bus: not a zero anywhere it cannot know.
     const sim = cellsOf("Sim");
     expect(sim[2]).toBe("—");
     expect(sim[3]).toBe("—");
     expect(sim[4]).toBe("—");
+    expect(sim[5]).toBe("—");
     // Its Adapter cell says there is no hardware, rather than showing
     // the canonical wire id every virtual binding carries.
-    expect(sim[6]).toBe("virtual bus");
+    expect(sim[7]).toBe("virtual bus");
 
     // And the healthy one, with the adapter column in the project
     // panel's own words.
     expect(cellsOf("Powertrain")[2]).toBe("34 %");
     await waitFor(() =>
-      expect(cellsOf("Powertrain")[6]).toBe("PEAK PCAN-USB FD (ch:1) 500k · FD data 2M"),
+      expect(cellsOf("Powertrain")[7]).toBe("PEAK PCAN-USB FD (ch:1) 500k · FD data 2M"),
     );
   });
 
@@ -138,9 +147,9 @@ describe("BusHealthPanel", () => {
     health = {};
     renderPanel();
     await waitFor(() => expect(screen.getAllByText("Not connected").length).toBe(3));
-    expect(cellsOf("Powertrain").slice(2, 6)).toEqual(["—", "—", "—", "—"]);
+    expect(cellsOf("Powertrain").slice(2, 7)).toEqual(["—", "—", "—", "—", "—"]);
     await waitFor(() =>
-      expect(cellsOf("Powertrain")[6]).toBe("PEAK PCAN-USB FD (ch:1)"),
+      expect(cellsOf("Powertrain")[7]).toBe("PEAK PCAN-USB FD (ch:1)"),
     );
   });
 
@@ -161,6 +170,81 @@ describe("BusHealthPanel", () => {
       "title",
       expect.stringContaining("Error-active"),
     );
+  });
+
+  it("shows the adapter identity the driver reported and an em dash for the rest", async () => {
+    // The prototype these fields came from filled them with fabricated
+    // strings. What is drawn now is what the peer's driver actually
+    // said, and an em dash — inside the identity line, so it reads as
+    // "this slot has no answer" rather than as a value — everywhere it
+    // said nothing. PCAN-Basic exposes no hardware serial at all, which
+    // is exactly the case that must not acquire one.
+    interfaces = [
+      {
+        id: "pcan:1",
+        display_name: "PEAK PCAN-USB FD (ch:1)",
+        fd_capable: true,
+        driver_name: "PCAN-Basic",
+        driver_version: "4.9.0.942",
+        firmware_version: "3.3.0",
+      },
+    ];
+    connStates = {};
+    health = {};
+    renderPanel();
+    const line = await waitFor(() => {
+      const el = document.querySelector(".bus-health-identity");
+      if (!el) throw new Error("no identity line");
+      return el as HTMLElement;
+    });
+    const slots = [...line.querySelectorAll(".bus-health-identity-slot")].map(
+      (el) => el.textContent ?? "",
+    );
+    expect(slots).toEqual([
+      "Driver PCAN-Basic 4.9.0.942",
+      "Firmware 3.3.0",
+      "Serial —",
+    ]);
+  });
+
+  it("draws no identity line at all for an adapter that reports none", async () => {
+    // The control, and the reason the line is conditional: a backend
+    // that exposes nothing — an in-process virtual bus, a Kvaser
+    // channel today — has to render exactly as it did before these
+    // fields existed, not as a row of em dashes announcing four facts
+    // nobody has.
+    connStates = {};
+    health = {};
+    renderPanel();
+    await waitFor(() =>
+      expect(cellsOf("Powertrain")[7]).toBe("PEAK PCAN-USB FD (ch:1)"),
+    );
+    expect(document.querySelector(".bus-health-identity")).toBeNull();
+  });
+
+  it("tells a driver that saw no receive loss from one that never looked", async () => {
+    // The distinction the column exists for. Zero says this capture is
+    // the whole of what the bus sent; an em dash says nobody checked.
+    // Every other number in the panel is read as though the first were
+    // true, which is why the second must never render as a zero.
+    connStates = {};
+    health = {
+      b1: {
+        controller: { state: "active", tec: 0, rec: 0, rxOverruns: 0 },
+        errorCount: 0,
+        errorRate: 0,
+      },
+      b2: {
+        controller: { state: "warning", tec: 104, rec: 0, rxOverruns: 17 },
+        errorCount: 0,
+        errorRate: 0,
+      },
+      b3: { controller: { state: "active", tec: 0, rec: 0 }, errorCount: 0, errorRate: 0 },
+    };
+    renderPanel();
+    await waitFor(() => expect(cellsOf("Powertrain")[5]).toBe("0"));
+    expect(cellsOf("Body")[5]).toBe("17");
+    expect(cellsOf("Sim")[5]).toBe("—");
   });
 
   it("says so rather than drawing an empty grid for a project with no buses", async () => {

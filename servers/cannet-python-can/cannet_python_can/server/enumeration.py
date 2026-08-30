@@ -31,12 +31,34 @@ from .._proto import cannet_pb2 as pb
 _WATCH_LIVENESS_RECHECK_S = 5.0
 
 
+def _interface_for(channel: drv.Channel) -> pb.Interface:
+    """One channel as a wire ``Interface``.
+
+    The four identity fields are ``optional`` on the wire, so a field
+    the backend did not read is left *unset* rather than sent as an
+    empty string: the reader's job is to render absent as absent, and it
+    can only do that if absent survives the encoding.
+    """
+    iface = pb.Interface(
+        id=channel.id,
+        display_name=channel.display_name,
+        fd_capable=channel.fd_capable,
+    )
+    for field in (
+        "driver_name",
+        "driver_version",
+        "firmware_version",
+        "serial_number",
+    ):
+        value = getattr(channel, field, None)
+        if value:
+            setattr(iface, field, value)
+    return iface
+
+
 def enumerate_interfaces(driver: drv.Driver) -> list[pb.Interface]:
     """Snapshot the driver's channels as wire ``Interface`` records."""
-    return [
-        pb.Interface(id=c.id, display_name=c.display_name, fd_capable=c.fd_capable)
-        for c in driver.list_channels()
-    ]
+    return [_interface_for(c) for c in driver.list_channels()]
 
 
 def watch_interfaces(
