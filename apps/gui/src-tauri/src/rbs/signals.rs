@@ -288,10 +288,10 @@ fn build_rbs_signal_rows(state: &AppState, element_id: &str) -> Option<Vec<RbsSi
 
 /// A Not Encoded row for an override on a *resolved* message — the id
 /// and message name are known, only this signal isn't. Not
-/// `overridden` in the row-model sense (matching the prototype: only
-/// an applied Override row offers a reset) even though the file does
-/// carry an entry for this name — there is nowhere to file an edit
-/// under, so the row offers none.
+/// `overridden` in the row-model sense (only an applied Override row
+/// offers a reset); the row's one repair is the Drop, whose delete
+/// needs no inverse — values are outside undo with no exceptions
+/// (ADR 0058), which is also why the Drop confirms before it acts.
 fn not_encoded_row(
     bus_key: &str,
     bus_id: Option<String>,

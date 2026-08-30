@@ -352,9 +352,11 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
         value: "Off",
       }),
     );
-    // The overridden signal carries a clear control; clearing sends
-    // null (back to DBC-tracking).
+    // The overridden signal carries a clear control. A value removal
+    // is not undoable, so it confirms: arm, then the second click
+    // sends null (back to DBC-tracking).
     fireEvent.click(screen.getByTitle(/clear override.*Standby/));
+    fireEvent.click(screen.getByTitle("click again to confirm"));
     await waitFor(() =>
       expect(lastCall("rbs_set_signal")?.args).toMatchObject({
         signal: "TargetMode",
@@ -551,6 +553,39 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
       elementId: "el",
       target: { bus: "Powertrain", ecu: "BMS", message: "0x123" },
     });
+  });
+
+  it("an overridden calc designation clears with the quiet ×, like the period's", async () => {
+    // Every customization removes with the same gesture from this
+    // panel (owner ruling 2026-08-30) — the calc override was the one
+    // reachable only through the fields… dialog. DBC-default
+    // designations offer no ×: there is no override to remove.
+    const view = sampleView();
+    view.buses[0].ecus[0].messages[0].counterOverridden = true;
+    VIEW = view;
+    renderPanel("/tmp/sim.cannet_rbs");
+    const clear = await screen.findByRole("button", {
+      name: "clear calculated-field override (track DBC designation)",
+    });
+    fireEvent.click(clear);
+    await waitFor(() => expect(lastCall("rbs_set_calc")).toBeDefined());
+    expect(lastCall("rbs_set_calc")?.args).toEqual({
+      elementId: "el",
+      target: { bus: "Powertrain", ecu: "BMS", message: "0x123" },
+      counter: null,
+      crc: null,
+    });
+  });
+
+  it("a DBC-default designation offers no ×", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    await screen.findByText("fields…");
+    expect(
+      screen.queryByRole("button", {
+        name: "clear calculated-field override (track DBC designation)",
+      }),
+    ).toBeNull();
   });
 
   it("opens the editor on the message's DBC-declared counter and CRC", async () => {

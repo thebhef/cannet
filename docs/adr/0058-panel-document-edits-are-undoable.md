@@ -28,10 +28,21 @@ project contents except for values."*)
 
 Three exclusions, stated once:
 
-1. **Values are out.** An RBS signal value override, and its clear,
-   go to the host unrecorded — no chord ever changes what a message
-   *carries*. This holds whether or not anything is running: the rule
-   is about the category, not the moment, so it stays predictable.
+1. **Values are out — with no exceptions.** An RBS signal value
+   override, its clear, and the Not Encoded row's Drop all go to the
+   host unrecorded — no chord ever changes what a message *carries*.
+   This holds whether or not anything is running: the rule is about
+   the category, not the moment, so it stays predictable. A dead-entry
+   carve-out (recording the Drop, since nothing encodes what it
+   deletes) was tried and reversed the same day (owner ruling
+   2026-08-30): the chord is global, and an absent-minded `Mod+Z` run
+   must never be *able* to write an override — an exception the user
+   has to reason about is worth less than a rule with none. The cost
+   is accepted openly: a removed value has no way back but re-typing
+   it, which is why every value-shaped remover — the value cell's
+   clear × and the grid's Drop — confirms before it acts (the transmit
+   panel's two-stage remove). The period and designation clears stay
+   one-click: a period is undoable, and a designation is not a value.
 2. **Runtime actions are out** (Run/Stop, connect/disconnect, capture
    control, transmission itself).
 3. **File operations are out** (open, save, reload).

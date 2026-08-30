@@ -34,10 +34,10 @@ export type PanelEditOp =
       message: string | null;
       enabled: boolean;
     }
-  // No op for `rbs_set_signal`: a value override is deliberately
-  // outside undo — the boundary is project contents *except values*
-  // (ADR 0058; owner ruling 2026-08-29). A chord must never change
-  // what a message carries on the bus.
+  // No op for `rbs_set_signal`, none: values are outside undo with no
+  // exceptions (ADR 0058; owner ruling 2026-08-30). The chord is
+  // global — an absent-minded Mod+Z must never be able to write an
+  // override, so not even the dead-entry Drop records one.
   /// `rbs_set_period` — a message's period override (`periodMs`) or its
   /// clear (`null`, back to `GenMsgCycleTime`).
   | {

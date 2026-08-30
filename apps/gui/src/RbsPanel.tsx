@@ -849,6 +849,28 @@ function MessageRow({
         <span className="rbs-calc-summary" title="calculated fields (counter / CRC)">
           {calcSummary}
         </span>
+        {/* The same quiet × every customization removes with (owner
+            ruling 2026-08-30); only an *override* offers it — a
+            DBC-default designation has nothing to remove. Unrecorded,
+            like the dialog's own writes. */}
+        {(m.counterOverridden || m.crcOverridden) && (
+          <button
+            type="button"
+            className="rbs-clear"
+            tabIndex={-1}
+            title="clear calculated-field override (track DBC designation)"
+            onClick={() => {
+              void invoke("rbs_set_calc", {
+                elementId,
+                target,
+                counter: null,
+                crc: null,
+              }).catch(() => {});
+            }}
+          >
+            <Icon name="x" />
+          </button>
+        )}
         <button
           type="button"
           className="rbs-configure"

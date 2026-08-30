@@ -31,7 +31,14 @@ that task's status log.
       hold the run-flag carry and the notice clear. The recorded Tauri
       mock-runtime blocker is real but is **not** what stands in the
       way: the decision lifts out into a pure function the way
-      `outcome_for` already did. Owner's call whether that ships as is
+      `outcome_for` already did. Owner's call whether that ships as is.
+      **2026-08-30:** reviewing this surfaced that every macOS watcher
+      had been silently dead since introduction (kqueue backend +
+      unnormalized `..` paths — fixed on `macos-watcher-fsevents`,
+      with the backend pinned by test); the owner then exercised the
+      RBS and DBC watches end-to-end on macOS ("all seem to be
+      working"). Open: the project-file watch, same machinery, not yet
+      exercised — one disk edit to an open `.cannet_prj` closes it
 - [x] 87 — BLF writer timestamp fidelity —
       `examples/time-origins/wall-clock-out-of-order.blf`
 - [x] 89 — signal mapping panel **§** — `examples/colliding-dbcs/`,

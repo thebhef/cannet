@@ -23,7 +23,7 @@
 /// same way the views panel's is — so this adds no cost `CLAUDE.md`'s
 /// paging rule is about.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { usePanelEditRecorder } from "./panelEditRecorder";
@@ -162,10 +162,10 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
   });
   const allRows = rows ?? [];
 
-  // The recorder serves the *enable* toggle below; a value edit is
-  // deliberately unrecorded — undo covers project contents *except
-  // values* (ADR 0058), so no chord ever changes what a message
-  // carries on the bus.
+  // The recorder serves the *enable* toggle below and nothing else;
+  // value edits — the Drop included — are deliberately unrecorded.
+  // Undo covers project contents *except values* (ADR 0058), so no
+  // chord ever changes what a message carries on the bus.
   const recordEdit = usePanelEditRecorder();
   const editSignal = useCallback(
     (row: RbsSignalRow, value: string | number | null) => {
@@ -188,6 +188,14 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
     },
     [editSignal],
   );
+  // The Drop repair: a not-encoded row IS a stale override key, so the
+  // delete goes straight through — no overridden guard (the synthesized
+  // row reports false; the file entry is what the row exists for).
+  // Unrecorded, final ruling: values are outside undo with NO
+  // exceptions — the chord is global, and tripping on it must never
+  // write an override. Which is why the button carries a confirm
+  // stage: there is deliberately no way back but re-typing the entry.
+  const onDrop = useCallback((row: RbsSignalRow) => editSignal(row, null), [editSignal]);
 
   // --- toolbar filters (nothing selected is no filter) ---
   const toggleStatus = useCallback(
@@ -393,6 +401,7 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
               gridProps={rowProps(r.id)}
               onCommit={onCommit}
               onClear={onClear}
+              onDrop={onDrop}
               selected={grid.selection.has(r.id)}
               active={grid.cursor === r.id}
             />
@@ -413,6 +422,7 @@ interface RbsSignalRowLineProps {
   gridProps: RowGridProps;
   onCommit: (row: RbsSignalRow, value: string | number) => void;
   onClear: (row: RbsSignalRow) => void;
+  onDrop: (row: RbsSignalRow) => void;
   selected: boolean;
   /// The gridview's cursor is on this row.
   active: boolean;
@@ -425,11 +435,21 @@ function RbsSignalRowLine({
   gridProps,
   onCommit,
   onClear,
+  onDrop,
   selected,
   active,
 }: RbsSignalRowLineProps) {
   const status = rbsSignalDisplayStatus(row);
   const disabled = row.status === "not-encoded" || row.status === "muted";
+  // Confirm-on-click for Drop, the transmit panel's remove pattern:
+  // first click arms (red + "confirm"), a second within 3s deletes.
+  // The stage earns its keep because the drop is NOT undoable.
+  const [pendingDrop, setPendingDrop] = useState(false);
+  useEffect(() => {
+    if (!pendingDrop) return;
+    const t = window.setTimeout(() => setPendingDrop(false), 3000);
+    return () => window.clearTimeout(t);
+  }, [pendingDrop]);
   return (
     <GridviewRow<RbsSignalColumnKey>
       defs={RBS_SIGNAL_COLUMN_DEFS}
@@ -496,6 +516,7 @@ function RbsSignalRowLine({
                   disabled={disabled}
                   onCommit={(value) => onCommit(row, value)}
                   onClear={() => onClear(row)}
+                  inlineClear={false}
                 />
               </span>
             );
@@ -516,7 +537,49 @@ function RbsSignalRowLine({
           case "unit":
             return <span className={className}>{row.unit}</span>;
           case "detail":
-            return <span className={`${className} rbs-signals-detail`}>{row.detail}</span>;
+            return (
+              <span className={`${className} rbs-signals-detail`}>
+                {row.detail}
+                {/* The row's one remove position: every value removal
+                    — an applied override's clear, and the not-encoded
+                    row's drop (an override key nothing encodes, whose
+                    value cell is rightly disabled) — rides the detail
+                    cell as the transmit panel's two-stage remove (arm,
+                    then confirm within 3s). Not undoable — values
+                    never ride the chord. */}
+                {(row.overridden || row.status === "not-encoded") && (
+                  <button
+                    type="button"
+                    className={`rbs-signals-drop${pendingDrop ? " rbs-signals-drop-armed" : ""}`}
+                    aria-label={
+                      pendingDrop
+                        ? "click again to confirm"
+                        : row.status === "not-encoded"
+                          ? "drop override"
+                          : `clear ${row.signalName} override`
+                    }
+                    title={
+                      pendingDrop
+                        ? "click again to confirm"
+                        : row.status === "not-encoded"
+                          ? "drop this override — delete its entry from the RBS file"
+                          : `clear override (track DBC default)${row.overrideText ? ` — currently ${row.overrideText}` : ""}`
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (pendingDrop) {
+                        onDrop(row);
+                        setPendingDrop(false);
+                      } else {
+                        setPendingDrop(true);
+                      }
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            );
           default:
             return <span className={className} />;
         }
