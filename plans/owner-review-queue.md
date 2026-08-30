@@ -56,6 +56,11 @@ their criterion-by-criterion verdicts to
 - [ ] 117 — refuse to connect without a bound bus (queue item 1.34 no
       longer exists post-reframe; recorded here instead — see
       [task 117](tasks/0117-refuse-to-connect-without-a-bound-bus.md))
+- [ ] 114 — one name per thing: the bar draws the command registry's
+      words, its Database chip shows the view, and a virtual bus reads
+      `virtual bus` in the Adapter column (queue items 1.37, 1.33b and
+      1.17 no longer exist post-reframe; their closures are in
+      [task 114](tasks/0114-one-name-per-thing.md)'s status log)
 
 ## Close-out chores
 

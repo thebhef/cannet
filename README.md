@@ -358,21 +358,27 @@ build, so Phase-8 hardware users get it for free.
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
 cannet window. Use the toolbar's **Import** chip to pick a log (a
 Vector `.blf` or an ASAM MDF 4.x bus-logging `.mf4` — the dialog's
-filter list offers both, plus "all supported"); **DBC**
-loads a database for live decoding — load more than one and frames
-decode against each in order, first match wins (every loaded DBC
-applies to the one interface for now).
+filter list offers both, plus "all supported"); the project panel's
+**DBC** section loads a database for live decoding — load more than
+one and frames decode against each in order, first match wins (every
+loaded DBC applies to the one interface for now).
 
 **The toolbar is chips.** Every control in it wears the app's one
 control shape (ADR 0055): a short Title Case label beside a drawn icon,
 with the full sentence — *Open project…*, *Save capture…* — in the
 tooltip. Where the icon says it on its own, the chip is the icon alone
-and the tooltip is all of its words: **Database panel**, **Graph
-panel**, **Events panel**, **Project panel**. The seven panel-adding
-commands sit behind one **Add** menu rather than seven near-identical
-phrases across the bar. Everything is still a command: a chip
-dispatches the same command id the palette and the keyboard do, so
-what a chip does is documented once, wherever that command is.
+and the tooltip is all of its words: **Graph panel**, **Events panel**,
+**Project panel**. **Database** keeps its word, because the name is the
+thing it settles — the view is "Database" everywhere a user meets it
+(ADR 0052). It shows that view and nothing else: *adding* a database
+file is project membership, and is offered where the project's
+databases are listed, in the project panel. The palette keeps both —
+it is the whole command list, and the bar a curated rendering of it
+(ADR 0055 §4). The seven panel-adding commands sit behind one **Add**
+menu rather than seven near-identical phrases across the bar.
+Everything is still a command: a chip dispatches the same command id
+the palette and the keyboard do, so what a chip does is documented
+once, wherever that command is.
 **Save is a split chip**: pressing **Save** saves, and only the `▾`
 beside it opens the menu that offers **Save As…** — a disclosure never
 swallows the primary press.
@@ -402,7 +408,10 @@ row per logical bus with its ISO 11898-1 fault-confinement state
 (error-active / error-warning / error-passive / bus-off), the transmit
 and receive error counters, the bus load, the error-frame tally and
 rate, and the adapter with the configuration the host actually put on
-the wire for it.
+the wire for it. A bus bound to an in-process virtual bus reads
+**virtual bus** in that column: it is the hardware column, and the
+honest answer for a bus with nothing behind it is that there is none
+(its own name is already in the first column).
 
 **Error-warning** is not one of the standard's three states — the
 controller is still error-active — but it is the limit the standard

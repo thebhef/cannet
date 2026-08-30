@@ -1711,8 +1711,8 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       >
         {content.length === 0 && fileContent.length === 0 && (
           <div className="dbc-panel-empty">
-            Nothing to browse yet. Add a database from the toolbar's{" "}
-            <em>Add DBC…</em>, or import a trace whose file carries signal
+            Nothing to browse yet. Add a database from the project panel's{" "}
+            <em>DBC</em> section, or import a trace whose file carries signal
             definitions.
           </div>
         )}

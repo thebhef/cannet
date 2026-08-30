@@ -66,6 +66,21 @@ export interface CommandSpec {
   /// what's shown. Folded into the fuzzy-match text alongside `label`;
   /// see `PaletteModal`.
   keywords?: string;
+  /// How the toolbar draws this command — on the bar itself or inside
+  /// one of its menus. Present only for the commands the bar renders:
+  /// the bar is a *curated* rendering of this registry, and absence is
+  /// how a command stays palette-only.
+  ///
+  /// The words live here, beside the palette's own, rather than in
+  /// `Toolbar.tsx`, because a chip that declared its own label is how
+  /// the Database rename (ADR 0052) reached every surface except the
+  /// bar. They are still two strings — the bar's is a Title Case word
+  /// or two and the palette's is the full phrase (ADR 0055) — but a
+  /// rename now has both under one hand.
+  ///
+  /// `label` omitted is the icon-only form, named by its tooltip.
+  /// `title` omitted means the bar's tooltip is the palette `label`.
+  bar?: { label?: string; title?: string };
 }
 
 /// One code-declared binding: chord syntax per `keybindings.ts`.
@@ -119,9 +134,14 @@ const findablePanelFocused = (ctx: CommandContext) =>
 /// Every command the palette lists. Toolbar actions are lifted here
 /// as a second access path — same handler, same behaviour.
 export const COMMANDS: readonly CommandSpec[] = [
-  { id: "project.open", label: "Open project…", category: "Project" },
-  { id: "project.save", label: "Save project", category: "Project" },
-  { id: "project.saveAs", label: "Save project as…", category: "Project" },
+  { id: "project.open", label: "Open project…", category: "Project", bar: { label: "Open" } },
+  { id: "project.save", label: "Save project", category: "Project", bar: { label: "Save" } },
+  {
+    id: "project.saveAs",
+    label: "Save project as…",
+    category: "Project",
+    bar: { label: "Save As…" },
+  },
   {
     // It has always started a fresh project rather than leaving the app
     // with nothing open, and "Close project" was the wrong name for
@@ -133,6 +153,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     label: "New project",
     category: "Project",
     keywords: "Close project",
+    bar: { label: "New" },
   },
   {
     id: "trace.import",
@@ -141,28 +162,76 @@ export const COMMANDS: readonly CommandSpec[] = [
     // Finds the action by the entry points it replaced (one BLF
     // button, one MDF button).
     keywords: "BLF MDF Open BLF Open MDF Vector ASAM",
+    // The bar names the two formats its dialog filters for, which the
+    // palette phrase leaves to the dialog itself.
+    bar: { label: "Import", title: "Import trace… (BLF / MDF)" },
   },
   { id: "dbc.add", label: "Add DBC…", category: "File" },
   { id: "connection.connect", label: "Connect", category: "Connection" },
   { id: "connection.disconnect", label: "Disconnect", category: "Connection" },
-  { id: "capture.clear", label: "Clear capture", category: "Capture" },
-  { id: "capture.save", label: "Save capture…", category: "Capture" },
-  { id: "panel.add.trace", label: "Add trace panel", category: "Panels" },
-  { id: "panel.add.plot", label: "Add plot panel", category: "Panels" },
-  { id: "panel.add.signals", label: "Add signal view panel", category: "Panels" },
-  { id: "panel.add.transmit", label: "Add transmit panel", category: "Panels" },
-  { id: "panel.add.rbs", label: "Add RBS panel", category: "Panels" },
-  { id: "panel.add.colormap", label: "Add color map", category: "Panels" },
-  { id: "panel.add.generator", label: "Add generator", category: "Panels" },
+  { id: "capture.clear", label: "Clear capture", category: "Capture", bar: { label: "Clear" } },
+  {
+    id: "capture.save",
+    label: "Save capture…",
+    category: "Capture",
+    bar: { label: "Capture" },
+  },
+  { id: "panel.add.trace", label: "Add trace panel", category: "Panels", bar: { label: "Trace" } },
+  {
+    id: "panel.add.plot",
+    label: "Add plot panel",
+    category: "Panels",
+    bar: { label: "Plot Panel" },
+  },
+  {
+    id: "panel.add.signals",
+    label: "Add signal view panel",
+    category: "Panels",
+    bar: { label: "Signal View" },
+  },
+  {
+    id: "panel.add.transmit",
+    label: "Add transmit panel",
+    category: "Panels",
+    bar: { label: "Transmit Panel" },
+  },
+  {
+    id: "panel.add.rbs",
+    label: "Add RBS panel",
+    category: "Panels",
+    bar: { label: "RBS Panel" },
+  },
+  {
+    id: "panel.add.colormap",
+    label: "Add color map",
+    category: "Panels",
+    bar: { label: "Color Map" },
+  },
+  {
+    id: "panel.add.generator",
+    label: "Add generator",
+    category: "Panels",
+    bar: { label: "Generator" },
+  },
   { id: "project.saveAll", label: "Save all", category: "Project" },
   {
     id: "project.clearColors",
     label: "Clear project colors…",
     category: "Project",
   },
-  { id: "panel.show.project", label: "Show project panel", category: "Panels" },
+  {
+    id: "panel.show.project",
+    label: "Show project panel",
+    category: "Panels",
+    bar: { title: "Project panel" },
+  },
   { id: "panel.show.systemMessages", label: "Show system messages", category: "Panels" },
-  { id: "panel.show.projectGraph", label: "Show project graph", category: "Panels" },
+  {
+    id: "panel.show.projectGraph",
+    label: "Show project graph",
+    category: "Panels",
+    bar: { title: "Graph panel" },
+  },
   {
     id: "panel.show.dbc",
     label: "Show Database panel",
@@ -170,6 +239,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     // It was the "DBC panel" before it grew every other
     // signal-defining format (ADR 0052) — keep the old name findable.
     keywords: "DBC panel",
+    // The one panel launcher on the bar that keeps its word: the name
+    // is the thing it settles.
+    bar: { label: "Database", title: "Database panel" },
   },
   {
     id: "panel.show.viewSignals",
@@ -179,7 +251,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   { id: "panel.show.settings", label: "Show settings", category: "Panels" },
   { id: "panel.show.about", label: "Show about", category: "Panels" },
-  { id: "panel.show.events", label: "Show events", category: "Panels" },
+  {
+    id: "panel.show.events",
+    label: "Show events",
+    category: "Panels",
+    bar: { title: "Events panel" },
+  },
   {
     id: "panel.show.busHealth",
     label: "Show bus health",

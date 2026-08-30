@@ -3,7 +3,10 @@
 Status: accepted (2026-08-21); amended (2026-08-22) — **a command
 wears the chip silhouette too**, reversing “do not convert a command
 into a chip”: the dot, not the shape, is what separates a state from
-a command.
+a command; amended (2026-08-27) — §4 added: **the command registry is
+the model and the chip bar one rendering of it**, so a command carries
+the words the bar draws it with rather than the bar declaring a second
+set.
 
 ## Context
 
@@ -104,7 +107,39 @@ report a condition pinned right.
   own dropdown. A future layout that genuinely needs the bar to clip
   must portal the menu out of it first.
 
-### 4. Combining is fine for reporting and forbidden for editing
+### 4. The command registry is the model; the chip bar is one rendering of it
+
+*Adopted 2026-08-27.* The toolbar is not a list of buttons that happen
+to run commands. **The command registry (ADR 0018) is the model, and
+the bar is one rendering of it** — a curated, ordered subset drawn as
+chips, beside the palette's rendering of the whole of it and the
+keyboard's rendering of the bound part. A chip is a command id, an
+icon and a position; pressing one dispatches through the same layer as
+the other two, so what a command does is decided once.
+
+**A command therefore carries the words every rendering draws it
+with.** The bar's word and the palette's phrase are deliberately
+different strings — the bar is a Title Case word or two, the palette
+the full sentence (§3's tooltip rule is the same distinction) — but
+both are declared on the command, not one on the command and the other
+in the bar's own table. A bar that spelled its own labels is how a
+rename reached the panel title, the palette entry and the saved-layout
+migration while the chip went on saying the old name.
+
+Two consequences follow, and they are the point of stating this:
+
+- **A command absent from the bar is not a lesser command.** The bar
+  is curated; the palette is complete. Moving an action off the bar
+  moves where it is offered, never whether it exists — so an action
+  taken off the bar must still be reachable somewhere a user can find
+  it without the palette, in the surface it belongs to.
+- **Two controls for one subject are two commands, not one chip with
+  two jobs.** Showing a view and adding to what the view lists are
+  different commands, and each is placed by what it is: the view
+  launcher on the bar, the membership action in the panel that owns
+  the membership.
+
+### 5. Combining is fine for reporting and forbidden for editing
 
 A chip that reports across several independent configurations (the RBS
 mapping chip over a project's `.cannet_rbs` files) sums their problems,
@@ -119,6 +154,8 @@ must never be merged. Editing still happens one configuration at a time.
 - A control's placement follows from what it is: a command in the
   toolbar, a state in the bar, a per-panel state in its own panel as the
   same component in a second placement.
+- Renaming a thing is one edit to its command, not a sweep across every
+  surface that draws it.
 - The bar's fit is arithmetic over measured widths, which means the drop
   and collapse behaviour can be driven to any width in a test rather
   than only observed at whatever width a browser happened to give.
