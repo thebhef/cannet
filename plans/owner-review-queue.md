@@ -23,7 +23,7 @@ that task's status log.
 
 - [x] 86 — import time origins, enum overlays, events-panel width —
       `examples/time-origins/`, `examples/cannet-demo.mf4`
-- [ ] 27 — live disk-watch for project and RBS files **§** —
+- [x] 27 — live disk-watch for project and RBS files **§** —
       `examples/ev-demo/`. **2 of 4 met, 2 partial.** The watch's
       *decisions* are tested (safety rules, event classification,
       watch bookkeeping, frontend reaction); the functions that
@@ -37,8 +37,11 @@ that task's status log.
       unnormalized `..` paths — fixed on `macos-watcher-fsevents`,
       with the backend pinned by test); the owner then exercised the
       RBS and DBC watches end-to-end on macOS ("all seem to be
-      working"). Open: the project-file watch, same machinery, not yet
-      exercised — one disk edit to an open `.cannet_prj` closes it
+      working"), and then the project-file watch too ("project reload
+      seems like it worked") — all three consumers live on macOS.
+      Ticked 2026-08-30; the fine-grained refusal paths (dirty /
+      running / broken hand-edit) remain coverage depth, not
+      acceptance
 - [x] 87 — BLF writer timestamp fidelity —
       `examples/time-origins/wall-clock-out-of-order.blf`
 - [x] 89 — signal mapping panel **§** — `examples/colliding-dbcs/`,

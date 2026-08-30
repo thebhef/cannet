@@ -23,7 +23,7 @@
 /// same way the views panel's is — so this adds no cost `CLAUDE.md`'s
 /// paging rule is about.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { usePanelEditRecorder } from "./panelEditRecorder";
@@ -60,6 +60,7 @@ import { toggleInSet } from "./toggleSet";
 import { formatCanIdHex } from "./format";
 import { ChipButton } from "./ChipButton";
 import { NameText } from "./NameText";
+import { TwoStageRemoveButton } from "./TwoStageRemoveButton";
 
 interface RbsSignalsPanelParams {
   [key: string]: unknown;
@@ -449,15 +450,6 @@ function RbsSignalRowLine({
 }: RbsSignalRowLineProps) {
   const status = rbsSignalDisplayStatus(row);
   const disabled = row.status === "not-encoded" || row.status === "muted";
-  // Confirm-on-click for Drop, the transmit panel's remove pattern:
-  // first click arms (red + "confirm"), a second within 3s deletes.
-  // The stage earns its keep because the drop is NOT undoable.
-  const [pendingDrop, setPendingDrop] = useState(false);
-  useEffect(() => {
-    if (!pendingDrop) return;
-    const t = window.setTimeout(() => setPendingDrop(false), 3000);
-    return () => window.clearTimeout(t);
-  }, [pendingDrop]);
   return (
     <GridviewRow<RbsSignalColumnKey>
       defs={RBS_SIGNAL_COLUMN_DEFS}
@@ -545,46 +537,31 @@ function RbsSignalRowLine({
           case "unit":
             return <span className={className}>{row.unit}</span>;
           case "detail":
+            return <span className={`${className} rbs-signals-detail`}>{row.detail}</span>;
+          case "remove":
+            // The row's removal, in its own column: every value
+            // removal — an applied override's clear, and the
+            // not-encoded row's drop (an override key nothing encodes,
+            // whose value cell is rightly disabled) — is the shared
+            // two-stage trash (`TwoStageRemoveButton`, the transmit
+            // panel row's pattern). Not undoable — values never ride
+            // the chord — which is why it confirms.
             return (
-              <span className={`${className} rbs-signals-detail`}>
-                {row.detail}
-                {/* The row's one remove position: every value removal
-                    — an applied override's clear, and the not-encoded
-                    row's drop (an override key nothing encodes, whose
-                    value cell is rightly disabled) — rides the detail
-                    cell as the transmit panel's two-stage remove (arm,
-                    then confirm within 3s). Not undoable — values
-                    never ride the chord. */}
+              <span className={className}>
                 {(row.overridden || row.status === "not-encoded") && (
-                  <button
-                    type="button"
-                    className={`rbs-signals-drop${pendingDrop ? " rbs-signals-drop-armed" : ""}`}
-                    aria-label={
-                      pendingDrop
-                        ? "click again to confirm"
-                        : row.status === "not-encoded"
-                          ? "drop override"
-                          : `clear ${row.signalName} override`
+                  <TwoStageRemoveButton
+                    label={
+                      row.status === "not-encoded"
+                        ? "drop override"
+                        : `clear ${row.signalName} override`
                     }
                     title={
-                      pendingDrop
-                        ? "click again to confirm"
-                        : row.status === "not-encoded"
-                          ? "drop this override — delete its entry from the RBS file"
-                          : `clear override (track DBC default)${row.overrideText ? ` — currently ${row.overrideText}` : ""}`
+                      row.status === "not-encoded"
+                        ? "drop this override — delete its entry from the RBS file"
+                        : `clear override (track DBC default)${row.overrideText ? ` — currently ${row.overrideText}` : ""}`
                     }
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (pendingDrop) {
-                        onDrop(row);
-                        setPendingDrop(false);
-                      } else {
-                        setPendingDrop(true);
-                      }
-                    }}
-                  >
-                    ×
-                  </button>
+                    onRemove={() => onDrop(row)}
+                  />
                 )}
               </span>
             );

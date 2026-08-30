@@ -6902,26 +6902,37 @@ button.color-chip {
   white-space: nowrap;
 }
 
-/* The Not Encoded row's Drop: the transmit panel's two-stage remove
-   (`.tx-remove` — arm on first click, red + confirm, then delete).
-   Two-stage because it is NOT undoable: values never ride the chord. */
-.rbs-signals-drop {
-  margin-left: 0.5rem;
+/* The remove column: the shared armed-trash control, centered. Only
+   removable rows render one. */
+.col-rs-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The shared two-stage remove (`TwoStageRemoveButton`): the transmit
+   panel row's pattern — quiet trash, red on the first click, acts on
+   the second. Two-stage because these removals are NOT undoable:
+   values never ride the chord. */
+.two-stage-remove {
   background: transparent;
   border: 1px solid transparent;
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
-  padding: 0.1rem 0.35rem;
+  padding: 0.1rem 0.3rem;
   border-radius: 3px;
   line-height: 1;
 }
-.rbs-signals-drop:hover {
-  color: var(--text-primary);
+.two-stage-remove svg {
+  display: block;
+}
+.two-stage-remove:hover {
+  color: var(--danger-text);
   border-color: var(--border-strong);
 }
-.rbs-signals-drop-armed,
-.rbs-signals-drop-armed:hover {
+.two-stage-remove-armed,
+.two-stage-remove-armed:hover {
   color: var(--danger-text);
   border-color: var(--danger-border);
   background: var(--danger-surface);
