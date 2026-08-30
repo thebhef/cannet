@@ -1,0 +1,434 @@
+{
+  "schema_version": 7,
+  "project_id": "3f1a7c22-9b40-4d16-8f5e-1c2d4e6a8b03",
+  "layout": {
+    "activeGroup": "trace",
+    "grid": {
+      "height": 1000,
+      "orientation": "HORIZONTAL",
+      "root": {
+        "data": [
+          {
+            "data": [
+              {
+                "data": {
+                  "activeView": "project",
+                  "id": "project",
+                  "views": [
+                    "project"
+                  ]
+                },
+                "size": 520,
+                "type": "leaf"
+              },
+              {
+                "data": {
+                  "activeView": "events",
+                  "id": "events",
+                  "views": [
+                    "events"
+                  ]
+                },
+                "size": 480,
+                "type": "leaf"
+              }
+            ],
+            "size": 420,
+            "type": "branch"
+          },
+          {
+            "data": [
+              {
+                "data": {
+                  "activeView": "trace-chrono",
+                  "id": "trace",
+                  "views": [
+                    "trace-chrono"
+                  ]
+                },
+                "size": 560,
+                "type": "leaf"
+              },
+              {
+                "data": {
+                  "activeView": "plot-vehicle",
+                  "id": "plot",
+                  "views": [
+                    "plot-vehicle"
+                  ]
+                },
+                "size": 440,
+                "type": "leaf"
+              }
+            ],
+            "size": 1180,
+            "type": "branch"
+          }
+        ],
+        "size": 1000,
+        "type": "branch"
+      },
+      "width": 1600
+    },
+    "panels": {
+      "events": {
+        "contentComponent": "events",
+        "id": "events",
+        "title": "Events"
+      },
+      "plot-vehicle": {
+        "contentComponent": "plot",
+        "id": "plot-vehicle",
+        "params": {
+          "areas": [
+            {
+              "id": "vehicle",
+              "primarySignalKey": null,
+              "signals": [
+                {
+                  "busId": "main",
+                  "color": "#60a5fa",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "VehicleState",
+                  "signalName": "VehSpeed",
+                  "unit": "km/h"
+                },
+                {
+                  "busId": "main",
+                  "color": "#f472b6",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "VehicleState",
+                  "signalName": "BrakePedal",
+                  "unit": "%"
+                },
+                {
+                  "busId": "main",
+                  "color": "#a78bfa",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "VehicleState",
+                  "signalName": "GearLever",
+                  "unit": ""
+                }
+              ],
+              "yAxisMode": "per-unit"
+            }
+          ],
+          "cursorMode": "x",
+          "cursorX": {
+            "a": null,
+            "b": null
+          },
+          "cursorYByArea": {},
+          "followLive": true,
+          "maxRateHz": 15,
+          "measEnabled": false,
+          "measKeys": [
+            "a",
+            "b",
+            "dt",
+            "freq",
+            "valA",
+            "valB",
+            "delta"
+          ],
+          "showDiag": false,
+          "showPoints": "auto",
+          "signalsWidthPx": 300
+        },
+        "title": "Vehicle"
+      },
+      "project": {
+        "contentComponent": "project",
+        "id": "project",
+        "title": "Project"
+      },
+      "trace-chrono": {
+        "contentComponent": "trace",
+        "id": "trace-chrono",
+        "params": {
+          "autoScroll": true,
+          "columns": [
+            {
+              "key": "idx",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "time",
+              "visible": true,
+              "width": 110
+            },
+            {
+              "key": "rate",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "bus",
+              "visible": true,
+              "width": 100
+            },
+            {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
+            },
+            {
+              "key": "id",
+              "visible": true,
+              "width": 96
+            },
+            {
+              "key": "msg",
+              "visible": true,
+              "width": 220
+            },
+            {
+              "key": "len",
+              "visible": true,
+              "width": 44
+            },
+            {
+              "key": "data",
+              "visible": true,
+              "width": 360
+            },
+            {
+              "key": "dir",
+              "visible": true,
+              "width": 40
+            },
+            {
+              "key": "kind",
+              "visible": true,
+              "width": 110
+            }
+          ],
+          "mode": "chronological",
+          "showEvents": true
+        },
+        "title": "Trace"
+      }
+    }
+  },
+  "elements": [
+    {
+      "config": {
+        "autoScroll": true,
+        "columns": [
+          {
+            "key": "idx",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "time",
+            "visible": true,
+            "width": 110
+          },
+          {
+            "key": "rate",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "bus",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
+          },
+          {
+            "key": "id",
+            "visible": true,
+            "width": 96
+          },
+          {
+            "key": "msg",
+            "visible": true,
+            "width": 220
+          },
+          {
+            "key": "len",
+            "visible": true,
+            "width": 44
+          },
+          {
+            "key": "data",
+            "visible": true,
+            "width": 360
+          },
+          {
+            "key": "dir",
+            "visible": true,
+            "width": 40
+          },
+          {
+            "key": "kind",
+            "visible": true,
+            "width": 110
+          }
+        ],
+        "mode": "chronological",
+        "showEvents": true
+      },
+      "id": "chrono",
+      "kind": "trace",
+      "name": "Trace",
+      "sources": [
+        "*"
+      ]
+    },
+    {
+      "config": {
+        "areas": [
+          {
+            "id": "vehicle",
+            "primarySignalKey": null,
+            "signals": [
+              {
+                "busId": "main",
+                "color": "#60a5fa",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "VehicleState",
+                "signalName": "VehSpeed",
+                "unit": "km/h"
+              },
+              {
+                "busId": "main",
+                "color": "#f472b6",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "VehicleState",
+                "signalName": "BrakePedal",
+                "unit": "%"
+              },
+              {
+                "busId": "main",
+                "color": "#a78bfa",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "VehicleState",
+                "signalName": "GearLever",
+                "unit": ""
+              }
+            ],
+            "yAxisMode": "per-unit"
+          }
+        ],
+        "cursorMode": "x",
+        "cursorX": {
+          "a": null,
+          "b": null
+        },
+        "cursorYByArea": {},
+        "followLive": true,
+        "maxRateHz": 15,
+        "measEnabled": false,
+        "measKeys": [
+          "a",
+          "b",
+          "dt",
+          "freq",
+          "valA",
+          "valB",
+          "delta"
+        ],
+        "showDiag": false,
+        "showPoints": "auto",
+        "signalsWidthPx": 300
+      },
+      "id": "vehicle",
+      "kind": "plot",
+      "name": "Vehicle",
+      "sources": [
+        "main"
+      ]
+    },
+    {
+      "id": "loopback",
+      "kind": "rbs",
+      "name": "Loopback RBS",
+      "path": "capture-features.cannet_rbs"
+    },
+    {
+      "busId": null,
+      "extended": false,
+      "id": "cm-gear",
+      "kind": "colormap",
+      "messageId": 256,
+      "name": "Gear lever",
+      "rules": [
+        {
+          "color": "#6b7280",
+          "max": 0,
+          "min": 0
+        },
+        {
+          "color": "#f59e0b",
+          "max": 1,
+          "min": 1
+        },
+        {
+          "color": "#94a3b8",
+          "max": 2,
+          "min": 2
+        },
+        {
+          "color": "#22c55e",
+          "max": 3,
+          "min": 3
+        }
+      ],
+      "signalName": "GearLever"
+    }
+  ],
+  "buses": [
+    {
+      "color": "#60a5fa",
+      "fd": false,
+      "id": "main",
+      "name": "Main",
+      "speed_bps": 500000
+    },
+    {
+      "color": "#f59e0b",
+      "fd": false,
+      "id": "aux",
+      "name": "Aux",
+      "speed_bps": 500000
+    }
+  ],
+  "interface_bindings": [
+    {
+      "bus_id": "main",
+      "interface": "bus",
+      "kind": "local-virtual-bus",
+      "server": "local-vbus://loopback"
+    }
+  ],
+  "dbcs": [
+    {
+      "buses": [
+        "main",
+        "aux"
+      ],
+      "path": "../cannet-demo.dbc"
+    }
+  ],
+  "remote_address": null,
+  "local_virtual_buses": [
+    {
+      "id": "loopback",
+      "name": "Loopback"
+    }
+  ],
+  "transmit_frames": []
+}

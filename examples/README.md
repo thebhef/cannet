@@ -19,6 +19,22 @@ Three example *projects* live alongside this trace fixture:
   one-sample hline, and enum lanes striped where their state is held
   rather than read.
 
+- [`capture-features/`](capture-features/README.md) — everything a
+  capture file can carry beyond ordinary traffic: coloured and
+  uncoloured events, a message-bound comment, a `cannet-event/1` block
+  from a later schema version, error and remote frames, file-backed and
+  coded signal series, a descending master, and two `.part` files left
+  by a capture that was killed mid-run. Its project runs on an
+  in-process virtual bus, so it demos with no hardware attached.
+- [`colliding-dbcs/`](colliding-dbcs/README.md) — two databases assigned
+  to one bus that disagree about arbitration id `0x100` in every way two
+  databases can: name, scale, unit, enum vocabulary, which signal owns a
+  byte, and whether a counter and CRC exist at all.
+- [`legacy-project/`](legacy-project/README.md) — a project carrying
+  three shapes nothing writes any more (a database assigned to nothing,
+  plot series with no bus, a persisted `run` flag), so the rules that
+  replaced them can be demonstrated rather than described.
+
 One more fixture set sits alongside them, without a project:
 
 - [`time-origins/`](time-origins/README.md) — a DBC and three ~2 s
@@ -26,6 +42,22 @@ One more fixture set sits alongside them, without a project:
   timeline starts (ADR 0024): a file with no stated start time, a BLF
   whose objects are out of timestamp order, and an MF4 whose earliest
   content is a signal rather than a frame.
+
+## Git LFS
+
+Every capture in this directory — `.blf`, `.mf4`, and the `.blf.part`
+recovery fixtures — is stored as a **Git LFS** object; see
+[`.gitattributes`](../.gitattributes). A fresh clone needs
+
+```sh
+git lfs install   # once per machine
+git lfs pull
+```
+
+before those files are anything but pointer text. Several Rust tests read
+them through the real reader, so a clone without them fails the suite.
+Everything else here — the DBCs, the projects, the RBS files, the
+generators — is plain text in plain git.
 
 ## Files
 

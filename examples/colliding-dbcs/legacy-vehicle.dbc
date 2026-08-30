@@ -1,0 +1,53 @@
+VERSION "colliding-dbcs legacy 1.0"
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: ECU1 GW
+
+BO_ 256 VehicleState: 8 ECU1
+ SG_ VehSpeed : 0|16@1+ (0.01,0) [0|655.35] "km/h" GW
+ SG_ EngineRpm : 16|16@1+ (0.25,0) [0|16383.75] "rpm" GW
+ SG_ GearLever : 32|3@1+ (1,0) [0|7] "" GW
+ SG_ BrakePedal : 35|8@1+ (0.5,0) [0|127.5] "%" GW
+
+BO_ 257 LegacyOnly: 4 ECU1
+ SG_ LegacyHeartbeat : 0|8@1+ (1,0) [0|255] "" GW
+
+CM_ BO_ 256 "The vehicle-state frame as the outgoing database defines it.";
+CM_ SG_ 256 VehSpeed "Metric, and the same wire bits the replacement reads as mph.";
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 256 50;
+
+VAL_ 256 GearLever 0 "P" 1 "R" 2 "N" 3 "D" 4 "S" 5 "L" 6 "Manual" 7 "Reserved";

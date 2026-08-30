@@ -297,6 +297,112 @@ to read it against. It is a single run over a session that restored
 319 k frames, which is exactly where a warm-up ramp lives. Recorded so
 the resumed per-phase captures have a starting point.
 
+### 2026-08-27 — § 2, example files for everything the frontend demos (phase 2)
+
+Branch `task-126-example-files` off `task-126-harness-truth` (724f3cc4).
+No product code changed; everything here is fixtures, generators, tests,
+docs and the LFS wiring.
+
+**The gap list came from the verification checklist, not from a wish
+list.** Every Acceptance row was walked against its exit criteria (read
+from git history for the retired task files) and asked one question:
+*what file does the owner need on screen to verify this?* Most rows
+already had one — `examples/time-origins/` covers 86 / 87 / 90 / 91,
+`ev-demo` covers 27 / 98 / 100, `ev-zonal` covers 96 / 97. Seventeen
+needs across eleven rows had nothing.
+
+| Need (rows) | Furnished |
+|---|---|
+| Unfinalized `.part` BLF (105, 122) | `capture-features/interrupted.blf.part` |
+| …and one cut mid-object (105) | `capture-features/interrupted-tail.blf.part` |
+| A **black** `#000000` event with an uncoloured control (122) | `capture-features/annotated.blf` |
+| A `cannet-event/1` block with a key this build cannot read (122, 107) | `annotated.blf`, `annotated.mf4` |
+| `EVENT_COMMENT` carrying `commentedEventType` (122, 102) | `annotated.blf` |
+| Error and remote frames (102) | both captures |
+| An event of a kind hidden by default (`busError`) (102) | both captures |
+| A foreign MDF whose master **descends** (122) | `annotated.mf4` |
+| An MDF native begin/end range pair (107) | `annotated.mf4` |
+| A coded file-backed series (97, 107) | `annotated.mf4` |
+| An event with no block at all — another tool's (102, 107) | `annotated.mf4` |
+| An import channel with no bus to map onto (88) | both captures, channel 2 |
+| A virtual bus, for the Adapter cell (114) | `capture-features.cannet_prj` |
+| An unbound bus, for the named refusal (117) | its `Aux` bus |
+| Transmit / RBS with no adapter attached (99) | that project + `capture-features.cannet_rbs` |
+| Two databases colliding on one id (92, 88, 89) | `examples/colliding-dbcs/` |
+| A pre-rule project: database assigned to nothing, plot series with `bus_id: null`, persisted `run: true` (88, 106, 99) | `examples/legacy-project/` |
+
+**Named gaps, not furnished.**
+
+- **A multi-million-frame capture** (104, 80) — deliberately absent. It
+  is tens of megabytes, against a set whose whole value is that it stays
+  a few hundred kilobytes and opens by hand. `gen_annotated_blf` gained
+  an optional frame-count argument that writes one wherever it is
+  pointed, documented in `examples/capture-features/README.md`, and both
+  rows now say so rather than implying a file exists.
+- **Vector and Kvaser hardware** (109 item 2, 101) — no file can stand in
+  for unplugging an adapter mid-capture.
+
+**Three fixture sets, ~112 KB of binaries.**
+
+- `examples/capture-features/` — `annotated.blf` (2.4 KB),
+  `annotated.mf4` (19 KB), the two `.part` files (57 + 53 KB), a project
+  and an RBS. Everything decodes against the existing
+  `examples/cannet-demo.dbc`; there is no new database, because the
+  checklist did not need one (`cannet-demo.dbc` already declares
+  `CannetCounter` / `CannetCrc` and a mux, `ev-demo` and `ev-zonal`
+  already carry the long-name extension).
+- `examples/colliding-dbcs/` — two text DBCs that disagree about
+  `0x100` in seven distinct ways, deliberately colliding on the id
+  `cannet-demo.blf` already carries, so the pair needs no capture.
+- `examples/legacy-project/` — one project plus its RBS, all text.
+
+*The `.part` files could only be made one way.* `BlfCaptureWriter::Drop`
+removes the temp file, so a `.part` exists only where `Drop` never ran:
+the generator `mem::forget`s the writer, which costs exactly what a kill
+costs — the flushed `LOG_CONTAINER`s survive, the scratch buffer does
+not, and the header keeps the anchor latched at open. 9 000 frames sizes
+it past the 128 KiB container buffer three times, so recovery has more
+than one container to walk.
+
+**Fixtures are pinned by tests, because nobody diffs a demo file.**
+`crates/cannet-blf/tests/capture_features_fixture.rs` (5),
+`crates/cannet-mdf/tests/capture_features_fixture.rs` (4),
+`crates/cannet-dbc/tests/colliding_dbcs_fixture.rs` (3), plus three
+project-parse tests and one RBS-resolution test in `cannet-gui`. Sixteen
+in all. The colour pair is the one worth naming: `annotated.blf` carries
+both `(fg 0x00FFFFFF, bg 0x000000)` and `(fg 0x000000, bg 0x00FFFFFF)`,
+and the two assertions falsify each other — a reader that folded
+`Some(0)` into `None` would leave only one pair in the file and fail one
+of them.
+
+**LFS is scoped to `examples/`, and that scope is a decision.**
+`.gitattributes` tracks `examples/**/*.{blf,part,mf4}` — ten files, the
+six that were already committed raw plus the four new ones.
+`crates/cannet-mdf/tests/fixtures/*.mf4` stay in plain git: they are read
+by `cargo test --workspace`, so behind LFS the default suite would fail
+in a clone that had not fetched the objects. The databases, projects and
+RBS files stay in plain git too — they are text, and a text diff is worth
+more than a pointer. The Tauri icons must be real bytes at build time.
+
+*One consequence, wired:* several Rust tests read `examples/` captures,
+so `.github/workflows/ci.yml`'s `rust` job checkout gained `lfs: true`.
+It is the only job that reads them; the other six are untouched.
+
+**Fresh-clone check — exit criterion 6.** `GIT_LFS_SKIP_SMUDGE=1
+git clone --local` of this branch into the scratchpad first, so the
+before state is real: all ten captures came down as 129-130 byte pointer
+files (`version https://git-lfs.github.com/spec/v1` / `oid sha256:…` /
+`size 2442`). Then `git lfs pull` — exit 0, `git lfs ls-files` listing
+all ten — and `md5sum` over the ten against the working tree: **all
+identical**. Then the real check, that the demo set *works*:
+`cargo test -p cannet-blf -p cannet-mdf -p cannet-dbc` in the clone,
+green, including the three new fixture suites (5 + 4 + 3). Nothing was
+pushed.
+
+**Full local CI, seven jobs, all green** — table in the phase report.
+No installer or perf capture was taken for the fixture work itself; see
+Blockers.
+
 ## Blockers / side effects
 
 - **Owed to the owner, not blocked:** the 3.46 band-vs-worst-of-N ruling
@@ -325,3 +431,38 @@ the resumed per-phase captures have a starting point.
 - `perfInteractTick`'s return type changed from `string | null` to a
   `TickOutcome` union. In-tree callers are `startPerfInteraction` and
   the test; nothing else consumes it.
+
+### From § 2 (phase 2)
+
+- **Two acceptance rows have no furnished file, by design.** 104
+  (determinate load progress) and 80 (a stopped capture's window scan)
+  both need a multi-million-frame capture — tens of megabytes against a
+  set whose value is that it stays small and opens by hand. Both rows in
+  the verification checklist now say **no furnished file** and point at
+  the generator flag that writes one locally
+  (`gen_annotated_blf -- <dir> <frames>`), so nothing implies a file that
+  is not there.
+- **Two more need hardware, not files.** 109 item 2 wants a Vector
+  adapter unplugged mid-capture; 101's Kvaser leg wants CANLIB. Already
+  known; recorded here so the gap list is complete.
+- **`cargo test --workspace` now depends on Git LFS.** Several suites
+  read `examples/` captures, which are LFS pointers until `git lfs pull`
+  runs. CI's `rust` job gained `lfs: true`; a contributor's clone is
+  covered by README § Prerequisites. A clone that skips it fails the
+  suite on a parse error that does not say why — the honest cost of the
+  ruling, and the reason the scope stops at `examples/`.
+- **`examples/capture-features/annotated.blf` carries a `busError`-kind
+  event**, which `Save Capture` never writes. That is deliberate: a file
+  is the only way to put a hidden-by-default kind on screen without a bus
+  fault. Noted so nobody reads it as evidence that the writer emits them.
+- **The `.gitattributes` close-out chore is only half addressed.** The
+  file now exists, carrying LFS patterns. The `eol` entries that would
+  stop `examples/ev-zonal/dbc/pack.dbc` and
+  `apps/gui/src-tauri/Cargo.toml` showing modified with no content change
+  were **not** added — that is a separate chore with its own normalising
+  diff, and folding it in here would have buried a 140 KB whole-file
+  rewrite inside a fixtures commit. The checklist row says so.
+- **No perf capture and no NSIS installer for this phase.** Nothing under
+  `apps/` or `crates/` changed behaviour: the diff is fixtures, fixture
+  generators, tests, docs, `.gitattributes` and one CI checkout flag.
+  There is no render path to measure and no product change to install.

@@ -660,6 +660,96 @@ mod tests {
         );
     }
 
+    /// Read one of the committed example projects, or fail naming it.
+    fn parse_example(relative: &str) -> Project {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../examples")
+            .join(relative);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        parse_project(&text).unwrap_or_else(|e| panic!("{relative} must parse: {e}"))
+    }
+
+    /// The capture-features project is the hardware-free demo: one bus on
+    /// an in-process virtual bus, one deliberately left unbound, and the
+    /// shared demo database scoped to both. The virtual bus is what makes
+    /// the whole set runnable with no adapter plugged in, and the unbound
+    /// one is what a refusal to connect has to name — so a binding that
+    /// quietly became a `remote` one, or an `aux` that gained a binding,
+    /// would take a demo with it.
+    #[test]
+    fn parses_the_checked_in_capture_features_example_project() {
+        let p = parse_example("capture-features/capture-features.cannet_prj");
+        assert_eq!(p.buses.len(), 2);
+        assert_eq!(p.local_virtual_buses.len(), 1);
+        assert_eq!(p.interface_bindings.len(), 1, "only `main` is bound");
+        let binding = &p.interface_bindings[0];
+        assert_eq!(binding.kind, BindingKind::LocalVirtualBus);
+        assert_eq!(binding.bus_id, "main");
+        assert_eq!(
+            binding.server,
+            format!("{LOCAL_VBUS_URL_SCHEME}{}", p.local_virtual_buses[0].id),
+        );
+        assert_eq!(binding.interface, LOCAL_VBUS_INTERFACE);
+        assert!(
+            !p.interface_bindings.iter().any(|b| b.bus_id == "aux"),
+            "`aux` is the unbound bus this project exists to show",
+        );
+        assert_eq!(p.dbcs.len(), 1);
+        assert_eq!(p.dbcs[0].path, "../cannet-demo.dbc");
+    }
+
+    /// The colliding-database project assigns two databases that disagree
+    /// about one arbitration id to a single bus — the ambiguity the
+    /// resolution rule settles. Both on the same bus is the whole fixture.
+    #[test]
+    fn parses_the_checked_in_colliding_dbcs_example_project() {
+        let p = parse_example("colliding-dbcs/colliding-dbcs.cannet_prj");
+        assert_eq!(p.buses.len(), 1);
+        assert_eq!(p.dbcs.len(), 2);
+        assert!(
+            p.dbcs.iter().all(|d| d.buses == vec!["pack".to_string()]),
+            "both must land on the same bus or they never collide",
+        );
+    }
+
+    /// The legacy project is the shape a file saved before the current
+    /// rules carries: a database assigned to nothing, plot series with no
+    /// bus behind them, and a persisted `run` flag from when opening a
+    /// project could start transmitting. Reading it must not resurrect any
+    /// of that — the assertions here are what the file *states*, and the
+    /// behaviour it exists to demonstrate is that none of it takes effect.
+    #[test]
+    fn parses_the_checked_in_legacy_example_project() {
+        let p = parse_example("legacy-project/legacy.cannet_prj");
+        assert_eq!(p.dbcs.len(), 1);
+        assert!(
+            p.dbcs[0].buses.is_empty(),
+            "a database assigned to nothing decodes nothing",
+        );
+        assert_eq!(p.transmit_frames.len(), 1);
+        assert_eq!(
+            p.transmit_frames[0].mode,
+            crate::transmit_frames::TransmitMode::Periodic,
+        );
+
+        let plot = p
+            .elements
+            .iter()
+            .find(|e| e.get("kind").and_then(serde_json::Value::as_str) == Some("plot"))
+            .expect("the fixture carries a plot element");
+        let signals = plot
+            .pointer("/config/areas/0/signals")
+            .and_then(serde_json::Value::as_array)
+            .expect("the plot area carries signals");
+        assert!(
+            signals
+                .iter()
+                .all(|s| s.get("busId") == Some(&serde_json::Value::Null)),
+            "every series must carry the pre-rule null bus",
+        );
+    }
+
     #[test]
     fn parse_defaults_the_optional_fields() {
         let p = parse_project(r#"{"schema_version": 7, "layout": {"grid": {}, "panels": {}}}"#)

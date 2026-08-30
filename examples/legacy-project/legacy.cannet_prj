@@ -1,0 +1,406 @@
+{
+  "schema_version": 7,
+  "project_id": "b2d7e10c-3a45-4f8e-9c61-70b5a2d38f49",
+  "layout": {
+    "activeGroup": "trace",
+    "grid": {
+      "height": 1000,
+      "orientation": "HORIZONTAL",
+      "root": {
+        "data": [
+          {
+            "data": [
+              {
+                "data": {
+                  "activeView": "project",
+                  "id": "project",
+                  "views": [
+                    "project"
+                  ]
+                },
+                "size": 520,
+                "type": "leaf"
+              },
+              {
+                "data": {
+                  "activeView": "rbs-legacy",
+                  "id": "rbs",
+                  "views": [
+                    "rbs-legacy"
+                  ]
+                },
+                "size": 480,
+                "type": "leaf"
+              }
+            ],
+            "size": 460,
+            "type": "branch"
+          },
+          {
+            "data": [
+              {
+                "data": {
+                  "activeView": "trace-chrono",
+                  "id": "trace",
+                  "views": [
+                    "trace-chrono"
+                  ]
+                },
+                "size": 560,
+                "type": "leaf"
+              },
+              {
+                "data": {
+                  "activeView": "plot-unbound",
+                  "id": "plot",
+                  "views": [
+                    "plot-unbound"
+                  ]
+                },
+                "size": 440,
+                "type": "leaf"
+              }
+            ],
+            "size": 1140,
+            "type": "branch"
+          }
+        ],
+        "size": 1000,
+        "type": "branch"
+      },
+      "width": 1600
+    },
+    "panels": {
+      "plot-unbound": {
+        "contentComponent": "plot",
+        "id": "plot-unbound",
+        "params": {
+          "areas": [
+            {
+              "id": "unbound",
+              "primarySignalKey": null,
+              "signals": [
+                {
+                  "busId": null,
+                  "color": "#60a5fa",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "VehicleState",
+                  "signalName": "VehSpeed",
+                  "unit": "km/h"
+                },
+                {
+                  "busId": null,
+                  "color": "#34d399",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "VehicleState",
+                  "signalName": "EngineRpm",
+                  "unit": "rpm"
+                }
+              ],
+              "yAxisMode": "per-unit"
+            }
+          ],
+          "cursorMode": "x",
+          "cursorX": {
+            "a": null,
+            "b": null
+          },
+          "cursorYByArea": {},
+          "followLive": true,
+          "maxRateHz": 15,
+          "measEnabled": false,
+          "measKeys": [
+            "a",
+            "b",
+            "dt",
+            "freq",
+            "valA",
+            "valB",
+            "delta"
+          ],
+          "showDiag": false,
+          "showPoints": "auto",
+          "signalsWidthPx": 300
+        },
+        "title": "Unbound series"
+      },
+      "project": {
+        "contentComponent": "project",
+        "id": "project",
+        "title": "Project"
+      },
+      "rbs-legacy": {
+        "contentComponent": "rbs",
+        "id": "rbs-legacy",
+        "params": {
+          "elementId": "legacy-rbs"
+        },
+        "title": "Legacy RBS"
+      },
+      "trace-chrono": {
+        "contentComponent": "trace",
+        "id": "trace-chrono",
+        "params": {
+          "autoScroll": true,
+          "columns": [
+            {
+              "key": "idx",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "time",
+              "visible": true,
+              "width": 110
+            },
+            {
+              "key": "rate",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "bus",
+              "visible": true,
+              "width": 100
+            },
+            {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
+            },
+            {
+              "key": "id",
+              "visible": true,
+              "width": 96
+            },
+            {
+              "key": "msg",
+              "visible": true,
+              "width": 220
+            },
+            {
+              "key": "len",
+              "visible": true,
+              "width": 44
+            },
+            {
+              "key": "data",
+              "visible": true,
+              "width": 360
+            },
+            {
+              "key": "dir",
+              "visible": true,
+              "width": 40
+            },
+            {
+              "key": "kind",
+              "visible": true,
+              "width": 110
+            }
+          ],
+          "mode": "chronological",
+          "showEvents": true
+        },
+        "title": "Trace"
+      }
+    }
+  },
+  "elements": [
+    {
+      "config": {
+        "autoScroll": true,
+        "columns": [
+          {
+            "key": "idx",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "time",
+            "visible": true,
+            "width": 110
+          },
+          {
+            "key": "rate",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "bus",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
+          },
+          {
+            "key": "id",
+            "visible": true,
+            "width": 96
+          },
+          {
+            "key": "msg",
+            "visible": true,
+            "width": 220
+          },
+          {
+            "key": "len",
+            "visible": true,
+            "width": 44
+          },
+          {
+            "key": "data",
+            "visible": true,
+            "width": 360
+          },
+          {
+            "key": "dir",
+            "visible": true,
+            "width": 40
+          },
+          {
+            "key": "kind",
+            "visible": true,
+            "width": 110
+          }
+        ],
+        "mode": "chronological",
+        "showEvents": true
+      },
+      "id": "chrono",
+      "kind": "trace",
+      "name": "Trace",
+      "sources": [
+        "*"
+      ]
+    },
+    {
+      "config": {
+        "areas": [
+          {
+            "id": "unbound",
+            "primarySignalKey": null,
+            "signals": [
+              {
+                "busId": null,
+                "color": "#60a5fa",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "VehicleState",
+                "signalName": "VehSpeed",
+                "unit": "km/h"
+              },
+              {
+                "busId": null,
+                "color": "#34d399",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "VehicleState",
+                "signalName": "EngineRpm",
+                "unit": "rpm"
+              }
+            ],
+            "yAxisMode": "per-unit"
+          }
+        ],
+        "cursorMode": "x",
+        "cursorX": {
+          "a": null,
+          "b": null
+        },
+        "cursorYByArea": {},
+        "followLive": true,
+        "maxRateHz": 15,
+        "measEnabled": false,
+        "measKeys": [
+          "a",
+          "b",
+          "dt",
+          "freq",
+          "valA",
+          "valB",
+          "delta"
+        ],
+        "showDiag": false,
+        "showPoints": "auto",
+        "signalsWidthPx": 300
+      },
+      "id": "unbound",
+      "kind": "plot",
+      "name": "Unbound series",
+      "sources": [
+        "bus1"
+      ]
+    },
+    {
+      "id": "legacy-rbs",
+      "kind": "rbs",
+      "name": "Legacy RBS",
+      "path": "legacy.cannet_rbs",
+      "run": true
+    }
+  ],
+  "buses": [
+    {
+      "color": "#60a5fa",
+      "fd": false,
+      "id": "bus1",
+      "name": "Bus 1",
+      "speed_bps": 500000
+    }
+  ],
+  "interface_bindings": [
+    {
+      "bus_id": "bus1",
+      "interface": "bus",
+      "kind": "local-virtual-bus",
+      "server": "local-vbus://legacy"
+    }
+  ],
+  "dbcs": [
+    {
+      "buses": [],
+      "path": "../cannet-demo.dbc"
+    }
+  ],
+  "remote_address": null,
+  "local_virtual_buses": [
+    {
+      "id": "legacy",
+      "name": "Legacy loopback"
+    }
+  ],
+  "transmit_frames": [
+    {
+      "cycle_ms": 50,
+      "description": "Saved while it was running",
+      "id": "legacy-periodic",
+      "mode": "periodic",
+      "request": {
+        "brs": false,
+        "busId": "bus1",
+        "data": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "dlc": 8,
+        "esi": false,
+        "extended": false,
+        "id": 256,
+        "kind": "classic"
+      },
+      "run": true
+    }
+  ]
+}

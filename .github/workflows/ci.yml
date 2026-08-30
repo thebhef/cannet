@@ -80,7 +80,16 @@ jobs:
     # states); 20 is ~3x the worst of those.
     timeout-minutes: 20
     steps:
+      # `lfs: true` is load-bearing here and nowhere else. The example
+      # captures under examples/ are Git LFS objects (see .gitattributes),
+      # and several tests read them through the real reader — the BLF
+      # ordering and capture-feature suites, the MDF fixture suite, and
+      # the GUI host's import tests. Without the objects those files are
+      # pointer text and the suite fails on a parse error that says
+      # nothing about why. No other job reads them.
       - uses: actions/checkout@v7
+        with:
+          lfs: true
 
       - name: Install WebView host libraries
         run: |
