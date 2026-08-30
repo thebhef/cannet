@@ -4413,14 +4413,17 @@ button.color-chip {
 /* ─── Context menus (shared shell) ─────────────────────────────────
  * The plot/trace/transmit panels all share the same look for their
  * right-click context menus: dark surface, thin border, flat
- * menu-item buttons + checkbox rows. Three entry points use the
- * same shell:
+ * menu-item buttons + checkbox rows. Entry points using the same
+ * shell:
  *
  * - `.plot-toolbar-menu` — the plot panel's existing menu (now also
  *   hosts the sources section).
  * - `.sources-context-menu` — the standalone trace / transmit menu
  *   (a positioned popover with just the sources checklist).
  * - `.graph-edge-menu` — the project-graph view's edge action menu.
+ * - `.trace-row-menu` — a trace frame row's right-click menu: just the
+ *   create-event action (ADR 0056), no sources checklist — panel-scoped
+ *   filtering isn't a message-level command.
  *
  * `.sources-picker-popover` is the headless checklist body; it
  * adopts whichever shell wraps it. */
@@ -4502,13 +4505,35 @@ button.color-chip {
 .sources-context-menu-action:hover {
   background: var(--surface-hover);
 }
-/* An action about the row the right-click landed on sits *above* the
- * picker, so its divider is on the other side. */
-.sources-context-menu-action--leading {
-  margin-top: 0;
-  margin-bottom: 0.2rem;
-  border-top: 0;
-  border-bottom: 1px solid var(--border-default);
+/* A trace frame row's right-click menu: the create-event action (ADR
+ * 0056) only — no sources checklist, which stays panel-scoped and
+ * reached from the button bar instead. Same shell and action look as
+ * `.sources-context-menu`, without the divider a leading action needed
+ * when a checklist followed. */
+.trace-row-menu {
+  position: fixed;
+  z-index: 200;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  box-shadow: 0 4px 12px var(--shadow-menu);
+}
+.trace-row-menu-action {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0.25rem 0.4rem;
+}
+.trace-row-menu-action:hover {
+  background: var(--surface-hover);
 }
 .plot-window-ctl {
   display: flex;
