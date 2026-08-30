@@ -987,7 +987,11 @@ where
         "connection",
         "frame source ended cleanly ({total} frames)"
     );
-    let _ = app.emit("log-finished", LogFinished::Ok { total });
+    // The store's own length, read here rather than left to the next
+    // `trace-grew` tick: this is the count the frontend freezes an
+    // ended import's windows at, and the sampler is up to a tick behind.
+    let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
+    let _ = app.emit("log-finished", LogFinished::Ok { total, count });
     anchor
 }
 

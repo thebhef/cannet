@@ -211,7 +211,7 @@ async function importCapture(path: string): Promise<void> {
     await new Promise((r) => setTimeout(r, 20));
   });
   await act(async () => {
-    for (const h of listeners.get("log-finished") ?? []) h({ payload: { status: "ok", total: 1 } });
+    for (const h of listeners.get("log-finished") ?? []) h({ payload: { status: "ok", total: 1, count: 1 } });
   });
 }
 

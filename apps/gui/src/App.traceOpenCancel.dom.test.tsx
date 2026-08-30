@@ -198,7 +198,9 @@ async function openThroughToLoading() {
   });
 }
 
-function fireLogFinished(payload: { status: "ok"; total: number } | { status: "error"; message: string }) {
+function fireLogFinished(
+  payload: { status: "ok"; total: number; count: number } | { status: "error"; message: string },
+) {
   return act(async () => {
     for (const h of listeners.get("log-finished") ?? []) h({ payload });
   });
@@ -282,7 +284,7 @@ describe("import busy feedback persists past first data", () => {
     expect(document.querySelector(".trace-scan-bar")).not.toBeNull();
 
     // Only the import's own completion ends it.
-    await fireLogFinished({ status: "ok", total: 500 });
+    await fireLogFinished({ status: "ok", total: 500, count: 500 });
     const idle = importButton();
     expect(idle.getAttribute("title")).toMatch(/^Import trace…/);
     expect(idle).not.toHaveAttribute("aria-busy");
@@ -315,7 +317,7 @@ describe("cancelling the import phase", () => {
     // The host's pump ends through its ordinary clean-exit path even
     // when cancelled (`log-finished: Ok`) — the frontend is what tells
     // the cancellation apart, since it's the one that asked for it.
-    await fireLogFinished({ status: "ok", total: 137 });
+    await fireLogFinished({ status: "ok", total: 137, count: 137 });
 
     // Partial state cleaned up: the host trace store gets cleared again
     // (on top of the clear that ran before the pump started), and the
@@ -354,7 +356,7 @@ describe("cancelling the import phase", () => {
     await fireTraceGrew(200);
 
     const clearsBefore = invokeCalls.filter((c) => c.cmd === "clear_trace_store").length;
-    await fireLogFinished({ status: "ok", total: 137 });
+    await fireLogFinished({ status: "ok", total: 137, count: 137 });
 
     expect(invokeCalls.filter((c) => c.cmd === "clear_trace_store").length).toBe(clearsBefore);
     expect(statusText()).toContain("Done:");
@@ -488,7 +490,7 @@ describe("determinate load progress", () => {
 
     // The next load starts from no report rather than inheriting this
     // one's last fraction.
-    await fireLogFinished({ status: "ok", total: 250 });
+    await fireLogFinished({ status: "ok", total: 250, count: 250 });
     expect(document.querySelector(".trace-progress-bar")).toBeNull();
   }, 30_000);
 });

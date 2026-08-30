@@ -139,6 +139,7 @@ import {
   freshTrace,
   reanchorToSession,
   restoredTrace,
+  stopTrace,
 } from "./trace";
 import { useSessionReset } from "./useSessionReset";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
@@ -393,6 +394,12 @@ export function App() {
   }>({ start: 0, rows: [] });
 
   const [state, setState] = useState<LogState>({ kind: "idle" });
+  // Mirror of the load state for the `log-finished` listener, which is
+  // registered once and would otherwise close over the kind it saw at
+  // mount. The event fires for a live session's pump as well as a
+  // file's, and only the file's ends a capture.
+  const stateKindRef = useRef(state.kind);
+  stateKindRef.current = state.kind;
   // Paths of the loaded DBCs, in priority order (mirrors the host's set
   // — it owns the parsed databases; this is just what the UI shows).
   const [dbcPaths, setDbcPaths] = useState<string[]>([]);
@@ -1216,7 +1223,23 @@ export function App() {
             });
             return;
           }
-          const total = event.payload.total;
+          const { total, count } = event.payload;
+          // A file import that reached its end is a capture nothing more
+          // will be appended to, so every trace element freezes there
+          // rather than staying *running* over a buffer that has stopped
+          // growing — a running element keeps each plot area's
+          // self-paced re-sample loop alive for a picture that cannot
+          // change (ADR 0024). Frozen at the event's own count, not at
+          // the last `trace-grew` tick's: the sampler runs on a timer and
+          // is up to a tick behind the pump, and an `end` below the true
+          // length is what `reanchorToSession` would then make permanent.
+          // A live session's pump exiting lands here too, and must not
+          // freeze anything — hence the same load-state gate the
+          // transition below uses.
+          if (stateKindRef.current === "loading" || stateKindRef.current === "running") {
+            setCount(count);
+            setRegistry((reg) => reg.map((e) => ({ ...e, trace: stopTrace(e.trace, count) })));
+          }
           setState((s) => {
             if (s.kind === "loading" || s.kind === "running") {
               return { kind: "done", result: s.result, total };

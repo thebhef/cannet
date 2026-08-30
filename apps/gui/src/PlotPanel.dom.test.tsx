@@ -8396,3 +8396,69 @@ describe("a highlight repaints the plot", () => {
     }
   });
 });
+
+describe("run state gates the self-paced resample loop", () => {
+  const sig = (signalName: string, unit = "V") => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "Pack",
+    unit,
+    color: "#112233",
+  });
+  const resamples = () => diagCounts().get("plotarea.resample") ?? 0;
+  const slides = () => diagCounts().get("followwin.slide") ?? 0;
+  const wait = (ms: number) => act(async () => {
+    await new Promise((r) => setTimeout(r, ms));
+  });
+
+  function mount(trace: TS) {
+    renderPanel({
+      params: { elementId: "el-run-state" },
+      registry: makeRegistry({
+        id: "el-run-state",
+        config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }] },
+        trace,
+      }),
+    });
+  }
+
+  it("a running trace keeps the loop sampling and sliding", async () => {
+    // `plot_fetch_interval_ms` defaults to 67 ms, so a live area ticks
+    // several times over the measured window.
+    await withSizedCanvas(async () => {
+      mount(freshTrace(0));
+      await wait(300);
+      const r0 = resamples();
+      const s0 = slides();
+      await wait(500);
+      expect(resamples() - r0).toBeGreaterThan(0);
+      expect(slides() - s0).toBeGreaterThan(0);
+    });
+  });
+
+  it("a stopped trace costs no steady-state render work at all", async () => {
+    await withSizedCanvas(async () => {
+      mount({ start: 0, end: 60, isPaused: false });
+      // A mount owes several one-shot re-samples (the build effect's
+      // pair, the ~250 ms post-mount uPlot rebuild's pair behind it),
+      // and jsdom delivers the animation-frame half of each late. Wait
+      // for two consecutive quiet windows so what follows is the
+      // steady state and not the tail of the mount.
+      let quiet = 0;
+      for (let i = 0; i < 16 && quiet < 2; i++) {
+        const before = resamples();
+        await wait(150);
+        quiet = resamples() === before ? quiet + 1 : 0;
+      }
+      expect(quiet).toBe(2);
+
+      const r0 = resamples();
+      const s0 = slides();
+      await wait(500);
+      expect(resamples() - r0).toBe(0);
+      expect(slides() - s0).toBe(0);
+    });
+  });
+});
