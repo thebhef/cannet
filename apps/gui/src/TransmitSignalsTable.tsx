@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
@@ -23,10 +30,28 @@ import {
 } from "./transmitFrameConfig";
 import { NameText } from "./NameText";
 
+/// How a disclosed signal line takes part in the gridview (ADR 0044).
+/// Each line is a row of the space in its own right, so it needs the
+/// DOM id `aria-activedescendant` names, whether the cursor and the
+/// selection are on it, and a click that moves them here.
+///
+/// `onRows` is the other direction: which signals are actually on
+/// screen is decided here — the active mux arm depends on the decoded
+/// switch value, which only this component holds — so the table tells
+/// the panel what it disclosed rather than the panel guessing.
+export interface SignalContentRows {
+  domId(name: string): string;
+  active(name: string): boolean;
+  selected(name: string): boolean;
+  onClick(name: string, e: ReactMouseEvent): void;
+  onRows(names: readonly string[]): void;
+}
+
 interface SignalsTableProps {
   frame: TransmitFrameConfig;
   descriptor: MessageDescriptorRecord | null;
   onChange: (mut: (f: TransmitFrameConfig) => TransmitFrameConfig) => void;
+  contentRows: SignalContentRows;
 }
 
 /// Signals table for the active mux arm. The rich message
@@ -35,7 +60,12 @@ interface SignalsTableProps {
 /// here as a prop; the decoded signal values come from `decode_frame`
 /// on every `dataHex` change. Editing a value cell partial-encodes
 /// that signal's bits via the host's `encode_frame` command.
-export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps) {
+export function SignalsTable({
+  frame,
+  descriptor,
+  onChange,
+  contentRows,
+}: SignalsTableProps) {
   const [decoded, setDecoded] = useState<DecodedFrameRecord | null>(null);
 
   // Re-decode the bytes on every change. The Tauri call is cheap and
@@ -108,6 +138,49 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
     [commitEdits, descriptor],
   );
 
+  // The lines this table will render, decided before the early returns
+  // below so a hook can report them to the panel — the rules of hooks,
+  // and the reason this is a memo rather than the plain walk it was.
+  const valuesByName = useMemo(() => {
+    const m = new Map<string, SignalRecord>();
+    for (const s of decoded?.signals ?? []) m.set(s.name, s);
+    return m;
+  }, [decoded]);
+  const rows = useMemo(() => {
+    if (descriptor == null || descriptor.usesExtendedMux) return EMPTY_SIGNALS;
+    if (frame.kind !== "classic" && frame.kind !== "fd") return EMPTY_SIGNALS;
+    // Resolve the current switch value (if the message has a
+    // multiplexor) so we can filter rows to the active arm. `decoded`
+    // always carries the switch when one exists.
+    const switchSig = descriptor.signals.find((s) => s.mux.kind === "multiplexor");
+    const activeSelector =
+      switchSig && valuesByName.has(switchSig.name)
+        ? Math.round(valuesByName.get(switchSig.name)!.value)
+        : null;
+    // Active arm only — sub-signals for inactive arms are hidden, not
+    // dimmed. Switching the switch zeroes the new arm's bits, so the
+    // newly visible rows show 0 by default.
+    return descriptor.signals.filter((s) => {
+      if (s.mux.kind === "plain" || s.mux.kind === "multiplexor") return true;
+      if (s.mux.kind === "multiplexed") {
+        return activeSelector !== null && s.mux.selector === activeSelector;
+      }
+      // `multiplexor_and_multiplexed` (sub-mux): not handled here —
+      // these signals are hidden for now.
+      return false;
+    });
+  }, [descriptor, frame.kind, valuesByName]);
+
+  // Report what is on screen to the panel's row space. Keyed on the
+  // names themselves, not on the callback — the panel hands a fresh
+  // closure every render, and depending on that would report in a loop.
+  const onRowsRef = useRef(contentRows.onRows);
+  onRowsRef.current = contentRows.onRows;
+  const names = rows.map((s) => s.name).join(NAME_SEP);
+  useEffect(() => {
+    onRowsRef.current(names.length === 0 ? EMPTY_NAMES : names.split(NAME_SEP));
+  }, [names]);
+
   if (frame.kind !== "classic" && frame.kind !== "fd") {
     return null;
   }
@@ -132,30 +205,6 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
       </div>
     );
   }
-  const valuesByName = new Map<string, SignalRecord>();
-  if (decoded) {
-    for (const s of decoded.signals) valuesByName.set(s.name, s);
-  }
-  // Resolve the current switch value (if the message has a
-  // multiplexor) so we can filter rows to the active arm. `decoded`
-  // always carries the switch when one exists.
-  const switchSig = descriptor.signals.find((s) => s.mux.kind === "multiplexor");
-  const activeSelector =
-    switchSig && valuesByName.has(switchSig.name)
-      ? Math.round(valuesByName.get(switchSig.name)!.value)
-      : null;
-  // Active arm only — sub-signals for inactive arms are hidden, not
-  // dimmed. Switching the switch zeroes the new arm's bits, so the
-  // newly visible rows show 0 by default.
-  const rows = descriptor.signals.filter((s) => {
-    if (s.mux.kind === "plain" || s.mux.kind === "multiplexor") return true;
-    if (s.mux.kind === "multiplexed") {
-      return activeSelector !== null && s.mux.selector === activeSelector;
-    }
-    // `multiplexor_and_multiplexed` (sub-mux): not handled here —
-    // these signals are hidden for now.
-    return false;
-  });
   if (rows.length === 0) {
     return null;
   }
@@ -176,6 +225,10 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
           sig={sig}
           decoded={valuesByName.get(sig.name) ?? null}
           onCommit={(physical) => commitOneSignal(sig, physical)}
+          domId={contentRows.domId(sig.name)}
+          active={contentRows.active(sig.name)}
+          selected={contentRows.selected(sig.name)}
+          onClick={(e) => contentRows.onClick(sig.name, e)}
         />
       ))}
     </div>
@@ -191,14 +244,39 @@ interface SignalRowProps {
   sig: SignalDescriptorRichRecord;
   decoded: SignalRecord | null;
   onCommit: (physical: number) => void;
+  /// This line's share of the gridview (ADR 0044): the DOM id
+  /// `aria-activedescendant` names, the cursor, the selection, and the
+  /// click that moves them here.
+  domId: string;
+  active: boolean;
+  selected: boolean;
+  onClick: (e: ReactMouseEvent) => void;
 }
 
 /// One row in the signals table — name · value · unit · range. Picks
 /// between a plain numeric input and an enum combobox based on the
 /// signal's `hasValueTable` flag.
-function SignalRow({ busId, messageId, extended, sig, decoded, onCommit }: SignalRowProps) {
+function SignalRow({
+  busId,
+  messageId,
+  extended,
+  sig,
+  decoded,
+  onCommit,
+  domId,
+  active,
+  selected,
+  onClick,
+}: SignalRowProps) {
   return (
-    <div className="tx-signal-row" role="row">
+    <div
+      id={domId}
+      className={selected ? "tx-signal-row tx-signal-row-selected" : "tx-signal-row"}
+      role="treeitem"
+      aria-selected={selected}
+      data-active={active || undefined}
+      onClick={onClick}
+    >
       <span className="tx-col-name" title={sig.name}>
         <NameText name={sig.name} />
       </span>
@@ -315,6 +393,13 @@ function EnumValueCell({
     />
   );
 }
+
+/// Stable empties, so a table with nothing to show hands the memo and
+/// the report the same value every render. `NAME_SEP` is a NUL, which
+/// no DBC identifier can carry, so joining and splitting round-trips.
+const EMPTY_SIGNALS: readonly SignalDescriptorRichRecord[] = [];
+const EMPTY_NAMES: readonly string[] = [];
+const NAME_SEP = "\u0000";
 
 /// Format a physical value for a single-cell display: compact
 /// representation, trimmed trailing zeros, finite-precision so the

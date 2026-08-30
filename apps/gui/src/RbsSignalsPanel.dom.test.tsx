@@ -70,6 +70,7 @@ function row(over: Partial<RbsSignalRow> = {}): RbsSignalRow {
     size: 16,
     signed: false,
     hasValueTable: false,
+    defaultValue: 800,
     detail: "DBC start value",
     ...over,
   };
@@ -111,10 +112,37 @@ describe("RbsSignalsPanel", () => {
     ROWS = [row({ id: "a", status: "override", overridden: true, value: 9000 })];
     renderPanel();
     await screen.findByText("EngineSpeed");
-    // washesOn defaults true, so the status text isn't rendered — flip
-    // it off via the toggle to read the fallback label.
-    fireEvent.click(screen.getByRole("button", { name: "Row Highlights" }));
     expect(await screen.findByText("Out of Range")).toBeInTheDocument();
+  });
+
+  it("paints no row background, and names every row's status in the status cell", async () => {
+    // Row background belongs to the gridview — cursor and selection are
+    // what paint a row (ADR 0044). A panel says per-row state in a
+    // *cell*, so the status text is unconditional and there is no
+    // toggle for turning it into a wash.
+    ROWS = [
+      row({ id: "a", signalName: "EngineSpeed", status: "not-encoded" }),
+      row({ id: "b", signalName: "PackVoltage", status: "muted" }),
+    ];
+    renderPanel();
+    await screen.findByText("EngineSpeed");
+    expect(screen.getByText("Not Encoded")).toBeInTheDocument();
+    expect(screen.getByText("Muted")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Row Highlights" })).toBeNull();
+    for (const el of document.querySelectorAll(".rbs-signals-row")) {
+      expect(el.className).not.toMatch(/wash/);
+    }
+  });
+
+  it("shows the DBC start value in the Default column, and `none` where there is none", async () => {
+    ROWS = [
+      row({ id: "a", signalName: "EngineSpeed", defaultValue: 812.5 }),
+      row({ id: "b", signalName: "PackVoltage", defaultValue: null, detail: "" }),
+    ];
+    renderPanel();
+    await screen.findByText("EngineSpeed");
+    expect(screen.getByText("812.5")).toBeInTheDocument();
+    expect(screen.getByText("none")).toBeInTheDocument();
   });
 
   it("filters to exactly the selected status chip", async () => {

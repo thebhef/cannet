@@ -13,6 +13,7 @@ import { useState } from "react";
 import {
   dispatchStroke,
   isEditableTarget,
+  isGridviewContentTarget,
   isGridviewTarget,
   parseChord,
   type KeyStroke,
@@ -618,9 +619,16 @@ describe("global dispatcher suppression", () => {
         isMac: false,
         inEditable: isEditableTarget(e.target),
         inGridview: isGridviewTarget(e.target),
+        inGridviewContent: isGridviewContentTarget(e.target),
       });
-      // Exactly what `useCommands` does with a consumed stroke.
-      if (r.handled) e.preventDefault();
+      // Exactly what `useCommands` does with a consumed stroke — the
+      // `stopPropagation` included, without which a press the
+      // dispatcher claims still reaches the panel underneath and the
+      // suppression rules read as weaker than they are.
+      if (r.handled) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
       if (r.commandId) fired.push(r.commandId);
     };
     document.addEventListener("keydown", onKeyDown, true);
@@ -650,21 +658,46 @@ describe("global dispatcher suppression", () => {
     }
   });
 
-  it("leaves an Escape a global command took to that command", () => {
-    // Escape is not one of the keys the grid is invisible for: a
-    // context-gated global binding (`view.exitFullscreen`) fires first
-    // from the capture phase and marks the press handled, and the grid's
-    // way out of a row's content stands down on the same rule content
-    // does.
+  it("beats a global Escape binding from inside a row, and yields to it on the container", () => {
+    // The grid's way out of a row's content outranks a global Escape
+    // binding (ADR 0044). `view.exitFullscreen` is the binding this
+    // matters for: it is gated on a maximized view, so the two are live
+    // together exactly when a fullscreened panel's row has the keyboard
+    // — and before this the global won, exiting fullscreen and leaving
+    // focus stranded on the control. Two presses, two layers: the first
+    // returns to the container, the second is the global's.
     const view = setup();
-    const dispatcher = installDispatcher([{ chord: "Escape", commandId: "test.escape" }]);
+    const dispatcher = installDispatcher([{ chord: "Escape", commandId: "view.exitFullscreen" }]);
     try {
       fireEvent.keyDown(view.grid, { key: "ArrowDown" });
       const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
       button.focus();
       fireEvent.keyDown(button, { key: "Escape" });
-      expect(dispatcher.fired).toEqual(["test.escape"]);
-      expect(document.activeElement).toBe(button);
+      expect(dispatcher.fired).toEqual([]);
+      expect(document.activeElement).toBe(view.grid);
+      expect(cursor(view.grid)).toBe("bus");
+
+      // Now the press is on the container, which has nothing to come
+      // back from — it belongs to the global binding.
+      fireEvent.keyDown(view.grid, { key: "Escape" });
+      expect(dispatcher.fired).toEqual(["view.exitFullscreen"]);
+    } finally {
+      dispatcher.dispose();
+    }
+  });
+
+  it("still lets a row's own control keep an Escape it consumed", () => {
+    // Content keeps first claim: the combobox stand-in marks the press
+    // handled, so neither the grid nor a global binding takes it.
+    const view = setup();
+    const dispatcher = installDispatcher([{ chord: "Escape", commandId: "view.exitFullscreen" }]);
+    try {
+      fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+      const combo = view.getByTestId("combo-bus");
+      combo.focus();
+      fireEvent.keyDown(combo, { key: "Escape" });
+      expect(dispatcher.fired).toEqual([]);
+      expect(document.activeElement).toBe(combo);
     } finally {
       dispatcher.dispose();
     }

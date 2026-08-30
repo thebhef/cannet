@@ -58,6 +58,7 @@ import { ChipButton } from "./ChipButton";
 import { Icon } from "./Icon";
 import { makeRowGridPropsCache, useGridview, type Gridview, type RowGridProps } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
+import { contentRowId } from "./gridviewContentRows";
 import {
   buildRbsFilterEntries,
   buildVisibleTree,
@@ -262,7 +263,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
     [view, rowIds, effectiveExpanded, keepRow],
   );
   const rowSpace = useMemo(() => makeRbsRowSpace(), []);
-  const gridRows = rowSpace(tree, rowIds);
+  const gridRows = rowSpace(tree, rowIds, effectiveExpanded);
   const treeRef = useRef<HTMLDivElement | null>(null);
   const setRowExpanded = useCallback((id: string, want: boolean) => {
     if (id.startsWith("m:")) {
@@ -689,7 +690,8 @@ interface MessageRowProps {
   message: RbsMessageView;
   inert: boolean;
   /// The gridview's id for this row — a **leaf with content**: the
-  /// signal table below discloses in place and adds no rows.
+  /// signal table below is a list, so its lines are rows of the space
+  /// one level deeper.
   rowId: string;
   grid: Gridview;
   rowProps: (id: string) => RowGridProps;
@@ -825,7 +827,10 @@ function MessageRow({
         </span>
       </div>
       {expanded && (
-        <table className="rbs-signals">
+        /* Presentational: the signal lines are rows of the gridview's
+           space (ADR 0044), so each `<tr>` carries `treeitem` and the
+           table's own row/cell semantics would fight it. */
+        <table className="rbs-signals" role="presentation">
           <tbody>
             {m.signals.map((s) => (
               <SignalRow
@@ -836,6 +841,9 @@ function MessageRow({
                 message={m}
                 signal={s}
                 inert={inert}
+                rowId={contentRowId(rowId, s.name)}
+                grid={grid}
+                rowProps={rowProps}
                 onMenu={(e) =>
                   onSignalMenu({
                     x: e.clientX,
@@ -868,6 +876,11 @@ interface SignalRowProps {
   message: RbsMessageView;
   signal: RbsSignalView;
   inert: boolean;
+  /// The gridview's id for this row — a row of the space in its own
+  /// right, one level below the message that disclosed it.
+  rowId: string;
+  grid: Gridview;
+  rowProps: (id: string) => RowGridProps;
   onMenu: (e: MouseEvent) => void;
 }
 
@@ -878,6 +891,9 @@ function SignalRow({
   message,
   signal: s,
   inert,
+  rowId,
+  grid,
+  rowProps,
   onMenu,
 }: SignalRowProps) {
   const commit = (value: string | number) => {
@@ -891,7 +907,13 @@ function SignalRow({
 
   return (
     <tr
-      className={s.overridden ? "rbs-signal rbs-signal-overridden" : "rbs-signal"}
+      className={`${s.overridden ? "rbs-signal rbs-signal-overridden" : "rbs-signal"}${
+        grid.selection.has(rowId) ? " rbs-row-selected" : ""
+      }`}
+      role="treeitem"
+      aria-selected={grid.selection.has(rowId)}
+      {...rowProps(rowId)}
+      data-active={grid.cursor === rowId || undefined}
       onContextMenu={(e) => {
         e.preventDefault();
         onMenu(e);

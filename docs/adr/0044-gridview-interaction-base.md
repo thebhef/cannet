@@ -32,14 +32,13 @@ non-virtualized panels sit unchanged beneath it.
 
 **Node model.** A row is `{id, kind: branch | leaf, expandable,
 depth}`. A branch's children appear in and disappear from the row space
-as it opens and shuts. **A leaf's content is rows too wherever that
-content is a list**: a trace row's decoded signals are rows of the
-space, each with its own id, a place in the order, and a share of the
-cursor and the selection. Content that is an *editor face* rather than
-a list — a transmit tile's frame-shape and byte editors, an RBS
-message's value cells — stays a block below the row and is reached by
-Tab, not by the cursor. Either shape keeps one rule: **the toggle is
-the row's own line, never the footprint of what it disclosed.** A click
+as it opens and shuts. **A leaf's content is rows.** A trace row's
+decoded signals, an RBS message's signals, a transmit tile's DBC
+signals table — each line gets its own id, a place in the order, and a
+share of the cursor and the selection. Controls the row carries, the
+disclosed ones included, are reached by Tab, exactly as a control on
+the row's own line is. Either shape keeps one rule: **the toggle is the
+row's own line, never the footprint of what it disclosed.** A click
 inside disclosed content acts on that content and never on the row that
 disclosed it. `kind` says what the rows *are* (a branch structures rows
 below it; a leaf's content belongs to it), not whether expanding
@@ -52,8 +51,20 @@ and added no rows, in every case. That made a list of content a blob
 inside one row: the row owned the click, so clicking a decoded signal
 collapsed the message the user was reading, and nothing in the content
 could be selected or reached by the cursor. Content-as-rows deletes
-that special case instead of guarding it, and the toggle rule above
-covers the editor faces that stay blocks.)*
+that special case instead of guarding it.)*
+
+*(Amended 2026-08-27. The **editor-face carve-out is deleted** — the
+clause excusing content that was "an editor face rather than a list"
+from being rows, which named a transmit tile's frame-shape and byte
+editors and an RBS message's value cells. It named two panels and both
+have now adopted content rows, so it has no occupants left. The
+distinction did not survive contact with the panels it was drawn for:
+an RBS message's "value cells" are a signals table, which is a list
+whichever way it is read, and once its lines are rows the value cell is
+just a control that row carries — reached by Tab like any other. What
+sits outside the row space is not a category of content but the
+ordinary case of a row with several controls on it, which the Tab rule
+already covered.)*
 
 **Cursor and selection are separate, and the cursor is
 row-granular.** One active row per gridview, keyed by id; the
@@ -77,6 +88,18 @@ was plain `div`s. It follows that **no row is a tab stop**: a row with
 `tabindex` is a second focus model beside the container's, it puts
 grid rows in the page's tab order, and its own key handlers duplicate
 keys the layer already owns.)*
+
+*(Amended 2026-08-27. **Row background belongs to the layer.** Cursor
+and selection are what paint a row; a panel says per-row state in a
+**cell** — a chip, an icon, text — never in the row's background, and
+never ships a toggle for doing so. Two signal-mapping grids had painted
+a translucent status wash across the row, competing with the layer's
+own selection indication on the same DOM node, and carried a "Row
+Highlights" chip plus a persisted `washesOn` param to switch between
+that wash and a status word in the cell. The wash is a panel
+re-implementing what the layer owns, and the toggle is workspace state
+for a behaviour that is not the panel's; both are gone, and the status
+word is unconditional.)*
 
 *(Amended 2026-08-23. The container being what holds focus means the
 UA's focus ring goes round the whole scroll viewport, which reads as
@@ -142,16 +165,27 @@ browser. Once focus is inside a row, Tab is the browser's again: it
 walks that row's own controls and then out of the row. **Escape is the
 way back**: focus returns to the container with the cursor untouched,
 so the arrows navigate again — without it, Tab into a row is one-way
-and the keyboard is only recovered with the mouse. Content keeps first
-claim on the press: a control that consumed Escape (a combobox closing
-its dropdown, an editor reverting a draft) either stops it reaching the
-container or marks it handled, and the grid takes only what is left —
-including when a context-gated global Escape binding claimed it from
-the capture phase. The container also takes focus back whenever a
-row's editor ends an edit by blurring itself (commit on Enter, revert
-on Escape) with nowhere to go, since a blur to the document body leaves
-the grid's keys dead and the next Tab restarting from the top of the
-page.
+and the keyboard is only recovered with the mouse.
+
+*(Amended 2026-08-27.)* **Escape's precedence, innermost first:
+content beats the grid, the grid beats a global binding, and a press
+that reaches the container is the global binding's.** A control that
+consumed Escape (a combobox closing its dropdown, an editor reverting
+a draft) either stops it reaching the container or marks it handled,
+and the grid takes only what is left. A *global* binding is not
+content and does not get to claim it from the capture phase: while
+focus is inside a row the dispatcher stands down on plain Escape, so
+the two layers arrive in order — one press out of the row, the next
+out of whatever the binding governs. Escape used to count a
+capture-phase global `preventDefault` as content having claimed it,
+which made `view.exitFullscreen` — gated on a maximized view, so live
+exactly when a fullscreened panel's row has the keyboard — win the
+press: fullscreen exited and focus stayed stranded on the control.
+
+The container also takes focus back whenever a row's editor ends an
+edit by blurring itself (commit on Enter, revert on Escape) with
+nowhere to go, since a blur to the document body leaves the grid's keys
+dead and the next Tab restarting from the top of the page.
 
 **Multiselect is mouse-built, and ranges extend from the keyboard.**
 Plain click replaces the selection; Ctrl/Cmd+click toggles a row;
@@ -194,12 +228,13 @@ handler, so the layer marks its container and the dispatcher treats
 focus-inside-a-gridview like its existing focus-inside-an-editable
 suppression for the keys the grid consumes (unmodified navigation
 keys, Space, F2, Tab, plus Ctrl/Cmd+A, Shift+Tab and Shift+Up/Down).
-Escape is *not* among them: the grid takes it only when a row's content
-left it unclaimed, so a context-gated global Escape binding keeps first
-claim on it. The grid makes that
-same editable-target exemption of its own: a text field inside a row (a
-section's name, an event row's label) keeps its keys, or the caret
-cannot be moved inside it, and a **focused button keeps Space** — that
+Escape is a narrower case: the dispatcher stands down on it only while
+focus is inside a *row*, which is where the grid's way out means
+something, and it fires normally on the container — so a context-gated
+global Escape binding is reached by the second press rather than losing
+the key. The grid makes that same editable-target exemption of its own:
+a text field inside a row (a section's name, an event row's label)
+keeps its keys, or the caret cannot be moved inside it, and a **focused button keeps Space** — that
 is how a button is activated, so a grid claiming the press would fire
 both the button and the panel's primary action. All other chords pass
 through. The

@@ -45,7 +45,6 @@ interface ViewSignalsPanelParams {
   sort?: unknown;
   statusFilter?: unknown;
   busFilter?: unknown;
-  washesOn?: unknown;
 }
 
 function sortFromParams(raw: unknown): ViewSignalSortState {
@@ -174,19 +173,14 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
   const [busFilter, setBusFilter] = useState<ReadonlySet<string>>(
     () => new Set(Array.isArray(params?.busFilter) ? params.busFilter.filter((v): v is string => typeof v === "string") : []),
   );
-  const [washesOn, setWashesOn] = useState<boolean>(() =>
-    typeof params?.washesOn === "boolean" ? params.washesOn : true,
-  );
-
   useEffect(() => {
     api.updateParameters({
       columns,
       sort,
       statusFilter: [...statusFilter],
       busFilter: [...busFilter],
-      washesOn,
     });
-  }, [api, columns, sort, statusFilter, busFilter, washesOn]);
+  }, [api, columns, sort, statusFilter, busFilter]);
 
   // --- the host model ---
   const [rows, setRows] = useState<ViewSignalRow[]>([]);
@@ -416,12 +410,6 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
             </div>
           )}
         </span>
-        <ChipButton
-          label="Row Highlights"
-          title="highlight each row's background by its status; the status column always names it"
-          pressed={washesOn}
-          onPress={() => setWashesOn((v) => !v)}
-        />
         <span className="spacer" />
         <ChipButton
           label={countsLabel}
@@ -459,7 +447,6 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
               row={r}
               columns={visible}
               gridTemplate={gridTemplate}
-              washesOn={washesOn}
               rowDomId={grid.rowDomId}
               onPick={onPick}
               onRemap={onRemap}
@@ -518,7 +505,6 @@ interface ViewSignalRowLineProps {
   row: ViewSignalRow;
   columns: readonly ViewSignalColumnState[];
   gridTemplate: string;
-  washesOn: boolean;
   rowDomId: (id: string) => string;
   onPick: (signal: string, dbcPath: string) => void;
   onRemap: (row: ViewSignalRow, candidate: ViewSignalCandidate) => void;
@@ -530,7 +516,6 @@ function ViewSignalRowLine({
   row,
   columns,
   gridTemplate,
-  washesOn,
   rowDomId,
   onPick,
   onRemap,
@@ -544,7 +529,7 @@ function ViewSignalRowLine({
       columns={columns}
       gridTemplate={gridTemplate}
       id={rowDomId(row.id)}
-      className={`trace-row view-signals-row${washesOn ? ` view-signals-row--wash-${STATUS_CLASS[row.status]}` : ""}${selected ? " selected" : ""}`}
+      className={`trace-row view-signals-row${selected ? " selected" : ""}`}
       aria-selected={selected}
       onClick={(e) => onSelect(row.id, e)}
       renderCell={(key, className) => {
@@ -557,7 +542,7 @@ function ViewSignalRowLine({
                   title={STATUS_LABEL[row.status]}
                   aria-hidden="true"
                 />
-                {!washesOn && <span className="view-signals-status-text">{STATUS_LABEL[row.status]}</span>}
+                <span className="view-signals-status-text">{STATUS_LABEL[row.status]}</span>
               </span>
             );
           case "bus":

@@ -12,10 +12,18 @@
 /// the panel's largest allocation and it answers the same thing every
 /// time. (The per-row DOM id and click handler are interned the same
 /// way, in the layer's own `makeRowGridPropsCache`.)
+///
+/// A signal row's id is *not* interned: it exists only while its
+/// message is open, so the set is what the reader chose to disclose
+/// rather than the config's size, and one string concat per open
+/// signal per refresh is not what this module was written for. Its
+/// row object still is, and the props cache keys on the string's
+/// value, so both caches hit.
 
 import type { RbsBusView, RbsEcuView, RbsMessageView, RbsView } from "./types";
 import type { GridviewFilterEntry } from "./gridviewFilter";
 import type { GridviewRow } from "./gridviewRows";
+import { contentRowId } from "./gridviewContentRows";
 
 /// Stable gridview row ids. The bus and ECU forms are also the keys the
 /// panel's `collapsed` set has always used, so the cursor, the expansion
@@ -172,8 +180,9 @@ export function findRbsEnableToggle(
 }
 
 /// The visible tree as the gridview's ordered row space: buses and ECUs
-/// are branches, a message is a **leaf with content** — its signal table
-/// grows the row in place and adds no rows (ADR 0044's node model).
+/// are branches, a message is a **leaf with content**, and that content
+/// is a list — so an open message's signals are rows of the space too,
+/// one level deeper (ADR 0044's node model).
 ///
 /// Interned like the ids, and for the same reason: the row space is a
 /// function of the tree's shape, so a value refresh must not rebuild one
@@ -183,6 +192,7 @@ export function findRbsEnableToggle(
 export function makeRbsRowSpace(): (
   tree: readonly VisibleBus[],
   ids: RbsRowIds,
+  expanded: (id: string) => boolean,
 ) => readonly GridviewRow[] {
   const byId = new Map<string, GridviewRow>();
   let last: readonly GridviewRow[] = [];
@@ -198,7 +208,7 @@ export function makeRbsRowSpace(): (
     byId.set(id, fresh);
     return fresh;
   };
-  return (tree, ids) => {
+  return (tree, ids, expanded) => {
     const rows: GridviewRow[] = [];
     for (const b of tree) {
       rows.push(row(ids.bus(b.bus.key), "branch", b.ecus.length > 0, 0));
@@ -207,7 +217,12 @@ export function makeRbsRowSpace(): (
         rows.push(row(ids.ecu(b.bus.key, e.ecu.name), "branch", e.messages.length > 0, 1));
         if (!e.expanded) continue;
         for (const m of e.messages) {
-          rows.push(row(ids.message(b.bus.key, m.key), "leaf", true, 2));
+          const mId = ids.message(b.bus.key, m.key);
+          rows.push(row(mId, "leaf", true, 2));
+          if (!expanded(mId)) continue;
+          for (const sig of m.signals) {
+            rows.push(row(contentRowId(mId, sig.name), "leaf", false, 3));
+          }
         }
       }
     }

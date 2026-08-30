@@ -1278,8 +1278,14 @@ export interface RbsSignalRow {
   size: number;
   signed: boolean;
   hasValueTable: boolean;
+  /// The DBC's start value in physical units, `null` where the DBC
+  /// declares none and the bits are the file's fill. The feed
+  /// collapses the DBC and override layers into one live `value`, so
+  /// this is the only place an overridden field's DBC default shows.
+  defaultValue: number | null;
   /// A short "what happened" note for the detail column; empty for a
-  /// clean Override row.
+  /// clean Override row, and for a signal the DBC gives no start value
+  /// — that one is the Default column's to say.
   detail: string;
 }
 

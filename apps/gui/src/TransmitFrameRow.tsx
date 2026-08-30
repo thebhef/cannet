@@ -13,7 +13,7 @@ import { DisclosureToggle } from "./DisclosureToggle";
 import { effectiveBusColor } from "./busColor";
 import { theme, useThemeName } from "./theme";
 import { BytesEditor } from "./TransmitBytesEditor";
-import { SignalsTable } from "./TransmitSignalsTable";
+import { SignalsTable, type SignalContentRows } from "./TransmitSignalsTable";
 import {
   CalcFieldsStrip,
   CanIdInput,
@@ -47,6 +47,10 @@ interface FrameRowProps {
   /// list reorder moved into the slot.
   expanded: boolean;
   onSetExpanded: (expanded: boolean) => void;
+  /// The tile's disclosed signal lines, which are rows of the
+  /// gridview's space in their own right (ADR 0044) — threaded through
+  /// to the table that decides which of them are on screen.
+  contentRows: SignalContentRows;
   messageName: string | null;
   onChange: (mut: (f: TransmitFrameConfig) => TransmitFrameConfig) => void;
   onRemove: () => void;
@@ -67,6 +71,7 @@ export function TransmitFrameRow({
   onRowClick: onGridRowClick,
   expanded,
   onSetExpanded,
+  contentRows,
   messageName,
   onChange,
   onRemove,
@@ -195,6 +200,8 @@ export function TransmitFrameRow({
       ref={rowRef}
       id={domId}
       className={selected ? "tx-frame-row tx-frame-row-selected" : "tx-frame-row"}
+      role="treeitem"
+      aria-expanded={expanded}
       data-active={active || undefined}
       aria-selected={selected}
       onDragOver={onFrameRowDragOver}
@@ -291,6 +298,7 @@ export function TransmitFrameRow({
               frame={frame}
               descriptor={descriptor}
               onChange={onChange}
+              contentRows={contentRows}
             />
           </div>
         )}

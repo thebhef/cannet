@@ -68,6 +68,7 @@ function row(status: RbsSignalRow["status"], over: Partial<RbsSignalRow> = {}): 
     size: 8,
     signed: false,
     hasValueTable: false,
+    defaultValue: null,
     detail: "",
     ...over,
   };

@@ -23,7 +23,15 @@ import {
 } from "./traceColumns";
 import { RBS_SIGNAL_STATUSES, rbsSignalDisplayStatus } from "./rbsSignalsFilter";
 
-export type RbsSignalColumnKey = "status" | "bus" | "msg" | "signal" | "value" | "unit" | "detail";
+export type RbsSignalColumnKey =
+  | "status"
+  | "bus"
+  | "msg"
+  | "signal"
+  | "value"
+  | "default"
+  | "unit"
+  | "detail";
 
 /// Columns with no sort at all — the prototype's own choice: a value
 /// cell and a free-text detail have nothing meaningful to order by.
@@ -40,6 +48,10 @@ export const RBS_SIGNAL_COLUMN_DEFS: readonly ColumnDef<RbsSignalColumnKey>[] = 
   { key: "msg", label: "message", className: "col-rs-msg", defaultWidth: 170 },
   { key: "signal", label: "signal", className: "col-rs-signal", defaultWidth: 150 },
   { key: "value", label: "value", className: "col-rs-value", defaultWidth: 150 },
+  // Beside the live value, because that is what it explains: the feed
+  // collapses the DBC and override layers into one value, so an
+  // overridden field's DBC default has nowhere else to show.
+  { key: "default", label: "default", className: "col-rs-default", defaultWidth: 110 },
   { key: "unit", label: "unit", className: "col-rs-unit", defaultWidth: 70 },
   { key: "detail", label: "detail", className: "col-rs-detail", defaultWidth: 260, flex: true },
 ];
@@ -97,6 +109,15 @@ function compareByColumn(key: RbsSignalColumnKey, a: RbsSignalRow, b: RbsSignalR
       return a.signalName.localeCompare(b.signalName);
     case "unit":
       return a.unit.localeCompare(b.unit);
+    case "default": {
+      // A field the DBC gives no start value sorts after every field
+      // that has one, in both directions of the toggle's ascending
+      // half — "none" is the absence of a number, not a small one.
+      const av = a.defaultValue;
+      const bv = b.defaultValue;
+      if (av == null || bv == null) return (av == null ? 1 : 0) - (bv == null ? 1 : 0);
+      return av - bv;
+    }
     case "value":
     case "detail":
       return 0;

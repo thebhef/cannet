@@ -132,6 +132,20 @@ that task's status log.
       **Open:** `serverList.ts`'s two hooks carry the same launch race
       and need a ruling on what a malformed payload does — see that
       task's Blockers.
+- [ ] 113 — RBS is a grid: an RBS message's and a transmit tile's
+      signals are rows the cursor reaches, Space on a signal row is
+      inert, neither signal-mapping grid paints a row background or
+      ships a Row Highlights toggle, the RBS signals grid carries a
+      **Default** column reading `none` where the DBC declares no start
+      value, and Escape from a row control returns to the grid instead
+      of exiting a fullscreened panel (queue items 1.6, 1.26, 1.13c and
+      3.8 no longer exist post-reframe; their closures are in
+      [task 113](tasks/0113-rbs-as-a-grid.md)'s status log) —
+      `examples/ev-zonal/`, `examples/ev-demo/`. **Open:** a combobox
+      dropdown still loses Escape to a global binding (it renders
+      through a portal, so it is outside the container the fix keys
+      on), and the two columned gridviews still carry no ARIA roles —
+      both in that task's Blockers.
 - [ ] 80 — a stopped capture costs nothing: an import that reaches its
       end freezes every trace element at the count the pump reports, and
       the by-id / signal window snapshot walks a bounded window in
