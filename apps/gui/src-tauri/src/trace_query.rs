@@ -25,6 +25,14 @@ use crate::ipc::{
 use crate::signal_snapshot;
 use crate::trace_store::{self, RawTraceFrame, TraceStore};
 
+/// Whether this row describes a transmit no wire took, as the marker
+/// the trace view renders. Only `Tx` rows can carry it, so an `Rx` row
+/// never pays for the lookup.
+fn tx_delivery(state: &AppState, record: &TraceFrameRecord) -> Option<&'static str> {
+    (record.direction == "Tx" && state.undelivered_tx.contains(record.index))
+        .then_some("undelivered")
+}
+
 /// Pull a `[start, end)` slice out of the trace store and decode each
 /// frame against the loaded DBCs (first that matches wins). Shared by
 /// the `fetch_trace_range` command (trace-view scrolling) and the
@@ -53,6 +61,7 @@ pub(crate) fn collect_trace_records(
             let decoded = decode_against(&model, &frame);
             let mut record = TraceFrameRecord::from_raw(absolute_index, &frame, decoded);
             record.violation = violations.get(&absolute_index).copied();
+            record.tx_delivery = tx_delivery(state, &record);
             record
         })
         .collect()
@@ -152,7 +161,12 @@ pub(crate) fn apply_filter_records(
 /// view the predicate needs directly instead of fabricating a
 /// `RawTraceFrame`.
 fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> bool {
-    predicate.matches_fields(record.id, Some(&record.bus_id), record.decoded.as_ref())
+    predicate.matches_fields(
+        record.id,
+        Some(&record.bus_id),
+        matches!(record.kind, crate::ipc::CanFrameKind::Error),
+        record.decoded.as_ref(),
+    )
 }
 
 /// Sort key for the by-id "bus" column: the project bus *name* (so the
@@ -285,11 +299,12 @@ pub(crate) async fn fetch_by_id_page(
         rows.into_iter()
             .filter_map(|row| {
                 let decoded = decode_against(&model, &row.frame);
-                let record = TraceFrameRecord::from_raw(
+                let mut record = TraceFrameRecord::from_raw(
                     u64::try_from(row.index).unwrap_or(u64::MAX),
                     &row.frame,
                     decoded,
                 );
+                record.tx_delivery = tx_delivery(&state, &record);
                 if let Some(p) = filter.as_ref() {
                     if !record_matches(p, &record) {
                         return None;
@@ -747,6 +762,7 @@ fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<Trace
             let mut record =
                 TraceFrameRecord::from_raw(index, &frame, decode_against(&model, &frame));
             record.violation = state.verifier.violation_at(index);
+            record.tx_delivery = tx_delivery(state, &record);
             record
         })
         .collect()

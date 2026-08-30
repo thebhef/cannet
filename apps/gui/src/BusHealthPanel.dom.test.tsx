@@ -144,6 +144,25 @@ describe("BusHealthPanel", () => {
     );
   });
 
+  it("says a healthy controller is connected, and keeps the ISO name on hover", async () => {
+    connStates = { b1: { kind: "connected", applied: null } };
+    health = {
+      b1: {
+        controller: { state: "active", tec: 0, rec: 0 },
+        loadPercent: 12,
+        errorCount: 0,
+        errorRate: 0,
+      },
+    };
+    renderPanel();
+    const cell = await screen.findByText("Connected");
+    expect(screen.queryByText("Error-active")).not.toBeInTheDocument();
+    expect(cell.closest("span.bus-health-state")).toHaveAttribute(
+      "title",
+      expect.stringContaining("Error-active"),
+    );
+  });
+
   it("says so rather than drawing an empty grid for a project with no buses", async () => {
     connStates = {};
     health = {};

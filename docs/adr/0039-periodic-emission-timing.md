@@ -107,10 +107,18 @@ manufacturing a violation the sender never put on a wire.
   the periodics should be running when it does; parking would freeze
   their counters across a fault the hardware clears in milliseconds.
 - **Mark the tx-confirm row instead of parking, when the interface is
-  gone.** The trace row would have to carry a "went nowhere" flag every
-  reader, exporter and file format then has to understand — and the
-  frame still would not have been sent. Not transmitting is both
-  smaller and more truthful.
+  gone.** For a *periodic* on a route that has gone, not transmitting is
+  both smaller and more truthful than transmitting and annotating — the
+  frame still would not have been sent, so the park stands.
+
+  A mark does exist, for the cases the park does not cover: a manual
+  send onto a bus no session carries, and a session that refuses the
+  frame. Those transmits are attempted, so a row has to land, and a row
+  that lands has to say whether a wire took it. The objection that
+  killed the mark as a *replacement* for parking does not apply to it:
+  the mark is host-side state read at fetch time, not a field on the
+  stored frame, so no exporter and no file format ever sees it, and a
+  saved capture is byte-for-byte what it was.
 - **Event-only park resume (no probe).** A missed hint from a future
   route-up path would strand parked messages forever; the probe bounds
   that failure to ~1 s of latency.

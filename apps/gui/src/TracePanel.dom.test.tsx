@@ -19,12 +19,18 @@ import { invoke } from "@tauri-apps/api/core";
 /// here and re-hydrate.
 let storedSettings: Record<string, unknown> = {};
 
+/// What the fake host's bus-health map holds. The trace's error-frame
+/// collapse asks it whether this capture has any error frames to
+/// collapse, so a test that wants the collapse engaged puts one here.
+let busHealth: Record<string, { errorCount: number; errorRate: number }> = {};
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "fetch_filtered_trace" || cmd === "fetch_by_id_page") {
       return { count: 0, start: 0, rows: [] };
     }
     if (cmd === "get_settings") return { ...storedSettings };
+    if (cmd === "get_bus_health") return { ...busHealth };
     // The host anchors each timeline event to a frame index (ADR 0035);
     // anchor everything at the window start so the events do splice in.
     if (cmd === "frame_indices_at_ns") {
@@ -155,6 +161,7 @@ beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   resetLiveTailDemand();
   storedSettings = {};
+  busHealth = {};
   await hydrateSettings();
 });
 afterEach(() => {
@@ -848,5 +855,67 @@ describe("TracePanel authoring an event from a trace row (ADR 0056)", () => {
     expect(document.querySelector(".sources-context-menu")).toBeInTheDocument();
     expect(createItem()).toBeUndefined();
     restore();
+  });
+});
+
+describe("TracePanel error-frame collapse", () => {
+  /// The predicate the panel last asked the host to page the
+  /// chronological view with, or `null` if it never used the filtered
+  /// path at all.
+  const lastFilter = () => {
+    const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === "fetch_filtered_trace");
+    return calls.length === 0
+      ? null
+      : (calls[calls.length - 1][1] as { filter: unknown }).filter;
+  };
+
+  const plainTrace = [{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement];
+
+  it("leaves a clean capture on the unfiltered window", async () => {
+    // The control, and the reason the collapse is gated on the host's
+    // error count: a capture with no error frames has nothing to
+    // collapse, and must not pay for a filtered view to exclude a
+    // category of row that never occurs.
+    renderPanel(plainTrace);
+    await waitFor(() => expect(invoke).toHaveBeenCalled());
+    expect(lastFilter()).toBeNull();
+  });
+
+  it("excludes the error frames once a bus has reported one", async () => {
+    // The ruling: the frames stay in the capture and the view shows
+    // the host's coalesced summary in their place. Nothing here drops
+    // anything — this is a predicate over a view.
+    busHealth = { b1: { errorCount: 115_136, errorRate: 5_200 } };
+    renderPanel(plainTrace);
+    await waitFor(() => expect(lastFilter()).toEqual({ error_frame: false }));
+  });
+
+  it("brings every row back when the collapse is switched off", async () => {
+    // Which is the proof that nothing was dropped: the rows are still
+    // there to come back.
+    busHealth = { b1: { errorCount: 12, errorRate: 1 } };
+    const { container } = renderPanel(plainTrace);
+    await waitFor(() => expect(lastFilter()).toEqual({ error_frame: false }));
+    const toggle = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.replace(/\s+/g, " ").trim() === "Collapse Errors",
+    )!;
+    vi.mocked(invoke).mockClear();
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+    // Back on the plain window: it declares the live tail again, and
+    // asks the host for no filtered page at all.
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_live_tail_rows", { rows: LIVE_TAIL_ROWS }),
+    );
+    expect(lastFilter()).toBeNull();
+  });
+
+  it("ANDs the exclusion onto the panel's own filter rather than replacing it", async () => {
+    busHealth = { b1: { errorCount: 3, errorRate: 1 } };
+    renderPanel(traceAndFilter);
+    await waitFor(() =>
+      expect(lastFilter()).toEqual({ all: [{ id_list: [256] }, { error_frame: false }] }),
+    );
   });
 });

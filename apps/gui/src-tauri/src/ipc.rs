@@ -36,6 +36,13 @@ pub struct TraceFrameRecord {
     /// flagged rows red (ADR 0027). Absent for clean frames.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub violation: Option<&'static str>,
+    /// `"undelivered"` on a `Tx` row whose frame reached no wire — the
+    /// bus routed to no open session, or the session refused it. Absent
+    /// on every other row, including a transmit a session accepted: the
+    /// mark says the frame was not carried, not that it was not
+    /// acknowledged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_delivery: Option<&'static str>,
 }
 
 /// A page of a filtered chronological trace view: the total match
@@ -155,6 +162,7 @@ impl TraceFrameRecord {
             // a row that shows no bus, which is what it had.
             bus_id: frame.bus_id.clone().unwrap_or_default(),
             violation: None,
+            tx_delivery: None,
         }
     }
 }

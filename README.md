@@ -416,13 +416,19 @@ Between the connection chip and the notices sits the **bus health
 launcher** — an icon, not a chip, because a single summary across
 several buses cannot name the one that is off, which is the only thing
 worth knowing when one is. It stays neutral while every controller that
-reports is error-active, and tints with a count when one is not, naming
+reports is healthy, and tints with a count when one is not, naming
 the bus in its tooltip. Pressing it opens the **Bus health** panel: one
-row per logical bus with its ISO 11898-1 fault-confinement state
-(error-active / error-warning / error-passive / bus-off), the transmit
-and receive error counters, the bus load, the error-frame tally and
-rate, and the adapter with the configuration the host actually put on
-the wire for it. A bus bound to an in-process virtual bus reads
+row per logical bus with its ISO 11898-1 fault-confinement state, the
+transmit and receive error counters, the bus load, the error-frame tally
+and rate, and the adapter with the configuration the host actually put
+on the wire for it.
+
+The healthy state reads **Connected**. `Error-active` is the standard's
+own name for a controller in normal operation, and it is the one state
+whose name reads as the opposite of what it means — the other three
+(**Error-warning**, **Error-passive**, **Bus-off**) read correctly as
+degrees of trouble. The ISO name survives on hover, so the word a CAN
+engineer looks for is still there. A bus bound to an in-process virtual bus reads
 **virtual bus** in that column: it is the hardware column, and the
 honest answer for a bus with nothing behind it is that there is none
 (its own name is already in the first column).
@@ -487,14 +493,27 @@ retained), so the figure is a floor rather than an estimate. Where no
 bitrate was sent there is nothing to divide by and the panel shows
 nothing rather than a guess.
 
-**Error frames** are surfaced two ways. Each one is a row in the trace
-saying `Bus error` — before, with the `type` column hidden by default,
-an imported log's error frames were indistinguishable from zero-byte
-data frames. And a run of them is coalesced host-side into one
-**Bus errors** timeline event carrying a count and a span, hidden by
-default in every event surface and switchable on per view. The
-coalescing is display only: a saved capture still contains every error
-frame that was received, and the summary is never written to a file.
+**Error frames** are surfaced two ways. A run of them is coalesced
+host-side into one **Bus errors** timeline event carrying a count and a
+span, shown by default in every event surface; and each frame is
+otherwise a row in the trace saying `Bus error` — with the `type` column
+hidden by default, an imported log's error frames would otherwise be
+indistinguishable from zero-byte data frames.
+
+Both at once is unreadable. A physical fault aborts the frame in flight,
+which is then retransmitted, so it produces error frames at roughly the
+bus's whole frame rate — about 5,200 a second on the bench — and a trace
+drawing one row each has buried everything else on the bus. So the
+chronological trace's **Collapse Errors** toggle, on by default, holds
+the individual error rows back and leaves the summary event in their
+place. It engages only once a bus has actually reported an error frame,
+so a clean capture keeps the plain unfiltered window.
+
+**Neither the coalescing nor the collapse touches what is stored.** A
+saved capture still contains every error frame that was received; the
+summary is host-derived and is never written to a file; and switching
+the collapse off brings every row straight back, because nothing was
+ever dropped.
 
 The bar is one row and never wraps — a header that grew a second line
 would reflow every panel beneath it. When the window is too narrow the
@@ -1996,19 +2015,29 @@ for the ownership and source-of-truth rules.
 
 Where a sent frame goes:
 
-- **Always** into the trace as a `Tx`-direction tx-confirm row, just
-  like a real analyzer shows for its own transmits. The transmit
-  pipeline is observable end-to-end even with no remote source open.
-- **If a remote session is open**, also onto the wire as a one-frame
-  `FrameBatch` envelope on the bus's bound interface. The BLF replay
-  server is read-only and rejects the transmit with
-  `Error::TX_REJECTED`, which surfaces in the system messages log
-  (no per-frame status panel — successful sends show as Tx-confirm
-  rows in the trace; failures are visible in the log). A
-  `cannet-server debug vbus` server accepts transmits on its
-  allocated participant id and fans them out to every other
-  subscriber; a solo subscriber's transmit reaches no recipients and
-  comes back as `Error::NO_ACKNOWLEDGER` instead.
+- **Onto the wire first**, if a session carries the bus, as a one-frame
+  `FrameBatch` envelope on the bus's bound interface (the periodic
+  scheduler sends its tick as one batch per destination).
+- **Then into the trace** as a `Tx`-direction tx-confirm row, just like
+  a real analyzer shows for its own transmits — always, so the transmit
+  pipeline is observable end-to-end even with no remote source open,
+  **but carrying what the wire answered**. A row whose frame reached no
+  wire at all — no session carried its bus, or the session refused it —
+  reads `Tx ✗` in the direction column and says why on hover. That order
+  is the point: a row appended before the attempt made a frame nothing
+  carried indistinguishable from one a bus took.
+- The far end can still refuse a frame it accepted from us. `TX_REJECTED`
+  and its two siblings (`NOT_SUBSCRIBED`, `NO_ACKNOWLEDGER`) arrive later
+  on the receive stream and belong to no single row, so they are tallied
+  per session and reported to **System messages** once a second, with a
+  count and the peer's own words. A peer refusing at bus rate produces
+  thousands a second, so the report is coalesced — one message per
+  session per second, silent while nothing is being refused. The BLF
+  replay server is read-only and refuses every transmit this way; a
+  `cannet-server debug vbus` server accepts transmits on its allocated
+  participant id and fans them out to every other subscriber, and a solo
+  subscriber's transmit reaches no recipients and comes back as
+  `Error::NO_ACKNOWLEDGER`.
 
 **Enum / state signals** render symbolically wherever they appear:
 
@@ -2595,7 +2624,7 @@ for its `sinks` list.
 
 **Filter elements**. A new project element `{kind: "filter"}` carries
 a structured predicate (`{all | any | bus | id_range | id_list |
-name_regex | signal_equals}`) and its own `sources` list so it can
+name_regex | signal_equals | error_frame}`) and its own `sources` list so it can
 chain after other filters or buses. The fetch path
 (`fetch_trace_range`, `fetch_by_id_page`) accepts an optional
 predicate that drops records that don't pass; the trace store stays

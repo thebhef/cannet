@@ -2200,6 +2200,9 @@ pub(crate) fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     // counter continuity) holds frame indices too and goes the same way.
     restamp_scratch_for_capture(&state);
     state.verifier.clear_runtime();
+    // Same reason: the undelivered-transmit marks address rows by
+    // index, so the new capture's row 0 would inherit the last one's.
+    state.undelivered_tx.clear();
     // `restamp_scratch_for_capture` dropped the file-backed series with
     // the rest of the capture-scoped state; the catalog over them is
     // now empty and its readers need to hear it.

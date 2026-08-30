@@ -142,6 +142,15 @@ that task's status log.
 
 ## Close-out chores
 
+- [ ] **Look at the error-frame collapse against a real fault.** The
+      chronological trace now hides the individual `Bus error` rows and
+      leaves the coalesced summary event in their place, on by default,
+      switching the panel onto the host's filtered paging the moment the
+      first error frame lands. Exercised in tests and on the virtual bus,
+      never against the PEAK bench's ~5,200 frames a second. Detail and
+      the two other findings from that phase are in
+      [task 121](tasks/0121-the-trace-tells-the-truth-about-the-wire.md)'s
+      Blockers.
 - [ ] Render-tier gate on the final tree: four 60 s captures with
       `--rbs-run-on-start` against the 2026-08-22 baseline, read as a
       band — only after

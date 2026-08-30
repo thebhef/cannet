@@ -26,6 +26,11 @@
 //! - `{ "signal_equals": { "name": "<sig>", "value": <number> } }` —
 //!   the decoded signal `<sig>` exists and its physical value equals
 //!   `<number>` within `1e-9` tolerance.
+//! - `{ "error_frame": <bool> }` — the frame is (`true`) or is not
+//!   (`false`) a bus error frame. Unlike every other leaf this one reads
+//!   nothing that narrows by arbitration id — an error frame carries no
+//!   id of its own worth indexing — so it always leaves the candidate
+//!   set un-narrowed and is confirmed per frame.
 //!
 //! Unknown variants and malformed shapes deserialize to
 //! [`FilterPredicate::Invalid`]; an invalid predicate is treated as
@@ -72,6 +77,11 @@ pub enum TaggedPredicate {
     IdList(Vec<u32>),
     NameRegex(String),
     SignalEquals(SignalMatch),
+    /// Whether the frame is a bus error frame. `false` is the useful
+    /// direction: it is what a trace view applies to show a fault's
+    /// coalesced summary instead of its hundred thousand rows, while
+    /// the capture goes on holding every one of them.
+    ErrorFrame(bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -87,7 +97,12 @@ impl FilterPredicate {
     /// is free.
     #[must_use]
     pub fn matches(&self, frame: &RawTraceFrame, decoded: Option<&DecodedRecord>) -> bool {
-        self.matches_fields(frame.id, frame.bus_id.as_deref(), decoded)
+        self.matches_fields(
+            frame.id,
+            frame.bus_id.as_deref(),
+            matches!(frame.payload, cannet_core::CanFramePayload::Error),
+            decoded,
+        )
     }
 
     /// Evaluate against the raw fields a predicate actually reads — the
@@ -100,11 +115,12 @@ impl FilterPredicate {
         &self,
         id: u32,
         bus_id: Option<&str>,
+        is_error_frame: bool,
         decoded: Option<&DecodedRecord>,
     ) -> bool {
         match self {
             FilterPredicate::Invalid(_) => false,
-            FilterPredicate::Tagged(p) => p.matches_fields(id, bus_id, decoded),
+            FilterPredicate::Tagged(p) => p.matches_fields(id, bus_id, is_error_frame, decoded),
         }
     }
 
@@ -138,7 +154,10 @@ impl FilterPredicate {
             TaggedPredicate::SignalEquals(m) => {
                 out.push(DecodeDependentLeaf::SignalName(&m.name));
             }
-            TaggedPredicate::Bus(_) | TaggedPredicate::IdRange(_) | TaggedPredicate::IdList(_) => {}
+            TaggedPredicate::Bus(_)
+            | TaggedPredicate::IdRange(_)
+            | TaggedPredicate::IdList(_)
+            | TaggedPredicate::ErrorFrame(_) => {}
         }
     }
 }
@@ -230,6 +249,10 @@ pub fn resolve_candidates(
             keys: normalize((inputs.signal_ids)(&m.name)),
             membership: false,
         }),
+        // Not narrowable by arbitration id: an error frame's id says
+        // nothing about it, so the caller visits the window and the
+        // per-frame test decides. `None` is exactly that instruction.
+        TaggedPredicate::ErrorFrame(_) => None,
         TaggedPredicate::All(children) => resolve_all(children, inputs),
         TaggedPredicate::Any(children) => resolve_any(children, inputs),
     }
@@ -333,15 +356,16 @@ impl TaggedPredicate {
         &self,
         id: u32,
         bus_id: Option<&str>,
+        is_error_frame: bool,
         decoded: Option<&DecodedRecord>,
     ) -> bool {
         match self {
             Self::All(children) => children
                 .iter()
-                .all(|c| c.matches_fields(id, bus_id, decoded)),
+                .all(|c| c.matches_fields(id, bus_id, is_error_frame, decoded)),
             Self::Any(children) => children
                 .iter()
-                .any(|c| c.matches_fields(id, bus_id, decoded)),
+                .any(|c| c.matches_fields(id, bus_id, is_error_frame, decoded)),
             Self::Bus(b) => bus_id == Some(b.as_str()),
             Self::IdRange([lo, hi]) => id >= *lo && id <= *hi,
             Self::IdList(ids) => ids.contains(&id),
@@ -356,6 +380,7 @@ impl TaggedPredicate {
                     .any(|s| s.name == m.name && (s.value - m.value).abs() < 1e-9),
                 None => false,
             },
+            Self::ErrorFrame(want) => is_error_frame == *want,
         }
     }
 }
@@ -412,6 +437,67 @@ mod tests {
             payload: CanFramePayload::Classic(vec![]),
             bus_id: bus_id.map(str::to_string),
         }
+    }
+
+    fn error_frame_on(bus_id: Option<&str>) -> RawTraceFrame {
+        RawTraceFrame {
+            payload: CanFramePayload::Error,
+            ..frame_with(0, bus_id)
+        }
+    }
+
+    #[test]
+    fn error_frames_can_be_excluded_and_the_rest_of_the_trace_left_alone() {
+        // What a trace view applies to show a fault's coalesced summary
+        // instead of its hundred thousand rows. The capture is
+        // untouched — this is a predicate over a view, and the store
+        // never sees it.
+        let p: FilterPredicate = serde_json::from_str(r#"{"error_frame": false}"#).unwrap();
+        assert!(!p.matches(&error_frame_on(Some("b1")), None));
+        assert!(p.matches(&frame_with(0x123, Some("b1")), None));
+    }
+
+    #[test]
+    fn the_predicate_reads_the_other_way_round_too() {
+        // The control: `true` keeps only the error frames. If `false`
+        // passed everything the test above would still pass.
+        let p: FilterPredicate = serde_json::from_str(r#"{"error_frame": true}"#).unwrap();
+        assert!(p.matches(&error_frame_on(Some("b1")), None));
+        assert!(!p.matches(&frame_with(0x123, Some("b1")), None));
+    }
+
+    #[test]
+    fn an_error_frame_leaf_narrows_no_ids_and_forces_the_per_frame_test() {
+        // An error frame's arbitration id says nothing about it, so
+        // there is no id set to index by. `None` tells the index build
+        // to visit the window; an `all` carrying one keeps whatever its
+        // narrowable siblings bound it to, but loses membership so the
+        // per-frame test still runs.
+        let inputs = CandidateInputs {
+            seen_ids: &[(1, false), (2, false)],
+            seen_on_bus: &|_| vec![(1, false)],
+            regex_ids: &|_| Vec::new(),
+            signal_ids: &|_| Vec::new(),
+        };
+        let lone: FilterPredicate = serde_json::from_str(r#"{"error_frame": false}"#).unwrap();
+        assert_eq!(resolve_candidates(&lone, &inputs), None);
+
+        let combined: FilterPredicate =
+            serde_json::from_str(r#"{"all": [{"id_list": [1]}, {"error_frame": false}]}"#).unwrap();
+        let set = resolve_candidates(&combined, &inputs).unwrap();
+        assert_eq!(set.keys, vec![(1, false), (1, true)]);
+        assert!(!set.membership, "the frame still has to be read");
+    }
+
+    #[test]
+    fn excluding_error_frames_composes_with_a_bus_predicate() {
+        // The shape the trace panel builds: its own source predicate,
+        // and the exclusion ANDed onto it.
+        let p: FilterPredicate =
+            serde_json::from_str(r#"{"all": [{"bus": "b1"}, {"error_frame": false}]}"#).unwrap();
+        assert!(p.matches(&frame_with(0x123, Some("b1")), None));
+        assert!(!p.matches(&error_frame_on(Some("b1")), None));
+        assert!(!p.matches(&frame_with(0x123, Some("b2")), None));
     }
 
     fn decoded(name: &str, signals: &[(&str, f64)]) -> DecodedRecord {
@@ -718,11 +804,13 @@ mod tests {
                 None,
                 Some(&d),
             ),
+            (r#"{"error_frame": false}"#, 5, None, None),
+            (r#"{"error_frame": true}"#, 5, None, None),
         ] {
             let p = parse(pred);
             let frame = frame_with(id, bus);
             assert_eq!(
-                p.matches_fields(id, bus, dec),
+                p.matches_fields(id, bus, false, dec),
                 p.matches(&frame, dec),
                 "field-view disagreed for {pred} id={id} bus={bus:?}",
             );

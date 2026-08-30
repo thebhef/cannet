@@ -62,6 +62,10 @@ export interface TraceFrameRecord {
   /// Ingest-time verification finding (`"crc"` / `"counter"` /
   /// `"truncated"`), if any — flagged rows render red (ADR 0027).
   violation?: string | null;
+  /// `"undelivered"` on a Tx row whose frame reached no wire — the bus
+  /// routed to no open session, or the session refused it. Absent
+  /// everywhere else, including a transmit a session accepted.
+  tx_delivery?: string | null;
 }
 
 /// Periodic IPC event carrying the trace store's current size + rate,
@@ -619,7 +623,8 @@ export type FilterPredicate =
   | { id_range: [number, number] }
   | { id_list: number[] }
   | { name_regex: string }
-  | { signal_equals: { name: string; value: number } };
+  | { signal_equals: { name: string; value: number } }
+  | { error_frame: boolean };
 
 /// The discriminant of a {@link ProjectElement}.
 export type ProjectElementKind = ProjectElement["kind"];

@@ -1302,6 +1302,7 @@ BO_ 1280 AuxFrame: 8 AUX
                     stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     clock: None,
                     controllers: None,
+                    rejections: None,
                 },
             )
             .unwrap();

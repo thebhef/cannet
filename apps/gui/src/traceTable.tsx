@@ -25,6 +25,21 @@ export const ERROR_FRAME_ROW_CLASS = "trace-row-error-frame";
 export const ERROR_FRAME_TITLE =
   "CAN bus error frame — the controller reported an error on the wire; it carries no id payload of its own";
 
+/// What a transmit no wire took reads as in the direction column, and
+/// the row class and tooltip that go with it. The row is still shown —
+/// an analyzer shows its own transmits — but it is not evidence that a
+/// bus carried anything, and before this it was indistinguishable from
+/// a row that was.
+export const UNDELIVERED_TX_LABEL = "Tx ✗";
+export const UNDELIVERED_TX_ROW_CLASS = "trace-row-undelivered-tx";
+export const UNDELIVERED_TX_TITLE =
+  "no wire took this frame — the bus reached no open session, or the session refused it";
+
+/// Whether this row describes a transmit no wire took.
+export function isUndeliveredTx(frame: TraceFrameRecord | null): boolean {
+  return frame?.tx_delivery === "undelivered";
+}
+
 /// The content for one trace cell, given the column. The `#` column is
 /// the row's 1-based index in the chronological view, and the total
 /// frame count for the id in the by-id view (passed as `count`); it's
@@ -62,7 +77,9 @@ export function cellContent(
       // placeholder — unlike bus, there's no meaningful fallback name.
       return frame.decoded?.transmitter ?? "";
     case "dir":
-      return frame.direction;
+      // A transmit nothing carried says so where the direction is read,
+      // not in a column a reader would have to turn on.
+      return isUndeliveredTx(frame) ? UNDELIVERED_TX_LABEL : frame.direction;
     case "id":
       return formatId(frame, idFormat);
     case "kind":

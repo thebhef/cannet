@@ -691,6 +691,47 @@ describe("an error frame is not an ordinary empty data frame", () => {
   });
 });
 
+describe("a transmit no wire took is not a confirmed transmit", () => {
+  /// The row the host appends for a frame it offered to no wire — the
+  /// bus routed to no open session, or the session refused it.
+  function txRow(index: number, delivery: string | null): TraceRow {
+    return {
+      row: "frame",
+      frame: {
+        index,
+        timestamp_seconds: index / 1000,
+        channel: 0,
+        id: 0x100 + index,
+        extended: false,
+        direction: "Tx",
+        kind: { kind: "classic" },
+        data: [1, 2],
+        decoded: null,
+        bus_id: "b1",
+        tx_delivery: delivery,
+      },
+    } as unknown as TraceRow;
+  }
+
+  it("says so in the direction column, and marks the row", () => {
+    render(view({ count: 1, getRow: () => txRow(0, "undelivered") }));
+    const row = rowShowing(0);
+    expect(row).toHaveClass("trace-row-undelivered-tx");
+    expect(row.querySelector(".col-dir")?.textContent).not.toBe("Tx");
+    expect(row).toHaveAttribute("title", expect.stringContaining("no wire"));
+  });
+
+  it("leaves a transmit the wire took reading exactly as before", () => {
+    // The control. If the assertions above passed for this one too the
+    // mark would say nothing.
+    render(view({ count: 1, getRow: () => txRow(0, null) }));
+    const row = rowShowing(0);
+    expect(row).not.toHaveClass("trace-row-undelivered-tx");
+    expect(row.querySelector(".col-dir")?.textContent).toBe("Tx");
+    expect(row).not.toHaveAttribute("title");
+  });
+});
+
 describe("a frame row's context menu (ADR 0056)", () => {
   it("hands the right-clicked frame to the owner and stops there", () => {
     // The panel opens its sources picker on any right-click, so a row

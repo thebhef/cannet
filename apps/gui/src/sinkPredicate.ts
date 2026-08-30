@@ -131,6 +131,25 @@ function resolveFilterPredicate(
   return andAll(all);
 }
 
+/// AND `{ error_frame: false }` onto a sink's predicate, so the view it
+/// feeds shows every frame *except* the bus error frames.
+///
+/// This is a view predicate and nothing else. The capture keeps every
+/// error frame — a fault that produced a hundred thousand of them saves
+/// a hundred thousand — and the host coalesces the run into one
+/// `busError` timeline event, which is the row the trace shows in their
+/// place. Turning the collapse off brings every row straight back,
+/// because nothing was ever dropped.
+export function withoutErrorFrames(predicate: SinkFilter): FilterPredicate {
+  const exclusion: FilterPredicate = { error_frame: false };
+  if (predicate === null) return exclusion;
+  // Flatten rather than nest: an `all` of an `all` evaluates the same,
+  // but the host resolves candidates over the tree it is handed and a
+  // flat one keeps the narrowable leaves at the top level.
+  if ("all" in predicate) return { all: [...predicate.all, exclusion] };
+  return { all: [predicate, exclusion] };
+}
+
 /// Collapse a list of predicates into their AND: `[]` → `null` (no
 /// constraint), a single predicate unwrapped, otherwise `{ all }`.
 /// The shared composition step both the sink and filter walks end on.

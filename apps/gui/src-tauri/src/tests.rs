@@ -150,6 +150,7 @@ fn snap(id: u32, channel: u8, rate: f64, bus: &str) -> ByIdSnapshot {
             decoded: None,
             bus_id: bus.into(),
             violation: None,
+            tx_delivery: None,
         },
         rate,
         count: 0,
@@ -620,6 +621,7 @@ pub(crate) fn test_state() -> AppState {
     let signals_dir = std::env::temp_dir().join(format!("cannet-test-signals-{n}"));
     AppState {
         databases: Mutex::new(Vec::new()),
+        undelivered_tx: transmit_commands::UndeliveredTx::default(),
         descriptor_snapshot: Mutex::new(None),
         split_messages: Mutex::new(None),
         remote_sessions: Mutex::new(HashMap::new()),
@@ -660,6 +662,7 @@ fn seam_session(
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
         controllers: None,
+        rejections: None,
     }
 }
 
@@ -1477,6 +1480,181 @@ fn transmit_frame_inner_appends_tx_confirm_when_not_connected() {
 }
 
 #[test]
+fn the_capture_keeps_every_error_frame_the_view_collapses() {
+    // The ruling, pinned both ways at once, because it is precisely
+    // that these two differ: the trace view shows a fault's run as the
+    // one summary event the host coalesced it into, and the capture
+    // still holds every frame that produced it. Nothing is dropped at
+    // ingest — the collapse is a predicate over a view.
+    let state = test_state();
+    let mut appended = 0usize;
+    for i in 0..5_000u64 {
+        // A fault at bus frame rate: error, retransmit, error.
+        state
+            .trace_store
+            .append(RawTraceFrame {
+                payload: CanFramePayload::Error,
+                ..dummy_frame(i * 200_000, 0)
+            })
+            .unwrap();
+        state
+            .trace_store
+            .append(frame_with_data(0x100 + u32::try_from(i % 4).unwrap()))
+            .unwrap();
+        appended += 2;
+    }
+    assert_eq!(
+        state.trace_store.len(),
+        appended,
+        "the store holds every frame that arrived, error frames included",
+    );
+
+    // The view's predicate hides them and touches nothing else.
+    let collapse: crate::filter::FilterPredicate =
+        serde_json::from_str(r#"{"error_frame": false}"#).unwrap();
+    let rows = state.trace_store.slice(0, appended);
+    let shown = rows.iter().filter(|f| collapse.matches(f, None)).count();
+    assert_eq!(shown, 5_000, "only the error frames are held back");
+    assert_eq!(
+        rows.iter()
+            .filter(|f| matches!(f.payload, CanFramePayload::Error))
+            .count(),
+        5_000,
+        "and they are still there to be saved",
+    );
+}
+
+#[test]
+fn a_tx_row_the_wire_never_carried_says_so() {
+    // The defect this pins: the row used to be appended before any
+    // wire attempt, so a frame nothing carried was indistinguishable
+    // from one that reached a bus. The row still lands — an analyzer
+    // shows its own transmits — but it now carries the outcome.
+    let state = test_state();
+    let req = ipc::TransmitRequest {
+        bus_id: "p".into(),
+        id: 0x123,
+        extended: false,
+        kind: ipc::TransmitKind::Classic,
+        data: vec![1, 2, 3, 4],
+        brs: false,
+        esi: false,
+        dlc: 0,
+    };
+    let result = transmit_frame_inner(&state, &req).unwrap();
+    assert_eq!(state.trace_store.len(), 1, "the row still lands");
+    assert!(
+        state.undelivered_tx.contains(result.tx_confirm_index),
+        "no session carried bus p, so nothing reached a wire",
+    );
+    let rows = crate::trace_query::collect_trace_records(&state, 0, 1);
+    assert_eq!(rows[0].tx_delivery, Some("undelivered"));
+}
+
+#[test]
+fn a_tx_row_the_wire_took_carries_no_mark() {
+    // The control for the test above. A route that resolved and a
+    // transmit the session accepted is the ordinary case, and marking
+    // it would make the mark meaningless.
+    let state = test_state();
+    state
+        .local_buses
+        .create("vbus", "v", cannet_core::BusConfig::classic_500k())
+        .unwrap();
+    let (sink_p, _source_p) = state.local_buses.attach_participant("vbus").unwrap();
+    state.remote_sessions.lock().unwrap().insert(
+        format!("{}vbus", project::LOCAL_VBUS_URL_SCHEME),
+        RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(vec![(
+                0,
+                std::sync::Arc::new(std::sync::Mutex::new(sink_p)),
+            )]),
+            channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
+            channel_to_bus: vec![(0, "p".into())],
+            stop: Arc::new(AtomicBool::new(false)),
+            clock: None,
+            controllers: None,
+            rejections: None,
+        },
+    );
+    let req = ipc::TransmitRequest {
+        bus_id: "p".into(),
+        id: 0x321,
+        extended: false,
+        kind: ipc::TransmitKind::Classic,
+        data: vec![9, 8, 7],
+        brs: false,
+        esi: false,
+        dlc: 0,
+    };
+    let result = transmit_frame_inner(&state, &req).unwrap();
+    assert!(
+        !state.undelivered_tx.contains(result.tx_confirm_index),
+        "the session took the frame",
+    );
+    let rows = crate::trace_query::collect_trace_records(&state, 0, 1);
+    assert_eq!(rows[0].tx_delivery, None);
+}
+
+#[test]
+fn a_transmit_onto_a_gone_adapter_marks_its_row() {
+    // The owner's hardware reading: the binding survives the adapter
+    // being unplugged, so the route keeps resolving and the tx count
+    // keeps rising. The count is honest only if the rows say the wire
+    // never took them.
+    let state = test_state();
+    state.remote_sessions.lock().unwrap().insert(
+        "tcp://host:1".into(),
+        session_with_controller("p", "PCAN_USBBUS1", Some(4)),
+    );
+    let req = ipc::TransmitRequest {
+        bus_id: "p".into(),
+        id: 0x123,
+        extended: false,
+        kind: ipc::TransmitKind::Classic,
+        data: vec![1],
+        brs: false,
+        esi: false,
+        dlc: 0,
+    };
+    let result = transmit_frame_inner(&state, &req).unwrap();
+    assert!(state.undelivered_tx.contains(result.tx_confirm_index));
+}
+
+#[test]
+fn undelivered_marks_do_not_grow_without_bound() {
+    // The marks are held per row index, and a bus that is down stays
+    // down at the scheduler's tick rate — so the set is run-length
+    // encoded and its runs are capped. A dead bus is one run however
+    // long it lasts.
+    let marks = crate::transmit_commands::UndeliveredTx::default();
+    for i in 0..100_000u64 {
+        marks.mark(i);
+    }
+    assert_eq!(marks.runs(), 1, "one uninterrupted outage is one run");
+    assert!(marks.contains(0) && marks.contains(99_999));
+    for i in 0..crate::transmit_commands::MAX_UNDELIVERED_RUNS * 4 {
+        marks.mark(200_000 + (i as u64) * 2);
+    }
+    assert!(
+        marks.runs() <= crate::transmit_commands::MAX_UNDELIVERED_RUNS,
+        "a flapping bus is capped, as the store's own ring is",
+    );
+}
+
+#[test]
+fn clearing_the_capture_clears_the_undelivered_marks() {
+    // The marks address rows by index, so a new capture's row 0 would
+    // otherwise inherit the last one's verdict.
+    let state = test_state();
+    state.undelivered_tx.mark(0);
+    assert!(state.undelivered_tx.contains(0));
+    state.undelivered_tx.clear();
+    assert!(!state.undelivered_tx.contains(0));
+}
+
+#[test]
 fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
     // Two project buses ("p", "q") bound to the same vbus, with
     // an in-process session open against `local-vbus://vbus`.
@@ -1504,6 +1682,7 @@ fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
         controllers: None,
+        rejections: None,
     };
     state
         .remote_sessions
@@ -1686,6 +1865,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
         controllers: None,
+        rejections: None,
     };
     state
         .remote_sessions
@@ -5302,6 +5482,7 @@ fn bench_tx_vbus_real_path() {
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
         controllers: None,
+        rejections: None,
     };
     state
         .remote_sessions
@@ -7353,6 +7534,7 @@ fn session_with_controller(bus: &str, interface: &str, state: Option<i32>) -> Re
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
         controllers: Some(controllers),
+        rejections: None,
     }
 }
 
@@ -7454,6 +7636,7 @@ fn an_interface_that_comes_back_gets_its_route_back() {
             stop: Arc::new(AtomicBool::new(false)),
             clock: None,
             controllers: Some(controllers.clone()),
+            rejections: None,
         },
     );
     assert!(crate::session::resolve_bus_route(&sessions, "p").is_none());
