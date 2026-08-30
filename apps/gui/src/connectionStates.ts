@@ -12,7 +12,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { formatBitrate } from "./busHardwareConfig";
 import type { StatusChipState } from "./StatusChip";
-import type { BusConnState, BusConnStates } from "./types";
+import type { Bus, BusConnState, BusConnStates, InterfaceBinding } from "./types";
 
 /// Tauri event the host fires whenever any bus's connection state
 /// moves. Must match `connection_state::CONNECTION_STATES_CHANGED_EVENT`
@@ -107,6 +107,31 @@ export function describeBusConnState(
         detail: state.reason,
       };
   }
+}
+
+/// Connect's pre-flight guard: a project needs at least one bus, and
+/// every bus needs an interface binding, before a connect attempt is
+/// worth making. Returns the message to refuse with, or `null` when
+/// every bus is bound.
+///
+/// Distinguishes "no buses at all" from "some buses unbound" so the
+/// message names what is actually missing — a bus, not a binding —
+/// rather than reading the same for either cause off an empty
+/// bindings list.
+export function unboundBusError(
+  buses: readonly Bus[],
+  bindings: readonly InterfaceBinding[],
+): string | null {
+  if (buses.length === 0) {
+    return "No buses in the project — add one in the project panel.";
+  }
+  const bound = new Set(bindings.map((b) => b.bus_id));
+  const unbound = buses.filter((bus) => !bound.has(bus.id));
+  if (unbound.length === 0) return null;
+  return (
+    `No interface bound for ${unbound.map((bus) => bus.name).join(", ")} — ` +
+    `bind one in the project panel.`
+  );
 }
 
 /// One bus the connection chip counts: a project bus with an

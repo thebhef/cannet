@@ -174,7 +174,7 @@ import {
 } from "./dockLayout";
 import { StatusBar, type StatusBarChip } from "./StatusBar";
 import { Toolbar } from "./Toolbar";
-import { summarizeConnection, useConnectionStates } from "./connectionStates";
+import { summarizeConnection, unboundBusError, useConnectionStates } from "./connectionStates";
 import { useRbsAttentionCount } from "./rbsAttention";
 import {
   EMPTY_FOCUS_HISTORY,
@@ -1643,11 +1643,12 @@ export function App() {
   // against the named virtual bus (ADR 0021) — the host dispatches on
   // the binding's `kind`; the frontend treats every binding the same.
   const handleConnect = useCallback(async () => {
-    if (interfaceBindings.length === 0) {
-      setState({
-        kind: "error",
-        message: "No interface bindings — add at least one in the project panel.",
-      });
+    // Refuse loudly rather than silently subscribing to nothing: a
+    // project with no buses, or with any bus that carries no
+    // interface binding, names what's missing.
+    const unboundError = unboundBusError(buses, interfaceBindings);
+    if (unboundError !== null) {
+      setState({ kind: "error", message: unboundError });
       return;
     }
     if (
@@ -2097,7 +2098,9 @@ export function App() {
       clearProjectDiskNotice();
       void loadDbcSet([], {});
       setDbcBuses({});
-      setBuses([]);
+      // A project always has at least one bus — matching the id/name
+      // scheme the project panel's own Add bus control uses.
+      setBuses([{ id: "b1", name: "Bus 1" }]);
       setInterfaceBindings([]);
       setLocalVirtualBuses([]);
       setSignalColors({});
