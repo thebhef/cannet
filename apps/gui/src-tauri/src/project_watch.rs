@@ -102,7 +102,7 @@ pub(crate) fn on_event(app: &AppHandle, event: &notify::Event) {
         let state: State<'_, AppState> = app.state();
         let record = state.watched_project();
         match record.path() {
-            Some(p) if event.paths.iter().any(|e| e == p) => p.to_path_buf(),
+            Some(p) if crate::dbc_watcher::event_touches(&event.paths, p) => p.to_path_buf(),
             _ => return,
         }
     };

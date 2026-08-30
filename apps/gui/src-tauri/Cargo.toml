@@ -69,9 +69,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry", "env-filter"] }
 # Phase 12: filesystem watcher for loaded DBC files — auto-reload on
 # change so the GUI stays current with an editor saving the file
-# next door. Default backend wraps the OS-native APIs (FSEvents,
-# inotify, ReadDirectoryChangesW).
-notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+# next door. Wraps the OS-native APIs (FSEvents, inotify,
+# ReadDirectoryChangesW). The macOS backend must be FSEvents, not
+# kqueue: every cannet watcher watches parent *directories* (so
+# atomic-rename saves can't drop the watch), and kqueue cannot see an
+# in-place content write through a directory watch — the shape is
+# pinned by `dbc_watcher`'s in-place-write test.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 # Process memory + process-tree enumeration for the on-disk health
 # recorder (`crash.rs`): sums RSS over our process and its descendants
 # so the WebView's separate processes (WebView2 on Windows, WebKitGTK on

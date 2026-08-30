@@ -92,10 +92,7 @@ pub(crate) fn on_event(app: &AppHandle, event: &notify::Event) {
             .iter()
             .filter_map(|(id, e)| {
                 let path = e.watch.path()?;
-                event
-                    .paths
-                    .iter()
-                    .any(|p| p == path)
+                crate::dbc_watcher::event_touches(&event.paths, path)
                     .then(|| (id.clone(), path.to_path_buf()))
             })
             .collect()

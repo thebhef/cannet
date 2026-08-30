@@ -119,7 +119,14 @@ impl DbcWatcher {
     /// refcount if we're already watching). Safe to call on a path
     /// whose parent is the same as another watched file's parent —
     /// only one underlying watch exists.
+    ///
+    /// The watch set keys the lexically-normalized path
+    /// ([`normalize_path`]): a project-relative reference like
+    /// `…/project-dir/../x.dbc` must watch the *real* parent, and its
+    /// dotted and canonical spellings must share one refcount.
     pub fn watch_file(&mut self, path: &Path) {
+        let path = normalize_path(path);
+        let path = path.as_path();
         let Some(watcher) = self.watcher.as_mut() else {
             return;
         };
@@ -153,6 +160,8 @@ impl DbcWatcher {
     /// Decrement the refcount for `path`'s parent and unwatch if it
     /// drops to zero. No-op if the path was never watched.
     pub fn unwatch_file(&mut self, path: &Path) {
+        let path = normalize_path(path);
+        let path = path.as_path();
         let Some(watcher) = self.watcher.as_mut() else {
             return;
         };
@@ -171,6 +180,42 @@ impl DbcWatcher {
             }
         }
     }
+}
+
+/// Lexically collapse `.` and `..` segments — no filesystem access, so
+/// it works for paths that don't exist yet and never resolves a
+/// symlink. The watcher's one path-identity rule: a project references
+/// files relative to its own directory, so a stored path can carry
+/// `..` (`…/project-dir/../x.dbc`) while the OS event names the
+/// canonical file — macOS `FSEvents` always reports canonical paths.
+/// Comparing spellings instead of shapes is how a watch goes
+/// silently dead.
+pub(crate) fn normalize_path(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            // `..` at the very start (a relative path climbing out)
+            // has nothing to pop and is kept literally.
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(c.as_os_str());
+                }
+            }
+            _ => out.push(c.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Whether one of an event's paths names `stored`, under
+/// [`normalize_path`] on both sides. Every watcher consumer matches
+/// through this — the DBC reload, the project watch and the RBS watch
+/// all hold paths that may be spelled with `..`.
+pub(crate) fn event_touches(event_paths: &[PathBuf], stored: &Path) -> bool {
+    let stored = normalize_path(stored);
+    event_paths.iter().any(|p| normalize_path(p) == stored)
 }
 
 /// What a filesystem event calls for.
@@ -229,7 +274,7 @@ fn on_event(app: &AppHandle, event: &notify::Event) {
             let state: State<'_, crate::app_state::AppState> = app.state();
             let dbs = state.databases();
             for d in dbs.iter() {
-                if event.paths.iter().any(|p| Path::new(&d.path) == p) {
+                if event_touches(&event.paths, Path::new(&d.path)) {
                     sys_warn!(
                         app,
                         "dbc-watch",
@@ -247,7 +292,7 @@ fn on_event(app: &AppHandle, event: &notify::Event) {
         let state: State<'_, crate::app_state::AppState> = app.state();
         let dbs = state.databases();
         dbs.iter()
-            .filter(|d| event.paths.iter().any(|p| Path::new(&d.path) == p))
+            .filter(|d| event_touches(&event.paths, Path::new(&d.path)))
             .map(|d| d.path.clone())
             .collect()
     };
@@ -338,6 +383,102 @@ mod tests {
 
     use super::*;
     use std::path::PathBuf;
+
+    /// The backend reports an in-place content write through a
+    /// **directory** watch — the only shape any cannet watcher uses
+    /// (parents are watched so atomic-rename saves can't drop the
+    /// watch), and the shape an editor's plain save exercises.
+    ///
+    /// Regression: the `macos_kqueue` backend silently delivered
+    /// nothing for exactly this case (kqueue sees directory-entry
+    /// churn, not the contents of files inside), so every DBC /
+    /// project / RBS auto-reload was dead on macOS with no log line to
+    /// show for it. The one timing-dependent watcher test earns its
+    /// keep by pinning the backend *choice*; it returns on the first
+    /// matching event and the timeout is generous.
+    #[test]
+    fn an_in_place_write_under_a_directory_watch_reports_a_reload() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        // FSEvents reports canonical paths (`/private/var/…` for the
+        // tempdir's `/var/…`), so compare against the canonical form —
+        // the app's own paths arrive canonical from the file dialogs.
+        let dir = dir.path().canonicalize().unwrap();
+        let file = dir.join("a.cannet_rbs");
+        std::fs::write(&file, "{\"a\":1}").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(e) = res {
+                let _ = tx.send(e);
+            }
+        })
+        .unwrap();
+        w.watch(&dir, RecursiveMode::NonRecursive).unwrap();
+        // Let the watch arm before writing, so the event can't predate it.
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::write(&file, "{\"a\":2}").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let Ok(e) = rx.recv_timeout(Duration::from_millis(250)) else {
+                continue;
+            };
+            if e.paths.iter().any(|p| p == &file) && reaction_to(e.kind, true) == Reaction::Reload
+            {
+                return;
+            }
+        }
+        panic!(
+            "no reload-worthy event for an in-place write within 10s — \
+             this notify backend cannot see content edits through a \
+             directory watch"
+        );
+    }
+
+    /// A project references files relative to its own directory, so a
+    /// DBC one level up arrives as `…/project-dir/../x.dbc` — and
+    /// `FSEvents` reports the canonical `…/x.dbc`. The watcher matches
+    /// lexically-normalized forms, or the event never names the file.
+    /// (Windows masked this: `ReadDirectoryChangesW` paths are rebuilt
+    /// by joining the watched directory string, preserving the `..`.)
+    #[test]
+    fn an_event_on_the_canonical_path_names_a_dotted_stored_path() {
+        assert!(event_touches(
+            &[PathBuf::from("/repo/examples/cannet-demo.dbc")],
+            Path::new("/repo/examples/legacy-project/../cannet-demo.dbc"),
+        ));
+        assert!(!event_touches(
+            &[PathBuf::from("/repo/examples/other.dbc")],
+            Path::new("/repo/examples/legacy-project/../cannet-demo.dbc"),
+        ));
+        // `.` segments collapse too; a genuinely different file never
+        // matches however it is spelled.
+        assert!(event_touches(
+            &[PathBuf::from("/repo/examples/./cannet-demo.dbc")],
+            Path::new("/repo/examples/cannet-demo.dbc"),
+        ));
+    }
+
+    /// The dotted and the canonical spelling of one file are one watch:
+    /// the parent-directory refcount keys the normalized form, so the
+    /// OS watch lands on the real directory and a later unwatch under
+    /// either spelling balances it.
+    #[test]
+    fn a_dotted_path_and_its_canonical_form_share_one_directory_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = DbcWatcher::inert();
+        let canonical = dir.path().join("a.dbc");
+        let dotted = dir.path().join("sub").join("..").join("a.dbc");
+        w.watch_file(&dotted);
+        assert_eq!(
+            w.watched_dirs.get(dir.path()),
+            Some(&1),
+            "the watch keys the real parent, not `…/sub/..`: {:?}",
+            w.watched_dirs,
+        );
+        w.unwatch_file(&canonical);
+        assert!(w.watched_dirs.is_empty());
+    }
 
     /// Opening a project is `clear_dbcs` followed by an `add_dbc` per
     /// database, and `clear_dbcs` unwatches every DBC it unloaded. The
