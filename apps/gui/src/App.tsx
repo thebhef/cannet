@@ -1210,20 +1210,10 @@ export function App() {
         if (event.payload.status === "ok") {
           // A cancelled pump ends through the identical clean-exit path
           // a natural EOF does (`cancel_import`'s cooperative flag just
-          // makes `run_pump` stop early) — this side is the only one
-          // that knows the click happened, so it's what tells the two
-          // apart. Abandon rather than present the partial frames as a
-          // finished capture: reset to idle and clear what the pump
-          // already appended, the same clear a fresh open runs before
-          // starting.
-          if (importCancelledRef.current) {
-            importCancelledRef.current = false;
-            setState({ kind: "idle" });
-            void resetSession({
-              onError: (err) => setState({ kind: "error", message: String(err) }),
-            });
-            return;
-          }
+          // makes `run_pump` stop early), and lands here on purpose: a
+          // cancelled import keeps the frames it already appended and
+          // reads as done at the count it stopped at — the user asked
+          // it to stop, not to throw away what it had.
           const { total, count } = event.payload;
           // A file import that reached its end is a capture nothing more
           // will be appended to, so every trace element freezes there
@@ -1253,7 +1243,6 @@ export function App() {
           // Disconnect (clear-all) or look at the per-server status in
           // the project panel.
         } else {
-          importCancelledRef.current = false;
           setState({ kind: "error", message: event.payload.message });
         }
       }),
@@ -1262,7 +1251,7 @@ export function App() {
     return () => {
       unlistens.forEach((p) => p.then((fn) => fn()));
     };
-  }, [invalidateCache, resetSession]);
+  }, [invalidateCache]);
 
   // Re-anchor every trace window when the session buffer shrinks (a new
   // connection cleared it) — a no-op on every other tick.
@@ -1311,14 +1300,6 @@ export function App() {
   // synchronously, on the call, before any render; the dialog-is-up
   // stretch is the pending state itself, which cannot go stale.
   const traceOpenInFlight = useRef(false);
-
-  // Set the moment the busy launcher is clicked to cancel a running
-  // import, read (and cleared) by the `log-finished` listener: the
-  // pump's own clean-exit path emits the identical `Ok` event whether
-  // it hit EOF or was cancelled (`cancel_import`'s cooperative flag), so
-  // the frontend is the only side that knows a completion was actually
-  // an abandonment — it's the one that asked for it.
-  const importCancelledRef = useRef(false);
 
   // "Import trace…": one file-open dialog for both formats,
   // routed by the picked path's extension (`importFormatFor`) to the
@@ -1398,20 +1379,17 @@ export function App() {
   //
   // The two ends differ in what they leave behind. A cancelled census
   // has produced nothing — its command resolves with `null` and
-  // `handleImportTrace` drops the gesture. A cancelled pump has frames
-  // in the store and ends through the same clean-exit path a natural
-  // EOF takes, so this side has to remember that it asked; the
-  // `log-finished` listener reads the flag and clears the partial
-  // capture instead of presenting it as a finished one.
+  // `handleImportTrace` drops the gesture. A cancelled pump keeps what
+  // it already appended: it ends through the same clean-exit path a
+  // natural EOF takes and the `log-finished` listener presents it as a
+  // capture finished at the count the cancel stopped at.
   const handleCancelLoad = useCallback(async () => {
-    if (state.kind === "loading") importCancelledRef.current = true;
     try {
       await invoke("cancel_import");
     } catch (err) {
-      importCancelledRef.current = false;
       setState({ kind: "error", message: String(err) });
     }
-  }, [state.kind]);
+  }, []);
 
   // Confirm the BLF channel mapping and actually start the pump.
   // `choices[ch] === ""` means "skip this channel"; `range` is the
@@ -1447,7 +1425,16 @@ export function App() {
         const channelBusMapping = scan.channels
           .filter((ch) => choices[ch])
           .map((ch) => ({ channel: ch, busId: choices[ch] }));
-        const result = await invoke<OpenLogResult>("open_log", {
+        // Loading *before* the command, not on its resolution: the pump
+        // thread the command spawns can finish — and emit its
+        // `log-finished` — before the resolution is processed on a small
+        // file, and the listener drops the event unless the state is
+        // already `loading`. A `loading` set afterwards would then never
+        // be cleared: that event was the only way out, and the host's
+        // cancel flag is already gone. The result is just the path
+        // echoed back, so nothing in it is worth waiting for.
+        setState({ kind: "loading", result: { blf_path: blfPath } });
+        await invoke<OpenLogResult>("open_log", {
           blfPath,
           channelBusMapping,
           startNs: range.startNs,
@@ -1457,7 +1444,6 @@ export function App() {
           // and is cheaper than any way of finding it again.
           totalFrames: scan.frame_count,
         });
-        setState({ kind: "loading", result });
         // Record on a successful open. Failures don't
         // promote a path — `handleImportTrace` drops it on the
         // recents-launch path.
@@ -1498,7 +1484,12 @@ export function App() {
         const channelBusMapping = scan.channels
           .filter((ch) => choices[ch])
           .map((ch) => ({ channel: ch, busId: choices[ch] }));
-        const result = await invoke<ImportMdfResult>("import_mdf", {
+        // See `handleBlfMapConfirm`: `loading` must be set before the
+        // command, or a pump that finishes first — a messages-less
+        // import emits `log-finished` the moment its thread starts —
+        // leaves the state stuck at `loading` forever.
+        setState({ kind: "loading", result: { mdf_path: mdfPath } });
+        await invoke<ImportMdfResult>("import_mdf", {
           mdfPath,
           channelBusMapping,
           startNs: range.startNs,
@@ -1508,7 +1499,6 @@ export function App() {
           // See `handleBlfMapConfirm`: the census's own count.
           totalFrames: scan.frame_count,
         });
-        setState({ kind: "loading", result });
         rememberRecentCapture(mdfPath);
       } catch (err) {
         setState({ kind: "error", message: String(err) });
@@ -3607,7 +3597,7 @@ export function App() {
               <button
                 type="button"
                 className="trace-load-cancel"
-                title="Stop loading this capture. A capture part-way through importing is discarded, not kept."
+                title="Stop loading this capture. The frames loaded so far are kept as the capture."
                 onClick={() => void handleCancelLoad()}
               >
                 Cancel

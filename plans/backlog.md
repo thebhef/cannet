@@ -49,19 +49,6 @@ trip over it.
   generator and fails on diff. (Surfaced by the 2026-07-02 quality
   audit, task 30.)
 
-- `[test]` **Five App dom-tests fail under Node 26 — `localStorage`
-  undefined in jsdom.** `App.midSessionCreate.dom.test.tsx`,
-  `App.renameLockup.dom.test.tsx`, and `App.viewActions.dom.test.tsx`
-  fail in `beforeEach` at `localStorage.clear()` ("Cannot read
-  properties of undefined") on Node 26.5 + jsdom 29, alongside Node's
-  "localStorage is not available because --localstorage-file was not
-  provided" ExperimentalWarning — Node's own experimental
-  `localStorage` global appears to shadow/suppress jsdom's. Verified
-  pre-existing on 2026-07-13 (fails identically against HEAD's
-  `App.tsx`); other jsdom suites pass. Fix candidates: stub
-  `localStorage` in vitest setup, pass `--localstorage-file`, or pin
-  the tested Node version in CI.
-
 - `[ci]` **Server-implementation conformance check.** Every server
   that speaks `cannet-wire` (today: `cannet-server`'s BLF replay and
   virtual-bus modes, `cannet-python-can`; tomorrow: other vendor
@@ -763,10 +750,45 @@ next pass on this surface can address them as one piece.
   time-index mapping): if frames genuinely are out of order, goto-time
   and the truncation marker are subtly wrong too, and so is the
   per-signal cache's `t_seconds` binary search on the legacy
-  `bus_id: None` "any bus" path (the bus-scoped path is safe, since one
-  bus's frames arrive in order). Settle it by instrumenting the pump for
+  `bus_id: None` "any bus" path. Settle it by instrumenting the pump for
   a non-monotonic append; if real, the fix is ordering the multi-bus
   merge, not patching the searches.
+
+  **The bus-scoped path is *not* safe against a disordered import**
+  (probed 2026-08-27, prompted by `examples/time-origins/`
+  `wall-clock-out-of-order.blf` showing its last-read frames earliest):
+  `partition_by_t`'s "one bus's frames arrive in order" precondition
+  holds live but not for a BLF whose objects are out of timestamp order
+  *within one channel* — the level-0 series then dips, and the
+  experiment (out-of-order appends t=5 s, 1.2 s, 3 s through
+  `SignalCacheStore::slice`) showed a `[4.5, 10)` window **dropping the
+  t=5 s sample it should contain** and every window serving
+  non-ascending `t_seconds`, which uPlot renders as a line doubling
+  back. Same conclusion as above: order the ingest for replay imports,
+  don't patch the searches.
+
+  **Owner ruling 2026-08-27: sort imports by timestamp, census-gated**
+  — a chronological session is the model's contract, and BLF not
+  guaranteeing file order is no reason for cannet to inherit the
+  disorder. Shape agreed with the owner: the census (which already
+  walks every object) detects non-monotonicity for free; an ordered
+  file — every real logger, every live capture — streams exactly as
+  today at zero cost; a disordered file takes a quarantined
+  collect-and-sort before append, after which every downstream
+  consumer (pyramids, time↔index searches, paging, eviction) works
+  unchanged because the ascending-timestamp invariant is simply true
+  again. Rejected alternatives, deliberately: a bounded reorder buffer
+  (disorder distance is unbounded — the fixture's earliest frames are
+  the file's last objects), presentation-only sorting via a rank
+  permutation (time order is consumed by the plot serve,
+  `frame_index_at_ns`, by-ID, filters and eviction, not just the
+  visible page), and pyramid insertion behavior (permanent complexity
+  in the hottest model path for files expected to be doctored
+  rarities). Disordered files are expected to be rare, so the rare
+  file pays — in-memory sort, with the census's frame count available
+  to warn on a huge one ("fix your weird BLF" is an acceptable
+  answer). `wall-clock-out-of-order.blf` is the regression fixture for
+  both the detection and the sorted result.
 
 - `[cannet-gui]` **Turning auto-scroll off spins TracePanel and TraceView
   in a render loop.** Observed 2026-08-02 while adding the live-tail

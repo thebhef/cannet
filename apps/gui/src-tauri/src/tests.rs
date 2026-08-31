@@ -2793,13 +2793,12 @@ fn write_census_fixture(path: &std::path::Path, frames: u64) {
     writer.finish().unwrap();
 }
 
-/// Everything an import gathers alongside its frames — a BLF's markers,
-/// an MDF's file-backed signal series — is applied *after* the pump, and
-/// by then the frontend has already seen `log-finished` and is clearing
-/// the partial capture. So the pump thread has to still know it was
-/// cancelled at that point, and the thing it asks is not the slot in
-/// `AppState`: the pump clears that the moment its loop ends. It is the
-/// clone it kept, which outlives the slot.
+/// A cancelled import keeps its frames but must not start the MDF
+/// file-backed signal fill — the expensive work that begins only after
+/// the pump has already announced it finished. So the pump thread has
+/// to still know it was cancelled at that point, and the thing it asks
+/// is not the slot in `AppState`: the pump clears that the moment its
+/// loop ends. It is the clone it kept, which outlives the slot.
 #[test]
 fn an_import_is_still_known_to_have_been_cancelled_after_its_slot_is_cleared() {
     let state = test_state();
@@ -2818,10 +2817,10 @@ fn an_import_is_still_known_to_have_been_cancelled_after_its_slot_is_cleared() {
 }
 
 /// The control: an import nobody cancelled reads as finished at the same
-/// point, so the guard above does not stop every import from applying
-/// what its walk collected.
+/// point, so the guard above does not stop every import from filling
+/// its file-backed signals.
 #[test]
-fn an_import_nobody_cancelled_is_not_treated_as_abandoned() {
+fn an_import_nobody_cancelled_is_not_treated_as_cancelled() {
     let state = test_state();
     let cancel = Arc::new(AtomicBool::new(false));
     *state.import_cancel() = Some(Arc::clone(&cancel));
