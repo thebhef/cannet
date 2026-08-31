@@ -67,7 +67,7 @@ crates/
                  end-to-end and translates each object into a
                  `cannet_core::CanFrame` (classic / FD / remote / error),
                  plus `BlfCaptureWriter` — the inverse direction for Save
-                 Capture, with an atomic temp-file + rename — and
+                 Capture, written in place at its own name — and
                  `scan_blf` for the import dialog's channel census.
   cannet-mdf/    `MdfCanFrameSource`: ASAM MDF 4.x bus-logging files as a
                  CanFrameSource, and `scan_mdf` for the same census.
@@ -2891,9 +2891,12 @@ capture…*)
 session buffer — every frame on every bus, classic / FD / error /
 remote — to a single `.blf` file via the new
 [`BlfCaptureWriter`](crates/cannet-blf/src/lib.rs) wrapper. Writes
-stream to `<file>.blf.part` and rename into place on completion
-(atomic — a mid-write crash leaves no half-file behind at the
-destination). Save confirmation, frame count, and byte size all
+go straight to the chosen `.blf` and its header is finalised in
+place, so a capture is findable under its own name while it runs and
+a crash leaves a readable file there rather than one hidden behind
+another extension — the reader recovers an unfinalized capture by
+content. The file the user picked is replaced when the write opens,
+not when it completes. Save confirmation, frame count, and byte size all
 surface in the **System Messages** panel tagged `capture`. The BLF's
 underlying f64-seconds timestamp storage drops sub-microsecond
 precision for modern absolute timestamps; the host warns at save

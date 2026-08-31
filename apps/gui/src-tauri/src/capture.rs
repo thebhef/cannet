@@ -517,10 +517,10 @@ pub(crate) fn save_capture(
 /// (ADR 0010): there is no repair and no repaired copy.
 ///
 /// A second line joins it only for a capture that states no measurement
-/// start, whose timestamps therefore run from zero. Every `.part` this
-/// build leaves carries its anchor — the writer persists it the moment
-/// it latches one — so that line is for files an earlier build wrote,
-/// and nothing can date those.
+/// start, whose timestamps therefore run from zero. Every unfinalized
+/// capture this build leaves carries its anchor — the writer persists it
+/// the moment it latches one — so that line is for files an earlier
+/// build wrote, and nothing can date those.
 pub(crate) fn recovered_capture_warning(scan: &cannet_blf::BlfScan) -> Option<String> {
     if !scan.unfinalized && scan.truncated_tail_bytes.is_none() {
         return None;

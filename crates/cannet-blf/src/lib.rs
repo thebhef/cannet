@@ -10,14 +10,19 @@
 //! [`BlfCaptureWriter`] so the rest of the system only ever sees
 //! `cannet_core` types.
 //!
-//! The writer streams to `<dest>.part` before atomically renaming
-//! into place on [`BlfCaptureWriter::finish`] — a mid-write crash
-//! therefore leaves no half-file behind at `<dest>`. A hard kill
-//! skips [`Drop`] and does leave the `<dest>.part`, carrying the
-//! placeholder header the writer stamped at open — statistics unfilled,
-//! but the capture's `measurement_start_time` already in it, written the
-//! moment the writer latched one. The reader recovers what such a file
-//! holds rather than refusing it (see [`format::reader`]).
+//! The writer writes to `<dest>` from the first byte —
+//! [`BlfCaptureWriter::finish`] finalises the header in place, there
+//! is no temp file and no rename. A capture is therefore discoverable
+//! under the name it was asked for while it is still running, and a
+//! crash or a hard kill leaves a real `.blf` at that name rather than
+//! something hidden behind another extension. That file carries the
+//! placeholder header the writer stamped at open — statistics
+//! unfilled, but the capture's `measurement_start_time` already in it,
+//! written the moment the writer latched one. The reader recovers what
+//! such a file holds rather than refusing it (see [`format::reader`]),
+//! which is what makes writing in place safe. The trade the design
+//! accepts is that opening the writer replaces whatever was at
+//! `<dest>` immediately, before a single frame arrives.
 //!
 //! A third entry point, [`scan_blf`], walks a file header-only for a
 //! channel census, time span, and markers — everything the import
@@ -49,9 +54,8 @@ pub use scan::{
     ScannedMarker,
 };
 
-use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cannet_core::{
     CanFdFlags, CanFrame, CanFrameError, CanFramePayload, CanFrameSource, CanId, Direction, IdError,
@@ -138,7 +142,7 @@ impl BlfCanFrameSource {
     ///
     /// `measurement_start_time` is the exception: this writer persists
     /// the anchor as soon as it has one, so a killed capture keeps its
-    /// wall clock. A `.part` from a build that wrote it only at `finish`
+    /// wall clock. A capture from a build that wrote it only at `finish`
     /// still carries the unset sentinel, and its timestamps run from
     /// zero.
     pub fn is_unfinalized(&self) -> bool {
@@ -419,9 +423,18 @@ fn can_error_ext_to_frame(m: &CanErrorExt, start_ns: u64) -> Result<CanFrame, Bl
 
 /// Streaming BLF writer driven by [`cannet_core::CanFrame`]s.
 ///
-/// Streams to `<dest>.part` and renames to `<dest>` on
-/// [`BlfCaptureWriter::finish`]. Drop without `finish` discards
-/// the partial file.
+/// Writes to `<dest>` from the first byte and finalises the header
+/// there on [`BlfCaptureWriter::finish`]. There is no temp file and
+/// no rename, so a capture is visible under the name it was asked
+/// for while it runs; a crash, a kill, or a drop without `finish`
+/// leaves a real `.blf` at that name, carrying everything the writer
+/// flushed and the placeholder header it stamped at open. The reader
+/// recovers such a file by content rather than refusing it (see
+/// [`format::reader`]).
+///
+/// **Opening replaces whatever is already at `dest`**, at `create`
+/// time rather than at `finish`. A caller that needs the user to
+/// confirm an overwrite must do so before it opens the writer.
 ///
 /// # On-disk shape
 ///
@@ -440,13 +453,8 @@ fn can_error_ext_to_frame(m: &CanErrorExt, start_ns: u64) -> Result<CanFrame, Bl
 /// stays for backwards compatibility but is always 0 with the
 /// native writer.
 pub struct BlfCaptureWriter {
-    /// Final destination path the temp file renames to on
-    /// [`Self::finish`].
-    dest: PathBuf,
-    /// Temp file path the writer streams to (`<dest>.part`).
-    temp: PathBuf,
-    /// `Option` so [`Self::finish`] can take ownership before the
-    /// rename. Cleared on success so [`Drop`] doesn't double-finish.
+    /// `Option` so [`Self::finish`] can take ownership of the file
+    /// writer. Cleared on success so [`Drop`] doesn't double-finish.
     inner: Option<format::writer::BlfFileWriter>,
     /// Frame count appended so far — included in
     /// [`FinishedCapture`] for system-log integration.
@@ -466,7 +474,7 @@ pub struct FinishedCapture {
     pub frame_count: u64,
     /// Number of `GLOBAL_MARKER` (note) objects written.
     pub marker_count: u64,
-    /// On-disk file size of the renamed-into-place BLF.
+    /// On-disk file size of the finalised BLF.
     pub byte_size: u64,
     /// Largest observed `|on-disk-ns - source-ns|` round-trip
     /// drift across the written frames. Always 0 with the native
@@ -507,7 +515,7 @@ pub struct ClampedEvent {
 /// Anything that can go wrong driving a [`BlfCaptureWriter`].
 #[derive(Debug)]
 pub enum BlfWriteError {
-    /// I/O error opening, writing, finalising, or renaming the file.
+    /// I/O error opening, writing, or finalising the file.
     Io(io::Error),
 }
 
@@ -534,17 +542,15 @@ impl From<io::Error> for BlfWriteError {
 }
 
 impl BlfCaptureWriter {
-    /// Open a new capture writer that will produce `dest` on
-    /// success. Streams to `<dest>.part`; calling [`Self::finish`]
-    /// renames into place atomically, while dropping without
-    /// `finish` (mid-write crash) leaves only the temp file behind.
+    /// Open a new capture writer on `dest`, **replacing whatever is
+    /// already there**. The capture streams straight into that file, so
+    /// it is discoverable under its own name while it is being written;
+    /// [`Self::finish`] finalises the header in place. Ending any other
+    /// way leaves an unfinalized but readable capture at `dest` rather
+    /// than deleting it.
     pub fn create<P: AsRef<Path>>(dest: P) -> Result<Self, BlfWriteError> {
-        let dest = dest.as_ref().to_path_buf();
-        let temp = temp_path_for(&dest);
-        let inner = format::writer::BlfFileWriter::create(&temp)?;
+        let inner = format::writer::BlfFileWriter::create(dest.as_ref())?;
         Ok(Self {
-            dest,
-            temp,
             inner: Some(inner),
             frame_count: 0,
             marker_count: 0,
@@ -713,15 +719,14 @@ impl BlfCaptureWriter {
         Ok(())
     }
 
-    /// Flush, finalise, and rename the temp file into the
-    /// destination. Returns the byte size and frame count for the
-    /// host's system-message integration.
+    /// Flush the buffered objects and finalise the header in place.
+    /// Returns the byte size and frame count for the host's
+    /// system-message integration.
     pub fn finish(mut self) -> Result<FinishedCapture, BlfWriteError> {
         let inner = self.inner.take().ok_or_else(|| {
             BlfWriteError::Io(io::Error::other("writer has already been finished"))
         })?;
         let byte_size = inner.finish()?;
-        fs::rename(&self.temp, &self.dest)?;
         Ok(FinishedCapture {
             frame_count: self.frame_count,
             marker_count: self.marker_count,
@@ -735,26 +740,14 @@ impl BlfCaptureWriter {
 
 impl Drop for BlfCaptureWriter {
     fn drop(&mut self) {
-        // If we still have an inner writer, the caller never
-        // reached `finish`. Drop it (closes the underlying file
-        // handle) and remove the partial file so the destination
-        // is observably untouched.
-        if let Some(inner) = self.inner.take() {
-            drop(inner);
-            let _ = fs::remove_file(&self.temp);
-        }
+        // If we still have an inner writer, the caller never reached
+        // `finish`. Close the file handle and leave the bytes: the
+        // destination was replaced at open, so deleting it now would
+        // take the frames we did write with it. What stays is a real
+        // capture with a placeholder header, which the reader recovers
+        // by content.
+        drop(self.inner.take());
     }
-}
-
-/// `<dest>.part`. Kept as a free function so the unit tests can
-/// reason about the contract without going through the writer.
-fn temp_path_for(dest: &Path) -> PathBuf {
-    let mut name = dest
-        .file_name()
-        .map(std::ffi::OsString::from)
-        .unwrap_or_default();
-    name.push(".part");
-    dest.with_file_name(name)
 }
 
 /// Channel-convention inverse of [`adjust_channel_to_zero_based`]:
@@ -859,6 +852,7 @@ fn frame_to_object_bytes(frame: &CanFrame, start_ns: Option<u64>) -> Vec<u8> {
 mod tests {
     use super::*;
     use cannet_core::{pump, CanFrameSink, WindowedSource};
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     /// Base timestamp for round-trip tests — a "modern" absolute
@@ -1387,13 +1381,13 @@ mod tests {
         assert!(src.next_frame().unwrap().is_none());
     }
 
-    /// Writes succeed across many frames, atomic rename actually
-    /// produced the destination, and the temp path no longer exists.
+    /// Writes succeed across many frames, the growing capture is at the
+    /// destination the whole time, and `finish` finalises it there —
+    /// with no sibling of any kind beside it.
     #[test]
-    fn capture_writer_finish_renames_and_cleans_up_temp() {
+    fn capture_writer_writes_at_the_destination_and_finalises_in_place() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("many.blf");
-        let temp = temp_path_for(&dest);
         let mut w = BlfCaptureWriter::create(&dest).unwrap();
         for i in 0u32..32 {
             let f = CanFrame::classic(
@@ -1406,51 +1400,89 @@ mod tests {
             .unwrap();
             w.append(&f).unwrap();
         }
-        // While writing the temp file exists at <dest>.part.
-        assert!(temp.exists());
+        // Mid-capture the file is already the one the user named.
+        assert!(dest.exists(), "the capture is visible while it is written");
+        assert_eq!(siblings(dir.path()), vec!["many.blf".to_string()]);
         let outcome = w.finish().unwrap();
         assert_eq!(outcome.frame_count, 32);
-        assert!(dest.exists());
-        assert!(!temp.exists(), "temp file should have been renamed away");
+        assert_eq!(
+            siblings(dir.path()),
+            vec!["many.blf".to_string()],
+            "finish finalises in place rather than renaming something into position",
+        );
+        let stats = BlfCanFrameSource::open(&dest).unwrap();
+        assert!(!stats.is_unfinalized(), "the header was finalised in place");
     }
 
-    /// Dropping a writer without `finish` leaves no artefact at
-    /// `<dest>`; the temp file is also cleaned up.
+    /// Dropping a writer without `finish` leaves the frames it flushed
+    /// at `<dest>`, readable, rather than deleting the user's file. The
+    /// destination was overwritten the moment the capture opened; a
+    /// half-written capture the reader recovers is worth more than a
+    /// file that vanishes.
     #[test]
-    fn capture_writer_drop_without_finish_leaves_no_dest_file() {
+    fn capture_writer_drop_without_finish_leaves_a_recoverable_dest_file() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("partial.blf");
-        let temp = temp_path_for(&dest);
         {
             let mut w = BlfCaptureWriter::create(&dest).unwrap();
-            w.append(
-                &CanFrame::classic(
-                    TS_BASE_NS,
-                    0,
-                    CanId::standard(0x10).unwrap(),
-                    Direction::Rx,
-                    vec![],
+            // Enough to cross the writer's container buffer several
+            // times, so whole `LOG_CONTAINER`s have reached disk when
+            // the drop happens.
+            for i in 0u32..8_000 {
+                w.append(
+                    &CanFrame::classic(
+                        TS_BASE_NS + u64::from(i) * 1_000,
+                        0,
+                        CanId::standard(0x10).unwrap(),
+                        Direction::Rx,
+                        vec![1, 2, 3, 4, 5, 6, 7, 8],
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            )
-            .unwrap();
+                .unwrap();
+            }
             // Drop here — no `finish`.
         }
-        assert!(!dest.exists(), "destination must not exist after drop");
-        assert!(!temp.exists(), "temp file must be cleaned up after drop");
+        assert!(dest.exists(), "the destination keeps what was written");
+        assert_eq!(
+            siblings(dir.path()),
+            vec!["partial.blf".to_string()],
+            "and nothing was left beside it",
+        );
+        let mut src = BlfCanFrameSource::open(&dest).unwrap();
+        assert!(src.is_unfinalized(), "no finish, so a placeholder header");
+        let mut seen = 0u32;
+        while src.next_frame().unwrap().is_some() {
+            seen += 1;
+        }
+        assert!(seen > 0, "the flushed containers read back");
     }
 
+    /// An existing file at the destination is replaced when the capture
+    /// opens, not when it finishes — the caller has already confirmed
+    /// the replacement, and the capture is written where it was asked
+    /// for.
     #[test]
-    fn temp_path_helper_appends_part_extension() {
-        assert_eq!(
-            temp_path_for(Path::new("/tmp/x.blf")),
-            PathBuf::from("/tmp/x.blf.part"),
-        );
-        // Bare filename (no directory part) still works.
-        assert_eq!(
-            temp_path_for(Path::new("x.blf")),
-            PathBuf::from("x.blf.part")
-        );
+    fn capture_writer_replaces_an_existing_destination_at_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("occupied.blf");
+        std::fs::write(&dest, vec![0xAAu8; 4096]).unwrap();
+        let w = BlfCaptureWriter::create(&dest).unwrap();
+        let bytes = std::fs::read(&dest).unwrap();
+        assert_ne!(bytes.len(), 4096, "the old contents are gone at open");
+        assert_eq!(&bytes[..4], b"LOGG", "and a BLF header is in their place");
+        drop(w);
+    }
+
+    /// Every entry in `dir`, sorted — so a test can say what the writer
+    /// left behind without naming what it did not.
+    fn siblings(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 
     /// The native writer is ns-exact — drift on a high-precision

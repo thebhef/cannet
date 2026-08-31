@@ -313,8 +313,8 @@ needs across eleven rows had nothing.
 
 | Need (rows) | Furnished |
 |---|---|
-| Unfinalized `.part` BLF (105, 122) | `capture-features/interrupted.blf.part` |
-| …and one cut mid-object (105) | `capture-features/interrupted-tail.blf.part` |
+| Unfinalized BLF (105, 122) | `capture-features/interrupted.blf` |
+| …and one cut mid-object (105) | `capture-features/interrupted-tail.blf` |
 | A **black** `#000000` event with an uncoloured control (122) | `capture-features/annotated.blf` |
 | A `cannet-event/1` block with a key this build cannot read (122, 107) | `annotated.blf`, `annotated.mf4` |
 | `EVENT_COMMENT` carrying `commentedEventType` (122, 102) | `annotated.blf` |
@@ -345,7 +345,8 @@ needs across eleven rows had nothing.
 **Three fixture sets, ~112 KB of binaries.**
 
 - `examples/capture-features/` — `annotated.blf` (2.4 KB),
-  `annotated.mf4` (19 KB), the two `.part` files (57 + 53 KB), a project
+  `annotated.mf4` (19 KB), the two interrupted captures (57 + 53 KB), a
+  project
   and an RBS. Everything decodes against the existing
   `examples/cannet-demo.dbc`; there is no new database, because the
   checklist did not need one (`cannet-demo.dbc` already declares
@@ -356,11 +357,10 @@ needs across eleven rows had nothing.
   `cannet-demo.blf` already carries, so the pair needs no capture.
 - `examples/legacy-project/` — one project plus its RBS, all text.
 
-*The `.part` files could only be made one way.* `BlfCaptureWriter::Drop`
-removes the temp file, so a `.part` exists only where `Drop` never ran:
-the generator `mem::forget`s the writer, which costs exactly what a kill
-costs — the flushed `LOG_CONTAINER`s survive, the scratch buffer does
-not, and the header keeps the anchor latched at open. 9 000 frames sizes
+*The interrupted captures could only be made one way*: by never
+finishing. The generator `mem::forget`s the writer, which costs exactly
+what a kill costs — the flushed `LOG_CONTAINER`s survive, the scratch
+buffer does not, and the header keeps the anchor latched at open. 9 000 frames sizes
 it past the 128 KiB container buffer three times, so recovery has more
 than one container to walk.
 

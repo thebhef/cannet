@@ -557,16 +557,24 @@ async fn a_client_killed_mid_session_leaves_the_server_ready_for_the_next_one() 
             .into_inner();
         second_tx.send(subscribe("blf:0")).await.unwrap();
         if let Ok(Some(Ok(env))) = timeout(Duration::from_millis(100), second_stream.next()).await {
-            assert!(
-                !matches!(&env.body, Some(Body::Error(e)) if e.code == i32::from(Code::Busy)),
-                "the killed client's session was never released",
-            );
+            // Busy here is the release still in flight, not a verdict:
+            // the server frees the session only when it *notices* the
+            // dead transport, and on a slow runner this probe outruns
+            // that notice. Keep polling — the assertion below is what
+            // fails if the session is genuinely never released.
+            if matches!(&env.body, Some(Body::Error(e)) if e.code == i32::from(Code::Busy)) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            }
             served = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(served, "no session was served after the client was killed");
+    assert!(
+        served,
+        "no session was served after the client was killed — its session was never released",
+    );
 
     drop((client, tx, stream));
     tunnel_handle.abort();

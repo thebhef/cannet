@@ -12,8 +12,8 @@
 //! | File | What it is |
 //! |---|---|
 //! | `annotated.blf` | A finished 2 s capture carrying every annotation record a BLF has: `GLOBAL_MARKER` events in four colour states (black among them, which is a colour and not the absence of one), an `EVENT_COMMENT` bound to a message, `cannet-event/1` blocks with tags and structural subjects, one block a *later* schema version wrote, an event of a kind hidden by default, plus error and remote frames on two channels. |
-//! | `interrupted.blf.part` | The same shape of traffic left **unfinalized**: the header carries the anchor the writer latched and nothing else. What a hard kill leaves behind. |
-//! | `interrupted-tail.blf.part` | The same file with its last bytes cut away, so the final `LOG_CONTAINER` ends mid-object. |
+//! | `interrupted.blf` | The same shape of traffic left **unfinalized**: the header carries the anchor the writer latched and nothing else. What a hard kill leaves behind. |
+//! | `interrupted-tail.blf` | The same file with its last bytes cut away, so the final `LOG_CONTAINER` ends mid-object. |
 //!
 //! Event text is spelled out here as literal `cannet-event/1` lines rather
 //! than built through the GUI's serializer, which is private to that
@@ -75,8 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_annotated(&dir.join("annotated.blf"))?;
     write_interrupted(&dir.join("interrupted.blf"))?;
     truncate_tail(
-        &dir.join("interrupted.blf.part"),
-        &dir.join("interrupted-tail.blf.part"),
+        &dir.join("interrupted.blf"),
+        &dir.join("interrupted-tail.blf"),
     )?;
     Ok(())
 }
@@ -375,15 +375,13 @@ fn write_annotated(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The interrupted capture. `BlfCaptureWriter` streams to `<dest>.part`
-/// and its `Drop` removes that file, so the only way to produce the state
-/// a hard kill leaves is to skip `Drop` — which is what `mem::forget`
-/// does, and it costs exactly what a kill costs: the containers already
-/// flushed survive, the scratch buffer does not, and the header keeps the
-/// anchor the writer latched at open with every statistic still zero.
-///
-/// `dest` is the *finished* name; the file this leaves behind is
-/// `<dest>.part`.
+/// The interrupted capture. `BlfCaptureWriter` writes straight to
+/// `dest`, so producing the state a hard kill leaves is a matter of
+/// never calling `finish` — `mem::forget` skips `Drop` too, so not even
+/// the file handle's flush runs, and the result costs exactly what a
+/// kill costs: the containers already flushed survive, the scratch
+/// buffer does not, and the header keeps the anchor the writer latched
+/// at open with every statistic still zero.
 fn write_interrupted(dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut w = BlfCaptureWriter::create_with_start(dest, WALL_CLOCK_NS)?;
     w.append_marker(

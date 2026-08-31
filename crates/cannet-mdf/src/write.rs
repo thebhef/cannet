@@ -50,9 +50,9 @@
 //! buffer until [`MdfCaptureWriter::finish`], because they are small next
 //! to the frame stream and their blocks land after it.
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cannet_core::{CanFrame, CanFramePayload, Direction};
 use mdf4_rs::blocks::{
@@ -142,7 +142,7 @@ pub struct MdfWritten {
     pub event_count: u64,
     pub signal_count: u64,
     pub attachment_count: u64,
-    /// On-disk size of the renamed-into-place file.
+    /// On-disk size of the finalised file.
     pub byte_size: u64,
 }
 
@@ -211,14 +211,19 @@ struct PendingSignal {
 /// reproduces the absolute nanoseconds that went in for any capture
 /// spanning less than about 26 days (ADR 0024).
 ///
-/// Streams to `<dest>.part` and renames on [`Self::finish`], so a
-/// half-written capture never appears at the destination; dropping without
-/// finishing removes the temp file.
+/// Writes to `<dest>` from the first byte; [`Self::finish`] finalises the
+/// links and lengths in place. There is no temp file and no rename, so the
+/// capture is visible under its own name while it is written.
+///
+/// **Opening replaces whatever is already at `dest`**, at `create` time
+/// rather than at `finish`, and a writer dropped without finishing leaves
+/// the unfinalized file behind. Unlike a BLF, an unfinalized MF4 is not
+/// recoverable by content — its links are still placeholders — so what a
+/// crash leaves is honest evidence of the interrupted save, not a readable
+/// capture.
 pub struct MdfCaptureWriter {
-    dest: PathBuf,
-    temp: PathBuf,
-    /// `Option` so `finish` can take it before the rename, and so `Drop`
-    /// can tell a finished writer from an abandoned one.
+    /// `Option` so `finish` can take ownership, and so `Drop` can tell a
+    /// finished writer from an abandoned one.
     out: Option<BufWriter<File>>,
     start_time_ns: u64,
     payload_bytes: usize,
@@ -237,9 +242,7 @@ impl MdfCaptureWriter {
         dest: P,
         layout: MdfCaptureLayout,
     ) -> Result<Self, MdfWriteError> {
-        let dest = dest.as_ref().to_path_buf();
-        let temp = temp_path_for(&dest);
-        let mut out = BufWriter::new(File::create(&temp)?);
+        let mut out = BufWriter::new(File::create(dest.as_ref())?);
 
         // ID and HD are fixed-size and come first; HD's links are patched
         // in `finish`, once the blocks they point at have addresses.
@@ -249,8 +252,6 @@ impl MdfCaptureWriter {
         out.write_all(&block_header("##DT", BLOCK_HEADER_LEN))?;
 
         Ok(Self {
-            dest,
-            temp,
             out: Some(out),
             start_time_ns: layout.start_time_ns,
             payload_bytes: layout
@@ -303,8 +304,8 @@ impl MdfCaptureWriter {
         self.attachments.push(attachment);
     }
 
-    /// Write everything that is not a data-frame record, patch the links
-    /// and lengths that were placeholders, and rename into place.
+    /// Write everything that is not a data-frame record and patch the
+    /// links and lengths that were placeholders, in place.
     pub fn finish(mut self) -> Result<MdfWritten, MdfWriteError> {
         let mut out = self.out.take().ok_or_else(finished)?;
         let record_size = self.record_size();
@@ -331,7 +332,6 @@ impl MdfCaptureWriter {
             .map_err(std::io::IntoInnerError::into_error)?;
         let byte_size = file.metadata()?.len();
         drop(file);
-        fs::rename(&self.temp, &self.dest)?;
 
         Ok(MdfWritten {
             frame_count: self.data_records
@@ -661,11 +661,10 @@ impl MdfCaptureWriter {
 
 impl Drop for MdfCaptureWriter {
     fn drop(&mut self) {
-        // Never reached `finish`: the destination must look untouched.
-        if let Some(out) = self.out.take() {
-            drop(out);
-            let _ = fs::remove_file(&self.temp);
-        }
+        // Never reached `finish`: close the handle and leave the bytes.
+        // The destination was replaced at open, so deleting it now would
+        // hide that the save was interrupted.
+        drop(self.out.take());
     }
 }
 
@@ -846,16 +845,6 @@ fn dlc_for(len: usize) -> u8 {
 
 fn finished() -> MdfWriteError {
     MdfWriteError::Io(std::io::Error::other("writer has already been finished"))
-}
-
-/// `<dest>.part`, matching what the BLF writer does.
-fn temp_path_for(dest: &Path) -> PathBuf {
-    let mut name = dest
-        .file_name()
-        .map(std::ffi::OsString::from)
-        .unwrap_or_default();
-    name.push(".part");
-    dest.with_file_name(name)
 }
 
 /// The `##FH` comment every MDF file needs — who wrote it, in the schema

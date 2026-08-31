@@ -177,8 +177,10 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
             // line reads the trend, not the per-batch arrival jitter. The
             // filter state is the last *emitted* value — a skipped tick is
             // by definition one where nothing moved.
-            let frames_per_second =
-                smooth_fps(last_emitted.map(|(_, fps, _, _)| fps), snap.frames_per_second);
+            let frames_per_second = smooth_fps(
+                last_emitted.map(|(_, fps, _, _)| fps),
+                snap.frames_per_second,
+            );
             let session_start_ns = snap.session_start_ns;
             let current = (
                 count,

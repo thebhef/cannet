@@ -47,7 +47,7 @@ that task's status log.
 - [ ] 92 — one resolution rule — `examples/colliding-dbcs/`
 - [x] 91 — `frame_index_at_ns` on an unsorted store —
       `examples/time-origins/wall-clock-out-of-order.blf`
-- [ ] 93 — source comments naming tasks, plus the CI lint **§**.
+- [x] 93 — source comments naming tasks, plus the CI lint **§**.
       **All 3 met**; the lint's own command returns no matches today.
       One correction: the residual bare-`Phase N` sites the task
       recorded are gone, and a different five remain in
@@ -66,9 +66,9 @@ that task's status log.
       `examples/legacy-project/`
 - [ ] 100 — counter/CRC declared in a DBC populates the editor —
       `examples/cannet-demo.dbc`, `examples/ev-demo/`
-- [ ] 105 — unfinalized-BLF recovery, read-only **§** —
-      `examples/capture-features/interrupted.blf.part`,
-      `examples/capture-features/interrupted-tail.blf.part`. **All 5
+- [x] 105 — unfinalized-BLF recovery, read-only **§** —
+      `examples/capture-features/interrupted.blf`,
+      `examples/capture-features/interrupted-tail.blf`. **All 5
       met.** Criterion 4's confirming experiment now lives in git
       history with the retired task file; today's tree carries its
       conclusion in `cannet-blf`'s reader and header docs
@@ -87,7 +87,7 @@ that task's status log.
       `examples/capture-features/annotated.mf4`
 - [ ] 19 — typed palette prompts, `Mod+T`/`Mod+E`, event-row keys —
       `examples/capture-features/annotated.blf`
-- [ ] 110 — chain CI repair; Windows MSI bundle target dropped **§**.
+- [x] 110 — chain CI repair; Windows MSI bundle target dropped **§**.
       It carried no criteria; its "Every job, green" table is
       **ratified as them**, plus the three fixes it made — **all 4
       met**. Note the job count moves: 110 measured six, CI defined
@@ -153,7 +153,7 @@ that task's status log.
       [task 80](tasks/0080-stopped-capture-resample.md)'s status log.
       **No furnished file**: needs a multi-million-frame capture,
       generated locally (`examples/capture-features/README.md`)
-- [ ] 118 — the `comment-references` check leaves `ci.yml` and moves
+- [x] 118 — the `comment-references` check leaves `ci.yml` and moves
       into the `implement-phase` and `oversee-roadmap` skills as a
       hand-run grep; CI is six jobs, not seven (queue item 1.35 no
       longer exists post-reframe; its closure is in

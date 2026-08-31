@@ -271,9 +271,9 @@ impl FileStatistics {
     /// `measurement_start_time` need not be: per-event timestamps are
     /// offsets *from* that anchor, so this writer puts it in the header
     /// as soon as it latches one rather than at close. A file whose
-    /// anchor is still the unset sentinel — an older build's `.part` —
-    /// has timestamps that run from zero, and nothing can recover the
-    /// wall clock from it.
+    /// anchor is still the unset sentinel — an unfinalized capture from
+    /// an older build — has timestamps that run from zero, and nothing
+    /// can recover the wall clock from it.
     pub fn is_unfinalized(&self) -> bool {
         self.file_size == 0
     }

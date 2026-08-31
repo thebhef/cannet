@@ -1302,7 +1302,9 @@ fn a_second_import_of_the_same_file_still_emits() {
 
     // Import A, settled: the emitter last spoke with this snapshot.
     state.trace_store.start_session(1_709_294_400_120_000_000);
-    state.trace_store.lower_session_start(1_709_294_400_100_000_000);
+    state
+        .trace_store
+        .lower_session_start(1_709_294_400_100_000_000);
     state.trace_store.append(frame());
     let settled = state.trace_store.status_snapshot();
     let last = Some((
@@ -1314,7 +1316,9 @@ fn a_second_import_of_the_same_file_still_emits() {
 
     // Import B of the identical file: clear, re-append, same origin.
     state.trace_store.start_session(1_709_294_400_120_000_000);
-    state.trace_store.lower_session_start(1_709_294_400_100_000_000);
+    state
+        .trace_store
+        .lower_session_start(1_709_294_400_100_000_000);
     state.trace_store.append(frame());
     let refilled = state.trace_store.status_snapshot();
     assert_eq!(refilled.len, settled.len);
@@ -1342,8 +1346,16 @@ fn an_unchanged_settled_session_stays_quiet() {
     let state = test_state();
     state.trace_store.start_session(0);
     let snap = state.trace_store.status_snapshot();
-    let tick = (snap.len as u64, 0.0, snap.session_start_ns, snap.session_generation);
-    assert!(trace_grew_changed(None, tick), "the first tick always emits");
+    let tick = (
+        snap.len as u64,
+        0.0,
+        snap.session_start_ns,
+        snap.session_generation,
+    );
+    assert!(
+        trace_grew_changed(None, tick),
+        "the first tick always emits"
+    );
     assert!(
         !trace_grew_changed(Some(tick), tick),
         "an identical tick with no clear in between stays suppressed",
@@ -4486,14 +4498,13 @@ fn a_recovered_capture_says_what_it_recovered() {
             )
             .unwrap();
     }
-    // A hard kill: neither `finish` nor `Drop` runs, so the partial
-    // file keeps the placeholder header its writer stamped at open —
-    // carrying the anchor, which the writer persists the moment it
-    // latches one.
+    // A hard kill: neither `finish` nor `Drop` runs, so the capture is
+    // left at the destination with the placeholder header its writer
+    // stamped at open — carrying the anchor, which the writer persists
+    // the moment it latches one.
     std::mem::forget(writer);
-    let part = dir.path().join("killed.blf.part");
 
-    let scan = cannet_blf::scan_blf(&part).unwrap();
+    let scan = cannet_blf::scan_blf(&path).unwrap();
     let line = capture::recovered_capture_warning(&scan)
         .expect("a capture with a placeholder header is worth a line");
     assert!(line.contains("never finalized"), "{line}");
@@ -4515,10 +4526,10 @@ fn a_recovered_capture_says_what_it_recovered() {
         "our writer's containers go out whole: {line}"
     );
 
-    // A `.part` from a build that wrote the anchor only at `finish` has
+    // A capture from a build that wrote the anchor only at `finish` has
     // the unset sentinel in those header bytes, and nothing can recover
     // it — that file still earns the line.
-    let mut undated = std::fs::read(&part).unwrap();
+    let mut undated = std::fs::read(&path).unwrap();
     undated[40..56].fill(0);
     let older = dir.path().join("older.blf");
     std::fs::write(&older, &undated).unwrap();
@@ -4528,7 +4539,7 @@ fn a_recovered_capture_says_what_it_recovered() {
 
     // Truncate it the way a buffered writer's death does, and the same
     // line names the fragment too.
-    let mut bytes = std::fs::read(&part).unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
     bytes.truncate(bytes.len() - 4096);
     let torn = dir.path().join("torn.blf");
     std::fs::write(&torn, &bytes).unwrap();

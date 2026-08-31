@@ -54,7 +54,7 @@ fn finalised(dir: &Path) -> PathBuf {
 
 /// A capture whose writer was abandoned mid-run: the same appends, then
 /// the writer is leaked so neither `finish` nor `Drop` runs — what a
-/// hard kill leaves at `<dest>.part`.
+/// hard kill leaves at `<dest>`.
 fn abandoned(dir: &Path, name: &str) -> PathBuf {
     let dest = dir.join(name);
     let mut w = BlfCaptureWriter::create(&dest).unwrap();
@@ -62,10 +62,11 @@ fn abandoned(dir: &Path, name: &str) -> PathBuf {
         w.append(&frame(i)).unwrap();
     }
     std::mem::forget(w);
-    let part = dir.join(format!("{name}.part"));
-    assert!(part.exists(), "the abandoned writer's partial file");
-    assert!(!dest.exists(), "nothing is left at the destination");
-    part
+    assert!(
+        dest.exists(),
+        "the killed capture is at the name it was asked for",
+    );
+    dest
 }
 
 /// `source`, minus its last `lost` bytes — a writer that buffered its
@@ -97,9 +98,9 @@ fn a_finalised_capture_yields_every_frame() {
 fn a_capture_whose_writer_never_finalized_yields_the_frames_it_flushed() {
     let dir = tempfile::tempdir().unwrap();
     let control = prints(&finalised(dir.path()));
-    let part = abandoned(dir.path(), "killed.blf");
+    let killed = abandoned(dir.path(), "killed.blf");
 
-    let seen = prints(&part);
+    let seen = prints(&killed);
     assert!(
         !seen.is_empty(),
         "the flushed containers are readable despite the placeholder header"
@@ -110,25 +111,25 @@ fn a_capture_whose_writer_never_finalized_yields_the_frames_it_flushed() {
         control[..seen.len()],
         "every frame before the loss is present and unchanged"
     );
-    let scan = scan_blf(&part).unwrap();
+    let scan = scan_blf(&killed).unwrap();
     assert_eq!(usize::try_from(scan.frame_count).unwrap(), seen.len());
     assert!(scan.unfinalized, "the placeholder header says so");
     assert_eq!(
         scan.truncated_tail_bytes, None,
         "our writer's containers go out whole, so nothing is torn"
     );
-    assert!(BlfCanFrameSource::open(&part).unwrap().is_unfinalized());
+    assert!(BlfCanFrameSource::open(&killed).unwrap().is_unfinalized());
 }
 
 #[test]
 fn a_trailing_fragment_ends_the_walk_instead_of_failing_it() {
     let dir = tempfile::tempdir().unwrap();
-    let part = abandoned(dir.path(), "killed.blf");
-    let whole = prints(&part);
+    let killed = abandoned(dir.path(), "killed.blf");
+    let whole = prints(&killed);
 
     let mut ever_cost_frames = false;
     for lost in [1usize, 4, 17, 4096] {
-        let cut = torn(&part, &dir.path().join(format!("torn-{lost}.blf")), lost);
+        let cut = torn(&killed, &dir.path().join(format!("torn-{lost}.blf")), lost);
         let seen = prints(&cut);
         assert!(
             !seen.is_empty(),
@@ -173,8 +174,8 @@ fn digest(path: &Path) -> (u64, u64) {
 #[test]
 fn recovering_a_damaged_capture_leaves_its_bytes_untouched() {
     let dir = tempfile::tempdir().unwrap();
-    let part = abandoned(dir.path(), "killed.blf");
-    let cut = torn(&part, &dir.path().join("torn.blf"), 1);
+    let killed = abandoned(dir.path(), "killed.blf");
+    let cut = torn(&killed, &dir.path().join("torn.blf"), 1);
 
     let before = digest(&cut);
     let _ = prints(&cut);
@@ -186,7 +187,7 @@ fn recovering_a_damaged_capture_leaves_its_bytes_untouched() {
     let siblings: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n != "killed.blf.part" && n != "torn.blf" && n != "finalised.blf")
+        .filter(|n| n != "killed.blf" && n != "torn.blf" && n != "finalised.blf")
         .collect();
     assert!(
         siblings.is_empty(),
@@ -200,8 +201,8 @@ fn recovering_a_damaged_capture_leaves_its_bytes_untouched() {
 #[test]
 fn damage_that_is_not_a_trailing_fragment_is_still_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    let part = abandoned(dir.path(), "killed.blf");
-    let mut bytes = std::fs::read(&part).unwrap();
+    let killed = abandoned(dir.path(), "killed.blf");
+    let mut bytes = std::fs::read(&killed).unwrap();
     // Corrupt the second top-level record's `LOBJ` signature. The
     // first container still reads; the walk must not sail past this.
     let first_size = u32::from_le_bytes(bytes[144 + 8..144 + 12].try_into().unwrap()) as usize;
