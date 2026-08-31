@@ -78,9 +78,9 @@ function row(over: Partial<RbsSignalRow> = {}): RbsSignalRow {
   };
 }
 
-function renderPanel() {
+function renderPanel(params: Record<string, unknown> = { statusFilter: [] }) {
   const api = { updateParameters: vi.fn() };
-  const props = { params: { elementId: "el1" }, api } as unknown as Parameters<
+  const props = { params: { elementId: "el1", ...params }, api } as unknown as Parameters<
     typeof RbsSignalsPanel
   >[0];
   const recorded: PanelEditStep[] = [];
@@ -191,6 +191,31 @@ describe("RbsSignalsPanel", () => {
     await screen.findByText("EngineSpeed");
     expect(screen.getByText("812.5")).toBeInTheDocument();
     expect(screen.getByText("none")).toBeInTheDocument();
+  });
+
+  it("a fresh panel opens with every status filter on except Default (owner ruling 2026-08-30)", async () => {
+    // Default rows are DBC facts, not customizations — a new grid
+    // shows what the file actually changes and what needs attention.
+    // Only a *fresh* panel: a persisted filter, the explicitly cleared
+    // empty one included, is honored as saved.
+    ROWS = [
+      row({ id: "a", signalName: "EngineSpeed", status: "default" }),
+      row({ id: "b", signalName: "PackVoltage", status: "override", overridden: true }),
+      row({ id: "c", signalName: "GhostSignal", status: "not-encoded", value: null }),
+    ];
+    renderPanel({}); // no statusFilter param — a fresh panel
+    await screen.findByText("PackVoltage");
+    expect(screen.getByText("GhostSignal")).toBeInTheDocument();
+    expect(screen.queryByText("EngineSpeed")).toBeNull();
+    // The chips say so: everything pressed but Default.
+    expect(screen.getByRole("button", { name: /^Default/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: /^Override/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("filters to exactly the selected status chip", async () => {
