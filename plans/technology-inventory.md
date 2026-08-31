@@ -105,7 +105,7 @@ and the license / platform constraints we need to be aware of.
 
 - **External icon set** (lucide, tabler, codicons, …) — `rejected` by
   owner ruling 2026-08-21 (task 108 grooming). The hand-drawn inline-SVG
-  icons from the chip-language prototype are **`adopted`** as the app's
+  icons from the toolbar-redesign prototype are **`adopted`** as the app's
   own icon language: 14 px grid, 1.4 px rounded stroke, one icon = one
   meaning (an icon may repeat only as the same *verb* — save / add /
   search / clear — with the label naming the object). They live as an
@@ -113,7 +113,7 @@ and the license / platform constraints we need to be aware of.
   set stays cohesive and grows deliberately.
 
   Reference sheet: `plans/prototypes/gui-chip-redesign.html` — the
-  chip-language prototype, kept after implementation (owner ruling
+  toolbar-redesign prototype, kept after implementation (owner ruling
   2026-08-21) as the living reference for the icon registry and the
   chrome design, to support fast iteration.
 
@@ -596,6 +596,29 @@ crate retained long-term).
   was silently dead. Found reviewing the RBS disk watch; the backend
   requirement is pinned by `dbc_watcher`'s in-place-write test.
 
+### Units / Quantities
+
+- **`runtime_units`** (Rust, MIT, 0.6.x) — `adopted` 2026-09-06 for
+  task 139 (unit-aware math scaling). Purpose-built for runtime unit
+  work: parses unit strings (abbreviations, singular and plural
+  names), converts at runtime, 86 feature-gated quantity types
+  covering the automotive set (ElectricPotential/Current/Charge,
+  Power, Energy, Torque, AngularVelocity, Pressure, Frequency, Ratio,
+  ThermodynamicTemperature with affine conversion, Velocity, Time),
+  serde support, small dependency footprint. Pre-1.0 (API "largely
+  stable"), single maintainer — mitigated by wrapping it behind a
+  host-side facade (unit id, dimension, affine gain/offset per
+  conversion) so the surface we depend on is narrow and a swap stays
+  contained. Features trimmed to the quantities the UI exposes.
+- **`rink-core`** — `rejected` 2026-09-06: the code is MPL-2.0 but its
+  units database (`definitions.units`) is GPL-3; shipping a GPL data
+  file inside the MIT-licensed app is a licensing entanglement.
+- **`uom`** / **`dimensioned`** — `rejected` 2026-09-06: compile-time
+  typed unit systems; the unit is a Rust type, so they cannot parse or
+  convert units chosen by the user at runtime.
+- **Hand-rolled in-repo unit table** — `rejected` 2026-09-06 by owner
+  ruling: use a library's unit list rather than curating our own.
+
 ### Protocols
 
 - CAN 2.0 A/B
@@ -913,7 +936,11 @@ crate retained long-term).
   never read the wall clock through chrono). Held by `cannet-log` rather
   than by each host, so the GUI's `cannet.log` and the server's
   `cannet-server.log` stamp instants identically by construction.
-  MIT / Apache-2.0.
+  MIT / Apache-2.0. **Extended 2026-09-06** (task 137, owner ruling):
+  `adopted` as a direct `cannet-gui` dependency for export/logger
+  name-template resolution — user strftime format strings pass
+  straight through to chrono (no subset), with the host validating
+  and returning polished error messages to the frontend.
 
 - **A dedicated log-file crate rather than `tracing-appender`** —
   `rejected` (2026-08-13) for the server's rolling logfile. The workspace

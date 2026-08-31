@@ -6,7 +6,7 @@
 > should be just about ready to converge. Maybe a new task for that
 > later, definitely not immediate scope."*
 
-Task 108 gave every bar the same chip language, so the app-level
+Task 108 gave every bar the same button style, so the app-level
 toolbar and the ten panel toolbars now *look* converged while still
 being hand-laid flex rows, each deciding wrap/overflow for itself. The
 convergence they are "just about ready" for is structural: one shared
@@ -22,19 +22,31 @@ toolbar control that owns layout, wrap-vs-overflow, and fit.
   wrap is the rule and it goes — one answer, not per-bar answers. The
   top toolbar's wrap-vs-overflow question (queue 3.21) is settled by
   whichever this task picks.
-- No visual change is the goal: the chip language already matches;
+- No visual change is the goal: the button style already matches;
   this is the layout layer beneath it.
+- **Say "button", not "chip"** (owner ruling 2026-08-31): "chip" is
+  retired for pressable controls — the prose docs already say button.
+  This task carries the vocabulary into the code it is already
+  rewriting: `ChipButton`, `ChipSegment`, the `chip-button` /
+  `status-chip` CSS family and their test kits rename to button terms,
+  and ADR 0055 is amended to match. "Chip" survives only for
+  non-interactive indicator tags (the load-progress/status chips,
+  event subject chips, pattern chips).
 - **One filter control** (queue 3.24, ruled 2026-08-26): the RBS
-  Signals and View Signals status-filter chips hand-write
+  Signals and View Signals status-filter buttons hand-write
   `<button className="status-chip chip-button">` for a per-status tall
   swatch the owner ruled unnecessary — *"I'm not sure they actually
   need to be a different control. The tall color swatch doesn't seem
   necessary."* And the swatch-bearing checkbox rows of
   `EventKindFilter` (the notes/diagnostics filters in the events,
   trace and plot panels) — *"those can all be the same control I
-  think."* Converge all of them onto the shared chip control; the
+  think."* Converge all of them onto the shared button control; the
   per-status colour survives as whatever indicator that one control
   offers, not as bespoke markup per bar.
+- Avoid GUI bouncing - in 0.9.0 GUI bouncing was observed when labels/buttons
+  changed size. It is expected that nothing was done to avoid this in the 0.10.0
+  effort and that it will still be reproducible. Attempt to reproduce and 
+  add a mitigation.
 
 ## Not immediate scope
 

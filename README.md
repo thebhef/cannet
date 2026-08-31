@@ -370,14 +370,14 @@ and only has to be re-run when the sidecar's Python dependencies change.
 build, so Phase-8 hardware users get it for free.
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
-cannet window. Use the toolbar's **Import** chip to pick a log (a
+cannet window. Use the toolbar's **Import** button to pick a log (a
 Vector `.blf` or an ASAM MDF 4.x bus-logging `.mf4` — the dialog's
 filter list offers both, plus "all supported"); the project panel's
 **DBC** section loads a database for live decoding — load more than
 one and frames decode against each in order, first match wins (every
 loaded DBC applies to the one interface for now).
 
-**The toolbar is chips.** Every control in it wears the app's one
+**The toolbar is buttons.** Every control in it wears the app's one
 control shape (ADR 0055): a short Title Case label beside a drawn icon,
 with the full sentence — *Open project…*, *Save capture…* — in the
 tooltip. **Database** keeps its word, because the name is the
@@ -388,17 +388,17 @@ databases are listed, in the project panel. The palette keeps both —
 it is the whole command list, and the bar a curated rendering of it
 (ADR 0055 §4). The seven panel-adding commands sit behind one **Add**
 menu rather than seven near-identical phrases across the bar.
-Everything is still a command: a chip dispatches the same command id
-the palette and the keyboard do, so what a chip does is documented
+Everything is still a command: a button dispatches the same command id
+the palette and the keyboard do, so what a button does is documented
 once, wherever that command is.
-**Save is a split chip**: pressing **Save** saves, and only the `▾`
+**Save is a split button**: pressing **Save** saves, and only the `▾`
 beside it opens the menu that offers **Save As…** — a disclosure never
 swallows the primary press.
 
 **Under the toolbar is the status bar.** The toolbar is commands —
 things you press to make something happen. The bar beneath it is the
 readout, and it also carries the controls for what it reports. On the
-left the **connection chip**: it shows the aggregate of the host's
+left the **connection button**: it shows the aggregate of the host's
 per-bus connection state (Not connected / Connecting… / Connected /
 Connected with a short count when some buses are up and others failed /
 Failed), and pressing it connects or disconnects, so nothing reports
@@ -406,12 +406,12 @@ the connection from two places. Beside it whatever is happening — a
 load and its **Cancel**, a cache rebuild and its **Discard**, a
 project that changed on disk with **Reload** and **Dismiss**. Then the
 numbers, as discrete aligned metrics: `f/s`, `bus load`, `frames`,
-`elapsed`, `RAM`, `cache`. On the right the chips that report a
+`elapsed`, `RAM`, `cache`. On the right the buttons that report a
 condition: **System messages**, **Signal mapping** and **RBS
 mapping**, each badged with what needs attention.
 
-Between the connection chip and the notices sits the **bus health
-launcher** — an icon, not a chip, because a single summary across
+Between the connection button and the notices sits the **bus health
+launcher** — an icon, not a labelled button, because a single summary across
 several buses cannot name the one that is off, which is the only thing
 worth knowing when one is. It stays neutral while every controller that
 reports is healthy, and tints with a count when one is not, naming
@@ -534,7 +534,7 @@ ever dropped.
 The bar is one row and never wraps — a header that grew a second line
 would reflow every panel beneath it. When the window is too narrow the
 metrics drop from the right, and hovering any metric label shows the
-whole readout including the dropped ones; the chips never drop, they
+whole readout including the dropped ones; the buttons never drop, they
 collapse into a **…** menu badged with the sum of the counts inside
 it, so something demanding attention can only become one click away,
 never invisible.
@@ -1324,12 +1324,12 @@ Singleton
 like the project panel, and read-only (DBCs are added / removed from
 the project panel, not from here).
 
-**Signal mapping** (the status bar's chip) opens the signal-mapping
+**Signal mapping** (the status bar's button) opens the signal-mapping
 panel: one row per signal the
 open views reference, live — what decodes it today, which views use it,
 and whether that still matches what the view was configured against
 (Not Decoded / Scale / Ambiguous / Stale / Decoded, most severe first).
-The chip is badged with the count needing attention (Not Decoded,
+The button is badged with the count needing attention (Not Decoded,
 Scale, Ambiguous) and is quiet when there is nothing to look at. Assigning or
 unassigning a database moves rows without a reopen. It is a repair
 surface as well as a report, and the **source** column is where both
@@ -1903,13 +1903,13 @@ resample at the end.
 - **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
   wheel** pans x (synced); **right-drag** box-zooms x; **⌘/ctrl +
   wheel** zooms y on the hovered area (buried — y is usually set with
-  the per-area range control); the toolbar's **fit-x** chip refits x to
+  the per-area range control); the toolbar's **fit-x** button refits x to
   the full signal extent. **Follow** keeps every area pinned to the
   capture's
   growing edge while keeping the current visible x-width (it just slides
   right); a manual x pan/zoom turns it off, the same way a manual scroll
   leaves auto-scroll in a trace panel.
-- **Show points.** A tri-state chip on the toolbar that cycles
+- **Show points.** A tri-state button on the toolbar that cycles
   **Points: Auto → Off → On** and applies to every series on every axis
   of every area in
   the panel: `auto` (default) defers to uPlot's density-aware mode
@@ -1923,7 +1923,7 @@ resample at the end.
   between them), **Y** cursors (per-area H1 / H2 — values and **ΔH**
   show in the area's signal-panel head, plus a chip on the plot), or
   **notes** (left-click drops an event note at that time); the
-  clear-cursors chip removes them all. The measurement readout strip
+  clear-cursors button removes them all. The measurement readout strip
   (A, B, Δt, 1/Δt, and per-trace value@A / value@B / Δ / min / max /
   mean over [A, B]) needs rework and does **not draw at all** for now —
   there is no toggle for it, and a project saved with it on will not
@@ -2386,7 +2386,7 @@ with one of the project's buses. Each bus is allowed at most one
 binding (one interface per bus); a bus that already has a binding is
 hidden from the picker.
 
-The status bar's **connection chip** — the only place connection is
+The status bar's **connection button** — the only place connection is
 commanded from — iterates every unique server in `interface_bindings`, opens one
 gRPC session per server, and subscribes only to the bound interfaces.
 The host's pump thread stamps every received frame with the chosen
@@ -2738,7 +2738,7 @@ of it. Sources currently in use:
 use `sidecar:<vendor>` in Phase 8).
 
 **System Messages panel**. Open it from the status bar's *System
-messages* chip. The panel renders a virtualised list filterable by
+messages* button. The panel renders a virtualised list filterable by
 source and by minimum level (default `info` — a session's worth of
 what you did; drop it to `debug` for the app's internal breadcrumbs,
 which reach the rolling log file either way). Copy-all and
@@ -2898,7 +2898,7 @@ for the LGPL analysis that motivates this layout.
 Phase 9 makes captures persistable and re-loadable, with user-placed
 notes round-tripping alongside.
 
-**Save Capture**. The toolbar grows an **Export** chip (*Save
+**Save Capture**. The toolbar grows an **Export** button (*Save
 capture…*), sitting beside **Import** with the mirrored arrow
 (disabled when the session buffer is empty). It writes the *entire*
 session buffer — every frame on every bus, classic / FD / error /
@@ -3009,8 +3009,8 @@ one.
 only there, since it is the only surface where an event row is a thing
 you select rather than a marker beside the frames — click an event to
 select it and Ctrl/Cmd+click a second. The toolbar's **Link Events**
-chip then joins them; with two already-linked events selected the same
-chip reads **Unlink Events** and takes the link away.
+button then joins them; with two already-linked events selected the same
+button reads **Unlink Events** and takes the link away.
 
 **Two gestures put a subject on an event as it is created.**
 
