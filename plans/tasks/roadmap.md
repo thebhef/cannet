@@ -14,144 +14,74 @@ Tasks keep stable numbers (they don't renumber when the order changes).
 
 ## Where things stand
 
-The 2026-08 chain — tasks 19, 27, 86–110 — is implemented on one
-linear branch chain off `main`, tip `task-109-phase-6-pattern-signals`;
-nothing has merged, and merging the last branch takes all of it. Those
-task files are retired (the detail lives in git history); what remains
-of them is acceptance verification, tracked as the checklist in
-[`../owner-review-queue.md`](../owner-review-queue.md). The review
-findings the chain produced were all dispositioned by 2026-08-26: into
-the tasks below, the backlog, or closures recorded at their sources.
+The 2026-08 chain (tasks 19, 27, 86–110) merged to `main` 2026-08-27;
+its task files are retired and its acceptance rows live in the
+verification checklist at
+[`../owner-review-queue.md`](../owner-review-queue.md).
+
+The 2026-08-27 residual-cleanup run — tasks 125, 115, 117, 114, 122,
+127, 80, 126, 121, 113 and 118 — is implemented on one linear
+single-commit-per-branch chain off `main`, ending at
+`task-118-comment-refs-out` (the owner's follow-up fixes and this
+close-out stack above it); nothing of it has merged. Its task files
+stay in this directory until acceptance (their Blockers sections carry
+the open items the checklist points at).
 
 ## Outstanding — correctness, rework, stability, project health
 
 In order of work, first at the top. None started.
 
-1. [Task 126 — Test and Example Cleanup](0126-test-and-example-cleanup.md)
-   — the perf harness stops lying (memory attribution fails loudly
-   instead of adopting foreign processes or reading 0.0; the `__shot`
-   helpers get a guard test; the interaction script's gestures are
-   tallied; one clean-machine capture set; the two unstable metrics get
-   their ruling on charted evidence before the close-out gate), small
-   LFS-carried example files for every demoable frontend surface, and
-   the exit-criteria verdicts five tasks never received. From queue
-   findings 3.45 and all of § 3F, ruled 2026-08-26. **Placed first
-   (owner, 2026-08-26): it furnishes the input files the verification
-   checklist's acceptance walk needs, and it gates the chain
-   close-out.**
-2. [Task 121 — The Tool Tells the Truth About the Wire](0121-the-trace-tells-the-truth-about-the-wire.md)
-   — a transmit row is appended before any wire attempt, so a frame the
-   bus never carried looks identical to one it did; the `TX_REJECTED`
-   that would say otherwise is logged to dev stderr and discarded; and
-   error frames reach the trace one row each, at ~5,200/s during the
-   owner's bench fault. One defect from three sides. **Ruled 2026-08-26:**
-   error frames stay in the saved capture and coalesce in the frontend,
-   so nothing is dropped at ingest. Carries two smaller findings — the
-   "Error-active" label (ruled: `Connected` plus the ISO name on hover)
-   and a dropped-frame counter (ruled: build it here).
-   Widened 2026-08-26 to carry all the hardware-truth work as one task
-   (split into PRs as convenient, all before next release): the
-   `Connected` relabel, the rx-loss counter reading the per-vendor
-   status the ingest discards, and the adapter-identity fields shipped
-   across from the sidecar (queue 3.52). Placed first: two of its
-   findings are the owner's own observations from hardware, and it is
-   the only group of findings sourced from real use. **§§ 1-2 landed
-   2026-08-27** (`task-121-trace-truth`); §§ 3-4 — the rx-loss counter
-   and the adapter-identity fields — are what remains.
-3. [Task 125 — The Suite Is Green](0125-the-suite-is-green.md)
-   — `PlotPanel.dom.test.tsx`'s panel-local-state test fails in two of
-   three full runs (`expected 1 to be +0`, one extra render), so the
-   frontend job every phase must report green is not reliably green.
-   Owner ruling 2026-08-26: *"re-run/fix."* Cause unestablished — one
-   hypothesis already refuted; scientific method required.
-4. [Task 127 — Shared-Layer Cleanups](0127-shared-layer-cleanups.md)
-   — the dead-keyboard defect after editing an event's tag (reachable
-   today, gets the regression test its F2 sibling got), a `fromPayload`
-   option on `useHostMirror` so `useConnectionStates` stops hand-rolling
-   the launch race open on a shipped connection path, and one focus
-   model plus real ARIA roles in the trace gridviews. From the queue's
-   § 3G, accepted as a task 2026-08-26; 3.13 closed the same day as
-   already done.
-5. [Task 122 — A File Keeps What You Wrote](0122-a-file-keeps-what-you-wrote.md)
-   — five small capture-format fixes, all ruled 2026-08-26 from the
-   queue's § 3A walk, no open questions: a black event survives BLF
-   (two colour guards of ours, not a format limit); the BLF anchor
-   reaches disk on first append so a killed session's `.part` stops
-   dating from 1970; foreign MDF sample order is sorted at the
-   boundary instead of trusted into a wrong plot; a future build's
-   unknown block keys round-trip; `commented_event_type` rides the
-   `cannet-event/1` block on every carrier. One phase, test-first.
-6. [Task 115 — Trace Row Menus Keep Only the Event Action](0115-trace-row-menu-scope.md)
-   — a right-click on a trace frame row stops offering the sources
-   picker; the button bar is where those items live and always was.
-   Create event stays. From queue item 1.23; fully ruled 2026-08-25.
-7. [Task 117 — Refuse to Connect Without a Bound Bus](0117-refuse-to-connect-without-a-bound-bus.md)
-   — connecting with any unbound bus fails loudly and names it; the
-   empty-project refusal names the bus rather than a binding; a new
-   project starts with one bus called `Bus 1`. From queue item 1.34,
-   captured at the owner's instruction 2026-08-25. No open questions.
-8. [Task 114 — One Name Per Thing](0114-one-name-per-thing.md)
-   — the chrome says one thing where the model says another. ADR 0055
-   is amended to say what the code does (the command registry is the
-   model, the chip bar one rendering of it); the toolbar's last `DBC`
-   chip becomes `Database`; a virtual bus stops rendering its wire id
-   in the bus-health adapter cell, reading `virtual bus` instead. Split
-   out of the owner review walk and fully groomed on 2026-08-25.
-   **No open questions**, no phases yet.
-9. [Task 118 — The `comment-references` Check Leaves CI](0118-comment-references-out-of-ci.md)
-   — the check moves to the `implement-phase` and `oversee-roadmap`
-   skills and the CI job goes. **Process, not product.** From queue
-   item 1.35; ruled 2026-08-25. The risk being accepted —
-   instruction-level enforcement is what failed before — is recorded in
-   the task, not argued.
-10. [Task 119 — Example DBCs for the Duplicate-Id Collision](0119-duplicate-id-example-dbcs.md)
+1. [Task 128 — Shared-Layer Holdouts](0128-shared-layer-holdouts.md)
+   — the last cleanup items the 2026-08-27 run surfaced, opened at the
+   owner's instruction while walking its open items: `serverList.ts`'s
+   two hooks onto `useHostMirror` via a `fromPayload` ignore signal
+   (ruled: option a — no behaviour change), Escape reaching a
+   portalled dropdown before the fullscreen binding, and the columned
+   gridviews' missing ARIA roles.
+2. [Task 119 — Example DBCs for the Duplicate-Id Collision](0119-duplicate-id-example-dbcs.md)
     — two DBCs that collide on one bus plus a project assigning both, so
     the owner can review what the Database panel marks. **A deliverable
     to review against, not a behaviour change.** From queue item 1.33a;
     ruled 2026-08-25. Two open questions.
-11. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
+3. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
     — the user-reachable empty-view defect Task 78 phase 1 attributed
     (restore a prior capture, then import: the view stays empty while
     the store refills), plus making `--app-data-dir` isolate the
     capture scratch as ADR 0031 claims. Opened by owner ruling
     2026-08-15; kept as scoped, both halves, by owner ruling
     2026-08-19.
-12. [Task 80 — Plot Resample Churn Over a Stopped Capture](0080-stopped-capture-resample.md)
-    — investigation-first: ~30 Hz resample + follow-slide held over a
-    stopped, fully imported capture (trace still reads RUNNING after
-    import). Opened by owner ruling 2026-08-15.
-13. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+4. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
     — the hardware/virtual-bus verify-and-fix pass (post-clear negative
     timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
     plot-color bug and the `decimatePoints` dead-code removal.
-14. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
+5. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
     — the small findings the retiring 70–78 task files recorded in
     passing, collected as one groomable pass: the project-command test
     harness gap, the rebuild-chip rough edges, the unattributed
     launch-hang lead, frameless-import time ranges, and the
     untrusted-row token editor. Opened by owner ruling 2026-08-16.
-15. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
+6. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
     — an imported MDF's embedded DBC decodes for the session but
     survives no reopen; make it durable (extraction or a durable
     project reference), then revisit name-matching file-backed
     signals on top. **Needs grilling before implementation.** Opened by
     owner ruling 2026-08-16.
-16. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+7. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
     — crash on exit (wry/WebKit layer-tree teardown race) and missing
     Spotlight bundle metadata. Independently-shippable macOS fixes.
-17. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
+8. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
     — the two data-named cuts from the 2026-08-08 ingest profiling: the
     disk-spill segment write (43 % of the release per-frame budget)
     and `bus_id: Option<String>` interning (~15 %). Opened by owner
     ruling 2026-08-09.
-18. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
+9. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
     — the health sampler's process-family metrics move to the web
     engine's own bookkeeping (WebView2 `GetProcessInfos`) as the
     de-jure source; per-platform matrix (the macOS ppid walk silently
     excludes WKWebView's launchd-parented helpers), the
     `unsafe`/`webview2-com` adoption rulings, costs re-measured.
     Opened by owner ruling 2026-08-15.
-19. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
+10. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
     — shape 3 of Task 72 phase 3's attributed enum-lag fix (owner
     ruling 2026-08-15): decode cursors advance independently of view
     fetches, serves read what the cursors reached. Amends ADR 0049.
