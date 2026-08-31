@@ -52,10 +52,17 @@ that task's status log.
       One correction: the residual bare-`Phase N` sites the task
       recorded are gone, and a different five remain in
       `apps/gui/src-tauri/Cargo.toml` — none of which the lint catches
-- [ ] 98 — signals rendering wrong on a common scale —
-      `examples/ev-demo/`
-- [ ] 95 — gridview content click collapsing the message —
-      `examples/cannet-demo.blf`, `examples/ev-demo/`
+- [x] 98 — signals rendering wrong on a common scale —
+      `examples/common-scale/`. Checked off 2026-08-28: the fix was
+      already accepted as resolved from use, and the furnished BLF +
+      project now reproduce both defect shapes from the experiment
+      matrix deterministically (the README is the acceptance script;
+      `examples/ev-demo/` remains the live-traffic eyeball)
+- [x] 95 — gridview content click collapsing the message —
+      `examples/cannet-demo.blf`, `examples/ev-demo/`. Checked
+      2026-08-28: content clicks select within the expanded grid, only
+      the message line collapses; the RBS half was exercised the same
+      night by the Enter/Space/Shift+Tab keyboard work
 - [ ] 97 — enum value labels on the plot's y axis —
       `examples/ev-zonal/dbc/pack.dbc`, `examples/cannet-demo.mf4`
 - [ ] 96 — long signal and `VAL_` names rendering —

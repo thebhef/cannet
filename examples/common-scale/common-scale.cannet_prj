@@ -1,0 +1,217 @@
+{
+  "schema_version": 7,
+  "project_id": "87706fe0-2d36-5138-a153-9ae42ad83674",
+  "layout": {
+    "activeGroup": "1",
+    "grid": {
+      "height": 1000,
+      "orientation": "HORIZONTAL",
+      "root": {
+        "data": [
+          {
+            "data": {
+              "activeView": "plot-common-scale",
+              "id": "1",
+              "views": [
+                "plot-common-scale"
+              ]
+            },
+            "size": 1600,
+            "type": "leaf"
+          }
+        ],
+        "size": 1000,
+        "type": "branch"
+      },
+      "width": 1600
+    },
+    "panels": {
+      "plot-common-scale": {
+        "contentComponent": "plot",
+        "id": "plot-common-scale",
+        "params": {
+          "areas": [
+            {
+              "id": "mixed",
+              "primarySignalKey": null,
+              "yAxisMode": "unified",
+              "signals": [
+                {
+                  "busId": "fixture",
+                  "color": "#60a5fa",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "MixedPair",
+                  "signalName": "SmallVolts",
+                  "unit": "V"
+                },
+                {
+                  "busId": "fixture",
+                  "color": "#f472b6",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "MixedPair",
+                  "signalName": "BigAmps",
+                  "unit": "A"
+                }
+              ]
+            },
+            {
+              "id": "unitless",
+              "primarySignalKey": null,
+              "yAxisMode": "unified",
+              "signals": [
+                {
+                  "busId": "fixture",
+                  "color": "#34d399",
+                  "extended": false,
+                  "messageId": 257,
+                  "messageName": "BarePair",
+                  "signalName": "SmallBare",
+                  "unit": ""
+                },
+                {
+                  "busId": "fixture",
+                  "color": "#fbbf24",
+                  "extended": false,
+                  "messageId": 257,
+                  "messageName": "BarePair",
+                  "signalName": "BigBare",
+                  "unit": ""
+                }
+              ]
+            }
+          ],
+          "cursorMode": "off",
+          "cursorX": {
+            "a": null,
+            "b": null
+          },
+          "cursorYByArea": {},
+          "followLive": true,
+          "maxRateHz": 15,
+          "measEnabled": false,
+          "measKeys": [
+            "a",
+            "b",
+            "dt",
+            "freq",
+            "valA",
+            "valB",
+            "delta"
+          ],
+          "showDiag": false,
+          "showPoints": "auto",
+          "signalsWidthPx": 300,
+          "elementId": "common-scale"
+        }
+      }
+    }
+  },
+  "elements": [
+    {
+      "id": "common-scale",
+      "kind": "plot",
+      "name": "Common scale",
+      "sources": [
+        "fixture"
+      ],
+      "config": {
+        "areas": [
+          {
+            "id": "mixed",
+            "primarySignalKey": null,
+            "yAxisMode": "unified",
+            "signals": [
+              {
+                "busId": "fixture",
+                "color": "#60a5fa",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "MixedPair",
+                "signalName": "SmallVolts",
+                "unit": "V"
+              },
+              {
+                "busId": "fixture",
+                "color": "#f472b6",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "MixedPair",
+                "signalName": "BigAmps",
+                "unit": "A"
+              }
+            ]
+          },
+          {
+            "id": "unitless",
+            "primarySignalKey": null,
+            "yAxisMode": "unified",
+            "signals": [
+              {
+                "busId": "fixture",
+                "color": "#34d399",
+                "extended": false,
+                "messageId": 257,
+                "messageName": "BarePair",
+                "signalName": "SmallBare",
+                "unit": ""
+              },
+              {
+                "busId": "fixture",
+                "color": "#fbbf24",
+                "extended": false,
+                "messageId": 257,
+                "messageName": "BarePair",
+                "signalName": "BigBare",
+                "unit": ""
+              }
+            ]
+          }
+        ],
+        "cursorMode": "off",
+        "cursorX": {
+          "a": null,
+          "b": null
+        },
+        "cursorYByArea": {},
+        "followLive": true,
+        "maxRateHz": 15,
+        "measEnabled": false,
+        "measKeys": [
+          "a",
+          "b",
+          "dt",
+          "freq",
+          "valA",
+          "valB",
+          "delta"
+        ],
+        "showDiag": false,
+        "showPoints": "auto",
+        "signalsWidthPx": 300
+      }
+    }
+  ],
+  "buses": [
+    {
+      "id": "fixture",
+      "name": "Fixture",
+      "speed_bps": 500000,
+      "fd": false,
+      "color": "#60a5fa"
+    }
+  ],
+  "interface_bindings": [],
+  "dbcs": [
+    {
+      "path": "common-scale.dbc",
+      "buses": [
+        "fixture"
+      ]
+    }
+  ],
+  "remote_address": null,
+  "local_virtual_buses": [],
+  "transmit_frames": []
+}
