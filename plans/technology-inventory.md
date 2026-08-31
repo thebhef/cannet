@@ -589,6 +589,12 @@ crate retained long-term).
   listen for. We watch parent directories with a refcount + filter
   events by exact path because watching a single file directly
   loses the watch on atomic-rename saves on several editors.
+  The macOS feature must be **`macos_fsevent`**: from adoption until
+  2026-08-29 the crate was built with `macos_kqueue`, under which a
+  directory watch delivers *no events* for in-place content writes to
+  the files inside it — every macOS auto-reload (DBC, project, RBS)
+  was silently dead. Found reviewing the RBS disk watch; the backend
+  requirement is pinned by `dbc_watcher`'s in-place-write test.
 
 ### Protocols
 
