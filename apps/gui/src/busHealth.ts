@@ -159,7 +159,7 @@ export interface BusHealthInputs {
 /// and the column asks what hardware is behind the bus, whose honest
 /// answer here is that there is none. The bus's own name is not
 /// repeated — column 1 already carries it.
-const VIRTUAL_BUS_ADAPTER = "virtual bus";
+const VIRTUAL_BUS_ADAPTER = "Virtual Bus";
 
 /// The adapter identity a cell renders, once **any** of it is known.
 ///

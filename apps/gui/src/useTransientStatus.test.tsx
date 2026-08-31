@@ -43,6 +43,26 @@ describe("useTransientStatus", () => {
     expect(result.current).toBe("resting");
   });
 
+  it("an identical notice with a bumped seq re-fires — a repeated attempt is loud", () => {
+    // The connect refusals set the same message on every press; the
+    // per-attempt `seq` is what makes press two re-freeze the label
+    // and re-log, instead of silently changing nothing (owner,
+    // 2026-08-28).
+    const emit = vi.fn();
+    const first: TransientStatus = { text: "Error: unbound", level: "error", seq: 1 };
+    const second: TransientStatus = { text: "Error: unbound", level: "error", seq: 2 };
+    const { result, rerender } = renderHook(
+      ({ t }: { t: TransientStatus | null }) => useTransientStatus("resting", t, emit, DWELL),
+      { initialProps: { t: first as TransientStatus | null } },
+    );
+    expect(emit).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(DWELL));
+    expect(result.current).toBe("resting");
+    rerender({ t: second });
+    expect(result.current).toBe("Error: unbound");
+    expect(emit).toHaveBeenCalledTimes(2);
+  });
+
   it("a different notice re-fires and re-freezes", () => {
     const emit = vi.fn();
     const a: TransientStatus = { text: "Error: a", level: "error" };

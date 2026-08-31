@@ -199,6 +199,25 @@ describe("Connect refuses an unbound bus", () => {
       .slice(callsBefore)
       .filter((c) => c.cmd === "connect_remote_server");
     expect(connectCalls).toHaveLength(0);
+
+    // Every attempt is loud (owner, 2026-08-28): the refusal lands in
+    // the System Messages log too, once per press — the status label
+    // alone cannot show that a second identical refusal happened.
+    const refusalLogs = () =>
+      invokeCalls
+        .slice(callsBefore)
+        .filter(
+          (c) =>
+            c.cmd === "gui_emit_system_log" &&
+            (c.args as { level: string; message: string }).level === "error" &&
+            (c.args as { message: string }).message.includes("Body"),
+        );
+    expect(refusalLogs()).toHaveLength(1);
+    await act(async () => {
+      fireEvent.click(connectionChip());
+    });
+    expect(refusalLogs()).toHaveLength(2);
+    expect(statusText()).toContain("Body");
   }, 30_000);
 });
 

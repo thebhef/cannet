@@ -1021,6 +1021,11 @@ export function TraceView({
                           domId={grid.rowDomId(id)}
                           selected={anySelected && grid.selection.has(id)}
                           onSelect={handleRowClick}
+                          onContextMenu={
+                            frame && onFrameContextMenu != null
+                              ? (e) => handleFrameContextMenu(frame, e)
+                              : undefined
+                          }
                         />
                       );
                     })}

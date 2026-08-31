@@ -35,6 +35,10 @@ export interface DecodedSignalCellProps {
   domId: string;
   selected: boolean;
   onSelect: (rowId: string, e: MouseEvent) => void;
+  /// Right-click, when the disclosing view offers a frame menu: the
+  /// signal line belongs to its message, so it presents the message's
+  /// menu — never the panel-scoped one a bubbled click would reach.
+  onContextMenu?: (e: MouseEvent) => void;
 }
 
 export const DecodedSignalCell = memo(function DecodedSignalCell({
@@ -47,6 +51,7 @@ export const DecodedSignalCell = memo(function DecodedSignalCell({
   domId,
   selected,
   onSelect,
+  onContextMenu,
 }: DecodedSignalCellProps) {
   const tint = resolveColor?.(
     {
@@ -69,6 +74,7 @@ export const DecodedSignalCell = memo(function DecodedSignalCell({
       style={{ position: "absolute", top, left: 0, right: 0, height: SIGNAL_LINE_HEIGHT }}
       draggable
       onClick={(e) => onSelect(rowId, e)}
+      onContextMenu={onContextMenu}
       onDragStart={(e) => {
         // The drag payload is a single ref; the bus comes from the
         // frame's own routing decision (the host's `bus_id`) so a frame

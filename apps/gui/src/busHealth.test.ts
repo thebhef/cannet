@@ -214,7 +214,7 @@ describe("busHealthRows", () => {
     // is the Adapter column — the honest answer for a bus with no
     // hardware behind it is that there is none.
     const r = row("b4");
-    expect(r.adapter).toBe("virtual bus");
+    expect(r.adapter).toBe("Virtual Bus");
     // And not the bus's own name: column 1 already carries that, so
     // repeating it here would say nothing.
     expect(r.name).toBe("Sim");

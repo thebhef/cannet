@@ -1656,24 +1656,32 @@ export function App() {
   // with the `local-vbus://` scheme open an in-process session
   // against the named virtual bus (ADR 0021) — the host dispatches on
   // the binding's `kind`; the frontend treats every binding the same.
+  /// Counts connect presses, so a repeated refusal carries a fresh
+  /// `seq` and stays loud (see `TransientStatus.seq`).
+  const connectAttemptRef = useRef(0);
   const handleConnect = useCallback(async () => {
+    // A refusal is loud on *every* press: `seq` makes an identical
+    // repeat re-flash the label and re-log, where an unchanged notice
+    // would silently change nothing.
+    const refuse = (message: string) => {
+      connectAttemptRef.current += 1;
+      setState({ kind: "error", message, seq: connectAttemptRef.current });
+    };
     // Refuse loudly rather than silently subscribing to nothing: a
     // project with no buses, or with any bus that carries no
     // interface binding, names what's missing.
     const unboundError = unboundBusError(buses, interfaceBindings);
     if (unboundError !== null) {
-      setState({ kind: "error", message: unboundError });
+      refuse(unboundError);
       return;
     }
     if (
       interfaceBindings.some(isLocalBinding) &&
       sidecarAddress === null
     ) {
-      setState({
-        kind: "error",
-        message:
-          "Local sidecar isn't ready yet — wait for the Connection panel's Local row to go green, then Connect.",
-      });
+      refuse(
+        "Local sidecar isn't ready yet — wait for the Connection panel's Local row to go green, then Connect.",
+      );
       return;
     }
     const servers = Array.from(
@@ -1684,10 +1692,7 @@ export function App() {
       ),
     );
     if (servers.length === 0) {
-      setState({
-        kind: "error",
-        message: "No reachable servers — check the Connection panel.",
-      });
+      refuse("No reachable servers — check the Connection panel.");
       return;
     }
 

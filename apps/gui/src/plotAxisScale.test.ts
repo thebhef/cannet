@@ -4,6 +4,7 @@ import {
   axisScaleIsEmpty,
   axisScalesFromRaw,
   denormalizeOnAxis,
+  enumTickLabels,
   enumTickSplits,
   logDecadeSplits,
   normalizeOnAxis,
@@ -288,5 +289,24 @@ describe("enumTickSplits", () => {
     // A `VAL_` table arrives in whatever order the DBC wrote it, and a
     // splits callback owes uPlot ticks inside the scale it was handed.
     expect(enumTickSplits([5, 0, 9, 2], 1, 8, 1)).toEqual([2, 5]);
+  });
+});
+
+describe("enumTickLabels", () => {
+  const table = [
+    { raw: 0, label: "Idle" },
+    { raw: 1, label: "Arming" },
+    { raw: 4, label: "Fault" },
+  ];
+
+  it("speaks the table's words, not its numbers (owner ruling 2026-08-28)", () => {
+    // The individual enum axis is the reader's key to the drawn codes,
+    // so its ticks read the `VAL_` names — a bare code on the gutter
+    // says nothing the tile overlay doesn't already say better.
+    expect(enumTickLabels([0, 1, 4], table)).toEqual(["Idle", "Arming", "Fault"]);
+  });
+
+  it("falls back to the code alone where the table names none", () => {
+    expect(enumTickLabels([0, 3], table)).toEqual(["Idle", "3"]);
   });
 });

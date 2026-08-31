@@ -35,7 +35,10 @@ export type LogState =
   | { kind: "loading"; result: CaptureResult }
   | { kind: "running"; result: CaptureResult }
   | { kind: "done"; result: CaptureResult; total: number }
-  | { kind: "error"; message: string };
+  // `seq` distinguishes repeated identical errors (a connect refusal
+  // pressed twice): each attempt bumps it, so the notice re-flashes
+  // and re-logs instead of silently changing nothing.
+  | { kind: "error"; message: string; seq?: number };
 
 /// The source path out of a `CaptureResult`, whichever format it came
 /// from.
@@ -54,6 +57,9 @@ export type RemoteStatus =
 export interface TransientStatus {
   text: string;
   level: SystemLogLevel;
+  /// Distinguishes repeated identical notices — part of the notice's
+  /// identity, so bumping it re-flashes and re-logs the same words.
+  seq?: number;
 }
 
 /// The status line split into its resting readout and any transient
@@ -142,7 +148,10 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
         },
       };
     case "error":
-      return { resting: idlePrompt, transient: { text: `Error: ${state.message}`, level: "error" } };
+      return {
+        resting: idlePrompt,
+        transient: { text: `Error: ${state.message}`, level: "error", seq: state.seq },
+      };
   }
 }
 

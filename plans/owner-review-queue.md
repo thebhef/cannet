@@ -44,7 +44,9 @@ that task's status log.
       criteria met** (the fourth was retired into task 91 at the time)
 - [ ] 88 — bus assignment governs decode — `examples/legacy-project/`,
       `examples/colliding-dbcs/`, `examples/capture-features/`
-- [ ] 92 — one resolution rule — `examples/colliding-dbcs/`
+- [ ] 92 — one resolution rule — `examples/colliding-dbcs/`. Reviewed
+      2026-08-28; open ask before it ticks: undo/redo should apply to
+      signal-mapping selections — to be tackled next
 - [x] 91 — `frame_index_at_ns` on an unsorted store —
       `examples/time-origins/wall-clock-out-of-order.blf`
 - [x] 93 — source comments naming tasks, plus the CI lint **§**.
@@ -63,16 +65,21 @@ that task's status log.
       2026-08-28: content clicks select within the expanded grid, only
       the message line collapses; the RBS half was exercised the same
       night by the Enter/Space/Shift+Tab keyboard work
-- [ ] 97 — enum value labels on the plot's y axis —
-      `examples/ev-zonal/dbc/pack.dbc`, `examples/cannet-demo.mf4`
-- [ ] 96 — long signal and `VAL_` names rendering —
-      `examples/ev-demo/dbc/bms.dbc`, `examples/ev-zonal/dbc/zonal.dbc`
+- [x] 97 — enum value labels on the plot's y axis —
+      `examples/ev-zonal/dbc/pack.dbc`, `examples/cannet-demo.mf4`.
+      Checked 2026-08-28 with one correction applied on the spot: the
+      individual enum axis now labels its ticks with the `VAL_` names
+      instead of the bare codes
+- [x] 96 — long signal and `VAL_` names rendering —
+      `examples/ev-demo/dbc/bms.dbc`, `examples/ev-zonal/dbc/zonal.dbc`.
+      Checked 2026-08-28 — looks good
 - [ ] 94 — server bind defaults, mDNS honesty, servers panel
 - [ ] 99 — transmit controls (the false Space-in-RBS premise was fixed
       by 109 phase 3, 2026-08-23) — `examples/capture-features/`,
       `examples/legacy-project/`
-- [ ] 100 — counter/CRC declared in a DBC populates the editor —
-      `examples/cannet-demo.dbc`, `examples/ev-demo/`
+- [x] 100 — counter/CRC declared in a DBC populates the editor —
+      `examples/cannet-demo.dbc`, `examples/ev-demo/`. Checked
+      2026-08-28 — looks good
 - [x] 105 — unfinalized-BLF recovery, read-only **§** —
       `examples/capture-features/interrupted.blf`,
       `examples/capture-features/interrupted-tail.blf`. **All 5
@@ -119,19 +126,28 @@ that task's status log.
       `examples/capture-features/`
 - [ ] 109 — usage feedback from the chip-era build — item 2 needs a
       Vector adapter, not a file
-- [ ] 115 — trace row menu keeps only the event action —
-      `examples/cannet-demo.blf` (queue item
-      1.23 no longer exists post-reframe; recorded here instead — see
+- [x] 115 — trace row menu keeps only the event action —
+      `examples/cannet-demo.blf`. Checked 2026-08-28 after one rework:
+      right-click on a disclosed signal line fell through to the
+      sources picker (the lines are siblings of their row since the
+      task-95 restructure); it now presents the message's own menu
+      (queue item 1.23 no longer exists post-reframe; recorded here
+      instead — see
       [task 115](tasks/0115-trace-row-menu-scope.md))
-- [ ] 117 — refuse to connect without a bound bus —
-      `examples/capture-features/` (its `Aux` bus is unbound) (queue item
+- [x] 117 — refuse to connect without a bound bus —
+      `examples/capture-features/` (its `Aux` bus is unbound). Checked
+      2026-08-28: refusal observed working, and per the owner's note
+      every rejected attempt now re-flashes the status label and lands
+      in the log (per-attempt `seq` on the notice); the
+      disable-Connect-with-tooltip follow-up is in the backlog (queue item
       1.34 no longer exists post-reframe; recorded here instead — see
       [task 117](tasks/0117-refuse-to-connect-without-a-bound-bus.md))
-- [ ] 114 — one name per thing: the bar draws the command registry's
+- [x] 114 — one name per thing: the bar draws the command registry's
       words, its Database chip shows the view, and a virtual bus reads
-      `virtual bus` in the Adapter column. **The two toolbar halves are
-      signed off with the bar (2026-08-28); only the Adapter-column
-      reading remains to eyeball** (queue items 1.37, 1.33b and
+      **Virtual Bus** in the Adapter column. Checked 2026-08-28: the
+      toolbar halves were signed off with the bar, and the owner
+      eyeballed the Adapter column — present, recased to Title Case on
+      the spot (queue items 1.37, 1.33b and
       1.17 no longer exist post-reframe; their closures are in
       [task 114](tasks/0114-one-name-per-thing.md)'s status log) —
       `examples/capture-features/`
