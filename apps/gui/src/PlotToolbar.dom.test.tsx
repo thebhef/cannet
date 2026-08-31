@@ -101,17 +101,14 @@ const BAR: readonly [string, string][] = [
   ["Clear", "Clear"],
   ["All Data", "widen the window to the whole session buffer and fit the x-axis to it"],
   ["Fit Data", "fit x axis to the data"],
-  [
-    "Fit Y",
-    "fit each area's y-axis to its currently visible data — useful after zooming in",
-  ],
+  ["Fit Y", "fit each y axis to its visible data"],
   ["Add Plot Area", "add plot area"],
   ["Follow Live", "follow the live edge"],
   ["Show Points", null as unknown as string],
   ["X Cursors", "x cursors — vertical A / B lines placed on click"],
   ["Y Cursors", "y cursors — horizontal H1 / H2 lines placed on click"],
   ["Notes", "notes — click places a timeline note"],
-  ["Clear Cursors", "remove all placed cursors"],
+  ["Clear Cursors", "clear measurement cursors"],
 ];
 
 /// Every chip on the bar, in DOM order — including the run controls

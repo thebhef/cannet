@@ -166,12 +166,13 @@ export function Toolbar({
     "sep",
     { command: "capture.clear", icon: "clear", disabled: captureEmpty },
     "sep",
-    "add",
-    "sep",
-    { command: "panel.show.dbc", icon: "db" },
-    { command: "panel.show.projectGraph", icon: "graph" },
-    { command: "panel.show.events", icon: "flag" },
+    // The panel launchers as one group, the Add menu at its end: the
+    // four named views, then the way to any other panel.
     { command: "panel.show.project", icon: "tree" },
+    { command: "panel.show.projectGraph", icon: "graph" },
+    { command: "panel.show.dbc", icon: "db" },
+    { command: "panel.show.events", icon: "flag" },
+    "add",
   ];
 
   const renderItem = (item: ToolbarItem, i: number) => {
