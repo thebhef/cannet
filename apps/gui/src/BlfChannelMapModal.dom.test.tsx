@@ -409,4 +409,66 @@ describe("BlfChannelMapModal", () => {
       messages: true,
     });
   });
+
+  // The dialog appears seconds after the click that caused it (the
+  // census walks the file in between), so nothing about the browser's
+  // focus follows it naturally: without management, focus stays on the
+  // launcher behind the overlay and Tab walks the toolbar, not the
+  // dialog.
+  describe("focus and dismissal", () => {
+    it("moves focus into the dialog when it opens", () => {
+      render(
+        <BlfChannelMapModal
+          blfPath="/tmp/cap.blf"
+          scan={scanFixture()}
+          buses={buses}
+          onConfirm={noop}
+          onCancel={noop}
+        />,
+      );
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    });
+
+    it("dismisses on Escape", () => {
+      const onCancel = vi.fn();
+      render(
+        <BlfChannelMapModal
+          blfPath="/tmp/cap.blf"
+          scan={scanFixture()}
+          buses={buses}
+          onConfirm={noop}
+          onCancel={onCancel}
+        />,
+      );
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps Tab inside the dialog at both ends", () => {
+      render(
+        <BlfChannelMapModal
+          blfPath="/tmp/cap.blf"
+          scan={scanFixture()}
+          buses={buses}
+          onConfirm={noop}
+          onCancel={noop}
+        />,
+      );
+      const dialog = screen.getByRole("dialog");
+      // Tab from the last control wraps to the first, not out of the
+      // dialog into the app behind it.
+      const open = screen.getByRole("button", { name: "Open" });
+      open.focus();
+      fireEvent.keyDown(open, { key: "Tab" });
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).not.toBe(open);
+      // And Shift+Tab from the first control wraps to the last.
+      const first = screen.getByLabelText("channel 0 bus");
+      first.focus();
+      fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).toBe(open);
+    });
+  });
 });
