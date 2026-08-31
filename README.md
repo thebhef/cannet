@@ -2885,8 +2885,8 @@ for the LGPL analysis that motivates this layout.
 Phase 9 makes captures persistable and re-loadable, with user-placed
 notes round-tripping alongside.
 
-**Save Capture**. The toolbar grows a **Capture** chip (*Save
-capture…*)
+**Save Capture**. The toolbar grows an **Export** chip (*Save
+capture…*), sitting beside **Import** with the mirrored arrow
 (disabled when the session buffer is empty). It writes the *entire*
 session buffer — every frame on every bus, classic / FD / error /
 remote — to a single `.blf` file via the new
@@ -3033,8 +3033,8 @@ the object type of the event each one is attached to. Which record a
 kind rides is a property of the kind, so the per-kind checklist names
 it and filtering by kind is filtering by record type.
 
-**Recent captures**. The toolbar grows a **Recent** menu next to
-**Import** that lists the last 8 opened BLF and MDF paths
+**Recent captures**. The toolbar grows a **Recent** menu beside the
+**Import** / **Export** pair that lists the last 8 opened BLF and MDF paths
 alike, persisted host-side
 ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)).
 Picking one fast-paths through the standard Import-trace flow,

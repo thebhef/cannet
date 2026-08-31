@@ -159,7 +159,7 @@ async function saveThrough(path: string | null) {
     emitTauri("trace-grew", grew(1234));
   });
   await act(async () => {
-    fireEvent.click(toolbarChip("Capture"));
+    fireEvent.click(toolbarChip("Export"));
   });
   await waitFor(() => {
     if (saveOptions.length === 0) throw new Error("save dialog not opened yet");

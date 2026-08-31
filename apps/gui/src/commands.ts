@@ -174,7 +174,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     id: "capture.save",
     label: "Save capture…",
     category: "Capture",
-    bar: { label: "Capture" },
+    // "Export" on the bar: the outward motion, sitting beside Import's
+    // inward one — the palette phrase keeps the fuller name.
+    bar: { label: "Export" },
   },
   { id: "panel.add.trace", label: "Add trace panel", category: "Panels", bar: { label: "Trace" } },
   {

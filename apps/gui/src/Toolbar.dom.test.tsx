@@ -28,9 +28,9 @@ const BAR: readonly [string, string | null, string | null][] = [
   ["Save project", "Save", "project.save"],
   ["More save actions", "▾", null],
   ["Import trace… (BLF / MDF)", "Import", "trace.import"],
+  ["Save capture…", "Export", "capture.save"],
   ["Recent captures", "Recent", null],
   ["Clear capture", "Clear", "capture.clear"],
-  ["Save capture…", "Capture", "capture.save"],
   ["Add a panel", "Add\u00a0\u25be", null],
   ["Database panel", "Database", "panel.show.dbc"],
   ["Graph panel", null, "panel.show.projectGraph"],
@@ -184,6 +184,18 @@ describe("Toolbar", () => {
 
     for (const chip of barChips()) fireEvent.click(chip);
     expect(onRun.mock.calls.map(([id]) => id as string)).not.toContain("dbc.add");
+  });
+
+  it("draws Capture with the export arrow, the mirror of Import's", () => {
+    // Import is an arrow down into the tray; saving a capture is the
+    // opposite motion, so its chip draws the arrow up out of the same
+    // tray — not the project-Save floppy it used to share.
+    renderBar();
+    const capture = barChips().find((c) => c.getAttribute("title") === "Save capture…")!;
+    const paths = Array.from(capture.querySelectorAll("svg path")).map((p) =>
+      p.getAttribute("d"),
+    );
+    expect(paths).toEqual(["M7 8.5v-7M4.5 4L7 1.5 9.5 4", "M1.5 9.5v3h11v-3"]);
   });
 
   it("offers nothing to clear or save while nothing has been captured", () => {

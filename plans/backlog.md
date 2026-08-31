@@ -406,6 +406,13 @@ trip over it.
   other surfaces that default to "every bus" via a wildcard
   (sink/source selectors, transmit fan-out, etc.).
 
+- `[ux]` **The goto-time prompt (`Mod+T`) should parse richer input and
+  preview what it understood.** Accept `dd:hh:mm:ss`-style durations
+  (today it takes seconds), and date/times; while typing, show the
+  parsed reading in a dim preview beside the input — e.g. `3:10:05` →
+  "3h 10m 5s" — the way macOS Spotlight previews math, so what will be
+  submitted is visible before Enter. (Owner, task-19 review 2026-08-28.)
+
 ### Graph view (and bus topology)
 
 Items surfaced during the Phase-6.5 default-receive-all / graph-view follow-up

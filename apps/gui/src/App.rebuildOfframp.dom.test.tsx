@@ -283,7 +283,7 @@ describe("Cold pyramid rebuild — discard offramp", () => {
     await boot();
     // A capture is loaded: the capture-scoped toolbar actions are live.
     expect(toolbarChip("Clear").disabled).toBe(false);
-    expect(toolbarChip("Capture").disabled).toBe(false);
+    expect(toolbarChip("Export").disabled).toBe(false);
 
     const discard = chip()?.querySelector("button");
     expect(discard).not.toBeNull();
@@ -299,7 +299,7 @@ describe("Cold pyramid rebuild — discard offramp", () => {
     // …and the session is empty, not half-deleted: no frames, so nothing
     // capture-scoped is offered.
     expect(toolbarChip("Clear").disabled).toBe(true);
-    expect(toolbarChip("Capture").disabled).toBe(true);
+    expect(toolbarChip("Export").disabled).toBe(true);
     // The announcement is over with the capture it was about.
     expect(chip()).toBeNull();
   });

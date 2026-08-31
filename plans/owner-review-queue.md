@@ -85,8 +85,12 @@ that task's status log.
 - [ ] 106 — any-bus series ruling, sample-order sweep —
       `examples/legacy-project/legacy.cannet_prj`,
       `examples/capture-features/annotated.mf4`
-- [ ] 19 — typed palette prompts, `Mod+T`/`Mod+E`, event-row keys —
-      `examples/capture-features/annotated.blf`
+- [x] 19 — typed palette prompts, `Mod+T`/`Mod+E`, event-row keys —
+      `examples/capture-features/annotated.blf`. Checked 2026-08-28;
+      two adjacent fixes landed with the review (the channel-map dialog
+      focuses Open so Enter confirms; the save-capture chip reads
+      **Export**, draws the mirror of Import's arrow, and sits beside
+      Import) and the richer `Mod+T` parsing wish went to the backlog
 - [x] 110 — chain CI repair; Windows MSI bundle target dropped **§**.
       It carried no criteria; its "Every job, green" table is
       **ratified as them**, plus the three fixes it made — **all 4
