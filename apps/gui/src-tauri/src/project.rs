@@ -775,15 +775,15 @@ mod tests {
         );
     }
 
-    /// The legacy project is the shape a file saved before the current
-    /// rules carries: a database assigned to nothing, plot series with no
-    /// bus behind them, and a persisted `run` flag from when opening a
-    /// project could start transmitting. Reading it must not resurrect any
-    /// of that — the assertions here are what the file *states*, and the
-    /// behaviour it exists to demonstrate is that none of it takes effect.
+    /// The mapping-repair project is the shape of a file with nothing
+    /// mapped: a database assigned to nothing, plot series with no bus
+    /// behind them, and a persisted `run` flag. Reading it must not give
+    /// any of that effect — the assertions here are what the file
+    /// *states*, and the behaviour it exists to demonstrate is that none
+    /// of it takes effect until the user maps it.
     #[test]
-    fn parses_the_checked_in_legacy_example_project() {
-        let p = parse_example("legacy-project/legacy.cannet_prj");
+    fn parses_the_checked_in_mapping_repair_example_project() {
+        let p = parse_example("mapping-repair/mapping-repair.cannet_prj");
         assert_eq!(p.dbcs.len(), 1);
         assert!(
             p.dbcs[0].buses.is_empty(),
@@ -808,7 +808,7 @@ mod tests {
             signals
                 .iter()
                 .all(|s| s.get("busId") == Some(&serde_json::Value::Null)),
-            "every series must carry the pre-rule null bus",
+            "every series must carry the null bus the mapping panel repairs",
         );
     }
 

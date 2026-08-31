@@ -623,7 +623,7 @@ mod tests {
 
         for relative in [
             "capture-features/capture-features.cannet_rbs",
-            "legacy-project/legacy.cannet_rbs",
+            "mapping-repair/mapping-repair.cannet_rbs",
         ] {
             let file = RbsFile::parse(&read(examples.join(relative))).unwrap();
             for (bus_key, bus) in &file.buses {

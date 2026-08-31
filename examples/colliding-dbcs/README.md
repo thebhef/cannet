@@ -99,8 +99,8 @@ as a project that outlived its database experiences it):
 at once. Every repair is one undo step (`Mod+Z`).
 
 The remaining shape — a reference that names **no bus**, repaired by
-re-pointing it at a bus that decodes — needs a file saved before
-per-bus binding: `../legacy-project/` carries it.
+re-pointing it at a bus that decodes — needs a project whose series
+name no bus: `../mapping-repair/` carries it.
 
 ## What checks it
 

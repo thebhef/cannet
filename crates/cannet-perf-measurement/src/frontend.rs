@@ -645,15 +645,19 @@ pub fn check_frontend(
     verdicts
 }
 
-/// The three memory-drift metrics [`check_frontend_gate`] judges on the
-/// **median** across a gate's reports rather than per-run, once more than
-/// one report is given. Kept as a name list (rather than re-deriving from
-/// [`check_frontend`]'s output) so the drift family is explicit at a
-/// glance.
-const DRIFT_METRIC_NAMES: [&str; 3] = [
+/// The metrics [`check_frontend_gate`] judges on the **median** across a
+/// gate's reports rather than per-run, once more than one report is
+/// given: the three memory-drift metrics, plus the two extreme-value
+/// metrics the owner moved onto the same rule on charted evidence (ADR
+/// 0031, 2026-08-30 amendment). Kept as a name list (rather than
+/// re-deriving from [`check_frontend`]'s output) so the family is
+/// explicit at a glance.
+const MEDIAN_METRIC_NAMES: [&str; 5] = [
     "jsheap_mb_drift_per_min",
     "renderer_mb_drift_per_min",
     "tree_mb_drift_per_min",
+    "lag_ms_max",
+    "rx_gap_short_frac_worst",
 ];
 
 /// Statistical median (the average of the two middle values on an even
@@ -671,20 +675,22 @@ fn median(mut values: Vec<f64>) -> f64 {
 /// Judge a gate's frontend report(s) against a baseline.
 ///
 /// With exactly one report this is [`check_frontend`], unchanged. With
-/// more than one, every metric except the three memory-drift rows
-/// (`{jsheap,renderer,tree}_mb_drift_per_min`) is still judged **per
-/// report** — one verdict row per report, worst-run-fails-the-gate
-/// preserved — while the drift family instead gates the **median** of
-/// the reports' values against the same limit (ADR 0031): a
-/// least-squares slope over a 60 s capture window is a property of
-/// where in a memory ramp the window landed, so its worst run across a
-/// gate is a noisier statistic than a latency maximum, which at least
-/// corresponds to something a user felt. The limit itself is untouched;
-/// only the statistic gated against it
-/// moves from worst-run to median. Each drift verdict's metric name is
-/// suffixed `(median of N)` so the printed table records what it was
-/// judged on. Still baseline-armed: a drift metric whose baseline is
-/// absent (≤ 0) stays inert, exactly as [`check_frontend`] leaves it.
+/// more than one, every metric except the `MEDIAN_METRIC_NAMES` rows
+/// is still judged **per report** — one verdict row per report,
+/// worst-run-fails-the-gate preserved — while that family instead gates
+/// the **median** of the reports' values against the same limit (ADR
+/// 0031): a least-squares slope over a 60 s capture window is a
+/// property of where in a memory ramp the window landed, and
+/// `lag_ms_max` / `rx_gap_short_frac_worst` are extreme-value
+/// statistics whose spread on an unchanged binary reached 27× and
+/// 1163× the median's (owner ruling 2026-08-30). The limit itself is
+/// untouched; only the statistic gated against it moves from worst-run
+/// to median. Each median verdict's metric name is suffixed
+/// `(median of N)` so the printed table records what it was judged on.
+/// Still baseline-armed where the per-run row is: a drift or rx-gap
+/// metric whose baseline is absent (≤ 0) stays inert, exactly as
+/// [`check_frontend`] leaves it; `lag_ms_max` is always armed, exactly
+/// as its per-run row is.
 ///
 /// # Panics
 /// `currents` must be non-empty.
@@ -705,14 +711,16 @@ pub fn check_frontend_gate(
     let mut verdicts: Vec<Verdict> = currents
         .iter()
         .flat_map(|cur| check_frontend(baseline, cur, expected))
-        .filter(|v| !DRIFT_METRIC_NAMES.contains(&v.metric))
+        .filter(|v| !MEDIAN_METRIC_NAMES.contains(&v.metric))
         .collect();
 
     let n = currents.len();
-    for (name, base_val, values) in [
+    for (name, base_val, floor, armed, values) in [
         (
             "jsheap_mb_drift_per_min",
             baseline.jsheap_mb_drift_per_min,
+            ftol::MEM_DRIFT_FLOOR_MB_PER_MIN,
+            baseline.jsheap_mb_drift_per_min > 0.0,
             currents
                 .iter()
                 .map(|m| m.jsheap_mb_drift_per_min)
@@ -721,6 +729,8 @@ pub fn check_frontend_gate(
         (
             "renderer_mb_drift_per_min",
             baseline.renderer_mb_drift_per_min,
+            ftol::MEM_DRIFT_FLOOR_MB_PER_MIN,
+            baseline.renderer_mb_drift_per_min > 0.0,
             currents
                 .iter()
                 .map(|m| m.renderer_mb_drift_per_min)
@@ -729,19 +739,38 @@ pub fn check_frontend_gate(
         (
             "tree_mb_drift_per_min",
             baseline.tree_mb_drift_per_min,
+            ftol::MEM_DRIFT_FLOOR_MB_PER_MIN,
+            baseline.tree_mb_drift_per_min > 0.0,
             currents
                 .iter()
                 .map(|m| m.tree_mb_drift_per_min)
                 .collect::<Vec<_>>(),
         ),
+        (
+            "lag_ms_max",
+            baseline.lag_ms_max,
+            ftol::LAG_FLOOR_MS,
+            true, // the render tier is always armed, matching its per-run row
+            currents.iter().map(|m| m.lag_ms_max).collect::<Vec<_>>(),
+        ),
+        (
+            "rx_gap_short_frac_worst",
+            baseline.rx_gap_short_frac_worst,
+            ftol::RX_GAP_SHORT_FRAC_FLOOR,
+            baseline.rx_gap_short_frac_worst > 0.0,
+            currents
+                .iter()
+                .map(|m| m.rx_gap_short_frac_worst)
+                .collect::<Vec<_>>(),
+        ),
     ] {
-        if base_val <= 0.0 {
-            continue; // inert until the baseline carries the memory tier
+        if !armed {
+            continue; // inert until the baseline carries this tier
         }
-        let limit = base_val * ftol::FACTOR + ftol::MEM_DRIFT_FLOOR_MB_PER_MIN;
+        let limit = base_val * ftol::FACTOR + floor;
         let med = median(values);
         // Leaked, not stored: `check_frontend_gate` runs once per short-lived
-        // `check` invocation, and at most three labels are leaked per call.
+        // `check` invocation, and at most five labels are leaked per call.
         let metric: &'static str = Box::leak(format!("{name} (median of {n})").into_boxed_str());
         verdicts.push(Verdict {
             mode: "frontend",
@@ -1396,6 +1425,90 @@ mod tests {
         assert!(
             !verdicts.iter().any(|v| v.metric.contains("_drift_per_min")),
             "drift gates must stay inert until the baseline carries them"
+        );
+    }
+
+    #[test]
+    fn lag_ms_max_gates_on_the_median_not_the_worst_run() {
+        // ADR 0031 (owner ruling 2026-08-30): eight captures of one
+        // unchanged binary spanned 2.8–37.6 ms against a 41 ms limit, so
+        // a lone outlier run must not fail the gate on its own.
+        let base = drift_armed_base(); // lag base 27 ⇒ limit 27*2+20 = 74
+        let lag = |v: f64| {
+            let mut m = base.clone();
+            m.lag_ms_max = v;
+            m
+        };
+        let currents = [lag(90.0), lag(30.0), lag(28.0)]; // 90 alone breaches
+        let verdicts = check_frontend_gate(&base, &currents, Expected::default());
+        let rows: Vec<&Verdict> = verdicts
+            .iter()
+            .filter(|v| v.metric.starts_with("lag_ms_max"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one median row, not one per report");
+        assert_eq!(rows[0].metric, "lag_ms_max (median of 3)");
+        assert!(
+            rows[0].pass,
+            "median of [90, 30, 28] = 30 must pass the 74 limit"
+        );
+        approx(rows[0].current, 30.0);
+    }
+
+    #[test]
+    fn a_consistently_elevated_lag_median_still_fails() {
+        // The median rule is not a rubber stamp: a build whose lag is
+        // elevated on every run fails the gate on the same limit.
+        let base = drift_armed_base();
+        let lag = |v: f64| {
+            let mut m = base.clone();
+            m.lag_ms_max = v;
+            m
+        };
+        let currents = [lag(80.0), lag(90.0), lag(78.0)];
+        let verdicts = check_frontend_gate(&base, &currents, Expected::default());
+        let row = verdicts
+            .iter()
+            .find(|v| v.metric.starts_with("lag_ms_max"))
+            .unwrap();
+        assert!(
+            !row.pass,
+            "median of [80, 90, 78] = 80 must fail the 74 limit"
+        );
+    }
+
+    #[test]
+    fn rx_gap_short_frac_gates_on_the_median_and_stays_baseline_armed() {
+        // Same 2026-08-30 ruling as lag_ms_max; the rx-gap tier keeps its
+        // baseline arming (a sim-only baseline holds 0 ⇒ inert).
+        let mut base = drift_armed_base();
+        base.rx_gap_p95_ratio_worst = 1.2;
+        base.rx_gap_short_frac_worst = 0.005; // limit = 0.005*2+0.15 = 0.16
+        let frac = |v: f64| {
+            let mut m = base.clone();
+            m.rx_gap_short_frac_worst = v;
+            m
+        };
+        let currents = [frac(0.3), frac(0.004), frac(0.006)]; // 0.3 alone breaches
+        let verdicts = check_frontend_gate(&base, &currents, Expected::default());
+        let rows: Vec<&Verdict> = verdicts
+            .iter()
+            .filter(|v| v.metric.starts_with("rx_gap_short_frac_worst"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one median row, not one per report");
+        assert_eq!(rows[0].metric, "rx_gap_short_frac_worst (median of 3)");
+        assert!(
+            rows[0].pass,
+            "median of [0.3, 0.004, 0.006] = 0.006 must pass the 0.16 limit"
+        );
+
+        let unarmed = drift_armed_base(); // rx-gap tier zero
+        let currents = [unarmed.clone(), unarmed.clone(), unarmed.clone()];
+        let verdicts = check_frontend_gate(&unarmed, &currents, Expected::default());
+        assert!(
+            !verdicts
+                .iter()
+                .any(|v| v.metric.starts_with("rx_gap_short_frac_worst")),
+            "an unarmed rx-gap baseline must stay inert under the median gate"
         );
     }
 }

@@ -1243,10 +1243,7 @@ mod tests {
             "Plot 1",
             vec![recorded("PackVolts", "PackStatus", "V", 0.1)],
         )]);
-        let rows = build(
-            &reg,
-            &[("a.dbc", &a, &buses), ("b.dbc", &b, &buses)],
-        );
+        let rows = build(&reg, &[("a.dbc", &a, &buses), ("b.dbc", &b, &buses)]);
 
         assert_eq!(rows[0].status, ViewSignalStatus::Ambiguous);
         assert!(
@@ -1291,10 +1288,7 @@ mod tests {
             .iter()
             .map(|c| (c.dbc_path.as_str(), c.signal_name.as_str()))
             .collect();
-        assert_eq!(
-            pairs,
-            vec![("a.dbc", "PackVolts"), ("b.dbc", "PackVolts")]
-        );
+        assert_eq!(pairs, vec![("a.dbc", "PackVolts"), ("b.dbc", "PackVolts")]);
     }
 
     #[test]
@@ -1323,10 +1317,7 @@ mod tests {
             .iter()
             .map(|c| (c.dbc_path.as_str(), c.signal_name.as_str()))
             .collect();
-        assert_eq!(
-            pairs,
-            vec![("a.dbc", "PackVolts"), ("b.dbc", "PackVolts")]
-        );
+        assert_eq!(pairs, vec![("a.dbc", "PackVolts"), ("b.dbc", "PackVolts")]);
     }
 
     #[test]
@@ -1366,7 +1357,10 @@ mod tests {
         // And like the Ambiguous row it came from, the offer is
         // databases only — never the message's other signals.
         assert!(
-            rows[0].candidates.iter().all(|c| c.signal_name == "PackVolts"),
+            rows[0]
+                .candidates
+                .iter()
+                .all(|c| c.signal_name == "PackVolts"),
             "a picked row's offer is which database, not which signal: {:?}",
             rows[0].candidates,
         );
