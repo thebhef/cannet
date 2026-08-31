@@ -31,13 +31,15 @@ export type RbsSignalColumnKey =
   | "value"
   | "default"
   | "unit"
-  | "detail";
+  | "detail"
+  | "remove";
 
 /// Columns with no sort at all — the prototype's own choice: a value
 /// cell and a free-text detail have nothing meaningful to order by.
 export const RBS_SIGNAL_UNSORTABLE: ReadonlySet<RbsSignalColumnKey> = new Set([
   "value",
   "detail",
+  "remove",
 ]);
 
 export const RBS_SIGNAL_COLUMN_DEFS: readonly ColumnDef<RbsSignalColumnKey>[] = [
@@ -54,6 +56,10 @@ export const RBS_SIGNAL_COLUMN_DEFS: readonly ColumnDef<RbsSignalColumnKey>[] = 
   { key: "default", label: "default", className: "col-rs-default", defaultWidth: 110 },
   { key: "unit", label: "unit", className: "col-rs-unit", defaultWidth: 70 },
   { key: "detail", label: "detail", className: "col-rs-detail", defaultWidth: 260, flex: true },
+  // The row's removal — its own column rather than a control floating
+  // in the detail text (owner ruling 2026-08-30). No label: the trash
+  // says it, and only removable rows render one.
+  { key: "remove", label: "", className: "col-rs-remove", defaultWidth: 36 },
 ];
 
 export type RbsSignalColumnState = ColumnState<RbsSignalColumnKey>;
@@ -120,6 +126,7 @@ function compareByColumn(key: RbsSignalColumnKey, a: RbsSignalRow, b: RbsSignalR
     }
     case "value":
     case "detail":
+    case "remove":
       return 0;
   }
 }
