@@ -730,6 +730,11 @@ pub fn run() -> ! {
             // connect surface always has a current list of the servers
             // advertising on this subnet (ADR 0040).
             server_browse::spawn(app.handle().clone());
+            // And watch every server the trust store can reach for the
+            // app's lifetime, so online state and interface lists are
+            // live before any panel asks — a server on another subnet
+            // has no mDNS advertisement to carry that news.
+            interfaces::sync_stored_watches(app.handle());
             // Build the DBC filesystem watcher. Construction
             // is the only step that needs the `AppHandle` (the
             // watcher's event callback emits events / pushes system

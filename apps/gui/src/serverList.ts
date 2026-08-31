@@ -55,7 +55,9 @@ export interface ServerRow {
   host: string | null;
   /// The server's release, from its `ver` TXT key.
   version: string | null;
-  /// Whether the server is advertising right now.
+  /// Whether the server is reachable right now: advertising on the
+  /// subnet, or holding a live interface stream with this host — the
+  /// only evidence available for a server on another subnet.
   online: boolean;
   trust: TrustState;
   fingerprint: string | null;

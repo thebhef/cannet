@@ -28,7 +28,7 @@
 //! follows the pending [`TrustPrompt::IdentityChanged`] the refused
 //! attempt left behind — a real observation, never a guess.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -132,7 +132,9 @@ pub struct ServerRow {
     /// The server's release, from its `ver` TXT key. Discovered rows
     /// only.
     pub version: Option<String>,
-    /// Whether the server is advertising right now.
+    /// Whether the server is reachable right now: advertising on the
+    /// subnet, or holding a live interface stream with this host —
+    /// the only evidence available for a server on another subnet.
     pub online: bool,
     pub trust: TrustState,
     /// The accepted fingerprint, in the `SHA256:` form the server
@@ -197,6 +199,7 @@ pub fn merge(
     trusted: &BTreeMap<String, TrustEntry>,
     prompts: &BTreeMap<String, TrustPrompt>,
     clocks: &BTreeMap<String, ServerClock>,
+    connected: &BTreeSet<String>,
     sidecar: Option<&str>,
     browse: BrowseStatus,
 ) -> ServerList {
@@ -233,6 +236,12 @@ pub fn merge(
             .or_insert_with(|| offline_row(key, &TrustEntry::default()));
     }
     for (key, row) in &mut rows {
+        // A live interface stream is direct evidence the server is up,
+        // and the only evidence there is for one on another subnet,
+        // where mDNS advertising cannot reach this machine.
+        if connected.contains(key) {
+            row.online = true;
+        }
         row.prompt = by_key.get(key).map(|p| (*p).clone());
         if matches!(row.prompt, Some(TrustPrompt::IdentityChanged { .. })) {
             row.trust = TrustState::FingerprintChanged;
@@ -313,6 +322,12 @@ fn build(app: &AppHandle) -> ServerList {
         &trusted,
         &prompts,
         &live_clocks(app),
+        // The cache keys watches by whatever spelling opened them; the
+        // rows are keyed by `server_key`, so normalize before matching.
+        &crate::interfaces::connected_addresses(app)
+            .iter()
+            .map(|a| server_key(a))
+            .collect(),
         crate::sidecar::bound_address(app).as_deref(),
         browse,
     )
@@ -486,10 +501,31 @@ mod tests {
             trusted,
             prompts,
             &BTreeMap::new(),
+            &BTreeSet::new(),
             None,
             BrowseStatus::Running,
         )
         .servers
+    }
+
+    #[test]
+    fn a_live_watch_stream_marks_a_row_online_without_mdns() {
+        // The rippy case: a server on another subnet advertises
+        // nowhere this machine can hear, so mDNS says nothing — but
+        // the host is holding an open interface stream to it, which is
+        // better evidence of "online" than an advertisement.
+        let rows = merge(
+            &[],
+            &store(&[("rippy.hefnet.thebhef.local:50051", pinned())]),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeSet::from(["rippy.hefnet.thebhef.local:50051".to_string()]),
+            None,
+            BrowseStatus::Running,
+        )
+        .servers;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].online, "a streaming server is online");
     }
 
     #[test]
@@ -760,6 +796,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
+                &BTreeSet::new(),
                 None,
                 status.clone(),
             );
@@ -775,6 +812,7 @@ mod tests {
             &store(&[("192.168.1.10:50051", pinned())]),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeSet::new(),
             None,
             BrowseStatus::Failed {
                 detail: "address in use".into(),
@@ -891,6 +929,7 @@ mod tests {
             &store(&[("192.168.1.10:50051", pinned())]),
             &BTreeMap::new(),
             &clocks,
+            &BTreeSet::new(),
             None,
             BrowseStatus::Running,
         )
@@ -916,6 +955,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &clocks,
+            &BTreeSet::new(),
             None,
             BrowseStatus::Running,
         )
@@ -944,6 +984,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &clocks,
+            &BTreeSet::new(),
             Some("127.0.0.1:65476"),
             BrowseStatus::Running,
         );
@@ -965,6 +1006,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &clocks,
+            &BTreeSet::new(),
             Some("127.0.0.1:65476"),
             BrowseStatus::Running,
         )
@@ -989,6 +1031,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &clocks,
+            &BTreeSet::new(),
             Some("http://127.0.0.1:65476"),
             BrowseStatus::Running,
         );
