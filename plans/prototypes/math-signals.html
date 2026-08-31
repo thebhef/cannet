@@ -1,0 +1,1103 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Math signals — task 135 prototype</title>
+<style>
+/* Tokens: dark verbatim from apps/gui/src/index.css :root (via
+   gui-chip-redesign.html) plus the plot/database tokens this page needs. */
+:root {
+  --divider:#2c3444; --divider-subtle:#1f2630;
+  --surface-app:#0e1116; --surface-field:#0f172a;
+  --surface-hover:#1c2530; --surface-section-header:#131a24;
+  --surface-toolbar-control:#1c2230; --surface-toolbar-control-hover:#2a3447;
+  --text-body:#d8dee9; --text-label:#e6ecf5; --text-muted:#94a3b8;
+  --text-faint:#64748b; --text-dim:#475569; --text-source:#a5b4fc;
+  --border-subtle:#243040; --border-wash:rgb(255 255 255 / 0.14);
+  --border-wash-strong:rgb(255 255 255 / 0.28);
+  --accent-marker:#4ecbff; --warn-text:#fbbf24; --danger-text:#f87171;
+  --surface-pop:#111827; --shadow-menu:rgba(0,0,0,0.45);
+  /* plot/database set (index.css, dark) */
+  --surface-sunken:#0d1114; --surface-row-primary:#131e29;
+  --surface-overlay:#131923; --border-row:#11161e;
+  --surface-row-selected:#1b2740; --surface-control:#0f141d;
+  --surface-control-hover:#334155; --surface-raised:#1e293b;
+  --surface-head-fade:rgba(51,65,85,.45);
+  --text-primary:#e2e8f0; --text-secondary:#cbd5e1;
+  --text-signal-value:#fde68a; --text-ecu:#5eead4;
+  --border-dotted:#1c252b; --border-soft:#1e293b; --border-strong:#334155;
+  --border-default:#2c3444; --border-row-fade:rgba(30,41,59,.5);
+  --cursor-pink:#ff5577; --accent-progress:#4ecbff;
+  --ok-text:#4ade80;
+  --select-tint-soft:rgba(99,102,241,.15); --select-tint:rgba(99,102,241,.35);
+  --select-tint-strong:rgba(99,102,241,.45); --select-outline:rgba(99,102,241,.9);
+  --shadow-modal:rgb(0 0 0/.5);
+  --axis-text:#cbd5e1; --axis-grid:#222b35; --axis-ticks:#3a4654;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --divider:#d3d8e0; --divider-subtle:#e4e7ec;
+  --surface-app:#f4f5f7; --surface-field:#ffffff;
+  --surface-hover:#eceff3; --surface-section-header:#eaedf2;
+  --surface-toolbar-control:#e8ebf0; --surface-toolbar-control-hover:#dbe0e9;
+  --text-body:#1f2937; --text-label:#0f172a; --text-muted:#5b6879;
+  --text-faint:#78849a; --text-dim:#98a3b3; --text-source:#4338ca;
+  --border-subtle:#d8dce3; --border-wash:rgb(15 23 42 / 0.14);
+  --border-wash-strong:rgb(15 23 42 / 0.28);
+  --accent-marker:#0263a8; --warn-text:#7a4a06; --danger-text:#a01212;
+  --surface-pop:#ffffff; --shadow-menu:rgba(15,23,42,0.18);
+  --surface-sunken:#e9ebef; --surface-row-primary:#e9f2f8;
+  --surface-overlay:#ffffff; --border-row:#eceef2;
+  --surface-row-selected:#d6e4fb; --surface-control:#ffffff;
+  --surface-control-hover:#d5dae2; --surface-raised:#ffffff;
+  --surface-head-fade:rgba(226,232,240,.75);
+  --text-primary:#16202f; --text-secondary:#334155;
+  --text-signal-value:#8a5a06; --text-ecu:#0f766e;
+  --border-dotted:#dfe3e9; --border-soft:#dce0e7; --border-strong:#b3bcc9;
+  --border-default:#ccd2db; --border-row-fade:rgba(203,213,225,.7);
+  --cursor-pink:#be123c; --accent-progress:#0284c7;
+  --ok-text:#116434;
+  --select-tint-soft:rgba(79,70,229,.12); --select-tint:rgba(79,70,229,.22);
+  --select-tint-strong:rgba(79,70,229,.30); --select-outline:rgba(67,56,202,.9);
+  --shadow-modal:rgb(15 23 42/.22);
+  --axis-text:#334155; --axis-grid:#e2e6ec; --axis-ticks:#9aa5b4;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--surface-app); color:var(--text-body);
+  font:13px/1.45 "Segoe UI", system-ui, sans-serif; }
+.wrap { padding:18px; max-width:1200px; margin:0 auto; }
+h1 { font-size:16px; margin:0 0 .2rem; color:var(--text-label); }
+h2.sec { font-size:13px; margin:1.6rem 0 .5rem; color:var(--text-label);
+  border-bottom:1px solid var(--divider); padding-bottom:.3rem; }
+p.note { color:var(--text-muted); margin:.2rem 0 1rem; max-width:80ch; }
+.bar { display:flex; gap:.5rem; align-items:center; margin-bottom:1rem; }
+button.plain { font:inherit; color:var(--text-body);
+  background:var(--surface-toolbar-control); border:1px solid var(--border-subtle);
+  border-radius:3px; padding:.2rem .5rem; cursor:pointer; }
+button.plain:hover { background:var(--surface-toolbar-control-hover); }
+
+/* === chip chrome (index.css verbatim, abridged) === */
+.status-chip { display:inline-flex; align-items:center; gap:.4rem; font:inherit;
+  font-size:.75rem; line-height:1.5; color:var(--text-primary); cursor:pointer;
+  background:var(--surface-toolbar-control); border:1px solid var(--border-wash);
+  border-radius:2px; padding:.14rem .45rem; text-align:left;
+  transition:background .12s, border-color .12s; }
+.status-chip:hover:not(:disabled) { background:var(--surface-toolbar-control-hover); }
+.chip-button { height:22px; padding:0 .45rem; }
+.chip-button svg { width:13px; height:13px; flex:none; stroke:currentColor; fill:none;
+  stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
+.chip-button--icon-only { width:22px; padding:0; justify-content:center; }
+.chip-button:focus-visible { outline:2px solid var(--accent-marker); outline-offset:1px; }
+.chip-button[aria-pressed="true"] { border-color:var(--accent-marker);
+  color:var(--text-label); background:var(--surface-hover); }
+.chip-field { display:inline-flex; align-items:center; gap:.3rem; height:22px;
+  padding:0 .4rem; background:var(--surface-field);
+  border:1px solid var(--border-wash); border-radius:2px; }
+.chip-field svg { width:13px; height:13px; flex:none; color:var(--text-faint);
+  stroke:currentColor; fill:none; stroke-width:1.4; }
+.chip-field input { font:inherit; font-size:.75rem; background:none; border:none;
+  outline:none; color:var(--text-body); min-width:0; }
+
+/* === plot panel (index.css verbatim, abridged) === */
+.plot-panel { display:flex; flex-direction:column; height:420px; min-height:0;
+  border:1px solid var(--border-subtle); background:var(--surface-app); }
+.plot-panel-toolbar { display:flex; align-items:center; gap:.4rem;
+  padding:.25rem .6rem; flex:0 0 auto; border-bottom:1px solid var(--border-subtle); }
+.plot-toolbar-slot { display:inline-flex; align-items:center; gap:.4rem; flex:none; }
+.plot-toolbar-sep { display:inline-block; width:1px; align-self:stretch;
+  background:var(--divider); margin:0 .15rem; }
+.plot-panel-areas { flex:1 1 0; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+.plot-area { display:flex; flex:1 1 0; min-height:24px;
+  border-bottom:1px solid var(--border-subtle); position:relative; }
+.plot-area:last-child { border-bottom:none; }
+.plot-area-canvas { flex:1 1 auto; min-width:0; min-height:0; overflow:hidden; position:relative; }
+.plot-area-canvas svg { display:block; width:100%; height:100%; }
+.plot-area-resizer { flex:0 0 4px; cursor:col-resize; background:transparent; margin:0 -2px; z-index:1; }
+.plot-area-resizer:hover { background:var(--divider); }
+
+.plot-area-signals { flex:0 0 250px; border-left:1px solid var(--border-subtle);
+  background:var(--surface-sunken); overflow-y:auto; font-size:.78rem; }
+.plot-area-signals-head { display:flex; align-items:center; justify-content:space-between;
+  gap:.3rem; padding:.2rem .4rem; border-bottom:1px solid var(--border-subtle);
+  color:var(--text-muted); text-transform:uppercase; letter-spacing:.08em; font-size:.66rem; }
+.plot-area-grip { color:var(--text-dim); cursor:grab; line-height:1; padding:0 .2rem 0 0; user-select:none; }
+.disclosure-toggle { display:inline-flex; align-items:center; justify-content:center;
+  min-width:24px; min-height:24px; padding:0; border:none; background:none;
+  color:var(--text-faint); font:inherit; cursor:pointer; }
+.disclosure-toggle-glyph { font-size:1.1rem; line-height:1; }
+.disclosure-toggle-compact { min-height:0; min-width:18px; height:100%; align-self:stretch; }
+.plot-area-label { color:var(--text-muted); }
+.plot-area-count-chip { color:var(--text-muted); border:1px solid var(--border-soft);
+  border-radius:3px; padding:0 .3rem; font-size:.66rem; text-transform:none;
+  letter-spacing:normal; white-space:nowrap; }
+.plot-area-fit-y, .plot-area-y-mode { background:var(--surface-control); color:var(--text-muted);
+  border:1px solid var(--border-default); border-radius:3px; font:inherit;
+  font-size:.62rem; padding:0 .2rem; cursor:pointer; }
+.plot-area-fit-y:hover, .plot-area-y-mode:hover { color:var(--text-primary); }
+.plot-area-filter { background:none; border:1px solid var(--border-strong);
+  color:var(--text-secondary); cursor:pointer; font-size:.7rem; padding:0 .4rem; border-radius:3px; }
+.plot-area-remove, .plot-signal-remove { background:none; border:none; color:var(--text-faint);
+  cursor:pointer; font-size:.9rem; line-height:1; padding:0 .1rem; }
+.plot-area-remove:hover, .plot-signal-remove:hover { color:var(--cursor-pink); }
+
+.plot-signal-row { display:grid; grid-template-columns:auto 1fr auto auto;
+  align-items:start; column-gap:.4rem; row-gap:.05rem; padding:.25rem .4rem;
+  border-bottom:1px dotted var(--border-dotted); cursor:grab; }
+.plot-signal-row.primary { background:var(--surface-row-primary);
+  box-shadow:inset 2px 0 0 var(--accent-marker); }
+.color-chip { border-radius:2px; border:1px solid var(--border-wash); padding:0; }
+.color-chip-bar { align-self:stretch; width:1.5rem; flex:0 0 auto; display:inline-block; }
+.color-chip-dot { display:inline-block; width:.55rem; height:.55rem; margin-right:.3rem;
+  vertical-align:middle; border-color:var(--border-wash-strong); }
+.plot-signal-text { display:flex; flex-direction:column; min-width:0; }
+.plot-signal-name { font-size:.92rem; color:var(--text-primary);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.plot-signal-message { font-size:.7rem; color:var(--text-faint);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.plot-signal-readout { display:flex; flex-direction:column; align-items:flex-end; min-width:0; }
+.plot-signal-value { color:var(--text-signal-value); font-variant-numeric:tabular-nums; }
+.plot-signal-remove { align-self:center; }
+/* prototype: math-row disclosure sits in column 4, before the remove x */
+.plot-signal-mathdisc { align-self:center; background:none; border:none; cursor:pointer;
+  color:var(--text-faint); font-size:.75rem; padding:0 .1rem; }
+.plot-signal-mathdetail { grid-column:1 / 5; font-size:.7rem; color:var(--text-muted);
+  padding:.1rem 0 .1rem 1.9rem; display:flex; flex-direction:column; gap:2px; }
+.plot-signal-mathdetail code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  color:var(--text-secondary); font-size:.7rem; }
+.plot-signal-mathdetail .mini { font-size:.66rem; padding:0 .3rem; border-radius:3px;
+  background:none; border:1px solid var(--border-strong); color:var(--text-secondary); cursor:pointer; }
+
+/* === database panel (index.css verbatim, abridged) === */
+.dbc-panel { display:flex; flex-direction:column; height:340px;
+  background:var(--surface-field); color:var(--text-primary); font-size:.85rem;
+  border:1px solid var(--border-subtle); }
+.dbc-panel-toolbar { display:flex; gap:.5rem; align-items:center; padding:.3rem .5rem;
+  border-bottom:1px solid var(--border-soft); background:var(--surface-pop); }
+.dbc-panel-search { flex:1 1 0; }
+.dbc-panel-tree { flex:1 1 0; overflow-y:auto;
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.78rem; }
+.dbc-row { display:flex; align-items:center; gap:.4rem; padding:.1rem .5rem;
+  height:20px; white-space:nowrap; overflow:hidden; cursor:pointer; user-select:none; }
+.dbc-row:hover { background:var(--surface-head-fade); }
+.dbc-row-selected { background:var(--select-tint); }
+.dbc-row-chevron { align-self:stretch; display:flex; align-items:center;
+  justify-content:center; min-width:24px; }
+.dbc-row-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dbc-row-bus .dbc-row-label { color:var(--warn-text); font-weight:600; }
+.dbc-row-dbc .dbc-row-label { color:var(--text-source); font-weight:600; }
+.dbc-row-ecu .dbc-row-label { color:var(--text-ecu); font-weight:600; }
+.dbc-row-file .dbc-row-label { color:var(--text-source); font-weight:600; }
+.dbc-row-message .dbc-row-label { color:var(--text-secondary); }
+.dbc-row-signal .dbc-row-label { color:var(--text-primary); }
+.dbc-row-meta { color:var(--text-faint); }
+.dbc-row-details { font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:.72rem; color:var(--text-muted); padding-right:.5rem; padding-bottom:3px;
+  border-bottom:1px solid var(--border-row-fade); }
+.dbc-details-grid { display:grid; grid-template-columns:max-content 1fr; gap:0 .7rem; margin:0; }
+.dbc-details-grid dt { color:var(--text-faint); text-align:right; height:16px; line-height:16px; }
+.dbc-details-grid dd { margin:0; color:var(--text-secondary); height:16px; line-height:16px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dbc-details-grid .mini { font-size:.66rem; padding:0 .3rem; border-radius:3px; height:14px;
+  line-height:12px; background:none; border:1px solid var(--border-strong);
+  color:var(--text-secondary); cursor:pointer; }
+
+/* === context menu + modal dialog === */
+.ctx { position:fixed; z-index:20; background:var(--surface-pop);
+  border:1px solid var(--border-subtle); border-radius:4px; min-width:200px;
+  box-shadow:0 8px 24px var(--shadow-menu); font-size:.8rem; }
+.ctx[hidden] { display:none; }
+.ctx .hd { padding:6px 12px 4px; font-size:.66rem; text-transform:uppercase;
+  letter-spacing:.07em; color:var(--text-faint); }
+.ctx button { display:block; width:100%; text-align:left; border:0; background:none;
+  color:var(--text-body); font:inherit; font-size:.8rem; padding:5px 12px; cursor:pointer; }
+.ctx button:hover { background:var(--surface-hover); }
+/* Non-modal so signals can be dragged in from the database tree or the
+   plot side list while the editor is open. */
+.backdrop { position:fixed; inset:0; background:transparent; pointer-events:none;
+  display:flex; align-items:flex-start; justify-content:flex-end;
+  padding:70px 26px 0 0; z-index:30; }
+.backdrop[hidden] { display:none; }
+.dlg { width:min(430px,92vw); background:var(--surface-raised); pointer-events:auto;
+  border:1px solid var(--border-subtle); border-radius:4px;
+  box-shadow:0 16px 40px var(--shadow-menu); }
+.dlg h2 { margin:0; padding:9px 14px; font-size:.85rem; font-weight:600;
+  color:var(--text-label); border-bottom:1px solid var(--border-subtle); }
+.dlg .body, .gallery-card .body { padding:12px 14px; display:flex; flex-direction:column; gap:9px; }
+.frow { display:flex; align-items:baseline; gap:10px; font-size:.8rem; }
+.frow > label:first-child { flex:0 0 76px; color:var(--text-muted); font-size:.75rem; }
+.frow input[type="text"], .frow input[type="number"], .frow select {
+  background:var(--surface-field); color:var(--text-body);
+  border:1px solid var(--border-default); border-radius:2px;
+  padding:3px 7px; font:inherit; font-size:.78rem; }
+.frow input[type="text"] { flex:1; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+.frow input[type="number"] { width:6em; }
+.frow select { max-width:100%; }
+/* operand selector = the Signals panel, columns trimmed way down:
+   trace-table chrome, real section headers (fixed, prepopulated: A/B,
+   Signal, Signals), drag-in rows, per-section patterns behind /…/. */
+.opsel-trace { --trace-row-padding-x:0.4rem; display:flex; flex-direction:column;
+  border:1px solid var(--border-default); border-radius:2px; background:var(--surface-field);
+  font-family:ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size:12px; line-height:22px; max-height:190px; overflow-y:auto; min-width:0; }
+.opsel-trace .trace-header, .opsel-trace .trace-row { display:grid; align-items:start;
+  padding:0 var(--trace-row-padding-x); white-space:nowrap; }
+.opsel-trace .trace-header { background:var(--surface-overlay); color:var(--text-muted);
+  border-bottom:1px solid var(--border-subtle); position:sticky; top:0; z-index:1; }
+.opsel-trace .trace-header > span, .opsel-trace .trace-row > span {
+  overflow:hidden; text-overflow:ellipsis; }
+.opsel-trace .trace-row { border-bottom:1px solid var(--border-row); cursor:default; height:22px; }
+.signals-name { cursor:grab; }
+.col-unit { color:var(--text-muted); }
+.opsel-trace .hint { color:var(--text-dim); }
+.signals-section-header { display:flex !important; align-items:center; gap:.35rem;
+  padding-left:.25rem; background:var(--surface-section-header);
+  border-bottom:1px solid var(--border-default); color:var(--text-secondary);
+  font-weight:600; font-size:.75rem; }
+.signals-section-header button { background:none; border:0; color:var(--text-muted);
+  cursor:pointer; font:inherit; font-weight:400; padding:0 .15rem; }
+.signals-section-header button:hover { color:var(--text-primary); }
+.valmsg { margin-left:auto; padding-right:.4rem; font-weight:400; font-size:.7rem; }
+.valmsg.ok { color:var(--ok-text); }
+.valmsg.warn { color:var(--warn-text); }
+.opsel-empty { font-style:italic; }
+.opsel-x { background:none; border:none; color:var(--text-faint); cursor:pointer;
+  font-size:.75rem; line-height:22px; padding:0; }
+.opsel-x:hover { color:var(--cursor-pink); }
+.opsec { min-width:0; }
+.opsec.dragover { outline:2px dashed var(--accent-marker); outline-offset:-2px; }
+/* per-section patterns popover + editor (SignalsPanel verbatim, abridged) */
+.signals-section-patterns { position:fixed; z-index:200; min-width:20rem;
+  background:var(--surface-sunken); border:1px solid var(--border-default);
+  border-radius:4px; padding:.4rem .5rem; box-shadow:0 4px 12px var(--shadow-menu); }
+.signals-section-patterns[hidden] { display:none; }
+.signals-section-patterns-title { color:var(--text-muted); font-size:.72rem; margin-bottom:.3rem; }
+.pattern-editor { display:flex; flex-direction:column; gap:.25rem; padding:.3rem .4rem;
+  background:var(--surface-pop); font-size:.75rem; }
+.pattern-editor-row { display:flex; gap:.4rem; align-items:center; }
+.pattern-editor-slash { color:var(--text-faint);
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+.pattern-editor-count { color:var(--text-muted); white-space:nowrap; }
+.pattern-editor input { flex:1 1 0; background:var(--surface-raised); color:var(--text-primary);
+  border:1px solid var(--border-strong); padding:.15rem .3rem; border-radius:3px;
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.75rem; }
+.secpat { white-space:nowrap; }
+/* single-slot combobox: flyout is a trimmed database tree with fzf search */
+.sigcombo { position:relative; margin-left:.4rem; }
+.sigcombo-btn { font-size:.66rem; text-transform:none; letter-spacing:normal; }
+.signals-section-header .sigcombo-btn { border:1px solid var(--border-default);
+  background:var(--surface-control); border-radius:3px; padding:0 .3rem; }
+.sigcombo-pop { position:absolute; right:0; top:calc(100% + 3px); z-index:40;
+  width:270px; background:var(--surface-pop); border:1px solid var(--border-subtle);
+  border-radius:4px; box-shadow:0 8px 24px var(--shadow-menu); font-weight:400; }
+.sigcombo-pop[hidden] { display:none; }
+.sigcombo-pop .chip-field { display:flex; margin:6px; }
+.sigcombo-pop .chip-field input { flex:1; }
+.sigcombo-tree { max-height:220px; overflow-y:auto; padding-bottom:4px;
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.78rem;
+  text-transform:none; letter-spacing:normal; }
+.sigcombo-tree .dbc-row-label b { color:var(--accent-marker); font-weight:600; }
+.dlg .buttons { display:flex; justify-content:flex-end; gap:8px; padding:10px 14px;
+  border-top:1px solid var(--border-subtle); }
+.dlg .buttons .plain.primary { border-color:var(--accent-marker); color:var(--text-label); }
+.toast { font-size:.78rem; color:var(--text-muted); min-height:18px; margin-top:.5rem; }
+
+/* === edit-controls gallery === */
+.gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+.gallery-card { background:var(--surface-raised); border:1px solid var(--border-subtle);
+  border-radius:4px; }
+.gallery-card h3 { margin:0; padding:7px 14px; font-size:.78rem; font-weight:600;
+  color:var(--text-label); border-bottom:1px solid var(--border-subtle); }
+.gallery-card h3 .fx { color:var(--text-source); font-style:italic; margin-right:.35rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Math signals — task 135 prototype</h1>
+  <p class="note">Faithful chrome: the plot side list uses the app's real
+  <code>.plot-signal-row</code> grid and tokens, the database panel the real
+  <code>.dbc-row</code> tree. Math signals are <b>created from the database view</b> (right-click
+  the tree) and land under <b>Computed</b>; in the app you would then drag them to a plot or
+  signals view — this mock adds them to the plot directly. The gallery at the bottom shows every
+  function's edit controls at once.</p>
+  <div class="bar">
+    <button class="plain" id="themebtn">Toggle light/dark</button>
+    <span class="toast" id="toast" style="margin:0"></span>
+  </div>
+
+  <div class="plot-panel">
+    <div class="plot-panel-toolbar">
+      <span class="plot-toolbar-slot">
+        <button class="status-chip chip-button chip-button--icon-only" title="fit x">
+          <svg viewBox="0 0 14 14"><path d="M2 7h10M4 4.5 1.5 7 4 9.5M10 4.5 12.5 7 10 9.5"/></svg></button>
+        <button class="status-chip chip-button chip-button--icon-only" title="fit y">
+          <svg viewBox="0 0 14 14"><path d="M7 2v10M4.5 4 7 1.5 9.5 4M4.5 10 7 12.5 9.5 10"/></svg></button>
+      </span>
+      <span class="plot-toolbar-sep"></span>
+      <span class="plot-toolbar-slot">
+        <button class="status-chip chip-button" aria-pressed="true" title="follow the live edge">
+          <svg viewBox="0 0 14 14"><path d="M2 7h7M6.5 4 9.5 7 6.5 10"/><path d="M11.5 3v8"/></svg>follow</button>
+        <button class="status-chip chip-button" title="show points">points</button>
+      </span>
+    </div>
+    <div class="plot-panel-areas">
+      <div class="plot-area">
+        <div class="plot-area-canvas"><svg id="plotsvg" preserveAspectRatio="none"></svg></div>
+        <div class="plot-area-resizer" role="separator" aria-orientation="vertical"></div>
+        <div class="plot-area-signals">
+          <div class="plot-area-signals-head">
+            <span style="display:flex;align-items:center;min-width:0">
+              <span class="plot-area-grip">⠿</span>
+              <button class="disclosure-toggle disclosure-toggle-compact"><span class="disclosure-toggle-glyph">▾</span></button>
+              <span class="plot-area-label">Area 1</span>
+            </span>
+            <span style="display:flex;align-items:center;gap:.3rem">
+              <button class="plot-area-fit-y">fit y</button>
+              <select class="plot-area-y-mode"><option>unified</option><option>per-unit</option><option>individual</option></select>
+              <button class="plot-area-filter">patterns…</button>
+              <button class="plot-area-remove" title="remove this area">✕</button>
+            </span>
+          </div>
+          <div id="rows"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">Database</h2>
+  <p class="note">Right-click anywhere in the tree (or the Computed branch) to add a math signal.
+  Computed rows expand to the same detail/edit view the plot side list shows.</p>
+  <div class="dbc-panel">
+    <div class="dbc-panel-toolbar">
+      <span class="chip-field dbc-panel-search">
+        <svg viewBox="0 0 14 14"><circle cx="6" cy="6" r="4"/><path d="m9.5 9.5 3 3"/></svg>
+        <input placeholder="filter signals…"></span>
+      <span class="dbc-panel-match-count"></span>
+    </div>
+    <div class="dbc-panel-tree" role="tree" id="dbt"></div>
+  </div>
+
+  <h2 class="sec">Edit controls — every function at once</h2>
+  <p class="note">The gallery renders each function type's edit dialog body with representative
+  values, so all parameter sets are reviewable without adding anything.</p>
+  <div class="gallery" id="gallery"></div>
+</div>
+
+<div class="ctx" id="ctx" hidden><div class="hd">Add math signal</div><div id="ctxitems"></div></div>
+
+<div class="backdrop" id="dlgwrap" hidden>
+  <div class="dlg">
+    <h2 id="dlgtitle">Add math signal</h2>
+    <div class="body" id="dlgbody"></div>
+    <div class="buttons">
+      <button class="plain" id="dlgcancel">Cancel</button>
+      <button class="plain primary" id="dlgok">Add</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  $("themebtn").addEventListener("click", () => {
+    const r = document.documentElement;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+  });
+
+  // ---- buses + mock sources (60 s at 10 Hz)
+  const BUSES = { CAN1: "#4f8ef7", CAN2: "#16a34a" };
+  const N = 600, DT = 0.1;
+  const T = Array.from({ length: N }, (_, i) => i * DT);
+  const series = gen => T.map(gen);
+  const SRC = [
+    { id: "c1", nm: "Cell01Voltage", unit: "V", color: "#4ecbff", bus: "CAN1", ecu: "BMS", msg: "BMS_CellVoltages",
+      v: series(t => 3.70 + 0.06 * Math.sin(t / 4) + 0.010 * Math.sin(t * 2.1)) },
+    { id: "c2", nm: "Cell02Voltage", unit: "V", color: "#34d399", bus: "CAN1", ecu: "BMS", msg: "BMS_CellVoltages",
+      v: series(t => 3.68 + 0.05 * Math.sin(t / 4 + 0.4) + 0.012 * Math.sin(t * 1.7)) },
+    { id: "c3", nm: "Cell03Voltage", unit: "V", color: "#a78bfa", bus: "CAN1", ecu: "BMS", msg: "BMS_CellVoltages",
+      v: series(t => 3.72 + 0.05 * Math.sin(t / 4 + 0.9) + 0.011 * Math.sin(t * 2.6)) },
+    { id: "c4", nm: "Cell04Voltage", unit: "V", color: "#f472b6", bus: "CAN1", ecu: "BMS", msg: "BMS_CellVoltages",
+      v: series(t => 3.64 - t * 0.002 + 0.05 * Math.sin(t / 4 + 1.3)) },
+    { id: "pv", nm: "PackVoltage", unit: "V", color: "#fbbf24", bus: "CAN1", ecu: "BMS", msg: "BMS_Pack",
+      v: series(t => 355 + 6 * Math.sin(t / 5)) },
+    { id: "ip", nm: "PackCurrent", unit: "A", color: "#fb923c", bus: "CAN2", ecu: "VCU", msg: "VCU_Drive",
+      v: series(t => 40 * Math.sin(t / 6) + 25 * Math.sign(Math.sin(t / 2.5)) + 5 * Math.sin(t * 3)) },
+    { id: "kc", nm: "ContactorCmd", unit: "", color: "#94a3b8", bus: "CAN2", ecu: "VCU", msg: "VCU_Drive",
+      v: series(t => (Math.sin(t / 1.9) > -0.3 ? 1 : 0)) },
+  ];
+
+  // ---- function set (task 135). Params are the prototype's proposal.
+  const FNS = {
+    sum:        { label: "Sum",                ops: "set" },
+    difference: { label: "Difference (A − B)", ops: "pair" },
+    product:    { label: "Product",            ops: "set" },
+    scale:      { label: "Scale (g·x + b)",    ops: "one",
+                  params: [{ k: "gain", label: "Gain", def: 1 }, { k: "offset", label: "Offset", def: 0 }] },
+    min:        { label: "Min of set",         ops: "set" },
+    max:        { label: "Max of set",         ops: "set" },
+    average:    { label: "Average of set",     ops: "set" },
+    median:     { label: "Median of set",      ops: "set" },
+    range:      { label: "Range of set",       ops: "set" },
+    expfilter:  { label: "Exponential filter", ops: "one", params: [{ k: "tau", label: "τ (s)", def: 2 }] },
+    integration:{ label: "Integration",        ops: "one", unitSuffix: "·s" },
+    duty:       { label: "Duty cycle",         ops: "one", unit: "%",
+                  params: [{ k: "threshold", label: "Threshold", def: 0.5 }, { k: "window", label: "Window (s)", def: 5 }] },
+    frequency:  { label: "Frequency",          ops: "one", unit: "Hz",
+                  params: [{ k: "threshold", label: "Threshold", def: 0.5 }, { k: "window", label: "Window (s)", def: 5 }] },
+    // statistic: ONE signal + a selected statistic → a capture-constant hline.
+    statistic:  { label: "Statistic (over capture)", ops: "one",
+                  params: [{ k: "stat", label: "Statistic", def: "mean",
+                             opts: ["min", "max", "mean", "median", "percentile"] },
+                           { k: "pct", label: "Percentile", def: 95, onlyWhen: { k: "stat", v: "percentile" } }] },
+    // rms: instantaneous √(x²); smoothing is user-composed downstream.
+    rms:        { label: "RMS (instantaneous)", ops: "one" },
+    hline:      { label: "HLine",              ops: "none", params: [{ k: "value", label: "Value", def: 0 }] },
+  };
+  const MCOLORS = ["#d3382f", "#0f9bb0", "#7a9c1e", "#c24fc9", "#856bff", "#c98a17"];
+
+  // ---- the central repository (mock of the host-side registry)
+  let maths = [
+    { id: "m1", fn: "median", operands: [], pattern: "Cell\\d+", params: {},
+      nm: "median(Cell\\d+)", unit: "V", color: "#d3382f", plotExp: false, dbExp: false },
+    { id: "m2", fn: "product", operands: ["pv", "ip"], pattern: "", params: {},
+      nm: "PackPower", unit: "W", color: "#0f9bb0", plotExp: false, dbExp: false },
+  ];
+  let nextM = 3;
+
+  const lookup = id => SRC.find(s => s.id === id) ?? maths.find(m => m.id === id);
+  const opName = id => lookup(id).nm;
+  function reaches(fromId, targetId) {
+    const m = maths.find(x => x.id === fromId);
+    return m ? m.operands.some(o => o === targetId || reaches(o, targetId)) : false;
+  }
+  function opsOf(def) {
+    const ids = [...def.operands];
+    if (def.pattern) {
+      try {
+        const re = new RegExp(def.pattern);
+        for (const c of [...SRC, ...maths])
+          if (c.id !== def.id && re.test(c.nm) && !ids.includes(c.id) && !reaches(c.id, def.id))
+            ids.push(c.id);
+      } catch (e) {}
+    }
+    return ids;
+  }
+  // Buses feeding a math signal, transitively — for its chips + label.
+  function busesOf(def) {
+    const out = new Set();
+    for (const id of opsOf(def)) {
+      const s = SRC.find(x => x.id === id);
+      if (s) out.add(s.bus);
+      else busesOf(maths.find(m => m.id === id)).forEach(b => out.add(b));
+    }
+    return [...out];
+  }
+  function valuesOf(id) {
+    const s = SRC.find(x => x.id === id);
+    return s ? s.v : compute(maths.find(m => m.id === id));
+  }
+  function compute(def) {
+    const set = (FNS[def.fn].ops === "set" ? opsOf(def) : def.operands).map(valuesOf);
+    const p = def.params;
+    switch (def.fn) {
+      case "sum":     return T.map((_, i) => set.reduce((a, s) => a + s[i], 0));
+      case "product": return T.map((_, i) => set.reduce((a, s) => a * s[i], 1));
+      case "difference": return T.map((_, i) => set[0][i] - set[1][i]);
+      case "scale":   return set[0].map(v => +p.gain * v + +p.offset);
+      case "min":     return T.map((_, i) => Math.min(...set.map(s => s[i])));
+      case "max":     return T.map((_, i) => Math.max(...set.map(s => s[i])));
+      case "average": return T.map((_, i) => set.reduce((a, s) => a + s[i], 0) / set.length);
+      case "median":  return T.map((_, i) => {
+        const v = set.map(s => s[i]).sort((a, b) => a - b);
+        return v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+      });
+      case "range":   return T.map((_, i) =>
+        Math.max(...set.map(s => s[i])) - Math.min(...set.map(s => s[i])));
+      case "expfilter": {
+        const x = set[0], a = DT / Math.max(DT, +p.tau); let y = x[0];
+        return x.map(v => (y += (v - y) * a));
+      }
+      case "integration": { const x = set[0]; let acc = 0; return x.map(v => (acc += v * DT)); }
+      case "duty": case "frequency": {
+        const x = set[0], n = Math.round(Math.max(DT, +p.window) / DT);
+        return T.map((_, i) => {
+          const a = Math.max(0, i - n + 1);
+          if (def.fn === "duty") {
+            let hi = 0;
+            for (let j = a; j <= i; j += 1) hi += x[j] > +p.threshold ? 1 : 0;
+            return 100 * hi / (i - a + 1);
+          }
+          let r = 0;
+          for (let j = Math.max(1, a); j <= i; j += 1)
+            r += x[j - 1] <= +p.threshold && x[j] > +p.threshold ? 1 : 0;
+          return r / ((i - a + 1) * DT);
+        });
+      }
+      case "rms": return set[0].map(v => Math.abs(v));   // pointwise √(x²)
+      case "statistic": {
+        const x = [...set[0]].sort((a, b) => a - b);
+        const q = t => x[Math.min(x.length - 1, Math.max(0, Math.round(t * (x.length - 1))))];
+        const v = p.stat === "min" ? x[0]
+          : p.stat === "max" ? x[x.length - 1]
+          : p.stat === "mean" ? set[0].reduce((a, b) => a + b, 0) / x.length
+          : p.stat === "median" ? q(0.5)
+          : q(+p.pct / 100);
+        return T.map(() => v);
+      }
+      case "hline": return T.map(() => +p.value);
+    }
+  }
+
+  // ---- plot canvas replica: gridlines + normalized series + x gutter
+  function drawPlot() {
+    const W = 1000, H = 380, P = 6, GB = 34;   // bottom gutter like the app's labeled axis
+    const svg = $("plotsvg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    let g = "";
+    for (let x = 0; x <= 60; x += 10) {
+      const px = (x / 60) * W;
+      g += `<line x1="${px}" y1="0" x2="${px}" y2="${H - GB}" stroke="var(--axis-grid)"/>`;
+      g += `<line x1="${px}" y1="${H - GB}" x2="${px}" y2="${H - GB + 4}" stroke="var(--axis-ticks)"/>`;
+      g += `<text x="${px + 3}" y="${H - GB + 14}" fill="var(--axis-text)"
+             font-family="ui-monospace,Menlo,monospace" font-size="10">${x}s</text>`;
+    }
+    for (let i = 1; i < 5; i += 1) {
+      const py = ((H - GB) / 5) * i;
+      g += `<line x1="0" y1="${py}" x2="${W}" y2="${py}" stroke="var(--axis-grid)"/>`;
+    }
+    const line = (v, color, wd) => {
+      let lo = Math.min(...v), hi = Math.max(...v);
+      if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+      const pts = v.map((y, i) =>
+        `${(i / (N - 1)) * W},${H - GB - P - ((y - lo) / (hi - lo)) * (H - GB - 2 * P)}`).join(" ");
+      return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="${wd}"
+               vector-effect="non-scaling-stroke"/>`;
+    };
+    svg.innerHTML = g +
+      SRC.map(s => line(s.v, s.color, 1)).join("") +
+      maths.map(m => line(compute(m), m.color, 1.5)).join("");
+  }
+
+  // ---- the shared math detail block (plot side list + database)
+  const paramSummary = (f, m) => (f.params ?? [])
+    .filter(p => !p.onlyWhen || m.params[p.onlyWhen.k] === p.onlyWhen.v)
+    .map(p => `${p.label.replace(/ \(.*/, "")} = ${m.params[p.k]}`).join(" · ");
+  function mathDetailHtml(m, cls) {
+    const f = FNS[m.fn];
+    const resolved = (f.ops === "set" ? opsOf(m) : m.operands).map(opName).join(", ");
+    const ops = m.pattern ? `<code>${esc(m.pattern)}</code> → ${esc(resolved)}`
+              : resolved ? `<code>${esc(resolved)}</code>` : "";
+    const ps = paramSummary(f, m);
+    return `<div class="${cls}">` +
+      `<div>${esc(f.label)}${ops ? ` of ${ops}` : ""}${ps ? ` · ${esc(ps)}` : ""}</div>` +
+      `<div>units <code>${esc(m.unit) || "—"}</code>
+        <button class="mini" data-edit="${m.id}">Edit…</button>
+        <button class="mini" data-del="${m.id}">Remove</button></div></div>`;
+  }
+  function mathBusLabel(m) {
+    const buses = busesOf(m);
+    const dots = buses.map(b =>
+      `<span class="color-chip color-chip-dot" style="background:${BUSES[b]}" aria-hidden="true"></span>`).join("");
+    if (buses.length === 0) return `Math`;
+    if (buses.length === 1) return `${dots}${buses[0]} · Math`;
+    return `${dots}Math - Multiple Busses`;
+  }
+
+  // ---- plot side list
+  function fmtVal(v, unit) {
+    const a = Math.abs(v);
+    const s = a >= 100 ? v.toFixed(1) : a >= 1 ? v.toFixed(2) : v.toFixed(3);
+    return unit ? `${s} ${unit}` : s;
+  }
+  function drawRows() {
+    const rows = [];
+    for (const s of SRC) {
+      const dot = `<span class="color-chip color-chip-dot" style="background:${BUSES[s.bus]}" aria-hidden="true"></span>`;
+      rows.push(`<div class="plot-signal-row" draggable="true" data-sig="${s.id}">
+        <span class="color-chip color-chip-bar" style="background:${s.color}" title="hide this signal"></span>
+        <div class="plot-signal-text">
+          <span class="plot-signal-name">${esc(s.nm)}</span>
+          <span class="plot-signal-message">${dot}${s.bus} · ${s.ecu} · ${s.msg}</span>
+        </div>
+        <div class="plot-signal-readout">
+          <span class="plot-signal-value">${fmtVal(s.v[N - 1], s.unit)}</span>
+        </div>
+        <button class="plot-signal-remove" title="remove this signal">✕</button>
+      </div>`);
+    }
+    for (const m of maths) {
+      const v = compute(m);
+      rows.push(`<div class="plot-signal-row" draggable="true" data-sig="${m.id}">
+        <span class="color-chip color-chip-bar" style="background:${m.color}" title="hide this signal"></span>
+        <div class="plot-signal-text">
+          <span class="plot-signal-name">${esc(m.nm)}</span>
+          <span class="plot-signal-message">${mathBusLabel(m)}</span>
+        </div>
+        <div class="plot-signal-readout">
+          <span class="plot-signal-value">${fmtVal(v[N - 1], m.unit)}</span>
+        </div>
+        <span style="display:flex;align-items:center">
+          <button class="plot-signal-mathdisc" data-t="${m.id}" data-k="plotExp"
+            aria-expanded="${!!m.plotExp}">${m.plotExp ? "▾" : "▸"}</button>
+          <button class="plot-signal-remove" title="remove this signal">✕</button>
+        </span>
+        ${m.plotExp ? mathDetailHtml(m, "plot-signal-mathdetail") : ""}
+      </div>`);
+    }
+    $("rows").innerHTML = rows.join("");
+  }
+
+  // ---- database tree
+  function drawDb() {
+    const chev = open =>
+      `<button class="disclosure-toggle disclosure-toggle-compact dbc-row-chevron" tabindex="-1">
+         <span class="disclosure-toggle-glyph">${open ? "▾" : "▸"}</span></button>`;
+    const leafPad = `<span class="dbc-row-chevron" aria-hidden="true"></span>`;
+    const rows = [];
+    const row = (cls, depth, inner, sig) =>
+      rows.push(`<div class="dbc-row ${cls}" role="treeitem" style="padding-left:${depth * 14}px"` +
+                `${sig ? ` draggable="true" data-sig="${sig}"` : ""}>${inner}</div>`);
+    row("dbc-row-bus", 0, chev(true) + `<span class="dbc-row-label">CAN1</span>`);
+    row("dbc-row-dbc", 1, chev(true) + `<span class="dbc-row-label">bms.dbc</span>`);
+    row("dbc-row-ecu", 2, chev(true) + `<span class="dbc-row-label">BMS</span>`);
+    row("dbc-row-message", 3, chev(true) + `<span class="dbc-row-label">BMS_CellVoltages</span><span class="dbc-row-meta">0x120 (288)</span>`);
+    for (const s of SRC.filter(x => x.msg === "BMS_CellVoltages"))
+      row("dbc-row-signal", 4, leafPad + `<span class="dbc-row-label">${esc(s.nm)}</span><span class="dbc-row-meta">[${s.unit}]</span>`, s.id);
+    row("dbc-row-message", 3, chev(true) + `<span class="dbc-row-label">BMS_Pack</span><span class="dbc-row-meta">0x121 (289)</span>`);
+    for (const s of SRC.filter(x => x.msg === "BMS_Pack"))
+      row("dbc-row-signal", 4, leafPad + `<span class="dbc-row-label">${esc(s.nm)}</span><span class="dbc-row-meta">[${s.unit}]</span>`, s.id);
+    row("dbc-row-bus", 0, chev(true) + `<span class="dbc-row-label">CAN2</span>`);
+    row("dbc-row-dbc", 1, chev(true) + `<span class="dbc-row-label">vcu.dbc</span>`);
+    row("dbc-row-ecu", 2, chev(true) + `<span class="dbc-row-label">VCU</span>`);
+    row("dbc-row-message", 3, chev(true) + `<span class="dbc-row-label">VCU_Drive</span><span class="dbc-row-meta">0x210 (528)</span>`);
+    for (const s of SRC.filter(x => x.msg === "VCU_Drive"))
+      row("dbc-row-signal", 4, leafPad + `<span class="dbc-row-label">${esc(s.nm)}</span><span class="dbc-row-meta">${s.unit ? `[${s.unit}]` : ""}</span>`, s.id);
+    row("dbc-row-file", 0, chev(true) + `<span class="dbc-row-label">Computed</span>` +
+        `<span class="dbc-row-meta">${maths.length} signal${maths.length === 1 ? "" : "s"}</span>`);
+    for (const m of maths) {
+      row("dbc-row-signal", 1,
+        `<button class="disclosure-toggle disclosure-toggle-compact dbc-row-chevron" data-t="${m.id}" data-k="dbExp" tabindex="-1">
+           <span class="disclosure-toggle-glyph" style="pointer-events:none">${m.dbExp ? "▾" : "▸"}</span></button>` +
+        `<span class="dbc-row-label">${esc(m.nm)}</span><span class="dbc-row-meta">${m.unit ? `[${m.unit}]` : ""}</span>`, m.id);
+      if (m.dbExp) {
+        const f = FNS[m.fn];
+        const resolved = (f.ops === "set" ? opsOf(m) : m.operands).map(opName).join(", ");
+        const ps = paramSummary(f, m);
+        rows.push(`<div class="dbc-row-details" style="padding-left:${1 * 14 + 24}px"><dl class="dbc-details-grid">
+          <dt>function</dt><dd>${esc(f.label)}</dd>
+          ${m.pattern ? `<dt>pattern</dt><dd>${esc(m.pattern)} → ${esc(resolved)}</dd>`
+                      : `<dt>operands</dt><dd>${esc(resolved) || "—"}</dd>`}
+          ${ps ? `<dt>params</dt><dd>${esc(ps)}</dd>` : ""}
+          <dt>units</dt><dd>${esc(m.unit) || "—"}
+            <button class="mini" data-edit="${m.id}">Edit…</button>
+            <button class="mini" data-del="${m.id}">Remove</button></dd>
+        </dl></div>`);
+      }
+    }
+    $("dbt").innerHTML = rows.join("");
+  }
+
+  function redraw() { drawPlot(); drawRows(); drawDb(); }
+
+  function mathClicks(e) {
+    const el = e.target.closest("[data-t],[data-edit],[data-del]");
+    if (!el) return;
+    const d = el.dataset;
+    if (d.t) { const m = maths.find(x => x.id === d.t); m[d.k] = !m[d.k]; redraw(); }
+    if (d.edit) { const m = maths.find(x => x.id === d.edit); openDialog(m.fn, m); }
+    if (d.del) { maths = maths.filter(x => x.id !== d.del); redraw(); }
+  }
+  $("rows").addEventListener("click", mathClicks);
+  $("dbt").addEventListener("click", mathClicks);
+
+  // ---- creation: context menu on the database tree
+  $("ctxitems").innerHTML = Object.entries(FNS)
+    .map(([k, f]) => `<button data-fn="${k}">${f.label}</button>`).join("");
+  $("dbt").addEventListener("contextmenu", e => {
+    e.preventDefault();
+    const m = $("ctx");
+    m.hidden = false;
+    m.style.left = Math.min(e.clientX, innerWidth - 220) + "px";
+    m.style.top = Math.min(e.clientY, innerHeight - 420) + "px";
+  });
+  document.addEventListener("click", e => {
+    if (!e.target.closest || !e.target.closest(".ctx")) $("ctx").hidden = true;
+  });
+  $("ctxitems").addEventListener("click", e => {
+    const fn = e.target.dataset?.fn;
+    if (fn) { $("ctx").hidden = true; openDialog(fn, null); }
+  });
+
+  // ---- the edit view (also used by the gallery). Operand slots are
+  // PREPOPULATED sections the user fills — never creates: A/B for a
+  // pair, Signal for one, Signals (+pattern) for a set. Fill by drag,
+  // by pattern, or — for a single slot — a combobox flying out a
+  // trimmed database tree with fzf filtering. Each section shows its
+  // own validation.
+  function patternMatches(st) {
+    if (!st.pattern) return [];
+    try {
+      const re = new RegExp(st.pattern);
+      return [...SRC, ...maths].filter(c =>
+        c.id !== st.id && re.test(c.nm) && !st.operands.includes(c.id) &&
+        !reaches(c.id, st.id)).map(c => c.id);
+    } catch (e) { return null; }   // invalid regex
+  }
+  function fzIdx(q, s) {
+    const ql = q.toLowerCase(), sl = s.toLowerCase(), idx = [];
+    let i = 0;
+    for (let j = 0; j < sl.length && i < ql.length; j += 1)
+      if (sl[j] === ql[i]) { idx.push(j); i += 1; }
+    return i === ql.length ? idx : null;
+  }
+  function hl(s, idx) {
+    if (!idx || idx.length === 0) return esc(s);
+    let out = "", k = 0;
+    for (let j = 0; j < s.length; j += 1) {
+      if (idx[k] === j) { out += "<b>" + esc(s[j]) + "</b>"; k += 1; }
+      else out += esc(s[j]);
+    }
+    return out;
+  }
+  // A trimmed SignalsPanel row: colored signal name (+ " ◇" when the
+  // pattern supplied it), unit, remove. 22px trace-table chrome.
+  const OP_COLS = "minmax(140px,1fr) 44px 22px";
+  function opRowHtml(id, slot, derived) {
+    const c = lookup(id);
+    return `<div class="trace-row" style="grid-template-columns:${OP_COLS}">
+      <span class="col-signal"><span class="signals-name" style="color:${c.color ?? "#94a3b8"}"
+        title="${esc(c.nm)} — drag to a plot; right-click to recolor">${esc(c.nm)}${derived ? " ◇" : ""}</span></span>
+      <span class="col-unit">${esc(c.unit)}</span>
+      <span>${derived ? "" : `<button class="opsel-x" data-oprm="${id}" data-slot="${slot}" title="remove">✕</button>`}</span>
+    </div>`;
+  }
+  const emptyRowHtml = hint =>
+    `<div class="trace-row" style="grid-template-columns:1fr"><span class="hint opsel-empty">${hint}</span></div>`;
+  // The SignalsPanel's own section-header row, with the affordances a
+  // fixed section suppresses (no rename, no delete, no drag, no add).
+  function sectionHeaderHtml(label, extras, valHtml) {
+    return `<div class="trace-row signals-section-header">
+      <button type="button" class="disclosure-toggle disclosure-toggle-compact" tabindex="-1"
+        aria-expanded="true"><span class="disclosure-toggle-glyph" aria-hidden="true">▾</span></button>
+      <span class="signals-section-label">${label}</span>${extras}${valHtml}</div>`;
+  }
+  function comboChoices() {
+    return [...SRC, ...maths.filter(m => m.id !== dlgState.id && !reaches(m.id, dlgState.id))];
+  }
+  function comboTreeHtml(q) {
+    const ch = comboChoices();
+    let html = "";
+    for (const bus of Object.keys(BUSES)) {
+      let busHtml = "";
+      const msgs = new Map();
+      for (const s of ch) if (s.bus === bus) {
+        if (!msgs.has(s.msg)) msgs.set(s.msg, []);
+        msgs.get(s.msg).push(s);
+      }
+      for (const [msg, sigs] of msgs) {
+        const rows = sigs.map(s => ({ s, idx: fzIdx(q, s.nm) })).filter(x => x.idx);
+        if (rows.length === 0) continue;
+        busHtml += `<div class="dbc-row dbc-row-message" style="padding-left:14px">
+          <span class="dbc-row-chevron"></span><span class="dbc-row-label">${esc(msg)}</span></div>`;
+        busHtml += rows.map(({ s, idx }) =>
+          `<div class="dbc-row dbc-row-signal" data-pick="${s.id}" style="padding-left:28px">
+            <span class="dbc-row-chevron"></span>
+            <span class="dbc-row-label">${hl(s.nm, idx)}</span>
+            <span class="dbc-row-meta">${s.unit ? `[${s.unit}]` : ""}</span></div>`).join("");
+      }
+      if (busHtml) html += `<div class="dbc-row dbc-row-bus">
+        <span class="dbc-row-chevron"></span><span class="dbc-row-label">${bus}</span></div>` + busHtml;
+    }
+    const mrows = ch.filter(c => !c.bus).map(m => ({ m, idx: fzIdx(q, m.nm) })).filter(x => x.idx);
+    if (mrows.length) {
+      html += `<div class="dbc-row dbc-row-file">
+        <span class="dbc-row-chevron"></span><span class="dbc-row-label">Computed</span></div>`;
+      html += mrows.map(({ m, idx }) =>
+        `<div class="dbc-row dbc-row-signal" data-pick="${m.id}" style="padding-left:14px">
+          <span class="dbc-row-chevron"></span>
+          <span class="dbc-row-label">${hl(m.nm, idx)}</span>
+          <span class="dbc-row-meta">${m.unit ? `[${m.unit}]` : ""}</span></div>`).join("");
+    }
+    return html || `<div class="dbc-panel-empty">no match</div>`;
+  }
+  const comboHtml = slot =>
+    `<span class="sigcombo" data-slot="${slot}">
+      <button type="button" class="sigcombo-btn">choose… ▾</button>
+      <div class="sigcombo-pop" hidden>
+        <span class="chip-field">
+          <svg viewBox="0 0 14 14"><circle cx="6" cy="6" r="4"/><path d="m9.5 9.5 3 3"/></svg>
+          <input class="sigcombo-q" placeholder="fuzzy find…"></span>
+        <div class="sigcombo-tree"></div>
+      </div></span>`;
+  function slotSectionHtml(label, slot, st, interactive) {
+    const id = st.operands[slot];
+    const val = id ? `<span class="valmsg ok">✓</span>` : `<span class="valmsg warn">pick one</span>`;
+    return `<div class="opsec" data-slot="${slot}">` +
+      sectionHeaderHtml(label,
+        `<span class="hint">(${id ? 1 : 0})</span>${interactive ? comboHtml(slot) : ""}`, val) +
+      (id ? opRowHtml(id, slot, false) : emptyRowHtml("drag a signal here, or choose…")) +
+      `</div>`;
+  }
+  function setSectionHtml(st, p) {
+    const matched = patternMatches(st);
+    const n = st.operands.length + (matched ?? []).length;
+    const val = matched === null ? `<span class="valmsg warn">bad regex</span>`
+      : n >= 2 ? `<span class="valmsg ok">${n} signals ✓</span>`
+      : `<span class="valmsg warn">needs ≥ 2</span>`;
+    const rows = st.operands.map(id => opRowHtml(id, "all", false))
+      .concat((matched ?? []).map(id => opRowHtml(id, "all", true)));
+    // The section's patterns live behind the header's /…/ button, in
+    // the SignalsPanel's section-patterns popover.
+    const patBtn = `<button type="button" class="secpat"
+        title="regex patterns this section collects">/…/${st.pattern ? " 1" : ""}</button>
+      <div class="signals-section-patterns" hidden>
+        <div class="signals-section-patterns-title">Signals patterns</div>
+        <div class="pattern-editor"><div class="pattern-editor-row">
+          <span class="pattern-editor-slash">/</span>
+          <input class="pattern-editor-regex" id="${p}mpattern" value="${esc(st.pattern ?? "")}"
+            placeholder="regex, e.g. Cell\\d+">
+          <span class="pattern-editor-slash" aria-hidden="true">/</span>
+          <span class="pattern-editor-count" id="${p}opcount">${matched === null ? "bad regex" : matched.length + " signals"}</span>
+        </div></div></div>`;
+    return `<div class="opsec" data-slot="all">` +
+      sectionHeaderHtml("Signals",
+        `<span class="hint" id="${p}ophint">(${n})</span>${patBtn}`,
+        `<span id="${p}opval" style="margin-left:auto;display:contents">${val}</span>`) +
+      `<div id="${p}oprows">${rows.join("") || emptyRowHtml("drag signals here, or add a pattern (/…/)")}</div></div>`;
+  }
+  function opselTraceHtml(f, st, p, interactive) {
+    let inner = "";
+    if (f.ops === "set") inner = setSectionHtml(st, p);
+    else if (f.ops === "pair")
+      inner = slotSectionHtml("A", 0, st, interactive) + slotSectionHtml("B", 1, st, interactive);
+    else inner = slotSectionHtml("Signal", 0, st, interactive);
+    return `<div class="trace opsel-trace">
+      <div class="trace-header" style="grid-template-columns:${OP_COLS}">
+        <span>signal</span><span>unit</span><span></span></div>${inner}</div>`;
+  }
+  function opselWrapHtml(f, st, p, interactive) {
+    if (f.ops === "none") return "";
+    return `<div class="frow"><label>${f.ops === "pair" ? "A − B" : "Signals"}</label>
+      <div id="${p}opselwrap" style="flex:1;min-width:0">${opselTraceHtml(f, st, p, interactive)}</div></div>`;
+  }
+  function dialogBodyHtml(fn, st, p, interactive) {
+    const f = FNS[fn];
+    let html = opselWrapHtml(f, st, p, interactive ?? true);
+    for (const pr of f.params ?? []) {
+      const cur = st.params?.[pr.k] ?? pr.def;
+      if (pr.opts) {
+        html += `<div class="frow"><label>${pr.label}</label>
+          <select id="${p}pp-${pr.k}">${pr.opts.map(o =>
+            `<option${o === cur ? " selected" : ""}>${o}</option>`).join("")}</select></div>`;
+      } else {
+        // onlyWhen: the field is disabled unless its governing select holds v.
+        const off = pr.onlyWhen && (st.params?.[pr.onlyWhen.k] ?? f.params.find(x => x.k === pr.onlyWhen.k).def) !== pr.onlyWhen.v;
+        html += `<div class="frow"><label>${pr.label}</label>
+          <input type="number" id="${p}pp-${pr.k}" step="any" value="${cur}"${off ? " disabled" : ""}></div>`;
+      }
+    }
+    html += `<div class="frow"><label>Name</label><input type="text" id="${p}mname"
+      value="${esc(st.nm ?? "")}"
+      placeholder="${f.ops === "set" ? "fn(pattern) when pattern-only; otherwise name it" : "name it"}"></div>`;
+    html += `<div class="frow"><label>Units</label><input type="text" id="${p}munit"
+      value="${esc(st.unit ?? "")}" placeholder="(default from the operands)"></div>`;
+    return html;
+  }
+
+  let editing = null, dlgFn = null, dlgState = null;
+  function renderOpsel() {
+    const f = FNS[dlgFn];
+    if (f.ops === "set") {
+      // Keep the pattern input alive (focus); refresh rows + validation.
+      const matched = patternMatches(dlgState);
+      const rows = dlgState.operands.map(id => opRowHtml(id, "all", false))
+        .concat((matched ?? []).map(id => opRowHtml(id, "all", true)));
+      $("oprows").innerHTML = rows.join("") ||
+        emptyRowHtml("drag signals here, or add a pattern (/…/)");
+      $("opcount").textContent = matched === null ? "bad regex" : matched.length + " signals";
+      const n = dlgState.operands.length + (matched ?? []).length;
+      $("ophint").textContent = `(${n})`;
+      $("opval").innerHTML = matched === null ? `<span class="valmsg warn">bad regex</span>`
+        : n >= 2 ? `<span class="valmsg ok">${n} signals ✓</span>`
+        : `<span class="valmsg warn">needs ≥ 2</span>`;
+    } else if ($("opselwrap")) {
+      $("opselwrap").innerHTML = opselTraceHtml(f, dlgState, "", true);
+    }
+  }
+  function openDialog(fn, existing) {
+    dlgFn = fn; editing = existing;
+    const f = FNS[fn];
+    const ex = existing?.operands ?? [];
+    dlgState = { id: existing?.id ?? "new",
+      operands: f.ops === "pair" ? [ex[0] ?? null, ex[1] ?? null]
+              : f.ops === "one" ? [ex[0] ?? null] : [...ex],
+      pattern: existing?.pattern ?? "",
+      params: { ...(existing?.params ?? {}) },
+      nm: existing?.nm ?? "", unit: existing?.unit ?? "" };
+    $("dlgtitle").textContent = (existing ? "Edit — " : "Add — ") + FNS[fn].label;
+    $("dlgok").textContent = existing ? "Save" : "Add";
+    $("dlgbody").innerHTML = dialogBodyHtml(fn, dlgState, "", true);
+    $("dlgwrap").hidden = false;
+  }
+  function setSlot(slot, id) {
+    if (!lookup(id) || id === dlgState.id || reaches(id, dlgState.id)) return;
+    if (slot === "all") {
+      if (!dlgState.operands.includes(id)) dlgState.operands.push(id);
+    } else dlgState.operands[+slot] = id;
+    renderOpsel();
+  }
+  // Pattern field + per-row remove drive the live state.
+  $("dlgbody").addEventListener("input", e => {
+    if (e.target.id === "mpattern") { dlgState.pattern = e.target.value.trim(); renderOpsel(); }
+    if (e.target.classList?.contains("sigcombo-q")) {
+      const tree = e.target.closest(".sigcombo").querySelector(".sigcombo-tree");
+      tree.innerHTML = comboTreeHtml(e.target.value.trim());
+    }
+  });
+  $("dlgbody").addEventListener("click", e => {
+    const rm = e.target.dataset?.oprm;
+    if (rm != null) {
+      const slot = e.target.dataset.slot;
+      if (slot === "all") dlgState.operands = dlgState.operands.filter(x => x !== rm);
+      else dlgState.operands[+slot] = null;
+      renderOpsel();
+      return;
+    }
+    const btn = e.target.closest?.(".sigcombo-btn");
+    if (btn) {
+      e.stopPropagation();
+      const pop = btn.closest(".sigcombo").querySelector(".sigcombo-pop");
+      const opening = pop.hidden;
+      document.querySelectorAll(".sigcombo-pop").forEach(x => { x.hidden = true; });
+      if (opening) {
+        pop.hidden = false;
+        pop.querySelector(".sigcombo-q").value = "";
+        pop.querySelector(".sigcombo-tree").innerHTML = comboTreeHtml("");
+        pop.querySelector(".sigcombo-q").focus();
+      }
+      return;
+    }
+    const sp = e.target.closest?.(".secpat");
+    if (sp) {
+      e.stopPropagation();
+      const pop = sp.nextElementSibling;
+      const r = sp.getBoundingClientRect();
+      pop.hidden = !pop.hidden;
+      if (!pop.hidden) {
+        pop.style.left = Math.min(r.left, innerWidth - 360) + "px";
+        pop.style.top = (r.bottom + 4) + "px";
+        pop.querySelector("input").focus();
+      }
+      return;
+    }
+    const pick = e.target.closest?.("[data-pick]");
+
+    if (pick) {
+      const slot = pick.closest(".sigcombo").dataset.slot;
+      setSlot(slot, pick.dataset.pick);
+    }
+  });
+  // A governing select (e.g. statistic's Statistic) enables/disables its
+  // dependent field (Percentile) — in the dialog and the gallery alike.
+  document.addEventListener("change", e => {
+    if (!/pp-stat$/.test(e.target.id ?? "")) return;
+    const pct = $(e.target.id.replace(/pp-stat$/, "pp-pct"));
+    if (pct) pct.disabled = e.target.value !== "percentile";
+  });
+  document.addEventListener("click", e => {
+    if (!e.target.closest?.(".sigcombo"))
+      document.querySelectorAll(".sigcombo-pop").forEach(x => { x.hidden = true; });
+    if (!e.target.closest?.(".signals-section-patterns") && !e.target.closest?.(".secpat"))
+      document.querySelectorAll(".signals-section-patterns").forEach(x => { x.hidden = true; });
+  });
+  // Drag a signal in — from the database tree or a plot area's side list.
+  document.addEventListener("dragstart", e => {
+    const el = e.target.closest?.("[data-sig]");
+    if (el) e.dataTransfer.setData("text/plain", el.dataset.sig);
+  });
+  $("dlgbody").addEventListener("dragover", e => {
+    const z = e.target.closest?.(".opsec");
+    if (z) { e.preventDefault(); z.classList.add("dragover"); }
+  });
+  $("dlgbody").addEventListener("dragleave", e => {
+    e.target.closest?.(".opsec")?.classList.remove("dragover");
+  });
+  $("dlgbody").addEventListener("drop", e => {
+    const z = e.target.closest?.(".opsec");
+    if (!z) return;
+    e.preventDefault();
+    z.classList.remove("dragover");
+    setSlot(z.dataset.slot, e.dataTransfer.getData("text/plain"));
+  });
+  $("dlgcancel").addEventListener("click", () => { $("dlgwrap").hidden = true; });
+  $("dlgok").addEventListener("click", () => {
+    const f = FNS[dlgFn];
+    let ops = dlgState.operands.filter(Boolean);
+    const pattern = f.ops === "set" ? dlgState.pattern : "";
+    const params = {};
+    for (const pr of f.params ?? [])
+      params[pr.k] = pr.opts ? $("pp-" + pr.k).value : +$("pp-" + pr.k).value;
+    const probe = { id: editing?.id ?? "probe", operands: ops, pattern };
+    const resolved = f.ops === "set" ? opsOf(probe) : ops;
+    if (f.ops === "set" && resolved.length < 2) {
+      $("toast").textContent = "The pattern and dragged-in signals resolve to fewer than two."; return;
+    }
+    if (f.ops === "pair" && !(dlgState.operands[0] && dlgState.operands[1])) {
+      $("toast").textContent = "A and B each need one signal."; return;
+    }
+    if (f.ops === "one" && !dlgState.operands[0]) {
+      $("toast").textContent = "Pick the input signal."; return;
+    }
+    // No heuristic names: a pattern-only set may default to the literal
+    // fn(pattern); anything else must be named (owner ruling 2026-09-06).
+    let nm = $("mname").value.trim();
+    if (!nm) {
+      if (f.ops === "set" && pattern && ops.length === 0) nm = `${dlgFn}(${pattern})`;
+      else if (dlgFn === "hline") nm = "hline";
+      else { $("toast").textContent = "Name it — names aren't derived from selections."; return; }
+    }
+    const unitOf = id => lookup(id).unit;
+    const units = [...new Set(resolved.map(unitOf))];
+    const baseUnit = f.unit ?? (units.length === 1 ? units[0] : "");
+    const def = editing ?? { id: "m" + nextM++, color: MCOLORS[maths.length % MCOLORS.length],
+                            plotExp: true, dbExp: true };
+    def.fn = dlgFn; def.operands = ops; def.pattern = pattern; def.params = params;
+    def.nm = nm;
+    def.unit = $("munit").value.trim() || (f.unitSuffix ? baseUnit + f.unitSuffix : baseUnit);
+    if (!editing) maths.push(def);
+    $("dlgwrap").hidden = true;
+    $("toast").textContent = `${editing ? "Updated" : "Added"} ${def.nm} — one central definition; in the app you'd drag it from Computed into views.`;
+    editing = null;
+    redraw();
+  });
+
+  // ---- gallery: every function's edit controls at once
+  function drawGallery() {
+    const sample = {
+      sum:        { operands: [], pattern: "Cell\\d+", params: {}, nm: "sum(Cell\\d+)", unit: "V" },
+      difference: { operands: ["c1", "c4"], pattern: "", params: {}, nm: "CellSpread14", unit: "V" },
+      product:    { operands: ["pv", "ip"], pattern: "", params: {}, nm: "PackPower", unit: "W" },
+      scale:      { operands: ["ip"], pattern: "", params: { gain: 0.1, offset: 0 }, nm: "PackCurrentDeciAmp", unit: "dA" },
+      min:        { operands: [], pattern: "Cell\\d+", params: {}, nm: "min(Cell\\d+)", unit: "V" },
+      max:        { operands: [], pattern: "Cell\\d+", params: {}, nm: "max(Cell\\d+)", unit: "V" },
+      average:    { operands: [], pattern: "Cell\\d+", params: {}, nm: "average(Cell\\d+)", unit: "V" },
+      median:     { operands: [], pattern: "Cell\\d+", params: {}, nm: "median(Cell\\d+)", unit: "V" },
+      range:      { operands: [], pattern: "Cell\\d+", params: {}, nm: "range(Cell\\d+)", unit: "V" },
+      expfilter:  { operands: ["ip"], pattern: "", params: { tau: 2 }, nm: "PackCurrentFiltered", unit: "A" },
+      integration:{ operands: ["ip"], pattern: "", params: {}, nm: "ChargeMoved", unit: "A·s" },
+      duty:       { operands: ["kc"], pattern: "", params: { threshold: 0.5, window: 5 }, nm: "ContactorDuty", unit: "%" },
+      frequency:  { operands: ["kc"], pattern: "", params: { threshold: 0.5, window: 5 }, nm: "ContactorFreq", unit: "Hz" },
+      statistic:  { operands: ["c4"], pattern: "", params: { stat: "percentile", pct: 95 }, nm: "Cell04P95", unit: "V" },
+      rms:        { operands: ["ip"], pattern: "", params: {}, nm: "PackCurrentRms", unit: "A" },
+      hline:      { operands: [], pattern: "", params: { value: 3.5 }, nm: "CellUndervoltLimit", unit: "V" },
+    };
+    $("gallery").innerHTML = Object.entries(FNS).map(([k, f], i) =>
+      `<div class="gallery-card"><h3><span class="fx">ƒ</span>${esc(f.label)}</h3>
+        <div class="body">${dialogBodyHtml(k, { id: "g" + i, ...sample[k] }, `g${i}-`, false)}</div></div>`).join("");
+  }
+
+  redraw();
+  drawGallery();
+</script>
+</body>
+</html>

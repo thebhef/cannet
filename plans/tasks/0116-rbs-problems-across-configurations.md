@@ -9,7 +9,7 @@ should be for all of them, like I specified. We should be able to filter by
 RBS file."*
 
 The combined view the original ruling implies **does not exist** — task 103
-declined to invent one, and the RBS chip navigates to an individual file
+declined to invent one, and the RBS button navigates to an individual file
 instead.
 
 **The steps-to-reproduce leg is dropped, ruled 2026-08-25:** *"I'm not
@@ -19,7 +19,7 @@ to reproduce; the ask stands on its own.
 ## Work
 
 One view over problems across **every open `.cannet_rbs`**, filterable by
-file. The RBS chip opens that, not a single configuration.
+file. The RBS button opens that, not a single configuration.
 
 Per [ADR 0044](../../docs/adr/0044-gridview-interaction-base.md) and
 `CLAUDE.md`'s paged-view rule, it is a view over a host-side model: the
@@ -41,7 +41,7 @@ Landing this first would build rows 113 then changes.
 
 ## Exit criteria
 
-1. **The RBS chip opens a view carrying problems from every open
+1. **The RBS button opens a view carrying problems from every open
    configuration**, verified in a running build.
 2. **Filtering by file narrows it**, pinned by a test.
 3. **The problem set is host-computed and paged**, not accumulated in
