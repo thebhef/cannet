@@ -21,12 +21,16 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  acceptPlotConfig,
+  acceptSignalDrift,
+  acceptSignalsConfig,
   remapColorMapPatch,
   remapElementPatch,
   remapPlotConfig,
   remapSignal,
   remapSignalsConfig,
   remapTransmitFrames,
+  type SignalDriftAccept,
   type SignalRemap,
   type SignalRemapStores,
 } from "./signalRemap";
@@ -549,6 +553,156 @@ describe("remapSignal — the one operation", () => {
     await remapSignal(s, { ...REMAP, to: REMAP.from });
     expect(patches).toEqual([]);
     expect(hostCalls).toEqual([]);
+  });
+});
+
+// The accept: a Scale / Stale row's repair. The serving database now
+// decodes the signal differently from the fields the views recorded at
+// pick time; accepting re-records those fields as the decoded values.
+// The identity never moves — only the comparand a drift is measured
+// against — so the identity-only stores hold nothing to rewrite.
+describe("acceptSignalDrift — adopting the decoded values", () => {
+  const ACCEPT: SignalDriftAccept = {
+    busId: "power",
+    messageId: 0x100,
+    extended: false,
+    signalName: "EngSpeed",
+    messageName: "EngineData",
+    unit: "rpm",
+  };
+
+  it("re-records a plot series' mapped fields without touching its identity", () => {
+    const config = {
+      areas: [{ id: "a1", signals: [plotSignal("EngSpeed", { colorPick: "#abcdef" })] }],
+    };
+    const next = acceptPlotConfig(config, ACCEPT) as {
+      areas: { signals: Record<string, unknown>[] }[];
+    } | null;
+    expect(next?.areas[0].signals[0]).toEqual({
+      busId: "power",
+      messageId: 0x100,
+      extended: false,
+      signalName: "EngSpeed",
+      messageName: "EngineData",
+      unit: "rpm",
+      colorPick: "#abcdef",
+    });
+  });
+
+  it("leaves a config that already records the decoded values alone, by identity", () => {
+    const config = {
+      areas: [
+        { id: "a1", signals: [plotSignal("EngSpeed", { messageName: "EngineData", unit: "rpm" })] },
+      ],
+    };
+    expect(acceptPlotConfig(config, ACCEPT)).toBeNull();
+  });
+
+  it("does not match a series on another bus, another message, or a file-backed one", () => {
+    const config = {
+      areas: [
+        { id: "a1", signals: [plotSignal("EngSpeed", { busId: "body" })] },
+        { id: "a2", signals: [plotSignal("EngSpeed", { messageId: 0x101 })] },
+        { id: "a3", signals: [plotSignal("EngSpeed", { fileBacked: true })] },
+      ],
+    };
+    expect(acceptPlotConfig(config, ACCEPT)).toBeNull();
+  });
+
+  it("leaves the area's primary key alone — the identity does not move", () => {
+    const config = {
+      areas: [{ id: "a1", signals: [plotSignal("EngSpeed")], primarySignalKey: OLD_KEY }],
+    };
+    const next = acceptPlotConfig(config, ACCEPT) as {
+      areas: { primarySignalKey: string }[];
+    } | null;
+    expect(next?.areas[0].primarySignalKey).toBe(OLD_KEY);
+  });
+
+  it("re-records the signals view's manual selection key, leaving its section assignment", () => {
+    const config = {
+      selection: { keys: [plotSignal("EngSpeed")], patterns: ["Cell(\\d+)"] },
+      sections: { names: ["Drive"], assignments: { [OLD_KEY]: "Drive" }, patterns: {} },
+    };
+    const next = acceptSignalsConfig(config, ACCEPT) as {
+      selection: { keys: Record<string, unknown>[]; patterns: string[] };
+      sections: { assignments: Record<string, string> };
+    } | null;
+    expect(next?.selection.keys[0]).toMatchObject({
+      signalName: "EngSpeed",
+      messageName: "EngineData",
+      unit: "rpm",
+    });
+    expect(next?.selection.patterns).toEqual(["Cell(\\d+)"]);
+    expect(next?.sections.assignments).toEqual({ [OLD_KEY]: "Drive" });
+  });
+
+  it("reaches the plot and the signals stores from one invocation, and no other", () => {
+    const patches: { id: string; patch: Partial<ProjectElement> }[] = [];
+    acceptSignalDrift(
+      {
+        elements: [
+          {
+            kind: "plot",
+            id: "p1",
+            sources: ["*"],
+            config: { areas: [{ id: "a1", signals: [plotSignal("EngSpeed")] }] },
+          },
+          {
+            kind: "signals",
+            id: "s1",
+            sources: ["*"],
+            config: { selection: { keys: [plotSignal("EngSpeed")], patterns: [] } },
+          },
+          // Identity-only stores: nothing recorded, nothing to accept.
+          {
+            kind: "colormap",
+            id: "cm1",
+            busId: "power",
+            messageId: 0x100,
+            extended: false,
+            signalName: "EngSpeed",
+            rules: [],
+          } as unknown as ProjectElement,
+        ],
+        updateElement: (id, patch) => patches.push({ id, patch }),
+      },
+      ACCEPT,
+    );
+    expect(patches.map((p) => p.id)).toEqual(["p1", "s1"]);
+    const plot = patches[0].patch as {
+      config: { areas: { signals: { messageName: string; unit: string }[] }[] };
+    };
+    expect(plot.config.areas[0].signals[0]).toMatchObject({
+      messageName: "EngineData",
+      unit: "rpm",
+    });
+  });
+
+  it("writes nothing when every record already matches the decoded values", () => {
+    const patches: string[] = [];
+    acceptSignalDrift(
+      {
+        elements: [
+          {
+            kind: "plot",
+            id: "p1",
+            sources: ["*"],
+            config: {
+              areas: [
+                {
+                  id: "a1",
+                  signals: [plotSignal("EngSpeed", { messageName: "EngineData", unit: "rpm" })],
+                },
+              ],
+            },
+          },
+        ],
+        updateElement: (id) => patches.push(id),
+      },
+      ACCEPT,
+    );
+    expect(patches).toEqual([]);
   });
 });
 

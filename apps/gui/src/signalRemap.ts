@@ -12,6 +12,12 @@
 /// outlives the reason it was created and mis-resolves quietly, so the
 /// references themselves are what change.
 ///
+/// The module also carries the drift **accept** ({@link
+/// acceptSignalDrift}): when the database legitimately changed what a
+/// signal decodes as (its unit, its message's name) and the views
+/// should adopt it, the same one-operation-over-every-store guarantee
+/// re-records their mapped fields as the decoded values.
+///
 /// **One operation, every store behind it.** {@link remapSignal} is a
 /// single function over every store rather than a call per store, and
 /// that is the whole point of the module: one signal is one row and a
@@ -414,6 +420,132 @@ export async function remapSignal(
   // One undo step for the whole host half; the element half coalesces
   // with it through the gesture the caller opened (task 129).
   stores.recordEdit?.({ undo: undoOps, redo: redoOps });
+}
+
+/// **The accept**: adopting the decoded values as the new record — a
+/// Scale / Stale row's repair. Such a row states that the serving
+/// database now decodes the signal differently from the fields the
+/// views recorded when it was picked (`view_signals.rs` measures the
+/// drift against that record). Accepting rewrites every view's recorded
+/// copy — message name and unit — to the decoded values, which is what
+/// brings the row back to Decoded.
+///
+/// The identity never moves: only the comparand does. So the stores
+/// that hold identity alone — a colormap target, a transmit frame's
+/// calculated-field signal, the colour overrides, the per-signal
+/// database choice — hold nothing for this operation to rewrite, and
+/// the plot's primary-signal key and the signals view's section
+/// assignments (both keyed on the identity) stay where they are.
+export interface SignalDriftAccept {
+  busId: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  /// The serving database's message name today — what the views'
+  /// recorded copies are rewritten to.
+  messageName: string;
+  /// The serving definition's unit today, likewise.
+  unit: string;
+}
+
+/// Re-record the mapped fields on every entry of one stored-reference
+/// list that names the signal, or `null` when none does (or every one
+/// already records the decoded values), so a caller can leave its
+/// config identity-stable.
+function acceptRefList(list: unknown, accept: SignalDriftAccept): unknown[] | null {
+  if (!Array.isArray(list)) return null;
+  const key = signalKey(accept.busId, accept.messageId, accept.extended, accept.signalName);
+  let changed = false;
+  const out = list.map((entry) => {
+    if (!isRecord(entry) || storedRefKey(entry) !== key) return entry;
+    if (entry.messageName === accept.messageName && entry.unit === accept.unit) return entry;
+    changed = true;
+    return { ...entry, messageName: accept.messageName, unit: accept.unit };
+  });
+  return changed ? out : null;
+}
+
+/// A plot element's config: each area's manual series carry the record.
+export function acceptPlotConfig(
+  config: unknown,
+  accept: SignalDriftAccept,
+): PanelViewConfig | null {
+  if (!isRecord(config) || !Array.isArray(config.areas)) return null;
+  let changed = false;
+  const areas = config.areas.map((raw) => {
+    if (!isRecord(raw)) return raw;
+    const signals = acceptRefList(raw.signals, accept);
+    if (signals === null) return raw;
+    changed = true;
+    return { ...raw, signals };
+  });
+  return changed ? { ...config, areas } : null;
+}
+
+/// A signals element's config: the manual selection keys carry the
+/// record.
+export function acceptSignalsConfig(
+  config: unknown,
+  accept: SignalDriftAccept,
+): PanelViewConfig | null {
+  if (!isRecord(config) || !isRecord(config.selection)) return null;
+  const keys = acceptRefList(config.selection.keys, accept);
+  return keys === null ? null : { ...config, selection: { ...config.selection, keys } };
+}
+
+/// The patch one project element needs, or `null` when it records
+/// nothing for the drift to have moved. Only the plot and signals
+/// element kinds record mapped fields at all (`viewSignalsPush.ts`).
+export function acceptElementPatch(
+  element: ProjectElement,
+  accept: SignalDriftAccept,
+): Partial<ProjectElement> | null {
+  switch (element.kind) {
+    case "plot": {
+      const config = acceptPlotConfig(element.config, accept);
+      return config === null ? null : { config };
+    }
+    case "signals": {
+      const config = acceptSignalsConfig(element.config, accept);
+      return config === null ? null : { config };
+    }
+    default:
+      return null;
+  }
+}
+
+/// **The operation.** Re-record every view's mapped fields for one
+/// signal as the decoded values. Synchronous and element-only — the
+/// host stores hold identities, not records, so there is no host half.
+/// Like the remap, there is no apply step: the element writes land, the
+/// views re-push, and the repair surface's rows come back Decoded.
+export function acceptSignalDrift(
+  stores: Pick<SignalRemapStores, "elements" | "updateElement">,
+  accept: SignalDriftAccept,
+): void {
+  for (const element of stores.elements) {
+    const patch = acceptElementPatch(element, accept);
+    if (patch !== null) stores.updateElement(element.id, patch);
+  }
+}
+
+/// {@link acceptSignalDrift} bound to the live element registry, as one
+/// undo gesture (task 129) — what the repair surface calls.
+export function useAcceptSignalDrift(): (accept: SignalDriftAccept) => void {
+  const registry = useElementRegistry();
+  const { entries, update } = registry;
+  const gesture = useUndoGesture();
+  return useCallback(
+    (accept: SignalDriftAccept) => {
+      gesture.transact(() =>
+        acceptSignalDrift(
+          { elements: entries.map((e) => e.element), updateElement: update },
+          accept,
+        ),
+      );
+    },
+    [entries, update, gesture],
+  );
 }
 
 /// {@link remapSignal} bound to the live element registry and the

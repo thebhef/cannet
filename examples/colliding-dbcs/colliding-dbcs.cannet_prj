@@ -54,7 +54,8 @@
                   "activeView": "plot-contested",
                   "id": "plot",
                   "views": [
-                    "plot-contested"
+                    "plot-contested",
+                    "signals-watch"
                   ]
                 },
                 "size": 440,
@@ -118,6 +119,24 @@
                   "messageName": "VehicleState",
                   "signalName": "GearLever",
                   "unit": ""
+                },
+                {
+                  "busId": "pack",
+                  "color": "#f87171",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "VehicleState",
+                  "signalName": "BrakePedal",
+                  "unit": "%"
+                },
+                {
+                  "busId": "pack",
+                  "color": "#fbbf24",
+                  "extended": false,
+                  "messageId": 257,
+                  "messageName": "LegacyOnly",
+                  "signalName": "LegacyHeartbeat",
+                  "unit": ""
                 }
               ],
               "yAxisMode": "per-unit"
@@ -151,6 +170,14 @@
         "contentComponent": "project",
         "id": "project",
         "title": "Project"
+      },
+      "signals-watch": {
+        "contentComponent": "signals",
+        "id": "signals-watch",
+        "params": {
+          "elementId": "watch"
+        },
+        "title": "Watch list"
       },
       "trace-chrono": {
         "contentComponent": "trace",
@@ -325,6 +352,24 @@
                 "messageName": "VehicleState",
                 "signalName": "GearLever",
                 "unit": ""
+              },
+              {
+                "busId": "pack",
+                "color": "#f87171",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "VehicleState",
+                "signalName": "BrakePedal",
+                "unit": "%"
+              },
+              {
+                "busId": "pack",
+                "color": "#fbbf24",
+                "extended": false,
+                "messageId": 257,
+                "messageName": "LegacyOnly",
+                "signalName": "LegacyHeartbeat",
+                "unit": ""
               }
             ],
             "yAxisMode": "per-unit"
@@ -355,6 +400,29 @@
       "id": "contested",
       "kind": "plot",
       "name": "Contested signals",
+      "sources": [
+        "pack"
+      ]
+    },
+    {
+      "config": {
+        "selection": {
+          "keys": [
+            {
+              "busId": "pack",
+              "extended": false,
+              "messageId": 256,
+              "messageName": "VehicleState",
+              "signalName": "VehSpeed",
+              "unit": "km/h"
+            }
+          ],
+          "patterns": []
+        }
+      },
+      "id": "watch",
+      "kind": "signals",
+      "name": "Watch list",
       "sources": [
         "pack"
       ]

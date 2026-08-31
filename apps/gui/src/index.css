@@ -6680,6 +6680,27 @@ button.color-chip {
   color: var(--text-faint);
   margin: 0 0.35rem;
 }
+/* The drifted row's one-click repair, sitting after its diff text. */
+.view-signals-accept {
+  margin-left: 0.6rem;
+  padding: 0 0.45rem;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.view-signals-accept:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-marker);
+}
+.view-signals-accept:focus-visible {
+  outline: 2px solid var(--accent-marker);
+  outline-offset: 1px;
+}
 
 .view-signals-footer {
   display: flex;

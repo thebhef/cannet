@@ -5,7 +5,7 @@ import { usePanelEditRecorder } from "./panelEditRecorder";
 import { listen } from "@tauri-apps/api/event";
 
 import type { ViewSignalCandidate, ViewSignalRow, ViewSignalStatus } from "./types";
-import { useRemapSignal } from "./signalRemap";
+import { useAcceptSignalDrift, useRemapSignal } from "./signalRemap";
 import { useProjectContext } from "./projectContext";
 import { useDbcGeneration } from "./dbcChanged";
 import { basename } from "./windowTitle";
@@ -154,6 +154,13 @@ const PAGE_ROWS = 20;
  *   decodes nothing (ADR 0054) and this is its repair; it goes through
  *   the same shared rewrite, with the bus moving alongside the name.
  *
+ * A drifted row (Scale / Stale) additionally carries **the accept**: a
+ * one-click adoption of what now decodes, re-recording every view's
+ * mapped fields as the decoded values through the same shared module
+ * (`acceptSignalDrift`). The identity never moves — only the comparand
+ * the drift was measured against — which is what turns the row back to
+ * Decoded.
+ *
  * Neither has an apply step. The element writes land synchronously and
  * the host writes announce themselves (a DBC change, a transmit-pool
  * change, and the views' own re-push), which is what brings this
@@ -256,6 +263,26 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
   // database decodes it. One operation over every store
   // (`signalRemap.ts`) — the rows come back through the views' own
   // re-push, as they do for any other config edit.
+  // The accept: a drifted row's repair. The row's own `messageName` /
+  // `unit` are the serving database's current values (the host swaps in
+  // the recorded ones only when nothing decodes — and an undecoded row
+  // never carries diffs), so they are exactly what the views' records
+  // are rewritten to.
+  const acceptDrift = useAcceptSignalDrift();
+  const onAccept = useCallback(
+    (row: ViewSignalRow) => {
+      acceptDrift({
+        busId: row.busId,
+        messageId: row.messageId,
+        extended: row.extended,
+        signalName: row.signalName,
+        messageName: row.messageName,
+        unit: row.unit,
+      });
+    },
+    [acceptDrift],
+  );
+
   const remapSignal = useRemapSignal();
   const onRemap = useCallback(
     (row: ViewSignalRow, candidate: ViewSignalCandidate) => {
@@ -469,6 +496,7 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
               rowDomId={grid.rowDomId}
               onPick={onPick}
               onRemap={onRemap}
+              onAccept={onAccept}
               selected={grid.selection.has(r.id)}
               onSelect={(id, e) =>
                 grid.onRowClick(id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey })
@@ -527,6 +555,7 @@ interface ViewSignalRowLineProps {
   rowDomId: (id: string) => string;
   onPick: (row: ViewSignalRow, dbcPath: string) => void;
   onRemap: (row: ViewSignalRow, candidate: ViewSignalCandidate) => void;
+  onAccept: (row: ViewSignalRow) => void;
   selected: boolean;
   onSelect: (id: string, e: React.MouseEvent) => void;
 }
@@ -538,6 +567,7 @@ function ViewSignalRowLine({
   rowDomId,
   onPick,
   onRemap,
+  onAccept,
   selected,
   onSelect,
 }: ViewSignalRowLineProps) {
@@ -671,6 +701,22 @@ function ViewSignalRowLine({
                     <span className="view-signals-detail-sep">·</span>
                     <span className="view-signals-detail-k">Decoded by:</span>{" "}
                     <span className="view-signals-detail-v">{detail.decoded}</span>
+                    {/* A drift's repair: adopt the decoded values as
+                        the views' new record. Only a drifted row has
+                        diffs, so only it carries the action. */}
+                    <button
+                      type="button"
+                      className="view-signals-accept"
+                      title="Adopt the decoded values: re-record every view's mapped fields as what now decodes"
+                      // The row's own click handler is selection, not
+                      // part of this gesture.
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAccept(row);
+                      }}
+                    >
+                      Accept
+                    </button>
                   </>
                 ) : null}
               </span>
