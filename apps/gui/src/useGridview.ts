@@ -57,8 +57,10 @@ const FOCUSABLE_SELECTOR = "a[href], button, input, select, textarea, [tabindex]
 /// The row's own controls, in tab order. A row's decorative buttons opt
 /// out with `tabindex="-1"` — a caret whose job Left/Right already does,
 /// a clear-override ×  — and Tab into the row must land where the
-/// keyboard can then walk, so they are skipped here too.
-function rowTabbables(row: HTMLElement): HTMLElement[] {
+/// keyboard can then walk, so they are skipped here too. Exported for
+/// the panel whose primary action *is* entering the row (the RBS
+/// tree's signal rows), so its landing is the very same as Tab's.
+export function rowTabbables(row: HTMLElement): HTMLElement[] {
   return Array.from(row.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
     (el) => el.tabIndex >= 0 && !(el as HTMLInputElement).disabled,
   );
@@ -75,8 +77,8 @@ export interface UseGridviewOptions {
   idPrefix: string;
   /// Space: the panel's primary action on the cursor's row. Most
   /// panels define none — expansion is already Left/Right's job, so
-  /// the layer binds no default. Enter is deliberately left unbound
-  /// for the user's own keybindings.
+  /// the layer binds no default. Enter is left unbound for the user's
+  /// own keybindings unless `enterIsPrimary` claims it.
   onPrimaryAction?: (id: string) => void;
   /// F2: begin the cursor row's inline rename. The layer's second
   /// action key beside Space, and optional the same way — a view that
@@ -85,6 +87,15 @@ export interface UseGridviewOptions {
   /// carry an editable label appear in more than one of them, and a
   /// per-view copy is what drifts.
   onRenameAction?: (id: string) => void;
+  /// Enter runs the primary action exactly as Space does. Opt-in: the
+  /// layer's default leaves Enter unbound for the user's own
+  /// keybindings, and only a panel whose rows make "Enter goes in" the
+  /// obvious reading (the RBS tree) should claim it.
+  enterIsPrimary?: boolean;
+  /// Shift+Tab from inside a row's content hands focus back to the
+  /// container, the way Escape does. Opt-in, because it takes the
+  /// press away from walking backward between a row's own controls.
+  shiftTabExitsRow?: boolean;
   /// Selectable items that are **not** rows of the scrolled space,
   /// appended to the selection order after them: ADR 0045's pattern
   /// chips, which are "selectable items in the same selection set as
@@ -138,6 +149,8 @@ export function useGridview({
   idPrefix,
   onPrimaryAction,
   onRenameAction,
+  enterIsPrimary = false,
+  shiftTabExitsRow = false,
   extraSelectableIds = EMPTY_EXTRAS,
 }: UseGridviewOptions): Gridview {
   const [cursor, setCursor] = useState<string | null>(null);
@@ -200,6 +213,22 @@ export function useGridview({
         !e.metaKey &&
         !e.altKey &&
         !e.shiftKey &&
+        e.target !== container &&
+        !e.defaultPrevented
+      ) {
+        e.preventDefault();
+        container.focus();
+        return;
+      }
+      // Shift+Tab is a second way out where the panel opted in: the
+      // same hand-back as Escape, from a control or a field alike.
+      if (
+        shiftTabExitsRow &&
+        e.key === "Tab" &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
         e.target !== container &&
         !e.defaultPrevented
       ) {
@@ -275,9 +304,10 @@ export function useGridview({
       }
       // Every other chord belongs to the command dispatcher.
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-      // Enter ships unbound.
-      if (e.key === "Enter") return;
-      if (e.key === " ") {
+      // Enter ships unbound unless the panel claimed it as a second
+      // primary-action key (`enterIsPrimary`).
+      if (e.key === "Enter" && !enterIsPrimary) return;
+      if (e.key === " " || e.key === "Enter") {
         // A focused button owns Space — pressing it is how a button is
         // activated. The same exemption in spirit as the editable-target
         // one above: the grid's action key must not double-fire a
@@ -320,12 +350,14 @@ export function useGridview({
     [
       adapter,
       cursor,
+      enterIsPrimary,
       moveCursor,
       onPrimaryAction,
       onRenameAction,
       pageRows,
       rowDomId,
       selectionOrder,
+      shiftTabExitsRow,
     ],
   );
 
