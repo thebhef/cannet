@@ -297,6 +297,29 @@ export function panelsForElementId<P extends { params?: unknown }>(
 /// must return `null` here. Returning a trace/plot component would let
 /// "Open" mount a panel whose `ensure(id, kind)` then retypes — and
 /// destroys — the filter element.
+/// The dock-panel id "Open element" mounts: `component-elementId`
+/// where that is free, else the first `-2`, `-3`, … suffix that is. A
+/// panel id is layout identity, not element identity — a persisted
+/// layout can hold a panel whose *id* happens to spell another
+/// element's derived name (the panel keys its element by
+/// `params.elementId`, never by id) — and dockview throws on a
+/// duplicate id, which silently ate the open (owner defect report,
+/// 2026-08-30: legacy-project's hand-authored `plot-unbound` /
+/// `trace-chrono` panels shadowed the `unbound` and `chrono`
+/// elements).
+export function elementPanelId(
+  component: string,
+  elementId: string,
+  takenIds: readonly string[],
+): string {
+  const base = `${component}-${elementId}`;
+  if (!takenIds.includes(base)) return base;
+  for (let n = 2; ; n++) {
+    const id = `${base}-${n}`;
+    if (!takenIds.includes(id)) return id;
+  }
+}
+
 export function elementPanelComponent(kind: ProjectElementKind): string | null {
   switch (kind) {
     case "trace":

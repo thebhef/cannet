@@ -9,6 +9,7 @@ import {
   RBS_SIGNALS_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_ID,
   elementPanelComponent,
+  elementPanelId,
   elementPanelTitle,
   panelKindForFocus,
   panelsForElementId,
@@ -54,6 +55,23 @@ describe("stripMaximizedNode", () => {
 
   it("returns a layout without one unchanged", () => {
     expect(stripMaximizedNode(base)).toBe(base);
+  });
+});
+
+describe("elementPanelId", () => {
+  it("derives component-elementId when free", () => {
+    expect(elementPanelId("plot", "abc", ["plot-xyz"])).toBe("plot-abc");
+  });
+
+  it("steps past a layout panel whose id shadows another element's derived name", () => {
+    // The legacy-project defect: a persisted layout held a panel *id*
+    // "plot-unbound" hosting a different element, and dockview's
+    // duplicate-id throw silently ate Open for the element actually
+    // named "unbound".
+    expect(elementPanelId("plot", "unbound", ["plot-unbound"])).toBe("plot-unbound-2");
+    expect(elementPanelId("plot", "unbound", ["plot-unbound", "plot-unbound-2"])).toBe(
+      "plot-unbound-3",
+    );
   });
 });
 

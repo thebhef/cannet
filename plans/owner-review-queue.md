@@ -179,16 +179,17 @@ that task's status log.
       longer exist post-reframe; their closures are in
       [task 122](tasks/0122-a-file-keeps-what-you-wrote.md)'s status log)
       — `examples/capture-features/`
-- [ ] 127 — the frontend's shared layer: the tag/description editors
+- [x] 127 — the frontend's shared layer: the tag/description editors
       hand the keyboard back, `useConnectionStates` and
       `useSidecarStatus` sit on `useHostMirror`'s new `fromPayload`, and
       the trace gridviews carry real ARIA roles with one focus model
       (findings 3.51, 3.19 and 3.18 no longer exist post-reframe; their
       closures are in
       [task 127](tasks/0127-shared-layer-cleanups.md)'s status log).
-      **Open:** `serverList.ts`'s two hooks carry the same launch race
-      and need a ruling on what a malformed payload does — see that
-      task's Blockers.
+      Checked 2026-08-30 ("127 looks good"); the `serverList.ts`
+      launch-race item was ruled (option a — no behaviour change) and
+      lives in [task 128](tasks/0128-shared-layer-holdouts.md) with the
+      other holdouts, not open here.
 - [x] 113 — RBS is a grid: an RBS message's and a transmit tile's
       signals are rows the cursor reaches, Space on a signal row is
       inert (superseded 2026-08-28: Enter/Space on a signal row now
