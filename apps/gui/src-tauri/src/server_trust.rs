@@ -178,17 +178,30 @@ pub(crate) fn trust_for(app: &tauri::AppHandle, address: &str) -> TrustEntry {
 /// running interface watch for `address` restarts against the new
 /// decision, so accepting an identity connects rather than leaving the
 /// user to find the retry button.
+///
+/// An answer that *stores* something to connect with is also dialled
+/// once when nothing watches the address — a server in the list but
+/// bound to no bus has no watch to restart, and without the dial a
+/// mistyped token is accepted in silence and refused only when the
+/// server is next needed. Forgetting passes `verify: false`: there is
+/// nothing stored to exercise, and dialling would raise a fresh
+/// first-contact question nobody asked for.
 fn answered(
     app: &tauri::AppHandle,
     address: &str,
     write: std::io::Result<()>,
+    verify: bool,
 ) -> Result<(), String> {
     write.map_err(|e| format!("failed to store the trust decision for {address}: {e}"))?;
     crate::connect_flow::resolved(app, address);
     // The store just moved, whether or not a question went with it, so
     // the merged server list has to be pushed on its own account.
     crate::server_list::changed(app);
-    crate::interfaces::rewatch(app, address);
+    if verify {
+        crate::interfaces::rewatch_or_verify(app, address);
+    } else {
+        crate::interfaces::rewatch(app, address);
+    }
     Ok(())
 }
 
@@ -217,7 +230,7 @@ pub fn accept_server_fingerprint(
             entry.token = Some(token);
         }
     });
-    answered(&app, &address, write)
+    answered(&app, &address, write, true)
 }
 
 /// Tauri command — replace the bearer token stored for `address`, the
@@ -233,7 +246,7 @@ pub fn set_server_token(
     let write = update_server(&dir, &address, |entry| {
         entry.token = if token.is_empty() { None } else { Some(token) };
     });
-    answered(&app, &address, write)
+    answered(&app, &address, write, true)
 }
 
 /// Tauri command — record that the operator chose to reach `address`
@@ -252,7 +265,7 @@ pub fn accept_server_insecure(app: tauri::AppHandle, address: String) -> Result<
         entry.fingerprint = None;
         entry.token = None;
     });
-    answered(&app, &address, write)
+    answered(&app, &address, write, true)
 }
 
 /// Tauri command — forget everything stored for `address`. The next
@@ -262,7 +275,7 @@ pub fn accept_server_insecure(app: tauri::AppHandle, address: String) -> Result<
 pub fn forget_server(app: tauri::AppHandle, address: String) -> Result<(), String> {
     let dir = store_dir(&app)?;
     let write = update_server(&dir, &address, |entry| *entry = TrustEntry::default());
-    answered(&app, &address, write)
+    answered(&app, &address, write, false)
 }
 
 #[cfg(test)]
