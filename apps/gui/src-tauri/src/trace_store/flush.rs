@@ -155,6 +155,13 @@ impl TraceStore {
         inner.reset_derived();
         inner.session_start_ns = session_start_ns;
         inner.session_started = true;
+        // A new session is a change even when its content ends up
+        // byte-identical to the last one's (re-importing the same small
+        // file repeats count, rate and origin exactly): the generation is
+        // what lets the `trace-grew` emitter see the clear it never
+        // witnesses directly, instead of staying suppressed and leaving
+        // the frontend without a session origin.
+        inner.session_generation = inner.session_generation.wrapping_add(1);
         // Wiping the buffer wipes the scratch (ADR 0002 DS-7): the raw
         // store's `clear` already dropped its segments and manifest; drop
         // the facade's derived + identity files too so a stale prior

@@ -120,6 +120,9 @@ pub struct StatusSnapshot {
     pub session_start_ns: u64,
     /// As [`TraceStore::session_started`].
     pub session_started: bool,
+    /// Session generation — bumped by every `start_session`, so a
+    /// cleared-and-refilled identical session still reads as changed.
+    pub session_generation: u64,
     /// As [`TraceStore::buffer_seconds`].
     pub buffer_seconds: f64,
     /// As [`TraceStore::frames_dropped_before_session`].
@@ -218,6 +221,12 @@ struct Inner {
     /// own. Not persisted: a store that reloads a capture from the
     /// scratch has one by definition.
     session_started: bool,
+    /// Bumped by every [`TraceStore::start_session`]. Distinguishes two
+    /// sessions whose visible state repeats exactly (same count, rate and
+    /// origin — a re-import of the same file), which the `trace-grew`
+    /// emitter's change detection needs: a clear it never observes must
+    /// still read as a change.
+    session_generation: u64,
     /// The raw frame bytes — `Vec`-backed in tests, disk-spilled in
     /// production. Owns the always-on `by-id` index too (on disk for the
     /// disk store), so it serves [`Self::matching_frames_indexed`].
@@ -347,6 +356,7 @@ impl TraceStore {
             inner: Mutex::new(Inner {
                 session_start_ns: 0,
                 session_started: false,
+                session_generation: 0,
                 raw,
                 ts_anchor: TsAnchorIndex::default(),
                 per_key: HashMap::new(),
@@ -432,6 +442,7 @@ impl TraceStore {
             first_index_ts_ns: first_ts,
             session_start_ns: inner.session_start_ns,
             session_started: inner.session_started,
+            session_generation: inner.session_generation,
             buffer_seconds,
             frames_dropped_before_session: inner.dropped_before_session,
             scratch_bytes: inner.scratch_dir.is_some().then_some(inner.footprint_bytes),

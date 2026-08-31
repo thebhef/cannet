@@ -32,7 +32,7 @@ that task's status log.
       mock-runtime blocker is real but is **not** what stands in the
       way: the decision lifts out into a pure function the way
       `outcome_for` already did. Owner's call whether that ships as is
-- [ ] 87 — BLF writer timestamp fidelity —
+- [x] 87 — BLF writer timestamp fidelity —
       `examples/time-origins/wall-clock-out-of-order.blf`
 - [ ] 89 — signal mapping panel **§** — `examples/colliding-dbcs/`,
       `examples/ev-zonal/`. **7 of 8 met, 1 partial**: the host-side
@@ -75,7 +75,7 @@ that task's status log.
 - [x] 104 — determinate load progress, discoverable cancel — **no
       furnished file**: needs a multi-million-frame capture, generated
       locally (`examples/capture-features/README.md`)
-- [ ] 102 — the event surface (macOS picker criterion waived
+- [x] 102 — the event surface (macOS picker criterion waived
       2026-08-26) — `examples/capture-features/annotated.blf`,
       `examples/capture-features/annotated.mf4`
 - [ ] 103 — toolbar status bar, status chips, ADR 0055
