@@ -123,7 +123,11 @@ describe("RbsValueCell", () => {
         onClear={onClear}
       />,
     );
+    // Two-stage: a value removal is not undoable (ADR 0058), so the
+    // first click only arms.
     fireEvent.click(screen.getByTitle(/clear override/));
+    expect(onClear).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTitle("click again to confirm"));
     expect(onClear).toHaveBeenCalledTimes(1);
   });
 });
@@ -176,5 +180,31 @@ describe("the hex-override bug, end to end through the input", () => {
     fireEvent.change(input, { target: { value: "0xA" } });
     fireEvent.blur(input);
     expect(onCommit).toHaveBeenCalledWith("0xA");
+  });
+});
+
+// jsdom does no layout, so the one layout rule the clear × depends on
+// is pinned as stylesheet text (the `gridviewFocusRing.test.ts`
+// idiom): the grid's value cell must lay out as a flex row whose input
+// yields, or `width: 100%` pushes the × past the cell's
+// `overflow: hidden` edge and every overridden row's clear is
+// invisible — the defect the owner hit 2026-08-30.
+describe("the grid value cell's clear × is never clipped", () => {
+  it(".col-rs-value flexes and its input yields", async () => {
+    const css = (await import("./index.css?raw")).default as string;
+    const rules: [string, string][] = [];
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const sel = m[1].replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
+      if (sel !== "" && !sel.includes("@")) rules.push([sel, m[2]]);
+    }
+    const decls = (selector: string) =>
+      rules
+        .filter(([sel]) => sel.split(",").some((s) => s.trim() === selector))
+        .map(([, d]) => d)
+        .join(";");
+    expect(decls(".col-rs-value")).toMatch(/display\s*:\s*flex/);
+    const input = decls(".col-rs-value .rbs-signal-input");
+    expect(input).toMatch(/min-width\s*:\s*0/);
+    expect(input).not.toMatch(/width\s*:\s*100%/);
   });
 });

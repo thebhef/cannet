@@ -13,6 +13,8 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import type { RbsSignalRow } from "./types";
+import { PanelEditRecorderContext } from "./panelEditRecorder";
+import type { PanelEditStep } from "./panelEditHistory";
 
 let ROWS: RbsSignalRow[] | null = [];
 const calls: Array<{ cmd: string; args: unknown }> = [];
@@ -81,7 +83,13 @@ function renderPanel() {
   const props = { params: { elementId: "el1" }, api } as unknown as Parameters<
     typeof RbsSignalsPanel
   >[0];
-  return render(<RbsSignalsPanel {...props} />);
+  const recorded: PanelEditStep[] = [];
+  const result = render(
+    <PanelEditRecorderContext.Provider value={(s) => recorded.push(s)}>
+      <RbsSignalsPanel {...props} />
+    </PanelEditRecorderContext.Provider>,
+  );
+  return { ...result, recorded };
 }
 
 beforeEach(() => {
@@ -135,6 +143,45 @@ describe("RbsSignalsPanel", () => {
     }
   });
 
+  it("a Not Encoded row offers a two-stage Drop, and records no undo step", async () => {
+    // Every not-encoded row is, by construction, an override key in
+    // the file that nothing encodes (rbs/signals.rs synthesizes one
+    // row per such key). Its value cell is rightly disabled, so the
+    // detail cell carries the one repair — the transmit panel's
+    // two-stage remove: first click arms, the second deletes. The
+    // confirm stage exists because the drop is NOT undoable: values
+    // are outside undo with no exceptions (ADR 0058; owner ruling
+    // 2026-08-30 — a global chord must never be able to write an
+    // override).
+    ROWS = [
+      row({
+        id: "Powertrain|0x100|GhostSignal",
+        signalName: "GhostSignal",
+        status: "not-encoded",
+        value: null,
+        detail: "No mapped database encodes this field",
+      }),
+      row({ id: "b", signalName: "PackVoltage" }),
+    ];
+    const { recorded } = renderPanel();
+    await screen.findByText("GhostSignal");
+    const drops = screen.getAllByRole("button", { name: "drop override" });
+    expect(drops).toHaveLength(1);
+    fireEvent.click(drops[0]);
+    // Armed, not deleted: the first click only asks for confirmation.
+    expect(calls.filter((c) => c.cmd === "rbs_set_signal")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "click again to confirm" }));
+    expect(calls.filter((c) => c.cmd === "rbs_set_signal").map((c) => c.args)).toEqual([
+      {
+        elementId: "el1",
+        target: { bus: "Powertrain", ecu: "BMS", message: "0x100" },
+        signal: "GhostSignal",
+        value: null,
+      },
+    ]);
+    expect(recorded).toEqual([]);
+  });
+
   it("shows the DBC start value in the Default column, and `none` where there is none", async () => {
     ROWS = [
       row({ id: "a", signalName: "EngineSpeed", defaultValue: 812.5 }),
@@ -186,11 +233,14 @@ describe("RbsSignalsPanel", () => {
     });
   });
 
-  it("clears an override through rbs_set_signal with a null value", async () => {
+  it("clears an override through rbs_set_signal with a null value, after a confirm", async () => {
     ROWS = [row({ id: "a", overridden: true, overrideText: "500", status: "override" })];
     renderPanel();
     const clearBtn = await screen.findByTitle(/clear override/);
     fireEvent.click(clearBtn);
+    // Armed only: a value removal is not undoable, so it confirms.
+    expect(calls.find((c) => c.cmd === "rbs_set_signal")).toBeUndefined();
+    fireEvent.click(screen.getByTitle("click again to confirm"));
     const call = calls.find((c) => c.cmd === "rbs_set_signal");
     expect(call?.args).toMatchObject({ signal: "EngineSpeed", value: null });
   });

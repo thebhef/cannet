@@ -5739,6 +5739,15 @@ button.color-chip {
 }
 .rbs-clear:hover { color: var(--danger-text); }
 .rbs-clear svg { display: block; }
+/* Armed (value clears confirm before they act — values never ride
+   undo, so there is no way back but re-entry). */
+.rbs-clear-armed,
+.rbs-clear-armed:hover {
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-surface);
+  border-radius: 3px;
+}
 .rbs-calc-cell { color: var(--text-source); }
 .rbs-calc-cell em { font-size: 10px; }
 .rbs-no-signals { color: var(--text-faint); font-style: italic; }
@@ -6869,14 +6878,53 @@ button.color-chip {
 .col-rs-msg {
   color: var(--text-message);
 }
+/* The grid's value cell lays out as a row so the clear × can never be
+   clipped: the input yields (`min-width: 0`) and the × keeps its
+   size. `width: 100%` on the input alone pushed the × past the cell's
+   `overflow: hidden` edge — invisible on every overridden row. */
+.col-rs-value {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .col-rs-value .rbs-signal-input {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+.col-rs-value .rbs-clear {
+  flex: 0 0 auto;
 }
 
 .rbs-signals-detail {
   font-size: 0.85rem;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* The Not Encoded row's Drop: the transmit panel's two-stage remove
+   (`.tx-remove` — arm on first click, red + confirm, then delete).
+   Two-stage because it is NOT undoable: values never ride the chord. */
+.rbs-signals-drop {
+  margin-left: 0.5rem;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  line-height: 1;
+}
+.rbs-signals-drop:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.rbs-signals-drop-armed,
+.rbs-signals-drop-armed:hover {
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-surface);
 }
 
 .rbs-signals-footer {

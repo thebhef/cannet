@@ -8,7 +8,7 @@
 /// (`rbsValueClamp.ts`) applied to every plain numeric commit before
 /// it reaches the caller's `onCommit`.
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { ValueTableEntryRecord } from "./types";
 import { Combobox } from "./Combobox";
@@ -42,6 +42,11 @@ export interface RbsValueCellProps {
   onCommit: (value: string | number) => void;
   onClear: () => void;
   className?: string;
+  /// Whether the clear × renders beside the input (the tree's layout).
+  /// The RBS signals grid passes `false` and renders its own × in the
+  /// detail cell instead — one remove position per row, shared with
+  /// the Drop.
+  inlineClear?: boolean;
 }
 
 export function RbsValueCell({
@@ -53,6 +58,7 @@ export function RbsValueCell({
   onCommit,
   onClear,
   className,
+  inlineClear = true,
 }: RbsValueCellProps) {
   const valueTableSignals = useMemo<ValueTableSignal[]>(
     () => (s.hasValueTable ? [{ busId, messageId, extended, signalName: s.name }] : []),
@@ -63,6 +69,19 @@ export function RbsValueCell({
 
   const display = s.label ?? (s.value != null ? formatValue(s.value) : "—");
   const cellClassName = className ?? "rbs-signal-input";
+
+  // Confirm-on-click for the clear: a value removal is not undoable
+  // (ADR 0058 — values never ride the chord), so every value-shaped
+  // remover (this × and the grid's Drop) arms first and acts on the
+  // second click within 3s. The period and designation clears stay
+  // one-click — they are not values.
+  const [pendingClear, setPendingClear] = useState(false);
+  useEffect(() => {
+    if (!pendingClear) return;
+    const t = window.setTimeout(() => setPendingClear(false), 3000);
+    return () => window.clearTimeout(t);
+  }, [pendingClear]);
+
 
   const commit = (value: string | number) => {
     // Clamp on entry ("Out of Range is a frontend concern, and
@@ -112,13 +131,25 @@ export function RbsValueCell({
           disabled={disabled}
         />
       )}
-      {s.overridden && (
+      {inlineClear && s.overridden && (
         <button
           type="button"
-          className="rbs-clear"
+          className={`rbs-clear${pendingClear ? " rbs-clear-armed" : ""}`}
           tabIndex={-1}
-          title={`clear override (track DBC default)${s.overrideText ? ` — currently ${s.overrideText}` : ""}`}
-          onClick={onClear}
+          aria-label={pendingClear ? "click again to confirm" : `clear ${s.name} override`}
+          title={
+            pendingClear
+              ? "click again to confirm"
+              : `clear override (track DBC default)${s.overrideText ? ` — currently ${s.overrideText}` : ""}`
+          }
+          onClick={() => {
+            if (pendingClear) {
+              onClear();
+              setPendingClear(false);
+            } else {
+              setPendingClear(true);
+            }
+          }}
         >
           ×
         </button>
