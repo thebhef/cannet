@@ -404,7 +404,7 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
 <div class="appframe">
   <div class="appbar hdr">
   <button class="chip" title="Open project…"><svg><use href="#i-folder"/></svg>Open</button>
-  <button class="chip" title="Save project"><svg><use href="#i-save"/></svg>Save</button>
+  <button class="chip" title="Save all"><svg><use href="#i-save"/></svg>Save</button>
   <span class="sep"></span>
   <button class="chip" id="importChip" title="Import trace… (BLF / MDF)"><svg><use href="#i-import"/></svg>Import</button>
   <button class="chip" title="Save capture…"><svg><use href="#i-export"/></svg>Export</button>
@@ -433,9 +433,9 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   </span>
   <span class="sep"></span>
   <button class="chip icon-only" title="Database panel"><svg><use href="#i-db"/></svg></button>
-  <button class="chip icon-only" title="Graph panel"><svg><use href="#i-graph"/></svg></button>
-  <button class="chip icon-only" title="Events panel"><svg><use href="#i-flag"/></svg></button>
-  <button class="chip icon-only" title="Project panel"><svg><use href="#i-tree"/></svg></button>
+  <button class="chip" title="Graph panel"><svg><use href="#i-graph"/></svg>Graph</button>
+  <button class="chip" title="Events panel"><svg><use href="#i-flag"/></svg>Events</button>
+  <button class="chip" title="Project panel"><svg><use href="#i-tree"/></svg>Project</button>
   </div>
   <div class="statusbar">
   <button class="chip w-conn" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">5 / 5</span></button>
@@ -835,7 +835,7 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
 </p>
 <div class="icon-grid">
   <div class="icon-cell"><svg><use href="#i-folder"/></svg><span><b>folder</b><span class="caption">Open project</span></span></div>
-  <div class="icon-cell"><svg><use href="#i-save"/></svg><span><b>save</b><span class="caption">Save project</span></span></div>
+  <div class="icon-cell"><svg><use href="#i-save"/></svg><span><b>save</b><span class="caption">Save all / Save As…</span></span></div>
   <div class="icon-cell"><svg><use href="#i-import"/></svg><span><b>import</b><span class="caption">Import trace</span></span></div>
   <div class="icon-cell"><svg><use href="#i-export"/></svg><span><b>export</b><span class="caption">Save capture</span></span></div>
   <div class="icon-cell"><svg><use href="#i-clock"/></svg><span><b>clock</b><span class="caption">Recent captures</span></span></div>

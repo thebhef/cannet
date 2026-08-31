@@ -443,7 +443,7 @@ describe("element undo", () => {
     // Remove the element: the registry loses it and its panel closes —
     // one gesture across both stacks.
     await act(async () => {
-      fireEvent.click(toolbarChip("Project panel"));
+      fireEvent.click(toolbarChip("Project"));
     });
     await act(async () => {
       fireEvent.click(buttonIn(elementRow("Plot 1"), "Remove"));
@@ -479,7 +479,7 @@ describe("element undo", () => {
       if (tabTitles().includes("Plot 1")) throw new Error("redo left the panel open");
     });
     await act(async () => {
-      fireEvent.click(toolbarChip("Project panel"));
+      fireEvent.click(toolbarChip("Project"));
     });
     expect(() => elementRow("Plot 1")).toThrow();
   }, 30_000);
@@ -502,7 +502,7 @@ describe("element undo", () => {
     // project panel forward, focus the trace from its inventory, then
     // add — a new panel joins whichever group is active.
     await act(async () => {
-      fireEvent.click(toolbarChip("Project panel"));
+      fireEvent.click(toolbarChip("Project"));
     });
     await act(async () => {
       fireEvent.click(buttonIn(elementRow("Trace 1"), "Focus"));
@@ -680,7 +680,7 @@ describe("element undo", () => {
   it("inserting a filter upstream is one step — the filter goes with it", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(toolbarChip("Graph panel"));
+      fireEvent.click(toolbarChip("Graph"));
     });
     await waitFor(() => {
       if (!document.querySelector(".graph-node-trace")) throw new Error("no trace node yet");
@@ -725,7 +725,7 @@ describe("element undo", () => {
   it("adding a filter from the graph toolbar is undoable on its own", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(toolbarChip("Graph panel"));
+      fireEvent.click(toolbarChip("Graph"));
     });
     await waitFor(() => {
       if (!document.querySelector(".graph-panel")) throw new Error("no graph panel yet");
@@ -816,7 +816,7 @@ describe("element undo", () => {
   it("a typed rename is one step, not one per keystroke", async () => {
     await mountApp();
     await act(async () => {
-      fireEvent.click(toolbarChip("Project panel"));
+      fireEvent.click(toolbarChip("Project"));
     });
     const input = elementRow("Trace 1").querySelector<HTMLInputElement>("input")!;
 

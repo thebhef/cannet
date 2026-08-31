@@ -141,10 +141,11 @@ another client of the one transmitter construct.
 ### Save flow and file extensions
 
 - RBS override edits accumulate in memory; saving is explicit.
-  **Save Project** saves the project only; a **Save All** action
-  saves the project plus every dirty `.cannet_rbs` (prompting for a
-  path for configs never saved); the exit prompt covers all unsaved
-  state. No duplicate-config affordance — forking
+  **Save All** saves the project plus every dirty `.cannet_rbs`
+  (prompting for a path for configs never saved) — it is what the
+  toolbar's **Save** presses and what the exit prompt runs, so all
+  unsaved state is covered; the palette's **Save project** saves the
+  project only. No duplicate-config affordance — forking
   a config is a file operation plus re-pointing the element's path.
 - File extensions: projects default to **`.cannet_prj`**, RBS files
   to **`.cannet_rbs`**; open dialogs also accept `.json` for both.

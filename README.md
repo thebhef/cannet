@@ -380,9 +380,7 @@ loaded DBC applies to the one interface for now).
 **The toolbar is chips.** Every control in it wears the app's one
 control shape (ADR 0055): a short Title Case label beside a drawn icon,
 with the full sentence — *Open project…*, *Save capture…* — in the
-tooltip. Where the icon says it on its own, the chip is the icon alone
-and the tooltip is all of its words: **Graph panel**, **Events panel**,
-**Project panel**. **Database** keeps its word, because the name is the
+tooltip. **Database** keeps its word, because the name is the
 thing it settles — the view is "Database" everywhere a user meets it
 (ADR 0052). It shows that view and nothing else: *adding* a database
 file is project membership, and is offered where the project's
@@ -1480,7 +1478,8 @@ panel's column layout and auto-scroll toggle), the project's elements
 paths, the project's logical buses, and the interface bindings (each
 of which names its own server address). The **project panel** (or the
 toolbar's **New** / **Open** / **Save**) drives it: **Save** /
-**Save As…** write one, **Open…** restores it (re-loads the DBCs and
+**Save As…** write one (the toolbar's **Save** is *Save all* — it also
+writes any dirty `.cannet_rbs`), **Open…** restores it (re-loads the DBCs and
 restores the bus / binding configuration — hit **Connect** to switch),
 **New** starts a fresh unsaved project (default layout, no DBCs, disconnected,
 buffer cleared). The toolbar also carries a **Projects** menu of the

@@ -187,9 +187,9 @@ export function Toolbar({
           <ChipSegment label="Save" className="save-split">
             <ChipButton
               icon="save"
-              label={BAR_WORDS.get("project.save")?.label}
-              title={BAR_WORDS.get("project.save")?.title}
-              onPress={() => onRun("project.save")}
+              label={BAR_WORDS.get("project.saveAll")?.label}
+              title={BAR_WORDS.get("project.saveAll")?.title}
+              onPress={() => onRun("project.saveAll")}
             />
             <ChipButton
               label={"▾"}
