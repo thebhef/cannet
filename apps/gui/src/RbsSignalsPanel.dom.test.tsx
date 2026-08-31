@@ -112,22 +112,23 @@ describe("RbsSignalsPanel", () => {
     ROWS = [row({ id: "a", status: "override", overridden: true, value: 9000 })];
     renderPanel();
     await screen.findByText("EngineSpeed");
-    expect(await screen.findByText("Out of Range")).toBeInTheDocument();
+    expect(await screen.findByRole("img", { name: "Out of Range" })).toBeInTheDocument();
   });
 
-  it("paints no row background, and names every row's status in the status cell", async () => {
+  it("paints no row background, and says a row's status with the chip alone", async () => {
     // Row background belongs to the gridview — cursor and selection are
     // what paint a row (ADR 0044). A panel says per-row state in a
-    // *cell*, so the status text is unconditional and there is no
-    // toggle for turning it into a wash.
+    // *cell*: the swatch-wide status column carries the chip, whose
+    // words are its tooltip and accessible name, never column text it
+    // would truncate.
     ROWS = [
       row({ id: "a", signalName: "EngineSpeed", status: "not-encoded" }),
       row({ id: "b", signalName: "PackVoltage", status: "muted" }),
     ];
     renderPanel();
     await screen.findByText("EngineSpeed");
-    expect(screen.getByText("Not Encoded")).toBeInTheDocument();
-    expect(screen.getByText("Muted")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Not Encoded" })).toHaveAttribute("title", "Not Encoded");
+    expect(screen.getByRole("img", { name: "Muted" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Row Highlights" })).toBeNull();
     for (const el of document.querySelectorAll(".rbs-signals-row")) {
       expect(el.className).not.toMatch(/wash/);

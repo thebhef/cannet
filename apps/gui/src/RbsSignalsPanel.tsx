@@ -444,14 +444,18 @@ function RbsSignalRowLine({
       renderCell={(key, className) => {
         switch (key) {
           case "status":
+            // The chip alone, as in the view-signals grid: the column
+            // is swatch-wide, and the words live on the chip (tooltip
+            // and accessible name) rather than as text it would
+            // truncate.
             return (
               <span className={className}>
                 <i
                   className={`rbs-signals-chip rbs-signals-chip--${STATUS_CLASS[status]}`}
                   title={STATUS_LABEL[status]}
-                  aria-hidden="true"
+                  role="img"
+                  aria-label={STATUS_LABEL[status]}
                 />
-                <span className="rbs-signals-status-text">{STATUS_LABEL[status]}</span>
               </span>
             );
           case "bus":

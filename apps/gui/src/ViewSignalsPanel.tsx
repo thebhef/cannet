@@ -230,15 +230,17 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
   // A source pick. No apply step and no local state: the host records
   // the choice and announces it as a DBC change, which the fetch above
   // already listens for. The undo step is recorded here (task 129) —
-  // the inverse is the decoder in force right now, read before the
-  // write erases it. A row nothing decodes has no inverse to express
-  // (there is no "un-pick" op), so that write goes unrecorded.
+  // the inverse is the *pick* in force right now, read before the
+  // write erases it: null when there was none, so undoing a first pick
+  // returns the row to unresolved rather than to a pick of the old
+  // winner. A row nothing decodes goes unrecorded (the write is a
+  // no-op host-side — the path names no definer).
   const recordEdit = usePanelEditRecorder();
   const onPick = useCallback(
     (row: ViewSignalRow, dbcPath: string) => {
       if (row.servingDbc !== null) {
         recordEdit({
-          undo: [{ kind: "pick", signal: row.id, dbcPath: row.servingDbc }],
+          undo: [{ kind: "pick", signal: row.id, dbcPath: row.pickedDbc }],
           redo: [{ kind: "pick", signal: row.id, dbcPath }],
         });
       }
@@ -552,14 +554,17 @@ function ViewSignalRowLine({
       renderCell={(key, className) => {
         switch (key) {
           case "status":
+            // The chip alone: the column is swatch-wide, and the words
+            // live on the chip (tooltip and accessible name) rather
+            // than as text the column would truncate.
             return (
               <span className={className}>
                 <i
                   className={`view-signals-chip view-signals-chip--${STATUS_CLASS[row.status]}`}
                   title={STATUS_LABEL[row.status]}
-                  aria-hidden="true"
+                  role="img"
+                  aria-label={STATUS_LABEL[row.status]}
                 />
-                <span className="view-signals-status-text">{STATUS_LABEL[row.status]}</span>
               </span>
             );
           case "bus":
@@ -585,8 +590,12 @@ function ViewSignalRowLine({
               <select
                 className={className}
                 disabled={row.candidates.length === 0}
+                // An ambiguous row shows no selection: load order is a
+                // default, not a choice, and a control that displays
+                // the winner as chosen cannot record choosing it (a
+                // select fires no change for its current value).
                 value={
-                  row.servingDbc
+                  row.servingDbc && row.status !== "ambiguous"
                     ? candidateValue(row.busId ?? "", row.servingDbc, row.signalName)
                     : ""
                 }
@@ -626,6 +635,14 @@ function ViewSignalRowLine({
                         without this the browser would show the first
                         offer as if it were in force. */}
                     {row.servingDbc === null && <option value="">— not decoded —</option>}
+                    {/* The unmade choice, naming what load order does
+                        in the meantime. Disabled: the way out is any
+                        real offer, including the winner itself. */}
+                    {row.servingDbc !== null && row.status === "ambiguous" && (
+                      <option value="" disabled>
+                        — load order: {basename(row.servingDbc)} —
+                      </option>
+                    )}
                     {row.candidates.map((c) => (
                       <option
                         key={candidateValue(c.busId, c.dbcPath, c.signalName)}

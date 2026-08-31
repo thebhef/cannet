@@ -147,6 +147,19 @@ Then:
 | **1.3** | The transmit row's own database | **Moved here whole, 2026-08-25.** See below — it is a reference like any other. |
 | **1.19** | Re-pointing a busless plot series | **Eased, not obviated, and not task work.** The repair exists and works; a registry turns its five-store rewrite into one edit. Its one remaining leg is a *look*, not a build — see the queue index. |
 
+### Owner additions
+
+- **2026-08-29 — a Scale row gets an "accept the current scale"
+  repair.** Today the panel only reports scale drift: a pick changes
+  the definer without touching the view's recorded unit/factor/offset,
+  and the picker routes a same-signal choice to "pick", so re-recording
+  the decoder's present scale is unreachable short of re-selecting the
+  signal in every referencing view. Under the registry that repair is
+  one edit to one entry (and one undo step); building it under the
+  push model would be another five-store walk. Review against task
+  [119](0119-duplicate-id-example-dbcs.md)'s fixtures, whose colliding
+  definitions disagree on scale.
+
 The rest of the sent-back items went elsewhere: 1.6, 1.26 and 1.13c to
 [113](0113-rbs-as-a-grid.md); 1.37, 1.33b and 1.17 to
 [114](0114-one-name-per-thing.md); 1.23, 1.13ab, 1.34, 1.35 and 1.33a to

@@ -314,14 +314,17 @@ describe("ViewSignalsPanel", () => {
     expect(lastListCall()?.args).toEqual(before);
   });
 
-  it("paints no row background, and names every row's status in the status cell", async () => {
+  it("paints no row background, and says a row's status with the chip alone", async () => {
     // Row background belongs to the gridview — cursor and selection are
     // what paint a row (ADR 0044). A panel says per-row state in a
-    // *cell*, so the status text is unconditional and there is no
-    // toggle for turning it into a wash.
+    // *cell*: the swatch-wide status column carries the chip, whose
+    // words are its tooltip and accessible name, never column text the
+    // 40px column would truncate.
     renderPanel();
     await waitFor(() => expect(screen.getByText("VehicleSpeed", { selector: ".col-vs-signal" })).toBeInTheDocument());
-    expect(screen.getByText("Scale")).toBeInTheDocument();
+    const chip = screen.getByRole("img", { name: "Scale" });
+    expect(chip).toHaveAttribute("title", "Scale");
+    expect(chip.closest(".col-vs-status")).toHaveTextContent("");
     expect(screen.queryByRole("button", { name: "Row Highlights" })).toBeNull();
     for (const el of document.querySelectorAll(".view-signals-row")) {
       expect(el.className).not.toMatch(/wash/);
@@ -369,7 +372,9 @@ describe("ViewSignalsPanel", () => {
 });
 
 /// The ambiguous row the source picker exists for: two databases on one
-/// bus define the same signal, and load order settles it silently.
+/// bus define the same signal, and load order settles it silently. The
+/// host offers exactly the signal under each definer — which database
+/// is the only question (`view_signals::offers`).
 const AMBIGUOUS = row({
   id: "power|s:256:PackVolts",
   signalName: "PackVolts",
@@ -378,7 +383,6 @@ const AMBIGUOUS = row({
   pickedDbc: null,
   candidates: [
     cand("/dbc/client.dbc", "PackVolts", "PackStatus", "V"),
-    cand("/dbc/client.dbc", "Other", "PackStatus", "A"),
     cand("/dbc/private.dbc", "PackVolts", "PackStatus", "V"),
   ],
 });
@@ -429,10 +433,12 @@ describe("ViewSignalsPanel source picker", () => {
     ATTENTION_COUNT = 1;
     renderPanel();
     await waitFor(() => expect(sourcePicker()).toBeEnabled());
-    // It opens on the database that decodes the signal today.
-    expect((sourcePicker() as HTMLSelectElement).value).toBe(
-      `power\0/dbc/client.dbc\0PackVolts`,
-    );
+    // It opens unresolved: load order is a default, not a choice, so
+    // no offer reads as chosen — the placeholder names the winner.
+    expect((sourcePicker() as HTMLSelectElement).value).toBe("");
+    expect(
+      screen.getByRole("option", { name: "— load order: client.dbc —" }),
+    ).toBeDisabled();
 
     fireEvent.change(sourcePicker(), {
       target: { value: `power\0/dbc/private.dbc\0PackVolts` },
@@ -445,7 +451,25 @@ describe("ViewSignalsPanel source picker", () => {
     ]);
   });
 
-  it("records the pick as an undo step whose inverse is today's decoder (task 129)", async () => {
+  it("records a pick of the load-order winner itself — the default is confirmable", async () => {
+    ROWS = [AMBIGUOUS];
+    ATTENTION_COUNT = 1;
+    renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+    fireEvent.change(sourcePicker(), {
+      target: { value: `power\0/dbc/client.dbc\0PackVolts` },
+    });
+    expect(calls.filter((c) => c.cmd === "set_signal_dbc_pick")).toEqual([
+      {
+        cmd: "set_signal_dbc_pick",
+        args: { signal: "power|s:256:PackVolts", dbcPath: "/dbc/client.dbc" },
+      },
+    ]);
+  });
+
+  it("records the pick as an undo step whose inverse is the pick in force (task 129)", async () => {
+    // A first pick's inverse is null — undoing it returns the row to
+    // unresolved, not to an explicit pick of the old winner.
     ROWS = [AMBIGUOUS];
     ATTENTION_COUNT = 1;
     const { recorded } = renderPanel();
@@ -455,14 +479,32 @@ describe("ViewSignalsPanel source picker", () => {
     });
     expect(recorded).toEqual([
       {
-        undo: [
-          { kind: "pick", signal: "power|s:256:PackVolts", dbcPath: "/dbc/client.dbc" },
-        ],
+        undo: [{ kind: "pick", signal: "power|s:256:PackVolts", dbcPath: null }],
         redo: [
           { kind: "pick", signal: "power|s:256:PackVolts", dbcPath: "/dbc/private.dbc" },
         ],
       },
     ]);
+
+    // Re-picking over an existing pick keeps that pick as the inverse.
+    ROWS = [row({ ...AMBIGUOUS, status: "decoded", pickedDbc: "/dbc/private.dbc", servingDbc: "/dbc/private.dbc" })];
+    emitHostEvent("dbc-changed");
+    await waitFor(() =>
+      expect((sourcePicker() as HTMLSelectElement).value).toBe(
+        `power\0/dbc/private.dbc\0PackVolts`,
+      ),
+    );
+    fireEvent.change(sourcePicker(), {
+      target: { value: `power\0/dbc/client.dbc\0PackVolts` },
+    });
+    expect(recorded[1]).toEqual({
+      undo: [
+        { kind: "pick", signal: "power|s:256:PackVolts", dbcPath: "/dbc/private.dbc" },
+      ],
+      redo: [
+        { kind: "pick", signal: "power|s:256:PackVolts", dbcPath: "/dbc/client.dbc" },
+      ],
+    });
   });
 
   it("records no step for a pick on a row nothing decodes — there is no inverse to keep", async () => {
@@ -498,10 +540,8 @@ describe("ViewSignalsPanel source picker", () => {
     fireEvent.change(sourcePicker(), {
       target: { value: `power\0/dbc/private.dbc\0PackVolts` },
     });
-    // The picker still shows what the host last said, unchanged.
-    expect((sourcePicker() as HTMLSelectElement).value).toBe(
-      `power\0/dbc/client.dbc\0PackVolts`,
-    );
+    // The picker still shows what the host last said — unresolved.
+    expect((sourcePicker() as HTMLSelectElement).value).toBe("");
     expect(calls.filter((c) => c.cmd === "list_view_signals")).toHaveLength(before);
 
     ROWS = [
@@ -520,17 +560,17 @@ describe("ViewSignalsPanel source picker", () => {
     );
   });
 
-  it("offers a remap candidate alongside the database choices", async () => {
-    ROWS = [AMBIGUOUS];
+  it("offers remap candidates on a row nothing decodes", async () => {
+    // Only such a row gets the message's signal list — its repair is a
+    // re-point (`view_signals::offers`). Every offer is live.
+    ROWS = [STALE_NAME];
     ATTENTION_COUNT = 1;
     renderPanel();
     await waitFor(() => expect(sourcePicker()).toBeEnabled());
     const options = screen.getAllByRole("option") as HTMLOptionElement[];
     const byValue = (v: string) => options.find((o) => o.value === v);
-    // The same signal under another database is the ambiguity pick;
-    // another signal of the same message is the remap. Both are live.
-    expect(byValue(`power\0/dbc/private.dbc\0PackVolts`)).toBeEnabled();
-    expect(byValue(`power\0/dbc/client.dbc\0Other`)).toBeEnabled();
+    expect(byValue(`power\0/dbc/client.dbc\0PackVoltage`)).toBeEnabled();
+    expect(byValue(`power\0/dbc/client.dbc\0PackCurrent`)).toBeEnabled();
   });
 
   /// The guarantee the shared operation exists for, at the gesture that

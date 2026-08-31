@@ -596,13 +596,33 @@ fn row(
         serving_dbc: serving.map(|(p, _, _)| p.to_owned()),
         picked_dbc: picked.map(ToOwned::to_owned),
         used_by: used_by.iter().map(|v| (*v).to_owned()).collect(),
-        candidates: if status == ViewSignalStatus::Decoded && picked.is_none() {
-            Vec::new()
-        } else {
-            candidates(described, bus_names)
-        },
+        candidates: offers(status, picked, reference, described, bus_names),
         diffs,
     }
+}
+
+/// What the source picker offers the row, by status. A Decoded row
+/// with no pick offers nothing (there is nothing to repair). A row
+/// whose signal still decodes — however it got flagged — is asking one
+/// question, *which database*, so it offers the signal under each
+/// definer and nothing else. Only a row nothing decodes keeps the full
+/// [`candidates`] list, because its repair is a re-point and the
+/// message's signals are what there is to re-point at.
+fn offers(
+    status: ViewSignalStatus,
+    picked: Option<&str>,
+    reference: &ViewSignalRef,
+    described: &[(Option<&str>, &DescribedMessage<'_>)],
+    bus_names: &HashMap<String, String>,
+) -> Vec<ViewSignalCandidate> {
+    if status == ViewSignalStatus::Decoded && picked.is_none() {
+        return Vec::new();
+    }
+    let mut offers = candidates(described, bus_names);
+    if status != ViewSignalStatus::NotDecoded {
+        offers.retain(|c| c.signal_name == reference.signal_name);
+    }
+    offers
 }
 
 /// Every `(bus, database, signal)` the referenced message offers, in
@@ -808,17 +828,13 @@ pub(crate) fn set_signal_dbc_pick_inner(
         .iter()
         .map(|d| (d.path.as_str(), d.db.as_ref(), d.buses.as_slice()))
         .collect();
-    // The same index the rows are built from, so "is this a definer,
-    // and is it the one load order already picks" is answered by the
-    // rule the panel displays rather than by a second scan.
+    // The same index the rows are built from, so "is this a definer"
+    // is answered by the rule the panel displays rather than by a
+    // second scan. Any definer counts, the load-order winner included:
+    // choosing the default explicitly is a choice, and only a recorded
+    // one makes the row leave Ambiguous. `None` is the revert.
     let definers = definition_index(borrowed.iter().copied());
-    let keep = dbc_path.filter(|path| {
-        definers
-            .defining(&signal)
-            .iter()
-            .skip(1)
-            .any(|d| *d == path)
-    });
+    let keep = dbc_path.filter(|path| definers.defining(&signal).iter().any(|d| *d == path));
     let mut picks = state.signal_dbc_picks();
     let changed = match &keep {
         Some(path) => picks.get(&signal) != Some(path),
@@ -1206,8 +1222,9 @@ mod tests {
         assert_eq!(rows[0].status, ViewSignalStatus::Ambiguous);
         // Load order decides today, and the row says so.
         assert_eq!(rows[0].serving_dbc.as_deref(), Some("a.dbc"));
-        // Both databases' definitions are offered, so the user can pick
-        // rather than inherit load order.
+        // The choice on offer is *which database* — one entry per
+        // definer, this signal only. The message's other signals are
+        // not part of the question.
         let pairs: Vec<(&str, &str)> = rows[0]
             .candidates
             .iter()
@@ -1215,12 +1232,39 @@ mod tests {
             .collect();
         assert_eq!(
             pairs,
-            vec![
-                ("a.dbc", "PackVolts"),
-                ("a.dbc", "Other"),
-                ("b.dbc", "PackVolts"),
-                ("b.dbc", "Other"),
-            ]
+            vec![("a.dbc", "PackVolts"), ("b.dbc", "PackVolts")]
+        );
+    }
+
+    #[test]
+    fn a_decoding_row_is_offered_databases_only_whatever_flagged_it() {
+        // Scale outranks Ambiguous in the taxonomy, so a duplicate
+        // whose definitions disagree on scale reads as Scale — and its
+        // offer must still be "which database", never the message's
+        // signal list. Only a row nothing decodes is offered other
+        // signals, because its repair is a re-point.
+        let drifted = dbc("PackStatus", "PackVolts", "mV", "0.1");
+        let agreeing = plain();
+        let buses = power();
+        let reg = registry(&[(
+            "v1",
+            "Plot 1",
+            vec![recorded("PackVolts", "PackStatus", "V", 0.1)],
+        )]);
+        let rows = build(
+            &reg,
+            &[("a.dbc", &drifted, &buses), ("b.dbc", &agreeing, &buses)],
+        );
+
+        assert_eq!(rows[0].status, ViewSignalStatus::Scale);
+        let pairs: Vec<(&str, &str)> = rows[0]
+            .candidates
+            .iter()
+            .map(|c| (c.dbc_path.as_str(), c.signal_name.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("a.dbc", "PackVolts"), ("b.dbc", "PackVolts")]
         );
     }
 
@@ -1257,6 +1301,13 @@ mod tests {
                 .iter()
                 .any(|c| c.dbc_path == "a.dbc" && c.signal_name == "PackVolts"),
             "the way back to the other database has to stay on offer"
+        );
+        // And like the Ambiguous row it came from, the offer is
+        // databases only — never the message's other signals.
+        assert!(
+            rows[0].candidates.iter().all(|c| c.signal_name == "PackVolts"),
+            "a picked row's offer is which database, not which signal: {:?}",
+            rows[0].candidates,
         );
 
         // A pick against the database load order already picks is
@@ -1705,10 +1756,10 @@ BU_: Ecu
     }
 
     #[test]
-    fn a_pick_is_recorded_only_when_it_is_a_real_non_default_choice() {
+    fn a_pick_of_any_definer_is_recorded_including_the_load_order_winner() {
         let state = ambiguous_state();
 
-        // The load-order loser: a genuine choice, so it is recorded.
+        // The load-order loser: recorded.
         assert!(set_signal_dbc_pick_inner(
             &state,
             PICKED.into(),
@@ -1723,23 +1774,19 @@ BU_: Ecu
             Some("b.dbc".into())
         ));
 
-        // Choosing the database load order already picks is how the
-        // user reverts: the entry goes, rather than a redundant one
-        // being written into the project file.
+        // The load-order winner is a choice like any other: choosing
+        // the default explicitly settles the ambiguity exactly as
+        // choosing the loser does — the picker treats every offer the
+        // same, and only recording can make the row leave Ambiguous.
         assert!(set_signal_dbc_pick_inner(
             &state,
             PICKED.into(),
             Some("a.dbc".into())
         ));
-        assert_eq!(pick_of(&state), None);
+        assert_eq!(pick_of(&state).as_deref(), Some("a.dbc"));
 
-        // `None` reverts too, and on an already-absent entry changes
-        // nothing.
-        assert!(set_signal_dbc_pick_inner(
-            &state,
-            PICKED.into(),
-            Some("b.dbc".into())
-        ));
+        // `None` is the revert (what undo dispatches), and on an
+        // already-absent entry changes nothing.
         assert!(set_signal_dbc_pick_inner(&state, PICKED.into(), None));
         assert_eq!(pick_of(&state), None);
         assert!(!set_signal_dbc_pick_inner(&state, PICKED.into(), None));
