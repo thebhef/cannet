@@ -88,7 +88,7 @@ section above comes first.
 
 12. [Task 116 — RBS Problems Across Every Configuration](0116-rbs-problems-across-configurations.md)
    — one view over problems from every open `.cannet_rbs`, filterable by
-   file, host-computed and paged. The RBS chip opens that instead of a
+   file, host-computed and paged. The RBS button opens that instead of a
    single configuration. From queue item 1.13ab; the steps-to-reproduce
    leg was dropped by owner ruling 2026-08-25. Task 113 settled what an
    RBS grid row is (landed 2026-08-27), so that dependency is met. Two
@@ -106,8 +106,8 @@ section above comes first.
    before implementation** — no phases, and five open design questions.
    Bears on queue findings 3.1, 3.31, 3.41 and 3.47.
 14. [Task 124 — One Toolbar](0124-one-toolbar.md)
-   — the app-level toolbar and the ten panel toolbars wear one chip
-   language but remain hand-laid flex rows; converge them on a shared
+   — the app-level toolbar and the ten panel toolbars wear one button
+   style but remain hand-laid flex rows; converge them on a shared
    toolbar control that owns layout and wrap-vs-overflow, settling
    `useToolbarFit`'s one-consumer question. Opened from queue finding
    3.21; owner-placed later, definitely not immediate scope.

@@ -146,7 +146,7 @@ trip over it.
 
 - `[ux]` **The plot's Shift+click gesture is undiscoverable.** Nothing
   on the plot says it exists; the README does. The prototype's hint
-  line has no home in the chip toolbar and the chip language has no
+  line has no home in the toolbar and the shared button style has no
   hint-text element. Backlogged by owner ruling 2026-08-26
   (owner-review-queue 3.32).
 - `[cleanup]` **Persist the plot perf-readout visibility.** Ruled
@@ -156,7 +156,7 @@ trip over it.
   test.
 - `[feat]` **Measurements strip rework.** Owner ruling 2026-08-21
   (task 108 grooming): the strip needs rework and stays hidden — the
-  chip-language pass removes its toolbar toggle and no replacement
+  toolbar redesign removed its toolbar toggle and no replacement
   entry point ships until the rework happens. `MeasurementMenu` and
   the `measEnabled` strip in `PlotPanel.tsx` are the code; what the
   rework should look like is undesigned.
@@ -219,7 +219,7 @@ trip over it.
   on the same value) is legitimate and remains.
 - `[arch]` **Three surfaces compute display status in the frontend**
   (owner-review-queue 3.47, backlogged 2026-08-26): the view-signals
-  attention count, the RBS chip badge re-running `rbsSignalsFilter`,
+  attention count, the RBS button badge re-running `rbsSignalsFilter`,
   and client-side sorting of the RBS grid. Owner's skepticism recorded:
   *"the signal mapping and sorting feel defensibly frontend/display
   concerns. RBS maybe not as much, but it's also more of an online
@@ -408,7 +408,7 @@ trip over it.
 
 - `[ux]` **Disable Connect, with a tooltip, while any bus lacks an
   interface binding** — instead of (or ahead of) the loud refusal the
-  chip currently gives on press. Needs the companion affordance the
+  button currently gives on press. Needs the companion affordance the
   ruling implies: a way to *disable* a bus, so a deliberately unbound
   bus stops blocking Connect rather than forcing a binding it doesn't
   want. (Owner, task-117 review 2026-08-28.)
