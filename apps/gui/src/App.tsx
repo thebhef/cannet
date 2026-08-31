@@ -89,6 +89,7 @@ import {
 } from "./panelEditHistory";
 import { usePanelEditUndo } from "./usePanelEditUndo";
 import { PanelEditRecorderContext } from "./panelEditRecorder";
+import { retargetTransmitCalc } from "./signalRemap";
 import { hostSettings, useSetting } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
@@ -3091,14 +3092,6 @@ export function App() {
           enabled: op.enabled,
         }).catch(() => { /* best effort */ });
         return;
-      case "rbsSignal":
-        void invoke("rbs_set_signal", {
-          elementId: op.elementId,
-          target: op.target,
-          signal: op.signal,
-          value: op.value,
-        }).catch(() => { /* best effort */ });
-        return;
       case "rbsPeriod":
         void invoke("rbs_set_period", {
           elementId: op.elementId,
@@ -3106,10 +3099,10 @@ export function App() {
           periodMs: op.periodMs,
         }).catch(() => { /* best effort */ });
         return;
-      case "transmitFrame":
-        void invoke("set_transmit_frame", { id: op.id, frame: op.frame }).catch(() => {
-          /* best effort */
-        });
+      case "transmitCalcRetarget":
+        // A rename over the pool as it is now — never a frame replay
+        // (ADR 0058: undo never writes what goes on the wire).
+        void retargetTransmitCalc(op).catch(() => { /* best effort */ });
         return;
       case "signalColor":
         handleSetSignalColor(op.key, op.color);

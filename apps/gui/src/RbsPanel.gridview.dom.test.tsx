@@ -326,35 +326,17 @@ describe("RbsPanel on the gridview", () => {
     ]);
   });
 
-  it("records a value override whose inverse is the clear, and a clear on nothing not at all", async () => {
+  it("records no step for a value override — values are outside undo (owner ruling 2026-08-29)", async () => {
+    // ADR 0058: undo covers project contents *except values*. A chord
+    // must never change what a message carries on the bus, so a value
+    // override goes to the host unrecorded.
     const { recorded } = renderPanel();
     await screen.findByText("PackStatus");
     fireEvent.click(screen.getByLabelText("toggle 0x100"));
     const cell = (await screen.findByLabelText("PackVoltage value")) as HTMLInputElement;
     fireEvent.change(cell, { target: { value: "42" } });
     fireEvent.blur(cell); // ValidatedInput commits when the edit ends
-    expect(recorded).toEqual([
-      {
-        undo: [
-          {
-            kind: "rbsSignal",
-            elementId: "el",
-            target: { bus: "Powertrain", ecu: "BMS", message: "0x100" },
-            signal: "PackVoltage",
-            value: null,
-          },
-        ],
-        redo: [
-          {
-            kind: "rbsSignal",
-            elementId: "el",
-            target: { bus: "Powertrain", ecu: "BMS", message: "0x100" },
-            signal: "PackVoltage",
-            value: 42,
-          },
-        ],
-      },
-    ]);
+    expect(recorded).toEqual([]);
   });
 
   it("clicking inside a disclosed signal table leaves the message open", async () => {

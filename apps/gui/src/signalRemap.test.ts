@@ -30,6 +30,7 @@ import {
   remapSignal,
   remapSignalsConfig,
   remapTransmitFrames,
+  retargetTransmitCalc,
   type SignalDriftAccept,
   type SignalRemap,
   type SignalRemapStores,
@@ -219,6 +220,18 @@ describe("remapElementPatch", () => {
   });
 });
 
+/// A remap's pool slice — what `remapSignal` derives and the undo op
+/// carries (`TransmitCalcRetarget`).
+function retargetOf(remap: SignalRemap) {
+  return {
+    busId: remap.fromBusId,
+    messageId: remap.messageId,
+    extended: remap.extended,
+    from: remap.from,
+    to: remap.to,
+  };
+}
+
 describe("remapTransmitFrames", () => {
   const frame = (over: Partial<TransmitFrameConfig> = {}): TransmitFrameConfig => ({
     id: "f1",
@@ -245,7 +258,7 @@ describe("remapTransmitFrames", () => {
         },
       }),
     ];
-    const changed = remapTransmitFrames(frames, REMAP);
+    const changed = remapTransmitFrames(frames, retargetOf(REMAP));
     expect(changed).toHaveLength(1);
     expect(changed[0].calc?.counter?.signal).toBe("EngineSpeed");
     expect(changed[0].calc?.crc?.signal).toBe("EngineSpeed");
@@ -254,8 +267,8 @@ describe("remapTransmitFrames", () => {
 
   it("ignores a frame on another bus or another id", () => {
     const calc = { counter: { signal: "EngSpeed", increment: 1 } };
-    expect(remapTransmitFrames([frame({ busId: "body", calc })], REMAP)).toEqual([]);
-    expect(remapTransmitFrames([frame({ canId: 0x101, calc })], REMAP)).toEqual([]);
+    expect(remapTransmitFrames([frame({ busId: "body", calc })], retargetOf(REMAP))).toEqual([]);
+    expect(remapTransmitFrames([frame({ canId: 0x101, calc })], retargetOf(REMAP))).toEqual([]);
   });
 
   it("returns only the frames that actually changed", () => {
@@ -264,7 +277,7 @@ describe("remapTransmitFrames", () => {
       frame({ id: "f2", calc: { counter: { signal: "Other", increment: 1 } } }),
       frame({ id: "f3", calc: { counter: { signal: "EngSpeed", increment: 1 } } }),
     ];
-    expect(remapTransmitFrames(frames, REMAP).map((f) => f.id)).toEqual(["f3"]);
+    expect(remapTransmitFrames(frames, retargetOf(REMAP)).map((f) => f.id)).toEqual(["f3"]);
   });
 });
 
@@ -349,7 +362,7 @@ describe("re-pointing a reference that names no bus", () => {
       dlc: 8,
       calc: { counter: { signal: "EngSpeed", increment: 1 } },
     };
-    expect(remapTransmitFrames([frame], REPOINT)).toEqual([]);
+    expect(remapTransmitFrames([frame], retargetOf(REPOINT))).toEqual([]);
   });
 
   it("carries the colour override onto the new identity", async () => {
@@ -500,11 +513,12 @@ describe("remapSignal — the one operation", () => {
 
     expect(recorded).toHaveLength(1);
     const step = recorded[0];
-    // Forward: colour move, pool rewrite, then the two pick writes.
+    // Forward: colour move, the calc retarget, then the two pick
+    // writes.
     expect(step.redo.map((o) => o.kind)).toEqual([
       "signalColor",
       "signalColor",
-      "transmitFrame",
+      "transmitCalcRetarget",
       "pick",
       "pick",
     ]);
@@ -515,11 +529,55 @@ describe("remapSignal — the one operation", () => {
     // The colour goes home.
     expect(step.undo).toContainEqual({ kind: "signalColor", key: OLD_KEY, color: "#123456" });
     expect(step.undo).toContainEqual({ kind: "signalColor", key: NEW_KEY, color: null });
-    // The pool's before-frame still names the old signal.
-    const tf = step.undo.find((o) => o.kind === "transmitFrame") as {
-      frame: { calc: { counter: { signal: string } } };
+    // The pool inverse is the rename swapped — an instruction, never a
+    // frame snapshot (ADR 0058: no chord carries what goes on the
+    // wire).
+    expect(step.undo).toContainEqual({
+      kind: "transmitCalcRetarget",
+      busId: "power",
+      messageId: 0x100,
+      extended: false,
+      from: "EngineSpeed",
+      to: "EngSpeed",
+    });
+  });
+
+  it("records no retarget op when the pool holds nothing to move", async () => {
+    POOL = [];
+    const recorded: PanelEditStep[] = [];
+    const { stores: s } = stores({ recordEdit: (step) => recorded.push(step) });
+    await remapSignal(s, REMAP);
+    expect(recorded[0].redo.some((o) => o.kind === "transmitCalcRetarget")).toBe(false);
+  });
+
+  it("a retarget restore renames calc targets over the pool as it is NOW — bytes ride through", async () => {
+    // The frame's data changed after the remap (a transmit-panel
+    // edit). Undo must move only the calc name back and carry today's
+    // bytes untouched — a chord never writes what goes on the wire.
+    POOL = [
+      {
+        id: "f1",
+        description: "",
+        request: { busId: "power", id: 0x100, extended: false, kind: "classic", data: [0xde, 0xad], brs: false, dlc: 8 },
+        cycleMs: 250,
+        mode: "manual",
+        running: false,
+        calc: { counter: { signal: "EngineSpeed", increment: 1 } },
+      },
+    ];
+    await retargetTransmitCalc({
+      busId: "power",
+      messageId: 0x100,
+      extended: false,
+      from: "EngineSpeed",
+      to: "EngSpeed",
+    });
+    const write = hostCalls.find((c) => c.cmd === "set_transmit_frame")?.args as {
+      frame: { request: { data: number[] }; cycleMs: number; calc: { counter: { signal: string } } };
     };
-    expect(tf.frame.calc.counter.signal).toBe("EngSpeed");
+    expect(write.frame.calc.counter.signal).toBe("EngSpeed");
+    expect(write.frame.request.data).toEqual([0xde, 0xad]);
+    expect(write.frame.cycleMs).toBe(250);
   });
 
   it("records no step for the no-op remap", async () => {

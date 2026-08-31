@@ -1417,9 +1417,17 @@ editing undo instead.
 The chords also cover the **document edits** the View Signals and RBS
 panels make ([ADR 0058](docs/adr/0058-panel-document-edits-are-undoable.md)):
 a mapping pick, a remap (one step, every store it touched), an RBS
-enable at any level, a value override or its clear, a period override.
-Undoing a disable re-enables — on a running element that resumes the
-message, exactly as its checkbox would.
+enable at any level, a period override. Undoing a disable re-enables —
+on a running element that resumes the message, exactly as its checkbox
+would.
+
+**Values are the exception.** Undo covers project contents *except
+values*: an RBS signal value override (and its clear) is never
+recorded, so no chord ever changes what a message carries on the bus.
+Re-enter a value or clear it by hand. The transmit panel has no undo
+at all — the one chord that reaches the transmit pool is a remap's
+calculated-field retarget, recorded as a rename and applied to the
+pool as it is then, never as a replay of frame content.
 
 Undo never reaches the runtime. Run/Stop, the connection, and the
 capture itself sit outside it by design

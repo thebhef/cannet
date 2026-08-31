@@ -1029,3 +1029,10 @@ next planning pass.
   designing before it is implemented. Stopgap already shipped: the kind
   no longer has its own filter row, and files under Notes.
   (Owner, 2026-08-24.)
+- `[gui]` **Transmit add/remove may eventually join undo — disabled on
+  re-add.** The transmit panel has no undo (ADR 0058: values never
+  ride a chord). The owner's noted future direction: row / element add
+  and remove probably do belong in undo, with a re-added transmit row
+  **disabled regardless of its state before removal** — restoring
+  structure must not resume sending. Needs its own design pass; not
+  part of the current boundary. (Owner, 2026-08-29.)
