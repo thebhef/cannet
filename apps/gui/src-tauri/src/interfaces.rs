@@ -82,25 +82,69 @@ struct InterfacesInner {
     entries: HashMap<String, AddressEntry>,
 }
 
+impl InterfacesInner {
+    /// One more subscriber for `address`. `true` when nothing watches
+    /// it yet, in which case the caller must spawn a task and
+    /// [`install`](Self::install) it.
+    fn subscribe(&mut self, address: &str) -> bool {
+        match self.entries.get_mut(address) {
+            Some(entry) => {
+                entry.refs += 1;
+                false
+            }
+            None => true,
+        }
+    }
+
+    /// Install the watch task a [`subscribe`](Self::subscribe) asked
+    /// for, counting that subscriber.
+    fn install(&mut self, address: String, task: JoinHandle<()>) {
+        self.entries.insert(
+            address,
+            AddressEntry {
+                snapshot: Vec::new(),
+                task,
+                refs: 1,
+            },
+        );
+    }
+
+    /// One subscriber gone. Returns the entry, for teardown, only when
+    /// it was the last one — two panels can watch one address, and the
+    /// first to leave must not kill the other's live feed.
+    fn unsubscribe(&mut self, address: &str) -> Option<AddressEntry> {
+        let entry = self.entries.get_mut(address)?;
+        if entry.refs > 1 {
+            entry.refs -= 1;
+            return None;
+        }
+        self.entries.remove(address)
+    }
+}
+
 struct AddressEntry {
     snapshot: Vec<InterfaceRecord>,
     /// Join handle for the long-lived watch task. Held so [`unwatch`]
     /// can `.abort()` the task at its next `.await` point; dropped
     /// along with the entry when the address is unwatched.
     task: JoinHandle<()>,
+    /// How many [`watch`] calls this task is serving. [`unwatch`]
+    /// decrements; the task and cache entry go when it reaches zero.
+    refs: usize,
 }
 
-/// Begin (or no-op on) a `WatchInterfaces` subscription against
-/// `address`. Idempotent: calling it twice for the same address keeps
-/// the existing subscription. The watch task lives until either
-/// [`unwatch`] is called for this address, or the app shuts down.
+/// Begin (or join) a `WatchInterfaces` subscription against `address`.
+/// Refcounted: a second `watch` shares the existing task, and the task
+/// lives until every subscriber has called [`unwatch`] — or the app
+/// shuts down. The sidecar lifecycle's own watch of the local address
+/// never unwatches, so no panel teardown can take it down.
 pub fn watch(app: &AppHandle, address: String) {
     let Some(state) = app.try_state::<InterfacesState>() else {
         return;
     };
     {
-        let inner = state.inner.lock().expect("interfaces state poisoned");
-        if inner.entries.contains_key(&address) {
+        let mut inner = state.inner.lock().expect("interfaces state poisoned");
+        if !inner.subscribe(&address) {
             return;
         }
     }
@@ -111,32 +155,28 @@ pub fn watch(app: &AppHandle, address: String) {
     });
     let mut inner = state.inner.lock().expect("interfaces state poisoned");
     // Re-check under the lock: a concurrent `watch` could have raced
-    // us and installed its own task. If so, abort ours and keep
-    // theirs.
-    if inner.entries.contains_key(&address) {
+    // us and installed its own task. If so, count our subscriber on
+    // theirs and abort ours.
+    if let Some(entry) = inner.entries.get_mut(&address) {
+        entry.refs += 1;
         handle.abort();
         return;
     }
-    inner.entries.insert(
-        address,
-        AddressEntry {
-            snapshot: Vec::new(),
-            task: handle,
-        },
-    );
+    inner.install(address, handle);
 }
 
-/// Stop watching `address` and drop its cached snapshot. The watch
-/// task is aborted at its next `.await`; any frontend subscriber to
-/// [`INTERFACES_CHANGED_EVENT`] sees one final empty-snapshot event so
-/// stale `(unassigned)` rows clear out of the UI.
+/// Drop one subscription to `address`. Only the last subscriber's
+/// `unwatch` stops the task and drops the cached snapshot — the task
+/// is then aborted at its next `.await`, and any frontend subscriber
+/// to [`INTERFACES_CHANGED_EVENT`] sees one final empty-snapshot event
+/// so stale `(unassigned)` rows clear out of the UI.
 pub fn unwatch(app: &AppHandle, address: &str) {
     let Some(state) = app.try_state::<InterfacesState>() else {
         return;
     };
     let removed = {
         let mut inner = state.inner.lock().expect("interfaces state poisoned");
-        inner.entries.remove(address)
+        inner.unsubscribe(address)
     };
     if let Some(entry) = removed {
         entry.task.abort();
@@ -454,6 +494,25 @@ mod tests {
         after[0].firmware_version = Some("3.3.0".to_string());
         assert!(interfaces_equal(&before, &before));
         assert!(!interfaces_equal(&before, &after));
+    }
+
+    #[test]
+    fn a_watch_survives_until_its_last_subscriber_unsubscribes() {
+        // Two panels can watch one address — Connection Management for
+        // a bus bound to it, the Servers panel for its row. Without
+        // the refcount, whichever unmounts first silently kills the
+        // other's live feed.
+        let mut inner = InterfacesInner::default();
+        assert!(inner.subscribe("a:1"), "first subscriber spawns a task");
+        inner.install("a:1".into(), tauri::async_runtime::spawn(async {}));
+        assert!(!inner.subscribe("a:1"), "second subscriber shares it");
+        assert!(
+            inner.unsubscribe("a:1").is_none(),
+            "one subscriber remains; nothing to tear down"
+        );
+        let last = inner.unsubscribe("a:1").expect("last unsubscribe tears down");
+        last.task.abort();
+        assert!(inner.unsubscribe("a:1").is_none(), "already gone");
     }
 
     #[test]

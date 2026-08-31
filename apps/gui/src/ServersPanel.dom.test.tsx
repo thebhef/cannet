@@ -790,3 +790,51 @@ describe("the trust lifecycle from a row", () => {
     expect(await screen.findByText(/read-only/)).toBeInTheDocument();
   });
 });
+
+describe("live interfaces on stored rows", () => {
+  // The panel watches every server the store can actually reach — a
+  // pin or an explicit unprotected choice — and none it can't: a watch
+  // on an untrusted row would dial it and raise a first-contact
+  // question nobody asked for.
+  it("watches the reachable rows and only those", async () => {
+    snapshot = list([BENCH, PINNED, OFFLINE]);
+    renderPanel();
+    await screen.findByText("rippy:50051");
+    await waitFor(() => {
+      const watched = calls
+        .filter((c) => c.cmd === "watch_interfaces")
+        .map((c) => c.args.address)
+        .sort();
+      expect(watched).toEqual(["rippy:50051", "spare:50051"]);
+    });
+  });
+
+  it("shows a stored row's interfaces as the host pushes them", async () => {
+    snapshot = list([PINNED]);
+    renderPanel();
+    await screen.findByText("rippy:50051");
+    emit("interfaces-changed", {
+      address: "rippy:50051",
+      interfaces: [
+        {
+          id: "pcan:PCAN_USBBUS1",
+          display_name: "PEAK PCAN-USB FD",
+          fd_capable: true,
+        },
+      ],
+    });
+    await waitFor(() =>
+      expect(rowFor("rippy:50051")).toHaveTextContent("PEAK PCAN-USB FD"),
+    );
+  });
+
+  it("says so when a reachable server lists nothing", async () => {
+    snapshot = list([PINNED]);
+    renderPanel();
+    await screen.findByText("rippy:50051");
+    emit("interfaces-changed", { address: "rippy:50051", interfaces: [] });
+    await waitFor(() =>
+      expect(rowFor("rippy:50051")).toHaveTextContent("no interfaces"),
+    );
+  });
+});

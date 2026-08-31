@@ -69,7 +69,7 @@ const COMBO_MANAGE_SERVERS = "__manage_servers__";
 /// returned yet (initial state); `ok` carries the interface list (which
 /// can be empty if the server has none); `err` carries the last error
 /// string so the row can show "(unreachable)" instead of going blank.
-type DiscoveryState =
+export type DiscoveryState =
   | { status: "pending" }
   | { status: "ok"; interfaces: InterfaceRecord[] }
   | { status: "err"; error: string };
@@ -85,7 +85,7 @@ interface DiscoveryRegistry {
 /// which remote addresses to watch via the `watch_interfaces` /
 /// `unwatch_interfaces` Tauri commands. The local sidecar address is
 /// auto-watched by the sidecar lifecycle host-side; calling `watch`
-/// for it again is harmless (the host de-duplicates).
+/// for it again is harmless (the host refcounts subscribers).
 export function useInterfaceDiscovery(addresses: readonly string[]): DiscoveryRegistry {
   const [entries, setEntries] = useState<Record<string, DiscoveryState>>({});
 

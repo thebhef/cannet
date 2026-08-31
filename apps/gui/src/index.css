@@ -1572,6 +1572,12 @@ ul.status-bar-menu .status-chip {
   font-family: inherit;
 }
 
+.server-interfaces {
+  flex-basis: 100%;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+}
+
 .server-token-entry {
   flex-basis: 100%;
   display: flex;
