@@ -29,6 +29,7 @@ import {
 } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
+import { usePanelEditRecorder } from "./panelEditRecorder";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
@@ -314,10 +315,24 @@ export function RbsPanel(props: IDockviewPanelProps) {
   /// the 500 ms value poll that rebuilds the tree.
   const treeDataRef = useRef(tree);
   treeDataRef.current = tree;
+  // Every edit this panel makes records its undo step (task 129); the
+  // inverse is read from the tree/row before the write erases it.
+  const recordEdit = usePanelEditRecorder();
   const onPrimaryAction = useCallback(
     (id: string) => {
       const toggle = findRbsEnableToggle(treeDataRef.current, rowIds, id);
       if (toggle != null) {
+        const base = {
+          kind: "rbsEnable" as const,
+          elementId,
+          bus: toggle.bus,
+          ecu: toggle.ecu,
+          message: toggle.message,
+        };
+        recordEdit({
+          undo: [{ ...base, enabled: !toggle.enabled }],
+          redo: [{ ...base, enabled: toggle.enabled }],
+        });
         void invoke("rbs_set_enabled", { elementId, ...toggle }).catch(() => {});
         return;
       }
@@ -327,7 +342,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
       const row = document.getElementById(rowDomIdRef.current(id));
       if (row != null) rowTabbables(row)[0]?.focus();
     },
-    [elementId, rowIds],
+    [elementId, rowIds, recordEdit],
   );
   const grid = useGridview({
     adapter,
@@ -363,6 +378,8 @@ export function RbsPanel(props: IDockviewPanelProps) {
   const handleAddBus = useCallback(() => {
     const name = busToAdd || addableBuses[0];
     if (!name) return;
+    const base = { kind: "rbsEnable" as const, elementId, bus: name, ecu: null, message: null };
+    recordEdit({ undo: [{ ...base, enabled: false }], redo: [{ ...base, enabled: true }] });
     void invoke("rbs_set_enabled", {
       elementId,
       bus: name,
@@ -371,7 +388,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
       enabled: true,
     }).catch(() => {});
     setBusToAdd("");
-  }, [busToAdd, addableBuses, elementId]);
+  }, [busToAdd, addableBuses, elementId, recordEdit]);
 
   return (
     <div className="rbs-panel">
@@ -582,7 +599,10 @@ function BusSection({
 }: BusSectionProps) {
   const bus = visible.bus;
   const inert = bus.busId == null;
+  const recordEdit = usePanelEditRecorder();
   const setEnabled = (ecu: string | null, message: string | null, enabled: boolean) => {
+    const base = { kind: "rbsEnable" as const, elementId, bus: bus.key, ecu, message };
+    recordEdit({ undo: [{ ...base, enabled: !enabled }], redo: [{ ...base, enabled }] });
     void invoke("rbs_set_enabled", {
       elementId,
       bus: bus.key,
@@ -736,6 +756,16 @@ function MessageRow({
   onSignalMenu,
 }: MessageRowProps) {
   const unknown = m.name == null;
+  const recordEdit = usePanelEditRecorder();
+  /// Set or clear the period override, recording the step (task 129):
+  /// the inverse is the current override, or the clear when the row is
+  /// tracking GenMsgCycleTime.
+  const editPeriod = (periodMs: number | null) => {
+    const prev = m.periodOverridden ? m.periodMs : null;
+    const base = { kind: "rbsPeriod" as const, elementId, target };
+    recordEdit({ undo: [{ ...base, periodMs: prev }], redo: [{ ...base, periodMs }] });
+    void invoke("rbs_set_period", { elementId, target, periodMs }).catch(() => {});
+  };
   const dataHex = formatBytes(m.data);
   const calcSummary = [
     m.counter ? `ctr:${m.counter.signal}` : null,
@@ -796,13 +826,7 @@ function MessageRow({
             parse={parsePositiveInt}
             focusBehavior="select"
             
-            onCommit={(ms) =>
-              void invoke("rbs_set_period", {
-                elementId,
-                target,
-                periodMs: ms,
-              }).catch(() => {})
-            }
+            onCommit={(ms) => editPeriod(ms)}
             className={m.periodOverridden ? "rbs-period-input rbs-overridden" : "rbs-period-input"}
             placeholder="period"
             ariaLabel={`${m.key} period`}
@@ -816,13 +840,7 @@ function MessageRow({
               className="rbs-clear"
                 tabIndex={-1}
               title="clear override (track GenMsgCycleTime)"
-              onClick={() =>
-                void invoke("rbs_set_period", {
-                  elementId,
-                  target,
-                  periodMs: null,
-                }).catch(() => {})
-              }
+              onClick={() => editPeriod(null)}
             >
               <Icon name="x" />
             </button>
@@ -914,7 +932,11 @@ function SignalRow({
   rowProps,
   onMenu,
 }: SignalRowProps) {
-  const commit = (value: string | number) => {
+  const recordEdit = usePanelEditRecorder();
+  const editSignal = (value: string | number | null) => {
+    const prev = s.overridden ? (s.overrideText ?? s.value) : null;
+    const base = { kind: "rbsSignal" as const, elementId, target, signal: s.name };
+    recordEdit({ undo: [{ ...base, value: prev }], redo: [{ ...base, value }] });
     void invoke("rbs_set_signal", {
       elementId,
       target,
@@ -922,6 +944,7 @@ function SignalRow({
       value,
     }).catch(() => {});
   };
+  const commit = (value: string | number) => editSignal(value);
 
   return (
     <tr
@@ -948,14 +971,10 @@ function SignalRow({
           extended={message.extended}
           disabled={inert}
           onCommit={commit}
-          onClear={() =>
-            void invoke("rbs_set_signal", {
-              elementId,
-              target,
-              signal: s.name,
-              value: null,
-            }).catch(() => {})
-          }
+          onClear={() => {
+            // Clearing an un-overridden signal moves nothing — no step.
+            if (s.overridden) editSignal(null);
+          }}
         />
       </td>
       <td className="rbs-sig-unit">{s.unit}</td>

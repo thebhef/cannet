@@ -45,8 +45,10 @@ that task's status log.
 - [ ] 88 — bus assignment governs decode — `examples/legacy-project/`,
       `examples/colliding-dbcs/`, `examples/capture-features/`
 - [ ] 92 — one resolution rule — `examples/colliding-dbcs/`. Reviewed
-      2026-08-28; open ask before it ticks: undo/redo should apply to
-      signal-mapping selections — to be tackled next
+      2026-08-28; the open ask — undo/redo over signal-mapping
+      selections — landed 2026-08-29 as task 129 (picks, remaps and
+      every RBS edit are undo steps; ADR 0058). Re-check with
+      `Mod+Z` over a pick ticks it
 - [x] 91 — `frame_index_at_ns` on an unsorted store —
       `examples/time-origins/wall-clock-out-of-order.blf`
 - [x] 93 — source comments naming tasks, plus the CI lint **§**.

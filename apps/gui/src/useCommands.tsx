@@ -77,6 +77,7 @@ import {
   type LayoutHistory,
 } from "./viewHistory";
 import type { LinkHistory } from "./eventLinkHistory";
+import type { PanelEditHistory } from "./panelEditHistory";
 import {
   popRedo,
   popUndo,
@@ -115,6 +116,9 @@ export interface UseCommandsOptions {
   /// link step to take, and how to take it.
   linkHistoryRef: MutableRefObject<LinkHistory>;
   applyEventLinkHistory: (dir: "undo" | "redo") => boolean;
+  /// The Signal/RBS panel-edit stack (task 129), read the same way.
+  panelEditHistoryRef: MutableRefObject<PanelEditHistory>;
+  applyPanelEditHistory: (dir: "undo" | "redo") => boolean;
   // Reactive model reads.
   registry: readonly RegistryEntry[];
   activePanel: ActivePanel;
@@ -225,6 +229,8 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     applyElementHistory,
     linkHistoryRef,
     applyEventLinkHistory,
+    panelEditHistoryRef,
+    applyPanelEditHistory,
     registry,
     activePanel,
     projectPath,
@@ -462,7 +468,9 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
             ? layoutHistoryRef.current
             : stack === "events"
               ? linkHistoryRef.current
-              : elementHistoryRef.current;
+              : stack === "edits"
+                ? panelEditHistoryRef.current
+                : elementHistoryRef.current;
         if (!history) return false;
         return (dir === "undo" ? history.past : history.future).length > 0;
       };
@@ -478,6 +486,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
         let applied = false;
         if (r.stacks.includes("element")) applied = applyElementHistory(dir);
         if (r.stacks.includes("events")) applied = applyEventLinkHistory(dir) || applied;
+        if (r.stacks.includes("edits")) applied = applyPanelEditHistory(dir) || applied;
         if (r.stacks.includes("layout")) applied = applyLayoutHistory(dir) || applied;
         if (applied) return;
       }
@@ -486,10 +495,12 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       layoutHistoryRef,
       elementHistoryRef,
       linkHistoryRef,
+      panelEditHistoryRef,
       undoOrderRef,
       applyLayoutHistory,
       applyElementHistory,
       applyEventLinkHistory,
+      applyPanelEditHistory,
     ],
   );
   const cycleTabInGroup = useCallback(

@@ -8,6 +8,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { PanelEditStep } from "./panelEditHistory";
+
 const hostCalls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 let POOL: unknown[] = [];
 vi.mock("@tauri-apps/api/core", () => ({
@@ -471,6 +473,56 @@ describe("remapSignal — the one operation", () => {
       { signal: NEW_KEY, dbcPath: "powertrain.dbc" },
       { signal: OLD_KEY, dbcPath: null },
     ]);
+  });
+
+  it("records the whole rewrite as one undo step carrying every inverse (task 129)", async () => {
+    POOL = [
+      {
+        id: "f1",
+        description: "",
+        request: { busId: "power", id: 0x100, extended: false, kind: "classic", data: [0], brs: false, dlc: 8 },
+        cycleMs: 100,
+        mode: "manual",
+        running: false,
+        calc: { counter: { signal: "EngSpeed", increment: 1 } },
+      },
+    ];
+    const recorded: PanelEditStep[] = [];
+    const { stores: s } = stores({
+      signalColors: { [OLD_KEY]: "#123456" },
+      recordEdit: (step) => recorded.push(step),
+    });
+    await remapSignal(s, { ...REMAP, fromPickedDbc: "legacy.dbc" });
+
+    expect(recorded).toHaveLength(1);
+    const step = recorded[0];
+    // Forward: colour move, pool rewrite, then the two pick writes.
+    expect(step.redo.map((o) => o.kind)).toEqual([
+      "signalColor",
+      "signalColor",
+      "transmitFrame",
+      "pick",
+      "pick",
+    ]);
+    // The pick inverses restore what the from-row carried and drop the
+    // target's new record.
+    expect(step.undo).toContainEqual({ kind: "pick", signal: OLD_KEY, dbcPath: "legacy.dbc" });
+    expect(step.undo).toContainEqual({ kind: "pick", signal: NEW_KEY, dbcPath: null });
+    // The colour goes home.
+    expect(step.undo).toContainEqual({ kind: "signalColor", key: OLD_KEY, color: "#123456" });
+    expect(step.undo).toContainEqual({ kind: "signalColor", key: NEW_KEY, color: null });
+    // The pool's before-frame still names the old signal.
+    const tf = step.undo.find((o) => o.kind === "transmitFrame") as {
+      frame: { calc: { counter: { signal: string } } };
+    };
+    expect(tf.frame.calc.counter.signal).toBe("EngSpeed");
+  });
+
+  it("records no step for the no-op remap", async () => {
+    const recorded: PanelEditStep[] = [];
+    const { stores: s } = stores({ recordEdit: (step) => recorded.push(step) });
+    await remapSignal(s, { ...REMAP, to: REMAP.from });
+    expect(recorded).toEqual([]);
   });
 
   it("writes nothing to an element that holds no reference to the old signal", async () => {

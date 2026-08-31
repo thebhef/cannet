@@ -65,6 +65,9 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { signalKey } from "./plotData";
 import { useElementRegistry } from "./projectElements";
+import { usePanelEditRecorder } from "./panelEditRecorder";
+import { useUndoGesture } from "./undoGesture";
+import type { PanelEditOp, PanelEditStep } from "./panelEditHistory";
 import { useProjectContext } from "./projectContext";
 import {
   configToFrame,
@@ -103,6 +106,10 @@ export interface SignalRemap {
   from: string;
   /// The name they are all rewritten to.
   to: string;
+  /// The pick recorded for the *from* signal today, if any — the undo
+  /// step's inverse for the pick this rewrite drops (task 129). Read
+  /// by the caller from the row before the write erases it.
+  fromPickedDbc?: string | null;
   /// The target definition's message name — what a view that records
   /// one is re-recorded against.
   messageName: string;
@@ -122,6 +129,9 @@ export interface SignalRemapStores {
   updateElement: (id: string, patch: Partial<ProjectElement>) => void;
   signalColors: Readonly<Record<string, string>>;
   setSignalColor: (key: string, color: string | null) => void;
+  /// Record the whole rewrite as one undo step (task 129). Optional —
+  /// a caller with no history (a test) just doesn't record.
+  recordEdit?: (step: PanelEditStep) => void;
 }
 
 /// The identity the references hold today.
@@ -367,21 +377,43 @@ export async function remapSignal(
   }
 
   // The host-owned transmit pool.
+  const undoOps: PanelEditOp[] = [];
+  const redoOps: PanelEditOp[] = [];
+  // Mirrors the colour move above, which has already happened —
+  // `color` is the pre-move read from the same closure.
+  if (color != null && stores.signalColors[toKey] == null) {
+    redoOps.push({ kind: "signalColor", key: toKey, color });
+    redoOps.push({ kind: "signalColor", key: fromKey, color: null });
+    undoOps.push({ kind: "signalColor", key: fromKey, color });
+    undoOps.push({ kind: "signalColor", key: toKey, color: null });
+  }
   const pool = await invoke<TransmitFrameRecord[]>("list_transmit_frames").catch(
     () => [] as TransmitFrameRecord[],
   );
   for (const frame of remapTransmitFrames(pool.map(recordToConfig), remap)) {
-    await invoke("set_transmit_frame", { id: frame.id, frame: configToFrame(frame) }).catch(
-      () => {},
-    );
+    const before = pool.find((r) => r.id === frame.id);
+    const after = configToFrame(frame);
+    if (before !== undefined) {
+      undoOps.push({ kind: "transmitFrame", id: frame.id, frame: configToFrame(recordToConfig(before)) });
+      redoOps.push({ kind: "transmitFrame", id: frame.id, frame: after });
+    }
+    await invoke("set_transmit_frame", { id: frame.id, frame: after }).catch(() => {});
   }
 
   // The per-signal database choice: record the chosen definition's
   // database for the target (the host keeps it only where it differs
   // from load order) and drop whatever was recorded for the name
   // nothing references any more.
+  redoOps.push({ kind: "pick", signal: toKey, dbcPath: remap.dbcPath });
+  redoOps.push({ kind: "pick", signal: fromKey, dbcPath: null });
+  undoOps.push({ kind: "pick", signal: fromKey, dbcPath: remap.fromPickedDbc ?? null });
+  undoOps.push({ kind: "pick", signal: toKey, dbcPath: null });
   await invoke("set_signal_dbc_pick", { signal: toKey, dbcPath: remap.dbcPath }).catch(() => {});
   await invoke("set_signal_dbc_pick", { signal: fromKey, dbcPath: null }).catch(() => {});
+
+  // One undo step for the whole host half; the element half coalesces
+  // with it through the gesture the caller opened (task 129).
+  stores.recordEdit?.({ undo: undoOps, redo: redoOps });
 }
 
 /// {@link remapSignal} bound to the live element registry and the
@@ -390,18 +422,26 @@ export function useRemapSignal(): (remap: SignalRemap) => void {
   const registry = useElementRegistry();
   const { signalColors, onSetSignalColor } = useProjectContext();
   const { entries, update } = registry;
+  const recordEdit = usePanelEditRecorder();
+  const gesture = useUndoGesture();
   return useCallback(
     (remap: SignalRemap) => {
+      // One gesture over the whole rewrite (task 129): the element
+      // patches' snapshot and the host half's step coalesce into one
+      // undo entry. The gesture stays open across the async host tail
+      // and closes only when the rewrite has finished.
+      gesture.begin();
       void remapSignal(
         {
           elements: entries.map((e) => e.element),
           updateElement: update,
           signalColors,
           setSignalColor: onSetSignalColor,
+          recordEdit,
         },
         remap,
-      );
+      ).finally(() => gesture.end());
     },
-    [entries, update, signalColors, onSetSignalColor],
+    [entries, update, signalColors, onSetSignalColor, recordEdit, gesture],
   );
 }

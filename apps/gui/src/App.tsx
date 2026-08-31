@@ -82,6 +82,13 @@ import {
   type TransientStatus,
 } from "./statusLine";
 import { useTransientStatus } from "./useTransientStatus";
+import {
+  EMPTY_PANEL_EDIT_HISTORY,
+  type PanelEditHistory,
+  type PanelEditOp,
+} from "./panelEditHistory";
+import { usePanelEditUndo } from "./usePanelEditUndo";
+import { PanelEditRecorderContext } from "./panelEditRecorder";
 import { hostSettings, useSetting } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
@@ -570,6 +577,7 @@ export function App() {
   // against the other two by the same log, so one chord always reverses
   // the most recent change whichever stack it lives on.
   const linkHistoryRef = useRef<LinkHistory>(EMPTY_LINK_HISTORY);
+  const panelEditHistoryRef = useRef<PanelEditHistory>(EMPTY_PANEL_EDIT_HISTORY);
   const undoOrderRef = useRef<UndoOrder>(EMPTY_UNDO_ORDER);
   const pendingElementEditRef = useRef(false);
   const applyingElementsRef = useRef(false);
@@ -3063,6 +3071,57 @@ export function App() {
     // like clicking the title-bar close button.
     "app.exit": () => void getCurrentWindow().close(),
   };
+  // Signal/RBS panel edits are the fourth undo stack (task 129) — the
+  // event-link pattern over the panels' own commands: the panel records
+  // the step with its inverse, a restore dispatches without
+  // re-recording.
+  const dispatchPanelEdit = useCallback((op: PanelEditOp) => {
+    switch (op.kind) {
+      case "pick":
+        void invoke("set_signal_dbc_pick", { signal: op.signal, dbcPath: op.dbcPath }).catch(
+          () => { /* best effort */ },
+        );
+        return;
+      case "rbsEnable":
+        void invoke("rbs_set_enabled", {
+          elementId: op.elementId,
+          bus: op.bus,
+          ecu: op.ecu,
+          message: op.message,
+          enabled: op.enabled,
+        }).catch(() => { /* best effort */ });
+        return;
+      case "rbsSignal":
+        void invoke("rbs_set_signal", {
+          elementId: op.elementId,
+          target: op.target,
+          signal: op.signal,
+          value: op.value,
+        }).catch(() => { /* best effort */ });
+        return;
+      case "rbsPeriod":
+        void invoke("rbs_set_period", {
+          elementId: op.elementId,
+          target: op.target,
+          periodMs: op.periodMs,
+        }).catch(() => { /* best effort */ });
+        return;
+      case "transmitFrame":
+        void invoke("set_transmit_frame", { id: op.id, frame: op.frame }).catch(() => {
+          /* best effort */
+        });
+        return;
+      case "signalColor":
+        handleSetSignalColor(op.key, op.color);
+        return;
+    }
+  }, [handleSetSignalColor]);
+  const { recordPanelEdit, applyPanelEditHistory } = usePanelEditUndo({
+    historyRef: panelEditHistoryRef,
+    undoOrderRef,
+    gestureId,
+    dispatch: dispatchPanelEdit,
+  });
   const commands = useCommands({
     dockApiRef,
     focusHistoryRef,
@@ -3073,6 +3132,8 @@ export function App() {
     applyElementHistory,
     linkHistoryRef,
     applyEventLinkHistory,
+    panelEditHistoryRef,
+    applyPanelEditHistory,
     registry,
     activePanel,
     projectPath,
@@ -3709,6 +3770,7 @@ export function App() {
         <SignalCatalogProvider>
           <ElementRegistryContext.Provider value={elementRegistryValue}>
             <UndoGestureContext.Provider value={undoGesture}>
+            <PanelEditRecorderContext.Provider value={recordPanelEdit}>
             <SignalGeneratorProvider>
             <SystemLogContext.Provider value={systemLogValue}>
               <NotesContext.Provider value={notesValue}>
@@ -3738,6 +3800,7 @@ export function App() {
               </NotesContext.Provider>
             </SystemLogContext.Provider>
             </SignalGeneratorProvider>
+            </PanelEditRecorderContext.Provider>
             </UndoGestureContext.Provider>
           </ElementRegistryContext.Provider>
         </SignalCatalogProvider>

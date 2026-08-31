@@ -12,6 +12,8 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { ViewSignalCandidate, ViewSignalRef, ViewSignalRow } from "./types";
+import { PanelEditRecorderContext } from "./panelEditRecorder";
+import type { PanelEditStep } from "./panelEditHistory";
 
 import {
   LONG_MESSAGE_NAME,
@@ -191,14 +193,17 @@ function renderPanel(params: Record<string, unknown> = {}, elements: ProjectElem
   const api = { updateParameters: vi.fn() };
   const props = { params, api } as unknown as Parameters<typeof ViewSignalsPanel>[0];
   const { Provider, control } = makeLiveRegistry(elements);
+  const recorded: PanelEditStep[] = [];
   render(
     <ProjectContext.Provider value={projectCtx}>
       <Provider>
-        <ViewSignalsPanel {...props} />
+        <PanelEditRecorderContext.Provider value={(s) => recorded.push(s)}>
+          <ViewSignalsPanel {...props} />
+        </PanelEditRecorderContext.Provider>
       </Provider>
     </ProjectContext.Provider>,
   );
-  return { api, registry: control };
+  return { api, registry: control, recorded };
 }
 
 function lastListCall() {
@@ -438,6 +443,47 @@ describe("ViewSignalsPanel source picker", () => {
         args: { signal: "power|s:256:PackVolts", dbcPath: "/dbc/private.dbc" },
       },
     ]);
+  });
+
+  it("records the pick as an undo step whose inverse is today's decoder (task 129)", async () => {
+    ROWS = [AMBIGUOUS];
+    ATTENTION_COUNT = 1;
+    const { recorded } = renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+    fireEvent.change(sourcePicker(), {
+      target: { value: `power\0/dbc/private.dbc\0PackVolts` },
+    });
+    expect(recorded).toEqual([
+      {
+        undo: [
+          { kind: "pick", signal: "power|s:256:PackVolts", dbcPath: "/dbc/client.dbc" },
+        ],
+        redo: [
+          { kind: "pick", signal: "power|s:256:PackVolts", dbcPath: "/dbc/private.dbc" },
+        ],
+      },
+    ]);
+  });
+
+  it("records no step for a pick on a row nothing decodes — there is no inverse to keep", async () => {
+    ROWS = [STALE_NAME];
+    ATTENTION_COUNT = 1;
+    const { recorded } = renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+    // A same-name candidate on an undecoded row would be the ambiguity
+    // pick with no serving database behind it; the write still goes,
+    // unrecorded. (STALE_NAME's candidates rename, so drive onPick's
+    // guard directly through a same-name fixture.)
+    ROWS = [row({ ...STALE_NAME, candidates: [cand("/dbc/client.dbc", "PackVolts", "PackStatus", "V")] })];
+    emitHostEvent("view-signals-changed");
+    await waitFor(() =>
+      expect((sourcePicker() as HTMLSelectElement).options.length).toBeGreaterThan(0),
+    );
+    fireEvent.change(sourcePicker(), {
+      target: { value: `power\0/dbc/client.dbc\0PackVolts` },
+    });
+    expect(recorded).toEqual([]);
+    expect(calls.filter((c) => c.cmd === "set_signal_dbc_pick")).toHaveLength(1);
   });
 
   it("brings the row back through the host rather than holding the pick locally", async () => {

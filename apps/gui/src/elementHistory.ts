@@ -281,9 +281,10 @@ function equalExceptConfig(a: MaskedElement, b: MaskedElement): boolean {
 /// through one log so a chord always reverses the most recent change,
 /// whichever kind it was.
 /// The stacks one gesture can step. `events` is the event-link stack
-/// (`eventLinkHistory.ts`) — steps rather than snapshots, but ordered
-/// against the other two by the same log.
-export type UndoStack = "layout" | "element" | "events";
+/// (`eventLinkHistory.ts`) and `edits` the Signal/RBS panel-edit stack
+/// (`panelEditHistory.ts`) — both steps rather than snapshots, but
+/// ordered against the other two by the same log.
+export type UndoStack = "layout" | "element" | "events" | "edits";
 
 /// One entry in the order log: the stacks a single user gesture stepped,
 /// in the order they stepped. Most gestures touch one stack; the ones

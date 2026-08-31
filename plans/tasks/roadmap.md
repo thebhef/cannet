@@ -92,14 +92,14 @@ The heavier items: feature rework and architectural change, most of
 them recently opened from the review walk. Ordered among themselves;
 the section above comes first.
 
-1. [Task 116 — RBS Problems Across Every Configuration](0116-rbs-problems-across-configurations.md)
+11. [Task 116 — RBS Problems Across Every Configuration](0116-rbs-problems-across-configurations.md)
    — one view over problems from every open `.cannet_rbs`, filterable by
    file, host-computed and paged. The RBS chip opens that instead of a
    single configuration. From queue item 1.13ab; the steps-to-reproduce
    leg was dropped by owner ruling 2026-08-25. Task 113 settled what an
    RBS grid row is (landed 2026-08-27), so that dependency is met. Two
    open questions.
-2. [Task 112 — The Signal Reference Registry](0112-signal-reference-registry.md)
+12. [Task 112 — The Signal Reference Registry](0112-signal-reference-registry.md)
    — every persisted signal reference moves onto one host-side registry,
    the way `NotesStore` and `TransmitFrameRegistry` already hold theirs.
    The `elements` blob stays opaque for presentation and stops carrying
@@ -111,42 +111,42 @@ the section above comes first.
    them ahead of the registry builds a one-off of it. **Needs grilling
    before implementation** — no phases, and five open design questions.
    Bears on queue findings 3.1, 3.31, 3.41 and 3.47.
-3. [Task 124 — One Toolbar](0124-one-toolbar.md)
+13. [Task 124 — One Toolbar](0124-one-toolbar.md)
    — the app-level toolbar and the ten panel toolbars wear one chip
    language but remain hand-laid flex rows; converge them on a shared
    toolbar control that owns layout and wrap-vs-overflow, settling
    `useToolbarFit`'s one-consumer question. Opened from queue finding
    3.21; owner-placed later, definitely not immediate scope.
-4. [Task 69 — Extension Architecture](0069-extension-architecture.md)
+14. [Task 69 — Extension Architecture](0069-extension-architecture.md)
    — implement ADR 0051: out-of-process, GUI-host-supervised
    extensions on a new `ExtensionHost` service in `cannet.proto`
    (filtered frame subscription, manifest-gated transmit, sandboxed
    contributed webviews, `.cannet-extension` packaging) plus an
    in-repo Python reference extension. Design groomed 2026-08-13.
-5. [Task 22 — CANopen](0022-canopen.md)
+15. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-6. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+16. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
    — triggers, math channels, per-series offset / gain, export.
    (Drag-a-plot-area-between-panels shipped separately, 2026-08-08.)
    Inherits the measurement strip's rework, which task 108 phase 4
    suppressed rather than removed.
-7. [Task 85 — Extended Multiplexing End to End](0085-extended-multiplexing.md)
+17. [Task 85 — Extended Multiplexing End to End](0085-extended-multiplexing.md)
    — `SG_MUL_VAL_` parsed and modelled, the Database panel rendering
    nested mux trees, per-frame decode gated on the full selector path,
    and a worked example DBC. The task file existed but had never
    reached this roadmap; found unlisted and added at the 2026-08-26
    close-out. Open design questions.
-8. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+18. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
    — cannet connects out to a value-source server that streams sparse
    `(signal, value)` updates by name; RBS applies them as overrides and
    keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
    (e.g. an EV drive cycle) drive the RBS.
-9. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+19. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
    — staged: pcapng import (CAN linktypes, no model change), step/hold
    plot semantics for on-change series, then the multi-protocol trace
    model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
    Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-10. [Task 40 — bridge_client / cannet-client Session-Machinery
+20. [Task 40 — bridge_client / cannet-client Session-Machinery
     Consolidation](0040-bridge-client-consolidation.md) — gated on
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else
