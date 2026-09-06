@@ -2,9 +2,9 @@
 
 One unary RPC in the unversioned ``cannet`` package (ADR 0059). It
 states the protocol packages this sidecar serves — today exactly
-:data:`PROTOCOL_PACKAGE` — so a client speaking a different major is
-told so in a sentence rather than discovering it as an
-``UNIMPLEMENTED`` on its first real call.
+:data:`cannet_python_wire.PROTOCOL_PACKAGE` — so a client speaking a
+different major is told so in a sentence rather than discovering it
+as an ``UNIMPLEMENTED`` on its first real call.
 
 The sidecar binds loopback and carries no bearer token of its own, so
 "unauthenticated" costs nothing here; the point of the rule lives on
@@ -18,18 +18,13 @@ import logging
 
 import grpc
 
+from cannet_python_wire import PROTOCOL_PACKAGE
+from cannet_python_wire._proto import cannet_info_pb2 as info_pb
+from cannet_python_wire._proto import cannet_info_pb2_grpc as info_pb_grpc
+
 from .. import __version__
-from .._proto import cannet_info_pb2 as info_pb
-from .._proto import cannet_info_pb2_grpc as info_pb_grpc
 
 _log = logging.getLogger(__name__)
-
-#: The protocol package this sidecar's stubs were generated from — the
-#: wire's major version, and the same string
-#: ``cannet_wire::PROTOCOL_PACKAGE`` carries on the Rust side. It is
-#: the package name in ``cannet.proto``; changing one without the other
-#: is the drift the CI gencode check exists to catch.
-PROTOCOL_PACKAGE = "cannet.v1"
 
 
 class ServerInfoService(info_pb_grpc.CannetInfoServicer):

@@ -18,10 +18,7 @@ cannet-python-can/
 │   ├── __main__.py             # `uv run cannet-python-can` entry
 │   ├── server.py               # gRPC service implementation
 │   ├── driver.py               # internal driver-adapter interface
-│   ├── driver_python_can.py    # default python-can-backed adapter
-│   └── _proto/                 # checked-in proto + grpc stubs
-├── scripts/
-│   └── regen_proto.sh          # regenerate stubs from ../../crates/cannet-wire/proto
+│   └── driver_python_can.py    # default python-can-backed adapter
 ├── tests/                      # pytest, hardware-free
 ├── SMOKE.md                    # per-vendor manual smoke procedures
 └── LICENSING.md                # LGPL diligence for vendor driver libraries
@@ -179,17 +176,14 @@ The wire-level code (`server.py`) does not change. See
 [`LICENSING.md`](LICENSING.md) for the LGPL analysis that motivates
 this layout.
 
-## Regenerate proto stubs
+## The wire encoding
 
-The `cannet_python_can/_proto/` directory holds stubs generated from
-[`crates/cannet-wire/proto/cannet.proto`](../../crates/cannet-wire/proto/cannet.proto).
-They are checked in so end users do not need `protoc`. To regenerate
-after a proto change:
-
-```sh
-uv --directory servers/cannet-python-can run --extra dev \
-    bash scripts/regen_proto.sh
-```
+The gRPC stubs, the `Frame` this sidecar's driver protocol passes
+around, and the mappers either side of it are not here: they are
+[`libs/cannet-python-wire`](../../libs/cannet-python-wire/), a path
+dependency shared with the python-can client, so there is exactly one
+encoding of the wire in the repository. Regenerating the stubs after a
+`.proto` change is that package's job — see its README.
 
 ## Per-vendor smoke tests
 

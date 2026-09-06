@@ -22,7 +22,7 @@ apps/gui/src-tauri/licenses.json
 .claude/worktrees/
 .claude/settings.local.json
 
-# Python sidecars (servers/)
+# Python packages (libs/, servers/, clients/)
 __pycache__/
 *.pyc
 .pytest_cache/

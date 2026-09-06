@@ -27,8 +27,8 @@ import grpc  # noqa: E402
 
 from cannet_python_can import __version__  # noqa: E402
 from cannet_python_can import server as srv  # noqa: E402
-from cannet_python_can._proto import cannet_info_pb2 as info_pb  # noqa: E402
-from cannet_python_can._proto import cannet_info_pb2_grpc as info_grpc  # noqa: E402
+from cannet_python_wire._proto import cannet_info_pb2 as info_pb  # noqa: E402
+from cannet_python_wire._proto import cannet_info_pb2_grpc as info_grpc  # noqa: E402
 from cannet_python_can.driver import Channel, Driver  # noqa: E402
 
 
@@ -73,9 +73,10 @@ def test_the_served_package_is_the_proto_package_the_stubs_came_from() -> None:
     # The two have to be the same string, and nothing else checks it:
     # a regenerated `cannet.proto` under a new package would otherwise
     # leave this sidecar advertising a major it no longer speaks.
-    from cannet_python_can._proto import cannet_pb2
+    from cannet_python_wire import PROTOCOL_PACKAGE
+    from cannet_python_wire._proto import cannet_pb2
 
-    assert cannet_pb2.DESCRIPTOR.package == srv.PROTOCOL_PACKAGE, (
+    assert cannet_pb2.DESCRIPTOR.package == PROTOCOL_PACKAGE, (
         "the package the stubs were generated from is the one to advertise"
     )
 

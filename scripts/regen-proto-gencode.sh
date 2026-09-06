@@ -12,6 +12,12 @@
 # package's business. This driver just runs all of them, and finds them
 # by glob so a package added later is covered without editing CI.
 #
+# `--frozen`: the stubs a `protoc` release emits carry its own gencode
+# version, and the protobuf runtime refuses gencode newer than itself.
+# Regenerating against a freshly-resolved `grpcio-tools` therefore
+# produces stubs the locked runtime cannot load — and a drift check has
+# to regenerate with exactly what the lock file says anyway.
+#
 # Usage (from anywhere):
 #   bash scripts/regen-proto-gencode.sh
 set -euo pipefail
@@ -25,7 +31,7 @@ for script in servers/*/scripts/regen_proto.sh libs/*/scripts/regen_proto.sh; do
     found=1
     package_dir=$(dirname -- "$(dirname -- "$script")")
     echo "== regenerating $package_dir"
-    uv --directory "$package_dir" run --extra dev bash scripts/regen_proto.sh
+    uv --directory "$package_dir" run --frozen --extra dev bash scripts/regen_proto.sh
 done
 
 if [[ $found -eq 0 ]]; then

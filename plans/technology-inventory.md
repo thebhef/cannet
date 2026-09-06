@@ -497,6 +497,20 @@ without reshaping callers.
   `adopted` in Phase 8 as the sidecar's gRPC runtime. `grpcio` is now
   **redistributed** (frozen into the sidecar onedir). See
   ADR 0008.
+
+  **`grpcio-tools` dev pin `>=1.80,<1.81`** — `adopted` 2026-09-20
+  (task 145) in `libs/cannet-python-wire`'s `dev` extra, the one place
+  the checked-in gencode is generated. The rule: **the generator must
+  never be newer than the oldest grpcio/protobuf runtime any consumer
+  locks**; lifting the pin moves every consumer's grpcio and protobuf
+  in the same change. Every generated stub records the toolchain that
+  emitted it and refuses to import under an older runtime — `_pb2.py`
+  against protobuf, `_pb2_grpc.py` against grpcio — and the sidecar and
+  the client lock grpcio 1.80.0 / protobuf 6.33.6. 1.81 emits stubs
+  demanding grpcio >= 1.81.1; 1.82 moves to protobuf 7 and emits 7.x
+  gencode. Either import-errors in both consumers the moment anyone
+  re-runs `scripts/regen_proto.sh`. Latent until the gencode-drift CI
+  check (ADR 0059) made regeneration reproducible.
 - **Vector XL Driver Library** / **Kvaser CANlib** /
   **PEAK PCAN-Basic** — `adopted` as runtime, user-installed
   vendor dependencies; not bundled. See ADR 0008.

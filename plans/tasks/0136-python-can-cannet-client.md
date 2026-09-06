@@ -15,8 +15,8 @@ Drop-in replacement for python-can; should be easy to compose alongside it.
   bearer token) — so callers name a server, never paste credentials.
 - One gRPC `Session` stream per bus: `ConfigureBus` sent before `Subscribe`; a factory id (`virtual:bus0`) waits for `InterfaceAllocated`;
   per-frame error codes (`TX_REJECTED`, `NO_ACKNOWLEDGER`) surface per-message while session-fatal codes raise (`cannet-client`'s split).
-- Reuse from `servers/cannet-python-can`: the checked-in `_proto` gencode and the `can.Message` ↔ wire `Frame` mappers; the client is a
-  sibling uv-managed package.
+- Reuse from `libs/cannet-python-wire`: the checked-in `_proto` gencode and the `can.Message` ↔ wire `Frame` mappers, shared with the
+  sidecar; the client is a sibling uv-managed package.
 - TLS: the pinned server cert as the sole root plus target-name override (Python gRPC's closest equivalent of the Rust client's
   fingerprint pin); the token as `authorization: Bearer` metadata on every RPC.
 - Hardware-free tests against `cannet-server debug replay` / `debug vbus` (both default `127.0.0.1:50051`).
@@ -28,7 +28,8 @@ Drop-in replacement for python-can; should be easy to compose alongside it.
   Windows, `~/Library/Application Support` on macOS; `server_trust.rs`). No relocation needed; document location + schema as stable.
 - **Do the time sync.** Port the SNTP clock-probe correction (the Rust client's `clock.rs` behaviour) so `Message.timestamp` matches
   the client's clock — fix-ups happen in the library, not in every consumer that cares about time.
-- **Repo-only packaging.** No PyPI; gencode shared with the sidecar plus the drift-guard CI check the backlog already wants.
+- **Repo-only packaging.** No PyPI; gencode shared with the sidecar (it lives in `libs/cannet-python-wire` — see the 2026-09-18
+  status entry) plus the drift-guard CI check the backlog already wants.
 - **Detection dials the servers.** `_detect_available_configs()` reads the trust store, dials each trusted server (short timeout),
   and returns one config per offered interface; unreachable servers contribute nothing.
 
@@ -50,3 +51,125 @@ Drop-in replacement for python-can; should be easy to compose alongside it.
    rejections surfaced per-message while session-fatal errors raise.
 6. A hardware-free test suite runs against `cannet-server debug replay` / `debug vbus`; CI guards the shared gencode against drift.
 7. Docs: README names the new package and how to run its tests; the package carries a usage example for a stafl-style app.
+
+## Status log
+
+### 2026-09-06 — phase 1 of 2, "core bus" (branch `task136-core-bus`)
+
+Criteria **1, 2, 5** met, plus the hardware-free test suite half of **6**
+and — because the package build needed a README and the README needed the
+example it names — **7**. Criteria **3** (SNTP clock sync), **4**
+(`detect_available_configs`), and the gencode drift-guard half of **6**
+are phase 2 and were deliberately not built.
+
+**Landed.** `clients/cannet-python-client/`, a uv-managed sibling of the
+sidecar: `CannetBus(can.BusABC)` under python-can's `can.interface`
+entry point as `cannet`, a `trust` module that reads the GUI's
+`servers.json`, a `tls` module that pins by certificate, and a `session`
+module that owns the gRPC `Session` stream. 52 tests + 1 platform-gated
+skip. Alongside it, `libs/cannet-python-wire`: the checked-in `_proto`
+gencode, the `Frame`, and the four mappers (`message_to_frame` /
+`frame_to_message`, `frame_to_proto` / `proto_to_frame`), which the
+client and the sidecar both take as a path dependency — so there is one
+encoding of the wire in the repo and nothing to drift.
+
+**Judgment calls, and why.**
+
+- **Pinning is by certificate, not by fingerprint.** Python's gRPC
+  exposes no verifier hook, so the library fetches the server's
+  certificate over an unverified handshake, checks its SHA-256 against
+  the stored fingerprint, and hands that exact certificate to gRPC as
+  the channel's sole trust root. Equivalent in what it accepts. A second
+  handshake — trusting the fetched certificate as its own root — reads
+  back its SAN list, which is the only honest way to pick a
+  `ssl_target_name_override` a self-signed certificate actually carries.
+  Not exercisable in the hardware-free suite: both debug servers
+  terminate no TLS, so the fingerprint form, the pin comparison and the
+  name selection are unit-tested and the handshake is not. **Phase 2
+  should know the TLS path has no end-to-end coverage.**
+- **An ordinary subscribe is ready as soon as it is sent.** The wire
+  does not acknowledge `Subscribe`, so a session-fatal
+  `CODE_UNKNOWN_INTERFACE` surfaces as `can.CanOperationError` on the
+  first `recv`, not out of the constructor — exactly `cannet-client`'s
+  split. A *factory* subscribe is acknowledged, so its errors do come
+  out of the constructor as `can.CanInitializationError`. The
+  alternative (a settle window, or using `ClockProbe` as an ack) trades
+  a definite behaviour for a stall against a peer that never answers.
+- **`state` reads `ACTIVE` when the peer has reported nothing.**
+  python-can's `BusState` has three members and no "unknown". The
+  difference survives on `CannetBus.controller_state`, which is `None`
+  until an `InterfaceState` arrives. The setter raises: the wire has no
+  envelope for setting a fault-confinement state.
+- **A bare name resolves only when the store holds exactly one entry for
+  it**; two ports under one name raise `AmbiguousServer` rather than
+  picking. Bare *loopback* names take port 50051, since nothing is ever
+  stored for loopback and the debug servers all sit there.
+- **Per-frame rejections log the first of a code at `warning` and the
+  rest at `debug`.** `cannet-client` warns on every one; a lone
+  rest-of-bus simulation on an empty virtual bus produces one per
+  transmit, and the example proved it buries everything else. The tally
+  (`bus.rejections`) is unchanged and is where the count lives.
+
+**CI wiring.** A `python-client` job in `.github/workflows/ci.yml` and
+four hooks in `.pre-commit-config.yaml`. The job builds
+`cannet-server` and checks out LFS, because a suite that silently
+skipped its integration half would be worth very little.
+
+**Ruff alignment (2026-09-16).** Both packages now lock ruff **0.15.16**
+— this one had resolved 0.16.6 beside the sidecar's 0.15.16, so the same
+code linted differently on either side. Aligned downward, not up: ruff
+0.16 *changes* its default selection rather than only widening it (E4xx
+out; `I`/`UP`/`S`/`PL`/`RUF` in), which puts 213 findings in the sidecar
+— among them 50 deliberate `# noqa: BLE001` / `E402` suppressions that
+`RUF100` deletes and five `S110`/`S112` best-effort `except: pass`
+shutdown paths whose only remedy is to start logging. That uplift is its
+own change, not a rider on this one.
+
+### 2026-09-18 — the shared wire layer is its own package
+
+Owner order: extract what the client and the sidecar share into
+`libs/cannet-python-wire` (import `cannet_python_wire`), a third
+uv-managed package. This supersedes this task's "reuse the sidecar's
+gencode and frame mappers" decision — the *reason* for that decision,
+exactly one wire encoding in the repository, is what the shared package
+now carries, and carries better: the client no longer depends on a
+server it never talks to.
+
+**Moved**, at the natural seam — shared wire-level code out, hardware
+driver and server machinery left in place: the `_proto` gencode and its
+`regen_proto.sh`, the `Frame` / `FrameKind` pair, the `can.Message` ↔
+`Frame` mappers, and the `Frame` ↔ proto mappers. The four mappers lose
+their underscore-prefixed originals and the aliases that fronted them:
+they are this package's public surface now, not a seam opened for one
+consumer. The sidecar's `driver.py` re-exports `Frame` / `FrameKind`,
+because they are still part of the driver-adapter contract an
+alternative-driver author reads.
+
+**Dependencies.** The client drops `cannet-python-can` entirely; both
+consumers take a path dependency on `../../libs/cannet-python-wire`.
+Wire declares `grpcio` / `protobuf` / `python-can`; `grpcio-tools`
+moves to its dev extra with the regen script. Nothing third-party was
+added, so `plans/technology-inventory.md` is unchanged. Wire's ruff is
+held `<0.16` for the reason the 2026-09-16 note below records: a shared
+package that lints differently on either side of its boundary is worse
+than no shared package.
+
+**Checks.** Wire gets the same four hooks and the same CI lane its
+siblings have. The sidecar's and the client's `mypy` / `pytest` hooks
+now also fire on wire's paths, because a change there can break either.
+
+## Blockers / side effects
+
+- **`cargo fmt --all --check` was already red on `feedback-capture`**, in
+  `apps/gui/src-tauri/src/interfaces.rs`, introduced by `7d18a421` (#460)
+  and still unformatted through `0dfbe070` (#461) and `128cecfd` (#462) —
+  three commits that used `--no-verify` in the shared tree. Not fixed
+  here: it is not one of the six CI jobs (there is no fmt job), the file
+  belongs to work another branch in this tree is actively on, and the
+  next commit that touches Rust will have the hook sweep it. Named so it
+  does not ride another chain.
+- **17 inherited `(task 129)` references in `apps/gui/src/` comments**,
+  from `24e76fb6` (#450), which `CLAUDE.md` § Documentation forbids.
+  Fixed here: every one was a bare parenthetical carrying only the task
+  number, so dropping it loses nothing. The `comment-references` grep is
+  clean over `apps/` and `crates/`.
