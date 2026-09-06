@@ -672,6 +672,40 @@ crate retained long-term).
   panel should grow toward; the current single-pane
   `PlotPanel.tsx` is the first step, not the destination.
 
+- **`wide`** (Zlib/Apache-2.0/MIT) — `rejected` for the math-signal
+  kernels. Also considered and not benchmarked separately: **`pulp`**,
+  which targets the same problem with runtime dispatch and a heavier
+  API.
+
+  The question was whether explicit SIMD beats the auto-vectorized
+  slice loops in `math_kernels`. Benchmarked on the development machine
+  against the exact kernel shape (k contiguous `f64` columns of 4 M
+  points reduced pointwise into one output column), best of 7 runs
+  after warm-up:
+
+  | kernel | operands | scalar | `wide` `f64x4` | scalar / wide |
+  |---|---|---|---|---|
+  | sum | 2 | 15.2 ms | 14.8 ms | 1.03× |
+  | sum | 8 | 45.7 ms | 43.2 ms | 1.06× |
+  | sum | 32 | 174.3 ms | 193.3 ms | 0.90× |
+  | max | 2 | 18.1 ms | 20.0 ms | 0.91× |
+  | max | 8 | 48.3 ms | 51.2 ms | 0.94× |
+  | max | 32 | 195.4 ms | 218.1 ms | 0.90× |
+  | scale (1 column, FMA) | 1 | 13.0 ms | 9.4 ms | 1.38× |
+
+  No consistent win, and a consistent *loss* on the reductions — which
+  are the set functions, the ones that actually carry several operands.
+  At these sizes the loops are memory-bandwidth bound (one 4 M-point
+  `f64` column is 32 MB, far past any cache), so the arithmetic width
+  is not what decides them. The single-column `scale` is the one case
+  where hand-written vectors pull ahead, and it is already the cheapest
+  kernel in the set. Rejecting the crate keeps the kernels readable,
+  keeps the dependency graph as it is, and costs nothing measurable.
+
+  Revisit if a kernel appears whose arithmetic dominates its memory
+  traffic — a true windowed RMS with a square root per point would be
+  the shape to re-measure.
+
 ### Build / Packaging / CI
 
 - **GitHub Actions** — `adopted` for CI and releases. `ci.yml` runs the

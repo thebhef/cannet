@@ -215,6 +215,31 @@ pub(crate) struct AppState {
     /// carries it, and cloning a map per serve is a cost the ordinary
     /// project should not pay.
     pub(crate) signal_dbc_picks: Mutex<Arc<crate::signal_fingerprint::SignalDbcPicks>>,
+    /// The central store of **math signal** definitions
+    /// ([`crate::math_signals`]). One per app: the Database panel's
+    /// Computed branch, a signal panel row and a plot's side list are
+    /// all views onto this, so an edit made on one surface is the same
+    /// edit everywhere. Loaded from the project on open, snapshotted
+    /// back on save.
+    pub(crate) math: crate::math_signals::MathRegistry,
+    /// The math definitions with each set's membership resolved against
+    /// the live catalog — built on first use and reused until the
+    /// definitions, the DBC set or the imported signals change.
+    ///
+    /// Cached for the same reason [`Self::scoped_descriptor_snapshot`]
+    /// is: resolving a pattern walks the whole descriptor universe, and
+    /// a serve must not pay for that. `None` is "not built yet", which
+    /// is also what an invalidation leaves behind.
+    pub(crate) math_model: Mutex<Option<Arc<crate::math_signals::MathModel>>>,
+    /// The project's bus `(id, name)` pairs, as the frontend last
+    /// stated them.
+    ///
+    /// A math pattern is evaluated against the canonical signal path
+    /// (ADR 0038), whose first segment is the bus *name*; the host has
+    /// no other record of what a project's buses are called, so the
+    /// math commands carry the map the way `fetch_signal_page` does and
+    /// it is latched here for the serves that have no caller to ask.
+    pub(crate) math_bus_names: Mutex<Vec<(String, String)>>,
 }
 
 /// Guarded-field accessors. Each wraps the one lock its field needs with
@@ -308,9 +333,11 @@ impl AppState {
         &self,
         dbcs: &'a [LoadedDbc],
     ) -> crate::signal_fingerprint::DecodeModel<'a> {
+        let math = self.math_model(dbcs);
         let scopes = dbc_scopes(dbcs);
         let split = self.split_message_index(&scopes);
         crate::signal_fingerprint::DecodeModel::with_split(scopes, self.picks_snapshot(), split)
+            .with_math(math)
     }
 
     /// Forget every per-signal database pick naming `path`, and say
@@ -394,6 +421,95 @@ impl AppState {
     /// Two concurrent misses may each build a snapshot; that is a
     /// wasted rebuild, not a correctness problem — they are equal by
     /// construction.
+    pub(crate) fn math_model_cache(
+        &self,
+    ) -> MutexGuard<'_, Option<Arc<crate::math_signals::MathModel>>> {
+        self.math_model.lock().expect("math_model mutex poisoned")
+    }
+
+    pub(crate) fn math_bus_names(&self) -> MutexGuard<'_, Vec<(String, String)>> {
+        self.math_bus_names
+            .lock()
+            .expect("math_bus_names mutex poisoned")
+    }
+
+    /// The resolved math model every decode model carries.
+    ///
+    /// Free in a project that has defined no math signal, which is the
+    /// common case: the registry is empty, so nothing is built and
+    /// nothing is cached. Otherwise built once per change and shared by
+    /// `Arc`, so a serve clones a pointer.
+    ///
+    /// Deliberately holds one lock at a time (check, release, build,
+    /// store), so it adds no edge to the documented lock order beyond
+    /// the DBC set → signal caches one every serve already takes.
+    pub(crate) fn math_model(&self, dbcs: &[LoadedDbc]) -> Arc<crate::math_signals::MathModel> {
+        let definitions = self.math.list();
+        if definitions.is_empty() {
+            return Arc::default();
+        }
+        if let Some(hit) = self.math_model_cache().as_ref().map(Arc::clone) {
+            return hit;
+        }
+        let bus_names: HashMap<String, String> = self.math_bus_names().iter().cloned().collect();
+        let mut catalog = Vec::new();
+        for descriptor in signal_snapshot::scoped_descriptors(
+            dbcs.iter().map(|l| (l.db.as_ref(), l.buses.as_slice())),
+        ) {
+            let (bus_id, d) = descriptor;
+            let bus_name = bus_id
+                .as_ref()
+                .map(|id| bus_names.get(id).cloned().unwrap_or_else(|| id.clone()));
+            catalog.push(crate::math_signals::MathCatalogEntry {
+                path: signal_snapshot::signal_path(
+                    bus_name.as_deref(),
+                    d.transmitter.as_deref(),
+                    &d.message_name,
+                    &d.signal_name,
+                ),
+                unit: d.unit.clone(),
+                reference: crate::math_signals::MathOperandRef {
+                    bus_id,
+                    message_id: d.message_id,
+                    extended: d.extended,
+                    signal_name: d.signal_name,
+                    file_backed: false,
+                    math: false,
+                },
+            });
+        }
+        // Imported series and other math signals are selectable
+        // operands too, so a pattern has to see them.
+        for entry in self.signal_caches.file_signals() {
+            let group = entry.info.group_label();
+            catalog.push(crate::math_signals::MathCatalogEntry {
+                path: signal_snapshot::signal_path(None, None, &group, &entry.info.name),
+                unit: entry.info.unit.clone(),
+                reference: crate::math_signals::MathOperandRef {
+                    bus_id: None,
+                    message_id: entry.info.group,
+                    extended: false,
+                    signal_name: entry.info.name,
+                    file_backed: true,
+                    math: false,
+                },
+            });
+        }
+        for definition in &definitions {
+            catalog.push(crate::math_signals::MathCatalogEntry {
+                path: signal_snapshot::signal_path(None, None, "Computed", &definition.name),
+                unit: definition.unit.clone().unwrap_or_default(),
+                reference: crate::math_signals::MathOperandRef::math(definition.id.clone()),
+            });
+        }
+        let built = Arc::new(crate::math_signals::MathModel::resolve(
+            &definitions,
+            &catalog,
+        ));
+        *self.math_model_cache() = Some(Arc::clone(&built));
+        built
+    }
+
     pub(crate) fn scoped_descriptor_snapshot(&self) -> Arc<signal_snapshot::ScopedDescriptors> {
         if let Some(hit) = self
             .descriptor_snapshot()
@@ -437,6 +553,11 @@ pub(crate) fn invalidate_derived_caches(state: &AppState) {
     // index is a function of that set, and `decode_model` below builds
     // one.
     *state.split_messages() = None;
+    // And before it too: a pattern-defined math set's membership is a
+    // function of the same universe — a signal a DBC just brought in
+    // may match one, and one it took away may have been in one — and
+    // `decode_model` below carries the resolved model.
+    *state.math_model_cache() = None;
     // Lock order: the DBC set before the signal caches, as every other
     // path that needs both takes them (`persist_pyramids`, `restore`,
     // `sample_signals`).
