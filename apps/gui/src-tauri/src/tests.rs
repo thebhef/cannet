@@ -620,6 +620,9 @@ pub(crate) fn test_state() -> AppState {
     let n = SIGNALS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let signals_dir = std::env::temp_dir().join(format!("cannet-test-signals-{n}"));
     AppState {
+        math: crate::math_signals::MathRegistry::new(),
+        math_model: Mutex::new(None),
+        project_bus_names: Mutex::new(Vec::new()),
         databases: Mutex::new(Vec::new()),
         undelivered_tx: transmit_commands::UndeliveredTx::default(),
         descriptor_snapshot: Mutex::new(None),
@@ -4796,6 +4799,7 @@ fn fetch_signal_page_serves_file_backed_rows_marked_by_source() {
     // And a manual pick reaches one without any pattern at all.
     let sel = SignalSelection {
         keys: vec![ipc::SignalQuery {
+            math: false,
             bus_id: None,
             message_id: 1,
             extended: false,
@@ -8044,4 +8048,282 @@ fn the_capture_extent_of_an_unstarted_session_names_no_origin() {
     assert_eq!(extent.session_start_ns, None);
     assert_eq!(extent.first_ns, None);
     assert_eq!(extent.frame_count, 0);
+}
+
+// ---- math signals: the registry against a live AppState -------------
+
+/// A definition with no operands to resolve — enough to exercise the
+/// registry and the resolved-model cache.
+fn math_hline(id: &str, name: &str, value: f64) -> crate::math_signals::MathDefinition {
+    crate::math_signals::MathDefinition {
+        id: id.to_string(),
+        name: name.to_string(),
+        unit: None,
+        function: crate::math_signals::MathFunction::HLine { value },
+        operands: crate::math_signals::MathOperands::default(),
+    }
+}
+
+#[test]
+fn the_resolved_math_model_is_cached_and_dropped_when_the_dbcs_change() {
+    // Resolving a pattern walks the whole descriptor universe, so a
+    // serve must not pay for it — but a DBC change can move what a
+    // pattern matches, so the cache cannot outlive one.
+    let state = test_state();
+    assert!(
+        state.math_model(&[]).is_empty(),
+        "a project with no math signals resolves to nothing",
+    );
+    assert!(
+        state.math_model_cache().is_none(),
+        "and caches nothing either",
+    );
+
+    state
+        .math
+        .define(math_hline("m1", "Limit", 3.5))
+        .expect("define");
+    let first = state.math_model(&[]);
+    assert!(state.math_model_cache().is_some(), "built and cached");
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &state.math_model(&[])),
+        "a second read is the same model, not a rebuild",
+    );
+
+    // A DBC-set change drops it — a pattern's membership may have moved
+    // — and the pass rebuilds one against the new set on its way past.
+    invalidate_derived_caches(&state);
+    assert!(
+        !std::sync::Arc::ptr_eq(&first, &state.math_model(&[])),
+        "the model was rebuilt rather than reused across the change",
+    );
+}
+
+#[test]
+fn a_math_pattern_matches_the_canonical_path_with_the_projects_bus_name() {
+    // ADR 0038's subject: the first segment is the bus *name*, so a
+    // pattern anchored on it selects what the user sees.
+    let state = test_state();
+    let db =
+        std::sync::Arc::new(cannet_dbc::Database::parse(&tiny_dbc(256, "Msg", "Speed")).unwrap());
+    *state.databases() = vec![LoadedDbc {
+        path: "d.dbc".into(),
+        db,
+        buses: vec!["b0".into()],
+    }];
+    state
+        .math
+        .define(crate::math_signals::MathDefinition {
+            id: "m1".into(),
+            name: "max".into(),
+            unit: None,
+            function: crate::math_signals::MathFunction::Max,
+            operands: crate::math_signals::MathOperands {
+                picks: Vec::new(),
+                patterns: vec!["^Powertrain/".into()],
+            },
+        })
+        .expect("define");
+
+    let dbcs: Vec<LoadedDbc> = state
+        .databases()
+        .iter()
+        .map(|l| LoadedDbc {
+            path: l.path.clone(),
+            db: l.db.clone(),
+            buses: l.buses.clone(),
+        })
+        .collect();
+    assert!(
+        state
+            .math_model(&dbcs)
+            .get("m1")
+            .expect("m1")
+            .operands
+            .is_empty(),
+        "no bus name is known yet, so the id is the subject and nothing matches",
+    );
+
+    state.set_project_bus_names(vec![("b0".into(), "Powertrain".into())]);
+    let resolved = state.math_model(&dbcs);
+    let operands = &resolved.get("m1").expect("m1").operands;
+    assert_eq!(operands.len(), 1, "{operands:?}");
+    assert_eq!(operands[0].signal_name, "Speed");
+}
+
+/// **A name-anchored pattern matches with no math command having run.**
+///
+/// The bus names used to arrive only on a math command's payload, so a
+/// project whose definitions were all pattern-defined served nothing
+/// until the frontend happened to list or write one: the host knew the
+/// buses by id, and `^Powertrain/` had no subject. The bus list is
+/// standing host state now — installed from the project file the open
+/// path parsed, and re-pushed on every bus add / rename / remove — so
+/// the first serve after open resolves against the names the user sees.
+#[test]
+fn a_name_anchored_math_pattern_matches_before_any_math_command() {
+    let state = test_state();
+    let db =
+        std::sync::Arc::new(cannet_dbc::Database::parse(&tiny_dbc(256, "Msg", "Speed")).unwrap());
+    *state.databases() = vec![LoadedDbc {
+        path: "d.dbc".into(),
+        db,
+        buses: vec!["b0".into()],
+    }];
+    // Retargeted from the hline helper rather than spelled out, so this
+    // test does not have to track every field of a definition.
+    let mut definition = math_hline("m1", "max", 0.0);
+    definition.function = crate::math_signals::MathFunction::Max;
+    definition.operands.patterns = vec!["^Powertrain/".into()];
+    state.math.define(definition).expect("define");
+
+    // Exactly what the open path installs, from the bus list it parsed.
+    state.set_project_bus_names(crate::project::bus_name_pairs(&[crate::project::Bus {
+        id: "b0".into(),
+        name: "Powertrain".into(),
+        speed_bps: None,
+        fd: None,
+        fd_data_speed_bps: None,
+        color: None,
+    }]));
+
+    let dbcs: Vec<LoadedDbc> = state
+        .databases()
+        .iter()
+        .map(|l| LoadedDbc {
+            path: l.path.clone(),
+            db: l.db.clone(),
+            buses: l.buses.clone(),
+        })
+        .collect();
+    let resolved = state.math_model(&dbcs);
+    let operands = &resolved.get("m1").expect("m1").operands;
+    assert_eq!(
+        operands.len(),
+        1,
+        "the project's bus names are known without a math command: {operands:?}",
+    );
+    assert_eq!(operands[0].signal_name, "Speed");
+}
+
+/// Records what a registry write announced, in order — the seam
+/// `math_commands::RegistryChangeSink` exists for.
+#[derive(Default)]
+struct MathChangeRecorder(std::cell::RefCell<Vec<&'static str>>);
+
+impl crate::math_commands::RegistryChangeSink for MathChangeRecorder {
+    fn math_signals_changed(&self) {
+        self.0.borrow_mut().push("math-signals-changed");
+    }
+    fn decode_model_changed(&self) {
+        self.0.borrow_mut().push("dbc-changed");
+    }
+}
+
+/// **A redefinition is a decode-model change, and says so.**
+///
+/// A math signal plotted, then edited, drew exactly the series it drew
+/// before. The model half is right — the definition's compositional
+/// fingerprint moves, the pyramid computed under the old one is
+/// dropped, and the next serve returns the new numbers (pinned by
+/// `a_math_redefinition_rebuilds_what_the_host_serves`). What was
+/// missing is the other half: the write announced only the listing,
+/// and the listing is not what a plot's samples are cached against.
+/// Every windowed view and every plot folds the decode-model epoch into
+/// its fetch descriptor, and `dbc-changed` is that epoch's only carrier
+/// (ADR 0053 §2/§3) — so nothing ever asked the host for the recomputed
+/// series.
+#[test]
+fn a_math_registry_write_announces_the_listing_and_the_decode_model() {
+    let state = test_state();
+    state
+        .math
+        .define(math_hline("m1", "Limit", 3.5))
+        .expect("define");
+
+    let sink = MathChangeRecorder::default();
+    crate::math_commands::changed(&sink, &state);
+
+    assert_eq!(
+        sink.0.into_inner(),
+        vec!["math-signals-changed", "dbc-changed"],
+        "both audiences are told: the listing, and the decoded model",
+    );
+}
+
+/// **A redefinition changes the numbers the host serves.** The model
+/// half of the bench report that a plotted math signal did not move
+/// when its definition was edited: the edit moves the definition's
+/// compositional fingerprint, `invalidate_derived_caches` drops the
+/// pyramid computed under the old one, and the next serve recomputes
+/// (ADR 0047). This half was already sound — what was missing was the
+/// announcement that makes a view ask again (`math_commands`).
+#[test]
+#[allow(clippy::float_cmp)]
+fn a_math_redefinition_rebuilds_what_the_host_serves() {
+    use crate::math_signals::{MathDefinition, MathFunction, MathOperandRef, MathOperands};
+    use crate::signal_cache::{CacheQuery, Reduction};
+
+    let state = test_state();
+    state.databases.lock().unwrap().push(loaded_scoped(
+        "test.dbc",
+        &tiny_dbc(0x123, "Msg", "Sig"),
+        &[TEST_BUS],
+    ));
+    for i in 0u64..10 {
+        state.trace_store.append(RawTraceFrame {
+            payload: CanFramePayload::Classic(vec![u8::try_from(i).unwrap(), 0, 0, 0, 0, 0, 0, 0]),
+            ..dummy_frame(i * 1_000_000_000, 0x123)
+        });
+    }
+
+    // One operand scaled by `gain` — the smallest edit that has to move
+    // every served sample. Built off `math_hline` so the fields this
+    // test does not care about come from one place.
+    let definition = |gain: f64| MathDefinition {
+        function: MathFunction::Scale { gain, offset: 0.0 },
+        operands: MathOperands {
+            picks: vec![MathOperandRef::dbc(TEST_BUS, 0x123, false, "Sig")],
+            patterns: Vec::new(),
+        },
+        ..math_hline("m1", "Scaled", 0.0)
+    };
+    let served = || {
+        let dbs = state.databases.lock().unwrap();
+        let model = state.decode_model(&dbs);
+        state
+            .signal_caches
+            .slice_many(
+                &[CacheQuery {
+                    bus_id: None,
+                    message_id: 0,
+                    extended: false,
+                    signal_name: "m1",
+                    file_backed: false,
+                    math: true,
+                }],
+                f64::MIN,
+                f64::MAX,
+                0,
+                Reduction::MinMax,
+                &state.trace_store,
+                &model,
+            )
+            .series
+            .swap_remove(0)
+            .iter()
+            .map(|p| p.value)
+            .collect::<Vec<_>>()
+    };
+
+    state.math.define(definition(1.0)).expect("define");
+    assert_eq!(served(), (0..10).map(f64::from).collect::<Vec<_>>());
+
+    state.math.update(definition(2.0)).expect("update");
+    invalidate_derived_caches(&state);
+    assert_eq!(
+        served(),
+        (0..10).map(|i| f64::from(i) * 2.0).collect::<Vec<_>>(),
+        "gain 2 doubles every sample the serve returns",
+    );
 }
