@@ -175,6 +175,15 @@ pub(crate) struct AppState {
     /// guard ever allows to run at a time. `cancel_import` flips
     /// whichever flag is here; a call with nothing importing is a no-op.
     pub(crate) import_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// Cooperative cancel flag for the single capture export in flight
+    /// right now (`save_capture`'s spawned thread), or `None` when
+    /// nothing is exporting. Its own slot rather than a share of
+    /// [`Self::import_cancel`]: an export and an import are independent —
+    /// exporting the capture you are still importing into is legal — so
+    /// one Cancel must not stop the other. `save_capture` fills the slot
+    /// before spawning (which is also how it refuses a second concurrent
+    /// export) and clears it when the thread ends.
+    pub(crate) export_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// How many trailing frames the frontend wants on each `trace-grew`
     /// (`set_live_tail_rows`). `0` — the startup default — means the
     /// emitter skips the tail collect + decode entirely; only an
@@ -327,6 +336,12 @@ impl AppState {
         self.import_cancel
             .lock()
             .expect("import_cancel mutex poisoned")
+    }
+
+    pub(crate) fn export_cancel(&self) -> MutexGuard<'_, Option<Arc<AtomicBool>>> {
+        self.export_cancel
+            .lock()
+            .expect("export_cancel mutex poisoned")
     }
 
     pub(crate) fn descriptor_snapshot(

@@ -337,7 +337,11 @@ pub(crate) fn rewatch_or_verify(app: &AppHandle, address: &str) {
         // a raised prompt when it is a question for the user.
         if let Ok(records) = refresh_interfaces(app.clone(), address.clone()).await {
             let n = records.len();
-            sys_info!(&app, SOURCE, "{address}: trust decision verified — {n} interface(s)");
+            sys_info!(
+                &app,
+                SOURCE,
+                "{address}: trust decision verified — {n} interface(s)"
+            );
         }
     });
 }
@@ -615,7 +619,10 @@ mod tests {
             manual: true,
         };
         let stored = std::collections::BTreeMap::from([
-            ("pinned:1".to_string(), entry(Some("SHA256:aaa"), Some("t"), false)),
+            (
+                "pinned:1".to_string(),
+                entry(Some("SHA256:aaa"), Some("t"), false),
+            ),
             ("plain:1".to_string(), entry(None, None, true)),
             ("token-only:1".to_string(), entry(None, Some("t"), false)),
             ("manual-only:1".to_string(), entry(None, None, false)),
@@ -638,7 +645,9 @@ mod tests {
             inner.unsubscribe("a:1").is_none(),
             "one subscriber remains; nothing to tear down"
         );
-        let last = inner.unsubscribe("a:1").expect("last unsubscribe tears down");
+        let last = inner
+            .unsubscribe("a:1")
+            .expect("last unsubscribe tears down");
         last.task.abort();
         assert!(inner.unsubscribe("a:1").is_none(), "already gone");
     }

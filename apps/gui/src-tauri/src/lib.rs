@@ -145,8 +145,9 @@ use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
 use capture::{
-    cancel_import, clear_trace_store, import_mdf, open_log, restore_scratch_capture, save_capture,
-    scan_blf_channels, scan_mdf_channels, signal_pyramids_rebuilding,
+    cancel_export, cancel_import, capture_extent, clear_trace_store, import_mdf, open_log,
+    restore_scratch_capture, save_capture, scan_blf_channels, scan_mdf_channels,
+    signal_pyramids_rebuilding,
 };
 #[cfg(test)]
 use capture::{
@@ -590,6 +591,8 @@ pub fn run() -> ! {
             frame_indices_at_ns,
             filtered_positions_at_ns,
             save_capture,
+            cancel_export,
+            capture_extent,
             export_template::preview_export_template,
             export_state::get_export_state,
             export_state::set_export_state,
@@ -690,6 +693,7 @@ pub fn run() -> ! {
                 filter_index_dir: Mutex::new(filter_dir),
                 filter_index: Mutex::new(None),
                 import_cancel: Mutex::new(None),
+                export_cancel: Mutex::new(None),
                 live_tail_rows: std::sync::atomic::AtomicU64::new(0),
                 active_project_id: Mutex::new(None),
                 watched_project: Mutex::new(watched_file::WatchedFile::default()),

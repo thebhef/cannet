@@ -641,6 +641,7 @@ pub(crate) fn test_state() -> AppState {
         filter_index_dir: Mutex::new(std::env::temp_dir().join("cannet-test-filter")),
         filter_index: Mutex::new(None),
         import_cancel: Mutex::new(None),
+        export_cancel: Mutex::new(None),
         live_tail_rows: std::sync::atomic::AtomicU64::new(0),
         active_project_id: Mutex::new(None),
         watched_project: Mutex::new(crate::watched_file::WatchedFile::default()),
@@ -2164,8 +2165,11 @@ fn write_blf_capture_round_trips_frames_and_notes() {
         &[f_classic, f_fd, f_err],
         &notes_in,
         &[],
+        &mut capture::ExportRun::inert(),
     )
-    .unwrap();
+    .unwrap()
+    .written()
+    .expect("an uncancelled export writes a capture");
     assert_eq!(outcome.frame_count, 3);
     assert_eq!(outcome.marker_count, 2);
     assert!(outcome.byte_size > 0);
@@ -3403,7 +3407,14 @@ fn both_blf_annotation_records_round_trip() {
         },
     ];
 
-    capture::write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        &notes_in,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let mut back = notes_via_import_walk(dest.to_str().unwrap());
     back.sort_by_key(|n| n.timestamp_ns);
     assert_eq!(
@@ -3488,6 +3499,7 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
         &frames,
         std::slice::from_ref(&rich),
         &[],
+        &mut capture::ExportRun::inert(),
     )
     .unwrap();
     let back = notes_via_import_walk(dest.to_str().unwrap());
@@ -3510,6 +3522,7 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
         &frames,
         std::slice::from_ref(&plain),
         &[],
+        &mut capture::ExportRun::inert(),
     )
     .unwrap();
     let back = notes_via_import_walk(dest.to_str().unwrap());
@@ -3605,7 +3618,14 @@ fn every_subject_kind_survives_a_blf_round_trip() {
         unknown_block_lines: Vec::new(),
     });
 
-    capture::write_blf_capture(dest.to_str().unwrap(), &one_frame(ts), &notes_in, &[]).unwrap();
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &one_frame(ts),
+        &notes_in,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let mut back = notes_via_import_walk(dest.to_str().unwrap());
     back.sort_by_key(|n| n.timestamp_ns);
     assert_eq!(back, notes_in, "a BLF carries the model exactly");
@@ -3645,7 +3665,14 @@ fn every_subject_kind_survives_an_mdf_round_trip() {
         unknown_block_lines: Vec::new(),
     });
 
-    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &notes_in, &[]).unwrap();
+    capture::write_mdf_capture(
+        dest.to_str().unwrap(),
+        &state,
+        &notes_in,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
     let back = capture::notes_from_mdf_events(&source.events().unwrap());
     assert_eq!(back, notes_in, "an MDF carries the model exactly");
@@ -3672,7 +3699,14 @@ fn an_unambiguous_pair_also_gets_mdfs_native_range_and_a_fan_out_does_not() {
     for frame in one_frame(ts) {
         state.trace_store.append(frame);
     }
-    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &span, &[]).unwrap();
+    capture::write_mdf_capture(
+        dest.to_str().unwrap(),
+        &state,
+        &span,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let events = cannet_mdf::MdfCanFrameSource::open(&dest)
         .unwrap()
         .events()
@@ -3704,7 +3738,14 @@ fn an_unambiguous_pair_also_gets_mdfs_native_range_and_a_fan_out_does_not() {
         unknown_block_lines: Vec::new(),
     });
     let dest = dir.path().join("fanout.mf4");
-    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &fan_out, &[]).unwrap();
+    capture::write_mdf_capture(
+        dest.to_str().unwrap(),
+        &state,
+        &fan_out,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
     let events = source.events().unwrap();
     assert!(
@@ -3799,7 +3840,14 @@ fn a_link_to_an_unexported_event_survives_the_round_trip_unresolved() {
     }];
 
     let dest = dir.path().join("dangling.blf");
-    capture::write_blf_capture(dest.to_str().unwrap(), &one_frame(ts), &notes_in, &[]).unwrap();
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &one_frame(ts),
+        &notes_in,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let back = notes_via_import_walk(dest.to_str().unwrap());
     assert_eq!(back, notes_in);
     assert!(
@@ -3849,7 +3897,14 @@ fn a_black_event_colour_survives_a_blf_marker_and_an_mdf_event() {
     ];
 
     let dest = dir.path().join("black.blf");
-    capture::write_blf_capture(dest.to_str().unwrap(), &one_frame(ts), &notes_in, &[]).unwrap();
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &one_frame(ts),
+        &notes_in,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let mut back = notes_via_import_walk(dest.to_str().unwrap());
     back.sort_by_key(|n| n.timestamp_ns);
     assert_eq!(back[0].color.as_deref(), Some("#000000"));
@@ -3863,7 +3918,14 @@ fn a_black_event_colour_survives_a_blf_marker_and_an_mdf_event() {
     for frame in one_frame(ts) {
         state.trace_store.append(frame);
     }
-    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &notes_in, &[]).unwrap();
+    capture::write_mdf_capture(
+        dest.to_str().unwrap(),
+        &state,
+        &notes_in,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
     let back = capture::notes_from_mdf_events(&source.events().unwrap());
     assert_eq!(back[0].color.as_deref(), Some("#000000"));
@@ -3898,7 +3960,14 @@ fn a_block_key_from_a_later_schema_version_survives_a_round_trip() {
     assert_eq!(notes[0].id, "n-future");
 
     let second = dir.path().join("resaved.blf");
-    capture::write_blf_capture(second.to_str().unwrap(), &one_frame(ts), &notes, &[]).unwrap();
+    capture::write_blf_capture(
+        second.to_str().unwrap(),
+        &one_frame(ts),
+        &notes,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let text = marker_descriptions(&second).remove(0);
     assert!(
         text.contains("\nseverity: critical"),
@@ -4086,9 +4155,16 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
     assert_eq!(store.events().len(), 2);
 
     // ...and exactly one is on the timeline the file records.
-    let outcome =
-        capture::write_blf_capture(dest.to_str().unwrap(), &frames, &store.exportable(), &[])
-            .unwrap();
+    let outcome = capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        &store.exportable(),
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap()
+    .written()
+    .expect("an uncancelled export writes a capture");
     assert_eq!(outcome.marker_count, 1);
     assert_eq!(
         notes_via_import_walk(dest.to_str().unwrap())
@@ -4164,9 +4240,16 @@ fn a_real_storm_coalesces_to_one_event_while_every_frame_reaches_the_file() {
         "nothing the coalescer produces is user data",
     );
 
-    let outcome =
-        capture::write_blf_capture(dest.to_str().unwrap(), &frames, &store.exportable(), &[])
-            .unwrap();
+    let outcome = capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        &store.exportable(),
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap()
+    .written()
+    .expect("an uncancelled export writes a capture");
     assert_eq!(outcome.marker_count, 0);
 
     let mut back = cannet_blf::BlfCanFrameSource::open(&dest).unwrap();
@@ -4295,8 +4378,16 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
         },
     ];
 
-    let outcome =
-        capture::write_mdf_capture(dest.to_str().unwrap(), &state, &notes_in, &buses).unwrap();
+    let outcome = capture::write_mdf_capture(
+        dest.to_str().unwrap(),
+        &state,
+        &notes_in,
+        &buses,
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap()
+    .written()
+    .expect("an uncancelled export writes a capture");
     assert_eq!(outcome.frame_count, 4);
     assert_eq!(outcome.marker_count, 2);
     assert_eq!(outcome.max_timestamp_drift_ns, 0);
@@ -5161,7 +5252,14 @@ fn mdf_import_carries_a_coded_channels_value_table_onto_the_series() {
     // ... and back out again: a save that dropped them would hand the
     // next reader codes with nothing to read them by.
     let dest = dir.path().join("saved.mf4");
-    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &[], &[]).unwrap();
+    capture::write_mdf_capture(
+        dest.to_str().unwrap(),
+        &state,
+        &[],
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
     let saved = MdfCanFrameSource::open(&dest).unwrap();
     assert_eq!(saved.signal_groups()[0].signals[0].value_table, table);
 }
@@ -5198,7 +5296,16 @@ fn write_blf_capture_re_channels_frames_by_project_bus_order() {
     ];
     let buses = vec!["p".to_string(), "c".to_string()];
 
-    let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &[], &buses).unwrap();
+    let outcome = write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        &[],
+        &buses,
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap()
+    .written()
+    .expect("an uncancelled export writes a capture");
     assert_eq!(outcome.frame_count, 3);
 
     let mut src = BlfCanFrameSource::open(&dest).unwrap();
@@ -5237,7 +5344,14 @@ fn write_blf_capture_keeps_wire_channel_when_bus_is_unmapped() {
     ];
     let buses = vec!["p".to_string(), "c".to_string()];
 
-    write_blf_capture(dest.to_str().unwrap(), &frames, &[], &buses).unwrap();
+    write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        &[],
+        &buses,
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
 
     let mut src = BlfCanFrameSource::open(&dest).unwrap();
     let read: Vec<u8> = std::iter::from_fn(|| src.next_frame().unwrap())
@@ -5301,7 +5415,16 @@ fn write_blf_capture_preserves_every_timestamp_of_an_out_of_order_capture() {
         unknown_block_lines: Vec::new(),
     }];
 
-    let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();
+    let outcome = write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        &notes_in,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap()
+    .written()
+    .expect("an uncancelled export writes a capture");
     assert_eq!(outcome.frame_count, 121);
 
     let mut back = BlfCanFrameSource::open(&dest).unwrap();
@@ -7732,4 +7855,193 @@ fn an_interface_that_comes_back_gets_its_route_back() {
     assert!(crate::session::resolve_bus_route(&sessions, "p").is_none());
     controllers.record("PCAN_USBBUS1", 1, 0, 0, None);
     assert!(crate::session::resolve_bus_route(&sessions, "p").is_some());
+}
+
+// ---------------------------------------------------------------------
+// Log export: the range an export writes, its progress bookkeeping, and
+// what a cancel leaves behind.
+// ---------------------------------------------------------------------
+
+/// A frame on `TEST_BUS` at `ts`, for the export-range tests.
+fn export_frame(ts: u64, id: u32) -> trace_store::RawTraceFrame {
+    dummy_frame(ts, id)
+}
+
+/// A user-authored note at `ts` — the other thing an export range has to
+/// bound, since a note is written into the same object stream.
+fn export_note(id: &str, ts: u64) -> notes::Note {
+    notes::Note {
+        id: id.into(),
+        timestamp_ns: ts,
+        label: id.into(),
+        kind: notes::EventKind::Note,
+        color: None,
+        description: None,
+        tag: None,
+        commented_event_type: None,
+        subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
+    }
+}
+
+#[test]
+fn an_unbounded_export_writes_the_whole_capture() {
+    // The default both bounds empty: every frame and note, which is what
+    // Save Capture wrote before a range existed.
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("all.blf");
+    let frames = vec![
+        export_frame(1_000_000_000, 0x100),
+        export_frame(2_000_000_000, 0x101),
+        export_frame(3_000_000_000, 0x102),
+    ];
+    let notes = vec![export_note("a", 1_500_000_000)];
+    let outcome = capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        &notes,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap()
+    .written()
+    .expect("an unbounded export is not cancelled");
+    assert_eq!(outcome.frame_count, 3);
+    assert_eq!(outcome.marker_count, 1);
+}
+
+#[test]
+fn an_export_range_keeps_only_what_falls_inside_it() {
+    // Both bounds inclusive, over frames *and* notes: a note comments on
+    // the frames around it, so a range that excludes those frames
+    // excludes the note too.
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("slice.blf");
+    let frames = vec![
+        export_frame(1_000_000_000, 0x100),
+        export_frame(2_000_000_000, 0x101),
+        export_frame(3_000_000_000, 0x102),
+        export_frame(4_000_000_000, 0x103),
+    ];
+    let notes = vec![
+        export_note("before", 500_000_000),
+        export_note("inside", 2_500_000_000),
+        export_note("after", 4_500_000_000),
+    ];
+    let mut run = capture::ExportRun::over(capture::ExportRange {
+        start_ns: Some(2_000_000_000),
+        end_ns: Some(3_000_000_000),
+    });
+    let outcome =
+        capture::write_blf_capture(dest.to_str().unwrap(), &frames, &notes, &[], &mut run)
+            .unwrap()
+            .written()
+            .expect("a completed export is not cancelled");
+    assert_eq!(outcome.frame_count, 2);
+    assert_eq!(outcome.marker_count, 1);
+}
+
+#[test]
+fn an_export_counts_its_progress_against_the_frames_in_range() {
+    // The denominator is what the export will write, not what the
+    // capture holds — a chip reporting 2 of 4 for a two-frame range
+    // would never reach 100%.
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("progress.blf");
+    let frames: Vec<_> = (1..=4u32)
+        .map(|i| export_frame(u64::from(i) * 1_000_000_000, 0x100 + i))
+        .collect();
+    let mut run = capture::ExportRun::over(capture::ExportRange {
+        start_ns: Some(2_000_000_000),
+        end_ns: Some(3_000_000_000),
+    });
+    capture::write_blf_capture(dest.to_str().unwrap(), &frames, &[], &[], &mut run).unwrap();
+    assert_eq!(run.total(), 2, "two frames fall inside the range");
+    assert_eq!(run.written(), 2);
+}
+
+#[test]
+fn a_cancelled_export_stops_short_and_reports_itself_cancelled() {
+    // Cooperative, the same shape the import pump uses: the flag is
+    // checked as the writer goes, and a set flag ends the write with
+    // `Cancelled` rather than an error — nothing failed.
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("stopped.blf");
+    let frames: Vec<_> = (1..=64u64)
+        .map(|i| export_frame(i * 1_000_000_000, 0x100))
+        .collect();
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut run = capture::ExportRun::over(capture::ExportRange::default());
+    run.cancel_with(Arc::clone(&flag));
+    let outcome =
+        capture::write_blf_capture(dest.to_str().unwrap(), &frames, &[], &[], &mut run).unwrap();
+    assert!(matches!(outcome, capture::ExportOutcome::Cancelled));
+    assert!(run.cancelled());
+}
+
+#[test]
+fn discarding_a_cancelled_export_removes_the_partial_file() {
+    // The writers stream straight into the destination (there is no temp
+    // sibling), so a cancelled export leaves a partial capture under the
+    // name the user chose. It is removed rather than left to look like a
+    // finished export.
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("partial.blf");
+    std::fs::write(&dest, b"partial").unwrap();
+    capture::discard_partial_export(dest.to_str().unwrap());
+    assert!(!dest.exists());
+}
+
+#[test]
+fn discarding_an_export_that_never_created_a_file_is_a_no_op() {
+    // The write can fail before the writer opens anything; the discard
+    // path must not care.
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("never-there.blf");
+    capture::discard_partial_export(dest.to_str().unwrap()); // must not panic
+    assert!(!dest.exists());
+}
+
+#[test]
+fn cancel_export_now_is_a_no_op_with_nothing_exporting() {
+    let state = test_state();
+    assert!(state.export_cancel().is_none());
+    capture::cancel_export_now(&state); // must not panic
+}
+
+#[test]
+fn cancel_export_now_flips_the_registered_flag() {
+    let state = test_state();
+    let flag = Arc::new(AtomicBool::new(false));
+    *state.export_cancel() = Some(Arc::clone(&flag));
+    capture::cancel_export_now(&state);
+    assert!(flag.load(Ordering::Relaxed));
+}
+
+#[test]
+fn the_capture_extent_reports_the_oldest_row_and_the_live_edge() {
+    // What the export dialog's timeline spans. The right edge is the
+    // store's running max, not the last row appended: arrival order is
+    // not timestamp order (ADR 0024).
+    let state = test_state();
+    state.trace_store.start_session(1_000_000_000);
+    state.trace_store.append(export_frame(1_000_000_000, 0x1));
+    state.trace_store.append(export_frame(9_000_000_000, 0x2));
+    state.trace_store.append(export_frame(5_000_000_000, 0x3));
+    let extent = capture::capture_extent_now(&state);
+    assert_eq!(extent.first_ns, Some(1_000_000_000));
+    assert_eq!(extent.live_edge_ns, Some(9_000_000_000));
+    assert_eq!(extent.frame_count, 3);
+    assert_eq!(extent.session_start_ns, Some(1_000_000_000));
+}
+
+#[test]
+fn the_capture_extent_of_an_unstarted_session_names_no_origin() {
+    // `None` is a different fact from an origin of zero (ADR 0024), and
+    // the dialog's relative-only mode turns on it.
+    let state = test_state();
+    let extent = capture::capture_extent_now(&state);
+    assert_eq!(extent.session_start_ns, None);
+    assert_eq!(extent.first_ns, None);
+    assert_eq!(extent.frame_count, 0);
 }
