@@ -298,6 +298,8 @@ export function signalRefFromRaw(
   if (s.hidden) ref.hidden = true;
   if (s.viaPattern) ref.viaPattern = true;
   if (s.fileBacked) ref.fileBacked = true;
+  if (s.math) ref.math = true;
+  if (s.math) ref.math = true;
   if (typeof s.colorPick === "string") ref.colorPick = s.colorPick;
   return ref;
 }

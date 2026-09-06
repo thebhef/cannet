@@ -82,6 +82,7 @@ function mathRecord(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     resolvedOperands: [],
     operandPaths: [],
     unitResolved: "V",
+    busIds: ["bus-a"],
     invalid: null,
     ...over,
   };
@@ -131,12 +132,36 @@ const signalPayload = (...names: string[]) => ({
   patterns: [],
 });
 
+/// What a Computed row drags: no bus, no message, the definition's
+/// **stable id** in the signal slot under the `math` flag.
+const mathPayload = (id: string) => ({
+  signals: [
+    {
+      busId: null,
+      messageId: 0,
+      extended: false,
+      signalName: id,
+      messageName: "Math",
+      unit: "V",
+      math: true,
+    },
+  ],
+  patterns: [],
+});
+
 const section = (label: string) => screen.getByRole("group", { name: `${label} operands` });
 const dbcRef = (name: string) => ({
   busId: "bus-a",
   messageId: 0x120,
   extended: false,
   signalName: name,
+});
+const mathRef = (id: string) => ({
+  busId: null,
+  messageId: 0,
+  extended: false,
+  signalName: id,
+  math: true,
 });
 function lastWrite() {
   const write = invoked.filter((c) => c.cmd === "update_math_signal");
@@ -215,6 +240,20 @@ describe("filling a section", () => {
     });
     await waitFor(() => expect(lastWrite()).toBeDefined());
     expect(writtenDefinition().operands.picks).toEqual([dbcRef("Cell01")]);
+  });
+
+  it("commits a math signal dragged in from the Computed branch", async () => {
+    // A math signal is a legal operand of another one, and the drag
+    // payload carries the provenance flag that says so. Dropping one
+    // has to keep the flag: without it the pick names a DBC identity
+    // nothing decodes, and the operand reads back as missing.
+    const other = mathRecord({ id: "m2", name: "PackRms", kind: "rms", arity: "one" });
+    renderEditor(mathRecord({ kind: "rms", arity: "one", function: { kind: "rms" } }), [other]);
+    fireEvent.drop(section("Signal"), {
+      dataTransfer: fakeDataTransfer(mathPayload("m2")),
+    });
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().operands.picks).toEqual([mathRef("m2")]);
   });
 
   it("takes a whole set from one drag, in one write", async () => {

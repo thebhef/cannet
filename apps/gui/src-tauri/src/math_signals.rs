@@ -659,6 +659,18 @@ pub struct ResolvedMath {
     pub operand_paths: Vec<String>,
     /// The unit the series carries: the user's, or the derived one.
     pub unit: String,
+    /// Every bus that contributes input to this series, **transitively**
+    /// and deduped, in bus-id order.
+    ///
+    /// A math series has no bus of its own — ADR 0038 gives it no
+    /// canonical path to hang one on — so what a surface shows beside
+    /// it is where its input comes from: one color chip per bus, and a
+    /// label that says so when there is more than one. Following a math
+    /// operand into *its* operands is what makes the answer true of the
+    /// whole chain rather than of its last link. An operand with no bus
+    /// (file-backed) and one naming a definition that is gone both
+    /// contribute nothing.
+    pub bus_ids: Vec<String>,
 }
 
 /// Every math definition with its membership resolved — the per-serve
@@ -753,10 +765,62 @@ impl MathModel {
                     operands,
                     operand_paths,
                     unit,
+                    // Filled below: a definition may read one listed
+                    // after it, so attribution needs the whole model.
+                    bus_ids: Vec::new(),
                 },
             );
         }
+        model.attribute_buses();
         model
+    }
+
+    /// Fill every resolved definition's [`ResolvedMath::bus_ids`].
+    ///
+    /// A second pass, because attribution follows math operands and a
+    /// definition may read one that resolves after it. Memoised on the
+    /// way down, so a chain is walked once however many dependents
+    /// share it; a cycle (unrepresentable — the registry refuses one)
+    /// terminates on the in-progress set rather than looping.
+    fn attribute_buses(&mut self) {
+        let mut done: HashMap<String, Vec<String>> = HashMap::new();
+        for id in &self.order {
+            let mut path = HashSet::new();
+            Self::buses_of(&self.by_id, id, &mut done, &mut path);
+        }
+        for (id, buses) in done {
+            if let Some(resolved) = self.by_id.get_mut(&id) {
+                resolved.bus_ids = buses;
+            }
+        }
+    }
+
+    fn buses_of(
+        by_id: &HashMap<String, ResolvedMath>,
+        id: &str,
+        done: &mut HashMap<String, Vec<String>>,
+        path: &mut HashSet<String>,
+    ) -> Vec<String> {
+        if let Some(hit) = done.get(id) {
+            return hit.clone();
+        }
+        if !path.insert(id.to_string()) {
+            return Vec::new();
+        }
+        let mut buses: Vec<String> = Vec::new();
+        if let Some(resolved) = by_id.get(id) {
+            for operand in &resolved.operands {
+                match operand.math_id() {
+                    Some(next) => buses.extend(Self::buses_of(by_id, next, done, path)),
+                    None => buses.extend(operand.bus_id.clone()),
+                }
+            }
+        }
+        buses.sort_unstable();
+        buses.dedup();
+        path.remove(id);
+        done.insert(id.to_string(), buses.clone());
+        buses
     }
 
     /// The resolved definition with this id.
@@ -1440,6 +1504,71 @@ mod tests {
         )];
         let model = MathModel::resolve(&mixed, &[entry("PackVolts", "V"), entry("Current", "A")]);
         assert_eq!(model.get("m1").expect("m1").unit, "");
+    }
+
+    /// The buses a math signal's row wears as color chips. A math
+    /// series has no bus of its own (ADR 0038 gives it no path), so
+    /// the chips name where its *input* comes from — and a set drawn
+    /// from two buses is what turns the row's label into
+    /// "Math - Multiple Busses".
+    #[test]
+    fn a_math_signal_names_every_bus_its_operands_come_from() {
+        let definitions = vec![def(
+            "m1",
+            MathFunction::Sum,
+            picks(&[
+                MathOperandRef::dbc("pack", 256, false, "Cell01"),
+                MathOperandRef::dbc("zonal", 257, false, "WheelSpeed"),
+                MathOperandRef::dbc("pack", 256, false, "Cell02"),
+            ]),
+        )];
+        let model = MathModel::resolve(&definitions, &[]);
+        // Sorted and deduped: the chips are a set, and their order must
+        // not depend on the order the operands happen to be picked in.
+        assert_eq!(model.get("m1").expect("m1").bus_ids, ["pack", "zonal"]);
+    }
+
+    /// Attribution is **transitive**: a math signal over a math signal
+    /// wears the buses that reach it, however deep the chain.
+    #[test]
+    fn bus_attribution_follows_a_math_operand_into_its_own_operands() {
+        let definitions = vec![
+            def(
+                "m2",
+                MathFunction::Rms,
+                picks(&[MathOperandRef::math("m1")]),
+            ),
+            def(
+                "m1",
+                MathFunction::Sum,
+                picks(&[
+                    MathOperandRef::dbc("pack", 256, false, "Cell01"),
+                    MathOperandRef::dbc("zonal", 257, false, "WheelSpeed"),
+                ]),
+            ),
+        ];
+        // m2 is listed *before* the definition it reads, so this also
+        // pins that attribution does not depend on registry order.
+        let model = MathModel::resolve(&definitions, &[]);
+        assert_eq!(model.get("m2").expect("m2").bus_ids, ["pack", "zonal"]);
+    }
+
+    /// A file-backed operand carries no bus, and an operand naming a
+    /// definition that is gone carries nothing at all — neither is an
+    /// error, and neither invents a chip.
+    #[test]
+    fn an_operand_with_no_bus_contributes_no_chip() {
+        let definitions = vec![def(
+            "m1",
+            MathFunction::Sum,
+            picks(&[
+                MathOperandRef::file(3, "EngineSpeed"),
+                MathOperandRef::math("gone"),
+                MathOperandRef::dbc("pack", 256, false, "Cell01"),
+            ]),
+        )];
+        let model = MathModel::resolve(&definitions, &[]);
+        assert_eq!(model.get("m1").expect("m1").bus_ids, ["pack"]);
     }
 
     #[test]

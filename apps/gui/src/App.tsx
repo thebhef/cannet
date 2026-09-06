@@ -19,6 +19,7 @@ import type {
   InterfaceBinding,
   InterfaceRecord,
   LoadProgress,
+  SignalDescriptorRecord,
   LocalVirtualBusDef,
   LogFinished,
   MdfScanResult,
@@ -134,6 +135,8 @@ import type { SystemMessage } from "./types";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import { MathSignalsProvider } from "./mathSignalsContext";
+import { perfMathDefinitions, withPerfMathCase } from "./perfMathCase";
 import { suppressDbcChanges, useDbcGeneration } from "./dbcChanged";
 import { useViewSignalsAttentionCount } from "./viewSignalsAttention";
 import { SignalGeneratorProvider } from "./signalGeneratorContext";
@@ -257,6 +260,10 @@ type AutomationConfig = {
   project: string | null;
   connectOnStart: boolean;
   rbsRunOnStart: boolean;
+  /// `--math-on-start`: define the harness's math case over the open
+  /// project (`perfMathCase.ts`), so the render tier is measured with
+  /// computed series on the bus.
+  mathOnStart: boolean;
   captureSecs: number | null;
   out: string | null;
   label: string | null;
@@ -3035,6 +3042,44 @@ export function App() {
   // simulation outright (`--rbs-run-on-start`, ADR 0031), because a
   // project file cannot carry that any more and a report of an idle
   // bus measures nothing.
+  // The harness's **math signal** case (ADR 0031): `--math-on-start`
+  // defines a standard set over whatever project the launch opened,
+  // once its databases have landed. A flag rather than a project of its
+  // own, because the baseline project is the comparand for every
+  // reading taken on this rig and growing it would invalidate the
+  // series. A normal launch does nothing here.
+  const mathCaseRanRef = useRef(false);
+  const mathOnStart = automation?.mathOnStart === true;
+  useEffect(() => {
+    if (!mathOnStart || mathCaseRanRef.current || dbcPaths.length === 0) return;
+    mathCaseRanRef.current = true;
+    const busNames = buses.map((b) => [b.id, b.name] as [string, string]);
+    void (async () => {
+      const catalog = await invoke<SignalDescriptorRecord[]>("list_signals").catch(() => []);
+      // Sequential: a definition reading another one is refused until
+      // the one it reads exists.
+      const defined: string[] = [];
+      for (const definition of perfMathDefinitions(catalog)) {
+        const ok = await invoke("define_math_signal", { definition, busNames })
+          .then(() => true)
+          .catch(() => false);
+        if (ok) defined.push(definition.id);
+      }
+      // Defining a math signal costs nothing on its own — the pyramids
+      // are built by a *serve*. So the case is only a case once the
+      // open views ask for the series: put them in every plot area and
+      // every signal view, which is what a person measuring this would
+      // do by dragging them there. The write goes through the ordinary
+      // config path, so each panel rehydrates and starts serving; the
+      // harness never saves, so nothing reaches the project file.
+      if (defined.length === 0) return;
+      for (const entry of registryRef.current) {
+        const element = entry.element as { id: string; kind: string; config?: unknown };
+        const patched = withPerfMathCase(element.kind, element.config, defined);
+        if (patched) updateElement(element.id, { config: patched } as Partial<ProjectElement>);
+      }
+    })();
+  }, [mathOnStart, dbcPaths, buses, updateElement]);
   const rbsHostStateRef = useRef<Map<string, { path: string | null }>>(new Map());
   const rbsRunOnStartRef = useRef(false);
   rbsRunOnStartRef.current = automation?.rbsRunOnStart === true;
@@ -3987,6 +4032,7 @@ export function App() {
       </header>
       <ProjectContext.Provider value={projectContextValue}>
         <SignalCatalogProvider>
+          <MathSignalsProvider>
           <ElementRegistryContext.Provider value={elementRegistryValue}>
             <UndoGestureContext.Provider value={undoGesture}>
             <PanelEditRecorderContext.Provider value={recordPanelEdit}>
@@ -4022,6 +4068,7 @@ export function App() {
             </PanelEditRecorderContext.Provider>
             </UndoGestureContext.Provider>
           </ElementRegistryContext.Provider>
+          </MathSignalsProvider>
         </SignalCatalogProvider>
       </ProjectContext.Provider>
       {commands.palettes}

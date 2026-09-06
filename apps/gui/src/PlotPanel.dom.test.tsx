@@ -278,6 +278,14 @@ const mockSampleRebuild = { on: false, served: 0, of: 0 };
 /// in what the plot draws rather than only in the request. Prefixed
 /// `mock` for the hoisted factory.
 const mockFileBackedSignals = new Set<string>();
+/// The **math signal** listing the fake host answers `list_math_signals`
+/// with (`docs/CONTEXT.md`). A math series is keyed by its own
+/// provenance host-side, so — like the file-backed set above — a query
+/// that drops the flag names an identity nothing computes and gets an
+/// empty serve. Keyed by the definition's stable id, which is what a
+/// query carries in the signal-name slot. Prefixed `mock` for the
+/// hoisted factory.
+const mockMathSignals: Record<string, unknown>[] = [];
 // Signals whose defining database is assigned to no bus. Such a database
 // decodes nothing (`filter::dbc_applies`), so the host leaves its signals
 // out of the descriptor universe and answers with no samples for them —
@@ -332,6 +340,8 @@ vi.mock("@tauri-apps/api/core", () => ({
           const q = s as { signalName?: string; fileBacked?: boolean };
           const name = q.signalName ?? "";
           if (mockFileBackedSignals.has(name) && !q.fileBacked) return { t: [], v: [] };
+          const qm = s as { math?: boolean };
+          if (mockMathSignals.some((m) => m.id === name) && !qm.math) return { t: [], v: [] };
           if (mockUnassignedSignals.has(name)) return { t: [], v: [] };
           const series = mockSampleSeries[name] ?? { t: [0, 1, 2], v: [10, 20, 15] };
           const points = req?.categorical ? mockReduceRuns(series, req.maxPoints ?? 0) : series;
@@ -346,9 +356,12 @@ vi.mock("@tauri-apps/api/core", () => ({
         const q = s as { signalName?: string; fileBacked?: boolean };
         const name = q.signalName ?? "";
         if (mockFileBackedSignals.has(name) && !q.fileBacked) return null;
+        const qm = s as { math?: boolean };
+        if (mockMathSignals.some((m) => m.id === name) && !qm.math) return null;
         if (mockUnassignedSignals.has(name)) return null;
         return mockSignalExtents[name] ?? { lo: 10, hi: 20 };
       });
+    if (cmd === "list_math_signals") return mockMathSignals;
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     if (cmd === "get_settings") return { ...mockSettings };
     return undefined;
@@ -403,6 +416,7 @@ import { NotesContext, type NotesContextValue } from "./notesContext";
 import { resetEventHighlight, selectEvents } from "./eventHighlight";
 import type { Note } from "./notes";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import { MathSignalsProvider } from "./mathSignalsContext";
 import { SignalGeneratorContext } from "./signalGeneratorContext";
 import { stableSignalColor, wheelColor } from "./palette";
 import { signalKey } from "./plotData";
@@ -556,11 +570,13 @@ function renderPanel(opts?: {
       <TraceDataProvider value={data}>
         <ProjectContext.Provider value={projectCtx}>
           <SignalCatalogProvider>
+            <MathSignalsProvider>
             <ElementRegistryContext.Provider value={registry}>
               <SignalGeneratorContext.Provider value={generatorIndexes}>
                 <PlotPanel {...props} />
               </SignalGeneratorContext.Provider>
             </ElementRegistryContext.Provider>
+            </MathSignalsProvider>
           </SignalCatalogProvider>
         </ProjectContext.Provider>
       </TraceDataProvider>
@@ -751,6 +767,7 @@ afterEach(async () => {
   mockRenderCost.perTickMs = 0;
   mockRenderCost.accMs = 0;
   mockFileBackedSignals.clear();
+  mockMathSignals.length = 0;
   mockUnassignedSignals.clear();
   mockUplotPointsShow.answer = false;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
@@ -3021,7 +3038,7 @@ describe("PlotArea y-normalisation", () => {
     const restore = stubSize();
     try {
       renderPanel();
-      await addSignals(["EngineSpeed"]);
+      addFocusedSignal("EngineSpeed");
       await waitFor(() =>
         expect(document.querySelector(".plot-signal-value")?.textContent).toBe("12.50 rpm"),
       );
@@ -8533,6 +8550,170 @@ describe("run state gates the self-paced resample loop", () => {
       await wait(500);
       expect(resamples() - r0).toBe(0);
       expect(slides() - s0).toBe(0);
+    });
+  });
+});
+
+/// A **math signal** (`docs/CONTEXT.md`) on the plot: computed
+/// host-side from other signals, carried by no message and no bus. Its
+/// side-list row is the third mounting of the shared editor — expanding
+/// it *is* editing the definition, exactly as under the Database
+/// panel's Computed branch (owner ruling: never a dialog).
+describe("PlotPanel math signals", () => {
+  const RECORD = {
+    id: "m1",
+    name: "CellSpread",
+    unit: null,
+    function: { kind: "range" },
+    operands: { picks: [], patterns: ["Cell\d+"] },
+    identity: "*|m:0:m1",
+    kind: "range",
+    arity: "set",
+    resolvedOperands: [],
+    operandPaths: [],
+    unitResolved: "V",
+    busIds: ["bus-a"],
+    invalid: null,
+  };
+
+  /// Drop a math row onto the first area, exactly as the Database
+  /// view's Computed branch drags one: no bus, no message, the
+  /// definition's **stable id** in the signal-name slot, and the
+  /// provenance flag that keeps it out of the DBC namespace.
+  function dropMathSignal(id: string, unit: string) {
+    const MIME = "application/x-cannet-plot-signal";
+    const payload = JSON.stringify({
+      signals: [
+        {
+          busId: null,
+          messageId: 0,
+          extended: false,
+          signalName: id,
+          messageName: "Math",
+          unit,
+          math: true,
+        },
+      ],
+      patterns: [],
+    });
+    const dt = {
+      types: [MIME, "application/x-cannet-drag-signals"],
+      getData: (t: string) => (t === MIME ? payload : ""),
+      dropEffect: "",
+    };
+    const area = screen.getByText("Area 1").closest(".plot-area")!;
+    fireEvent.dragOver(area, { dataTransfer: dt });
+    fireEvent.drop(area, { dataTransfer: dt });
+  }
+
+  const lastQuery = (cmd: string) => {
+    const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === cmd);
+    const args = calls[calls.length - 1]?.[1] as { signals?: Record<string, unknown>[] };
+    return args?.signals ?? [];
+  };
+
+  const mathRow = () => document.querySelector(".plot-signal-row.math") as HTMLElement | null;
+
+  it("samples one by its provenance, so its points draw", async () => {
+    mockMathSignals.push(RECORD);
+    mockSampleSeries.m1 = { t: [0, 1, 2], v: [1, 2, 3] };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      dropMathSignal("m1", "V");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      // Both host queries carry the flag — the window fetch…
+      await waitFor(() =>
+        expect(lastQuery("sample_signals")).toEqual([
+          expect.objectContaining({ signalName: "m1", math: true }),
+        ]),
+      );
+      // …and the extent sidecar built from the same list.
+      expect(lastQuery("signal_min_max")).toEqual([
+        expect.objectContaining({ signalName: "m1", math: true }),
+      ]);
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3));
+    });
+  });
+
+  it("labels the row with the definition's name, never its id", async () => {
+    mockMathSignals.push(RECORD);
+    await withSizedCanvas(async () => {
+      renderPanel();
+      dropMathSignal("m1", "V");
+      await waitFor(() => expect(mathRow()).not.toBeNull());
+      expect(mathRow()!).toHaveTextContent("CellSpread");
+      expect(mathRow()!).not.toHaveTextContent("m1");
+    });
+  });
+
+  it("wears one bus chip per contributing bus, and says so when there are several", async () => {
+    mockMathSignals.push({ ...RECORD, busIds: ["bus-a"] });
+    await withSizedCanvas(async () => {
+      renderPanel();
+      dropMathSignal("m1", "V");
+      await waitFor(() => expect(mathRow()).not.toBeNull());
+      expect(mathRow()!.querySelectorAll(".plot-bus-swatch")).toHaveLength(1);
+      expect(mathRow()!).toHaveTextContent("Math");
+      expect(mathRow()!).not.toHaveTextContent("Multiple Busses");
+    });
+  });
+
+  it("reads Math - Multiple Busses once two buses feed it", async () => {
+    mockMathSignals.push({ ...RECORD, busIds: ["bus-a", "bus-b"] });
+    await withSizedCanvas(async () => {
+      renderPanel();
+      dropMathSignal("m1", "V");
+      await waitFor(() => expect(mathRow()).not.toBeNull());
+      expect(mathRow()!.querySelectorAll(".plot-bus-swatch")).toHaveLength(2);
+      expect(mathRow()!).toHaveTextContent("Math - Multiple Busses");
+    });
+  });
+
+  it("expands into the editor in place, with the disclosure away from the ✕", async () => {
+    mockMathSignals.push(RECORD);
+    await withSizedCanvas(async () => {
+      renderPanel();
+      dropMathSignal("m1", "V");
+      await waitFor(() => expect(mathRow()).not.toBeNull());
+      const row = mathRow()!;
+      // No read-only stage: the disclosure is the only way in, and what
+      // it opens is the editor.
+      expect(document.querySelector(".math-editor")).toBeNull();
+      const disclosure = row.querySelector(".disclosure-toggle") as HTMLElement;
+      expect(disclosure).not.toBeNull();
+      fireEvent.click(disclosure);
+      const editor = await waitFor(() => {
+        const e = document.querySelector(".math-editor");
+        expect(e).not.toBeNull();
+        return e!;
+      });
+      // In place on the row that invoked it, never a floating dialog.
+      expect(row.contains(editor)).toBe(true);
+      expect(editor.closest("[role=dialog], .modal")).toBeNull();
+      // The disclosure and the remove are not neighbouring targets
+      // (owner ruling): the disclosure leads the row, as it does on a
+      // Database tree row, and the value readout stands between them.
+      const remove = row.querySelector(".plot-signal-remove") as HTMLElement;
+      expect(remove).not.toBeNull();
+      const order = [...row.children];
+      expect(order.indexOf(disclosure)).toBeLessThan(
+        order.indexOf(row.querySelector(".plot-signal-readout")!),
+      );
+      expect(order.indexOf(row.querySelector(".plot-signal-readout")!)).toBeLessThan(
+        order.indexOf(remove),
+      );
+    });
+  });
+
+  it("leaves an ordinary signal's row with no disclosure at all", async () => {
+    await withSizedCanvas(async () => {
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() =>
+        expect(document.querySelector(".plot-signal-row")).not.toBeNull(),
+      );
+      const row = document.querySelector(".plot-signal-row") as HTMLElement;
+      expect(row.querySelector(".disclosure-toggle")).toBeNull();
     });
   });
 });

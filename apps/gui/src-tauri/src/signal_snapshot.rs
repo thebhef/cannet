@@ -510,9 +510,89 @@ pub fn select_file_backed(
             // Stamped by `arrange_sections`, which runs next.
             section: None,
             file_backed: true,
+            math: false,
         });
     }
     Ok(out)
+}
+
+/// The **math signals** (`docs/CONTEXT.md`) `selection` admits, as
+/// snapshot rows — the third half of what `fetch_signal_page` serves,
+/// beside [`select_descriptors`]' DBC-backed rows and
+/// [`select_file_backed`]'s.
+///
+/// **Only a manual key selects one.** A math series has no canonical
+/// path (ADR 0038 builds one out of bus / ECU / message, and a math
+/// signal has none of the three), so there is nothing for a view-level
+/// pattern to match — a math signal joins a signal view by being
+/// dragged into it, exactly as it joins a plot area. A view **wired to
+/// specific buses** excludes them for the same reason it excludes a
+/// file-backed row: nothing puts them on a bus.
+///
+/// `latest` is index-parallel with `resolved` — the newest sample of
+/// each series and how many it holds, from
+/// [`crate::signal_cache::SignalCacheStore::math_latest`]. A definition
+/// whose fill has produced nothing yet, or one that is invalid and
+/// serves nothing, gets a row with blank value columns rather than no
+/// row: the row is where the user repairs it.
+pub fn select_math(
+    resolved: &[&crate::math_signals::ResolvedMath],
+    latest: &[Option<(crate::signal_sampler::SamplePoint, usize)>],
+    source_buses: Option<&[String]>,
+) -> Vec<SignalSnapshotRecord> {
+    if source_buses.is_some() {
+        return Vec::new();
+    }
+    resolved
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let newest = latest.get(i).and_then(|l| l.as_ref());
+            SignalSnapshotRecord {
+                bus_id: None,
+                transmitter: None,
+                message_id: 0,
+                extended: false,
+                // The display name, so the row reads as what the user
+                // named — the *id* is what the reference stores.
+                message_name: r.definition.name.clone(),
+                signal_name: r.definition.id.clone(),
+                unit: r.unit.clone(),
+                is_enum: false,
+                raw_field: false,
+                display_hex: false,
+                value: newest.map(|(p, _)| p.value),
+                // A computed value is physical throughout: there are no
+                // raw bits behind it and no `VAL_` table over it.
+                raw: None,
+                label: None,
+                // A math series' cadence is its operands', which is not
+                // a fact about this series — the plot is where its rate
+                // is read, off the samples themselves.
+                rate: None,
+                count: newest.map(|(_, n)| u64::try_from(*n).unwrap_or(u64::MAX)),
+                time_seconds: newest.map(|(p, _)| p.t_seconds),
+                // Stamped by `arrange_sections`, which runs next.
+                section: None,
+                file_backed: false,
+                math: true,
+            }
+        })
+        .collect()
+}
+
+/// The math signals a selection names, by their manual keys — the ids
+/// [`select_math`] then needs the registry's resolution of.
+#[must_use]
+pub fn selected_math_ids(selection: &SignalSelection) -> Vec<String> {
+    let mut seen = HashSet::new();
+    selection
+        .keys
+        .iter()
+        .filter(|k| k.math)
+        .filter(|k| seen.insert(k.signal_name.clone()))
+        .map(|k| k.signal_name.clone())
+        .collect()
 }
 
 /// The file-backed signals arranged the way the Database view lists
@@ -674,6 +754,27 @@ pub fn signal_identity(
     )
 }
 
+/// The identity a snapshot row is keyed by — what a section assignment
+/// names, whichever provenance the row carries.
+///
+/// A **math** row is keyed by its definition's id under the math flag
+/// (`math_signals::math_identity`), the fourth member of the `s|x|f|m`
+/// set: it has no bus and no message, so without the flag it would
+/// share a key with a busless DBC-backed signal on message id 0.
+#[must_use]
+pub fn row_identity(row: &SignalSnapshotRecord) -> String {
+    if row.math {
+        return crate::math_signals::math_identity(&row.signal_name);
+    }
+    signal_identity(
+        row.bus_id.as_deref(),
+        row.message_id,
+        row.extended,
+        &row.signal_name,
+        row.file_backed,
+    )
+}
+
 /// The CAN message a [`signal_identity`] key names: `(message id,
 /// extended)`, or `None` when the key names no CAN message — a
 /// file-backed signal, whose number is its source file's channel-group
@@ -794,13 +895,7 @@ pub fn arrange_sections(
 
     let mut buckets: Vec<Vec<SignalSnapshotRecord>> = vec![Vec::new(); names.len()];
     for mut row in rows {
-        let id = signal_identity(
-            row.bus_id.as_deref(),
-            row.message_id,
-            row.extended,
-            &row.signal_name,
-            row.file_backed,
-        );
+        let id = row_identity(&row);
         // An assignment naming a section that no longer exists reads as
         // unassigned — deleting a section returns its signals without
         // rewriting every assignment, and re-creating it restores them.
@@ -990,6 +1085,7 @@ mod tests {
             time_seconds: None,
             section: None,
             file_backed: false,
+            math: false,
         }
     }
 
@@ -1362,6 +1458,116 @@ mod tests {
                 "+relay",
             ],
         );
+    }
+
+    /// A math signal (`docs/CONTEXT.md`) is a row of a signal view: the
+    /// registry answers its name, unit and validity, and its own
+    /// pyramid answers its value — no frame in the window carries one.
+    #[test]
+    fn a_math_signal_is_a_row_of_a_signal_view() {
+        use crate::math_signals::{MathDefinition, MathFunction, MathModel, MathOperands};
+        let definitions = vec![MathDefinition {
+            id: "m1".into(),
+            name: "CellSpread".into(),
+            unit: Some("V".into()),
+            function: MathFunction::Range,
+            operands: MathOperands::default(),
+        }];
+        let model = MathModel::resolve(&definitions, &[]);
+        let resolved: Vec<_> = model.iter().collect();
+        let latest = vec![Some((
+            crate::signal_sampler::SamplePoint {
+                t_seconds: 4.5,
+                value: 1.25,
+            },
+            17usize,
+        ))];
+        let rows = select_math(&resolved, &latest, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        // The *id* identifies it; the display name is what the row reads
+        // as, so a rename leaves every reference to the definition alone.
+        assert_eq!(row.signal_name, "m1");
+        assert_eq!(row.message_name, "CellSpread");
+        assert_eq!(row.unit, "V");
+        assert!(row.math);
+        assert!(!row.file_backed);
+        assert_eq!(row.bus_id, None);
+        assert_eq!(row.value, Some(1.25));
+        assert_eq!(row.count, Some(17));
+        assert_eq!(row.time_seconds, Some(4.5));
+        // A computed value is physical throughout, and its cadence is
+        // its operands' rather than its own.
+        assert_eq!(row.raw, None);
+        assert_eq!(row.rate, None);
+    }
+
+    /// A view **wired to specific buses** excludes math rows for the
+    /// same reason it excludes file-backed ones: nothing puts them on a
+    /// bus.
+    #[test]
+    fn a_bus_wired_view_takes_no_math_rows() {
+        use crate::math_signals::{MathDefinition, MathFunction, MathModel, MathOperands};
+        let definitions = vec![MathDefinition {
+            id: "m1".into(),
+            name: "CellSpread".into(),
+            unit: None,
+            function: MathFunction::Range,
+            operands: MathOperands::default(),
+        }];
+        let model = MathModel::resolve(&definitions, &[]);
+        let resolved: Vec<_> = model.iter().collect();
+        assert!(select_math(&resolved, &[None], Some(&["pack".to_string()])).is_empty());
+    }
+
+    /// Only a manual key selects one: a math series has no canonical
+    /// path (ADR 0038 builds one from bus / ECU / message, and it has
+    /// none of the three), so there is nothing for a pattern to match.
+    #[test]
+    fn only_a_manual_key_names_a_math_signal() {
+        let selection = SignalSelection {
+            keys: vec![
+                SignalQuery {
+                    bus_id: None,
+                    message_id: 0,
+                    extended: false,
+                    signal_name: "m1".into(),
+                    file_backed: false,
+                    math: true,
+                },
+                // The same id twice is one row.
+                SignalQuery {
+                    bus_id: None,
+                    message_id: 0,
+                    extended: false,
+                    signal_name: "m1".into(),
+                    file_backed: false,
+                    math: true,
+                },
+                SignalQuery {
+                    bus_id: Some("p".into()),
+                    message_id: 256,
+                    extended: false,
+                    signal_name: "PackVolts".into(),
+                    file_backed: false,
+                    math: false,
+                },
+            ],
+            patterns: vec![".*".to_string()],
+        };
+        assert_eq!(selected_math_ids(&selection), ["m1"]);
+    }
+
+    /// A math row's section assignment is keyed under the math flag, so
+    /// it cannot share a key with a busless DBC-backed signal on
+    /// message id 0.
+    #[test]
+    fn a_math_rows_identity_carries_its_provenance() {
+        let mut row = blank_row("m1");
+        row.math = true;
+        assert_eq!(row_identity(&row), "*|m:0:m1");
+        let plain = blank_row("m1");
+        assert_eq!(row_identity(&plain), "*|s:0:m1");
     }
 
     #[test]
