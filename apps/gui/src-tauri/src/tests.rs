@@ -8283,7 +8283,7 @@ fn a_math_redefinition_rebuilds_what_the_host_serves() {
     let definition = |gain: f64| MathDefinition {
         function: MathFunction::Scale { gain, offset: 0.0 },
         operands: MathOperands {
-            picks: vec![MathOperandRef::dbc(TEST_BUS, 0x123, false, "Sig")],
+            picks: vec![Some(MathOperandRef::dbc(TEST_BUS, 0x123, false, "Sig"))],
             patterns: Vec::new(),
         },
         ..math_hline("m1", "Scaled", 0.0)
