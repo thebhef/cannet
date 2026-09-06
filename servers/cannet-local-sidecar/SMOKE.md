@@ -114,7 +114,7 @@ simply skips that vendor and the others still work.
   exits again, capture the stderr and file an issue.
 - **Frames look corrupt**: check the bitrate / FD configuration on
   the logical bus. The wire `Subscribe` envelope does not currently
-  carry bitrate (see `plans/backlog.md`); the host applies a
+  carry bitrate; the host applies a
   per-interface configuration locally before subscribing. Most
   symptoms reduce to that path not being plumbed end-to-end for a
   given vendor yet.

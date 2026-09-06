@@ -1022,14 +1022,17 @@ crate retained long-term).
   window. Chromium-only by construction, so the check is Windows-only;
   see the crate README. MIT / Apache-2.0.
 
-- **ruff** + **mypy** (dev-dependencies in `servers/cannet-local-sidecar`,
-  pinned via its `uv.lock`) — `adopted` for the Python sidecar. ruff
-  does both linting and black-compatible formatting in one tool;
-  mypy type-checks the `cannet_local_sidecar` package (the generated
-  `_proto/` gRPC stubs are excluded — machine-emitted, not
+- **ruff** + **mypy** (dev-dependencies in each Python package —
+  `servers/cannet-local-sidecar`, `clients/cannet-python-client`,
+  `libs/cannet-python-wire` — pinned via their `uv.lock`s) —
+  `adopted` for the Python packages. ruff does both linting and
+  black-compatible formatting in one tool; mypy type-checks each
+  package (the generated `_proto/` gRPC stubs, now in
+  `cannet-python-wire`, are excluded — machine-emitted, not
   hand-maintained — and the dynamically-populated protobuf module is
-  treated as untyped). pytest already covered the test suite. All four
-  run in the CI `python` job. ruff is from Astral, like the `uv` already
+  treated as untyped). pytest already covered the test suites. All
+  four run per package in the CI `python` / `python-client` /
+  `python-wire` jobs. ruff is from Astral, like the `uv` already
   in use. MIT / (mypy) MIT.
 
 - **`memory-stats`** crate — `proposed` then **`rejected`** (replaced by

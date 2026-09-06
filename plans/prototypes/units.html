@@ -1,0 +1,797 @@
+<title>Units & Prefixes</title>
+<style>
+:root {
+  /* app theme tokens, per gui-chip-redesign.html / math-signals.html */
+  --surface-app:#0e1116; --surface-field:#0f172a; --surface-raised:#1e293b;
+  --surface-overlay:#131923; --surface-pop:#111827; --surface-hover:#1c2530;
+  --surface-section-header:#131a24; --surface-row-selected:#1b2740;
+  --text-body:#d8dee9; --text-label:#e6ecf5; --text-muted:#94a3b8;
+  --text-faint:#64748b; --text-dim:#475569; --text-primary:#e2e8f0;
+  --border-subtle:#243040; --border-default:#2c3444; --border-row:#11161e;
+  --border-strong:#334155;
+  --accent-marker:#4ecbff; --warn-text:#fbbf24; --danger-text:#f87171;
+  --ok-text:#4ade80; --text-signal-value:#fde68a;
+  --select-tint:rgba(99,102,241,.35); --select-outline:rgba(99,102,241,.9);
+  --shadow-menu:rgba(0,0,0,.45);
+  --mono:ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+body { background:var(--surface-app); color:var(--text-body);
+  font-family:"Segoe UI", system-ui, sans-serif; font-size:13px; line-height:1.45; }
+.wrap { max-width:900px; margin:0 auto; padding:1.1rem 1rem 4rem; }
+h1 { font-size:1.15rem; margin:.3rem 0 .15rem; color:var(--text-label); }
+.sub { color:var(--text-muted); margin:0 0 1.3rem; max-width:64ch; }
+h2 { font-size:.9rem; margin:1.9rem 0 .15rem; color:var(--text-label); }
+h2 .tag { font-size:.66rem; color:var(--text-dim); font-weight:normal; margin-left:.5rem; letter-spacing:.05em; }
+.note { color:var(--text-muted); font-size:.8rem; margin:.15rem 0 .7rem; max-width:70ch; }
+.panel { background:var(--surface-overlay); border:1px solid var(--border-subtle); border-radius:4px; overflow:hidden; }
+.mono { font-family:var(--mono); }
+
+/* ---- Database panel mock ---- */
+.dbc-row { display:flex; align-items:center; gap:.4rem; padding:.1rem .5rem; height:22px;
+  white-space:nowrap; overflow:hidden; font-family:var(--mono); font-size:12px; cursor:default; }
+.dbc-row:hover { background:var(--surface-hover); }
+.dbc-row .chev { width:14px; color:var(--text-faint); text-align:center; flex:none; }
+.dbc-row-label { color:var(--text-primary); }
+.dbc-row-meta { color:var(--text-faint); }
+.dbc-row-value { margin-left:auto; color:var(--text-signal-value); }
+.dbc-row .del { flex:none; background:none; border:0; color:var(--text-dim); cursor:pointer; padding:0 2px; }
+.dbc-row .del:hover { color:var(--danger-text); }
+
+/* in-place editor (math-signals.html idiom) */
+.inline-editor { background:var(--surface-raised); border:1px solid var(--border-subtle);
+  border-left:2px solid var(--accent-marker); border-radius:3px; margin:2px 6px 6px 22px; }
+.inline-editor .body { padding:10px 14px; display:flex; flex-direction:column; gap:8px; }
+.frow { display:flex; align-items:center; gap:10px; font-size:.8rem; }
+.frow > label:first-child { flex:0 0 76px; color:var(--text-muted); font-size:.75rem; }
+.frow input[type=text], .frow select {
+  background:var(--surface-field); color:var(--text-body); border:1px solid var(--border-default);
+  border-radius:2px; padding:3px 7px; font:inherit; font-size:.78rem; }
+.frow input.num { width:4.5em; font-family:var(--mono); }
+.frow .dim-note { color:var(--text-dim); font-size:.72rem; }
+
+/* operand mini-list */
+.oplist { border:1px solid var(--border-default); border-radius:2px; background:var(--surface-field);
+  font-family:var(--mono); font-size:12px; }
+.oplist .orow { display:flex; align-items:center; gap:.5rem; padding:0 .5rem; height:24px;
+  border-bottom:1px solid var(--border-row); }
+.oplist .orow:last-child { border-bottom:0; }
+.oplist .oname { min-width:11rem; color:var(--text-primary); }
+.chip { font-family:var(--mono); font-size:11px; border-radius:3px; padding:0 .35rem;
+  border:1px solid var(--border-default); white-space:nowrap; line-height:16px; }
+.chip.ok { color:var(--ok-text); border-color:rgba(74,222,128,.35); background:rgba(74,222,128,.07); }
+.chip.warn { color:var(--warn-text); border-color:rgba(251,191,36,.4); background:rgba(251,191,36,.08); cursor:pointer; }
+.chip.dim { color:var(--text-muted); }
+.chip.acc { color:var(--accent-marker); border-color:rgba(78,203,255,.4); }
+.chip.click { cursor:pointer; }
+.chip.click:hover { border-color:var(--border-strong); }
+.oplist .g { margin-left:auto; display:flex; gap:.3rem; align-items:center; color:var(--text-dim); font-size:11px; }
+.oplist input { width:3.2em; background:var(--surface-overlay); border:1px solid var(--border-default);
+  border-radius:2px; color:var(--text-body); font:inherit; padding:1px 4px; }
+
+/* ---- the unit button + popover ---- */
+.unitbtn { display:inline-flex; align-items:center; gap:.35rem; background:var(--surface-field);
+  border:1px solid var(--border-default); border-radius:2px; color:var(--text-body);
+  font-family:var(--mono); font-size:.8rem; padding:2px 8px; cursor:pointer; }
+.unitbtn:hover { border-color:var(--border-strong); }
+.unitbtn .caret { color:var(--text-dim); font-size:.65rem; }
+.pop { position:absolute; z-index:20; background:var(--surface-pop); border:1px solid var(--border-strong);
+  border-radius:4px; box-shadow:0 8px 24px var(--shadow-menu); display:flex; min-width:330px; }
+.pop[hidden] { display:none; }
+.pop .col { display:flex; flex-direction:column; max-height:260px; overflow-y:auto; min-width:150px; }
+.pop .col + .col { border-left:1px solid var(--border-subtle); }
+.pop .colhead { position:sticky; top:0; background:var(--surface-section-header); color:var(--text-muted);
+  font-size:.68rem; letter-spacing:.05em; padding:3px 8px; border-bottom:1px solid var(--border-subtle); }
+.pop .item { display:flex; align-items:baseline; gap:.5rem; padding:2px 8px; cursor:pointer;
+  font-family:var(--mono); font-size:12px; }
+.pop .item:hover { background:var(--surface-hover); }
+.pop .item.sel { background:var(--surface-row-selected); outline:1px solid var(--select-outline); outline-offset:-1px; }
+.pop .item .sym { min-width:2.6em; color:var(--text-primary); }
+.pop .item .nm { color:var(--text-muted); flex:1; font-family:"Segoe UI",system-ui,sans-serif; font-size:11px; }
+.pop .item .fac { color:var(--text-dim); font-size:11px; }
+.pop .dimhead { padding:3px 8px 1px; color:var(--text-dim); font-size:.66rem; letter-spacing:.06em; }
+
+/* ---- plot panel (math-signals.html chrome, abridged) ---- */
+.plot-panel { display:flex; flex-direction:column; height:300px; min-height:0;
+  border:1px solid var(--border-subtle); background:var(--surface-app); }
+.plot-panel-toolbar { display:flex; align-items:center; gap:.4rem;
+  padding:.25rem .6rem; flex:0 0 auto; border-bottom:1px solid var(--border-subtle);
+  color:var(--text-muted); font-size:.72rem; }
+.plot-panel-areas { flex:1 1 0; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+.plot-area { display:flex; flex:1 1 0; min-height:24px; position:relative; }
+.plot-area-canvas { flex:1 1 auto; min-width:0; min-height:0; overflow:hidden; position:relative; }
+.plot-area-canvas svg { display:block; width:100%; height:100%; }
+.plot-area + .plot-area { border-top:1px solid var(--border-subtle); }
+.plot-area-label-sep { color:var(--text-dim); padding:0 .15rem; }
+.plot-area-axis-label { color:var(--text-muted); font-family:var(--mono);
+  text-transform:none; letter-spacing:normal; }
+.plot-area-resizer { flex:0 0 4px; cursor:col-resize; background:transparent; margin:0 -2px; z-index:1; }
+.plot-area-resizer:hover { background:var(--border-default); }
+.plot-area-signals { flex:0 0 250px; border-left:1px solid var(--border-subtle);
+  background:var(--surface-sunken, #0d1114); overflow-y:auto; font-size:.78rem; }
+.plot-area-signals-head { display:flex; align-items:center; justify-content:space-between;
+  gap:.3rem; padding:.2rem .4rem; border-bottom:1px solid var(--border-subtle);
+  color:var(--text-muted); text-transform:uppercase; letter-spacing:.08em; font-size:.66rem; }
+.plot-area-grip { color:var(--text-dim); cursor:grab; line-height:1; padding:0 .2rem 0 0; user-select:none; }
+.plot-area-count-chip { color:var(--text-muted); border:1px solid var(--border-default);
+  border-radius:3px; padding:0 .3rem; font-size:.66rem; text-transform:none;
+  letter-spacing:normal; white-space:nowrap; }
+.plot-area-y-mode { background:var(--surface-field); color:var(--text-muted);
+  border:1px solid var(--border-default); border-radius:3px; font:inherit;
+  font-size:.62rem; padding:0 .2rem; cursor:pointer; }
+.plot-signal-row { display:grid; grid-template-columns:auto 1fr auto auto;
+  align-items:start; column-gap:.4rem; row-gap:.05rem; padding:.25rem .4rem;
+  border-bottom:1px dotted var(--border-row); cursor:grab; }
+.color-chip-bar { align-self:stretch; width:1.5rem; flex:0 0 auto; display:inline-block;
+  border-radius:2px; border:1px solid rgb(255 255 255 / 0.14); }
+.plot-signal-text { display:flex; flex-direction:column; min-width:0; }
+.plot-signal-name { font-size:.92rem; color:var(--text-primary);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.plot-signal-message { font-size:.7rem; color:var(--text-faint);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.plot-signal-readout { display:flex; align-items:center; gap:.3rem; min-width:0; }
+.plot-signal-value { color:var(--text-signal-value); font-variant-numeric:tabular-nums;
+  font-family:var(--mono); font-size:.8rem; }
+.plot-signal-remove { background:none; border:none; color:var(--text-faint);
+  cursor:pointer; font-size:.9rem; line-height:1; padding:0 .1rem; align-self:center; }
+.plot-signal-remove:hover { color:var(--danger-text); }
+
+/* ---- tables ---- */
+table { border-collapse:collapse; width:100%; font-size:12px; font-family:var(--mono); }
+th { text-align:left; font-size:.66rem; letter-spacing:.05em; color:var(--text-muted);
+  font-weight:600; padding:3px 8px; background:var(--surface-section-header);
+  border-bottom:1px solid var(--border-default); font-family:"Segoe UI",system-ui,sans-serif; }
+td { padding:2px 8px; border-bottom:1px solid var(--border-row); }
+tr:last-child td { border-bottom:0; }
+td.faint { color:var(--text-faint); }
+td.num { text-align:right; color:var(--text-faint); font-variant-numeric:tabular-nums; }
+.rowbtn { background:none; border:1px solid var(--border-default); color:var(--text-muted);
+  border-radius:3px; font-size:11px; padding:1px 7px; cursor:pointer; font-family:"Segoe UI",system-ui,sans-serif; }
+.rowbtn:hover { background:var(--surface-hover); color:var(--text-primary); }
+.maprow td { background:var(--surface-row-selected); }
+.mapper { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; font-family:"Segoe UI",system-ui,sans-serif; }
+.mapper .lead { font-size:.75rem; color:var(--text-muted); }
+td.ck { text-align:center; }
+td.ck input { accent-color:var(--accent-marker, #4ecbff); cursor:pointer; }
+
+.tester { display:flex; align-items:center; gap:.6rem; padding:.6rem .7rem; }
+.tester input { background:var(--surface-field); color:var(--text-body); border:1px solid var(--border-default);
+  border-radius:2px; padding:3px 7px; font-family:var(--mono); font-size:12px; width:9rem; }
+.verdict { font-family:var(--mono); font-size:12px; }
+.verdict.ok { color:var(--ok-text); } .verdict.bad { color:var(--warn-text); }
+
+.qs { margin:2rem 0 0; padding:.7rem 1rem; border-left:3px solid var(--warn-text);
+  background:rgba(251,191,36,.06); border-radius:0 4px 4px 0; }
+.qs h2 { margin-top:0; } .qs ol { margin:.3rem 0 0; padding-left:1.2rem; }
+.qs li { margin-bottom:.4rem; max-width:72ch; color:var(--text-body); }
+</style>
+
+<div class="wrap">
+  <h1>Units &amp; Prefixes — round 4</h1>
+  <p class="sub">Behaviour rulings applied: unit reassignment is <b>arbitrary</b> in View signals
+  (reinterpretation, no scaling); everywhere units are <b>applied</b> — plot, math — the picker is
+  <b>kind-locked</b> (conversion, scaling real). The chain builder is gone (backlogged as
+  "complex unit definitions"). New: derived output units by dimensional analysis (1b), and the
+  plot's per-unit lanes.</p>
+
+  <h2>1 · Math editor <span class="tag">KIND-LOCKED · CONVERSION</span></h2>
+  <p class="note">The <b>time unit is the function's parameter</b>: integrate over
+  <span class="mono">s / min / h</span> on the Function row, and the output unit follows as the
+  composition — <span class="mono">operand · h</span> derives <span class="mono">Ah</span>.
+  The unit button then picks <b>within the composed dimension</b>: the composition itself
+  (prefixable), or a named unit like <span class="mono">C</span>. Current selection opens
+  centered; prefix rows carry factors.</p>
+  <div class="panel">
+    <div class="dbc-row"><span class="chev">▾</span><span class="dbc-row-label">Computed</span></div>
+    <div class="dbc-row" style="padding-left:1.4rem"><span class="chev">▾</span>
+      <span class="dbc-row-label">PackCharge</span><button class="del" title="delete PackCharge">🗑</button>
+      <span class="dbc-row-meta">integration</span>
+      <span class="dbc-row-value" id="rowValue">4.821 Ah</span></div>
+    <div class="inline-editor"><div class="body">
+      <div class="frow"><label>Name</label><input type="text" value="PackCharge" style="max-width:14rem"></div>
+      <div class="frow"><label>Function</label>
+        <select disabled><option>Integration</option></select>
+        <span class="dim-note">operand ·</span>
+        <select id="intTime" style="font-size:.72rem"><option>s</option><option>min</option><option selected>h</option></select></div>
+      <div class="frow"><label>Operands</label>
+        <div class="oplist" style="flex:1" id="oplist"></div></div>
+      <div class="frow"><label>Units</label>
+        <button class="unitbtn" id="unitBtn"><span id="unitBtnLabel">Ah</span><span class="caret">▾</span></button>
+        <span class="dim-note" id="unitDim"></span></div>
+      <div class="frow"><label>Output</label>
+        <span class="dim-note">gain</span><input class="num" type="text" value="1">
+        <span class="dim-note">offset</span><input class="num" type="text" value="0"></div>
+    </div></div>
+  </div>
+
+  <h2>1b · Derived output <span class="tag">DIMENSIONAL ANALYSIS · OVERRIDE KIND-LOCKED</span></h2>
+  <p class="note">No unit is set here — and instead of deriving <i>nothing</i> from a product
+  of different units, dimensional analysis composes the operands': dims add, factors multiply, so
+  <span class="mono">A × s</span> ships as <span class="mono">A·s</span> —
+  dimensionally <b>charge</b>. The picker locks to that dimension: the composition itself
+  (prefixable) beside the dimension's <b>named</b> units (<span class="mono">Ah</span>,
+  <span class="mono">C</span>) — here time is an operand, so there is nothing to choose
+  about it. <b>Derivative</b> (below) of an <span class="mono">Ah</span> charge counter over
+  <span class="mono">d/ds</span> ships as <span class="mono">Ah/s</span>, dimensionally
+  <b>current</b> — switch the function's time unit to <span class="mono">h</span>
+  (<span class="mono">Ah/h</span>) or pick the named <span class="mono">A</span>; the
+  ×3600 falls out of the analysis either way, not a special case.</p>
+  <div class="panel">
+    <div class="dbc-row"><span class="chev">▾</span><span class="dbc-row-label">Computed</span></div>
+    <div class="dbc-row" style="padding-left:1.4rem"><span class="chev">▾</span>
+      <span class="dbc-row-label">SampleCharge</span><button class="del" title="delete SampleCharge">🗑</button>
+      <span class="dbc-row-meta">product</span>
+      <span class="dbc-row-value" id="prodRowValue"></span></div>
+    <div class="inline-editor"><div class="body">
+      <div class="frow"><label>Name</label><input type="text" value="SampleCharge" style="max-width:14rem"></div>
+      <div class="frow"><label>Function</label>
+        <select disabled><option>Product</option></select>
+        <span class="dim-note">a × b</span></div>
+      <div class="frow"><label>Operands</label>
+        <div class="oplist" style="flex:1">
+          <div class="orow"><span class="oname">VCU_Drive · PackCurrent</span><span class="chip ok" title="DBC ‘A’ — built-in">A</span></div>
+          <div class="orow"><span class="oname">VCU_Drive · SamplePeriod</span><span class="chip ok" title="DBC ‘s’ — built-in">s</span></div>
+        </div></div>
+      <div class="frow"><label>Units</label>
+        <button class="unitbtn" id="prodBtn"><span id="prodBtnLabel"></span><span class="caret">▾</span></button>
+        <span class="dim-note" id="prodDim"></span></div>
+    </div></div>
+  </div>
+
+  <div class="panel" style="margin-top:6px">
+    <div class="dbc-row"><span class="chev">▾</span><span class="dbc-row-label">Computed</span></div>
+    <div class="dbc-row" style="padding-left:1.4rem"><span class="chev">▾</span>
+      <span class="dbc-row-label">PackCurrent_Est</span><button class="del" title="delete PackCurrent_Est">🗑</button>
+      <span class="dbc-row-meta">derivative</span>
+      <span class="dbc-row-value" id="derRowValue"></span></div>
+    <div class="inline-editor"><div class="body">
+      <div class="frow"><label>Name</label><input type="text" value="PackCurrent_Est" style="max-width:14rem"></div>
+      <div class="frow"><label>Function</label>
+        <select disabled><option>Derivative</option></select>
+        <span class="dim-note">d(operand) / d</span>
+        <select id="derTime" style="font-size:.72rem"><option selected>s</option><option>min</option><option>h</option></select></div>
+      <div class="frow"><label>Operands</label>
+        <div class="oplist" style="flex:1">
+          <div class="orow"><span class="oname">BMS_Pack · PackCharge</span><span class="chip ok" title="DBC ‘Ah’ — built-in">Ah</span></div>
+        </div></div>
+      <div class="frow"><label>Units</label>
+        <button class="unitbtn" id="derBtn"><span id="derBtnLabel"></span><span class="caret">▾</span></button>
+        <span class="dim-note" id="derDim"></span></div>
+    </div></div>
+  </div>
+
+  <h2>2 · View signals <span class="tag">ARBITRARY · REINTERPRETATION, NO SCALING</span></h2>
+  <p class="note">Click any resolved-unit chip: the full sectioned picker opens and the unit can
+  be changed to <b>anything</b> — the decoded value is simply read as those units from then on.
+  This is the "my DBC is wrong" affordance, per-signal, persisted with the project. Unrecognized
+  strings still map in Settings (section 4).</p>
+  <div class="panel"><table id="vsTable">
+    <thead><tr><th>signal</th><th>message</th><th>unit</th><th>resolved</th></tr></thead>
+    <tbody></tbody></table></div>
+
+  <h2>3 · Plot <span class="tag">PER-UNIT LANES · CONVERT TO CONVERGE</span></h2>
+  <p class="note">Per-unit y mode as the real control lays it out: <b>one stacked lane per
+  distinct unit</b> — its own canvas, its own y-scale, its own slice of the side list, the
+  unit riding the lane's head as <span class="mono">[mV]</span>. mV is a different unit than V,
+  so the cell voltage gets a lane of its own. The convert affordance is <b>in the row's
+  readout</b>: the unit beside the value is the chip — click it, pick a like-kind unit, and
+  the series converts and its lane merges into the target unit's lane. Try mV → V.</p>
+  <div class="plot-panel">
+    <div class="plot-panel-toolbar"><span>fit x</span><span>fit y</span><span style="margin-left:.4rem">follow</span></div>
+    <div class="plot-panel-areas" id="plotAreas"></div>
+  </div>
+
+  <h2>4 · Settings → Units <span class="tag">UNMAPPED STRINGS · ONE ROW PER UNIT</span></h2>
+  <p class="note">Unmapped strings the project contains lead; below them, one row per unit
+  carrying its matched strings — map <span class="mono">Deg C</span> and it joins the
+  °C row beside <span class="mono">degC</span>. The <b>project / user</b> columns say where a
+  row's custom mappings persist: tick <b>user</b> to promote them to every project, untick
+  <b>project</b> to demote them out of this one. Every row carries the pair; built-in matches
+  themselves persist nowhere.</p>
+  <div class="panel">
+    <table id="unmappedTable">
+      <thead><tr><th>needs attention — unmapped strings in this project</th><th>signals</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <table id="unitsTable" style="margin-top:2px">
+      <thead><tr><th>unit</th><th>dimension</th><th>matched strings</th><th>project</th><th>user</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h2>5 · Poke the parser <span class="tag">RECOGNITION RULES, LIVE</span></h2>
+  <div class="panel tester">
+    <input type="text" id="probe" value="nAh">
+    <span class="verdict" id="probeOut"></span>
+  </div>
+
+  <div class="qs">
+    <h2>Open questions</h2>
+    <ol>
+      <li><b>Observed strings</b> — requires the host to aggregate distinct unit strings across
+        loaded databases with usage counts. Confirm as a phase-6 host surface.</li>
+      <li><b>Built-in rows</b> — listed dimmed and overridable (as here), or only rows needing attention?</li>
+      <li><b>Blank units</b> — mappable to <span class="mono">scalar</span>; should blank stay
+        unflagged by default (today's rule)?</li>
+      <li><b>Per-series display unit persistence</b> — with the plot conversion (section 3), a
+        series' chosen display unit persists where the plot's other per-series state lives?</li>
+    </ol>
+  </div>
+</div>
+<div class="pop" id="unitPop" hidden>
+  <div class="col" id="popBases"><div class="colhead">unit</div></div>
+  <div class="col" id="popScale"><div class="colhead">prefix</div></div>
+</div>
+
+<script>
+// ---------- model ----------
+const PREFIXES = [
+  ["Q",30],["R",27],["Y",24],["Z",21],["E",18],["P",15],["T",12],["G",9],["M",6],["k",3],
+  ["h",2],["da",1],["",0],["d",-1],["c",-2],["m",-3],["µ",-6],["n",-9],["p",-12],["f",-15],
+  ["a",-18],["z",-21],["y",-24],["r",-27],["q",-30],
+];
+const RATIO_SCALES = [["0–1","ratio",1],["0–100 (%)","percent",0.01],["ppm","ppm",1e-6]];
+const D = (A=0,s=0,kg=0,m=0,K=0)=>[A,s,kg,m,K];
+const BASES = [
+  ["volt","V","potential",true,D(-1,-3,1,2),1,["Volt","volts"],"potential"],
+  ["ampere","A","current",true,D(1),1,["amp","amps"],"current"],
+  ["ampere-second","A·s","charge",true,D(1,1),1,[],"charge",true],
+  ["ampere-minute","A·min","charge",true,D(1,1),60,[],"charge",true],
+  ["ampere-hour","Ah","charge",true,D(1,1),3600,["A·h"],"charge"],
+  ["coulomb","C","charge",true,D(1,1),1,[],"charge"],
+  ["ampere-hour-per-second","Ah/s","current",true,D(1),3600,[],"current",true],
+  ["ampere-hour-per-minute","Ah/min","current",true,D(1),60,[],"current",true],
+  ["ampere-hour-per-hour","Ah/h","current",true,D(1),1,[],"current",true],
+  ["watt","W","power",true,D(0,-3,1,2),1,[],"power"],
+  ["watt-hour","Wh","energy",true,D(0,-2,1,2),3600,[],"energy"],
+  ["joule","J","energy",true,D(0,-2,1,2),1,[],"energy"],
+  ["hertz","Hz","frequency",true,D(0,-1),1,[],"frequency"],
+  ["second","s","time",true,D(0,1),1,["sec"],"time"],
+  ["hour","h","time",false,D(0,1),3600,["hr"],"time"],
+  ["newton-meter","Nm","torque",true,D(0,-2,1,2),1,["N·m"],"torque"],
+  ["pascal","Pa","pressure",true,D(0,-2,1,-1),1,[],"pressure"],
+  ["bar","bar","pressure",true,D(0,-2,1,-1),1e5,[],"pressure"],
+  ["celsius","°C","temperature",false,D(0,0,0,0,1),1,["degC"],"temperature"],
+  ["kelvin","K","temperature",false,D(0,0,0,0,1),1,[],"temperature"],
+  ["ratio","0–1","ratio",false,D(),1,[],"ratio"],
+  ["percent","%","ratio",false,D(),0.01,["pct"],"ratio"],
+  ["ppm","ppm","ratio",false,D(),1e-6,[],"ratio"],
+  ["scalar","scalar","dimensionless",false,D(),1,["count","counts","cnt"],"scalar"],
+  ["rpm","rpm","angular velocity",false,D(0,-1),0.10471975511965977,["RPM"],"angular"],
+  ["meter","m","length",true,D(0,0,0,1),1,[],"length"],
+  ["meter-per-second","m/s","speed",true,D(0,-1,0,1),1,[],"speed"],
+  ["kilometer-per-hour","km/h","speed",false,D(0,-1,0,1),1/3.6,["kph","kmh"],"speed"],
+];
+const custom = { VOLTS: { base:"volt", scale:"" } };   // spelling -> {base, scale}
+const baseInfo = id => BASES.find(b => b[0] === id);
+const isRatio = id => baseInfo(id)?.[7] === "ratio";
+const kindOf = id => baseInfo(id)?.[7];
+function label(base, scale) {
+  const b = baseInfo(base); if (!b) return "?";
+  if (isRatio(base)) return baseInfo(scale)?.[1] ?? b[1];
+  return (scale || "") + b[1];
+}
+function factorOf(base, scale) {  // to SI-coherent of the unit's dims
+  const b = baseInfo(base); if (!b) return 1;
+  if (isRatio(base)) return baseInfo(scale)?.[5] ?? b[5];
+  const e = PREFIXES.find(x=>x[0]===(scale||""))?.[1] ?? 0;
+  return b[5] * Math.pow(10, e);
+}
+function recognize(raw) {
+  for (const key of [raw, raw.trim()]) if (custom[key]) return { ...custom[key], via:"customization" };
+  const t = raw.trim(); if (!t) return null;
+  for (const exact of [true,false]) {
+    for (const b of BASES) {
+      // coulomb's display "C" is withheld from parsing — a guess between
+      // charge and Celsius; its id still reads back to it.
+      const names = b[0]==="coulomb" ? [b[0], ...b[6]] : [b[1], ...b[6], b[0]];
+      if (names.some(n => exact ? n===t : n.toLowerCase()===t.toLowerCase()))
+        return { base:b[0], scale: isRatio(b[0]) ? b[0] : "", via: exact?"built-in":"built-in (case)" };
+    }
+    if (exact) for (const [p] of PREFIXES) {
+      if (!p || !t.startsWith(p)) continue;
+      const rest = t.slice(p.length);
+      const b = BASES.find(x => x[1]===rest && x[3]);
+      if (b) return { base:b[0], scale:p, via:"prefix parse" };
+    }
+  }
+  return null;
+}
+const fmtExp = e => e===0 ? "×1" : `×10${String(e).split("").map(c=>"⁰¹²³⁴⁵⁶⁷⁸⁹"[c]??(c==="-"?"⁻":c)).join("")}`;
+
+// ---------- one popover, three callers ----------
+// ctx: { get: () => ({base, scale}), set: (base, scale) => void,
+//        kinds: null | [kind,...]   // null = arbitrary (all units, sectioned)
+const pop = document.getElementById("unitPop");
+let popCtx = null;
+function openPop(anchor, ctx) {
+  popCtx = ctx;
+  renderPopBases(); renderPopScale();
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = (r.left + window.scrollX) + "px";
+  pop.style.top = (r.bottom + window.scrollY + 3) + "px";
+  pop.hidden = false;
+  centerSel();
+}
+function centerSel() {
+  for (const col of pop.querySelectorAll(".col")) {
+    const s = col.querySelector(".item.sel");
+    if (s) col.scrollTop = s.offsetTop - col.clientHeight/2 + s.offsetHeight/2;
+  }
+}
+function renderPopBases() {
+  const col = document.getElementById("popBases");
+  const cur = popCtx.get();
+  const locked = popCtx.kinds !== null;
+  col.innerHTML = `<div class="colhead">${locked ? "unit · " + popCtx.kinds.map(k=>k).join(" / ") : "unit"}</div>`;
+  let lastDim = null;
+  for (const b of BASES) {
+    if (b[0]==="percent"||b[0]==="ppm") continue;  // ratio scales live in the scale column
+    if (b[8] && b[0]!==popCtx.composed) continue;  // composed spellings: only the caller's own
+    if (locked && !popCtx.kinds.includes(b[7])) continue;
+    if (!locked && b[2]!==lastDim) { const h=document.createElement("div"); h.className="dimhead"; h.textContent=b[2]; col.appendChild(h); lastDim=b[2]; }
+    const it = document.createElement("div");
+    it.className = "item" + (b[0]===cur.base ? " sel" : "");
+    it.innerHTML = `<span class="sym">${b[0]==="ratio"?"ratio":b[1]}</span><span class="nm">${b[0]}</span>`;
+    it.addEventListener("click", e => {
+      e.stopPropagation();
+      const scale = isRatio(b[0]) ? "percent" : (b[3] ? (isRatio(cur.base) ? "" : cur.scale) : "");
+      popCtx.set(b[0], scale);
+      renderPopBases(); renderPopScale(); centerSel();
+    });
+    col.appendChild(it);
+  }
+}
+function renderPopScale() {
+  const col = document.getElementById("popScale");
+  const cur = popCtx.get();
+  const b = baseInfo(cur.base);
+  if (isRatio(cur.base)) {
+    col.innerHTML = `<div class="colhead">scale</div>`;
+    for (const [lab,id,f] of RATIO_SCALES) {
+      const it = document.createElement("div");
+      it.className = "item" + (id===cur.scale ? " sel" : "");
+      it.innerHTML = `<span class="sym">${lab}</span><span class="fac">${fmtExp(Math.round(Math.log10(1/f)))}</span>`;
+      it.addEventListener("click", e => { e.stopPropagation(); popCtx.set(cur.base, id); renderPopScale(); });
+      col.appendChild(it);
+    }
+  } else if (b && b[3]) {
+    col.innerHTML = `<div class="colhead">prefix</div>`;
+    for (const [p,e] of PREFIXES) {
+      const it = document.createElement("div");
+      it.className = "item" + (p===cur.scale ? " sel" : "");
+      it.innerHTML = `<span class="sym">${p||"—"}</span><span class="nm">${p ? "" : "no prefix"}</span>
+        <span class="fac">${fmtExp(e)}</span><span class="fac">${p+b[1]}</span>`;
+      it.addEventListener("click", ev => { ev.stopPropagation(); popCtx.set(cur.base, p); renderPopScale(); });
+      col.appendChild(it);
+    }
+  } else {
+    col.innerHTML = `<div class="colhead">prefix</div><div class="item"><span class="nm">not prefixable</span></div>`;
+  }
+}
+document.addEventListener("click", e => { if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true; });
+
+// ---------- 1 · math editor (kind-locked: the integral of a current) ----------
+// Time is the function's parameter; the output unit follows as
+// operand·time. The button picks within that dimension only.
+const INT_RAW = 4.821 * 3600;   // the integral, canonical (A·s)
+const INT_COMP = { s:"ampere-second", min:"ampere-minute", h:"ampere-hour" };
+let intTime = "h";
+let sel = null;                 // null = the composition for intTime
+function refreshUnit() {
+  const u = sel ?? { base:INT_COMP[intTime], scale:"" };
+  const f = factorOf(u.base, u.scale);
+  document.getElementById("unitBtnLabel").textContent = label(u.base, u.scale);
+  document.getElementById("unitDim").textContent = sel
+    ? `charge — output converts ${label(INT_COMP[intTime],"")} → ${label(u.base,u.scale)} (${f===1?"×1":f>1?"÷"+f:"×"+1/f})`
+    : `composed: A · ${intTime}`;
+  document.getElementById("rowValue").textContent =
+    (+(INT_RAW/f).toPrecision(4)).toLocaleString("en-US",{maximumFractionDigits:6}) + " " + label(u.base, u.scale);
+}
+document.getElementById("intTime").addEventListener("change", e => { intTime = e.target.value; sel = null; refreshUnit(); });
+document.getElementById("unitBtn").addEventListener("click", e => {
+  e.stopPropagation();
+  if (!pop.hidden) { pop.hidden = true; return; }
+  openPop(e.currentTarget, {
+    get: () => sel ?? { base:INT_COMP[intTime], scale:"" },
+    set: (b,sc) => { sel = (b===INT_COMP[intTime] && !sc) ? null : { base:b, scale:sc }; refreshUnit(); },
+    kinds: ["charge"],              // the composed dimension, nothing wider
+    composed: INT_COMP[intTime],    // the composition the time choice implies
+  });
+});
+const OPERANDS = [["VCU_Drive · PackCurrent","A"]];
+function renderOperands() {
+  const host = document.getElementById("oplist"); host.innerHTML="";
+  for (const [name, raw] of OPERANDS) {
+    const r = recognize(raw);
+    const row = document.createElement("div"); row.className="orow";
+    const chip = r
+      ? `<span class="chip ok" title="DBC ‘${raw}’ — ${r.via}">${label(r.base,r.scale)}</span>`
+      : `<span class="chip warn" title="nothing can place ‘${raw}’ — map it in Settings → Units">${raw} ⚠</span>`;
+    row.innerHTML = `<span class="oname">${name}</span>${chip}
+      <span class="g">gain <input value="1"> offset <input value="0"></span>`;
+    host.appendChild(row);
+  }
+}
+
+// ---------- 1b · derived output unit (dimensional analysis) ----------
+// The operands' units compose: dims add, factors multiply. The composed
+// spelling is the derived unit; its dims name the kind that locks the
+// override picker. Nothing here asks the user before shipping a unit.
+const PROD_RAW = 13370.4;            // the function's output, in A·s (= C)
+const prodDerived = { base:"ampere-second", scale:"" };
+let prodSel = null;                  // null = derived; {base,scale} = user override
+function refreshProd() {
+  const u = prodSel ?? prodDerived;
+  document.getElementById("prodBtnLabel").textContent = label(u.base, u.scale);
+  const v = PROD_RAW / factorOf(u.base, u.scale);
+  document.getElementById("prodRowValue").textContent =
+    (+v.toPrecision(4)).toLocaleString("en-US",{maximumFractionDigits:6}) + " " + label(u.base, u.scale);
+  const f = factorOf(u.base, u.scale);
+  document.getElementById("prodDim").textContent = u.base === prodDerived.base && !u.scale
+    ? `derived: A × s → A·s`
+    : `charge — output converts A·s → ${label(u.base,u.scale)} (${f===1?"×1":f>1?"÷"+f:"×"+1/f})`;
+}
+document.getElementById("prodBtn").addEventListener("click", e => {
+  e.stopPropagation();
+  if (!pop.hidden) { pop.hidden = true; return; }
+  openPop(e.currentTarget, {
+    get: () => prodSel ?? prodDerived,
+    set: (b,sc) => { prodSel = { base:b, scale:sc }; refreshProd(); },
+    kinds: ["charge"],              // the composed dimension's kind, nothing wider
+    composed: "ampere-second",      // fixed: time is an operand here
+  });
+});
+
+// ---------- 1b (cont.) · derivative: division composes, dims land in a family ----------
+const DER_RAW_SI = -87.12;      // d(PackCharge)/dt, canonical (A)
+const DER_COMP = { s:"ampere-hour-per-second", min:"ampere-hour-per-minute", h:"ampere-hour-per-hour" };
+let derTime = "s";
+let derSel = null;              // null = the composition for derTime
+function refreshDer() {
+  const u = derSel ?? { base:DER_COMP[derTime], scale:"" };
+  const f = factorOf(u.base, u.scale);
+  document.getElementById("derBtnLabel").textContent = label(u.base, u.scale);
+  document.getElementById("derRowValue").textContent =
+    (+(DER_RAW_SI/f).toPrecision(4)).toLocaleString("en-US",{maximumFractionDigits:6}) + " " + label(u.base, u.scale);
+  const rel = f / factorOf(DER_COMP[derTime], "");
+  document.getElementById("derDim").textContent = derSel
+    ? `current — output converts ${label(DER_COMP[derTime],"")} → ${label(u.base,u.scale)} (${rel===1?"×1":rel>1?"÷"+rel:"×"+1/rel})`
+    : `composed: Ah / ${derTime}`;
+}
+document.getElementById("derTime").addEventListener("change", e => { derTime = e.target.value; derSel = null; refreshDer(); });
+document.getElementById("derBtn").addEventListener("click", e => {
+  e.stopPropagation();
+  if (!pop.hidden) { pop.hidden = true; return; }
+  openPop(e.currentTarget, {
+    get: () => derSel ?? { base:DER_COMP[derTime], scale:"" },
+    set: (b,sc) => { derSel = (b===DER_COMP[derTime] && !sc) ? null : { base:b, scale:sc }; refreshDer(); },
+    kinds: ["current"],             // the composed dimension, nothing wider
+    composed: DER_COMP[derTime],    // the composition the time choice implies
+  });
+});
+
+// ---------- 2 · view signals (arbitrary reinterpretation) ----------
+const VS = [
+  { nm:"PackCurrent",   msg:"VCU_Drive",        raw:"A" },
+  { nm:"PackVoltage",   msg:"BMS_Pack",         raw:"V" },
+  { nm:"Cell01Voltage", msg:"BMS_CellVoltages", raw:"mV" },
+  { nm:"Cell_Charge_Trickle", msg:"BMS_Charge", raw:"nAh" },
+  { nm:"Motor_Temp",    msg:"INV_Status",       raw:"Deg C" },
+  { nm:"SoC",           msg:"BMS_Pack",         raw:"%" },
+  { nm:"BMS_FaultCounter", msg:"BMS_Status",    raw:"cnts" },
+];
+const vsOverride = {};   // signal name -> {base, scale}: reinterpretation, no scaling
+function vsResolved(sig) { return vsOverride[sig.nm] ?? recognize(sig.raw); }
+function renderVS() {
+  const tb = document.querySelector("#vsTable tbody"); tb.innerHTML="";
+  for (const sig of VS) {
+    const r = vsResolved(sig);
+    const over = !!vsOverride[sig.nm];
+    const chip = r
+      ? `<span class="chip click ${over?"acc":"ok"}" data-vs="${sig.nm}"
+           title="${over?"reinterpreted — decoded value read as "+label(r.base,r.scale)+", no scaling":"click to reinterpret"}">${label(r.base,r.scale)}</span>`
+      : `<span class="chip click warn" data-vs="${sig.nm}" title="unrecognized — click to assign, or map the string in Settings">⚠ assign</span>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${sig.nm}</td><td class="faint">${sig.msg}</td><td class="faint">${sig.raw}</td><td>${chip}</td>`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll("[data-vs]").forEach(el => el.addEventListener("click", e => {
+    e.stopPropagation();
+    const sig = VS.find(s => s.nm === el.dataset.vs);
+    openPop(el, {
+      get: () => vsResolved(sig) ?? { base:"scalar", scale:"" },
+      set: (b,s) => { vsOverride[sig.nm] = { base:b, scale:s }; renderAll(); pop.hidden = true; },
+      kinds: null,   // arbitrary: reinterpretation may cross kinds
+    });
+  }));
+}
+
+// ---------- 3 · plot (kind-locked conversion converges lanes) ----------
+const SERIES = [
+  { nm:"PackVoltage",   msg:"BMS_Pack",         color:"#fbbf24", raw:"V",  val:396.4 },
+  { nm:"Cell01Voltage", msg:"BMS_CellVoltages", color:"#4ecbff", raw:"mV", val:3712 },
+  { nm:"PackCurrent",   msg:"VCU_Drive",        color:"#fb923c", raw:"A",  val:-87.2 },
+  { nm:"SoC",           msg:"BMS_Pack",         color:"#34d399", raw:"%",  val:76.2 },
+];
+const display = {};   // series name -> {base, scale}: display unit (conversion)
+function seriesUnit(s) {
+  const src = recognize(s.raw);
+  return { src, disp: display[s.nm] ?? (src ? { base:src.base, scale:src.scale } : null) };
+}
+function seriesValue(s) {
+  const { src, disp } = seriesUnit(s);
+  if (!src || !disp) return s.val;
+  return s.val * factorOf(src.base, src.scale) / factorOf(disp.base, disp.scale);
+}
+function renderPlot() {
+  const areas = document.getElementById("plotAreas");
+  areas.innerHTML = "";
+  // per-unit y mode derives one axis per distinct display unit; each
+  // derived axis is its own stacked lane with its own signal slice
+  const order = []; const groups = new Map();
+  for (const s of SERIES) {
+    const { disp } = seriesUnit(s);
+    const key = disp ? label(disp.base, disp.scale) : "?";
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(s);
+  }
+  let first = true;
+  for (const unit of order) {
+    const members = groups.get(unit);
+    let paths = "";
+    for (const s of members) {
+      const seed = [...s.nm].reduce((a,c)=>a+c.charCodeAt(0),0);
+      const mid = 40 + (seed % 26) - 13;
+      let d = `M0 ${mid}`;
+      for (let x=14; x<=560; x+=14)
+        d += ` L${x} ${mid + 20*Math.sin((x+seed)/47) + ((seed>>2)%7) - 3}`;
+      paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.4" vector-effect="non-scaling-stroke"/>`;
+    }
+    const lane = document.createElement("div"); lane.className = "plot-area";
+    lane.innerHTML = `<div class="plot-area-canvas"><svg viewBox="0 0 560 80" preserveAspectRatio="none">${paths}</svg></div>
+      <div class="plot-area-resizer" role="separator" aria-orientation="vertical"></div>
+      <div class="plot-area-signals">
+        <div class="plot-area-signals-head">
+          <span style="display:flex;align-items:center;min-width:0">
+            ${first ? '<span class="plot-area-grip">\u283f</span><span class="plot-area-label">Area 1</span><span class="plot-area-label-sep">\u00b7</span>' : ""}
+            <span class="plot-area-axis-label">[${unit}]</span></span>
+          ${first ? '<select class="plot-area-y-mode"><option>unified</option><option selected>per-unit</option><option>individual</option></select>' : ""}
+        </div>
+        <div class="lane-rows"></div>
+      </div>`;
+    const rowsHost = lane.querySelector(".lane-rows");
+    for (const s of members) {
+      const { src, disp } = seriesUnit(s);
+      const conv = disp && src && (disp.base!==src.base || disp.scale!==src.scale);
+      const row = document.createElement("div"); row.className = "plot-signal-row";
+      row.innerHTML = `<span class="color-chip-bar" style="background:${s.color}"></span>
+        <span class="plot-signal-text"><span class="plot-signal-name">${s.nm}</span>
+          <span class="plot-signal-message">${s.msg}</span></span>
+        <span class="plot-signal-readout">
+          <span class="plot-signal-value">${(+seriesValue(s).toPrecision(4))}</span>
+          <span class="chip click ${conv?"acc":"dim"}" data-plot="${s.nm}"
+            title="${conv?`converted from ${label(src.base,src.scale)} \u2014 like-kind only`:"display unit \u2014 click to convert (like-kind only)"}">${disp?label(disp.base,disp.scale):"?"}</span></span>
+        <button class="plot-signal-remove" title="remove">\u00d7</button>`;
+      rowsHost.appendChild(row);
+    }
+    areas.appendChild(lane);
+    first = false;
+  }
+  areas.querySelectorAll("[data-plot]").forEach(el => el.addEventListener("click", e => {
+    e.stopPropagation();
+    const s = SERIES.find(x => x.nm === el.dataset.plot);
+    const { src } = seriesUnit(s);
+    if (!src) return;
+    openPop(el, {
+      get: () => display[s.nm] ?? { base:src.base, scale:src.scale },
+      set: (b,sc) => { display[s.nm] = { base:b, scale:sc }; renderPlot(); },
+      kinds: [kindOf(src.base)],   // conversion is real: like-kind only
+    });
+  }));
+}
+
+// ---------- 4 · settings ----------
+const PROJECT_STRINGS = [["A",41],["V",118],["mV",64],["nAh",3],["degC",22],["Deg C",2],["%",31],["cnts",14],["kmh",4],["Nm",8],["VOLTS",5]];
+let mappingRow = null;
+function renderUnmapped() {
+  const tb = document.querySelector("#unmappedTable tbody"); tb.innerHTML="";
+  const unmapped = PROJECT_STRINGS.filter(([raw]) => !recognize(raw));
+  if (!unmapped.length) {
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td class="faint" colspan="3">every unit string this project contains reads as a unit</td>`;
+    tb.appendChild(tr); return;
+  }
+  for (const [raw,count] of unmapped) {
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td><span class="chip warn">${raw}</span></td><td class="num">${count}</td>
+      <td><button class="rowbtn" data-map="${raw}">map</button></td>`;
+    tb.appendChild(tr);
+    if (mappingRow===raw) {
+      const mr=document.createElement("tr"); mr.className="maprow";
+      mr.innerHTML=`<td colspan="3"><div class="mapper"><span class="lead">“${raw}” means</span>
+        <select id="mapBase"></select><select id="mapScale"></select>
+        <button class="rowbtn" id="mapCommit">save</button><button class="rowbtn" id="mapCancel">cancel</button></div></td>`;
+      tb.appendChild(mr);
+      const mb=mr.querySelector("#mapBase"), ms=mr.querySelector("#mapScale");
+      fillBaseSelect(mb); fillScaleSelect(ms, mb.value);
+      mb.addEventListener("change",()=>fillScaleSelect(ms,mb.value));
+      mr.querySelector("#mapCommit").addEventListener("click",()=>{
+        custom[raw]={base:mb.value, scale: ms.disabled ? (isRatio(mb.value)?mb.value:"") : ms.value};
+        mappingRow=null; renderAll();
+      });
+      mr.querySelector("#mapCancel").addEventListener("click",()=>{ mappingRow=null; renderUnmapped(); });
+    }
+  }
+  tb.querySelectorAll("[data-map]").forEach(b=>b.addEventListener("click",()=>{ mappingRow=b.dataset.map; renderUnmapped(); }));
+}
+const scopes = {};   // unit label -> {project, user}: where its custom mappings persist
+function renderUnits() {
+  const tb = document.querySelector("#unitsTable tbody"); tb.innerHTML="";
+  const rows = new Map();
+  const rowFor = (base, scale) => {
+    const key = label(base, scale);
+    if (!rows.has(key)) rows.set(key, { base, scale, strings: [] });
+    return rows.get(key);
+  };
+  for (const [raw] of PROJECT_STRINGS) {
+    const r = recognize(raw);
+    if (r) rowFor(r.base, r.scale).strings.push({ raw, via: r.via });
+  }
+  for (const raw of Object.keys(custom))
+    if (!PROJECT_STRINGS.some(([p])=>p===raw)) rowFor(custom[raw].base, custom[raw].scale).strings.push({ raw, via: "customization" });
+  for (const [key, row] of rows) {
+    const b = baseInfo(row.base);
+    const chips = row.strings.map(sr =>
+      sr.via === "customization"
+        ? `<span class="chip acc">${sr.raw} <span data-clear="${sr.raw}" style="cursor:pointer" title="remove this mapping">\u00d7</span></span>`
+        : `<span class="chip dim" title="${sr.via}">${sr.raw}</span>`
+    ).join(" ");
+    const hasCustom = row.strings.some(sr => sr.via === "customization");
+    const sc = scopes[key] ??= { project: hasCustom, user: false };
+    const cks = `<td class="ck"><input type="checkbox" data-scope="${key}" data-which="project" ${sc.project?"checked":""}
+           title="persist this row's custom mappings in the project settings"></td>
+         <td class="ck"><input type="checkbox" data-scope="${key}" data-which="user" ${sc.user?"checked":""}
+           title="persist this row's custom mappings in your user settings \u2014 every project sees them"></td>`;
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td><span class="chip ok">${key}</span></td><td class="faint">${b?b[2]:""}</td><td>${chips||`<span class="faint">\u2014</span>`}</td>${cks}`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll("[data-clear]").forEach(x=>x.addEventListener("click",()=>{ delete custom[x.dataset.clear]; renderAll(); }));
+  tb.querySelectorAll("[data-scope]").forEach(x=>x.addEventListener("change",()=>{
+    scopes[x.dataset.scope][x.dataset.which] = x.checked;
+  }));
+}
+function fillBaseSelect(sel) {
+  sel.innerHTML="";
+  let g=null,last=null;
+  for (const b of BASES) {
+    if (b[0]==="percent"||b[0]==="ppm"||b[8]) continue;
+    if (b[2]!==last){ g=document.createElement("optgroup"); g.label=b[2]; sel.appendChild(g); last=b[2]; }
+    const o=document.createElement("option"); o.value=b[0]; o.textContent=b[0]==="ratio"?"ratio":b[1];
+    g.appendChild(o);
+  }
+}
+function fillScaleSelect(sel, base) {
+  sel.innerHTML=""; const b=baseInfo(base);
+  if (isRatio(base)) { sel.disabled=false;
+    for (const [lab,id] of RATIO_SCALES){ const o=document.createElement("option"); o.value=id; o.textContent=lab; sel.appendChild(o); } return; }
+  if (!b||!b[3]) { const o=document.createElement("option"); o.value=""; o.textContent="—"; sel.appendChild(o); sel.disabled=true; return; }
+  sel.disabled=false;
+  for (const [p,e] of PREFIXES){ const o=document.createElement("option"); o.value=p; o.textContent=(p||"—")+"  "+fmtExp(e); sel.appendChild(o); }
+  sel.value="";
+}
+// ---------- 5 · probe ----------
+function renderProbe() {
+  const v=document.getElementById("probe").value, out=document.getElementById("probeOut");
+  const r=recognize(v);
+  if(!v.trim()){ out.textContent="(blank — never flagged, never converted)"; out.className="verdict"; }
+  else if(r){ out.textContent=`→ ${label(r.base,r.scale)} · ${baseInfo(r.base)[2]} · via ${r.via}`; out.className="verdict ok"; }
+  else { out.textContent="→ unrecognized (kept verbatim, flagged where shown)"; out.className="verdict bad"; }
+}
+document.getElementById("probe").addEventListener("input", renderProbe);
+
+function renderAll() {
+  renderOperands(); renderVS(); renderPlot(); renderUnmapped(); renderUnits(); renderProbe(); refreshUnit(); refreshProd(); refreshDer();
+}
+renderAll();
+</script>
