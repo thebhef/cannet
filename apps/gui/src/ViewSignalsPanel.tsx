@@ -236,7 +236,7 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
 
   // A source pick. No apply step and no local state: the host records
   // the choice and announces it as a DBC change, which the fetch above
-  // already listens for. The undo step is recorded here (task 129) —
+  // already listens for. The undo step is recorded here —
   // the inverse is the *pick* in force right now, read before the
   // write erases it: null when there was none, so undoing a first pick
   // returns the row to unresolved rather than to a pick of the old
@@ -297,7 +297,7 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
         unit: candidate.unit,
         dbcPath: candidate.dbcPath,
         // The undo step's inverse for the pick this rewrite drops —
-        // read from the row before the write erases it (task 129).
+        // read from the row before the write erases it.
         fromPickedDbc: row.pickedDbc,
       });
     },

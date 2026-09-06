@@ -113,7 +113,7 @@ export interface SignalRemap {
   /// The name they are all rewritten to.
   to: string;
   /// The pick recorded for the *from* signal today, if any — the undo
-  /// step's inverse for the pick this rewrite drops (task 129). Read
+  /// step's inverse for the pick this rewrite drops. Read
   /// by the caller from the row before the write erases it.
   fromPickedDbc?: string | null;
   /// The target definition's message name — what a view that records
@@ -135,7 +135,7 @@ export interface SignalRemapStores {
   updateElement: (id: string, patch: Partial<ProjectElement>) => void;
   signalColors: Readonly<Record<string, string>>;
   setSignalColor: (key: string, color: string | null) => void;
-  /// Record the whole rewrite as one undo step (task 129). Optional —
+  /// Record the whole rewrite as one undo step. Optional —
   /// a caller with no history (a test) just doesn't record.
   recordEdit?: (step: PanelEditStep) => void;
 }
@@ -445,7 +445,7 @@ export async function remapSignal(
   await invoke("set_signal_dbc_pick", { signal: fromKey, dbcPath: null }).catch(() => {});
 
   // One undo step for the whole host half; the element half coalesces
-  // with it through the gesture the caller opened (task 129).
+  // with it through the gesture the caller opened.
   stores.recordEdit?.({ undo: undoOps, redo: redoOps });
 }
 
@@ -573,7 +573,7 @@ export function acceptSignalDrift(
 }
 
 /// {@link acceptSignalDrift} bound to the live element registry, as one
-/// undo gesture (task 129) — what the repair surface calls.
+/// undo gesture — what the repair surface calls.
 export function useAcceptSignalDrift(): (accept: SignalDriftAccept) => void {
   const registry = useElementRegistry();
   const { entries, update } = registry;
@@ -601,7 +601,7 @@ export function useRemapSignal(): (remap: SignalRemap) => void {
   const gesture = useUndoGesture();
   return useCallback(
     (remap: SignalRemap) => {
-      // One gesture over the whole rewrite (task 129): the element
+      // One gesture over the whole rewrite: the element
       // patches' snapshot and the host half's step coalesce into one
       // undo entry. The gesture stays open across the async host tail
       // and closes only when the rewrite has finished.

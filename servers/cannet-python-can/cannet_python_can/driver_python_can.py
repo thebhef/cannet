@@ -1248,4 +1248,21 @@ def _frame_to_msg(frame: Frame):
     )
 
 
-__all__ = ["PythonCanChannel", "PythonCanDriver"]
+#: Public names for the two python-can seams above. The in-repo
+#: python-can *client* encodes frames the same way this sidecar does,
+#: and a second copy of that encoding could only drift from this one —
+#: so it imports these rather than growing its own.
+#:
+#: Note what ``frame_to_message`` deliberately leaves unset: this is the
+#: sidecar's transmit path, where a received frame's timestamp and
+#: direction have no meaning. A consumer decoding *received* frames
+#: supplies both.
+message_to_frame = _msg_to_frame
+frame_to_message = _frame_to_msg
+
+__all__ = [
+    "PythonCanChannel",
+    "PythonCanDriver",
+    "frame_to_message",
+    "message_to_frame",
+]

@@ -315,7 +315,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
   /// the 500 ms value poll that rebuilds the tree.
   const treeDataRef = useRef(tree);
   treeDataRef.current = tree;
-  // Every edit this panel makes records its undo step (task 129); the
+  // Every edit this panel makes records its undo step; the
   // inverse is read from the tree/row before the write erases it.
   const recordEdit = usePanelEditRecorder();
   const onPrimaryAction = useCallback(
@@ -757,7 +757,7 @@ function MessageRow({
 }: MessageRowProps) {
   const unknown = m.name == null;
   const recordEdit = usePanelEditRecorder();
-  /// Set or clear the period override, recording the step (task 129):
+  /// Set or clear the period override, recording the step:
   /// the inverse is the current override, or the clear when the row is
   /// tracking GenMsgCycleTime.
   const editPeriod = (periodMs: number | null) => {

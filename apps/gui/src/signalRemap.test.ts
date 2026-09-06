@@ -492,7 +492,7 @@ describe("remapSignal — the one operation", () => {
     ]);
   });
 
-  it("records the whole rewrite as one undo step carrying every inverse (task 129)", async () => {
+  it("records the whole rewrite as one undo step carrying every inverse", async () => {
     POOL = [
       {
         id: "f1",
