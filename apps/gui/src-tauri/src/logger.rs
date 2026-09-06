@@ -220,7 +220,7 @@ impl LoggerRuntime {
     }
 
     /// Every logger's status, in configuration order.
-    fn statuses(&self) -> Vec<LoggerStatus> {
+    pub(crate) fn statuses(&self) -> Vec<LoggerStatus> {
         let inner = self.lock();
         inner
             .configs

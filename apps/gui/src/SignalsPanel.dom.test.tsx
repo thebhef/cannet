@@ -169,6 +169,7 @@ const projectCtx: ProjectContextValue = {
   blfPath: null,
   onNewProject: () => {},
   onOpenProject: () => {},
+  onImportCapture: () => {},
   onSaveProject: () => {},
   onSaveProjectAs: () => {},
   onAddDbc: () => {},

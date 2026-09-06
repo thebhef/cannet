@@ -4429,6 +4429,122 @@ button.color-chip {
   cursor: not-allowed;
 }
 
+/* The logger folder's file gridview (ADR 0044): recursive .blf listing
+ * beneath the panel's controls. Row geometry mirrors `.trace-row` /
+ * `.blf-map-marker-row`'s cursor/selected tokens; the grid itself is not
+ * virtualized — a log folder is small enough to render every row. */
+.logger-file-grid-wrap {
+  margin-top: 0.4rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logger-file-grid {
+  flex: 1 1 auto;
+  min-height: 6rem;
+  overflow: auto;
+  border: 1px solid var(--border-dotted);
+  border-radius: 0.2rem;
+}
+/* Header and rows are the shared column layer's (`gridviewColumns`):
+   `.trace-header` / `.trace-row` carry the grid display, sticky header,
+   resize handles and horizontal padding; the tracks are inline from the
+   panel's column state. Only what is specific to this grid stays here. */
+.logger-file-grid .trace-header {
+  font-size: 0.68rem;
+}
+.logger-file-row {
+  align-items: center;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.logger-file-row > span {
+  padding-right: 0.5rem;
+}
+.logger-file-row.cursor {
+  background: var(--surface-button-hover);
+}
+.logger-file-row.selected {
+  background: var(--accent-selected-bg);
+  color: var(--text-on-accent);
+}
+.logger-file-row.selected .logger-file-cell {
+  color: var(--text-on-accent);
+}
+.logger-file-cell {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.logger-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.logger-file-row.dir .logger-file-name {
+  color: var(--text-primary);
+}
+.logger-file-caret {
+  border: 0;
+  background: none;
+  padding: 0 0.3rem 0 0;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.logger-file-dot {
+  color: var(--ok-text);
+}
+.logger-file-import-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.3rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 0.2rem;
+  color: inherit;
+  cursor: pointer;
+}
+.logger-file-import-btn:hover {
+  border-color: var(--border-default);
+  background: var(--surface-button-hover);
+}
+.logger-file-empty {
+  padding: 0.4rem;
+  color: var(--text-faint);
+  font-size: 0.78rem;
+}
+.logger-file-ctx {
+  position: fixed;
+  z-index: 1000;
+  background: var(--surface-pop);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px var(--shadow-modal);
+  min-width: 10rem;
+}
+.logger-file-ctx button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.logger-file-ctx button:hover {
+  background: var(--surface-button-hover);
+}
+
 /* Small color dot before the bus name in a signal row — matches the
  * bus's graph color so the source bus is identifiable at a glance.
  * Shape comes from `.color-chip-dot` (ColorChip.tsx); plot-bus-swatch
