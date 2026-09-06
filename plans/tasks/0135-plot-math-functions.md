@@ -228,3 +228,101 @@ The latch is **gone**, not kept beside it: `latch_bus_names` and the
 command arguments by key, so a caller still sending `busNames` is
 simply not read — nothing breaks on the way through the stack, but the
 frontend call sites added by the later phases have a key to drop.
+
+### 2026-09-16 — a math row's rate, and where its chips live (`task135-surfaces`)
+
+Owner-ordered on the 2026-09-16 queue walk, against two of phase 3's
+own recorded deviations ("both seem like they should be
+straightforward to resolve").
+
+#### (a) The rate column
+
+**Observation.** `signal_snapshot::select_math` set `rate: None` on
+every math row it built, with the reason written beside it: "a math
+series' cadence is its operands', which is not a fact about this
+series". So the `msg/s` column was blank for every computed row in a
+signal view, whatever the series actually did.
+
+**Hypothesis.** The cadence being the operands' makes it a fact about
+the *filled series*, not a reason there is no fact: the fold lays every
+computed sample on the union of the operands' timelines, so the filled
+pyramid has a real sample spacing — and `SignalCache::rate()` already
+measures exactly that for every other provenance. If `math_latest`
+reports it beside the newest sample, the column fills from the model
+with nothing derived in JS (CLAUDE.md § thin views).
+
+**Experiment 1 (red).**
+`a_math_rows_rate_is_the_cadence_its_operands_gave_it` folds a `Sum`
+over two operands carried by a 50-frame, 1 Hz capture and asserts the
+row's rate is `Some(1.0)` — the operands' cadence — and, beside it,
+that an `hline` reports `None`. It did not compile: `no field rate on
+type (SamplePoint, usize)`, the defect stated as a type fact, since the
+pair `math_latest` returned had no room for the answer.
+
+**Experiment 2 (falsification).** Two mutations, each run on its own
+against the pair of rate tests:
+
+| mutation | result |
+|---|---|
+| report `cache.rate()` unconditionally | the `hline` half fails — a constant reads `0.02` Hz, which is `2/span`, not a cadence |
+| keep `select_math`'s `rate: None` and only widen the tuple | `a_math_signal_is_a_row_of_a_signal_view` fails with `None` against `Some(9.5)` |
+
+So both halves are load-bearing: the measurement and the
+constant's exemption, and the pass-through into the row.
+
+**Conclusion / what landed.** `SignalCacheStore::math_latest` returns
+`MathLatest { newest, count, rate }` instead of a `(SamplePoint,
+usize)` pair — the math analogue of `FileSignalEntry`, whose statistics
+are read off the pyramid in the model for the same reason. `rate` is
+`SignalCache::rate()` except for a **capture-constant** (`MathFill`'s
+`constant`: an `hline`, a `statistic`), which is two points spanning
+the capture and has no cadence to report. `select_math` passes it into
+the row's `rate`, so the column reads through the same
+`formatMsgRate` every other row's does and the frontend derives
+nothing.
+
+#### (b) Where the chips live
+
+**Observation.** A math row's bus chips are rendered in the `msg` cell,
+and the bus cell rendered `mathBusLabel` — the same string the message
+cell already shows. The recorded reason for the placement was "because
+the bus column is hidden by default".
+
+**Hypothesis.** The placement is right and the *reason* is wrong, and
+what made it look arbitrary is the duplicate label. Two independent
+facts say the message cell is the home: it is this table's **provenance
+cell** — the one that speaks when bus / ECU / message cannot, which is
+why the file-backed badge is already in it — and it is the direct
+analogue of a plot side list's message line, which renders these very
+chips before this very label. Both of the owner's criteria (visible on
+a default panel; consistent with the plot side list) are then met by
+where they already are.
+
+**Experiment (red).** `names the contributing buses in the bus cell,
+and its rate in msg/s` opens the panel from a saved layout that shows
+both default-hidden columns and asserts the bus cell reads
+`Powertrain, Zonal` and holds no `Math`. It failed on the bus cell
+(`Math - Multiple Busses`) and passed on `msg/s` — the frontend was
+already rendering whatever the host served, which is the data that the
+blank column was the host's doing and not the view's. The chips'
+home is pinned in the same file by a cell-scoped assertion (`.col-msg`
+holds the swatches), so a future move has to argue with a test.
+
+**Conclusion / what landed.** The chips did not move. The bus cell now
+names the buses feeding the row — what a bus column names — instead of
+repeating the message-line label, and both cells carry the reason. The
+plot side list is untouched.
+
+#### Also on this branch
+
+The `busNames` residue this branch owns, from the standing project-bus
+map (entry above): `mathSignalsContext.tsx` no longer passes the map to
+`list_math_signals`, no longer publishes `mathBusNames` (nothing on the
+stack consumed it), and its module doc says what is now true. The
+project's buses stay a refetch **dependency** — a rename moves what a
+name-anchored pattern selects and `rbs_sync_project_buses` emits no
+`math-signals-changed` — the same treatment `DatabasePanel` got on
+`task135-editor`. The `--math-on-start` harness path in `App.tsx` was
+carrying the key into `define_math_signal` too, and drops it; the
+Database panel's DOM test that asserted the key is what now asserts the
+call has no argument at all.

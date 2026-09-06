@@ -415,12 +415,22 @@ pub(crate) fn fetch_signal_page_inner(
     };
     // The picks travel with the set: a snapshot row is a decoded value
     // like any other, so it resolves per signal (ADR 0054).
+    // The math model rides along: a math signal is a row of this view
+    // too, and its fill resolves membership through the same model the
+    // decode does — so the two cannot disagree inside one page.
+    let math_model = {
+        let guard = state.databases();
+        let m = state.math_model(&guard);
+        drop(guard);
+        m
+    };
     let model = crate::signal_fingerprint::DecodeModel::new(
         dbs.iter()
             .map(|(path, db, buses)| crate::signal_fingerprint::DbcScope { path, db, buses })
             .collect(),
         state.picks_snapshot(),
-    );
+    )
+    .with_math(math_model);
     // Shared, cached universe — rebuilding and re-sorting one entry per
     // signal per bus on every poll tick is what this cache exists to
     // avoid. The view's `sources` wiring is applied inside the selection
@@ -444,6 +454,16 @@ pub(crate) fn fetch_signal_page_inner(
         &selection,
         source_buses,
     )?);
+    // Math signals (`docs/CONTEXT.md`) are rows of this view too, on
+    // the same terms: computed rather than decoded, so their columns
+    // come from the registry and their own pyramid instead of from the
+    // trace window. Only a manual key selects one — a math series has
+    // no canonical path for a pattern to match — so the whole block is
+    // skipped for the overwhelmingly common view that names none.
+    let math_ids = signal_snapshot::selected_math_ids(&selection);
+    if !math_ids.is_empty() {
+        rows.extend(math_rows(state, &model, &math_ids, source_buses));
+    }
     // Sectioning subsumes the sort: rows sort *within* a section, so the
     // two cannot be separate passes.
     let rows = signal_snapshot::arrange_sections(rows, sections, sort_key, sort_dir, &names);
@@ -459,6 +479,43 @@ pub(crate) fn fetch_signal_page_inner(
         start: u64::try_from(off).unwrap_or(0),
         rows: page,
     })
+}
+
+/// The snapshot rows for the math signals `ids` names.
+///
+/// A math series is materialised by a serve and nothing else — its
+/// pyramid is session-scoped, not persisted — so the value columns are
+/// read through a fill, the same one a plot's window fetch drives. The
+/// fill is incremental with a watermark, so this costs the tail of what
+/// the operands have grown by since the last poll, not the capture. An
+/// id the registry no longer holds gets no row: the definition is gone,
+/// and the view's reference to it is repaired where it is owned.
+fn math_rows(
+    state: &AppState,
+    model: &crate::signal_fingerprint::DecodeModel<'_>,
+    ids: &[String],
+    source_buses: Option<&[String]>,
+) -> Vec<crate::ipc::SignalSnapshotRecord> {
+    let resolved: Vec<&crate::math_signals::ResolvedMath> =
+        ids.iter().filter_map(|id| model.math().get(id)).collect();
+    if resolved.is_empty() {
+        return Vec::new();
+    }
+    let queries: Vec<crate::signal_cache::CacheQuery<'_>> = resolved
+        .iter()
+        .map(|r| crate::signal_cache::CacheQuery {
+            bus_id: None,
+            message_id: 0,
+            extended: false,
+            signal_name: &r.definition.id,
+            file_backed: false,
+            math: true,
+        })
+        .collect();
+    let latest = state
+        .signal_caches
+        .math_latest(&queries, &state.trace_store, model);
+    signal_snapshot::select_math(&resolved, &latest, source_buses)
 }
 
 /// Join the selected descriptors with the trace window: one decoded
@@ -651,30 +708,40 @@ fn collect_signal_rows(
         .iter()
         .map(|&i| {
             let (bus, d) = &all[i];
-            let cell = cells.remove(&i);
-            SignalSnapshotRecord {
-                bus_id: bus.clone(),
-                transmitter: d.transmitter.clone(),
-                message_id: d.message_id,
-                extended: d.extended,
-                message_name: d.message_name.clone(),
-                signal_name: d.signal_name.clone(),
-                unit: d.unit.clone(),
-                is_enum: d.is_enum,
-                raw_field: cannet_dbc::is_raw_field(d.value_is_raw_integer, &d.unit, d.is_enum),
-                display_hex: d.display_hex,
-                value: cell.as_ref().map(|c| c.value),
-                raw: cell.as_ref().map(|c| c.raw),
-                label: cell.as_ref().and_then(|c| c.label.clone()),
-                rate: cell.as_ref().map(|c| c.rate),
-                count: cell.as_ref().map(|c| c.count),
-                time_seconds: cell.as_ref().map(|c| c.time_seconds),
-                // Stamped by `arrange_sections`, which runs next.
-                section: None,
-                file_backed: false,
-            }
+            snapshot_row(bus.as_deref(), d, cells.remove(&i).as_ref())
         })
         .collect()
+}
+
+/// One DBC-backed descriptor plus the cell the window join found for
+/// it (or `None` — the row still renders, blank), as a snapshot row.
+fn snapshot_row(
+    bus: Option<&str>,
+    d: &cannet_dbc::SignalDescriptor,
+    cell: Option<&SnapshotCell>,
+) -> SignalSnapshotRecord {
+    SignalSnapshotRecord {
+        bus_id: bus.map(str::to_string),
+        transmitter: d.transmitter.clone(),
+        message_id: d.message_id,
+        extended: d.extended,
+        message_name: d.message_name.clone(),
+        signal_name: d.signal_name.clone(),
+        unit: d.unit.clone(),
+        is_enum: d.is_enum,
+        raw_field: cannet_dbc::is_raw_field(d.value_is_raw_integer, &d.unit, d.is_enum),
+        display_hex: d.display_hex,
+        value: cell.map(|c| c.value),
+        raw: cell.map(|c| c.raw),
+        label: cell.and_then(|c| c.label.clone()),
+        rate: cell.map(|c| c.rate),
+        count: cell.map(|c| c.count),
+        time_seconds: cell.map(|c| c.time_seconds),
+        // Stamped by `arrange_sections`, which runs next.
+        section: None,
+        file_backed: false,
+        math: false,
+    }
 }
 
 /// The filter index `AppState` keeps live for the trace's current filtered

@@ -43,6 +43,20 @@
 /// *names* across the whole catalog to assign a color-wheel slot: it
 /// puts nothing on screen, and wherever a matched signal is displayed
 /// the view displaying it already pushes it.
+///
+/// **Math series push nothing either.** The panel these refs feed is a
+/// database-mapping surface: every status it can report is a statement
+/// about what a DBC now says (`view_signals.rs`). A **math** signal
+/// (`docs/CONTEXT.md`) is computed from a definition the project owns —
+/// no database ever bore on it, its unit is its definition's to set,
+/// and its `signalName` is that definition's stable id, so a row for it
+/// would name a GUID and flag a unit only its editor can change. The
+/// builders below drop math-provenance refs, which the frontend can do
+/// on its own because provenance rides on every persisted pick
+/// (`SignalRef.math`, `DraggableSignalRef.math`); the wire shape carries
+/// no math flag, and needs none. A *pattern* can never reach one either
+/// — the catalog these views match against (`list_signals`) holds only
+/// DBC-defined and file-backed signals.
 
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -127,7 +141,7 @@ export function plotViewSignalRefs(
   const seen = new Set<string>();
   for (const area of areas) {
     for (const s of area.signals) {
-      if (s.viaPattern) continue;
+      if (s.viaPattern || s.math) continue;
       seen.add(identityKey(s));
       out.push({
         busId: s.busId,
@@ -142,6 +156,7 @@ export function plotViewSignalRefs(
   }
   for (const area of effectiveAreas) {
     for (const s of area.signals) {
+      if (s.math) continue;
       const key = identityKey(s);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -161,7 +176,8 @@ export function signalsViewSignalRefs(
   keys: readonly DraggableSignalRef[],
   matches: readonly MatchedSignalRef[],
 ): ViewSignalRef[] {
-  const out: ViewSignalRef[] = keys.map((k) => ({
+  const picks = keys.filter((k) => !k.math);
+  const out: ViewSignalRef[] = picks.map((k) => ({
     busId: k.busId,
     messageId: k.messageId,
     extended: k.extended,
@@ -170,7 +186,7 @@ export function signalsViewSignalRefs(
     messageName: k.messageName,
     unit: k.unit,
   }));
-  const seen = new Set(keys.map(identityKey));
+  const seen = new Set(picks.map(identityKey));
   for (const m of matches) {
     const key = identityKey(m);
     if (seen.has(key)) continue;
