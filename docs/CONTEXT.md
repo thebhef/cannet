@@ -207,6 +207,19 @@ bound, and discarded whole when the capture changes.
 _Avoid_: "orphaned" / "dangling" — both imply there is no way back,
 and a park exists precisely because there is.
 
+**Logger**:
+A project element that writes the live capture to file for as long as
+it is **enabled** and something is **connected** — one panel per
+logger, holding a templated folder and file, a preview, and the file
+size it splits at. A logger writes BLF. Where **Save Capture** writes a slice of
+what has already been captured, a logger is a standing instruction
+that keeps writing as frames arrive. Its enabled flag *is* persisted
+with the project, deliberately unlike the RBS **Run** flag: logging
+writes locally and puts nothing on a bus, so opening a project can
+resume one without transmitting.
+_Avoid_: "recording" / "recorder" — the term is logger, and "capture"
+already names the data.
+
 **Trace import census**:
 The header-only pass over an entire capture file that runs when a file
 is picked, **before** any frame is imported (`scan_blf_channels` /

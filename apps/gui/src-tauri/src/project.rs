@@ -333,6 +333,11 @@ pub fn open_project(
             // makes "opening a project never transmits" true even when
             // the two projects share element ids.
             crate::rbs::stop_all_elements(&state);
+            // The loggers being replaced belong to the project that is
+            // closing, and their files are finished with it. The
+            // frontend pushes this project's set next, and a logger it
+            // left enabled starts again on connect.
+            crate::logger::stop_all(&app);
             // Load the host TX-message registry from
             // the project's pool. All periodics start stopped — reopen
             // never fires traffic onto a bus the user hasn't
@@ -391,6 +396,8 @@ pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_s
     // Leaving the project leaves its simulation: Run is session state
     // and a fresh project starts stopped.
     crate::rbs::stop_all_elements(&state);
+    // …and its loggers, whose files belong to the project being left.
+    crate::logger::stop_all(&app);
     // No project file, so no project identity to stamp a capture with,
     // and nothing on disk left to watch.
     *state.active_project_id() = None;

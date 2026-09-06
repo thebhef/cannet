@@ -92,6 +92,7 @@ const KIND_ORDER: Record<ProjectElementKind, number> = {
   rbs: 5,
   colormap: 6,
   generator: 7,
+  logger: 8,
 };
 
 /// Read the persisted collapse set, tolerating whatever a hand-edited

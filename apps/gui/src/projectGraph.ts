@@ -117,12 +117,13 @@ export function deriveGraph(
   }
 
   const busIds = new Set(buses.map((b) => b.id));
-  // Color-map (ADR 0029) and generator (ADR 0026) elements are ambient
-  // modifiers, not graph nodes — they never appear in the project graph
-  // or its wiring.
+  // Color-map (ADR 0029), generator (ADR 0026) and logger elements are
+  // ambient — they never appear in the project graph or its wiring. A
+  // logger writes the whole capture rather than consuming a selection
+  // from it, so there is no edge to draw.
   const graphElements = elements.filter(
-    (e): e is Exclude<ProjectElement, { kind: "colormap" | "generator" }> =>
-      e.kind !== "colormap" && e.kind !== "generator",
+    (e): e is Exclude<ProjectElement, { kind: "colormap" | "generator" | "logger" }> =>
+      e.kind !== "colormap" && e.kind !== "generator" && e.kind !== "logger",
   );
   const filterIds = new Set(
     graphElements.filter((e) => e.kind === "filter").map((e) => e.id),
