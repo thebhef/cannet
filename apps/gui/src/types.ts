@@ -610,6 +610,37 @@ export type ProjectElement =
       rules: GeneratorRule[];
     }
   | {
+      /// A project logger: writes the live capture to file for as long
+      /// as it is enabled and something is connected. Ambient like a
+      /// colormap — not a graph node and not wired through `sources`,
+      /// because it logs the capture, not a selection from it.
+      kind: "logger";
+      id: string;
+      name?: string;
+      /// Whether this logger should be writing whenever the project is
+      /// connected. **Persisted with the project**, deliberately unlike
+      /// the RBS Run flag (ADR 0028): arming a simulation puts frames on
+      /// a bus, whereas logging only writes locally — so a project left
+      /// with a logger enabled resumes logging when it next connects.
+      enabled: boolean;
+      /// Folder template. Tokens resolve as they do for an export name;
+      /// a relative result is rooted at the project directory.
+      folder: string;
+      /// File template, relative to the folder. Path separators are
+      /// allowed, so a template can give each run its own subdirectory;
+      /// either kind may be written, and the host resolves them to the
+      /// separator of the OS it runs on. The extension comes from the
+      /// format.
+      file: string;
+      /// The file format. Live logging is BLF; the field is here
+      /// because the project records what the panel's Format control
+      /// says, not because there is a second writer.
+      format: "blf";
+      /// The size at which the logger closes the file and opens the
+      /// next, in megabytes.
+      maxFileSizeMb: number;
+    }
+  | {
       kind: "transmit";
       id: string;
       name?: string;

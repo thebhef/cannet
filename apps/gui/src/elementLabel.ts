@@ -28,6 +28,8 @@ export function elementKindLabel(kind: ProjectElementKind): string {
       return "Color Map";
     case "generator":
       return "Generator";
+    case "logger":
+      return "Logger";
   }
 }
 

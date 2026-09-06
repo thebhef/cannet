@@ -719,6 +719,21 @@ impl BlfCaptureWriter {
         Ok(())
     }
 
+    /// Bytes this capture occupies on disk right now — the header plus
+    /// every `LOG_CONTAINER` flushed so far, lagging the appended
+    /// content by at most one buffered container.
+    ///
+    /// What a size-capped writer splits on: the compressed figure the
+    /// user's disk shows, available while the file is still open, which
+    /// [`FinishedCapture::byte_size`] is not. Returns 0 once
+    /// [`Self::finish`] has taken the file.
+    #[must_use]
+    pub fn bytes_on_disk(&self) -> u64 {
+        self.inner
+            .as_ref()
+            .map_or(0, format::writer::BlfFileWriter::bytes_on_disk)
+    }
+
     /// Flush the buffered objects and finalise the header in place.
     /// Returns the byte size and frame count for the host's
     /// system-message integration.

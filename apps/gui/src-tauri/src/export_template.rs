@@ -27,8 +27,14 @@
 //! relative result is rooted at the project directory when the project
 //! has one the user chose ([`TemplateContext::project_dir`]), and
 //! rejected otherwise.
+//!
+//! A template may write its path separators either way — a project is
+//! edited on one OS and opened on another — and every resolved result
+//! comes back in the separator of the OS this build runs on, so a
+//! preview shows and a logger writes the same path the platform's own
+//! file manager would.
 
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR, MAIN_SEPARATOR_STR};
 
 use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, Local, TimeZone, Utc};
@@ -93,6 +99,20 @@ pub(crate) fn slugify(name: &str) -> String {
     } else {
         out
     }
+}
+
+/// `text` with both path separators written as this OS's own — `\` on
+/// Windows, `/` everywhere else.
+///
+/// Template text is project data, so it travels between machines; the
+/// separator it was typed with says nothing about the machine resolving
+/// it. Rendering the result natively is what keeps a preview honest
+/// about the path the host will actually open. The cost is that a
+/// literal backslash cannot appear *in* a name on Unix — a template
+/// separator is a template separator on every platform.
+fn to_native_separators(text: &str) -> String {
+    let foreign = if MAIN_SEPARATOR == '\\' { '/' } else { '\\' };
+    text.replace(foreign, MAIN_SEPARATOR_STR)
 }
 
 /// `secs` (Unix-epoch seconds, fractional) as a local date-time. Out of
@@ -176,8 +196,9 @@ fn resolve_token(
 }
 
 /// Resolve every `{token}` / `{token:fmt}` in `template` against `ctx`.
-/// Text outside `{...}` passes through unchanged; an unterminated `{`
-/// (no matching `}`) is left as literal text rather than an error,
+/// Text outside `{...}` passes through unchanged apart from its path
+/// separators, which come back as this OS writes them; an unterminated
+/// `{` (no matching `}`) is left as literal text rather than an error,
 /// since there is nothing to interpret it as.
 pub(crate) fn resolve(
     template: &str,
@@ -211,7 +232,7 @@ pub(crate) fn resolve(
     }
     out.push_str(rest);
     Ok(Resolved {
-        text: out,
+        text: to_native_separators(&out),
         start_resolved_as_now,
     })
 }
@@ -545,6 +566,46 @@ mod tests {
     fn an_error_inside_a_folder_template_is_reported_as_such() {
         let err = resolve_folder("{logger}", &ctx("p", None, None), fixed_now()).unwrap_err();
         assert!(err.contains("logger"), "{err}");
+    }
+
+    // ---------- separators ----------
+
+    /// The separator this OS does *not* write paths with — what no
+    /// resolved template may still contain.
+    const FOREIGN_SEPARATOR: char = if std::path::MAIN_SEPARATOR == '\\' {
+        '/'
+    } else {
+        '\\'
+    };
+
+    #[test]
+    fn a_template_written_with_either_separator_resolves_in_the_host_os_separator() {
+        let ctx = ctx("Bench Rig", Some("Front ECU"), None);
+        let native = format!("logs{}front-ecu", std::path::MAIN_SEPARATOR);
+        for template in ["logs/{logger}", "logs\\{logger}"] {
+            let r = resolve(template, &ctx, fixed_now()).unwrap();
+            assert_eq!(r.text, native, "template {template}");
+        }
+    }
+
+    #[test]
+    fn a_folder_template_roots_in_the_host_os_separator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = ctx("p", Some("Front ECU"), None);
+        ctx.project_dir = Some(tmp.path());
+        for template in ["logs/{logger}", "logs\\{logger}"] {
+            let r = resolve_folder(template, &ctx, fixed_now()).unwrap();
+            assert_eq!(
+                Path::new(&r.text),
+                tmp.path().join("logs").join("front-ecu"),
+                "template {template}"
+            );
+            assert!(
+                !r.text.contains(FOREIGN_SEPARATOR),
+                "{template} resolved to {}",
+                r.text
+            );
+        }
     }
 
     // ---------- preview wire shape ----------
