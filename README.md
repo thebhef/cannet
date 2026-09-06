@@ -2628,6 +2628,46 @@ The MDF a save writes is always **sorted and finalized**, uncompressed
 `hd_start_time_ns`, which reproduces absolute nanoseconds exactly for
 any capture spanning less than about 26 days.
 
+**A logger writes the capture as it arrives.** Where Export names one
+file and writes a slice of what has already been captured, a **logger**
+is a standing instruction: a project element with its own panel, pointed
+at a folder and a file, that keeps writing to disk while it is switched
+on. Add one from the toolbar's Add menu or the palette (*Add logger*).
+
+The panel is the export dialog's controls, standing still:
+
+| control | what it takes |
+| --- | --- |
+| **Folder** | a template, resolved by the same tokens as an export name; a relative folder is rooted at the project directory, and the resolved path is shown under the field. *Browse…* fills it with a directory you pick. |
+| **File** | a template relative to the folder. Path separators are allowed, so `logs/{logger}` + `{start}/{now}` gives each run its own subdirectory. Either separator may be typed: what a template resolves to is written — and shown — in the separator of the OS cannet is running on. The `.blf` extension is appended. |
+| **Preview** | what the file will be called, as a label — the host's answer, with the reason in its place when the template is wrong. |
+| **Max size** | megabytes, default 500 — the size at which the file is closed and the next one opened. |
+
+`{logger}` is a fifth token, available only inside a logger: the logger's
+own name, slugified. Its `{now}` is the moment logging *started*, not the
+moment the panel repainted, so every file of one run shares it.
+
+**A logger writes Vector BLF**, and the panel says so by having no
+format control at all: a select with one choice asks a question that has
+one answer. It comes back when there is a second format to log in.
+Export still writes either BLF or MDF — that choice is real.
+
+**Logging runs exactly while the logger is enabled and something is
+connected.** Connecting starts it, disconnecting stops it, switching it
+on while connected starts it at once, and switching it off stops it. The
+folder and the size cap are locked while a file is open —
+they are what that file is — while the File template stays editable,
+because it only takes effect at the next start. Unlike the RBS **Run**
+flag, the enabled flag **is saved with the project**: logging writes
+locally and puts nothing on a bus, so a project left with a logger
+enabled starts logging again the next time it connects.
+
+**Reaching the size cap closes the file and opens the next**, with
+`-002`, `-003`… appended to the last path segment before its extension
+(`bench.blf` → `bench-002.blf`). A run that starts where a file already
+sits takes the next suffix the same way, so a second run never
+overwrites the first.
+
 **Bus assignment governs decode**. Each DBC entry in the project panel
 grows a row of checkboxes — one per defined logical bus — that control
 which buses the DBC decodes for. A DBC with no boxes checked is

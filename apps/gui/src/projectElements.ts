@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 
+import { normalizeLoggerFields } from "./logger";
 import type { ColorRule, GeneratorRule, ProjectElement, ProjectElementKind } from "./types";
 import type { TraceState } from "./trace";
 
@@ -85,7 +86,8 @@ export function isProjectElement(v: unknown): v is ProjectElement {
       o.kind === "filter" ||
       o.kind === "rbs" ||
       o.kind === "colormap" ||
-      o.kind === "generator") &&
+      o.kind === "generator" ||
+      o.kind === "logger") &&
     typeof o.id === "string"
   );
 }
@@ -145,6 +147,13 @@ export function normalizeElement(el: ProjectElement): ProjectElement {
       signalName: typeof o.signalName === "string" ? o.signalName : "",
       rules: normalizeColorRules(o.rules),
     };
+  }
+  if (el.kind === "logger") {
+    // A logger writes the capture; it consumes no producer, so no
+    // `sources`. Its fields are coerced defensively — a malformed blob
+    // loads as an idle logger with the defaults, never as one that
+    // starts writing somewhere unexpected.
+    return { ...el, name, ...normalizeLoggerFields(el) };
   }
   if (el.kind === "generator") {
     // Signal-name generator rules (ADR 0026): ambient like a colormap,

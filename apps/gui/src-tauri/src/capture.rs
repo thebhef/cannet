@@ -1742,7 +1742,7 @@ const DBC_MIME_TYPE: &str = "application/vnd.vector.dbc";
 /// channel is the index of `frame.bus_id` in that list, or the
 /// frame's wire-level channel if the bus isn't listed (or the
 /// frame is unassigned).
-fn raw_to_core_frame(
+pub(crate) fn raw_to_core_frame(
     frame: &trace_store::RawTraceFrame,
     buses: &[String],
 ) -> Result<CoreCanFrame, String> {

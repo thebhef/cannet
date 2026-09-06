@@ -45,6 +45,11 @@ pub struct BlfFileWriter {
     /// Running uncompressed inner-byte count — what the final
     /// `FileStatistics.uncompressed_file_size` reports.
     uncompressed_size: u64,
+    /// Bytes actually on disk: the fixed header plus every
+    /// `LOG_CONTAINER` flushed so far. Counted rather than read back
+    /// from the file handle so [`Self::bytes_on_disk`] costs nothing
+    /// per call — a size-capped writer asks for it often.
+    on_disk_size: u64,
 }
 
 impl BlfFileWriter {
@@ -68,7 +73,24 @@ impl BlfFileWriter {
             last_unix_nanos: None,
             object_count: 0,
             uncompressed_size: 0,
+            on_disk_size: FILE_STATISTICS_MIN_BYTES as u64,
         })
+    }
+
+    /// Bytes this writer has put on disk so far: the header plus every
+    /// flushed `LOG_CONTAINER`. Objects still in the scratch buffer are
+    /// not counted — they are not on disk yet — so the value lags the
+    /// appended content by at most one container
+    /// ([`DEFAULT_CONTAINER_BUFFER_BYTES`] uncompressed) and equals
+    /// [`Self::finish`]'s return value once the last container is out.
+    ///
+    /// It exists for a writer that has to stop at a size: a live logger
+    /// splitting at a byte cap needs the on-disk figure — the compressed
+    /// one the user's disk sees — and cannot get it from
+    /// `FileStatistics`, which is only correct after `finish`.
+    #[must_use]
+    pub fn bytes_on_disk(&self) -> u64 {
+        self.on_disk_size
     }
 
     /// If the anchor is not yet set, set it to `candidate` and return
@@ -150,6 +172,7 @@ impl BlfFileWriter {
         let bytes = log_container::encode(&self.buffer, COMPRESSION_ZLIB)
             .map_err(|e| io::Error::other(format!("LOG_CONTAINER encode: {e}")))?;
         self.file.write_all(&bytes)?;
+        self.on_disk_size = self.on_disk_size.saturating_add(bytes.len() as u64);
         self.buffer.clear();
         Ok(())
     }
@@ -283,6 +306,51 @@ mod tests {
             }
         }
         assert_eq!(count, 32);
+    }
+
+    /// `bytes_on_disk` counts the header and every flushed container,
+    /// and agrees with `finish`'s file size once the last container is
+    /// out. A size-capped logger splits on this number, so it has to be
+    /// the real on-disk figure and it has to move as the file grows.
+    #[test]
+    fn bytes_on_disk_tracks_the_header_and_the_flushed_containers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sized.blf");
+        let mut writer = BlfFileWriter::create(&path).unwrap();
+        assert_eq!(
+            writer.bytes_on_disk(),
+            FILE_STATISTICS_MIN_BYTES as u64,
+            "a fresh file is its header",
+        );
+        let base_ns = 1_700_000_000_u64 * 1_000_000_000;
+        writer.set_start_if_unset(base_ns).unwrap();
+        assert_eq!(
+            writer.bytes_on_disk(),
+            FILE_STATISTICS_MIN_BYTES as u64,
+            "latching the anchor rewrites the header in place, it does not grow the file",
+        );
+        // Enough objects to force several container flushes.
+        for i in 0..20_000u32 {
+            let m = build_can_message2(u64::from(i), 1, 0, 8, 0x100, vec![0xAB; 8]);
+            writer
+                .append_object(&encode_can_message2(&m), base_ns + u64::from(i))
+                .unwrap();
+        }
+        let mid = writer.bytes_on_disk();
+        assert!(
+            mid > FILE_STATISTICS_MIN_BYTES as u64,
+            "containers have been flushed: {mid}",
+        );
+        let size = writer.finish().unwrap();
+        assert!(
+            size >= mid,
+            "finish only adds the last container: {size} < {mid}"
+        );
+        assert_eq!(
+            size,
+            std::fs::metadata(&path).unwrap().len(),
+            "and the number is what the filesystem reports",
+        );
     }
 
     /// The anchor reaches disk when it is latched, not when the file is

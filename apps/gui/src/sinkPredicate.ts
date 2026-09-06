@@ -36,7 +36,8 @@ export function buildSinkPredicate(
     sink.kind === "transmit" ||
     sink.kind === "rbs" ||
     sink.kind === "colormap" ||
-    sink.kind === "generator"
+    sink.kind === "generator" ||
+    sink.kind === "logger"
   ) {
     return null;
   }

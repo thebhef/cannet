@@ -62,6 +62,13 @@ import { exportRangeNs, type RangeEvent } from "./exportRange";
 import { LoadProgressChip } from "./LoadProgressChip";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { GeneratorPanel } from "./GeneratorPanel";
+import { LoggerPanel } from "./LoggerPanel";
+import {
+  DEFAULT_LOGGER_FILE,
+  DEFAULT_LOGGER_FOLDER,
+  DEFAULT_LOGGER_MAX_MB,
+  loggerConfigs,
+} from "./logger";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DatabasePanel } from "./DatabasePanel";
 import { ViewSignalsPanel } from "./ViewSignalsPanel";
@@ -169,6 +176,7 @@ import {
   PROJECT_PANEL_ID,
   COLORMAP_PANEL_COMPONENT,
   GENERATOR_PANEL_COMPONENT,
+  LOGGER_PANEL_COMPONENT,
   RBS_PANEL_COMPONENT,
   RBS_SIGNALS_PANEL_COMPONENT,
   SETTINGS_PANEL_COMPONENT,
@@ -296,6 +304,7 @@ const DOCK_COMPONENTS = {
   [RBS_SIGNALS_PANEL_COMPONENT]: RbsSignalsPanel,
   [COLORMAP_PANEL_COMPONENT]: ColorMapPanel,
   [GENERATOR_PANEL_COMPONENT]: GeneratorPanel,
+  [LOGGER_PANEL_COMPONENT]: LoggerPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DatabasePanel,
@@ -834,6 +843,19 @@ export function App() {
         // Signal-name generator rules (ADR 0026): written in its own
         // editor, so a fresh one claims no signal.
         return { kind, id, name, rules: [] };
+      case "logger":
+        // A fresh logger is idle: it writes nothing until the user
+        // enables it, and then only while something is connected.
+        return {
+          kind,
+          id,
+          name,
+          enabled: false,
+          folder: DEFAULT_LOGGER_FOLDER,
+          file: DEFAULT_LOGGER_FILE,
+          format: "blf",
+          maxFileSizeMb: DEFAULT_LOGGER_MAX_MB,
+        };
       default:
         return { kind, id, name, sources: ["*"] };
     }
@@ -3067,6 +3089,24 @@ export function App() {
     }
     rbsHostStateRef.current = current;
   }, [registry, queueRbsOp]);
+  // --- Logger host lifecycle ---
+  // Push the project's loggers whenever the set or any of their fields
+  // changes, project open included. The host reconciles from there — it
+  // owns "enabled and connected", so nothing here starts or stops a
+  // write. `project` is what `{project}` resolves against and `buses` is
+  // the ordered list whose positions become BLF channel numbers, the
+  // same mapping Save Capture uses.
+  const loggers = useMemo(
+    () => loggerConfigs(registry.map((e) => e.element)),
+    [registry],
+  );
+  useEffect(() => {
+    void invoke("set_loggers", {
+      loggers,
+      project: projectName(projectPath) ?? "capture",
+      buses: buses.map((b) => b.id),
+    }).catch(() => {});
+  }, [loggers, buses, projectPath]);
   // Keep every element-backed dockview tab title in lockstep with the
   // model-owned name (ADR 0019): covers rename from the project
   // panel, project open (layouts saved with stale titles), and the
@@ -3214,6 +3254,7 @@ export function App() {
     "panel.add.rbs": () => addPanel("rbs"),
     "panel.add.colormap": () => addPanel("colormap"),
     "panel.add.generator": () => addPanel("generator"),
+    "panel.add.logger": () => addPanel("logger"),
     "project.saveAll": () => void handleSaveAllRef.current(),
     "project.clearColors": () => setConfirmingClearColors(true),
     // Both outcomes — what was added, or why it couldn't be — are

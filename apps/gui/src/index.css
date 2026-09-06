@@ -4346,6 +4346,89 @@ button.color-chip {
   align-self: flex-start;
 }
 
+/* Project logger panel: the export dialog's controls, standing still.
+ * One label column so Folder / File / Preview / Max size read as a
+ * stack, with the resolved folder hanging under its field. */
+.logger-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  overflow: auto;
+}
+.logger-head {
+  display: flex;
+  align-items: center;
+}
+.logger-switch {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text-primary);
+}
+.logger-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.logger-row > label:first-child,
+.logger-row > .logger-lbl {
+  flex: 0 0 4.5rem;
+  color: var(--text-muted);
+}
+.logger-row > input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--surface-row);
+  color: var(--text-primary);
+  border: 1px solid var(--border-dotted);
+  border-radius: 0.2rem;
+  padding: 0.2rem 0.3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.logger-max {
+  width: 5rem;
+  background: var(--surface-row);
+  color: var(--text-primary);
+  border: 1px solid var(--border-dotted);
+  border-radius: 0.2rem;
+  padding: 0.2rem 0.3rem;
+}
+.logger-preview {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.logger-resolved {
+  margin-left: 4.9rem;
+  margin-top: -0.25rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.logger-resolved.bad {
+  color: var(--danger-text);
+}
+.logger-hint {
+  color: var(--text-faint);
+  font-size: 0.75rem;
+}
+.logger-message {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+.logger-panel input:disabled,
+.logger-panel button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Small color dot before the bus name in a signal row — matches the
  * bus's graph color so the source bus is identifiable at a glance.
  * Shape comes from `.color-chip-dot` (ColorChip.tsx); plot-bus-swatch
