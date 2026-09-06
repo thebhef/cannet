@@ -79,6 +79,7 @@ export const ICON_NAMES = [
   "goto",
   "edit",
   "link",
+  "help",
   "x",
 ] as const;
 
@@ -127,6 +128,11 @@ export const ICON_REGISTRY: Readonly<Record<IconName, readonly IconShape[]>> = {
     { tag: "path", d: "M4.5 1.5v3M9.5 1.5v3" },
     { tag: "path", d: "M3 4.5h8v2.5a4 4 0 0 1-8 0z" },
     { tag: "path", d: "M7 11v1.8" },
+  ],
+  help: [
+    { tag: "circle", cx: 7, cy: 7, r: 5.5 },
+    { tag: "path", d: "M5.4 5.6c0-1 .7-1.8 1.6-1.8s1.6.7 1.6 1.5c0 1.3-1.6 1.4-1.6 2.6" },
+    { tag: "path", d: "M7 10v.2" },
   ],
   clear: [{ tag: "path", d: "M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.7 8h5.6l.7-8" }],
   plus: [{ tag: "path", d: "M7 2.5v9M2.5 7h9" }],
