@@ -24,6 +24,10 @@ server sees the same client whichever language it is talking to:
   goes on. Every other code — including one this build does not
   recognise, so a future variant cannot be swallowed in silence — ends
   the session and is raised to the reader.
+- **Delivered timestamps are corrected for the peer's clock**, via the
+  SNTP probe :mod:`cannet_python_client.clock` runs over this same
+  stream. A peer that never answers degrades to raw stamps rather than
+  holding a session up.
 
 Frame encoding is the sidecar's, imported rather than reimplemented:
 `cannet_python_can` holds the checked-in gencode and the
@@ -38,6 +42,7 @@ import dataclasses
 import logging
 import queue
 import threading
+import time
 from collections.abc import Iterator, Sequence
 from typing import Any
 
@@ -48,7 +53,7 @@ from cannet_python_can.driver import Frame
 from cannet_python_can.driver_python_can import frame_to_message, message_to_frame
 from cannet_python_can.server.helpers import frame_to_proto, proto_to_frame
 
-from . import tls
+from . import clock, tls
 from .trust import ServerTarget
 
 _log = logging.getLogger(__name__)
@@ -69,6 +74,18 @@ _PER_FRAME_CODES = frozenset(
 
 #: How long the constructor waits for an allocation before giving up.
 DEFAULT_OPEN_TIMEOUT_S = 15.0
+
+#: How long a one-shot `ListInterfaces` call (used by detection) waits
+#: for a server to answer. Short: a server that is off or unreachable
+#: must not eat much of the caller's own detection budget.
+DEFAULT_LIST_TIMEOUT_S = 2.0
+
+
+def _wall_clock_ns() -> int:
+    """Wall-clock nanoseconds since the Unix epoch — the clock the
+    wire's timestamps are on, and therefore the one whose distance from
+    the server's is worth measuring."""
+    return time.time_ns()
 
 
 class SessionError(Exception):
@@ -222,6 +239,27 @@ def open_channel(target: ServerTarget, timeout: float) -> grpc.Channel:
     )
 
 
+def list_interfaces(target: ServerTarget, timeout: float) -> list[pb.Interface]:
+    """One-shot ``ListInterfaces`` against ``target``: dial, ask, hang up.
+
+    Used by detection (:func:`cannet_python_client.bus.CannetBus._detect_available_configs`),
+    which needs a snapshot and nothing else — no ``Session``, no
+    subscribe. The channel opens and closes within this call, same as
+    the Rust client's own ``list_interfaces``.
+    """
+    channel = open_channel(target, timeout)
+    try:
+        stub = pb_grpc.CannetServerStub(channel)
+        response = stub.ListInterfaces(
+            pb.ListInterfacesRequest(),
+            timeout=timeout,
+            metadata=_bearer_metadata(target),
+        )
+        return list(response.interfaces)
+    finally:
+        channel.close()
+
+
 class _EndOfStream:
     """Queue sentinel: the response stream is over."""
 
@@ -247,6 +285,11 @@ class Session:
         self.requested_id = interface_id
         self.rejections = PerFrameErrors()
         self.controller_state: int | None = None
+        #: What this session has learned about the peer's clock (see
+        #: :mod:`cannet_python_client.clock`). Readable from any thread;
+        #: `Message.timestamp` values delivered by :meth:`recv` are
+        #: already corrected by it.
+        self.clock = clock.SessionClock()
 
         self._allocates = (
             wants_allocation(interface_id) if allocates is None else allocates
@@ -257,6 +300,18 @@ class Session:
         self._ready = threading.Event()
         self._failure: BaseException | None = None
         self._closing = threading.Event()
+
+        # Guards `_slew` (touched by every delivered frame *and* by the
+        # clock thread closing a round) and the round's own sample
+        # buffer (touched by the clock thread *and* by `_handle` on the
+        # pump thread as replies arrive). One lock rather than two: the
+        # two thread's critical sections never overlap for long enough
+        # for that to cost anything real.
+        self._clock_lock = threading.Lock()
+        self._slew = clock.OffsetSlew()
+        self._clock_samples: list[clock.ClockSample] = []
+        self._clock_round_active = False
+        self._clock_round_complete = threading.Event()
 
         self._channel = open_channel(target, timeout)
         stub = pb_grpc.CannetServerStub(self._channel)
@@ -269,6 +324,14 @@ class Session:
             target=self._pump, name="cannet-session", daemon=True
         )
         self._worker.start()
+        # The clock probe runs alongside everything else rather than
+        # gating readiness: a session must come up at the speed of its
+        # subscribes, and a peer that never answers must cost nothing
+        # but a clock left at `STATUS_UNSUPPORTED` once its round closes.
+        self._clock_worker = threading.Thread(
+            target=self._clock_loop, name="cannet-clock", daemon=True
+        )
+        self._clock_worker.start()
 
         # An ordinary subscribe is complete once it is sent, and the
         # constructor deliberately does not look at `_failure` on the
@@ -394,6 +457,8 @@ class Session:
                 envelope.log.source,
                 envelope.log.message,
             )
+        elif body == "clock_reply":
+            self._handle_clock_reply(envelope.clock_reply)
 
     def _handle_batch(self, batch: pb.FrameBatch) -> None:
         if not batch_belongs(
@@ -404,13 +469,38 @@ class Session:
             return
         for proto_frame in batch.frames:
             try:
-                self._inbox.put(_proto_to_message(proto_frame))
+                frame = proto_to_frame(proto_frame)
+                # The one place the peer's clock is corrected for.
+                # Everything downstream sees a frame like any other
+                # from any other source, which is what keeps a
+                # pre-corrected source just a source.
+                with self._clock_lock:
+                    corrected_ns = self._slew.correct(frame.timestamp_ns)
+                    applied_ns = self._slew.applied_ns()
+                self.clock.publish_applied(applied_ns)
+                message = frame_to_message(frame)
+                message.timestamp = corrected_ns / 1_000_000_000
+                message.is_rx = frame.is_rx
             except ValueError as exc:
                 # An undecodable frame is the wire disagreeing with us
                 # about its own encoding; carrying on would deliver
                 # silently wrong frames.
                 self._fail(SessionError(f"undecodable frame: {exc}"))
                 return
+            self._inbox.put(message)
+
+    def _handle_clock_reply(self, reply: pb.ClockReply) -> None:
+        # t4 first: anything done before sampling it lands in the
+        # measured delay.
+        t4 = _wall_clock_ns()
+        with self._clock_lock:
+            if not self._clock_round_active:
+                return
+            self._clock_samples.append(clock.sample(reply.t1, reply.t2, reply.t3, t4))
+            complete = len(self._clock_samples) >= clock.CLOCK_PROBE_COUNT
+        if complete:
+            # A complete round has no reason to wait out its deadline.
+            self._clock_round_complete.set()
 
     def _handle_error(self, error: pb.Error) -> None:
         if is_per_frame_error(error.code):
@@ -434,6 +524,62 @@ class Session:
             )
         )
 
+    # --- the clock probe ------------------------------------------------
+    #
+    # A dedicated thread rather than folding this into `_pump`: replies
+    # arrive on the pump thread as they come, but *deciding a round is
+    # over* needs a deadline that fires whether or not a reply ever
+    # does, and Python has no single-thread equivalent of the Rust
+    # client's `tokio::select!` over both a stream and a timer. The
+    # policy is unchanged — send a burst, wait, fold to one measurement,
+    # keep asking a peer that has ever answered, stop asking one that
+    # never has (see `cannet_python_client.clock` for why).
+
+    def _send_probe(self) -> None:
+        self._outbox.put(pb.Envelope(clock_probe=pb.ClockProbe(t1=_wall_clock_ns())))
+
+    def _run_probe_round(self) -> None:
+        with self._clock_lock:
+            self._clock_samples = []
+            self._clock_round_active = True
+        self._clock_round_complete.clear()
+        for i in range(clock.CLOCK_PROBE_COUNT):
+            if self._closing.is_set():
+                break
+            self._send_probe()
+            if i < clock.CLOCK_PROBE_COUNT - 1 and self._closing.wait(
+                clock.CLOCK_PROBE_SPACING_S
+            ):
+                break
+        if not self._closing.is_set():
+            # Woken early once every probe has an answer (see
+            # `_handle_clock_reply`), or by `close()` — either way there
+            # is nothing left to wait for.
+            self._clock_round_complete.wait(clock.CLOCK_PROBE_DEADLINE_S)
+        with self._clock_lock:
+            self._clock_round_active = False
+            samples = self._clock_samples
+        if self._closing.is_set():
+            return
+        measured = self.clock.settle_round(samples, _wall_clock_ns())
+        if measured is not None:
+            with self._clock_lock:
+                self._slew.retarget(measured.offset_ns)
+                applied_ns = self._slew.applied_ns()
+            self.clock.publish_applied(applied_ns)
+
+    def _clock_loop(self) -> None:
+        while True:
+            self._run_probe_round()
+            if self._closing.is_set():
+                return
+            if not self.clock.ever_measured():
+                # This peer does not recognise the envelopes; asking
+                # again inside this session would not change that.
+                return
+            if self._closing.wait(clock.CLOCK_REPROBE_INTERVAL_S):
+                return
+
     # --- teardown ------------------------------------------------------
 
     def close(self) -> None:
@@ -441,11 +587,15 @@ class Session:
         if self._closing.is_set():
             return
         self._closing.set()
+        # Wake a clock thread waiting out a round's deadline; it checks
+        # `_closing` as soon as it wakes and returns without settling.
+        self._clock_round_complete.set()
         self._outbox.put(None)
         # Best-effort: an already-dead stream is exactly what we wanted.
         with contextlib.suppress(Exception):
             self._responses.cancel()
         self._worker.join(timeout=5.0)
+        self._clock_worker.join(timeout=5.0)
         self._channel.close()
 
 
@@ -454,22 +604,6 @@ _LOG_LEVELS = {
     pb.LOG_LEVEL_WARN: logging.WARNING,
     pb.LOG_LEVEL_ERROR: logging.ERROR,
 }
-
-
-def _proto_to_message(proto_frame: pb.Frame) -> Any:
-    """Wire ``Frame`` -> ``can.Message``, through the sidecar's mappers.
-
-    ``frame_to_message`` is the sidecar's transmit path, where a
-    timestamp and a direction have no meaning, so it sets neither; both
-    are the point of a received frame and are applied here. The wire
-    carries Unix-epoch nanoseconds and python-can carries Unix-epoch
-    seconds as a float.
-    """
-    frame = proto_to_frame(proto_frame)
-    message = frame_to_message(frame)
-    message.timestamp = frame.timestamp_ns / 1_000_000_000
-    message.is_rx = frame.is_rx
-    return message
 
 
 def _message_to_proto(message: Any) -> pb.Frame:

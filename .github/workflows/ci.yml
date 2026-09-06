@@ -166,6 +166,18 @@ jobs:
       - run: uv run mypy
       - run: uv run pytest
 
+      # `cannet_python_can/_proto` is checked in so neither this
+      # package nor `cannet-python-client` (which imports it by path
+      # dependency) needs a `protoc` install, and it is the one
+      # encoding of the wire in the repository. Regenerating it here
+      # and diffing the tree is the simplest deterministic guard against
+      # someone editing `cannet.proto` without re-running the script
+      # that produces it: no drift means no diff.
+      - name: Check the checked-in gencode matches cannet.proto
+        run: |
+          uv run --extra dev bash scripts/regen_proto.sh
+          git diff --exit-code -- cannet_python_can/_proto
+
   python-client:
     name: Python client (ruff + mypy + pytest)
     runs-on: ubuntu-latest

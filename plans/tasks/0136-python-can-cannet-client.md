@@ -113,6 +113,77 @@ four hooks in `.pre-commit-config.yaml`. The job builds
 `cannet-server` and checks out LFS, because a suite that silently
 skipped its integration half would be worth very little.
 
+### 2026-09-06 — phase 2 of 2, "clock + detection" (branch `task136-clock-detect`)
+
+Criteria **3, 4** and the gencode drift-guard half of **6** are met;
+**7** picked up the two doc sections its new behaviour needed. No Rust
+or frontend code changed — this phase is entirely the client package,
+`.github/workflows/ci.yml`, and this file.
+
+**Clock sync (criterion 3).** `cannet_python_client/clock.py` is a
+straight port of `crates/cannet-client/src/clock.rs`'s math and state
+machine — `ClockSample`/`sample`/`best_sample` (RFC 4330 § 5),
+`SessionClock` (the per-session record, thread-safe via one lock
+instead of an atomic + mutex split — Python has no data race on a
+single attribute read, so the extra type wasn't worth carrying over),
+and `OffsetSlew` (the bounded-rate correction). 27 tests port the
+Rust suite's cases 1:1, minus the `u64`/`i128` overflow-saturation
+tests: Python integers don't overflow, so there was nothing there to
+pin. `Session` in `session.py` drives it from a dedicated
+`cannet-clock` thread rather than folding it into the `_pump` thread's
+receive loop — Python has no equivalent of `tokio::select!` over a
+stream and a timer at once, and a thread with blocking waits is the
+straightforward way to get the same two guarantees: a session comes
+up at the speed of its subscribe (the probe never gates readiness),
+and a peer that never answers a round costs nothing but an
+`Unsupported`/`STATUS_UNSUPPORTED` reading once the round's 2 s
+deadline passes. `close()` wakes that thread immediately via the same
+event the round waits on, so shutdown never pays the deadline.
+`Session._handle_batch` applies the correction to every delivered
+frame before it reaches `recv`; `Session.clock` is the read surface,
+matching `cannet-client`'s `Session::clock()`. Not ported:
+`ProbeRounds`, the Rust state machine for alternating a single timer
+between "await this round's replies" and "wait for the next round" —
+a dedicated thread just runs that as a loop with blocking waits, and
+carrying the class over would have meant re-deriving in Python a
+design that exists to work around Rust's single-timer constraint,
+which this code doesn't have. `tests/test_session_clock.py` proves
+both halves against real wire behaviour: a `debug vbus` server's
+probe gets measured within the round, and — against a fake in-process
+gRPC service that answers `Subscribe` but drops every `ClockProbe`,
+because neither debug server can be made to do that — a session
+delivers its frame and closes in well under the 2 s deadline, with
+the timestamp unmodified.
+
+**Detection (criterion 4).** `session.list_interfaces()` is the
+one-shot `ListInterfaces` helper phase 1 left as a gap: dial, ask,
+hang up, reusing `open_channel`'s TLS-pinning path. `bus._detect_configs`
+takes a trust-store mapping the way `trust.resolve` does (the test
+seam) and is what `CannetBus._detect_available_configs()` — the
+`BusABC` hook behind `can.detect_available_configs()` — calls with the
+real store. A server that raises for any reason (unreachable, refused
+pin, not trusted) is skipped rather than failing the scan, matching
+the ruling. Returned configs carry a `server` key beyond what
+`can.typechecking.AutoDetectedConfig` declares — this interface can't
+be reopened without it — so the static method's return is a `cast`,
+documented as such; the internal helper stays a plain `list[dict]` so
+the extra key needs no per-call `# type: ignore`.
+
+**Gencode drift guard (criterion 6, remainder).** A step in the
+`python` (sidecar) CI job re-runs `scripts/regen_proto.sh` — already
+the contributor path for editing `cannet.proto` — and
+`git diff --exit-code`s the tree. No new tooling, and the check is as
+strong as the regeneration itself already is. Verified locally
+content-clean (`git diff --ignore-space-at-eol` reports nothing); a
+byte-for-byte local run showed CRLF-only churn from Python's text-mode
+write on Windows, irrelevant to the `ubuntu-latest` runner this job
+actually uses.
+
+**Docs (criterion 7).** The package README gained "Clock correction"
+and "Detecting servers" sections; the top-level README already named
+the package and its test commands from phase 1 and needed nothing
+further.
+
 ## Blockers / side effects
 
 - **`cargo fmt --all --check` was already red on `feedback-capture`**, in
@@ -128,3 +199,7 @@ skipped its integration half would be worth very little.
   Fixed here: every one was a bare parenthetical carrying only the task
   number, so dropping it loses nothing. The `comment-references` grep is
   clean over `apps/` and `crates/`.
+- **(phase 2) `cargo fmt --all --check` is still red** on the same file,
+  for the same reason — re-checked, not newly introduced; this phase
+  touched no Rust. The `comment-references` grep is still clean,
+  including over this phase's new files.
