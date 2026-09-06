@@ -26,6 +26,8 @@ const invoke = vi.hoisted(() =>
     if (cmd === "capture_extent") {
       return { firstNs: null, liveEdgeNs: null, sessionStartNs: 1_700_000_000_000_000_000, frameCount: 0 };
     }
+    if (cmd === "list_logger_files") return [];
+    if (cmd === "reveal_in_file_manager") return null;
     if (cmd === "preview_export_template") {
       const template = String(args?.template);
       if (template.includes("{nope}")) {
@@ -62,9 +64,11 @@ import { ElementRegistryContext, type ElementRegistry, type RegistryEntry } from
 import { freshTrace } from "./trace";
 import type { ProjectElement } from "./types";
 
+const onImportCapture = vi.fn();
 const projectCtx = {
   projectPath: "C:\\proj\\bench.cannet_prj",
   buses: [{ id: "b1", name: "Chassis" }],
+  onImportCapture,
 } as unknown as ProjectContextValue;
 
 type LoggerElement = Extract<ProjectElement, { kind: "logger" }>;
