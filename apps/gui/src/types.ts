@@ -1548,3 +1548,92 @@ export type ExportFinishedRecord =
   | { status: "ok"; path: string; frameCount: number; byteSize: number }
   | { status: "cancelled" }
   | { status: "error"; message: string };
+
+/// One operand a **math signal** (`docs/CONTEXT.md`) reads, mirroring
+/// `math_signals::MathOperandRef` — the series key's fields plus the
+/// provenance flag that says which namespace `signalName` and
+/// `messageId` live in. `math` marks a reference to another math
+/// definition, whose `signalName` is then that definition's stable id.
+export interface MathOperandRef {
+  busId: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  fileBacked?: boolean;
+  math?: boolean;
+}
+
+/// The function a math signal computes, mirroring
+/// `math_signals::MathFunction`: an internally tagged enum whose
+/// parameters ride in the variant, so a definition cannot carry a
+/// parameter its function does not read.
+export type MathFunctionKind =
+  | "sum"
+  | "difference"
+  | "product"
+  | "scale"
+  | "min"
+  | "max"
+  | "average"
+  | "median"
+  | "range"
+  | "expfilter"
+  | "integration"
+  | "duty"
+  | "frequency"
+  | "statistic"
+  | "rms"
+  | "hline";
+
+export interface MathFunction {
+  kind: MathFunctionKind;
+  [parameter: string]: number | string;
+}
+
+/// What a math signal selects: manual picks, plus — for a set function
+/// — the live regex patterns whose matches join them (ADR 0020,
+/// ADR 0038). Mirrors `math_signals::MathOperands`.
+export interface MathOperands {
+  picks: MathOperandRef[];
+  patterns: string[];
+}
+
+/// One math signal as it is defined and persisted
+/// (`math_signals::MathDefinition`). `id` is stable and never reused;
+/// `name` is the mutable display name, and `unit: null` means "derive
+/// it from the operands".
+export interface MathDefinition {
+  id: string;
+  name: string;
+  unit: string | null;
+  function: MathFunction;
+  operands: MathOperands;
+}
+
+/// How many operands a function takes — what an editor prepopulates its
+/// fixed operand sections from (`math_signals::Arity`).
+export type MathArity = "none" | "one" | "pair" | "set";
+
+/// One math signal as `list_math_signals` lists it: the stored
+/// definition (flattened) plus what it currently resolves to. The
+/// resolved half is derived from the live catalog, so it moves when the
+/// catalog does — the host answers it rather than each surface
+/// re-deriving it (ADR 0025).
+export interface MathSignalRecord extends MathDefinition {
+  /// The series identity this math signal is keyed by everywhere,
+  /// `*|m:0:<id>` — the fourth provenance flag.
+  identity: string;
+  kind: MathFunctionKind;
+  arity: MathArity;
+  /// Manual picks then live pattern matches, in resolution order.
+  /// Distinct from `operands`, which is the stored selection.
+  resolvedOperands: MathOperandRef[];
+  /// Each resolved operand's canonical path (ADR 0038), index-parallel
+  /// with `resolvedOperands`; empty for one the catalog no longer
+  /// holds, which is how an editor shows a missing operand.
+  operandPaths: string[];
+  /// The unit the series carries: the user's, or the derived one.
+  unitResolved: string;
+  /// Why the definition is unusable as it stands, or `null`.
+  invalid: string | null;
+}

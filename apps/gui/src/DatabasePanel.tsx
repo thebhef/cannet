@@ -11,6 +11,8 @@ import type {
   DbcSignalMux,
   FileBackedContentRecord,
   FileBackedSignalRecord,
+  MathFunctionKind,
+  MathSignalRecord,
 } from "./types";
 import type { SignalSnapshotRecord } from "./types";
 import { useProjectContext } from "./projectContext";
@@ -44,6 +46,13 @@ import { DBC_PANEL_ID } from "./dockLayout";
 import { NameText } from "./NameText";
 import { ChipButton } from "./ChipButton";
 import { Icon } from "./Icon";
+import {
+  MathFunctionMenu,
+  MathSignalEditor,
+  mathEditorLines,
+} from "./MathSignalEditor";
+import { newMathDefinition } from "./mathSignals";
+import { usePanelEditRecorder } from "./panelEditRecorder";
 
 /**
  * The **Database** panel: the one catalog surface over every
@@ -215,6 +224,17 @@ export function fileGroupNodeId(key: string, group: number): string {
 }
 export function fileSignalNodeId(key: string, group: number, signalName: string): string {
   return `fsig:${key}::${group}::${signalName}`;
+}
+
+/// The **Computed** branch (`docs/CONTEXT.md`): the catalog's third
+/// root, holding every math signal the registry defines. Its own node
+/// id prefix, like the other two halves of the tree.
+export const COMPUTED_NODE_ID = "computed:";
+/// One math signal's row, keyed by the definition's **stable id** — a
+/// rename must not drop the user's expand state, which is the same
+/// split ADR 0038 draws between what a signal is called and what it is.
+export function mathNodeId(id: string): string {
+  return `math:${id}`;
 }
 
 /// Sentinel bus ids. Real project bus ids are UUIDs, so the `:::`
@@ -552,7 +572,14 @@ interface RenderRow {
         group: number;
         groupLabel: string;
         signal: FileBackedSignalRecord;
-      };
+      }
+    /// The Computed branch's root — the math signals' own catalog
+    /// half, and the surface they are created on.
+    | { tag: "computed"; count: number }
+    /// One math signal. Expanding it opens its editor in place: there
+    /// is no read-only detail stage (owner ruling), so the disclosure
+    /// *is* the way in to editing.
+    | { tag: "mathsignal"; record: MathSignalRecord };
 }
 
 /// Group [`DbcContentRecord`]s by the bus(es) they are **assigned
@@ -686,6 +713,7 @@ function formatCollisionNote(
 function buildRows(
   groups: readonly BusGroup[],
   files: readonly FileBackedContentRecord[],
+  math: readonly MathSignalRecord[],
   effectiveExpanded: ReadonlySet<string>,
   matchSet: ReadonlySet<string>,
   ancestorsOfMatches: ReadonlySet<string>,
@@ -915,6 +943,33 @@ function buildRows(
       }
     }
   }
+  // The Computed branch, last: math signals are defined over the other
+  // two halves, so they read as derived from what stands above them.
+  // It is rendered whether or not anything is computed yet — it is the
+  // surface a math signal is created on.
+  if (!filterActive || ancestorsOfMatches.has(COMPUTED_NODE_ID)) {
+    const cExpanded = effectiveExpanded.has(COMPUTED_NODE_ID);
+    out.push({
+      id: COMPUTED_NODE_ID,
+      depth: 0,
+      expanded: cExpanded,
+      hasChildren: math.length > 0,
+      kind: { tag: "computed", count: math.length },
+    });
+    if (cExpanded) {
+      for (const record of math) {
+        const id = mathNodeId(record.id);
+        if (filterActive && !matchSet.has(id)) continue;
+        out.push({
+          id,
+          depth: 1,
+          expanded: effectiveExpanded.has(id),
+          hasChildren: true,
+          kind: { tag: "mathsignal", record },
+        });
+      }
+    }
+  }
   return out;
 }
 
@@ -1022,6 +1077,19 @@ export function buildFileSearchIndex(
   return out;
 }
 
+/// The Computed half of the search index: one entry per math signal,
+/// under the branch root. Its haystack is the name, the function and
+/// the unit — a math signal has no message or ECU to search by.
+export function buildMathSearchIndex(
+  math: readonly MathSignalRecord[],
+): GridviewFilterEntry[] {
+  return math.map((m) => ({
+    id: mathNodeId(m.id),
+    ancestors: [COMPUTED_NODE_ID],
+    haystack: `Computed.${m.name} ${m.kind} ${m.unitResolved}`.trim(),
+  }));
+}
+
 /// Auto-expand every bus group, its DBC children, and their ECU
 /// groups when the panel first loads content, so the user sees the
 /// messages without an extra click (messages themselves stay
@@ -1049,6 +1117,9 @@ function initialExpandedRoots(
   for (const [i, file] of files.entries()) {
     out.add(fileNodeId(fileKey(i, file.sourcePath)));
   }
+  // The Computed branch opens with the tree: its rows are the whole
+  // math signal set, which is small and user-authored.
+  out.add(COMPUTED_NODE_ID);
   return out;
 }
 
@@ -1077,7 +1148,13 @@ function rowToSignalRefs(
     row.kind.tag === "dbc" ||
     row.kind.tag === "ecu" ||
     row.kind.tag === "file" ||
-    row.kind.tag === "filegroup"
+    row.kind.tag === "filegroup" ||
+    row.kind.tag === "computed" ||
+    // A math signal drags like any other signal — but the drag payload
+    // has no math provenance slot yet, so dropping one would name a
+    // DBC-backed signal that does not exist. It stays undraggable until
+    // the payload carries the flag.
+    row.kind.tag === "mathsignal"
   ) {
     return [];
   }
@@ -1155,7 +1232,12 @@ function rowToSignalRefs(
 /// row rather than per kind for exactly this shape — a message and a
 /// mux arm are *selectable branches* (ADR 0044).
 function isSelectableRow(row: RenderRow): boolean {
-  return isSignalRow(row) || row.kind.tag === "message" || row.kind.tag === "mux";
+  return (
+    isSignalRow(row) ||
+    row.kind.tag === "message" ||
+    row.kind.tag === "mux" ||
+    row.kind.tag === "mathsignal"
+  );
 }
 
 /// A row that stands for one signal, of either provenance — a leaf in
@@ -1245,6 +1327,14 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   /// it is refetched off the capture's own change signals below rather
   /// than off the project's DBC set.
   const [fileContent, setFileContent] = useState<FileBackedContentRecord[]>([]);
+  /// The math signals the registry holds, with their membership
+  /// resolved (`list_math_signals`). Project-scoped like the DBC set —
+  /// the definitions live in the project file — but refetched off the
+  /// capture's signals too, since a set's membership resolves against
+  /// the live catalog.
+  const [mathSignals, setMathSignals] = useState<MathSignalRecord[]>([]);
+  /// Where the creation menu was opened, or `null`.
+  const [createMenu, setCreateMenu] = useState<{ x: number; y: number } | null>(null);
   /// Whether the panel is on screen — false while it sits in a
   /// background tab of its dockview group. The value poll below is a
   /// standing host round-trip that decodes and joins one row per
@@ -1271,8 +1361,12 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   // each, with those ancestors treated as expanded so a deep match is
   // visible without the user unfolding to it.
   const buildFilterEntries = useCallback(
-    () => [...buildSearchIndex(busGroups), ...buildFileSearchIndex(fileContent)],
-    [busGroups, fileContent],
+    () => [
+      ...buildSearchIndex(busGroups),
+      ...buildFileSearchIndex(fileContent),
+      ...buildMathSearchIndex(mathSignals),
+    ],
+    [busGroups, fileContent, mathSignals],
   );
   const filter = useGridviewFilter(buildFilterEntries, filterFromParams(params?.filter));
   /// The search box, so `panel.find` (Mod+F, ADR 0018) can focus and
@@ -1374,6 +1468,29 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     };
   }, [seedExpanded]);
 
+  /// The bus-name map every math command carries. A pattern is
+  /// evaluated against the canonical path (ADR 0038), whose first
+  /// segment is the bus *name*, and the host keeps no standing record
+  /// of one — so it travels with the call, exactly as it does on
+  /// `fetch_signal_page`.
+  const mathBusNames = useMemo(
+    () => buses.map((b) => [b.id, b.name] as [string, string]),
+    [buses],
+  );
+  const refreshMath = useCallback(() => {
+    let cancelled = false;
+    void invoke<MathSignalRecord[]>("list_math_signals", { busNames: mathBusNames })
+      .then((next) => {
+        if (!cancelled) setMathSignals(Array.isArray(next) ? next : []);
+      })
+      .catch(() => {
+        /* best effort — the database branches render regardless */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mathBusNames]);
+
   // The capture's own change signals. `file-signals-changed` is the
   // host saying the file-backed set moved (an import filled it, a
   // cleared or restored capture replaced it); `log-finished` covers an
@@ -1403,6 +1520,25 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   useEffect(() => refreshContent(), [dbcPaths, dbcGeneration, refreshContent]);
   useEffect(() => refreshCollisions(), [dbcPaths, dbcGeneration, refreshCollisions]);
 
+  // The math listing follows the same triggers plus its own: the host
+  // emits `math-signals-changed` whenever a definition is added,
+  // changed or deleted — including by another surface editing the same
+  // registry — and the resolved membership moves with the catalog, so
+  // an import or a DBC edit changes what a pattern selects.
+  useEffect(() => refreshMath(), [dbcPaths, dbcGeneration, refreshMath]);
+  useEffect(() => {
+    const unlisten = Promise.all([
+      listen("math-signals-changed", () => refreshMath()),
+      listen("file-signals-changed", () => refreshMath()),
+      listen("log-finished", () => refreshMath()),
+    ]);
+    return () => {
+      void unlisten.then((fns) => {
+        for (const fn of fns) fn();
+      });
+    };
+  }, [refreshMath]);
+
   // Persist filter + expanded + showDetails into the dockview panel
   // params so the saved layout round-trips them. Selection
   // deliberately doesn't ride along — it's transient state, like an
@@ -1421,6 +1557,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       buildRows(
         busGroups,
         fileContent,
+        mathSignals,
         effectiveExpanded,
         filter.matchSet,
         filter.ancestorsOfMatches,
@@ -1430,6 +1567,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     [
       busGroups,
       fileContent,
+      mathSignals,
       effectiveExpanded,
       filter.matchSet,
       filter.ancestorsOfMatches,
@@ -1673,8 +1811,80 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     setSignalDragData(e, refs);
   }, []);
 
+  /// Create a math signal from the tree's context menu.
+  ///
+  /// The definition is written **immediately**, unfinished: the host
+  /// stores it, marks it invalid and serves it empty until it is filled
+  /// in. Its row then expands, which is what opens its editor — there
+  /// is no staging step between picking a function and having one.
+  const recordPanelEdit = usePanelEditRecorder();
+  const handleCreateMath = useCallback(
+    (kind: MathFunctionKind) => {
+      setCreateMenu(null);
+      const definition = newMathDefinition(kind, crypto.randomUUID());
+      recordPanelEdit({
+        undo: [{ kind: "mathDelete", id: definition.id }],
+        redo: [{ kind: "mathDefine", definition, busNames: mathBusNames }],
+      });
+      void invoke("define_math_signal", { definition, busNames: mathBusNames })
+        .then(() => {
+          setRowExpanded(COMPUTED_NODE_ID, true);
+          setRowExpanded(mathNodeId(definition.id), true);
+          refreshMath();
+        })
+        .catch(() => {
+          /* the host refuses only a duplicate id or a cycle, neither of
+             which a fresh definition can be */
+        });
+    },
+    [mathBusNames, recordPanelEdit, refreshMath, setRowExpanded],
+  );
+
+  /// Removes a math definition, once its row's two-stage control has
+  /// confirmed. Anything that took it as an operand keeps the
+  /// reference and shows it missing — the host is deliberate about not
+  /// rewriting the user's other definitions.
+  const handleMathDelete = useCallback(
+    (id: string) => {
+      const record = mathSignals.find((m) => m.id === id);
+      if (!record) return;
+      recordPanelEdit({
+        undo: [
+          {
+            kind: "mathDefine",
+            definition: {
+              id: record.id,
+              name: record.name,
+              unit: record.unit,
+              function: { ...record.function },
+              operands: {
+                picks: [...record.operands.picks],
+                patterns: [...record.operands.patterns],
+              },
+            },
+            busNames: mathBusNames,
+          },
+        ],
+        redo: [{ kind: "mathDelete", id }],
+      });
+      void invoke("delete_math_signal", { id })
+        .then(() => refreshMath())
+        .catch(() => {
+          /* best effort — the listing refetches either way */
+        });
+    },
+    [mathBusNames, mathSignals, recordPanelEdit, refreshMath],
+  );
+
   return (
     <div className="dbc-panel">
+      {createMenu && (
+        <MathFunctionMenu
+          position={createMenu}
+          onPick={handleCreateMath}
+          onClose={() => setCreateMenu(null)}
+        />
+      )}
       <div className="dbc-panel-toolbar">
         <span className="chip-field dbc-panel-search" title="search messages, signals, comments, attributes…">
           <Icon name="search" />
@@ -1709,6 +1919,12 @@ export function DatabasePanel(props: IDockviewPanelProps) {
         role="tree"
         {...grid.containerProps}
         onScroll={onTreeScroll}
+        onContextMenu={(e) => {
+          // Anywhere in the tree: creating a math signal is a property
+          // of the catalog, not of whichever row was under the cursor.
+          e.preventDefault();
+          setCreateMenu({ x: e.clientX, y: e.clientY });
+        }}
       >
         {content.length === 0 && fileContent.length === 0 && (
           <div className="dbc-panel-empty">
@@ -1728,6 +1944,21 @@ export function DatabasePanel(props: IDockviewPanelProps) {
           >
             {visibleRows.map((row) => {
               const vk = showValues ? valueColumnKey(row.kind) : null;
+              // The editor is built here rather than inside the row, so
+              // the row stays a memoised leaf for every other kind: only
+              // the one hosting an editor gets a fresh prop per render.
+              const editor =
+                row.kind.tag === "mathsignal" && row.expanded ? (
+                  <div
+                    className="dbc-math-editor"
+                    style={{ paddingLeft: `${row.depth * 14 + 14}px` }}
+                  >
+                    <MathSignalEditor
+                      record={row.kind.record}
+                      definitions={mathSignals}
+                    />
+                  </div>
+                ) : undefined;
               return (
                 <DbcRow
                   key={row.id}
@@ -1741,6 +1972,8 @@ export function DatabasePanel(props: IDockviewPanelProps) {
                   onToggle={setRowExpanded}
                   onClick={handleRowClick}
                   onDragStart={handleDragStart}
+                  below={editor}
+                  onDelete={row.kind.tag === "mathsignal" ? handleMathDelete : undefined}
                 />
               );
             })}
@@ -1760,7 +1993,14 @@ export function DatabasePanel(props: IDockviewPanelProps) {
 /// The per-kind counts live next to the components that render them
 /// ([`MessageDetails`] / [`SignalDetails`]) so a field added to one is
 /// added to the other.
+///
+/// An expanded math signal carries its editor instead — not gated on
+/// the panel-wide toggle, because expanding a math signal *is* opening
+/// its editor.
 function detailLinesFor(row: RenderRow, showDetails: boolean): number {
+  if (row.kind.tag === "mathsignal") {
+    return row.expanded ? mathEditorLines(row.kind.record) : 0;
+  }
   if (!showDetails) return 0;
   if (row.kind.tag === "message") return messageDetailLines(row.kind.message);
   if (row.kind.tag === "signal") return signalDetailLines(row.kind.signal);
@@ -1790,6 +2030,13 @@ interface DbcRowProps {
     target: HTMLElement | null,
   ) => void;
   onDragStart: (e: React.DragEvent, row: RenderRow) => void;
+  /// Content disclosed under the row — a math signal's editor. Built by
+  /// the panel so every other row keeps a stable (undefined) prop and
+  /// stays memoised.
+  below?: React.ReactNode;
+  /// Delete this definition. Absent ⇒ the row carries no delete
+  /// button. The confirmation is the shared control's, not the row's.
+  onDelete?: (id: string) => void;
 }
 
 /// One tree row. **Memoised**: most panel state changes (the keyboard
@@ -1811,6 +2058,8 @@ const DbcRow = memo(function DbcRow({
   onToggle,
   onClick,
   onDragStart,
+  below,
+  onDelete,
 }: DbcRowProps) {
   diagCount("dbcpanel.rowRender"); // DIAG
   const indent = `${row.depth * 14}px`;
@@ -1823,9 +2072,12 @@ const DbcRow = memo(function DbcRow({
     row.kind.tag === "dbc" ||
     row.kind.tag === "ecu" ||
     row.kind.tag === "file" ||
-    row.kind.tag === "filegroup";
+    row.kind.tag === "filegroup" ||
+    row.kind.tag === "computed";
   const selectable = !isContainerRow;
-  const draggable = !isContainerRow;
+  // A math signal drags like any other signal once the drag payload
+  // carries a math provenance; until then its row is not a drag source.
+  const draggable = !isContainerRow && row.kind.tag !== "mathsignal";
   const baseClass = [
     "dbc-row",
     `dbc-row-${row.kind.tag}`,
@@ -1883,7 +2135,7 @@ const DbcRow = memo(function DbcRow({
         ) : (
           <span className="dbc-row-chevron" aria-hidden="true" />
         )}
-        <DbcRowContent kind={row.kind} />
+        <DbcRowContent kind={row.kind} onDelete={onDelete} />
         {value !== undefined && valueColorTarget(row.kind) && (
           <span className="dbc-row-value">
             <SignalValueCell
@@ -1903,6 +2155,7 @@ const DbcRow = memo(function DbcRow({
       {showDetails && row.kind.tag === "signal" && (
         <SignalDetails signal={row.kind.signal} indent={detailIndent} />
       )}
+      {below}
     </>
   );
 });
@@ -2069,7 +2322,15 @@ function MessageDetails({ message, indent }: MessageDetailsProps) {
   );
 }
 
-function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
+function DbcRowContent({
+  kind,
+  onDelete,
+}: {
+  kind: RenderRow["kind"];
+  /// Drop a math definition. Rendered inside the row's content because
+  /// the control belongs to the name it deletes, not to the row.
+  onDelete?: (id: string) => void;
+}) {
   if (kind.tag === "bus") {
     return <span className="dbc-row-label">{kind.label}</span>;
   }
@@ -2138,6 +2399,56 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
       <span className="dbc-row-label">
         <NameText name={kind.label} />
       </span>
+    );
+  }
+  if (kind.tag === "computed") {
+    return (
+      <>
+        <span className="dbc-row-label">Computed</span>
+        <span className="dbc-row-meta">
+          {kind.count} signal{kind.count === 1 ? "" : "s"}
+        </span>
+      </>
+    );
+  }
+  if (kind.tag === "mathsignal") {
+    const m = kind.record;
+    return (
+      <>
+        <span className="dbc-row-label">
+          {m.name.trim() === "" ? (
+            <span className="dbc-row-unnamed">(unnamed)</span>
+          ) : (
+            <NameText name={m.name} />
+          )}
+        </span>
+        {onDelete && (
+          // Pinned to the end of the name it deletes. A far-end
+          // placement moved with the panel's width, so the control the
+          // cursor was over changed on every resize (owner ruling); the
+          // disclosure still leads the row, so the two are not
+          // neighbours. One click, because the delete is undoable — the
+          // panel records a step that defines the signal again.
+          <button
+            type="button"
+            className="dbc-row-delete"
+            aria-label={`delete ${m.name}`}
+            title="delete this definition"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(m.id);
+            }}
+          >
+            <Icon name="clear" />
+          </button>
+        )}
+        {m.unitResolved && <span className="dbc-row-meta">[{m.unitResolved}]</span>}
+        {m.invalid && (
+          <span className="dbc-row-meta dbc-row-invalid" title={m.invalid}>
+            {m.invalid}
+          </span>
+        )}
+      </>
     );
   }
   if (kind.tag === "filesignal") {
