@@ -3303,6 +3303,20 @@ export function App() {
       case "signalColor":
         handleSetSignalColor(op.key, op.color);
         return;
+      // The math registry's three writes.
+      case "mathDefine":
+        void invoke("define_math_signal", { definition: op.definition }).catch(() => {
+          /* best effort */
+        });
+        return;
+      case "mathUpdate":
+        void invoke("update_math_signal", { definition: op.definition }).catch(() => {
+          /* best effort */
+        });
+        return;
+      case "mathDelete":
+        void invoke("delete_math_signal", { id: op.id }).catch(() => { /* best effort */ });
+        return;
     }
   }, [handleSetSignalColor]);
   const { recordPanelEdit, applyPanelEditHistory } = usePanelEditUndo({

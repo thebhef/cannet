@@ -10,12 +10,12 @@
 //! listing moved, and so did what the capture decodes to — and the
 //! views refetch.
 //!
-//! **The bus names travel with the call.** A pattern is evaluated
-//! against the canonical signal path (ADR 0038), whose first segment is
-//! the bus *name*, and the host has no other record of what a project's
-//! buses are called — so every command carries the map, exactly as
-//! `fetch_signal_page` does, and latches it for the serves that have no
-//! caller to ask.
+//! **A command carries a definition and nothing else.** A pattern is
+//! evaluated against the canonical signal path (ADR 0038), whose first
+//! segment is the bus *name*, but the project's bus list is standing
+//! host state ([`AppState::set_project_bus_names`]) written where that
+//! list already arrives — so a name-anchored pattern resolves with no
+//! math command having run, and there is nothing for a caller to pass.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -51,9 +51,15 @@ pub(crate) struct MathSignalRecord {
     pub arity: Arity,
     /// Manual picks then live pattern matches, in resolution order —
     /// what the fill reads and what the fingerprint covers.
-    pub operands: Vec<MathOperandRef>,
+    ///
+    /// Deliberately **not** called `operands`: the flattened definition
+    /// already carries a field of that name (its picks and patterns),
+    /// and two fields serialising under one key leave a reader only
+    /// whichever was written last. An editor needs both halves — the
+    /// stored selection to prefill, the resolution to show.
+    pub resolved_operands: Vec<MathOperandRef>,
     /// The canonical path (ADR 0038) of each resolved operand,
-    /// index-parallel with `operands`; empty for one the catalog no
+    /// index-parallel with `resolved_operands`; empty for one the catalog no
     /// longer holds, which is how an editor shows a missing operand.
     pub operand_paths: Vec<String>,
     /// The unit the series carries: the user's, or the derived one.
@@ -66,6 +72,8 @@ pub(crate) struct MathSignalRecord {
 
 /// Fill in the one name the host is allowed to derive: a set defined
 /// by exactly one pattern and nothing else defaults to `fn(pattern)`.
+/// Applied on every write, not only the first: a set that gains its
+/// pattern after it was created earns the same default.
 ///
 /// No other heuristic name exists, by ruling — a name composed from a
 /// selection reads as authoritative while being a guess, so a manually
@@ -76,7 +84,7 @@ fn with_default_name(mut definition: MathDefinition) -> MathDefinition {
         if let Some(name) =
             math_signals::default_name(&definition.function, &definition.operands.patterns)
         {
-            if definition.operands.picks.is_empty() {
+            if definition.operands.filled().next().is_none() {
                 definition.name = name;
             }
         }
@@ -98,13 +106,13 @@ pub(crate) fn list_math_signals(state: State<'_, AppState>) -> Vec<MathSignalRec
             // Validity is judged against the *resolved* membership: a
             // pattern-defined set whose matches have all gone no longer
             // satisfies its arity, and the editor says so.
-            candidate.operands.picks.clone_from(&resolved.operands);
+            candidate.operands.picks = resolved.operands.iter().cloned().map(Some).collect();
             MathSignalRecord {
                 identity: math_signals::math_identity(&resolved.definition.id),
                 kind: resolved.definition.function.kind(),
                 arity: resolved.definition.function.arity(),
                 operand_paths: resolved.operand_paths.clone(),
-                operands: resolved.operands.clone(),
+                resolved_operands: resolved.operands.clone(),
                 unit_resolved: resolved.unit.clone(),
                 invalid: candidate.validate().err().map(|e| e.to_string()),
                 definition: resolved.definition.clone(),
@@ -113,9 +121,12 @@ pub(crate) fn list_math_signals(state: State<'_, AppState>) -> Vec<MathSignalRec
         .collect()
 }
 
-/// Add a math signal. Refuses a duplicate id, an unsatisfied arity, a
-/// parameter out of range, a pattern that does not compile, an operand
-/// naming no definition, and a cycle.
+/// Add a math signal.
+///
+/// A definition is created the moment the user picks a function, so
+/// what arrives here is usually **unfinished** — it is stored, marked
+/// invalid by its own validation, and serves nothing until it is filled
+/// in. Only a duplicate id and a cycle are refused.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn define_math_signal(app: AppHandle, definition: MathDefinition) -> Result<(), String> {
@@ -128,14 +139,18 @@ pub(crate) fn define_math_signal(app: AppHandle, definition: MathDefinition) -> 
     Ok(())
 }
 
-/// Replace a math signal's definition, under the same checks
+/// Replace a math signal's definition, under the same two refusals
 /// [`define_math_signal`] applies. Its place in the listing is kept, so
-/// an edit does not reorder the Computed branch.
+/// an edit does not reorder the Computed branch — which matters when
+/// every field commits as it is left.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn update_math_signal(app: AppHandle, definition: MathDefinition) -> Result<(), String> {
     let state: State<'_, AppState> = app.state();
-    state.math.update(definition).map_err(|e| e.to_string())?;
+    state
+        .math
+        .update(with_default_name(definition))
+        .map_err(|e| e.to_string())?;
     changed(&app, &state);
     Ok(())
 }
@@ -203,4 +218,90 @@ pub(crate) fn changed<S: RegistryChangeSink>(sink: &S, state: &AppState) {
     crate::app_state::invalidate_derived_caches(state);
     sink.math_signals_changed();
     sink.decode_model_changed();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::math_signals::{MathDefinition, MathFunction, MathOperands};
+
+    fn record() -> MathSignalRecord {
+        let definition = MathDefinition {
+            id: "m1".to_string(),
+            name: "CellSpread".to_string(),
+            unit: None,
+            function: MathFunction::Sum,
+            operands: MathOperands {
+                picks: vec![Some(MathOperandRef::dbc("bus-a", 0x120, false, "Cell01"))],
+                patterns: vec![r"Cell\d+".to_string()],
+            },
+        };
+        MathSignalRecord {
+            identity: math_signals::math_identity(&definition.id),
+            kind: definition.function.kind(),
+            arity: definition.function.arity(),
+            resolved_operands: definition.operands.filled().cloned().collect(),
+            operand_paths: vec!["CAN1/BMS/Cells/Cell01".to_string()],
+            unit_resolved: "V".to_string(),
+            invalid: None,
+            definition,
+        }
+    }
+
+    /// The stored selection and its live resolution are two different
+    /// facts, and an editor prefills from the first while showing the
+    /// second — so both have to survive the wire. They did not once:
+    /// the resolved list was called `operands` too, and serialising it
+    /// beside the flattened definition's own `operands` left a JSON
+    /// reader only the last one written.
+    #[test]
+    fn a_listing_carries_the_stored_selection_and_its_resolution_apart() {
+        let json = serde_json::to_value(record()).unwrap();
+        assert_eq!(json["operands"]["patterns"][0], r"Cell\d+");
+        assert_eq!(json["operands"]["picks"][0]["signalName"], "Cell01");
+        assert_eq!(json["resolvedOperands"][0]["signalName"], "Cell01");
+        assert_eq!(json["operandPaths"][0], "CAN1/BMS/Cells/Cell01");
+    }
+
+    /// The rest of the listing's derived half, which every surface
+    /// keys and labels its row from.
+    #[test]
+    fn a_listing_carries_the_identity_the_series_is_keyed_by() {
+        let json = serde_json::to_value(record()).unwrap();
+        assert_eq!(json["identity"], "*|m:0:m1");
+        assert_eq!(json["kind"], "sum");
+        assert_eq!(json["arity"], "set");
+        assert_eq!(json["unitResolved"], "V");
+        assert_eq!(json["invalid"], serde_json::Value::Null);
+    }
+
+    /// The parameter names the editor writes into a function object.
+    /// The enum renames its *variants* (the `kind` tag), not the fields
+    /// inside them, so each parameter travels under its Rust name.
+    #[test]
+    fn a_function_carries_its_parameters_under_their_own_names() {
+        let json = serde_json::to_value(MathFunction::Duty {
+            threshold: 0.5,
+            window_seconds: 5.0,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "duty", "threshold": 0.5, "window_seconds": 5.0})
+        );
+        let json = serde_json::to_value(MathFunction::Statistic {
+            statistic: crate::math_signals::Statistic::Percentile,
+            percentile: 95.0,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "statistic", "statistic": "percentile", "percentile": 95.0})
+        );
+        let json = serde_json::to_value(MathFunction::ExpFilter { tau_seconds: 2.0 }).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "expfilter", "tau_seconds": 2.0})
+        );
+    }
 }

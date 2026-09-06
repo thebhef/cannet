@@ -1773,7 +1773,7 @@ mod tests {
             unit: None,
             function,
             operands: MathOperands {
-                picks: picks.to_vec(),
+                picks: picks.iter().cloned().map(Some).collect(),
                 patterns: patterns.iter().map(|p| (*p).to_string()).collect(),
             },
         }

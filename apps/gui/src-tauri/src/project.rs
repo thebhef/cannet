@@ -663,8 +663,8 @@ mod tests {
                 function: MathFunction::Product,
                 operands: MathOperands {
                     picks: vec![
-                        MathOperandRef::dbc("p", 256, false, "PackVolts"),
-                        MathOperandRef::dbc("p", 256, false, "PackCurrent"),
+                        Some(MathOperandRef::dbc("p", 256, false, "PackVolts")),
+                        Some(MathOperandRef::dbc("p", 256, false, "PackCurrent")),
                     ],
                     patterns: Vec::new(),
                 },
@@ -687,7 +687,7 @@ mod tests {
                 operands: MathOperands {
                     // Math on math, referenced by id — so renaming the
                     // definition below never rewrites this one.
-                    picks: vec![MathOperandRef::math("0f0c1f9a")],
+                    picks: vec![Some(MathOperandRef::math("0f0c1f9a"))],
                     patterns: Vec::new(),
                 },
             },
@@ -702,7 +702,12 @@ mod tests {
         renamed.math_signals[0].name = "Power".into();
         let back = parse_project(&serde_json::to_string(&renamed).unwrap()).unwrap();
         assert_eq!(
-            back.math_signals[2].operands.picks[0].signal_name,
+            back.math_signals[2]
+                .operands
+                .filled()
+                .next()
+                .unwrap()
+                .signal_name,
             "0f0c1f9a"
         );
         assert_eq!(back.math_signals[0].name, "Power");

@@ -108,6 +108,77 @@ To be set as grooming completes.
 
 ## Status log
 
+### 2026-09-16 — a pair's operands are slots (`task135-editor`)
+
+Owner-ordered on the 2026-09-16 queue walk ("should get fixed"): a pair
+function's first pick landed in A even when the user picked into B.
+
+**Observation.** `withPick(definition, 1, ref)` against a fresh
+`difference` wrote `picks: [ref]`, and the editor then rendered that
+operand in section A with B still asking for one. The frontend unit
+test that stood there said so in as many words — *"lands a pair's first
+pick in A whichever slot it was made in"*, with the reason: the picks
+are an ordered list with no room for a hole.
+
+**Hypothesis.** The hole is the whole defect. If a fixed-arity
+function's picks are **slots** — each position one named operand,
+`null` for one standing empty — end to end, then a pick into B is
+stored at position 1 and read back at position 1, and nothing else
+about the model has to move.
+
+**Experiment 1 (red, at the wire).**
+`a_pairs_empty_slot_survives_the_wire` deserialises
+`{"picks":[null,{…}],"patterns":[]}` and asserts the operand is in slot
+B. It did not compile: `expected MathOperandRef, found Option<_>`, and
+`no method named filled` — the defect stated as a type fact, since a
+`Vec<MathOperandRef>` cannot hold the state the user put the editor in.
+Alongside it, `a_pair_with_an_empty_slot_is_not_usable_yet` (the hole
+must still read as unfinished) and the DOM test `leaves a pick made
+into B in B, with A still empty`, which drags a signal onto section B
+of a blank pair and reads the write.
+
+**Experiment 2 (falsification).** Three mutations against the new
+tests, each run on its own:
+
+| mutation | result |
+|---|---|
+| `withPick` back to "append when past the end" | the unit test and the DOM test fail; the rest pass |
+| `withoutPick` always closes the list up | `keeps a pair's pick in the slot it was made in` fails on clearing A |
+| `validate` counts `picks.len()` rather than filled slots | `a_pair_with_an_empty_slot_is_not_usable_yet` fails with `Ok(())` — a pair holding only B would be judged **usable** |
+
+So all three halves of the fix — the padding on the way in, the hole
+left on the way out, and "an empty slot is not an operand" — are
+load-bearing and each is pinned by a test.
+
+**Conclusion / what landed.** `MathOperands::picks` is
+`Vec<Option<MathOperandRef>>`, with `MathOperands::filled()` as the one
+way the model reads operands out of it — validation, resolution, the
+cycle walk and the default-name rule all go through it, so an empty
+slot contributes no operand, no unit and no membership, and a pair
+holding only B fails the arity it always failed. Frontend-side,
+`withPick` pads to the slot instead of appending, `withoutPick` empties
+a fixed-arity slot (and closes a *set* up, where order is only the
+order the user built it in), and `pickInSlot` is what a section
+renders.
+
+**Serde compat is the type's own.** An old file's dense
+`[{…},{…}]` deserialises into `[Some, Some]` untouched, and a
+definition whose slots fill from the front re-serialises to exactly
+the JSON it always wrote — trailing empties are not stored, so `null`
+appears only for the one state that could not be expressed before.
+`a_pick_list_written_before_slots_still_fills_them_in_order` pins both
+directions.
+
+**Also on this branch:** the `busNames` residue the project-bus-map
+entry below left for the frontend phases, for the call sites this
+branch owns — `list_math_signals` / `define_math_signal` /
+`update_math_signal` in `DatabasePanel.tsx` and `MathSignalEditor.tsx`,
+the `mathDefine` / `mathUpdate` edit-history records and App's replay
+of them. The `refreshMath` listener kept its bus trigger (a rename
+moves what a pattern selects) as an effect dependency rather than an
+argument. `mathSignalsContext.tsx` does not exist on this branch — its
+`list_math_signals` call site belongs to `task135-surfaces`.
+
 ### 2026-09-16 — a standing project-bus map on `AppState` (`task135-engine`)
 
 Owner-ordered on the 2026-09-16 queue walk, fixing the blocker phase 1
