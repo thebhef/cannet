@@ -74,7 +74,11 @@ export function captureLabel(
 
 /// The project file's basename without its extension, or `null` when no
 /// project file is open.
-function projectName(projectPath: string | null): string | null {
+/// The project's display name: its file's base name without the
+/// extension, or `null` for an unsaved project. The title's leading
+/// segment, and what `{project}` resolves against in an export name
+/// template.
+export function projectName(projectPath: string | null): string | null {
   if (projectPath === null) return null;
   const base = basename(projectPath);
   // Strip the last extension only (`.cannet_prj`, legacy `.json`) —

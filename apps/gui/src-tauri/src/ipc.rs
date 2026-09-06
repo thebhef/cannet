@@ -653,6 +653,43 @@ pub enum LoadProgress {
     Import { frames: u64, total_frames: u64 },
 }
 
+/// How far the background export in flight has got: frames written
+/// against the frames its range holds.
+///
+/// Determinate from the first report — unlike a load, an export knows
+/// exactly what it is going to write before it writes any of it, because
+/// the writer's first pass has already counted the slice. The name the
+/// chip shows is the frontend's own (it chose the path), so it is not
+/// restated here.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportProgress {
+    pub written: u64,
+    pub total: u64,
+}
+
+/// How the export in flight ended.
+///
+/// `Cancelled` is its own ending rather than an error: nothing failed,
+/// and the partial file has already been removed by the time this is
+/// emitted. That is the opposite of a cancelled import, which keeps what
+/// it read — see `capture::discard_partial_export` for why.
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ExportFinished {
+    Ok {
+        path: String,
+        #[serde(rename = "frameCount")]
+        frame_count: u64,
+        #[serde(rename = "byteSize")]
+        byte_size: u64,
+    },
+    Cancelled,
+    Error {
+        message: String,
+    },
+}
+
 /// One `(bus, message, signal)` triple the loaded DBCs define,
 /// returned by `list_signals` to populate a plot panel's signal
 /// picker. The same signal name on two different buses is two

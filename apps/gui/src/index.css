@@ -7121,3 +7121,260 @@ button.color-chip {
   border-radius: 2px;
   padding: 0 0.25rem;
 }
+
+/* --- Export capture: the dialog in front of the OS save picker ---
+   The name template with its live preview, the range picker's timeline
+   and bound fields, and the informational labels for the capture's own
+   ends. Wider than the confirm modals because the timeline needs the
+   room to be a target. */
+.modal.export-dialog {
+  max-width: 34rem;
+}
+
+.export-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  margin-bottom: 0.6rem;
+}
+
+.export-row > label:first-child,
+.export-row > .export-label {
+  flex: 0 0 4.5rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.export-row > input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+}
+
+/* The resolved name is a label, not a field: it is the host's answer,
+   and what gets edited is the template above it. */
+.export-preview {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  color: var(--text-data);
+}
+
+.export-preview-ext {
+  color: var(--text-muted);
+}
+
+.export-range {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+/* The timeline spans the whole capture; the fill is the selection and
+   the two handles are its bounds. Dragging a handle to the outer edge
+   returns that bound to its default, which is why the fill can reach
+   both ends. */
+.export-track {
+  position: relative;
+  height: 10px;
+  margin: 0.3rem 8px 0;
+  border-radius: 5px;
+  background: var(--divider-subtle);
+}
+
+.export-track-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 5px;
+  background: var(--accent-progress);
+  opacity: 0.5;
+}
+
+.export-track-handle {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface-overlay);
+  border: 2px solid var(--accent-progress);
+  transform: translate(-50%, -50%);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.export-track-handle:focus-visible {
+  outline: 2px solid var(--border-search-focus);
+  outline-offset: 1px;
+}
+
+/* One tick per timeline event. Clicking one moves the nearer bound, so
+   a range that means "from the fault to the end" is one click. */
+.export-track-tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--accent-marker);
+  cursor: pointer;
+}
+
+.export-track-tick:hover {
+  width: 4px;
+  margin-left: -1px;
+}
+
+/* Informational only: the capture's own ends, so the times typed into
+   the bounds have something to be read against. */
+.export-extent {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.export-bounds {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.export-bounds-to {
+  color: var(--text-faint);
+}
+.export-span {
+  margin-left: auto;
+}
+.export-presets {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.2rem;
+}
+.template-token-help {
+  display: inline-flex;
+  color: var(--text-faint);
+  cursor: help;
+}
+.template-token-help svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.4;
+}
+
+.export-bound {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.export-bound > input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-right: 0;
+  border-radius: 4px 0 0 4px;
+  padding: 0.2rem 0.4rem;
+}
+
+.export-bound-open {
+  padding: 0 0.35rem;
+  font-size: 0.6rem;
+  border-radius: 0 4px 4px 0;
+}
+
+.export-bound-list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 15;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--surface-pop);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px var(--shadow-modal);
+}
+
+.export-bound-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.78rem;
+}
+
+.export-bound-list button:hover {
+  background: var(--surface-hover);
+}
+
+.export-hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.export-error {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  color: var(--danger-text);
+}
+
+.export-note {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  color: var(--warn-text);
+}
+
+/* The export in flight, in the status bar. Same shape as the load and
+   cache-rebuild notices beside it: a readout that carries the way out of
+   what it reports. */
+.export-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: 0.6rem;
+  padding-right: 0.6rem;
+  border-right: 1px solid var(--divider-subtle);
+}
+
+.export-chip-label {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-data);
+}
+
+.export-chip-cancel {
+  padding: 0 0.4rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.export-chip.done {
+  color: var(--text-muted);
+}

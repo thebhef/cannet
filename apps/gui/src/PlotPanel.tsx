@@ -40,6 +40,7 @@ import { parseVisibleRangeInput, resolveVisibleRange } from "./plotVisibleRange"
 import { mergeSeries } from "./plotData";
 import { hostSettings, useSetting } from "./hostSettings";
 import { fetchWindowExtent } from "./useDecimatedRange";
+import { publishPlotWindow } from "./plotWindow";
 import {
   SIGNALS_WIDTH_MAX,
   SIGNALS_WIDTH_MIN,
@@ -738,6 +739,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
     sync.suppress = true;
     sync.xMin = min;
     sync.xMax = max;
+    // The one read of this window from outside the panel: the export
+    // dialog's "Plot window" preset. Published here because this is the
+    // single place a panel's window changes.
+    publishPlotWindow(min, max);
     for (const [id, u] of instancesRef.current) {
       if (id === exceptId) continue;
       const xs = u.scales.x;
