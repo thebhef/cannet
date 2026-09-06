@@ -172,3 +172,90 @@ first.
    import dialog with range selection for the slice to import.
 6. Docs: README covers export naming and loggers; rustdoc on new
    public API; the CONTEXT.md glossary gains the logger term.
+
+## Status log
+
+### 2026-09-06 — phase 1 of 4, "template machinery + sticky state" (branch `task137-templates`)
+
+Criterion **3** met in full, plus the sticky-state persistence half of
+criterion **1** (folder / format / template persist at machine scope;
+the dialog that reads and writes them is phase 2). No GUI landed —
+phases 2-4 build the export dialog, project loggers, and the file
+gridview on top of this.
+
+**Landed**, `apps/gui/src-tauri/src/`:
+
+- `export_template.rs` — `resolve` / `resolve_folder`: `{project}`,
+  `{logger}`, `{start}`, `{now}` tokens; a bare token is ISO 8601
+  basic with a timezone offset (chrono's own `%z`, so no separate
+  implementation); `{token:<fmt>}` passes `<fmt>` straight through to
+  chrono's `format_with_items` (validated first via `StrftimeItems`
+  against `Item::Error`, so a bad specifier can't hit chrono's
+  `to_string` panic) — full strftime, no subset, per the 2026-09-06
+  ruling. `{start}` on an unanchored capture (`start_seconds: None`)
+  resolves as `{now}` and `Resolved::start_resolved_as_now` carries
+  that fact for a future preview to announce. `resolve_folder` roots a
+  relative result at `TemplateContext::project_dir`, which the
+  `preview_export_template` command sets from
+  `ActiveProjectDir::is_auto_located()` — `None` (and therefore an
+  error on a relative folder) exactly when the project has no
+  directory the user chose. The four required error shapes (unknown
+  token, bad strftime, `{logger}` outside a logger, relative folder
+  with no project directory) each carry a polished message; 33 tests.
+- `export_state.rs` — `ExportState { folder, format, name_template }`
+  at user (machine) scope, `export.json` under `app_config_dir`,
+  following the `servers.json` / `persisted_json` precedent
+  (`parse_or_default` + atomic write); default template
+  `{project}-{start}`, default format BLF. `get_export_state` /
+  `set_export_state` Tauri commands for phase 2 to read and write. 6
+  tests.
+- `preview_export_template` Tauri command: `(template, project,
+  logger, start_seconds, is_folder) -> TemplatePreview { resolved,
+  error, start_resolved_as_now }` — the live-preview surface phase 2's
+  dialog and phase 3's logger panel both call.
+- `chrono` added as a direct `cannet-gui` dependency (`std`, `clock`
+  features — `clock` for `Local::now()`, which `cannet-log`'s existing
+  use of chrono deliberately omits); `plans/technology-inventory.md`
+  already carried this extension from the owner ruling, so it needed
+  no further edit here.
+
+**Design choices not spelled out by a ruling:**
+
+- `resolve` takes `now: DateTime<Local>` as a parameter rather than
+  reading the system clock itself, so a future logger can inject "the
+  moment logging started" instead of "the moment the panel repaints"
+  for its own `{now}` — the token table's "for a logger, the time
+  logging started" line. The Tauri command supplies `Local::now()`.
+- "Project-directory mode" (rulings 12, 16) is read as `!is_auto_located()`
+  on the active project directory — the project has a directory the
+  user pointed cannet at, not one cannet chose for lack of one (ADR
+  0042). A relative folder under an auto-located directory would land
+  inside cannet's own cache space, which is what the "otherwise an
+  error" half of the ruling is for.
+- `project` is a required string the caller supplies (not derived
+  here): the frontend already computes a project display name for the
+  window title, and this module has no independent notion of what a
+  project is called.
+
+**Verification**, run from the repo root unless noted:
+
+| Job | Command | Result |
+| --- | --- | --- |
+| rust (test) | `cargo test --workspace` | pass |
+| rust (clippy) | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+| mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass |
+| frontend | `pnpm --dir apps/gui test` then `pnpm --dir apps/gui build` | pass (untouched by this phase) |
+| python | `uv sync --extra dev --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest` (in `servers/cannet-python-can`) | pass (untouched) |
+| sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass |
+| comment-references | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
+
+`cargo fmt --all --check` is clean over every file this phase touched.
+
+## Blockers / side effects
+
+- **`cargo fmt --all --check` is still red** on
+  `apps/gui/src-tauri/src/interfaces.rs` (pre-existing since `7d18a421`
+  #460, already flagged in task 136's own status log). Not fixed here:
+  the file is untouched by this phase and belongs to work another
+  branch owns in this shared tree.
