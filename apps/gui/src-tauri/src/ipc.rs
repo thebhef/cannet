@@ -932,6 +932,15 @@ pub struct SignalSnapshotRecord {
     /// from the wire when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub file_backed: bool,
+    /// A **math** signal (`docs/CONTEXT.md`): computed host-side from
+    /// other signals. `signal_name` is then the definition's stable id
+    /// — the view looks its display name, unit and contributing buses
+    /// up in the math listing, so a rename leaves every reference to it
+    /// alone — and it has no bus, no message and no ECU. Its
+    /// value/count are facts about the whole computed series, like a
+    /// file-backed one's. Omitted from the wire when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub math: bool,
 }
 
 /// One source file's **file-backed signals** (`docs/CONTEXT.md`) as

@@ -107,6 +107,9 @@ import { diagCount, diagGauge } from "./diag"; // DIAG
 import { theme, useThemeName } from "./theme";
 import { laneLabelInk } from "./laneLabelInk";
 import { NameText } from "./NameText";
+import { MathSignalEditor } from "./MathSignalEditor";
+import { mathBusLabel } from "./mathSignals";
+import { useMathSignals } from "./mathSignalsContext";
 
 const ZOOM_STEP = 1.15;
 /** Line width (CSS px) for a *selected* series, against 1 for the rest.
@@ -1307,6 +1310,27 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onSortArea,
   } = p;
 
+  /// The shared **math signal** listing (`docs/CONTEXT.md`), read from
+  /// the context rather than drilled through the panel: a math row
+  /// names its definition by *stable id*, so everything a row shows —
+  /// the display name, the resolved unit, the buses feeding it, and the
+  /// definition the expanded editor writes — is looked up here. The
+  /// same listing the Database panel's Computed branch renders, so the
+  /// two surfaces cannot answer differently about one definition.
+  const { mathSignals } = useMathSignals();
+  const mathById = useMemo(
+    () => new Map(mathSignals.map((m) => [m.id, m])),
+    [mathSignals],
+  );
+  const mathRecordFor = (s: SignalRef) =>
+    s.math ? mathById.get(s.signalName) ?? null : null;
+  /// Which math rows are expanded into their editor. **View-local**:
+  /// an expansion is a look at a definition, not a fact about it, so it
+  /// is not persisted and every plot area holds its own.
+  const [expandedMath, setExpandedMath] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+
   /** Fold dropped patterns into this area's own list (ADR 0045): live,
    * deduped, and never flattened to their current matches — that is
    * what the explicit materialize path is for. */
@@ -1847,6 +1871,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         extended: s.extended,
         signalName: s.signalName,
         fileBacked: s.fileBacked ?? false,
+        math: s.math ?? false,
       }));
       const sidecar = wantHostExtent
         ? () => invoke<(SignalExtent | null)[]>("signal_min_max", { signals: sigQuery })
@@ -1878,10 +1903,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               // not the same numbers once the DBC set has moved.
               descriptor: `${modelEpoch}:${signalMembershipKey}`,
               // Provenance rides along, exactly as it does on the
-              // extent sidecar above: a file-backed series is keyed by
-              // it host-side, so a query that dropped the flag would
-              // name a message identity nothing decodes and come back
-              // empty.
+              // extent sidecar above: a file-backed series — and a math
+              // one — is keyed by it host-side, so a query that dropped
+              // the flag would name a message identity nothing decodes
+              // and come back empty.
               signals: signals.map((s) => ({
                 key: signalRefKey(s),
                 busId: s.busId,
@@ -1889,6 +1914,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 extended: s.extended,
                 signalName: s.signalName,
                 fileBacked: s.fileBacked ?? false,
+                math: s.math ?? false,
               })),
               winStart: lr.winStart,
               winEnd: lr.winEnd,
@@ -3570,13 +3596,17 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   }, [collapsed, plotSurface]);
 
   /** The row's message line: the signal's DBC ancestry, `bus · ecu ·
-   * message` — the same hierarchy the picker groups by. */
+   * message` — the same hierarchy the picker groups by. A **math**
+   * signal has no ancestry at all (ADR 0038 gives it no path), so its
+   * line names the buses feeding it instead. */
   const messageLabelFor = (s: SignalRef): string =>
-    signalRowLabel(
-      s.busId == null ? null : busNameLookup.get(s.busId) ?? s.busId,
-      ecuLookup.get(messageEcuKey(s.busId, s.messageId, s.extended)),
-      s.messageName,
-    );
+    s.math
+      ? mathBusLabel(mathRecordFor(s)?.busIds ?? [], busNameLookup)
+      : signalRowLabel(
+          s.busId == null ? null : busNameLookup.get(s.busId) ?? s.busId,
+          ecuLookup.get(messageEcuKey(s.busId, s.messageId, s.extended)),
+          s.messageName,
+        );
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
   // With both X cursors placed: Δ value (A − B), shown as a second line
   // under the per-signal value.
@@ -4002,9 +4032,25 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // control to read. The un-hide affordance stays the
             // swatch, exactly as a full row's hide toggle.
             const compact = !!s.hidden;
+            // A **math** row (`docs/CONTEXT.md`) carries the extra
+            // things a computed series needs: the definition's display
+            // name in place of the stable id the ref stores, a chip per
+            // bus feeding it, and a disclosure that opens the shared
+            // editor in place. A definition that has been deleted out
+            // from under the area leaves the ref behind — the row still
+            // renders, under the id, and serves nothing.
+            const math = mathRecordFor(s);
+            const mathOpen = math != null && expandedMath.has(math.id);
+            // The name a row shows. A math ref stores the definition's
+            // stable id (so a rename leaves every reference alone), and
+            // the id is not what anybody named it — the display name
+            // comes from the listing, and an unnamed definition says so
+            // rather than showing a UUID.
+            const rowName = math ? math.name || "(unnamed)" : s.signalName;
+            const rowLabel = math ? rowName : `${s.messageName}.${s.signalName}`;
             return (
               <div
-                className={`plot-signal-row${s.hidden ? " hidden" : ""}${isSoloMasked ? " solo-masked" : ""}${isPrimary ? " primary" : ""}${isSelected ? " selected" : ""}`}
+                className={`plot-signal-row${s.math ? " math" : ""}${s.hidden ? " hidden" : ""}${isSoloMasked ? " solo-masked" : ""}${isPrimary ? " primary" : ""}${isSelected ? " selected" : ""}`}
                 key={key}
                 title={
                   isPrimary
@@ -4074,6 +4120,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                       signalName: s.signalName,
                       messageName: s.messageName,
                       unit: s.unit,
+                      // Provenance travels: a math row dropped anywhere
+                      // else has to arrive as the same computed series,
+                      // not as a DBC identity nothing decodes.
+                      ...(s.math ? { math: true as const } : {}),
+                      ...(s.fileBacked ? { fileBacked: true as const } : {}),
                     }],
                     panelElementId,
                   );
@@ -4095,14 +4146,38 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   onToggleHidden={() => onToggleHidden(s)}
                   onPickColor={(c) => onSetSignalColor(s, c)}
                 />
+                {/* The app's standard disclosure (ADR 0044), leading
+                    the row as it does on a Database tree row — and so
+                    deliberately far from the row's ✕ at the other end,
+                    with the value readout between them: expanding a
+                    definition and removing the series must not be
+                    neighbouring targets (owner ruling). */}
+                {math && !compact && (
+                  <DisclosureToggle
+                    className="plot-signal-mathdisc"
+                    compact
+                    tabIndex={-1}
+                    expanded={mathOpen}
+                    ariaLabel={`edit ${math.name || "(unnamed)"}`}
+                    onToggle={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      setExpandedMath((prev) => {
+                        const next = new Set(prev);
+                        if (!next.delete(math.id)) next.add(math.id);
+                        return next;
+                      });
+                    }}
+                  />
+                )}
                 {compact ? (
                   <span
                     className="plot-signal-name"
-                    title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                    title={`${rowLabel} — drag to another plot area`}
                   >
                     <NameText
-                      name={s.signalName}
-                      title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                      name={rowName}
+                      title={`${rowLabel} — drag to another plot area`}
                     />
                   </span>
                 ) : (
@@ -4110,26 +4185,28 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                     <div className="plot-signal-text">
                       <span
                         className="plot-signal-name"
-                        title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                        title={`${rowLabel} — drag to another plot area`}
                       >
                         <NameText
-                          name={s.signalName}
-                          title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                          name={rowName}
+                          title={`${rowLabel} — drag to another plot area`}
                         />
                       </span>
                       <span className="plot-signal-message" title={messageLabelFor(s)}>
-                        {s.busId ? (
-                          <>
-                            <ColorChip
-                              color={busColorLookup.get(s.busId) ?? theme().busUnknown}
-                              size="dot"
-                              swatchClassName="plot-bus-swatch"
-                            />
-                            <NameText name={messageLabelFor(s)} />
-                          </>
-                        ) : (
-                          <NameText name={messageLabelFor(s)} />
-                        )}
+                        {/* A math series has no bus of its own, so its
+                            chips are the buses feeding it — one each,
+                            transitively, as the host resolved them
+                            (ADR 0025). A DBC-backed row wears the one
+                            bus it is bound to. */}
+                        {(math ? math.busIds : s.busId ? [s.busId] : []).map((busId) => (
+                          <ColorChip
+                            key={busId}
+                            color={busColorLookup.get(busId) ?? theme().busUnknown}
+                            size="dot"
+                            swatchClassName="plot-bus-swatch"
+                          />
+                        ))}
+                        <NameText name={messageLabelFor(s)} />
                       </span>
                     </div>
                     <div className="plot-signal-readout">
@@ -4196,6 +4273,26 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                       );
                     })()}
                   </>
+                )}
+                {/* The shared editor, in place on the row that opened
+                    it (owner ruling: never a dialog). Expanding a math
+                    signal *is* editing it — there is no read-only
+                    stage in front of it — and every field commits to
+                    the registry as it is left, so nothing here holds a
+                    draft that unmounting would lose. */}
+                {mathOpen && math && (
+                  <div
+                    className="plot-signal-mathdetail"
+                    // The editor is full of its own controls; a click
+                    // inside it is not a click on the row, and must not
+                    // repoint the area's primary series.
+                    onClick={(e) => e.stopPropagation()}
+                    onContextMenu={(e) => e.stopPropagation()}
+                    draggable={false}
+                    onDragStart={(e) => e.stopPropagation()}
+                  >
+                    <MathSignalEditor record={math} definitions={mathSignals} />
+                  </div>
                 )}
               </div>
             );

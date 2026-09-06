@@ -9,6 +9,7 @@ import {
   fanOutByBus,
   isDraggableSignalRef,
   parseSignalDragData,
+  setSignalDragData,
   setSignalDragPayload,
   SIGNAL_DND_MIME,
   type DraggableSignalRef,
@@ -127,6 +128,64 @@ describe("dragSignals", () => {
       const out = dedupeSignalRefs([{ ...SAMPLE, busId: null }, fileBacked, fileBacked]);
       expect(out).toHaveLength(2);
       expect(out.filter((r) => r.fileBacked)).toHaveLength(1);
+    });
+    it("keeps a math signal apart from the other two provenances", () => {
+      // A math ref carries no bus and no message at all, so without the
+      // flag in the identity it would collapse onto whatever else
+      // happens to sit at `(null, 0, false)`.
+      const math: DraggableSignalRef = {
+        busId: null,
+        messageId: 0,
+        extended: false,
+        signalName: "m-1",
+        messageName: "Math",
+        unit: "V",
+        math: true,
+      };
+      const collider: DraggableSignalRef = { ...math, math: undefined };
+      const out = dedupeSignalRefs([math, math, collider]);
+      expect(out).toHaveLength(2);
+      expect(out.filter((r) => r.math)).toHaveLength(1);
+    });
+    it("keeps two math signals with different ids apart", () => {
+      const math: DraggableSignalRef = {
+        busId: null,
+        messageId: 0,
+        extended: false,
+        signalName: "m-1",
+        messageName: "Math",
+        unit: "",
+        math: true,
+      };
+      expect(dedupeSignalRefs([math, { ...math, signalName: "m-2" }])).toHaveLength(2);
+    });
+  });
+
+  describe("a math signal on the wire", () => {
+    const math: DraggableSignalRef = {
+      busId: null,
+      messageId: 0,
+      extended: false,
+      signalName: "m-1",
+      messageName: "Math",
+      unit: "V",
+      math: true,
+    };
+    it("validates like any other draggable ref", () => {
+      expect(isDraggableSignalRef(math)).toBe(true);
+    });
+    it("survives a round trip through the payload with its provenance", () => {
+      const data = new Map<string, string>();
+      const e = {
+        dataTransfer: {
+          setData: (t: string, v: string) => data.set(t, v),
+          getData: (t: string) => data.get(t) ?? "",
+          effectAllowed: "",
+        } as unknown as DataTransfer,
+      };
+      setSignalDragData(e, [math]);
+      const parsed = parseSignalDragData(data.get(SIGNAL_DND_MIME) ?? "");
+      expect(parsed.signals).toEqual([math]);
     });
   });
 

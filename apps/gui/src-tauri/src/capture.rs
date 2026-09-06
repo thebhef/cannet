@@ -712,11 +712,17 @@ pub(crate) fn capture_extent(state: State<'_, AppState>) -> CaptureExtent {
 /// | frames | yes | yes |
 /// | notes | `GLOBAL_MARKER` | `##EV` |
 /// | file-backed signals | **no** | signal channel groups |
+/// | math signals | **no** | one `Computed` signal channel group |
 /// | project DBCs | no | `##AT` attachments |
 ///
-/// A BLF save that is about to drop file-backed signals says so
-/// ([`dropped_file_backed_warning`]); an MDF save carries them, so it
-/// does not.
+/// A math signal is written as an already-decoded channel, exactly as a
+/// file-backed one is — its *definition* stays in the project file,
+/// since MDF has no way to say "the median of these six signals" that a
+/// reader would understand.
+///
+/// A BLF save that is about to drop computed or file-backed signals
+/// says so ([`dropped_file_backed_warning`]); an MDF save carries both,
+/// so it does not.
 ///
 /// Emits `capture`-tagged System Messages: `info` with the frame
 /// count + byte size + marker count on success, `warn` naming any
@@ -858,7 +864,27 @@ fn log_export_result(
     }
     // Only BLF drops them; MDF is the save that carries them.
     if format == SaveFormat::Blf {
-        if let Some(warning) = dropped_file_backed_warning(&state.signal_caches.file_signals()) {
+        let math_names: Vec<String> = {
+            let dbcs = state.databases();
+            let model = state.decode_model(&dbcs);
+            let names = model
+                .math()
+                .iter()
+                .map(|r| {
+                    let d = &r.definition;
+                    if d.name.trim().is_empty() {
+                        d.id.clone()
+                    } else {
+                        d.name.clone()
+                    }
+                })
+                .collect();
+            drop(dbcs);
+            names
+        };
+        if let Some(warning) =
+            dropped_file_backed_warning(&state.signal_caches.file_signals(), &math_names)
+        {
             sys_warn!(&app, "capture", "{warning}");
         }
     }
@@ -921,24 +947,32 @@ pub(crate) fn recovered_capture_warning(scan: &cannet_blf::BlfScan) -> Option<St
 /// A warning, not a refusal. BLF is still the right save for a capture
 /// whose frames are the point, and the user is the one who knows.
 #[must_use]
-pub(crate) fn dropped_file_backed_warning(signals: &[FileSignalEntry]) -> Option<String> {
+pub(crate) fn dropped_file_backed_warning(
+    signals: &[FileSignalEntry],
+    math: &[String],
+) -> Option<String> {
     // Long captures can carry hundreds; the log line names enough to
     // recognise what is going and says how many more there are.
     const NAMED: usize = 8;
-    if signals.is_empty() {
+    let total = signals.len() + math.len();
+    if total == 0 {
         return None;
     }
+    // Math signals are named beside the file-backed ones: both are
+    // series BLF has no channel for, and a user who asked for BLF needs
+    // to know the whole of what is being left behind.
     let mut names: Vec<String> = signals
         .iter()
-        .take(NAMED)
         .map(|e| format!("{}/{}", e.info.group_label(), e.info.name))
+        .chain(math.iter().map(|m| format!("Computed/{m}")))
         .collect();
-    if signals.len() > NAMED {
-        names.push(format!("… and {} more", signals.len() - NAMED));
+    let more = names.len().saturating_sub(NAMED);
+    names.truncate(NAMED);
+    if more > 0 {
+        names.push(format!("… and {more} more"));
     }
     Some(format!(
-        "BLF carries frames only — {n} file-backed signal(s) will not be in the saved file: {list}",
-        n = signals.len(),
+        "BLF carries frames only — {total} computed or file-backed signal(s) will not be in the saved file: {list}",
         list = names.join(", "),
     ))
 }
@@ -1459,8 +1493,31 @@ const MDF_SAVE_CHUNK: usize = 65_536;
 /// and events from outside it.
 type MdfRangedContents = (
     Vec<(FileSignalInfo, Vec<crate::signal_sampler::SamplePoint>)>,
+    Vec<MathChannel>,
     Vec<Note>,
 );
+
+/// One **math signal** (`docs/CONTEXT.md`) as an MDF channel: the name
+/// it is written under, its unit, and its samples.
+///
+/// The series is already decoded — it is computed from decoded
+/// operands — so it rides the same `add_signal` path a file-backed one
+/// does, which is exactly the precedent the ruling names ("math signals
+/// ride the existing `write_mdf_capture` path as already-decoded
+/// channels"). What is *not* written is the definition: an MDF channel
+/// is a series of values, and there is nowhere in the format to say
+/// "this is the median of these six signals" that a reader would
+/// understand. The project file keeps the definition.
+struct MathChannel {
+    name: String,
+    unit: String,
+    points: Vec<crate::signal_sampler::SamplePoint>,
+}
+
+/// The acquisition name every math channel is grouped under — the same
+/// word the Database view's branch wears, so a reader opening the file
+/// finds them where the app said they were.
+const MDF_MATH_GROUP: &str = "Computed";
 
 fn mdf_contents_in_range(state: &AppState, notes: &[Note], run: &ExportRun) -> MdfRangedContents {
     let signals = state
@@ -1475,12 +1532,33 @@ fn mdf_contents_in_range(state: &AppState, notes: &[Note], run: &ExportRun) -> M
             (info, kept)
         })
         .collect();
+    // Math series are *computed*, not stored: this drives their fill, so
+    // an export carries a definition nobody has plotted this session.
+    // An unnamed definition is written under its id rather than under a
+    // blank channel name, which no reader could tell apart.
+    let dbcs = state.databases();
+    let model = state.decode_model(&dbcs);
+    let math = state
+        .signal_caches
+        .math_series(&state.trace_store, &model)
+        .into_iter()
+        .map(|(id, name, unit, points)| MathChannel {
+            name: if name.trim().is_empty() { id } else { name },
+            unit,
+            points: points
+                .into_iter()
+                .filter(|p| run.keeps(sample_ns(p.t_seconds)))
+                .collect(),
+        })
+        .filter(|c| !c.points.is_empty())
+        .collect();
+    drop(dbcs);
     let notes = notes
         .iter()
         .filter(|n| run.keeps(n.timestamp_ns))
         .cloned()
         .collect();
-    (signals, notes)
+    (signals, math, notes)
 }
 
 /// Perform the MDF write: the full-fidelity save.
@@ -1507,7 +1585,7 @@ pub(crate) fn write_mdf_capture(
     buses: &[String],
     run: &mut ExportRun,
 ) -> Result<ExportOutcome, String> {
-    let (signals, notes) = mdf_contents_in_range(state, notes, run);
+    let (signals, math, notes) = mdf_contents_in_range(state, notes, run);
     let events = events_from_notes(&notes);
     let attachments = dbc_attachments(state);
 
@@ -1535,6 +1613,11 @@ pub(crate) fn write_mdf_capture(
     }
     for (_, points) in &signals {
         if let Some(first) = points.first() {
+            start_time_ns = start_time_ns.min(sample_ns(first.t_seconds));
+        }
+    }
+    for channel in &math {
+        if let Some(first) = channel.points.first() {
             start_time_ns = start_time_ns.min(sample_ns(first.t_seconds));
         }
     }
@@ -1588,6 +1671,7 @@ pub(crate) fn write_mdf_capture(
             },
         );
     }
+    add_math_channels(&mut writer, &math);
     for event in events {
         writer.add_event(event);
     }
@@ -1611,6 +1695,30 @@ pub(crate) fn write_mdf_capture(
         // nothing is ever moved to reach it.
         clamped_timestamps: None,
     }))
+}
+
+/// Write the math signals as MDF channels, under their own acquisition
+/// group: already-decoded series, exactly as a file-backed one is. No
+/// value table — a computed value is physical throughout, with no code
+/// behind it.
+fn add_math_channels(writer: &mut cannet_mdf::MdfCaptureWriter, math: &[MathChannel]) {
+    for channel in math {
+        writer.add_signal(
+            Some(MDF_MATH_GROUP.to_string()),
+            cannet_mdf::FileSignal {
+                name: channel.name.clone(),
+                unit: (!channel.unit.is_empty()).then(|| channel.unit.clone()),
+                conversion: None,
+                value_table: Vec::new(),
+                timestamps_ns: channel
+                    .points
+                    .iter()
+                    .map(|p| sample_ns(p.t_seconds))
+                    .collect(),
+                values: channel.points.iter().map(|p| p.value).collect(),
+            },
+        );
+    }
 }
 
 /// A cached sample's `t_seconds` back as absolute nanoseconds. The cache

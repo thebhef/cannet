@@ -45,6 +45,13 @@ export interface DraggableSignalRef {
   /// then a signal channel group index and `messageName` that group's
   /// label. Absent ⇒ DBC-backed.
   fileBacked?: boolean;
+  /// A **math** signal (`docs/CONTEXT.md`) — computed host-side, with
+  /// no bus and no message at all. `signalName` is then the
+  /// definition's **stable id**, never its display name, so renaming a
+  /// definition leaves every reference to it alone; `messageName` and
+  /// `unit` are what the drop target shows until it can look the
+  /// definition up for itself. Absent ⇒ not one.
+  math?: boolean;
 }
 
 /// Validator for one draggable signal ref. Mirrors the plot panel's
@@ -223,15 +230,16 @@ export function fanOutByBus(
 ///
 /// Provenance is part of that identity: a file-backed ref's
 /// `messageId` is a channel-group index, an unrelated number that may
-/// equal some message's id, so the flag slot keeps the two namespaces
-/// apart exactly as `signalKey` does.
+/// equal some message's id, and a math ref has neither a bus nor a
+/// message, so the flag slot keeps the three namespaces apart exactly
+/// as `signalKey` does.
 export function dedupeSignalRefs(
   refs: readonly DraggableSignalRef[],
 ): DraggableSignalRef[] {
   const seen = new Set<string>();
   const out: DraggableSignalRef[] = [];
   for (const r of refs) {
-    const flag = r.fileBacked ? "f" : r.extended ? "x" : "s";
+    const flag = r.math ? "m" : r.fileBacked ? "f" : r.extended ? "x" : "s";
     const k = `${r.busId ?? ""}|${r.messageId}|${flag}|${r.signalName}`;
     if (seen.has(k)) continue;
     seen.add(k);

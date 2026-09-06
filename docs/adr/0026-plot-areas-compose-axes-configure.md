@@ -486,6 +486,25 @@ below:
   worth keeping — see the extrapolation rule above — so what is written
   down is now what the code does: a series *is* drawn past its data,
   and the stretch where it is says so.
+- **A user-authored constant is data, and draws solid.** A **math
+  signal** (`docs/CONTEXT.md`) whose function is `hline` — a value the
+  user typed — or `statistic` — one number over the whole capture,
+  which is what it *means* — is a horizontal line spanning the
+  capture, and the rules above would dash both of its wings as a hold
+  past its own samples. They do not apply to it. Holding such a value
+  across the axis is not the renderer inferring anything: it is the
+  series. The suppression is the model's, at the one place that
+  classifies (`SignalCache::extrapolated_spans` reads the provenance),
+  so the renderer still styles what it is told and re-derives nothing.
+  This settles the one-sample-series question above **for this
+  provenance only** — a decoded series holding one sample is still
+  dashed on both wings, because nobody authored that value as a
+  constant. Being *one* line is the model's job too: a capture reaches
+  a serve in pieces, and a `statistic`'s answer over what has decoded
+  so far moves with every piece, so each round **rewrites** the series
+  to the whole line at the value it holds now rather than appending
+  its answer to the partial ones before it. A constant that grew a
+  staircase would still be styled solid, and still be wrong.
 - **Y-axis-mode selector** (`unified` / `per-unit` / `individual`)
   sits in each plot area's signal-panel head. Switching modes
   re-stacks the area's canvases. The per-axis derivation is the pure
