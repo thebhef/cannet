@@ -105,3 +105,55 @@ frequency, and max / min / average / median / **range** over a set of signals.
 ## Exit criteria
 
 To be set as grooming completes.
+
+## Status log
+
+### 2026-09-16 — a standing project-bus map on `AppState` (`task135-engine`)
+
+Owner-ordered on the 2026-09-16 queue walk, fixing the blocker phase 1
+recorded: bus names reached the host only on a math command's payload.
+
+**Observation.** `AppState` carried `math_bus_names`, written by
+`math_commands::latch_bus_names` and by nothing else. A pattern is
+evaluated against the canonical path (ADR 0038), whose first segment is
+the bus *name*, so until the frontend had listed or written a math
+signal the map was empty, every path in the catalog was built from the
+bus *id*, and `^Powertrain/` selected nothing. A project whose
+definitions are all pattern-defined therefore served empty series on
+the first serve after an open.
+
+**Hypothesis.** The map is project state, not command state: if the
+host installs it wherever the project's bus list already arrives — the
+open parse, and the frontend's push on every bus add / rename /
+remove — a name-anchored pattern resolves with no math command having
+run, and the per-call carry has nothing left to do.
+
+**Experiment 1 (red).**
+`a_name_anchored_math_pattern_matches_before_any_math_command` defines a
+`^Powertrain/` set against a DBC on bus `b0` and installs the bus names
+the way an open does, with no command called. It did not compile: no
+seam existed to install them through (`no method named
+set_project_bus_names`) — the defect stated as an API fact.
+
+**Experiment 2 (falsification, after the fix).** Two mutations, each
+run against the pair of bus-name tests: a setter that stores nothing
+fails both; a setter that stores but does not drop the resolved model
+fails `a_math_pattern_matches_the_canonical_path_with_the_projects_bus_name`
+(which builds a model before the names land) and passes the new one. So
+both halves of the setter are load-bearing and both are pinned.
+
+**Conclusion / what landed.** `AppState::project_bus_names` (renamed
+from `math_bus_names`) with `set_project_bus_names`, which stores and
+drops the resolved math model when the pairs moved. Written from
+`project::open_project` via `project::bus_name_pairs(&p.buses)`, cleared
+by `close_project` alongside the definitions it belongs with, and
+refreshed by `rbs_sync_project_buses` — the frontend's existing push on
+every bus add / rename / remove, which now feeds both the RBS bus keys
+and the math patterns.
+
+The latch is **gone**, not kept beside it: `latch_bus_names` and the
+`busNames` parameter of `list_math_signals`, `define_math_signal` and
+`update_math_signal` are deleted, so there is one writer. Tauri reads
+command arguments by key, so a caller still sending `busNames` is
+simply not read — nothing breaks on the way through the stack, but the
+frontend call sites added by the later phases have a key to drop.

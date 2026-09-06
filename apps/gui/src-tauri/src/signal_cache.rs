@@ -98,6 +98,8 @@ use cannet_dbc::Database;
 use cannet_spill::{lower_bound, SampleSeq, SAMPLE_ENTRY_BYTES};
 use serde::{Deserialize, Serialize};
 
+use crate::math_kernels::{self, MathCarry};
+use crate::math_signals::{MathFunction, MathModel, MathOperandRef, ResolvedMath};
 use crate::signal_fingerprint::{self, DecodeModel};
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::{read_json, write_json, RawTraceFrame, TraceStore};
@@ -263,6 +265,10 @@ struct SignalCache {
     /// empty sentinel) means nothing has decoded yet.
     lo: f64,
     hi: f64,
+    /// Set for a **math** series: what its fill has consumed of its
+    /// operands, and the state its kernel carries between rounds.
+    /// `None` for every other provenance.
+    math: Option<MathFill>,
     /// Set for a **file-backed** series: what it was read from. `None`
     /// is a DBC-backed series, whose samples come from decoding frames.
     /// This is the decode provenance the ruling turns on — it decides
@@ -319,6 +325,7 @@ impl SignalCache {
             next_index: 0,
             lo: f64::INFINITY,
             hi: f64::NEG_INFINITY,
+            math: None,
             file,
             restored: false,
             encoding: None,
@@ -856,6 +863,9 @@ impl SignalCache {
             next_index: usize::try_from(p.next_index).unwrap_or(usize::MAX),
             lo,
             hi,
+            // A math pyramid is never persisted, so a restored row is
+            // never one ([`SignalCacheStore::persist`]).
+            math: None,
             file: p.file.clone(),
             restored: true,
             // The row was only adopted because its fingerprint answered
@@ -1140,19 +1150,41 @@ fn window_slice(level: &SampleSeq, from: f64, to: f64) -> Vec<SamplePoint> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct SignalKey {
     /// DBC-backed: the bus the series decodes from, always present.
-    /// File-backed: `None` — nothing on the wire carries the series, so
-    /// it has no bus to name.
+    /// File-backed and math: `None` — nothing on the wire carries the
+    /// series, so it has no bus to name.
     bus_id: Option<String>,
     /// DBC-backed: the message id. File-backed: the source file's
-    /// signal-channel-group index.
+    /// signal-channel-group index. Math: zero, and meaningless.
     slot: u32,
     /// DBC-backed: whether `slot` is a 29-bit extended id. Always
-    /// `false` file-backed.
+    /// `false` otherwise.
     extended: bool,
+    /// The signal name — or, for a math series, the definition's stable
+    /// id, which is what makes it unique.
     signal: String,
-    /// `true` for a file-backed series — filled once from an imported
-    /// signal channel group, never from frames.
-    file_backed: bool,
+    origin: SignalOrigin,
+}
+
+/// Where a cached series' samples come from — its **decode
+/// provenance**, and the one thing that decides its fill.
+///
+/// Part of the key rather than a field beside it because the three
+/// namespaces must not alias: a channel-group index, a message id and a
+/// definition id are unrelated identifiers that would otherwise
+/// collide. The frontend spells the same distinction in the series
+/// key's flag slot, `s|x|f|m` (`plotData.ts`'s `signalKey`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum SignalOrigin {
+    /// Decoded from the frames of a `(message, bus)`, incrementally,
+    /// for as long as frames keep arriving.
+    Dbc,
+    /// Imported from a capture file as an already-decoded value series,
+    /// filled once and complete forever.
+    File,
+    /// Computed from other series by a math definition
+    /// ([`crate::math_signals`]), filled incrementally from its
+    /// operands' level-0 samples.
+    Math,
 }
 
 impl SignalKey {
@@ -1170,7 +1202,7 @@ impl SignalKey {
             slot: message_id,
             extended,
             signal,
-            file_backed: false,
+            origin: SignalOrigin::Dbc,
         }
     }
 
@@ -1181,8 +1213,41 @@ impl SignalKey {
             slot: group,
             extended: false,
             signal,
-            file_backed: true,
+            origin: SignalOrigin::File,
         }
+    }
+
+    /// The key of the math series definition `id` computes.
+    fn math(id: String) -> Self {
+        Self {
+            bus_id: None,
+            slot: 0,
+            extended: false,
+            signal: id,
+            origin: SignalOrigin::Math,
+        }
+    }
+
+    /// Whether this series is imported rather than decoded.
+    fn is_file_backed(&self) -> bool {
+        self.origin == SignalOrigin::File
+    }
+
+    /// Whether this series is computed rather than decoded.
+    fn is_math(&self) -> bool {
+        self.origin == SignalOrigin::Math
+    }
+
+    /// Whether frames decode this series — the question every path that
+    /// scans the trace store asks.
+    fn is_dbc(&self) -> bool {
+        self.origin == SignalOrigin::Dbc
+    }
+
+    /// The math definition this key names, or `None` when it names a
+    /// signal rather than a math series.
+    fn math_id(&self) -> Option<&str> {
+        self.is_math().then_some(self.signal.as_str())
     }
 }
 
@@ -1238,7 +1303,7 @@ impl Harden {
 }
 
 /// A stable, filesystem-safe file-name base for a signal's pyramid levels:
-/// `sig.{s|e}{id:08x}.{hash:016x}`. The id and extended flag are encoded
+/// `sig.{s|e|f|m}{id:08x}.{hash:016x}`. The id and provenance are encoded
 /// literally (debuggable); the variable-length bus/signal text is folded
 /// into an FNV-1a hash so the name is bounded and contains no path-hostile
 /// characters. Deterministic in the key, so the same signal always maps to
@@ -1256,13 +1321,17 @@ fn key_prefix(key: &SignalKey) -> String {
     mix(key.bus_id.as_deref().unwrap_or("").as_bytes());
     mix(&[0]);
     mix(&key.slot.to_le_bytes());
-    mix(&[u8::from(key.extended), u8::from(key.file_backed)]);
-    mix(key.signal.as_bytes());
-    let kind = match (key.file_backed, key.extended) {
-        (true, _) => 'f',
-        (false, true) => 'e',
-        (false, false) => 's',
+    // Provenance is mixed as its own discriminant byte, not as a flag
+    // beside `extended`: three origins do not fit in a bool, and two
+    // series of different provenance must not be able to hash alike.
+    let (discriminant, kind) = match (key.origin, key.extended) {
+        (SignalOrigin::File, _) => (2u8, 'f'),
+        (SignalOrigin::Math, _) => (3, 'm'),
+        (SignalOrigin::Dbc, true) => (1, 'e'),
+        (SignalOrigin::Dbc, false) => (0, 's'),
     };
+    mix(&[u8::from(key.extended), discriminant]);
+    mix(key.signal.as_bytes());
     let slot = key.slot;
     format!("sig.{kind}{slot:08x}.{h:016x}")
 }
@@ -1674,7 +1743,283 @@ fn parked_seq(base: &str) -> Option<u64> {
     u64::from_str_radix(rest.split('.').next()?, 16).ok()
 }
 
-/// One signal a batch of queries names: the cache key's four fields,
+/// How many level-0 samples of one operand a single math fold round
+/// reads.
+///
+/// The math fill runs under the cache lock — it reads its operands'
+/// pyramids and appends to its own, and both live in the same map — so
+/// what bounds the lock hold is what bounds one round (ADR 0048). At
+/// this chunk a round's work is a few hundred microseconds of
+/// arithmetic over a couple of hundred kilobytes, which is the band the
+/// decode path's own chunk already occupies.
+const MATH_CHUNK_SAMPLES: usize = 16_384;
+
+/// How deep a chain of math-on-math a fingerprint follows before it
+/// gives up.
+///
+/// A cycle is refused when a definition is written
+/// ([`crate::math_signals::MathRegistry`]), so this can only be reached
+/// by a project file someone edited by hand. It bounds the recursion
+/// rather than trusting that guarantee, because the cost of being wrong
+/// is a stack overflow inside a serve.
+const MATH_MAX_DEPTH: usize = 32;
+
+/// What a math series' fill has consumed of its operands, and what its
+/// kernel carries between rounds.
+///
+/// The fill is **incremental**, like the decode path and unlike the
+/// file-backed one: a math series over a live capture grows as its
+/// operands do, so each round reads only the operand samples that have
+/// arrived since the last and appends only the output rows they
+/// produce. That is what makes the state here necessary — an
+/// exponential filter's running output, an integrator's accumulator and
+/// a trailing window's running sums all have to survive from one round
+/// to the next, or the series would restart on every serve.
+struct MathFill {
+    /// The operand series this fill reads, in the definition's resolved
+    /// order. Fixed for the life of the cache: a membership change
+    /// moves the fingerprint, which parks this pyramid and mints a new
+    /// one (ADR 0047).
+    operands: Vec<SignalKey>,
+    /// The level-0 slot each operand has been read through — an
+    /// **absolute** slot index, so it stays valid across the front
+    /// trimming eviction does.
+    cursors: Vec<usize>,
+    /// Each operand's last value, held between rounds — the state
+    /// [`math_kernels::merge_hold`] carries.
+    held: Vec<Option<f64>>,
+    carry: MathCarry,
+    /// True while the operands hold samples this fill has not consumed.
+    /// A serve over a math series is incomplete while this is set, even
+    /// when every operand has itself caught up (ADR 0049).
+    pending: bool,
+}
+
+/// The cache key an operand reference names, or `None` for a DBC-backed
+/// reference that names no bus — which resolves nothing, the same way a
+/// busless query does ([`CacheQuery::key`]).
+fn operand_key(reference: &MathOperandRef) -> Option<SignalKey> {
+    if reference.math {
+        Some(SignalKey::math(reference.signal_name.clone()))
+    } else if reference.file_backed {
+        Some(SignalKey::file(
+            reference.message_id,
+            reference.signal_name.clone(),
+        ))
+    } else {
+        Some(SignalKey::dbc(
+            reference.bus_id.clone()?,
+            reference.message_id,
+            reference.extended,
+            reference.signal_name.clone(),
+        ))
+    }
+}
+
+/// Every math definition the batch's keys reach, **dependencies first**
+/// — the order a fold must run in, since a series computed from another
+/// has to read a level-0 series that is already up to date.
+fn math_ids(keys: &[Option<SignalKey>], model: &MathModel) -> Vec<String> {
+    if model.is_empty() {
+        return Vec::new();
+    }
+    let named: Vec<String> = keys
+        .iter()
+        .flatten()
+        .filter_map(|k| k.math_id().map(str::to_string))
+        .collect();
+    model.dependency_order(&named)
+}
+
+/// The operand keys of `ids` — what the decode pass has to catch up
+/// before the fold can read them.
+///
+/// Math operands are in the list too, harmlessly: [`group_keys`] leaves
+/// every non-DBC key out of the decode groups, and the fold covers them
+/// itself, in dependency order.
+fn math_operand_keys(ids: &[String], model: &MathModel) -> Vec<Option<SignalKey>> {
+    ids.iter()
+        .filter_map(|id| model.get(id))
+        .flat_map(|resolved| resolved.operands.iter().map(operand_key))
+        .collect()
+}
+
+/// The compositional fingerprint of math definition `id`
+/// ([`signal_fingerprint::math_encoding`]): its function, its
+/// parameters, its resolved operands, and each operand's own
+/// fingerprint.
+///
+/// The recursion is what makes a change deep in a chain reach every
+/// series above it. A file-backed operand's fingerprint comes from the
+/// cache the import filled, because that is where its
+/// [`FileSignalInfo`] is; an operand nothing has imported contributes
+/// the empty stamp, which moves — correctly — once something has.
+fn math_stamp(caches: &Caches, dbcs: &DecodeModel<'_>, id: &str, depth: usize) -> String {
+    let Some(resolved) = dbcs.math().get(id) else {
+        return String::new();
+    };
+    if depth >= MATH_MAX_DEPTH {
+        return String::new();
+    }
+    let stamps: Vec<String> = resolved
+        .operands
+        .iter()
+        .map(|reference| {
+            if let Some(operand) = reference.math_id() {
+                return math_stamp(caches, dbcs, operand, depth + 1);
+            }
+            if reference.file_backed {
+                let key = SignalKey::file(reference.message_id, reference.signal_name.clone());
+                return caches
+                    .by_key
+                    .get(&key)
+                    .and_then(|c| c.file.as_ref())
+                    .map_or_else(String::new, signal_fingerprint::file_source);
+            }
+            signal_fingerprint::dbc_encoding(
+                dbcs,
+                reference.bus_id.as_deref(),
+                reference.message_id,
+                reference.extended,
+                &reference.signal_name,
+            )
+        })
+        .collect();
+    let borrowed: Vec<&str> = stamps.iter().map(String::as_str).collect();
+    signal_fingerprint::math_encoding(resolved, &borrowed)
+}
+
+/// Create the cache for math definition `id` if it has none, and the
+/// caches its fill will read.
+///
+/// A DBC-backed operand gets a cache here for the same reason a plotted
+/// signal does — it is about to be decoded, and its fingerprint is
+/// stamped against the set that will decode it. A file-backed operand
+/// gets none: nothing decodes it, so an empty cache minted here could
+/// only ever stay empty ([`ensure_caches`]).
+fn ensure_math(caches: &mut Caches, dbcs: &DecodeModel<'_>, id: &str) {
+    let Some(resolved) = dbcs.math().get(id) else {
+        return;
+    };
+    let operands: Vec<SignalKey> = resolved.operands.iter().filter_map(operand_key).collect();
+    let root = caches.root.clone();
+    for key in &operands {
+        if !key.is_dbc() {
+            continue;
+        }
+        caches.by_key.entry(key.clone()).or_insert_with(|| {
+            let mut cache = SignalCache::new(&root, &key_prefix(key), None);
+            cache.encoding = Some(signal_fingerprint::dbc_encoding(
+                dbcs,
+                key.bus_id.as_deref(),
+                key.slot,
+                key.extended,
+                &key.signal,
+            ));
+            cache
+        });
+    }
+    let key = SignalKey::math(id.to_string());
+    if caches.by_key.contains_key(&key) {
+        return;
+    }
+    // Stamped at creation, against the model that is about to compute
+    // it — the rule a decoded series follows (ADR 0047), and what lets
+    // a math pyramid built this session park rather than be discarded.
+    let stamp = math_stamp(caches, dbcs, id, 0);
+    let mut cache = SignalCache::new(&root, &key_prefix(&key), None);
+    cache.math = Some(MathFill {
+        cursors: vec![0; operands.len()],
+        held: vec![None; operands.len()],
+        operands,
+        carry: MathCarry::new(),
+        // Nothing has been read yet, so a serve answering off this
+        // cache before its first fold is answering off a prefix.
+        pending: true,
+    });
+    cache.encoding = Some(stamp);
+    caches.by_key.insert(key, cache);
+}
+
+/// One operand's contribution to a fold round: the samples it has that
+/// the fill has not read, capped at [`MATH_CHUNK_SAMPLES`], plus the
+/// newest time the operand has ever produced.
+struct OperandChunk {
+    samples: Vec<SamplePoint>,
+    /// The operand's newest sample time, whether or not it is in
+    /// `samples` — the watermark [`math_kernels::merge_hold`] needs to
+    /// know how far a quiet operand has actually got.
+    newest: Option<f64>,
+    /// The slot `samples` starts at — the cursor clamped up to the
+    /// level's first live slot, so an operand whose front has been
+    /// evicted skips what is gone rather than reading past the map.
+    read_from: usize,
+    /// The slot the chunk read through.
+    cursor: usize,
+    /// Whether the operand still holds samples beyond `cursor`.
+    more: bool,
+    /// The operand's decode has scanned the whole store the serve read
+    /// (or nothing will ever fill it — a file-backed series no import
+    /// has minted). With `newest` still `None`, the operand is *absent*:
+    /// the capture has never carried it, and the merge must not hold
+    /// the set's other members for it ([`math_kernels::merge_hold`]).
+    caught_up: bool,
+}
+
+/// Read one round's worth of each operand's unread level-0 samples.
+///
+/// The cursor is clamped up to the level's first live slot, so an
+/// operand whose front has been evicted skips the samples that are gone
+/// rather than reading past the end of the map.
+fn read_operands(
+    caches: &Caches,
+    operands: &[SignalKey],
+    cursors: &[usize],
+    store_len: usize,
+) -> Vec<OperandChunk> {
+    operands
+        .iter()
+        .zip(cursors)
+        .map(|(key, cursor)| {
+            let Some(cache) = caches.by_key.get(key) else {
+                // No cache at all: nothing decodes this operand, so
+                // there is nothing to wait for. (A later import minting
+                // one moves the definition's fingerprint, which parks
+                // this pyramid and starts a fresh fill — so a stale
+                // "absent" can't linger past the operand appearing.)
+                return OperandChunk {
+                    samples: Vec::new(),
+                    newest: None,
+                    read_from: *cursor,
+                    cursor: *cursor,
+                    more: false,
+                    caught_up: true,
+                };
+            };
+            let level = &cache.levels[0];
+            let from = (*cursor).max(level.first_slot());
+            let to = level.len().min(from.saturating_add(MATH_CHUNK_SAMPLES));
+            let samples = (from..to)
+                .map(|k| {
+                    let (t_seconds, value) = level.get(k);
+                    SamplePoint { t_seconds, value }
+                })
+                .collect();
+            OperandChunk {
+                samples,
+                newest: cache.latest().map(|s| s.t_seconds),
+                read_from: from,
+                cursor: to.max(from),
+                more: to < level.len(),
+                // A file-backed cache is filled whole by its import,
+                // never by a scan, so existing at all is caught up.
+                caught_up: cache.file.is_some() || cache.next_index >= store_len,
+            }
+        })
+        .collect()
+}
+
+/// One signal a batch of queries names: the cache key's fields,
 /// borrowed. A plot panel asks about many at once, and the ones sharing
 /// a `(message_id, extended)` are caught up in a single decode pass.
 pub struct CacheQuery<'a> {
@@ -1694,6 +2039,11 @@ pub struct CacheQuery<'a> {
     /// filled: nothing decodes such a signal, so there is no series to
     /// create on demand.
     pub file_backed: bool,
+    /// Names a **math** signal ([`crate::math_signals`]), in which case
+    /// `signal_name` is its definition's stable id and every other
+    /// field is meaningless. Wins over `file_backed`, which the wire
+    /// shape lets a caller set alongside it but nothing ever does.
+    pub math: bool,
 }
 
 /// How a serve summarises a window that holds more samples than the
@@ -1733,7 +2083,9 @@ impl CacheQuery<'_> {
     /// it at a bus — but it resolves to no series here, so every serve
     /// answers it empty.
     fn key(&self) -> Option<SignalKey> {
-        if self.file_backed {
+        if self.math {
+            Some(SignalKey::math(self.signal_name.to_string()))
+        } else if self.file_backed {
             Some(SignalKey::file(
                 self.message_id,
                 self.signal_name.to_string(),
@@ -1768,12 +2120,20 @@ fn ensure_caches(
     queries: &[CacheQuery<'_>],
     dbcs: &DecodeModel<'_>,
 ) -> Vec<Option<SignalKey>> {
+    // A **math** query creates a cache, and so does every DBC-backed
+    // operand its fill will read — the operands have to be decoding
+    // before there is anything to compute from. Done first, and in
+    // dependency order, so a series computed from another finds it.
+    let named: Vec<Option<SignalKey>> = queries.iter().map(CacheQuery::key).collect();
+    for id in math_ids(&named, dbcs.math()) {
+        ensure_math(caches, dbcs, &id);
+    }
     let Caches { root, by_key, .. } = caches;
     queries
         .iter()
         .map(|q| {
             let key = q.key()?;
-            if !key.file_backed {
+            if key.is_dbc() {
                 by_key.entry(key.clone()).or_insert_with(|| {
                     let mut cache = SignalCache::new(root, &key_prefix(&key), None);
                     // Stamped here, because here is where the samples
@@ -1807,7 +2167,7 @@ fn group_keys(keys: &[Option<SignalKey>]) -> HashMap<(u32, bool), Vec<&SignalKey
     let mut seen: std::collections::HashSet<&SignalKey> = std::collections::HashSet::new();
     let mut groups: HashMap<(u32, bool), Vec<&SignalKey>> = HashMap::new();
     for key in keys.iter().flatten() {
-        if !key.file_backed && seen.insert(key) {
+        if key.is_dbc() && seen.insert(key) {
             groups
                 .entry((key.slot, key.extended))
                 .or_default()
@@ -2203,18 +2563,36 @@ impl SignalCacheStore {
         let mut park_keys: Vec<SignalKey> = Vec::new();
         let mut drop_keys: Vec<SignalKey> = Vec::new();
         for (key, cache) in &caches.by_key {
-            if key.file_backed {
+            if key.is_file_backed() {
                 continue;
             }
-            let now = signal_fingerprint::dbc_encoding(
-                dbcs,
-                key.bus_id.as_deref(),
-                key.slot,
-                key.extended,
-                &key.signal,
-            );
+            // A **math** series is judged by its compositional stamp,
+            // which covers its operands' encodings — so a DBC edit
+            // under an operand, or a redefinition anywhere below it,
+            // parks the derived pyramid exactly as it parks a decoded
+            // one whose definition moved (ADR 0047, ADR 0054).
+            let now = match key.math_id() {
+                Some(id) => math_stamp(&caches, dbcs, id, 0),
+                None => signal_fingerprint::dbc_encoding(
+                    dbcs,
+                    key.bus_id.as_deref(),
+                    key.slot,
+                    key.extended,
+                    &key.signal,
+                ),
+            };
             match cache.encoding.as_deref() {
                 Some(stamp) if stamp == now => {}
+                // **A math series is dropped rather than parked.** A
+                // park is a bet that the samples will be wanted again
+                // unchanged, and a revived pyramid is reopened from its
+                // level files alone — which for a math series would
+                // leave it with no fill state (its operand cursors, its
+                // held values, its kernel's carry), so it could never
+                // be extended again. Recomputing one costs a pass over
+                // samples that are already decoded, which is a fraction
+                // of what a park saves a decoded series (ADR 0047).
+                Some(_) if key.is_math() => drop_keys.push(key.clone()),
                 Some(_) => park_keys.push(key.clone()),
                 None => drop_keys.push(key.clone()),
             }
@@ -2355,9 +2733,19 @@ impl SignalCacheStore {
         for cache in caches.by_key.values_mut() {
             cache.flush_levels(harden, &mut budget);
         }
+        // **A math series is session-scoped.** Its fill carries state
+        // the samples do not — a filter's running output, an
+        // integrator's accumulator, a trailing window's running sums —
+        // so a persisted pyramid could not be resumed without
+        // persisting all of that beside it. Recomputing one from
+        // operand pyramids that *are* restored costs a pass over
+        // already-decoded samples, which is a fraction of the decode a
+        // persisted pyramid exists to avoid, so the trade is the other
+        // way round here than it is for a decoded series (ADR 0047).
         let signals: Vec<PersistedSignal> = caches
             .by_key
             .iter_mut()
+            .filter(|(key, _)| !key.is_math())
             .map(|(key, cache)| cache.snapshot(key, dbcs))
             .collect();
         let manifest = PyramidManifest {
@@ -2617,7 +3005,7 @@ impl SignalCacheStore {
         let mut series = 0u64;
         let mut decoded = 0u64;
         for (key, cache) in &caches.by_key {
-            if key.file_backed || cache.restored {
+            if !key.is_dbc() || cache.restored {
                 continue;
             }
             any = true;
@@ -2646,11 +3034,17 @@ impl SignalCacheStore {
     /// it: front-trimming one would drop imported samples nothing can
     /// re-derive, since the frames that rebuild a DBC-backed pyramid
     /// never carried it.
+    ///
+    /// **Math** series are trimmed like decoded ones. They are computed
+    /// from series the mark does trim, so keeping their history would
+    /// keep a curve whose inputs are gone — and their fill cursors are
+    /// absolute slot indices, so trimming a front does not disturb what
+    /// has been consumed.
     pub fn evict_below(&self, ts_seconds: f64) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let mut touched = false;
         for (key, cache) in &mut caches.by_key {
-            if key.file_backed {
+            if key.is_file_backed() {
                 continue;
             }
             cache.evict_below(ts_seconds);
@@ -3064,6 +3458,7 @@ impl SignalCacheStore {
             extended,
             signal_name,
             file_backed: false,
+            math: false,
         };
         self.slice_many(
             std::slice::from_ref(&query),
@@ -3121,13 +3516,17 @@ impl SignalCacheStore {
         // judged against — so "complete" means "caught up to the capture
         // this serve read", not to a tip that moved under it.
         let store_len = store.len();
-        self.catch_up_keys(
-            &keys,
-            store_len,
-            dbs,
-            &store_fetch(store),
-            &self.serve_limit(),
-        );
+        let limit = self.serve_limit();
+        let math = math_ids(&keys, dbs.math());
+        // A math series' operands are caught up with the batch, in the
+        // same decode pass, and then folded — so one round trip answers
+        // the whole batch however deep the math goes.
+        let mut decode = keys.clone();
+        decode.extend(math_operand_keys(&math, dbs.math()));
+        self.catch_up_keys(&decode, store_len, dbs, &store_fetch(store), &limit);
+        if !math.is_empty() {
+            self.fold_math(&math, dbs, capture_span(store), store_len, &limit);
+        }
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let mut series = Vec::with_capacity(keys.len());
         let mut extrapolated = Vec::with_capacity(keys.len());
@@ -3184,6 +3583,7 @@ impl SignalCacheStore {
             extended,
             signal_name,
             file_backed: false,
+            math: false,
         };
         self.min_max_many(std::slice::from_ref(&query), store, dbs)
             .pop()
@@ -3208,13 +3608,15 @@ impl SignalCacheStore {
         dbs: &DecodeModel<'_>,
     ) -> Vec<Option<(f64, f64)>> {
         let keys = self.ensure_caches(queries, dbs);
-        self.catch_up_keys(
-            &keys,
-            store.len(),
-            dbs,
-            &store_fetch(store),
-            &self.serve_limit(),
-        );
+        let limit = self.serve_limit();
+        let math = math_ids(&keys, dbs.math());
+        let mut decode = keys.clone();
+        decode.extend(math_operand_keys(&math, dbs.math()));
+        let store_len = store.len();
+        self.catch_up_keys(&decode, store_len, dbs, &store_fetch(store), &limit);
+        if !math.is_empty() {
+            self.fold_math(&math, dbs, capture_span(store), store_len, &limit);
+        }
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         keys.iter()
             .map(|key| {
@@ -3224,6 +3626,253 @@ impl SignalCacheStore {
             })
             .collect()
     }
+
+    /// Bring every math series in `ids` up to date with its operands,
+    /// in dependency order, within the serve's remaining budget.
+    ///
+    /// This is the math half of the provenance rule. A DBC-backed
+    /// series fills from frames and a file-backed one from an import; a
+    /// math series fills from **its operands' level-0 samples** — the
+    /// raw series, never a pyramid level, because the stateful
+    /// functions would otherwise give a different answer at every zoom.
+    /// Everything downstream is the same store, the same pyramid, the
+    /// same paged serve.
+    ///
+    /// `ids` must be dependency-ordered ([`math_ids`]), so a series
+    /// computed from another reads one this same call has already
+    /// advanced.
+    ///
+    /// `capture_span` is the capture's `(first, live edge)` in seconds,
+    /// which only the zero-operand [`MathFunction::HLine`] reads — it
+    /// has no operand timeline of its own to follow.
+    fn fold_math(
+        &self,
+        ids: &[String],
+        dbcs: &DecodeModel<'_>,
+        capture_span: Option<(f64, f64)>,
+        store_len: usize,
+        limit: &ServeLimit,
+    ) {
+        for id in ids {
+            let Some(resolved) = dbcs.math().get(id) else {
+                continue;
+            };
+            let key = SignalKey::math(id.clone());
+            // Round after round until the series has read everything
+            // its operands hold, or the serve runs out of budget and
+            // answers with the prefix (ADR 0049).
+            while let Some(progress) = self.fold_math_round(&key, resolved, capture_span, store_len)
+            {
+                if progress == 0 || limit.spend(progress) {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// One round of one math series' fill: read a chunk of each
+    /// operand, compute, append. Returns how much the round moved —
+    /// rows appended plus operand samples consumed — or `None` when the
+    /// series has gone from under the serve.
+    ///
+    /// Unlike the decode path, the inputs here are pyramids in this
+    /// very map, so reading them *is* holding the lock and there is no
+    /// off-lock phase to move the arithmetic into. What bounds the hold
+    /// instead is the round: [`MATH_CHUNK_SAMPLES`] per operand, with
+    /// the lock released and the budget charged between rounds (ADR
+    /// 0048).
+    fn fold_math_round(
+        &self,
+        key: &SignalKey,
+        resolved: &ResolvedMath,
+        capture_span: Option<(f64, f64)>,
+        store_len: usize,
+    ) -> Option<usize> {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        // Taken out rather than cloned: a trailing window's running
+        // sums are the largest thing here, and a round must not pay to
+        // copy them. Nothing can remove the entry while the lock is
+        // held, so it always goes back.
+        let mut fill = caches.by_key.get_mut(key)?.math.take()?;
+        let mine_last = caches.by_key.get(key).and_then(SignalCache::latest);
+
+        let (points, consumed) = match &resolved.definition.function {
+            // Neither of these is a function of the operands' samples
+            // over time, and neither reads a chunk.
+            MathFunction::HLine { value } => (
+                hline_points(*value, mine_last.map(|s| s.t_seconds), capture_span),
+                0,
+            ),
+            MathFunction::Statistic {
+                statistic,
+                percentile,
+            } => statistic_round(
+                &caches,
+                &mut fill,
+                mine_last.map(|s| s.t_seconds),
+                *statistic,
+                *percentile,
+            ),
+            function => streaming_round(&caches, &mut fill, function, store_len),
+        };
+
+        let cache = caches.by_key.get_mut(key).expect("held across the lock");
+        for point in &points {
+            cache.push_sample(point.t_seconds, point.value);
+        }
+        if !points.is_empty() {
+            cache.fold();
+            caches.dirty = true;
+        }
+        let progress = points.len() + consumed;
+        caches
+            .by_key
+            .get_mut(key)
+            .expect("held across the lock")
+            .math = Some(fill);
+        Some(progress)
+    }
+}
+
+/// One streaming round: merge the operands' unread samples onto the
+/// shared timeline and run the kernel over the block.
+///
+/// The cursor advances by what the **merge** consumed, not by what the
+/// chunk held: a merge stops at the slowest operand's newest sample, so
+/// samples past that watermark are read again next round, once the
+/// slowest has caught up ([`math_kernels::merge_hold`]).
+fn streaming_round(
+    caches: &Caches,
+    fill: &mut MathFill,
+    function: &MathFunction,
+    store_len: usize,
+) -> (Vec<SamplePoint>, usize) {
+    let chunks = read_operands(caches, &fill.operands, &fill.cursors, store_len);
+    let slices: Vec<&[SamplePoint]> = chunks.iter().map(|c| c.samples.as_slice()).collect();
+    let newest: Vec<Option<f64>> = chunks.iter().map(|c| c.newest).collect();
+    // A **set**'s membership is the pattern's whole catalog match, and
+    // a real catalog holds far more signals than any capture carries:
+    // a member whose decode is caught up and has still produced nothing
+    // is absent, and must not hold the fold at "no rows ever" (the
+    // strict rule would). A pair or single operand stays strict — the
+    // function is meaningless without it.
+    let lenient = function.arity() == crate::math_signals::Arity::Set;
+    let absent: Vec<bool> = chunks
+        .iter()
+        .map(|c| lenient && c.newest.is_none() && c.caught_up)
+        .collect();
+    let merged = math_kernels::merge_hold(&slices, &mut fill.held, &newest, &absent);
+    let values = math_kernels::apply(function, &merged.block, &mut fill.carry);
+    let points: Vec<SamplePoint> = merged
+        .block
+        .t
+        .iter()
+        .zip(&values)
+        .map(|(t_seconds, value)| SamplePoint {
+            t_seconds: *t_seconds,
+            value: *value,
+        })
+        .collect();
+    let mut consumed = 0;
+    for ((chunk, cursor), took) in chunks.iter().zip(&mut fill.cursors).zip(&merged.consumed) {
+        *cursor = chunk.read_from + took;
+        consumed += took;
+    }
+    // Still owed whatever the chunks left behind, and whatever the
+    // watermark held back.
+    fill.pending = chunks
+        .iter()
+        .zip(&fill.cursors)
+        .any(|(chunk, cursor)| chunk.more || *cursor < chunk.cursor);
+    (points, consumed)
+}
+
+/// One round of a capture-constant statistic.
+///
+/// The statistic is over **every sample the operand has decoded**, so
+/// it is recomputed whenever the operand has grown — which is what the
+/// cursor tracks here, rather than a consumption point. The series it
+/// produces carries one point per recomputation: two over a stopped
+/// capture (the operand's first and last sample time), and one more per
+/// serve while the capture is growing, because the answer is still
+/// moving. Once the operand stops, the value stops with it and what is
+/// left is the flat line the function is drawn as.
+fn statistic_round(
+    caches: &Caches,
+    fill: &mut MathFill,
+    mine_last: Option<f64>,
+    statistic: crate::math_signals::Statistic,
+    percentile: f64,
+) -> (Vec<SamplePoint>, usize) {
+    fill.pending = false;
+    let (Some(key), Some(cursor)) = (fill.operands.first(), fill.cursors.first().copied()) else {
+        return (Vec::new(), 0);
+    };
+    let Some(cache) = caches.by_key.get(key) else {
+        return (Vec::new(), 0);
+    };
+    let level = &cache.levels[0];
+    // Nothing new to reduce over: the answer cannot have moved.
+    if level.len() <= cursor || level.live_len() == 0 {
+        return (Vec::new(), 0);
+    }
+    let values: Vec<f64> = (level.first_slot()..level.len())
+        .map(|k| level.get(k).1)
+        .collect();
+    let read = values.len();
+    let Some(value) = math_kernels::statistic(values, statistic, percentile) else {
+        return (Vec::new(), 0);
+    };
+    let (first, last) = cache.time_span().unwrap_or((0.0, 0.0));
+    fill.cursors[0] = level.len();
+    let mut points = Vec::new();
+    // The line starts where the operand does, and is extended to the
+    // operand's newest sample as it grows.
+    if mine_last.is_none() {
+        points.push(SamplePoint {
+            t_seconds: first,
+            value,
+        });
+    }
+    if last > mine_last.unwrap_or(first) {
+        points.push(SamplePoint {
+            t_seconds: last,
+            value,
+        });
+    }
+    (points, read)
+}
+
+/// The points a horizontal line contributes this round.
+///
+/// An `hline` has no operands, so it has no timeline of its own to
+/// follow: it takes the capture's. The first sample anchors it at the
+/// capture's start and each later one extends it to the live edge, so
+/// it is two points over a stopped capture and grows by one per serve
+/// over a live one — the line spans the data without carrying a sample
+/// per frame.
+fn hline_points(
+    value: f64,
+    mine_last: Option<f64>,
+    capture_span: Option<(f64, f64)>,
+) -> Vec<SamplePoint> {
+    let Some((first, last)) = capture_span else {
+        return Vec::new();
+    };
+    let mut points = Vec::new();
+    if mine_last.is_none() {
+        points.push(SamplePoint {
+            t_seconds: first,
+            value,
+        });
+    }
+    if last > mine_last.unwrap_or(first) {
+        points.push(SamplePoint {
+            t_seconds: last,
+            value,
+        });
+    }
+    points
 }
 
 /// One stretch of a served window across which the renderer draws
@@ -3273,13 +3922,48 @@ pub struct ServedWindows {
 /// with no cache is a signal this capture doesn't have, which is also a
 /// settled answer.
 fn caught_up(caches: &Caches, keys: &[Option<SignalKey>], store_len: usize) -> bool {
-    keys.iter().flatten().all(|key| {
-        key.file_backed
-            || caches
-                .by_key
-                .get(key)
-                .is_some_and(|c| c.next_index >= store_len)
-    })
+    keys.iter()
+        .flatten()
+        .all(|key| key_caught_up(caches, key, store_len, 0))
+}
+
+/// One key's completeness, following a math series into its operands.
+///
+/// A **math** key is caught up when its fill has consumed everything
+/// its operands hold *and* every one of those operands is itself caught
+/// up — so a serve over a math series whose input is still decoding
+/// reports the partial answer ADR 0049 asks for, rather than a
+/// finished-looking curve over half a capture. The walk is bounded by
+/// [`MATH_MAX_DEPTH`] against a hand-edited cycle, exactly as the
+/// fingerprint's is.
+fn key_caught_up(caches: &Caches, key: &SignalKey, store_len: usize, depth: usize) -> bool {
+    if key.is_file_backed() {
+        return true;
+    }
+    let Some(cache) = caches.by_key.get(key) else {
+        return false;
+    };
+    let Some(fill) = &cache.math else {
+        return cache.next_index >= store_len;
+    };
+    if fill.pending || depth >= MATH_MAX_DEPTH {
+        return false;
+    }
+    fill.operands
+        .iter()
+        .all(|operand| key_caught_up(caches, operand, store_len, depth + 1))
+}
+
+/// The capture's `(first, live edge)` in seconds — the timeline a
+/// zero-operand [`MathFunction::HLine`] spans, since it has none of its
+/// own. `None` for a capture with no frames.
+#[allow(clippy::cast_precision_loss)]
+fn capture_span(store: &TraceStore) -> Option<(f64, f64)> {
+    let snapshot = store.status_snapshot();
+    let first = snapshot.first_index_ts_ns?;
+    let anchors = store.window_anchors(snapshot.first_index);
+    let last = anchors.live_edge_ns.unwrap_or(first).max(first);
+    Some((first as f64 / 1e9, last as f64 / 1e9))
 }
 
 #[cfg(test)]
@@ -4269,6 +4953,7 @@ mod tests {
                     extended: false,
                     signal_name: "X",
                     file_backed: false,
+                    math: false,
                 }],
                 from,
                 to,
@@ -4908,6 +5593,7 @@ mod tests {
                 extended: false,
                 signal_name: "X",
                 file_backed: false,
+                math: false,
             }],
             store_len,
             dbs,
@@ -5039,6 +5725,7 @@ mod tests {
             extended: false,
             signal_name,
             file_backed: false,
+            math: false,
         }
     }
 
@@ -5725,6 +6412,7 @@ mod tests {
                 extended: false,
                 signal_name: "A",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some("p"),
@@ -5732,6 +6420,7 @@ mod tests {
                 extended: false,
                 signal_name: "B",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some("p"),
@@ -5739,6 +6428,7 @@ mod tests {
                 extended: false,
                 signal_name: "A",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some("c"),
@@ -5746,6 +6436,7 @@ mod tests {
                 extended: false,
                 signal_name: "B",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some(TEST_BUS),
@@ -5753,6 +6444,7 @@ mod tests {
                 extended: false,
                 signal_name: "M0",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some(TEST_BUS),
@@ -5760,6 +6452,7 @@ mod tests {
                 extended: false,
                 signal_name: "M1",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some(TEST_BUS),
@@ -5767,6 +6460,7 @@ mod tests {
                 extended: false,
                 signal_name: "Sel",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some(TEST_BUS),
@@ -5774,6 +6468,7 @@ mod tests {
                 extended: true,
                 signal_name: "X",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some(TEST_BUS),
@@ -5781,6 +6476,7 @@ mod tests {
                 extended: false,
                 signal_name: "Nothing",
                 file_backed: false,
+                math: false,
             },
         ]
     }
@@ -5919,6 +6615,7 @@ mod tests {
                 extended: false,
                 signal_name: "A",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some("p"),
@@ -5926,6 +6623,7 @@ mod tests {
                 extended: false,
                 signal_name: "A",
                 file_backed: false,
+                math: false,
             },
             CacheQuery {
                 bus_id: Some("c"),
@@ -5933,6 +6631,7 @@ mod tests {
                 extended: false,
                 signal_name: "B",
                 file_backed: false,
+                math: false,
             },
         ];
         let store_len = 2 * CATCH_UP_CHUNK_FRAMES + 7;
@@ -5987,6 +6686,7 @@ mod tests {
             extended: false,
             signal_name: "A",
             file_backed: false,
+            math: false,
         };
         let b = CacheQuery {
             bus_id: Some(TEST_BUS),
@@ -5994,6 +6694,7 @@ mod tests {
             extended: false,
             signal_name: "B",
             file_backed: false,
+            math: false,
         };
         // `A` alone first, then more capture, then both together.
         assert_eq!(
@@ -6055,6 +6756,7 @@ mod tests {
             extended: false,
             signal_name: "A",
             file_backed: false,
+            math: false,
         };
         queries.push(repeat);
         let out = cache
@@ -6112,6 +6814,7 @@ mod tests {
             extended: false,
             signal_name: "X",
             file_backed: false,
+            math: false,
         }
     }
 
@@ -7500,7 +8203,7 @@ mod tests {
             slot: 256,
             extended: false,
             signal: "X".to_string(),
-            file_backed: false,
+            origin: SignalOrigin::Dbc,
         });
         assert!(rename_prefix(root.path(), &scoped, &busless));
         let path = root.path().join(MANIFEST_FILE);
@@ -8098,6 +8801,7 @@ mod tests {
             extended: false,
             signal_name,
             file_backed: true,
+            math: false,
         }
     }
 
@@ -8561,6 +9265,7 @@ mod tests {
                 extended: false,
                 signal_name: "X0",
                 file_backed: false,
+                math: false,
             })
             .collect();
 
@@ -8703,6 +9408,7 @@ mod tests {
                 extended: false,
                 signal_name: &names[n % per_message],
                 file_backed: false,
+                math: false,
             })
             .collect();
 
@@ -8972,6 +9678,727 @@ mod tests {
             secs / (restore_secs + served_secs).max(1e-9),
             persist_secs,
             again_secs,
+        );
+    }
+
+    // ---- math signals (`crate::math_signals`) --------------------------
+    //
+    // A math series is the fourth decode provenance: it is a cache entry
+    // like any other — same pyramid, same paged serve, same
+    // completeness — and differs only in the fill, which reads its
+    // operands' level-0 samples instead of frames or an import.
+
+    use crate::math_signals::{
+        MathDefinition, MathFunction, MathModel, MathOperandRef, MathOperands, Statistic,
+    };
+
+    /// A capture in which `A` counts up by one per frame and `B` holds
+    /// ten times as much, one frame per second.
+    #[allow(clippy::cast_possible_truncation)]
+    fn ab_capture(frames: u64) -> TraceStore {
+        let store = TraceStore::new();
+        for i in 0..frames {
+            store.append(ab_frame(i * S, i as u16, (i * 10) as u16));
+        }
+        store
+    }
+
+    fn math_query(id: &str) -> CacheQuery<'_> {
+        CacheQuery {
+            bus_id: None,
+            message_id: 0,
+            extended: false,
+            signal_name: id,
+            file_backed: false,
+            math: true,
+        }
+    }
+
+    fn operand(name: &str) -> MathOperandRef {
+        MathOperandRef::dbc(TEST_BUS, 256, false, name)
+    }
+
+    fn math_def(id: &str, function: MathFunction, picks: &[MathOperandRef]) -> MathDefinition {
+        MathDefinition {
+            id: id.to_string(),
+            name: id.to_string(),
+            unit: None,
+            function,
+            operands: MathOperands {
+                picks: picks.to_vec(),
+                patterns: Vec::new(),
+            },
+        }
+    }
+
+    /// A decode model over `db` on the test bus, carrying `definitions`
+    /// resolved against a catalog holding `A` and `B`.
+    fn with_math<'a>(db: &'a Database, definitions: &[MathDefinition]) -> DecodeModel<'a> {
+        let catalog: Vec<crate::math_signals::MathCatalogEntry> = ["A", "B"]
+            .iter()
+            .map(|name| crate::math_signals::MathCatalogEntry {
+                reference: operand(name),
+                path: format!("{TEST_BUS}//Msg/{name}"),
+                unit: "V".to_string(),
+            })
+            .collect();
+        on_test_bus(&[db]).with_math(std::sync::Arc::new(MathModel::resolve(
+            definitions,
+            &catalog,
+        )))
+    }
+
+    /// Serve one math series whole, undecimated.
+    fn math_series(
+        store: &SignalCacheStore,
+        id: &str,
+        trace: &TraceStore,
+        dbs: &DecodeModel<'_>,
+    ) -> Vec<(f64, f64)> {
+        store
+            .slice_many(
+                &[math_query(id)],
+                f64::MIN,
+                f64::MAX,
+                0,
+                Reduction::MinMax,
+                trace,
+                dbs,
+            )
+            .series
+            .pop()
+            .expect("one query, one window")
+            .iter()
+            .map(|p| (p.t_seconds, p.value))
+            .collect()
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_math_series_serves_like_any_other() {
+        // The ruling's core claim, applied to the fourth provenance: a
+        // computed series goes through the same pyramid and the same
+        // paged, decimated serve as a decoded one.
+        let trace = ab_capture(200);
+        let db = dbc_ab(10);
+        let definitions = vec![math_def(
+            "m1",
+            MathFunction::Sum,
+            &[operand("A"), operand("B")],
+        )];
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+
+        let series = math_series(&store, "m1", &trace, &dbs);
+        assert_eq!(series.len(), 200);
+        for (i, (t, v)) in series.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let i = i as f64;
+            assert_eq!(*t, i, "sample {i} time");
+            // A = i, B = 10·i scaled by ten.
+            assert_eq!(*v, i + i * 100.0, "sample {i} value");
+        }
+        // And the scalar extent the plot's auto-normalisation reads.
+        assert_eq!(
+            store.min_max_many(&[math_query("m1")], &trace, &dbs),
+            vec![Some((0.0, 199.0 * 101.0))],
+        );
+        // Decimation reads the same pyramid every other series has.
+        let decimated = store.slice_many(
+            &[math_query("m1")],
+            f64::MIN,
+            f64::MAX,
+            16,
+            Reduction::MinMax,
+            &trace,
+            &dbs,
+        );
+        assert!(decimated.series[0].len() <= 32, "{:?}", decimated.series[0]);
+        assert!(decimated.complete);
+    }
+
+    #[test]
+    fn every_function_fills_through_the_cache() {
+        // One capture, sixteen definitions: every function in the set
+        // has to reach the store as a served series. The kernels'
+        // arithmetic is asserted in `math_kernels`; what this pins is
+        // that each one is *wired* — the fill drives it, the pyramid
+        // takes it and the serve returns it.
+        let trace = ab_capture(50);
+        let db = dbc_ab(10);
+        let a = [operand("A")];
+        let ab = [operand("A"), operand("B")];
+        let cases: Vec<(MathFunction, &[MathOperandRef])> = vec![
+            (MathFunction::Sum, &ab),
+            (MathFunction::Product, &ab),
+            (MathFunction::Difference, &ab),
+            (
+                MathFunction::Scale {
+                    gain: 2.0,
+                    offset: 1.0,
+                },
+                &a,
+            ),
+            (MathFunction::Min, &ab),
+            (MathFunction::Max, &ab),
+            (MathFunction::Average, &ab),
+            (MathFunction::Median, &ab),
+            (MathFunction::Range, &ab),
+            (MathFunction::ExpFilter { tau_seconds: 2.0 }, &a),
+            (MathFunction::Integration, &a),
+            (
+                MathFunction::Duty {
+                    threshold: 10.0,
+                    window_seconds: 5.0,
+                },
+                &a,
+            ),
+            (
+                MathFunction::Frequency {
+                    threshold: 10.0,
+                    window_seconds: 5.0,
+                },
+                &a,
+            ),
+            (
+                MathFunction::Statistic {
+                    statistic: Statistic::Median,
+                    percentile: 50.0,
+                },
+                &a,
+            ),
+            (MathFunction::Rms, &a),
+            (MathFunction::HLine { value: 3.5 }, &[]),
+        ];
+        assert_eq!(cases.len(), 16, "the whole function set");
+        let definitions: Vec<MathDefinition> = cases
+            .iter()
+            .enumerate()
+            .map(|(i, (function, picks))| math_def(&format!("m{i}"), function.clone(), picks))
+            .collect();
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+
+        for (definition, (function, _)) in definitions.iter().zip(&cases) {
+            let series = math_series(&store, &definition.id, &trace, &dbs);
+            assert!(
+                !series.is_empty(),
+                "{} produced no samples",
+                function.kind()
+            );
+            assert!(
+                series.windows(2).all(|w| w[0].0 <= w[1].0),
+                "{} is not in time order",
+                function.kind()
+            );
+        }
+    }
+
+    /// A DBC of `messages` eight-signal messages (`Sig0000`…, one byte
+    /// each), ids 512… — the catalog shape a pattern-membership set
+    /// resolves against.
+    fn wide_dbc_text(messages: u32) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::from(DBC_HEADER);
+        for m in 0..messages {
+            write!(out, "\nBO_ {} Wide{m}: 8 Vector__XXX\n", 512 + m)
+                .expect("writing to a String cannot fail");
+            for k in 0..8u32 {
+                let n = m * 8 + k;
+                writeln!(
+                    out,
+                    " SG_ Sig{n:04} : {}|8@1+ (1,0) [0|0] \"\" Vector__XXX",
+                    k * 8
+                )
+                .expect("writing to a String cannot fail");
+            }
+        }
+        out
+    }
+
+    fn wide_catalog(messages: u32) -> Vec<crate::math_signals::MathCatalogEntry> {
+        (0..messages)
+            .flat_map(|m| {
+                (0..8u32).map(move |k| {
+                    let n = m * 8 + k;
+                    crate::math_signals::MathCatalogEntry {
+                        reference: MathOperandRef::dbc(
+                            TEST_BUS,
+                            512 + m,
+                            false,
+                            &format!("Sig{n:04}"),
+                        ),
+                        path: format!("{TEST_BUS}//Wide{m}/Sig{n:04}"),
+                        unit: String::new(),
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// `cycles` rounds in which only the first `live` of the wide DBC's
+    /// messages transmit, all at the cycle's whole-second timestamp;
+    /// signal `SigN` carries `N mod 256` in every cycle, so the live
+    /// set's range is a constant however long the capture runs.
+    #[allow(clippy::cast_possible_truncation)]
+    fn wide_capture(cycles: u64, live: u32) -> TraceStore {
+        let store = TraceStore::new();
+        for i in 0..cycles {
+            for m in 0..live {
+                let payload: Vec<u8> = (0..8u32).map(|k| (m * 8 + k) as u8).collect();
+                store.append(dummy(i * S, 512 + m, payload));
+            }
+        }
+        store
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
+    fn a_pattern_set_computes_over_the_members_that_have_data() {
+        // The pattern-membership regime a real project hits: a set whose
+        // pattern matches the whole catalog — a thousand signals — while
+        // only the few actually on the bus ever decode a sample. The
+        // fold computes over the members that have data and the serve
+        // completes; a member the capture has never carried joins if it
+        // ever arrives, but must not hold the series at "building"
+        // forever.
+        let messages = 125; // × 8 signals = a 1000-signal catalog
+        let live = 4; // 32 of them ever transmit
+        let trace = wide_capture(50, live);
+        let db = Database::parse(&wide_dbc_text(messages)).unwrap();
+        let definitions = vec![MathDefinition {
+            id: "m1".to_string(),
+            name: "range".to_string(),
+            unit: None,
+            function: MathFunction::Range,
+            operands: MathOperands {
+                picks: Vec::new(),
+                patterns: vec!["Sig".to_string()],
+            },
+        }];
+        let catalog = wide_catalog(messages);
+        let dbs = on_test_bus(&[&db]).with_math(std::sync::Arc::new(MathModel::resolve(
+            &definitions,
+            &catalog,
+        )));
+        assert_eq!(
+            dbs.math().get("m1").expect("resolved").operands.len(),
+            1000,
+            "the pattern matched the whole catalog"
+        );
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+
+        let served = store.slice_many(
+            &[math_query("m1")],
+            f64::MIN,
+            f64::MAX,
+            0,
+            Reduction::MinMax,
+            &trace,
+            &dbs,
+        );
+        let series = &served.series[0];
+        assert!(
+            served.complete,
+            "the serve must complete, not report building forever"
+        );
+        assert_eq!(series.len(), 50, "one range row per cycle");
+        for (i, p) in series.iter().enumerate() {
+            assert_eq!(p.t_seconds, i as f64, "row {i} time");
+            // Live values are n for n in 0..32, so the range is 31 at
+            // every row, the quiet 968 members contributing nothing.
+            assert_eq!(p.value, 31.0, "row {i} value");
+        }
+    }
+
+    /// Runtime of the pattern-membership regime at full width, printed
+    /// rather than asserted — perf is collected, never gated. Run it
+    /// release-mode by hand:
+    ///
+    /// ```sh
+    /// cargo test -p cannet-gui --release --lib \
+    ///   a_thousand_member_set -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "benchmark: run by hand, release, with --nocapture"]
+    #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
+    fn a_thousand_member_set_benchmark() {
+        let messages = 125; // × 8 = 1000 signals
+        let db = Database::parse(&wide_dbc_text(messages)).unwrap();
+        let catalog = wide_catalog(messages);
+        let definitions = vec![MathDefinition {
+            id: "m1".to_string(),
+            name: "range".to_string(),
+            unit: None,
+            function: MathFunction::Range,
+            operands: MathOperands {
+                picks: Vec::new(),
+                patterns: vec!["Sig".to_string()],
+            },
+        }];
+        let dbs = on_test_bus(&[&db]).with_math(std::sync::Arc::new(MathModel::resolve(
+            &definitions,
+            &catalog,
+        )));
+        for (label, cycles, live) in [
+            ("1000 matched / 32 live", 1000u64, 4u32),
+            ("1000 matched / 1000 live", 1000, 125),
+        ] {
+            let trace = wide_capture(cycles, live);
+            let dir = TempDir::new().unwrap();
+            let store = SignalCacheStore::new_unbounded(dir.path());
+            // A cold serve at this size is legitimately budgeted (ADR
+            // 0049): loop the way the app's poll does, counting how many
+            // round trips "building" takes.
+            let t0 = std::time::Instant::now();
+            let mut round_trips = 0u32;
+            let served = loop {
+                round_trips += 1;
+                let s = store.slice_many(
+                    &[math_query("m1")],
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    Reduction::MinMax,
+                    &trace,
+                    &dbs,
+                );
+                if s.complete || round_trips >= 10_000 {
+                    break s;
+                }
+            };
+            let cold = t0.elapsed();
+            assert!(served.complete, "{label}: serve completed");
+            assert_eq!(
+                served.series[0].len(),
+                usize::try_from(cycles).unwrap(),
+                "{label}: rows"
+            );
+            // Values are `n mod 256` over one-byte signals, so the
+            // range saturates at 255 once the live set spans a byte.
+            let expected = f64::from((live * 8 - 1).min(255));
+            assert!(
+                served.series[0].iter().all(|p| p.value == expected),
+                "{label}: range is the live set's spread"
+            );
+            let t1 = std::time::Instant::now();
+            let again = store.slice_many(
+                &[math_query("m1")],
+                f64::MIN,
+                f64::MAX,
+                0,
+                Reduction::MinMax,
+                &trace,
+                &dbs,
+            );
+            let warm = t1.elapsed();
+            assert!(again.complete);
+            println!(
+                "{label}: {} frames, cold build {cold:?} over {round_trips} serve(s), warm re-serve {warm:?}",
+                trace.len()
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_capture_constant_statistic_draws_as_a_flat_line() {
+        // `statistic` is the one function whose answer is a number
+        // rather than a curve: over a stopped capture it settles to two
+        // points at one value.
+        let trace = ab_capture(101);
+        let db = dbc_ab(10);
+        let definitions = vec![math_def(
+            "m1",
+            MathFunction::Statistic {
+                statistic: Statistic::Max,
+                percentile: 0.0,
+            },
+            &[operand("A")],
+        )];
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let series = math_series(&store, "m1", &trace, &dbs);
+        assert_eq!(series.len(), 2, "{series:?}");
+        assert_eq!(series[0].1, 100.0);
+        assert_eq!(series[1].1, 100.0);
+        // A second serve over a capture that has not grown adds nothing.
+        assert_eq!(math_series(&store, "m1", &trace, &dbs), series);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn an_hline_spans_the_capture_without_a_sample_per_frame() {
+        let trace = ab_capture(500);
+        let db = dbc_ab(10);
+        let definitions = vec![math_def("m1", MathFunction::HLine { value: 3.5 }, &[])];
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let series = math_series(&store, "m1", &trace, &dbs);
+        assert_eq!(series.len(), 2, "{series:?}");
+        assert!(series.iter().all(|(_, v)| *v == 3.5), "{series:?}");
+        assert!(series[1].0 > series[0].0, "{series:?}");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn an_incremental_fill_matches_one_over_the_whole_capture() {
+        // The fill is incremental, so a series built across several
+        // serves of a growing capture must equal the same series built
+        // in one pass — including for the stateful functions, whose
+        // carry is exactly what could get this wrong.
+        let db = dbc_ab(10);
+        for function in [
+            MathFunction::ExpFilter { tau_seconds: 3.0 },
+            MathFunction::Integration,
+            MathFunction::Duty {
+                threshold: 20.0,
+                window_seconds: 7.0,
+            },
+            MathFunction::Frequency {
+                threshold: 20.0,
+                window_seconds: 7.0,
+            },
+        ] {
+            let kind = function.kind();
+            let definitions = vec![math_def("m1", function, &[operand("A")])];
+            let dbs = with_math(&db, &definitions);
+
+            let whole = {
+                let dir = TempDir::new().unwrap();
+                let store = SignalCacheStore::new_unbounded(dir.path());
+                math_series(&store, "m1", &ab_capture(120), &dbs)
+            };
+
+            let dir = TempDir::new().unwrap();
+            let store = SignalCacheStore::new_unbounded(dir.path());
+            let growing = TraceStore::new();
+            let mut piecewise = Vec::new();
+            for chunk in 0..4u64 {
+                #[allow(clippy::cast_possible_truncation)]
+                for i in chunk * 30..(chunk + 1) * 30 {
+                    growing.append(ab_frame(i * S, i as u16, (i * 10) as u16));
+                }
+                piecewise = math_series(&store, "m1", &growing, &dbs);
+            }
+            assert_eq!(piecewise, whole, "{kind}");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn math_on_math_computes_through_the_chain() {
+        let trace = ab_capture(100);
+        let db = dbc_ab(10);
+        let definitions = vec![
+            math_def(
+                "inner",
+                MathFunction::Scale {
+                    gain: 2.0,
+                    offset: 1.0,
+                },
+                &[operand("A")],
+            ),
+            math_def(
+                "outer",
+                MathFunction::Scale {
+                    gain: 10.0,
+                    offset: 0.0,
+                },
+                &[MathOperandRef::math("inner")],
+            ),
+        ];
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        // Asked for the outer series alone: the fill runs the chain in
+        // dependency order, so the inner one is filled on the way.
+        let series = math_series(&store, "outer", &trace, &dbs);
+        assert_eq!(series.len(), 100);
+        for (i, (_, v)) in series.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let i = i as f64;
+            assert_eq!(*v, (2.0 * i + 1.0) * 10.0, "sample {i}");
+        }
+    }
+
+    #[test]
+    fn a_serve_over_a_catching_up_operand_says_it_is_partial() {
+        // ADR 0049 through the fourth provenance: a math series whose
+        // operand is still decoding answers with its prefix and says
+        // so, exactly as the operand itself would.
+        let trace = ab_capture(80_000);
+        let db = dbc_ab(10);
+        let definitions = vec![math_def(
+            "m1",
+            MathFunction::Sum,
+            &[operand("A"), operand("B")],
+        )];
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_chunk_at_a_time(dir.path());
+        let served = store.slice_many(
+            &[math_query("m1")],
+            f64::MIN,
+            f64::MAX,
+            0,
+            Reduction::MinMax,
+            &trace,
+            &dbs,
+        );
+        assert!(
+            !served.complete,
+            "a serve that stopped inside the capture is not complete",
+        );
+        assert!(
+            served.series[0].len() < 80_000,
+            "and answers with the prefix it has: {}",
+            served.series[0].len(),
+        );
+        // Asked again until it settles, the answer becomes complete and
+        // whole.
+        for _ in 0..200 {
+            let served = store.slice_many(
+                &[math_query("m1")],
+                f64::MIN,
+                f64::MAX,
+                0,
+                Reduction::MinMax,
+                &trace,
+                &dbs,
+            );
+            if served.complete {
+                assert_eq!(served.series[0].len(), 80_000);
+                return;
+            }
+        }
+        panic!("the serve never caught up");
+    }
+
+    #[test]
+    fn an_operand_redefinition_parks_the_dependent_pyramid() {
+        // The compositional fingerprint's whole point (ADR 0047, 0054):
+        // a DBC edit that re-encodes an operand must retire the derived
+        // pyramid, and putting the definition back must revive it.
+        let trace = ab_capture(60);
+        let definitions = vec![math_def("m1", MathFunction::Sum, &[operand("A")])];
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+
+        let before = {
+            let db = dbc_ab_scaled(1, 10);
+            let dbs = with_math(&db, &definitions);
+            math_series(&store, "m1", &trace, &dbs)
+        };
+        assert_eq!(before.len(), 60);
+
+        // A's factor doubles: the operand's encoding moves, so the
+        // math series' compositional stamp moves with it.
+        let rescaled = dbc_ab_scaled(2, 10);
+        let dbs = with_math(&rescaled, &definitions);
+        store.invalidate_dbcs(&dbs);
+        let after = math_series(&store, "m1", &trace, &dbs);
+        assert_eq!(after.len(), 60);
+        assert_eq!(
+            after.last().map(|p| p.1),
+            before.last().map(|p| p.1 * 2.0),
+            "the series was recomputed under the new definition",
+        );
+
+        // And back: the parked pyramid answers to the stamp it was
+        // parked under.
+        let restored = dbc_ab_scaled(1, 10);
+        let dbs = with_math(&restored, &definitions);
+        store.invalidate_dbcs(&dbs);
+        // The *operand* pyramid revives; the math series is recomputed
+        // from it, because a revived pyramid carries no fill state.
+        assert_eq!(store.usage().revivals, 1, "the operand pyramid");
+        assert_eq!(math_series(&store, "m1", &trace, &dbs), before);
+    }
+
+    #[test]
+    fn a_definition_change_parks_the_series_it_re_encoded() {
+        // The same rule for a change to the *definition* rather than to
+        // an operand: a different function is a different series.
+        let trace = ab_capture(40);
+        let db = dbc_ab(10);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+
+        let summed = {
+            let definitions = vec![math_def("m1", MathFunction::Sum, &[operand("A")])];
+            let dbs = with_math(&db, &definitions);
+            math_series(&store, "m1", &trace, &dbs)
+        };
+        let definitions = vec![math_def(
+            "m1",
+            MathFunction::Scale {
+                gain: 3.0,
+                offset: 0.0,
+            },
+            &[operand("A")],
+        )];
+        let dbs = with_math(&db, &definitions);
+        store.invalidate_dbcs(&dbs);
+        let scaled = math_series(&store, "m1", &trace, &dbs);
+        assert_eq!(scaled.len(), summed.len());
+        assert_eq!(
+            scaled.last().map(|p| p.1),
+            summed.last().map(|p| p.1 * 3.0),
+            "the new definition computed a new series",
+        );
+    }
+
+    #[test]
+    fn a_rename_leaves_the_pyramid_where_it_is() {
+        // The display name is not part of the fingerprint, so renaming
+        // a math signal must not cost its samples (ADR 0038's split
+        // between what a signal is called and what it is).
+        let trace = ab_capture(40);
+        let db = dbc_ab(10);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let mut definitions = vec![math_def("m1", MathFunction::Rms, &[operand("A")])];
+        let dbs = with_math(&db, &definitions);
+        let before = math_series(&store, "m1", &trace, &dbs);
+
+        definitions[0].name = "Something Else".to_string();
+        definitions[0].unit = Some("mV".to_string());
+        let dbs = with_math(&db, &definitions);
+        store.invalidate_dbcs(&dbs);
+        assert_eq!(store.usage().retained, 0, "nothing was parked");
+        assert_eq!(math_series(&store, "m1", &trace, &dbs), before);
+    }
+
+    #[test]
+    fn a_math_pyramid_is_not_persisted() {
+        // Its fill carries state the samples do not — a filter's
+        // running output, an integrator's accumulator — so it is
+        // session-scoped and recomputed from operand pyramids that are
+        // restored.
+        let trace = ab_capture(30);
+        let db = dbc_ab(10);
+        let definitions = vec![math_def("m1", MathFunction::Integration, &[operand("A")])];
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let _ = math_series(&store, "m1", &trace, &dbs);
+        let validity = validity("cap", 0);
+        assert!(store.persist(&validity, &dbs, Harden::All));
+
+        let reopened = SignalCacheStore::new_unbounded(dir.path());
+        let outcome = reopened.restore(&validity, &dbs, trace.len());
+        // Both operands came back; the math series was never written.
+        assert_eq!(counts(outcome).0, 1, "only the operand pyramid reopened");
+        // And it recomputes to the same thing.
+        assert_eq!(
+            math_series(&reopened, "m1", &trace, &dbs),
+            math_series(&store, "m1", &trace, &dbs),
         );
     }
 }

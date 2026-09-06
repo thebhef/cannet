@@ -181,6 +181,21 @@ plot, signal grid), never as trace rows.
 _Avoid_: "message-independent signal" outside file-format contexts —
 in the model the term is file-backed.
 
+**Math signal**:
+A signal **computed** host-side from other signals by a user-authored
+definition — a sum, a difference, an exponential filter, a statistic
+over a set, a constant line. It is a third **provenance** beside
+DBC-backed and file-backed: no message carries it and no database
+defines it, and it lives in the capture model with the same series
+shape as either — same pyramid, same paged serve, same completeness —
+differing only in how it is filled. Its definition carries a **stable
+id**, which is what everything referencing it stores, so the display
+name is free to change. A definition may take another math signal as
+an operand; cycles are refused when a definition is written.
+_Avoid_: "computed channel", "virtual signal", "formula" — in the
+model the term is math signal (the Database view's branch for them is
+labelled Computed).
+
 **Filter predicate**:
 A frame-matching condition (by id, bus, signal value, …). Applying one
 narrows every data view to the matching frames — the filtered Trace

@@ -71,6 +71,7 @@ use cannet_core::CanId;
 use cannet_dbc::{Database, FloatKind, MuxGate, SignalDecodeSpec, SignalMux};
 
 use crate::filter;
+use crate::math_signals::{MathModel, ResolvedMath};
 use crate::signal_cache::FileSignalInfo;
 use crate::signal_snapshot::signal_identity;
 
@@ -80,6 +81,11 @@ const TAG_DBC: u8 = b'D';
 /// [`TAG_DBC`] in the first byte mixed, so the two kinds cannot collide
 /// however their bodies line up.
 const TAG_FILE: u8 = b'F';
+/// Section tag for a math signal's fingerprint, distinct in the same
+/// first byte.
+const TAG_MATH: u8 = b'M';
+/// Section tag opening one operand of a math signal's fingerprint.
+const TAG_OPERAND: u8 = b'O';
 /// Section tag opening the winning definition's decode specification.
 const TAG_WINNER: u8 = b'W';
 /// Section tag closing the body, so a series no loaded database defines
@@ -159,6 +165,14 @@ pub struct DecodeModel<'a> {
     /// not" would mean walking every signal of every database instead
     /// of every message.
     split_messages: Arc<SplitMessages>,
+    /// The math definitions, each set's membership already resolved
+    /// against the live catalog ([`MathModel`]).
+    ///
+    /// It rides in the decode model rather than beside it because every
+    /// serve that takes a decode model may also have to fill a math
+    /// series, and a set's membership must not move between two series
+    /// of one batch. Empty in every project that has defined none.
+    math: Arc<MathModel>,
 }
 
 /// The `(message id, extended)` pairs more than one loaded database
@@ -240,6 +254,7 @@ impl<'a> DecodeModel<'a> {
             picks,
             message_picks,
             split_messages,
+            math: Arc::default(),
         }
     }
 
@@ -262,6 +277,7 @@ impl<'a> DecodeModel<'a> {
             picks,
             message_picks,
             split_messages,
+            math: Arc::default(),
         }
     }
 
@@ -274,7 +290,26 @@ impl<'a> DecodeModel<'a> {
             picks: Arc::default(),
             message_picks: HashSet::new(),
             split_messages,
+            math: Arc::default(),
         }
+    }
+
+    /// The same model carrying the resolved math definitions a serve
+    /// may have to fill from.
+    ///
+    /// A builder rather than a fourth constructor argument: a model is
+    /// built in several places and only the serve paths care about the
+    /// math set, so the ones that do not carry on reading as they did.
+    #[must_use]
+    pub fn with_math(mut self, math: Arc<MathModel>) -> Self {
+        self.math = math;
+        self
+    }
+
+    /// The resolved math definitions this model carries.
+    #[must_use]
+    pub fn math(&self) -> &MathModel {
+        &self.math
     }
 
     /// Whether any signal of this message carries a pick — the question
@@ -687,6 +722,55 @@ pub fn file_source(info: &FileSignalInfo) -> String {
     h.mix_str(&info.source_path);
     h.mix_u32(info.group);
     h.mix_str(&info.name);
+    h.finish()
+}
+
+/// The fingerprint of a **math** series: what computes it, and what it
+/// is computed from.
+///
+/// **Compositional**, which is the whole point. The stamp covers the
+/// function, its parameters, the resolved operand list *in order*, and
+/// each operand's own fingerprint — `operand_encodings` is
+/// index-parallel with `resolved.operands`, each entry the operand's
+/// [`dbc_encoding`], [`file_source`] or (recursively) `math_encoding`.
+/// So a DBC edit under an operand, a signal joining a pattern-defined
+/// set, or a redefinition three levels down all move this fingerprint,
+/// and ADR 0047 parks the dependent pyramid exactly as it parks a
+/// decoded one whose definition changed.
+///
+/// What is deliberately **not** mixed is everything that cannot move a
+/// sample: the definition's display name, its unit, and its id. A
+/// rename is free, a unit is a label, and the id is already the key
+/// this fingerprint is stored against — mixing it would only stop two
+/// identical definitions from sharing a parked pyramid.
+///
+/// An operand whose own fingerprint is unavailable — a reference to a
+/// definition that has been deleted — is mixed as the empty string,
+/// which is a well-defined encoding distinct from every real one, so
+/// the broken series has a stamp rather than being unjudgeable.
+#[must_use]
+pub fn math_encoding(resolved: &ResolvedMath, operand_encodings: &[&str]) -> String {
+    let mut h = Fnv::new();
+    h.mix_u8(TAG_MATH);
+    h.mix_str(resolved.definition.function.kind());
+    let parameters = resolved.definition.function.parameters();
+    h.mix_len(parameters.len());
+    for p in parameters {
+        h.mix_f64(p);
+    }
+    h.mix_len(resolved.operands.len());
+    for (i, operand) in resolved.operands.iter().enumerate() {
+        h.mix_u8(TAG_OPERAND);
+        h.mix_bool(operand.bus_id.is_some());
+        h.mix_str(operand.bus_id.as_deref().unwrap_or(""));
+        h.mix_u32(operand.message_id);
+        h.mix_bool(operand.extended);
+        h.mix_bool(operand.file_backed);
+        h.mix_bool(operand.math);
+        h.mix_str(&operand.signal_name);
+        h.mix_str(operand_encodings.get(i).copied().unwrap_or(""));
+    }
+    h.mix_u8(TAG_END);
     h.finish()
 }
 
@@ -1639,5 +1723,202 @@ mod tests {
             label: "Stopped".to_string(),
         }];
         assert_eq!(base, file_source(&relabelled));
+    }
+
+    // ---- math fingerprints ---------------------------------------------
+    //
+    // A math series' stamp is compositional: what computes it, and what
+    // it is computed from. These pin the two halves of that claim — it
+    // moves when anything a sample depends on moves, and it does not
+    // move for anything else.
+
+    use crate::math_signals::{
+        MathCatalogEntry, MathDefinition, MathFunction, MathModel, MathOperandRef, MathOperands,
+    };
+
+    /// A one-message DBC declaring `sigs`, assigned to [`FP_BUS`] —
+    /// the fixture shape the fingerprint tests share, kept alive across
+    /// a call so the borrowed model can name it.
+    fn fp_db(sigs: &[&str]) -> Database {
+        parse(&message(sigs))
+    }
+
+    fn on_fp_bus<'a>(db: &'a Database, buses: &'a [String]) -> DecodeModel<'a> {
+        plain(vec![scope("db.dbc", db, buses)])
+    }
+
+    fn math_operand(name: &str) -> MathOperandRef {
+        MathOperandRef::dbc(FP_BUS, 256, false, name)
+    }
+
+    fn math_catalog(names: &[&str]) -> Vec<MathCatalogEntry> {
+        names
+            .iter()
+            .map(|name| MathCatalogEntry {
+                reference: math_operand(name),
+                path: format!("{FP_BUS}//Msg/{name}"),
+                unit: "V".to_string(),
+            })
+            .collect()
+    }
+
+    fn math_definition(
+        function: MathFunction,
+        picks: &[MathOperandRef],
+        patterns: &[&str],
+    ) -> MathDefinition {
+        MathDefinition {
+            id: "m1".to_string(),
+            name: "Derived".to_string(),
+            unit: None,
+            function,
+            operands: MathOperands {
+                picks: picks.to_vec(),
+                patterns: patterns.iter().map(|p| (*p).to_string()).collect(),
+            },
+        }
+    }
+
+    /// The stamp of `definition` resolved against `catalog`, with each
+    /// operand's fingerprint taken from `dbcs` — the composition the
+    /// signal cache performs.
+    fn math_stamp_of(
+        definition: &MathDefinition,
+        catalog: &[MathCatalogEntry],
+        dbcs: &DecodeModel<'_>,
+    ) -> String {
+        let model = MathModel::resolve(std::slice::from_ref(definition), catalog);
+        let resolved = model.get(&definition.id).expect("just resolved");
+        let stamps: Vec<String> = resolved
+            .operands
+            .iter()
+            .map(|r| {
+                dbc_encoding(
+                    dbcs,
+                    r.bus_id.as_deref(),
+                    r.message_id,
+                    r.extended,
+                    &r.signal_name,
+                )
+            })
+            .collect();
+        let borrowed: Vec<&str> = stamps.iter().map(String::as_str).collect();
+        math_encoding(resolved, &borrowed)
+    }
+
+    #[test]
+    fn a_math_stamp_moves_when_an_operands_definition_does() {
+        let a = fp_db(&["A : 0|16@1+ (1,0) [0|0] \"\" ECU"]);
+        let b = fp_db(&["A : 0|16@1+ (2,0) [0|0] \"\" ECU"]);
+        let definition = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
+        let catalog = math_catalog(&["A"]);
+        let bus = fp_bus();
+        assert_ne!(
+            math_stamp_of(&definition, &catalog, &on_fp_bus(&a, &bus)),
+            math_stamp_of(&definition, &catalog, &on_fp_bus(&b, &bus)),
+        );
+    }
+
+    #[test]
+    fn a_math_stamp_moves_when_the_function_or_a_parameter_does() {
+        let db = fp_db(&["A : 0|16@1+ (1,0) [0|0] \"\" ECU"]);
+        let bus = fp_bus();
+        let dbcs = on_fp_bus(&db, &bus);
+        let catalog = math_catalog(&["A"]);
+        let rms = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
+        let slow = math_definition(
+            MathFunction::ExpFilter { tau_seconds: 1.0 },
+            &[math_operand("A")],
+            &[],
+        );
+        let fast = math_definition(
+            MathFunction::ExpFilter { tau_seconds: 2.0 },
+            &[math_operand("A")],
+            &[],
+        );
+        let stamps = [&rms, &slow, &fast].map(|d| math_stamp_of(d, &catalog, &dbcs));
+        assert_ne!(stamps[0], stamps[1], "a different function");
+        assert_ne!(stamps[1], stamps[2], "a different time constant");
+    }
+
+    #[test]
+    fn a_math_stamp_moves_when_a_pattern_takes_in_a_new_signal() {
+        // The membership of a pattern-defined set is live (ADR 0020), so
+        // a signal that starts matching joins it — and the derived
+        // series has to be rebuilt rather than quietly leaving it out.
+        let db = fp_db(&[
+            "Cell01 : 0|16@1+ (1,0) [0|0] \"\" ECU",
+            "Cell02 : 16|16@1+ (1,0) [0|0] \"\" ECU",
+        ]);
+        let bus = fp_bus();
+        let dbcs = on_fp_bus(&db, &bus);
+        let definition = math_definition(MathFunction::Max, &[], &[r"Cell\d+"]);
+        assert_ne!(
+            math_stamp_of(&definition, &math_catalog(&["Cell01"]), &dbcs),
+            math_stamp_of(&definition, &math_catalog(&["Cell01", "Cell02"]), &dbcs),
+        );
+    }
+
+    #[test]
+    fn a_math_stamp_does_not_move_for_a_rename_or_a_unit() {
+        // What a series is *called* is not what it is (ADR 0038), so a
+        // rename must not cost the user their pyramid.
+        let db = fp_db(&["A : 0|16@1+ (1,0) [0|0] \"\" ECU"]);
+        let bus = fp_bus();
+        let dbcs = on_fp_bus(&db, &bus);
+        let catalog = math_catalog(&["A"]);
+        let mut definition = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
+        let before = math_stamp_of(&definition, &catalog, &dbcs);
+        definition.name = "Something Else".to_string();
+        definition.unit = Some("mV".to_string());
+        assert_eq!(math_stamp_of(&definition, &catalog, &dbcs), before);
+    }
+
+    #[test]
+    fn a_math_stamp_distinguishes_operand_order() {
+        // `difference` is A − B, so swapping the two is a different
+        // series and must not revive the other's pyramid.
+        let db = fp_db(&[
+            "A : 0|16@1+ (1,0) [0|0] \"\" ECU",
+            "B : 16|16@1+ (1,0) [0|0] \"\" ECU",
+        ]);
+        let bus = fp_bus();
+        let dbcs = on_fp_bus(&db, &bus);
+        let catalog = math_catalog(&["A", "B"]);
+        let ab = math_definition(
+            MathFunction::Difference,
+            &[math_operand("A"), math_operand("B")],
+            &[],
+        );
+        let ba = math_definition(
+            MathFunction::Difference,
+            &[math_operand("B"), math_operand("A")],
+            &[],
+        );
+        assert_ne!(
+            math_stamp_of(&ab, &catalog, &dbcs),
+            math_stamp_of(&ba, &catalog, &dbcs),
+        );
+    }
+
+    #[test]
+    fn a_math_stamp_is_distinct_from_a_signal_stamp_with_the_same_body() {
+        let db = fp_db(&["A : 0|16@1+ (1,0) [0|0] \"\" ECU"]);
+        let bus = fp_bus();
+        let dbcs = on_fp_bus(&db, &bus);
+        let definition = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
+        let math = math_stamp_of(&definition, &math_catalog(&["A"]), &dbcs);
+        assert_ne!(math, dbc_encoding(&dbcs, Some(FP_BUS), 256, false, "A"));
+        assert_ne!(
+            math,
+            file_source(&FileSignalInfo {
+                source_path: "capture.mf4".into(),
+                group: 0,
+                group_name: None,
+                name: "A".into(),
+                unit: String::new(),
+                value_table: Vec::new(),
+            })
+        );
     }
 }

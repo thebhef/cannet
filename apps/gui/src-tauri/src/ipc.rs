@@ -1214,6 +1214,13 @@ pub struct SignalQuery {
     /// means the DBC-backed signal every query used to be.
     #[serde(default)]
     pub file_backed: bool,
+    /// Names a **math** signal (`crate::math_signals`), a series
+    /// computed host-side from other signals. `signal_name` is then the
+    /// definition's stable id and every other field is meaningless —
+    /// the fourth member of the series key's provenance flag set
+    /// `s|x|f|m`, mirrored by the frontend's `signalKey`.
+    #[serde(default)]
+    pub math: bool,
 }
 
 /// One signal's freshly-decoded points, parallel arrays (`t[i]` is the
