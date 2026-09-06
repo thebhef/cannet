@@ -57,6 +57,12 @@ what order. Treat it as living documentation, not historical record.
   of doing drive-by work; review and prune it whenever a new phase or step is
   being planned. Keep it small — if it's growing, that's a signal to fold
   items into a phase or drop them.
+- **`plans/ungroomed-user-feedback.md`** — feedback from real use by any
+  user (owner or the initial user network), grouped but ungroomed. Not a
+  task (no roadmap slot, no exit criteria) and not the backlog (that is
+  for things noticed while building). Capture feedback here verbatim-ish;
+  items leave only by being groomed into a task, folded into one, or
+  dropped.
 
 When a planning document and the code disagree, fix whichever is wrong in the
 same change — never leave them inconsistent.
