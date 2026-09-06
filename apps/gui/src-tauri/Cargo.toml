@@ -87,6 +87,13 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # timestamps (`crash.rs`), shared with `cannet-server` so the two hosts'
 # logs cannot drift apart in their semantics.
 cannet-log = { path = "../../../crates/cannet-log" }
+# Export / logger name-template resolution (`export_template.rs`): an
+# explicit `{start:%…}` / `{now:%…}` format passes straight through to
+# chrono's strftime formatter, and the bare-token ISO-8601-basic form
+# is `chrono`'s own `%z` offset. `clock` is needed here (unlike
+# `cannet-log`'s direct use, which only formats an epoch value) because
+# a template's `{now}` reads the live local wall clock.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 [dev-dependencies]
 # Phase 9: round-trip the Save Capture writer through real files

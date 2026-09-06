@@ -504,6 +504,7 @@ dependencies = [
  "cannet-sidecar",
  "cannet-spill",
  "cannet-wire",
+ "chrono",
  "mdns-sd",
  "notify",
  "regex",
