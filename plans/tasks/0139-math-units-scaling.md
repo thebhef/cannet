@@ -3,8 +3,11 @@
 > **Opened 2026-09-06** by owner instruction, immediately after the
 > task-135 math engine landed. **Executes now, on the current stack**
 > (owner ruling): branch `task139-units` on `task135-surfaces`, with
-> `doc-closeout` restacked on top. Groomed 2026-09-06; all questions
-> ruled.
+> `doc-closeout` restacked on top. Groomed 2026-09-06/07 with the
+> owner across a bench session and five prototype rounds; **this doc
+> records the final groomed state only** — the stack ships one atomic
+> set of changes, so superseded intermediate rulings are not retained
+> here (git history has them).
 
 The ask, in the owner's words:
 
@@ -16,73 +19,235 @@ The ask, in the owner's words:
   selectable list of units in a settings-view section; a sparse dict
   config persists whatever the user has changed.
 
-## Grooming notes
+## Design (groomed, final)
 
-**2026-09-06 (owner rulings):**
+### Resolve and scaling model
 
-1. **Unit-aware resolve ("architecture B").** The definition stores
-   intent, not numbers: a target unit on the definition means the host
-   derives each member's conversion from its *own* DBC unit string —
-   through the unit library plus the user's customization dict — fresh
-   at resolve time. Pattern members with mixed units each get their
-   own correct factor; a customization edit rescales every dependent
-   channel (factors join the cache fingerprint, so caches rebuild).
-   Rejected: storing computed scalars with the unit picker as a
-   one-shot calculator — it cannot serve pattern operands and throws
-   the intent away at edit time.
-2. **Affordances for what the DBC doesn't map cleanly** (accepted
-   2026-09-06): manual `{gain, offset}` on any operand and on the
-   output (the unit-free path, composes with or replaces conversion);
-   per-operand source-unit override ("treat this operand as mA")
-   local to the channel; unconvertible members pass through unscaled
-   and are *reported* by resolve, never silent; a unit outside the
-   library's list means manual scalars (a define-custom-unit row was
-   deliberately out of scope until it bit — **reversed 2026-09-09**,
-   see ruling 20 below).
-3. **Conversions are affine** (gain + offset) — covers °C↔K↔°F.
-4. **No mapping dialog.** The customization UI is a **section in the
-   settings view**: a selectable list of units provided by the unit
-   library, to which the user adds customizations (DBC unit string →
-   library unit). The settings model's existing `workspace` scope
-   carries it, so the sparse dict persists with the project — it
-   interprets that project's DBCs and travels with them. Built-in
-   recognitions cover common strings ("V", "mV", "A", "degC", "°C",
-   "rpm", "%", …); the dict stores only what the user changes.
-5. **Unit library: `runtime_units`** (MIT, 0.6.x) — found and adopted
-   2026-09-06 at owner instruction to use a library rather than an
-   in-repo table; see `plans/technology-inventory.md` § Units /
-   Quantities for the evaluation and the rejected candidates
-   (rink-core's GPL data file, uom/dimensioned's compile-time types).
-   Wrapped behind a host-side facade so the depended-on surface stays
-   narrow.
+- **Unit-aware resolve ("architecture B").** The definition stores
+  intent, not numbers: a target unit on the definition means the host
+  derives each member's conversion from its *own* DBC unit string —
+  through the unit library plus the user's customization dict — fresh
+  at resolve time. Pattern members with mixed units each get their
+  own correct factor; a customization edit rescales every dependent
+  channel (factors join the cache fingerprint, so caches rebuild).
+  Rejected: storing computed scalars with the unit picker as a
+  one-shot calculator — it cannot serve pattern operands and throws
+  the intent away at edit time.
+- **Affordances for what the DBC doesn't map cleanly**: manual
+  `{gain, offset}` on any operand and on the output (the unit-free
+  path, composes with or replaces conversion); per-operand
+  source-unit override ("treat this operand as mA") local to the
+  channel; unconvertible members pass through unscaled and are
+  *reported* by resolve, never silent.
+- **Conversions are affine** (gain + offset) — covers °C↔K↔°F.
+- **Integration-aware target conversion.** Integration multiplies by
+  time, so a definition's target in the *integrated* dimension is
+  reachable: the operand converts only to its family's canonical
+  rate and the output affine carries canonical-integral → target
+  (`A`→`Ah` is ÷3600 on the output). A target in the operand's own
+  family keeps pointwise semantics (integrate in mA); a target in
+  neither dimension is badged.
 
-**2026-09-06, evening bench (owner ruling — integration and time):**
+### The unit library, identity, and recognition
 
-6. **Convertibility accounts for the function's time dimension.** An
-   integration of an `A` operand with unit `Ah` was badged
-   unconvertible: resolve compared operand dimension (current) to
-   target (charge) as if the function were pointwise. The operand is
-   right as the DBC declares it — the *decision* is wrong: integration
-   multiplies by time, so the question is whether `current x time`
-   reaches the requested unit. Design: the facade learns the
-   rate<->integral pairings (current x t = charge, canonical A*s =
-   coulomb; power x t = energy, W*s = joule); for Integration a
-   requested unit in the *integrated* dimension means no operand
-   conversion where the operand already speaks the rate family — the
-   output affine carries coulomb->Ah (/3600) and kin, via the library.
-   A unit in the operand's own family keeps operand-target semantics
-   (integrate in mA), so the owner's `A` workaround stays valid. With
-   no unit set, integrating a recognised operand derives a *real*
-   integrated unit (coulomb, joule) instead of the `*s` string —
-   best-effort, per the owner; unrecognised operands keep the suffix.
-   The badge then marks only true dead ends.
+- **Library: `runtime_units`** (MIT, 0.6.x), adopted at owner
+  instruction over an in-repo table; see
+  `plans/technology-inventory.md` § Units / Quantities for the
+  evaluation, the rejected candidates, and the recorded gaps.
+  Wrapped behind a host-side facade so the depended-on surface stays
+  narrow. **The library does the math**: its enumerated prefixed
+  variants where they exist, and `Quantity x Quantity` composition
+  for the holes — standard **dimensional analysis** (dims add,
+  factors multiply) — so nanoampere x hour reaches nAh and
+  `try_convert`s to ampere-hour. A cross-check test validates
+  composed factors against every pair the crate does enumerate.
+- **Unit identity is base unit x SI prefix.** The picker offers a
+  base unit ("volt") and a prefix choice, never an enumerated
+  volts/millivolts/kiloamps list. The full SI prefix range is in the
+  model; recognition parses `[prefix][base]` DBC spellings
+  exact-case ("mV" is not "MV"), customizations winning over
+  built-ins. Enumeration gaps in the crate do not dictate the model
+  (bar is prefixable even though the crate enumerates only
+  millibar).
+- **Units are typed values in the model; strings exist only at the
+  ingest boundary.** DBC unit strings are read once through
+  recognition + the mapping config; from there everything is a typed
+  unit (id + prefix). A user's picked unit or override persists in
+  the typed form, never as a spelling; composed units are structural
+  (the function and its time parameter imply them) and their
+  displays ("A·s") are rendered one-way, never parsed or persisted.
+  The editor offers no free-text unit entry (owner ruling,
+  2026-09-08, from bench testing — reversing an earlier keep); a
+  spelling stored by an old file still loads, resolves and displays.
+  No new string syntax is introduced anywhere.
+- **Kind guard is the facade's.** Verified at the crate's API:
+  `try_convert` guards only on base-dimension equality (seven SI
+  dimensions — no angle, no kind), so it would convert rpm→Hz at
+  2π/60 and N·m→J at 1.0. The facade groups units into its own
+  dimension families and converts only within one; a library-side
+  kind guard is a separate handed-off effort nothing here waits on.
+- **Temperature offsets are the facade's, permanently.** Upstream
+  deliberately ships no absolute-temperature quantity and the owner
+  will not ask them to overturn that.
+- **`scalar` is the no-unit placeholder** (the library's lone
+  Dimensionless unit under its own name). DBC strings
+  "count"/"counts"/"cnt" recognise to it. The **ratio family** is
+  separate, told apart by kind, and takes a scale choice instead of
+  SI prefixes: 0–1 / 0–100 (%) / ppm.
+- **Every unit appears in pickers** — coulomb included; a spelling
+  withheld from *parsing* (its "C" would be a guess against Celsius)
+  is still selectable, and its id reads back to it.
+- **Resolve retains a per-signal kind**, and unit pickers lead with
+  it.
 
-**Implementation notes (read 2026-09-06):**
+### Derived output units (dimensional analysis)
+
+- **Every math function provides a derived output unit**; deriving
+  nothing where analysis can name one is unhelpful. Per function:
+  fixed physical quantities state theirs (duty `%`, frequency `Hz`);
+  pointwise set functions, statistics, filters, scale and RMS
+  inherit the operands' unit after like-kind conversion (mixed
+  `mA`+`A` derives, the members converting); product composes the
+  operands' units (`A x s` ships as `A·s`, dimensionally charge);
+  HLine has no operands — the user names it, `scalar` otherwise.
+  The one no-derivation case is dimensionally honest: an additive
+  set mixing dimensions (V beside A) cannot be summed, so it derives
+  nothing and stays badged.
+- **Time is the function's parameter for integration and
+  derivative.** Both carry a time-unit choice on the Function row —
+  `operand · [t]`, `d(operand) / d[t]` — offering the library's time
+  units (prefixed seconds, minute, hour, day), **default `s`**; an
+  existing definition deserialises to the default unchanged. The
+  output unit follows as the composition (`operand · h` derives
+  `Ah`, which is just `A·h` spelled the familiar way). Changing the
+  time unit re-derives and clears any named override. Host-side this
+  is a time-unit field on Integration and Derivative in
+  `MathFunction`.
+- **A Derivative function joins the engine** (exactly as useful as
+  integration). Plain slope between consecutive samples — no
+  smoothing, no window parameter. Its unit derives as
+  `operand/(time unit)` — and division can land in a *named* family:
+  d/dt of an `Ah` counter over `d/ds` ships as `Ah/s`, dimensionally
+  current, so the picker offers `A` and the ×3600 falls out of the
+  analysis.
+- **The derived kind-lock is the composed dimension only** (an
+  integration of a current locks to charge; a milli-scale
+  integration is `mA·s` by prefix, not a current-family target).
+  The unit picker offers exactly the current composition
+  (prefixable) beside the dimension's **named** units — never a menu
+  of pre-composed time variants.
+- **The unit button reads only its resolved unit** (owner ruling,
+  2026-09-08 — the inline `composed:`/conversion note confused);
+  the derivation and conversion detail live in the button's hover
+  text. Clearing an override is picking the composition again, and
+  the picker always carries a way back: the composition row where
+  one exists, else a synthetic "derived" row that commits nothing.
+- **Pattern matches fold in the editor's operand list** — one
+  disclosure row per pattern (`Cell\d+ (24 matches)`), collapsed by
+  default, expansion view-local (owner ask, 2026-09-08).
+
+### Applying units vs reinterpreting them
+
+- **View signals reassigns units arbitrarily, as reinterpretation.**
+  Any signal's unit can be changed there to anything (kinds may
+  cross — the DBC's label may be wrong in kind); NO scaling is
+  applied: the decoded value is read as the chosen units from then
+  on. Per-signal, persisted with the project. The panel carries a
+  **resolved-unit chip column** — what each signal's unit string
+  means after recognition and the project's customizations, warning
+  chip when nothing places it. (Note: this defines the signal's unit
+  globally, not for one view — closer to the panel's ultimate
+  intent, and one more strain on the "View signals" name that task
+  0112 resolves.)
+- **Everywhere units are *applied* — plot, math signals, anywhere
+  else — the picker is kind-locked**: only like-kind units are
+  offered, and choosing one is a real conversion.
+- **The plot converges series through display-unit conversion.** In
+  per-unit y mode the real control stacks **one derived axis per
+  distinct unit** (`plotAxisDerivation.ts`, ADR 0026) — own lane,
+  own y-scale, own slice of the side list, the unit riding the
+  lane's head as the `[unit]` axis label. The convert affordance is
+  the unit chip **in the side-list row's readout**: kind-locked
+  picker, and the converted series' lane merges into the target
+  unit's lane. The chosen display unit persists per-series in the
+  plot panel's config, beside the series' other per-series state.
+- **Per-unit collection stays honest by default**: nAh and Ah are
+  distinct units; setting a series' display unit is how readings
+  land on a common scale.
+
+### Settings → Units section
+
+- **A section in the settings view, not a dialog.** The
+  customization dict lives on the settings model's `workspace` scope
+  so it travels with the project's DBCs; built-in recognitions cover
+  common strings and the dict stores only what the user changes.
+- **The table lists the library's full base-unit set**, plus any
+  units added by user or project config — one row per base unit,
+  carrying its **matched strings** (no usage counts; "degC" and
+  "Deg C" both on the degree-C row), with string assignments typed
+  into the row. No needs-attention list here: unrecognised strings
+  surface per-signal in View signals (the `Unknown unit` filter),
+  which is where individual fixes happen; settings is where
+  project-wide string mappings live.
+- **Project / user checkbox columns on every row** govern where that
+  row's custom mappings persist: tick user to promote them to every
+  project, untick project to demote them out of this one. The
+  user-scope mapping store is new (today's dict is
+  project-persisted only); **where both scopes map the same string,
+  project wins**. No persisted-dict inspector — no other settings
+  surface has one.
+- **A two-field entry composes a unit** (owner ruling, 2026-09-09,
+  reversing an earlier out-of-scope call): a name, and a string over
+  units the model already knows — `VA` = `V * A`. Terms separated by
+  `*` (or `·`) and `/`, a term that reads as a number is a plain
+  factor, nothing nests, and a definition may name another whatever
+  order they were entered in. What it defines is a unit in every
+  respect: composed dimension, its own name as its spelling,
+  recognised when a database writes it, offered in the pickers in
+  `units::list_order` position, converting by the factor dimensional
+  analysis implies. It persists at the same two scopes with the same
+  per-row checkbox semantics, and is a row of the same table carrying
+  its composition and a delete control. The string is an **ingest
+  boundary** like a DBC's unit field — read once, refused with a
+  reason where it is wrong, never seen downstream. A name recognition
+  already answers (`W`) is refused: taking it would change what every
+  database in the project reads.
+
+### UI rules
+
+- **The unit control is judged in context** — at its real size inside
+  the Database panel's in-place editor, not as a standalone widget.
+- **The prefix picker is one exponent-ordered list**, each row
+  carrying its scale factor (×10^n), opened with the current
+  selection centered — neighbors one step away, extreme exponents a
+  scroll away.
+
+### Defects folded into this task
+
+- The math editor's operand shows "from DBC" without recognition
+  state and only fails at conversion time — recognition state must
+  show at edit time.
+- The owner's nAh signal was not flagged in the View-signals panel —
+  investigate before assuming the flag path works.
+
+### Prototype gate
+
+Phases 5–6 start only after `plans/prototypes/units.html` passes the
+owner's review. **Progress (2026-09-07):** the unit selection model,
+the math-editor behaviors, composition and the integral/derivative
+time-parameter design, and the settings section (with scope
+checkboxes on every row) are accepted as prototyped, and every open
+question the prototype carried has been ruled (the rulings are folded
+into the design above; the prototype's settings table intentionally
+lags the full-base-unit-list ruling).
+
+### Implementation notes (read 2026-09-06)
 
 - `MathDefinition.unit: Option<String>` already exists (display unit,
   derived when unset) — it becomes the conversion **target**: set and
   recognised ⇒ operands convert to it; unset or unrecognised ⇒
-  today's behaviour, no conversion.
+  today's behaviour, no conversion. Phase 5 moves the target to the
+  typed unit form (old string-bearing files still load).
 - `MathOperandRef` derives `Eq + Hash`; f64 fields would break both.
   Per-operand parameters ride a wrapper (`serde(flatten)` keeps old
   project files deserialising) rather than the ref itself.
@@ -95,21 +260,6 @@ The ask, in the owner's words:
 - `runtime_units` distinguishes TemperatureInterval from
   ThermodynamicTemperature; DBC temperature readings map to the
   absolute kind by default.
-
-**2026-09-09 (owner ruling — composed units, reversing the above):**
-
-20. **Composed units are supported, via a string.** "Give a simple two
-    field entry, allowing creation of a name, and then a string which
-    composes units. For example: W = V \* A." So Settings → Units gains
-    a two-field entry — a name, and a composition over units the model
-    already knows. The string is an **ingest boundary** like a DBC's
-    unit field: read once, refused with a reason where it is wrong, and
-    never seen again downstream. What it defines is a unit in every
-    respect — composed dimension, its own name as its spelling, in the
-    pickers in `units::list_order` position, converting by the factor
-    dimensional analysis implies — persisted through the same two-scope
-    project/user mechanism as the spellings, with the same per-row
-    checkbox semantics, and shown as a row of the same table.
 
 ## Phases
 
@@ -128,43 +278,52 @@ flags, the settings-view units section (library-provided selectable
 list + customization rows over the workspace-scoped dict). DOM tests.
 
 **Phase 4 — integration units** — *landed 2026-09-07* (host; opened
-from the evening bench, ruling 6). The rate<->integral pairing in the facade;
-Integration-aware resolve (integrated-dimension target => output
-affine, own-family target => operand semantics, else badge); derived
-unit becomes the canonical integrated unit for recognised operands.
-Amends `task139-units` (message updated). Tests: A->Ah (/3600),
-mA->Ah, W->kWh, derived coulomb, own-family mA target, true-mismatch
-badge.
+from the evening bench). The rate↔integral pairing in the facade;
+Integration-aware resolve (integrated-dimension target ⇒ output
+affine, own-family target ⇒ operand semantics, else badge). Amends
+`task139-units` (message updated). Tests: A→Ah (÷3600), mA→Ah,
+W→kWh, own-family mA target, true-mismatch badge.
 
-**Phase 5 — composition, prefixes, recognition, derivation** (host).
-The facade converts via the library's enumerated prefixed variants plus
-`Quantity x Quantity` composition (dimensional analysis), with a
-cross-check test against every pair the crate enumerates; unit identity
-becomes typed base x prefix — the definition's target moves to the typed
-form (strings stay at the ingest boundary only); recognition parses
-`[prefix][base]` exact-case with customizations still winning;
-`derived_unit` derives for every function — products compose,
+**Phase 5 — composition, prefixes, recognition, derivation** (host;
+after the prototype gate). The facade converts via the library's
+enumerated prefixed variants plus `Quantity x Quantity` composition
+(dimensional analysis), with the cross-check test against every pair
+the crate enumerates; unit identity becomes typed base x prefix —
+the definition's target moves to the typed form (strings stay at the
+ingest boundary only); recognition parses `[prefix][base]`
+exact-case with customizations still winning; `derived_unit` derives
+for every function per the design — products compose,
 integration/derivative compose with their time-unit field on
-`MathFunction` (default `s`, old files unchanged), like-kind sets convert
-and inherit — and the composed dims name the kind that locks the override
-picker; the Derivative function (kernel + resolve, plain
-consecutive-sample slope); the per-signal unit reinterpretation store,
-served to every consumer; the user-scope mapping store (project wins on
-conflict); resolve reports recognition state per operand; the
+`MathFunction` (default `s`, old files unchanged), like-kind sets
+convert and inherit — and the composed dims name the kind that locks
+the override picker; the Derivative function (kernel + resolve,
+plain consecutive-sample slope); the per-signal unit
+reinterpretation store, served to every consumer; the user-scope
+mapping store (project wins on conflict); resolve reports
+recognition state per operand (not only convertibility); the
 View-signals nAh flag investigation and fix.
 
-**Phase 6 — selection UI and the settings rework** (frontend; after the
-prototype gate). The base + prefix picker replaces the flat unit list in
-the math editor; integration/derivative get the function-row time-unit
-choice, their unit pickers offering the resulting composition or a named
-unit of the dimension, kind-locked to that dimension; the function
-select gains Derivative; the operand's "from DBC" chip shows parse state
-at edit time; the View-signals reinterpretation picker on the
-resolved-unit chip; the plot's per-unit readout chip converts a series'
-display unit (persisted per-series in plot config); the settings units
-section is rebuilt to the accepted prototype as ruled — the library's
-full base-unit list plus config-added units, matched-string rows, and
-project/user scope checkboxes on every row.
+**Phase 6 — selection UI and the settings rework** (frontend; after
+the prototype gate). The base + prefix picker replaces the flat unit
+list in the math editor; integration/derivative get the function-row
+time-unit choice, their unit pickers offering the resulting
+composition or a named unit of the dimension, kind-locked to that
+dimension; the function select gains Derivative; the operand's
+"from DBC" chip shows parse state at edit time; the View-signals
+reinterpretation picker on the resolved-unit chip; the plot's
+per-unit readout chip converts a series' display unit (persisted
+per-series in plot config); the settings units section is rebuilt to
+the accepted prototype as ruled — the library's full base-unit list
+plus config-added units, matched-string rows, and project/user scope
+checkboxes on every row.
+
+**Phase 7 — composed units** — *landed 2026-09-10* (host + frontend;
+opened by the 2026-09-09 owner ruling above, on `units-composition`
+under `doc-closeout`). The composition parser and the process-global
+registry behind the facade's lookups; the `unit_definitions` /
+`unit_definitions_user` settings pair and the `check_unit_definition`
+command; the two-field entry, the table's `composed from` column with
+its delete control, and the scope checkboxes moving a definition.
 
 ## Exit criteria
 
@@ -190,24 +349,18 @@ project/user scope checkboxes on every row.
 - [x] An integration reaches a target its operand only reaches through
       time: `A`→`Ah` and `mA`→`Ah`, `W`→`kWh`. A target in the
       operand's own family (`mA` on an `A` operand) still converts the
-      operand; a target in neither dimension is still badged; with no
-      target, a recognised rate derives its integral's unit.
-
-- [x] Unit identity is base x SI prefix: `nAh` recognises and converts
-      to `Ah` through composition; the composed-factor cross-check test
-      passes against every pair the crate enumerates.
-- [x] Every math function derives an output unit: a product of `A` and
-      `s` ships as `A·s`; integration and derivative follow their
-      function-row time unit (`operand · h` derives `Ah`); a like-kind
-      mixed set converts and inherits; an additive set mixing dimensions
-      derives nothing and is badged.
-- [x] Derivative works end to end (host half): d/dt of an `Ah` counter
-      over `d/ds` reads `Ah/s` and converts to `A` on request.
-- [x] A signal's unit reinterpreted in View signals reads as the chosen
-      unit everywhere, with no scaling applied.
-- [x] A mapping promoted to user scope is effective in another project,
-      and project wins where both scopes map one string.
-- [x] The owner's `nAh` View-signals flag case is explained and fixed.
+      operand; a target in neither dimension is still badged.
+- [x] Unit identity is base x SI prefix: `nAh` recognises and
+      converts to `Ah` through composition; the composed-factor
+      cross-check test passes against every pair the crate
+      enumerates.
+- [x] Every math function derives an output unit: a product of `A`
+      and `s` ships as `A·s`; integration and derivative follow
+      their function-row time unit (`operand · h` derives `Ah`); a
+      like-kind mixed set converts and inherits; an additive set
+      mixing dimensions derives nothing and is badged.
+- [x] Derivative works end to end: d/dt of an `Ah` counter over
+      `d/ds` reads `Ah/s` and converts to `A` on request.
 - [x] Unit pickers in applied contexts are kind-locked — for
       integration/derivative to the composed dimension, offering the
       composition plus named units only; View signals reassigns
@@ -219,7 +372,24 @@ project/user scope checkboxes on every row.
       strings and project/user scope checkboxes; promoting a mapping
       to user scope makes it effective in another project, and
       project wins where both scopes map one string.
-- [x] Derivative is usable end to end from the UI.
+- [x] A signal's unit reinterpreted in View signals reads as the
+      chosen unit everywhere, with no scaling applied.
+- [x] The owner's `nAh` View-signals flag case is explained and
+      fixed.
+- [x] A unit composed in the settings entry (`VA` = `V * A`) has the
+      composed dimension, reads as its own name, is recognised when a
+      database spells it, converts by the factor its composition
+      implies (`VA`→`W` ×1, `kVA` = `1000 * V * A` →`W` ×1000), and is
+      offered in the pickers in `units::list_order` position.
+- [x] A composition may divide and may carry numeric factors; one
+      definition may name another whatever order the dict sorts in.
+- [x] A composed unit persists at both scopes, project winning, and its
+      row's checkboxes move the definition; deleting the row removes it
+      from both.
+- [x] An empty or already-taken name, an unknown term and a malformed
+      string are each refused where they were typed, saying what is
+      wrong; a stored definition that no longer holds says why on its
+      own row.
 
 ## Status log
 
@@ -705,10 +875,9 @@ unconverted mixed set, the file-backed skip) and were rewritten to the
 new contract rather than deleted.
 
 **2026-09-07 — Phase 4 (integration units), absorbed into
-`task139-units`.** Landed: the rate↔integral pairing in the facade,
-Integration-aware resolve, and the derived integrated unit. The owner's
-report — an integration of an `A` operand asked for `Ah` badged
-unconvertible — now converts.
+`task139-units`.** Landed: the rate↔integral pairing in the facade
+and Integration-aware resolve. The owner's report — an integration of
+an `A` operand asked for `Ah` badged unconvertible — now converts.
 
 - **Where the factor rides.** A pointwise conversion cannot express
   `A`→`Ah`, because the operand is not what changes: integrating amps
@@ -748,20 +917,6 @@ unconvertible — now converts.
   `milliampere-hour`, `joule`, `kilojoule`, `watt-hour` and
   `kilowatt-hour` were all already curated, and `Energy` and
   `ElectricCharge` already on.
-- **The derived unit is the integral's id, and only where it is
-  true.** With no target set nothing converts, so integrating `mA`
-  produces milliampere-seconds — millicoulombs, which the table does
-  not carry — and claiming `coulomb` there would be wrong by a
-  thousand. `MathFunction::derived_unit` therefore names the integral
-  only when the operand's unit *is* its family's canonical rate (`A` →
-  `coulomb`, `W` → `joule`) and keeps the `·s` suffix otherwise
-  (`mA·s`, `widgets·s`). The **id** rather than the display, because
-  coulomb's display is `C`, which Phase 1 deliberately refuses to
-  recognise (a DBC saying `C` means Celsius as often as coulomb) — and
-  because Phase 2's id pass makes `coulomb` a string that reads back to
-  the unit it names. `derived_unit` gained the customization dict as an
-  argument for the same reason resolve has it: an in-house spelling the
-  user has placed must derive the same integral `A` does.
 
 Tests: 1173 → 1190 host lib tests passing (7 ignored, unchanged): 4 in
 `units`, 9 in `math_signals`, 3 in `signal_cache`, 1 in
@@ -1002,9 +1157,9 @@ Tests: host lib 1260 → 1262 passing (7 ignored, unchanged); frontend
 3462 → 3463 across 246 files. All four were written red first.
 
 **2026-09-10 — composed units, on `units-composition`.** The owner's
-2026-09-09 ruling (grooming note 20), on a branch of its own inserted
-under `doc-closeout` because this is new behaviour rather than a defect
-in a branch that introduced one.
+2026-09-09 ruling (folded into the design's Settings → Units section),
+on a branch of its own inserted under `doc-closeout` because this is new
+behaviour rather than a defect in a branch that introduced one.
 
 - **The grammar accepted** is a product of terms: `*` (or `·`) and `/`
   separate them, whitespace around them is ignored, and a term that

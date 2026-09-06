@@ -1,9 +1,9 @@
 # 0140 — Project State Items
 
-> **Opened 2026-09-06** by owner instruction. **Queued behind the
-> in-progress 136 → 137 → 135 stack and task 139** (owner: "we won't
-> probably do this until after our work in progress is landed").
-> **Needs grooming and a prototype before implementation.**
+> **Opened 2026-09-06** by owner instruction; groomed and prototyped
+> 2026-09-07/08, and **executed on the current stack** (branch
+> `task140-controls` on `task139-apply`) per the owner's approved
+> plan, 2026-09-08.
 
 The ask, in the owner's words: add start/stop to RBS and logger
 items in the project view. (A status-strip section of active items
@@ -60,18 +60,18 @@ both directions.
 
 ## Exit criteria
 
-- [ ] Element rows show icon buttons: trash removes in one click
+- [x] Element rows show icon buttons: trash removes in one click
       (undoable via the registry), `enter` focuses the element's
       open panel or opens it — no text buttons remain on the rows.
-- [ ] Bus and DBC rows' Remove and the interfaces' Discover are
+- [x] Bus and DBC rows' Remove and the interfaces' Discover are
       icon buttons too (trash / `refresh`).
-- [ ] The RBS and Logger rows' play/stop toggle reads and writes the
+- [x] The RBS and Logger rows' play/stop toggle reads and writes the
       same enabled state as the element's own panel; toggling in
       either place updates both, and no behavior beyond the existing
       enable changes.
-- [ ] The toggle alone conveys state — play/stop shape, green
+- [x] The toggle alone conveys state — play/stop shape, green
       running, amber armed — with no state text labels.
-- [ ] DOM tests cover both toggle-sync directions and the remove and
+- [x] DOM tests cover both toggle-sync directions and the remove and
       focus actions.
 
 ## Status log

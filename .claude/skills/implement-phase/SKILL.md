@@ -71,29 +71,49 @@ have side effects that are easy to forget:
 | `cargo fmt --all` | the hook formats *and re-stages* — run it before staging, or you commit unformatted Rust |
 | `check_local_paths.py`, `relativize_project_paths.py` | an absolute path from your machine reaches the commit |
 
-**The hook is not the gate. Run every CI job locally before you
-report** — this is an exit criterion, not a nicety. The hook
-deliberately scopes checks down, and says so in its own comments:
-Rust tests cover only the crates you touched, never their dependents,
-and the sidecar freeze and the MDF export oracle are left to CI
-entirely. A phase that trusts the hook can report green while CI is
-red, and has.
+**Verification is tiered** (owner rulings 2026-09-06 — redundant
+fixed overhead is not run; a phase does not need 40 minutes of test):
 
-Read `.github/workflows/ci.yml` and match it — it is canonical, and
-this table only tells you the shape. Cheapest first, so you fail
-fast:
+**Per phase — scoped to what you touched.** Run, before you report:
 
-| Job | Roughly |
+| Check | Roughly |
 |---|---|
-| frontend | `pnpm --dir apps/gui test`, then `pnpm --dir apps/gui build` |
-| python | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` — all via `uv run` |
-| rust | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` |
-| mdf-export-oracle | the `cannet-mdf` sample export, then the asammdf validation |
-| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
-| sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` |
+| tests, touched crates | `cargo test -p <crate>` for each crate you touched, plus any dependent crate whose use of your change you altered |
+| clippy, touched crates | `cargo clippy -p <crate> --all-targets -- -D warnings` |
+| fmt | `cargo fmt --all -- --check` (seconds) |
+| frontend, affected files | the test files covering what you touched (`pnpm --dir apps/gui test <pattern>`); full `pnpm test` + `build` only when the touch is broad (shared context, types.ts, App.tsx) |
+| python, touched packages | the touched package's ruff/mypy/pytest via `uv run --extra dev` — only when you touched `servers/` or `proto/` |
+| comment-references grep | always (below) |
+
+**Once per task — the full matrix.** The task's FINAL phase (the
+overseer says which, and may also ask for it mid-task) runs the whole
+CI matrix from `.github/workflows/ci.yml` — frontend test+build,
+python suites, `cargo test --workspace`, workspace clippy, the MDF
+oracle, rustdoc `-D warnings`, sidecar-freeze — and reports the full
+table, using `skipped — <reason>` only for lanes the *task's* whole
+diff cannot reach. Task acceptance rests on that run, so a scoped
+phase that quietly broke a dependent surfaces before close-out, one
+task later at worst.
+
+**Fix/evaluate mode — checks are quick** (owner ruling 2026-09-08).
+When you are amending already-reviewed branches in a bench-fix
+iteration (the owner is testing builds and turning findings around,
+not opening new phases), run the scoped per-phase set **only on the
+branches you amend**, then ONE combined verification at the stack
+tip; never re-run suites per intermediate branch after a restack — a
+clean restack plus a green tip covers them. CI runs the matrix again
+on submission; ten local reruns buy nothing.
+
+Judge scope by inputs, not intent — `Cargo.lock`/manifest changes
+count as touching every Rust crate; when in doubt, run the wider
+check. The release-host build (`tauri build --no-bundle`) is needed
+only when the phase takes a perf reading or the overseer asked for a
+runnable build. The hook is still not the gate: it scopes even
+narrower than this table and skips the freeze and the oracle
+entirely.
 
 The `comment-references` check no longer runs in CI — run its grep by
-hand before every commit, in addition to the six jobs above.
+hand before every commit, whatever tier you are on.
 `--untracked` is load-bearing — a file you just wrote is not yet
 tracked, so a plain `git grep` misses it and the violation surfaces
 only later:
@@ -177,21 +197,28 @@ Regardless of why you are measuring:
   disarmed and *passed* while measuring an idle bus. Check
   `ids_measured` and the rx/tx rates.
 
-### Every phase ships an installer
+### Every phase ships a runnable release binary — never an installer
 
-Once your commit is green, run `pnpm --dir apps/gui tauri build`. The
-owner installs the NSIS bundle to try your work — a deliverable, not a
-check, and it is unconditional: every phase, whatever it touched.
+Once your commit is green, run `pnpm --dir apps/gui tauri build
+--no-bundle`. (Plain `cargo build --release -p cannet-gui` lacks the
+`custom-protocol` feature and comes up with no frontend; the
+`--no-bundle` tauri build is the runnable release host.)
+
+**Do not build NSIS/MSI bundles.** Owner ruling 2026-08-27: installers
+are not produced along the way — bundling adds minutes per phase and
+nothing any gate reads; they are a release-time artifact, built only on
+the owner's ask. (This section previously said every phase ships an
+installer; that predated the ruling.)
 
 - Every build output is gitignored, so this cannot dirty the tree.
   The sidecar freeze caches, so a rebuild is far cheaper than the
   first one.
 - **A build failure is a phase failure.** Fix it and amend your commit.
-  Never report a phase whose bundle does not build.
-- **Report the installer path.** Local builds carry the placeholder
-  version — `target/release/bundle/nsis/cannet_0.0.0_x64-setup.exe`.
-  The release workflow injects the real version; you never edit it.
-- **Never run or install it.** That is the owner's, on their machine.
+  Never report a phase whose release build does not build.
+- **Report the binary path** — `target/release/cannet-gui` (`.exe` on
+  Windows), frontend embedded.
+- **Never install anything.** Trying the build is the owner's, on
+  their machine.
 
 ## 5. Investigations follow the scientific method
 
@@ -285,11 +312,13 @@ One commit, green, then report — short, in this order:
 - branch name and commit hash; pre-squash HEAD if you squashed
 - the commit message you composed
 - perf readings, anything over § 4's thresholds first
-- **one row per CI job, with its result and the command you ran** —
-  all six, every phase, plus the hand-run `comment-references` grep.
+- **one row per check you ran, with its result and command** — the
+  scoped per-phase set, or the full matrix on a task-final phase
+  (`skipped — <reason>` rows allowed per § 3), plus the hand-run
+  `comment-references` grep. Say which tier the table is.
   "Green" without the table is not a report, and a job you did not
   run is a red job.
-- the NSIS installer's path
+- the release binary's path (no installer — see § above)
 - status-log, blockers, and queue entries you added
 - what you deviated on, and why
 

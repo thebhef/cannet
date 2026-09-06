@@ -954,3 +954,20 @@ absolute path in the running OS's own form — so `logPathSeparator`
 reads the marker off that (`logFileGrid.ts`, tested both ways, plus a
 DOM test rendering a mac folder). The dom test's stand-in folder was
 `C:/logs`, a shape the host no longer produces; it is `C:\logs` now.
+
+## Exit criteria verdicts (orchestrator walk, 2026-09-06)
+
+1. **Met** (phases 1+2): dialog with template preview, range picker (timeline/comboboxes/events/presets, wall-time labels,
+   relative-only unanchored), OS picker seeded from sticky state; folder/format/template persist at machine scope.
+2. **Met** (phase 2): background export with status-bar chip (name/percent/cancel; cancel removes the partial file); model
+   serves views throughout. Cancel-flag granularity bug found and fixed in-phase.
+3. **Met** (phase 1): host-side tokens, ISO-basic bare form, chrono pass-through, polished rejections surfaced to the preview.
+4. **Met** (phase 3): logger project element + panel (folder/file/preview/format order), enabled∧connected write, locks while
+   writing, BLF live with size-cap split (`-00N`, collision → next suffix), enabled flag project-persisted. *Caveat:* the split
+   is unit-tested with a small cap override, not exercised live (a real 500 MB split needs ~30 min of traffic).
+5. **Met** (phase 4): recursive gridview, cached start/end/duration/count columns (mtime-invalidated, host-side), writing row
+   as live status, import via button / context menu / Space through the standard import dialog with range selection.
+6. **Met** (each phase): README export + logger sections, rustdoc on new API, CONTEXT.md logger term (phase 3).
+
+**Open owner items carried in the review queue**: BoundField-vs-Combobox divergence, panel name-field omission, Format select
+shape, both-directions frame count, "project-directory mode" reading. Awaiting owner acceptance.

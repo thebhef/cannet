@@ -88,16 +88,71 @@ started.
 
 The heavier items: feature rework and architectural change, the
 revisions that follow the 0.10.x path. Ordered among themselves; the
-section above comes first.
+section above comes first. **Exception (owner ruling 2026-09-06): the
+groomed 136 → 137 → 135 run executes now**, moved to the head of this
+section with implementation underway.
 
-13. [Task 116 — RBS Problems Across Every Configuration](0116-rbs-problems-across-configurations.md)
+13. [Task 136 — python-can Cannet Client](0136-python-can-cannet-client.md)
+    — `CannetBus(can.BusABC)` behind python-can's `can.interface`
+    entry point, fed by a factory reading the canonical server trust
+    store; SNTP time sync; detection dials the trusted servers; reuses
+    the sidecar's gencode and frame mappers. Split out of task 134,
+    2026-09-05; groomed 2026-09-06 — all questions ruled, exit
+    criteria set. Two phases.
+14. [Task 137 — Log Export](0137-log-export.md)
+    — templated export naming ({project}/{logger}/{start}/{now}
+    resolved host-side), an export dialog with range picker, background
+    export with a status-bar progress chip, project loggers writing
+    BLF live with size-cap splits, and the logger folder's recursive
+    file gridview with ranged re-import. Split out of task 134,
+    2026-09-05; groomed 2026-09-06 — prototype
+    (`plans/prototypes/export-dialog.html`) accepted as the
+    behavioural spec, exit criteria set. Four phases.
+15. [Task 135 — Plot Math Functions](0135-plot-math-functions.md)
+    — math functions on plotted signals (sum, difference, product,
+    scale, expfilter, hline, integration, duty cycle, frequency, the
+    pointwise set functions, statistic, rms), computed host-side as a
+    new provenance with compositional fingerprints; created from the
+    Database view's Computed branch, edited in place everywhere.
+    Split out of task 134, 2026-09-05; grooming closing 2026-09-06 —
+    prototype `plans/prototypes/math-signals.html`, exit-criteria
+    draft in the task file pending the in-place-editor rework.
+16. [Task 139 — Units and Scaling for Math Signals](0139-math-units-scaling.md)
+    — per-operand and output scalars on math channels, unit-driven via
+    a unit library seeded from the DBC's unit strings, with a mapping
+    dialog and a persisted sparse dict for arbitrary strings. Opened by
+    owner instruction 2026-09-06; **executes now, on the current
+    stack**; grooming in progress.
+17. [Task 141 — Bench Rework: Owner-Reported Fixes on the Open Stack](0141-bench-rework.md)
+    — the 2026-09-06 evening bench queue, distributed through the
+    stack: the database panel's two-stage delete converges on the
+    shared control (amends `task135-editor`), its value rows stop
+    letting the comment squeeze out name/value/unit
+    (`task135-surfaces`), Ctrl+F reaches the settings search box (own
+    branch off `feedback-capture`), and integration produces Ah from
+    an A operand (139 phase 4, `task139-units`). **Executes now.**
+18. [Task 138 — Events in Logged BLFs](0138-logged-events.md)
+    — the project logger appends user-authored timeline events to the
+    streaming BLF live: a marker on create and on every edit, fresh id
+    per revision chained by an `edited:` key, deletion as a tombstone
+    revision; ingest collapses chains to current state and re-export
+    writes the clean file. Extends task 137's logger; opened by owner
+    instruction 2026-09-06, groomed same day — all questions ruled,
+    two phases.
+19. [Task 140 — Project State Items](0140-project-state-items.md)
+    — start/stop on RBS and logger items in the project view, and a
+    right-aligned recently-active section in the top-level status
+    strip. Opened by owner instruction 2026-09-06; queued behind the
+    in-progress stack and task 139; needs grooming and a status-strip
+    prototype at pickup.
+20. [Task 116 — RBS Problems Across Every Configuration](0116-rbs-problems-across-configurations.md)
    — one view over problems from every open `.cannet_rbs`, filterable by
    file, host-computed and paged. The RBS button opens that instead of a
    single configuration. From queue item 1.13ab; the steps-to-reproduce
    leg was dropped by owner ruling 2026-08-25. Task 113 settled what an
    RBS grid row is (landed 2026-08-27), so that dependency is met. Two
    open questions.
-14. [Task 112 — The Signal Reference Registry](0112-signal-reference-registry.md)
+21. [Task 112 — The Signal Reference Registry](0112-signal-reference-registry.md)
    — every persisted signal reference moves onto one host-side registry,
    the way `NotesStore` and `TransmitFrameRegistry` already hold theirs.
    The `elements` blob stays opaque for presentation and stops carrying
@@ -109,87 +164,71 @@ section above comes first.
    them ahead of the registry builds a one-off of it. **Needs grilling
    before implementation** — no phases, and five open design questions.
    Bears on queue findings 3.1, 3.31, 3.41 and 3.47.
-15. [Task 124 — One Toolbar](0124-one-toolbar.md)
+22. [Task 124 — One Toolbar](0124-one-toolbar.md)
    — the app-level toolbar and the ten panel toolbars wear one button
    style but remain hand-laid flex rows; converge them on a shared
    toolbar control that owns layout and wrap-vs-overflow, settling
    `useToolbarFit`'s one-consumer question. Opened from queue finding
    3.21; owner-placed later, definitely not immediate scope.
-16. [Task 130 — One Modal](0130-one-modal.md)
+23. [Task 130 — One Modal](0130-one-modal.md)
    — the six modal dialogs share CSS chrome and a hand-copied
    "Escape/backdrop means Cancel" convention but no code; converge them
    on a shared modal base owning dismissal, ARIA, and focus trapping.
    The modal companion to task 124; opened by owner instruction
    2026-08-30.
-17. [Task 69 — Extension Architecture](0069-extension-architecture.md)
+24. [Task 69 — Extension Architecture](0069-extension-architecture.md)
    — implement ADR 0051: out-of-process, GUI-host-supervised
    extensions on a new `ExtensionHost` service in `cannet.proto`
    (filtered frame subscription, manifest-gated transmit, sandboxed
    contributed webviews, `.cannet-extension` packaging) plus an
    in-repo Python reference extension. Design groomed 2026-08-13.
-18. [Task 22 — CANopen](0022-canopen.md)
+25. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-19. [Task 132 — J1939](0132-j1939.md)
+26. [Task 132 — J1939](0132-j1939.md)
    — the basic functions of a complete J1939 implementation as one
    set: PGN-aware decode, Transport Protocol reassembly (RTS/CTS and
    BAM), DM1/DM2 diagnostics including DM1 over TP, address claim.
    Opened by owner instruction 2026-08-31; no J1939 task existed
    before it.
-20. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+27. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
    — triggers, math channels, per-series offset / gain, export.
    (Drag-a-plot-area-between-panels shipped separately, 2026-08-08.)
    Inherits the measurement strip's rework, which task 108 phase 4
    suppressed rather than removed.
-21. [Task 131 — Grow Live](0131-grow-live.md)
+28. [Task 131 — Grow Live](0131-grow-live.md)
    — a third x-range behaviour beside manual and Follow: left edge
    pinned to the capture's first sample, right edge riding the live
    edge, so the window widens as data arrives. Runs for a period after
    connect, then hands off to Follow at the grown width. Opened by
    owner instruction 2026-08-31; duration and mode-vs-phase questions
    open.
-22. [Task 85 — Extended Multiplexing End to End](0085-extended-multiplexing.md)
+29. [Task 85 — Extended Multiplexing End to End](0085-extended-multiplexing.md)
    — `SG_MUL_VAL_` parsed and modelled, the Database panel rendering
    nested mux trees, per-frame decode gated on the full selector path,
    and a worked example DBC. The task file existed but had never
    reached this roadmap; found unlisted and added at the 2026-08-26
    close-out. Open design questions.
-23. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+30. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
    — cannet connects out to a value-source server that streams sparse
    `(signal, value)` updates by name; RBS applies them as overrides and
    keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
    (e.g. an EV drive cycle) drive the RBS.
-24. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+31. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
    — staged: pcapng import (CAN linktypes, no model change), step/hold
    plot semantics for on-change series, then the multi-protocol trace
    model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
    Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-25. [Task 40 — bridge_client / cannet-client Session-Machinery
+32. [Task 40 — bridge_client / cannet-client Session-Machinery
     Consolidation](0040-bridge-client-consolidation.md) — gated on
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else
     in that audit shipped.
-26. [Task 134 — Usage Feedback and Features](0134-usage-feedback-and-features.md)
+33. [Task 134 — Usage Feedback and Features](0134-usage-feedback-and-features.md)
     — grouped collection of owner usage feedback (copy/paste out,
     file-backed signals + CSV, plotting/signal items, server and
     integration, rx CRC, extension signals), ungroomed; items move
     out as they are groomed. Opened by owner instruction 2026-09-05;
     tasks 135–137 split out the same day.
-27. [Task 135 — Plot Math Functions](0135-plot-math-functions.md)
-    — math functions on plotted signals: sum, difference, product,
-    hline, scale, exponential filter. Split out of task 134,
-    2026-09-05; **needs grooming**, including the boundary with task
-    23's math channels.
-28. [Task 136 — python-can Cannet Client](0136-python-can-cannet-client.md)
-    — `CannetBus(can.BusABC)` behind python-can's `can.interface`
-    entry point, fed by a factory reading the canonical server trust
-    store; reuses the sidecar's gencode and frame mappers. Split out
-    of task 134, 2026-09-05; groomed 2026-09-06, four open questions.
-29. [Task 137 — Log Export](0137-log-export.md)
-    — templated export naming ({project}/{start}/{now}), an in-app
-    export dialog in front of the file picker, background export with
-    a status-bar progress chip, and project loggers that write the
-    capture to file live. Split out of task 134, 2026-09-05; grooming
-    in progress (dated notes in the task file).
 
 ## Notes
 

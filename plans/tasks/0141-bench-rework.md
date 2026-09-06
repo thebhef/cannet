@@ -7,6 +7,10 @@
 > its own branch where the reworked code predates the stack. Opus
 > agents, per the oversee-roadmap flow as modified this session
 > (shared tree, absorption amends, `gt restack` only).
+>
+> **Items 5–7 were added on 2026-09-07** from a second bench pass over
+> the rebuilt stack. Two of them reverse rulings taken in the first
+> pass; those reversals are the owner's latest word.
 
 ## Items and their distribution targets
 
@@ -42,12 +46,30 @@
    **amend `task139-units`** (whose message also gains the earlier
    ratio-rename absorption).
 
-5. **A math signal dragged from the Computed branch into another math
+5. **Value rows must spend the comment before the name or the value.**
+   `.dbc-row`'s flex items have to give the comment up *completely*
+   before either the name or the value cell loses a character: a value
+   ellipsized from its tail loses its unit, a truncated name loses the
+   row's identity, and a truncated comment loses only prose. CSS
+   geometry — jsdom cannot measure it, so it is an eyeball on a narrow
+   panel. → **amend `task135-surfaces`**.
+6. **The math delete's two-stage confirm and its far-end placement
+   both go.** Item 1's two rulings are reversed: the delete is one
+   click, not the shared `TwoStageRemoveButton`, and it is pinned
+   immediately after the definition's name rather than at the row's
+   far end. → **amend `task135-editor`**.
+7. **The database panel's search box only takes a click over its
+   placeholder.** The chip draws a box that runs to the Details
+   button, but the `<input>` inside it is intrinsically sized, so most
+   of the drawn rectangle is the chip's dead space. The owning code is
+   on `main`, so this lands as **its own branch `task141-dbc-search`
+   off `task141-settings-find`**, for the orchestrator to splice.
+8. **A math signal dragged from the Computed branch into another math
    signal's operand section does nothing.** Math-on-math is documented
    and works through the operand combobox; only the drop path fails.
    → **amend `task135-surfaces`** (which made a Computed row draggable
    and taught every other drop target the flag).
-6. **`cargo clippy -p cannet-gui --all-targets -- -D warnings` fails at
+9. **`cargo clippy -p cannet-gui --all-targets -- -D warnings` fails at
    `task135-engine`** with four pedantic errors in the wide-DBC test
    generator and the bounded-serve loop. Mechanical; the check is its
    own guard. → **amend `task135-engine`**.
@@ -67,9 +89,12 @@
 
 - [x] Every item implemented at its distribution target, each
       branch still a single commit whose message covers its content.
-- [x] Stack linear, `doc-closeout` on top, full suites green at tip.
+- [x] Stack linear, `doc-closeout` on top, full suites green at tip —
+      item 7's `task141-dbc-search` is built and green but not yet
+      spliced in.
 - [x] Installer rebuilt from the tip for the owner's visual pass
-      (items 2's layout and 1's control read correctly on the bench).
+      (item 5's row layout and item 6's delete read correctly on the
+      bench). The first pass's build predates items 5–7.
 
 ## Status log
 
@@ -124,9 +149,70 @@
   bare 0–1 `ratio` unit and percent↔ratio conversion) and this item.
   `gt restack` after it.
 
-**2026-09-08 — items 5 and 6 absorbed.**
+**2026-09-07 — items 5–7, the owner's second bench pass.**
 
-- **Item 5 → `task135-surfaces`.** Scientific method:
+- **Item 5 → `task135-surfaces`.** `.dbc-row-comment` carries
+  `flex-shrink: 200` against the default factor 1 on `.dbc-row-label`
+  and `.dbc-row-value`, with a `min-width: 6ch` stub, so the comment
+  absorbs essentially the whole deficit before either of the other two
+  gives up a character; only when it reaches the stub do the two share
+  what is left. The value cell ellipsizes from its tail, which is where
+  the unit sits, so the ordering is the whole point — both rules carry
+  that constraint as a stylesheet comment. No test: jsdom cannot
+  measure flex layout, so the check is an eyeball on a signal row with
+  a long comment, values on, at a narrow panel width.
+- **Item 6 → `task135-editor`.** Both of item 1's rulings are
+  reversed: the delete is **one click**, not the shared
+  `TwoStageRemoveButton`, and it is pinned **immediately after the
+  definition's name**, not at the row's far end. Both follow from the
+  same two facts — the delete records an undo step carrying the whole
+  definition back, so it is not the irreversible removal ADR 0058's
+  two-stage control exists for; and a far-end control moves as the
+  panel is resized, so what sits under the cursor changes with the
+  width. `.dbc-row-delete` is `flex: none` plus the app's quiet inline
+  icon-button look; the panel's armed state, the row's `deleteArmed`
+  prop and the `TwoStageRemoveButton` import are gone. The DOM tests
+  pin the undo path ("takes one click, and the undo step carries the
+  definition back") and the placement ("pins the delete to the end of
+  the name") — the undo replay, not a confirmation prompt, is the
+  safety story now.
+- **Item 7 → `task141-dbc-search`**, a branch of its own off
+  `task141-settings-find`: the owning code is `main`-era (`72c1f0b6`
+  drew the toolbar, `1b70256b` made it a chip-field), so no commit in
+  the stack could absorb it, and it is left for the orchestrator to
+  splice. The chip `.dbc-panel-search` is `flex: 1 1 0` and draws a box
+  the width of the toolbar, while the `<input>` inside it kept the
+  browser's ~20-character intrinsic width — so a click past the
+  placeholder landed on the chip and focused nothing. The input now
+  carries `.dbc-panel-search-input` (`flex: 1 1 0`) through the
+  `className` slot `GridviewFilterBox` already exposed, and the drawn
+  box and the click target are one rectangle. Scoped to this panel
+  deliberately: it is the only chip-field the app stretches, and a
+  blanket `.chip-field input { flex: 1 }` would relayout the RBS
+  filter, the plot's solo box and the servers search for no gain.
+  jsdom cannot measure widths, so the DOM test pins the structure the
+  CSS keys on — the input is a direct child of the stretched chip and
+  carries the class that fills it; removing the `className` prop was
+  watched to fail it.
+- Items 5 and 6 landed before their agent was killed mid-round, and
+  the orchestrator resolved the restack that left behind. Both amended
+  branches are still one commit; their messages were re-read against
+  the code at tip and already describe the round-two content (the
+  editor's "one click on a quiet trash pinned to the end of the
+  definition's name", the surfaces' "the comment yields first … the
+  name and the value hold their content until it is spent"), so no
+  message fix was needed.
+- This entry and the items above land in `doc-closeout` rather than in
+  item 7's own commit. A `git merge-file` simulation of the restack
+  showed no bottom-of-stack placement is conflict-free: an entry that
+  replaces the `(none yet)` placeholder collides with
+  `task135-surfaces`' patch, and one appended after it collides with
+  `task139-units`'. At the tip the file already carries both, so the
+  addition merges with nothing.
+
+**2026-09-08 — items 8 and 9 absorbed.**
+
+- **Item 8 → `task135-surfaces`.** Scientific method:
   - *Observation.* Dropping a Computed row on an operand section fills
     nothing; dropping a DBC signal fills it.
   - *Hypothesis.* The drop handler narrows the dragged
@@ -147,7 +233,7 @@
     can see a math ref — `PlotArea`'s side-list drag and
     `SignalsPanel`'s wire selection — already carried it; this drop
     target was the one this branch missed when it added the flag.
-- **Item 6 → `task135-engine`.** `wide_dbc_text` builds through
+- **Item 9 → `task135-engine`.** `wide_dbc_text` builds through
   `write!`/`writeln!` (the file's existing
   `.expect("writing to a String cannot fail")` idiom) instead of
   `push_str(&format!(…))`; the bounded-serve loop's counter is
@@ -160,4 +246,11 @@
 
 ## Blockers / side effects
 
-(none yet)
+- **Splicing item 7 has one ordering constraint.** `git grep
+  --untracked -Ein "task [0-9]|plans/" -- apps/ crates/` is clean at
+  `doc-closeout`, but returns 17 hits at `task141-settings-find` —
+  `(task 129)` citations `main` carries from `24e76fb6` (#450), swept
+  by `task136-core-bus`. `task141-dbc-search` branches below that
+  sweep, so it shows those 17 at its own level and adds none of its
+  own. The intended splice position keeps it below `task136-core-bus`,
+  which leaves every commit from there up clean.
