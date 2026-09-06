@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Regenerate protobuf + grpc Python stubs for cannet-python-can.
+# Regenerate protobuf + grpc Python stubs for cannet-python-wire.
 #
-# The stubs (cannet_python_can/_proto/cannet_pb2{,_grpc}.py) are
+# The stubs (cannet_python_wire/_proto/cannet_pb2{,_grpc}.py) are
 # checked into the tree so end users do not need a `protoc` install;
 # this script is for contributors who edit the `.proto`.
 #
 # Usage (from the repo root):
-#   uv --directory servers/cannet-python-can run --extra dev \
+#   uv --directory libs/cannet-python-wire run --extra dev \
 #       bash scripts/regen_proto.sh
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-SIDECAR_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
-REPO_ROOT=$(cd -- "$SIDECAR_DIR/../.." && pwd)
+WIRE_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+REPO_ROOT=$(cd -- "$WIRE_DIR/../.." && pwd)
 
 PROTO_DIR="$REPO_ROOT/crates/cannet-wire/proto"
-OUT_DIR="$SIDECAR_DIR/cannet_python_can/_proto"
+OUT_DIR="$WIRE_DIR/cannet_python_wire/_proto"
 
 mkdir -p "$OUT_DIR"
 touch "$OUT_DIR/__init__.py"
@@ -28,7 +28,7 @@ python -m grpc_tools.protoc \
 
 # grpc_tools writes `import cannet_pb2 as cannet__pb2` at the top of
 # the *_grpc.py file. With the stubs living under
-# `cannet_python_can._proto/`, that bare import would fail at runtime.
+# `cannet_python_wire._proto/`, that bare import would fail at runtime.
 # Rewrite it to a package-relative import.
 PY_GRPC="$OUT_DIR/cannet_pb2_grpc.py"
 if [[ -f "$PY_GRPC" ]]; then

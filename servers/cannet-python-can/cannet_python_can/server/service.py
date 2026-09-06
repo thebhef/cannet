@@ -26,10 +26,11 @@ import threading
 from typing import Iterator, Optional
 
 import grpc
+from cannet_python_wire import proto_to_frame
+from cannet_python_wire._proto import cannet_pb2 as pb
+from cannet_python_wire._proto import cannet_pb2_grpc as pb_grpc
 
 from .. import driver as drv
-from .._proto import cannet_pb2 as pb
-from .._proto import cannet_pb2_grpc as pb_grpc
 from .enumeration import (
     _WATCH_LIVENESS_RECHECK_S,
     enumerate_interfaces,
@@ -41,7 +42,6 @@ from .helpers import (
     _error_envelope,
     _log_envelope,
     _now_ns,
-    _proto_to_frame,
     load_driver,
 )
 from .shared_interface import _InterfaceRegistry
@@ -253,7 +253,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             return
         for proto_frame in batch.frames:
             try:
-                frame = _proto_to_frame(proto_frame)
+                frame = proto_to_frame(proto_frame)
             except ValueError as e:
                 # A frame the wire model can't decode (unspecified /
                 # unrecognised kind) can't be transmitted — reject it

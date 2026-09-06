@@ -1,10 +1,12 @@
 """Stateless helpers shared across the sidecar's gRPC service modules.
 
-Driver resolution, the self-stamp clock, the driver ``Frame`` ↔ wire
-``Frame`` conversion seam, envelope builders, and the small
-``ConfigureBus`` / controller-state translators. Nothing here holds
-session or interface state; the stateful pieces live in
+Driver resolution, the self-stamp clock, envelope builders, and the
+small ``ConfigureBus`` / controller-state translators. Nothing here
+holds session or interface state; the stateful pieces live in
 :mod:`.shared_interface`, :mod:`.enumeration`, and :mod:`.service`.
+The ``Frame`` ↔ wire ``Frame`` conversion is not the sidecar's own —
+it is :mod:`cannet_python_wire.proto`, shared with every other speaker
+of the protocol in this repository.
 """
 
 from __future__ import annotations
@@ -15,8 +17,9 @@ import os
 import time
 from typing import Optional
 
+from cannet_python_wire._proto import cannet_pb2 as pb
+
 from .. import driver as drv
-from .._proto import cannet_pb2 as pb
 
 _log = logging.getLogger(__name__)
 
@@ -54,64 +57,12 @@ def load_driver() -> drv.Driver:
 
 
 def _now_ns() -> int:
-    # Wall clock, not monotonic: self-stamped envelopes (TX-frame
-    # fallback, log messages) must share the Unix-epoch ns scale of
+    # Wall clock, not monotonic: self-stamped envelopes (log messages,
+    # clock replies) must share the Unix-epoch ns scale of
     # hardware-stamped RX frames, or consumers that anchor on the
     # first frame's timestamp see the streams ~3 orders of magnitude
     # apart.
     return time.time_ns()
-
-
-#: The frame-kind seam. A driver :class:`~cannet_python_can.driver.FrameKind`
-#: maps 1:1 onto a wire ``FrameKind``; the priority ladder that collapses
-#: a backend's independent booleans lives in ``FrameKind.from_flags``, so
-#: both directions here are a straight lookup with no re-derivation.
-_KIND_TO_PROTO: dict[drv.FrameKind, int] = {
-    drv.FrameKind.CLASSIC: pb.FRAME_KIND_CLASSIC,
-    drv.FrameKind.FD: pb.FRAME_KIND_FD,
-    drv.FrameKind.REMOTE: pb.FRAME_KIND_REMOTE,
-    drv.FrameKind.ERROR: pb.FRAME_KIND_ERROR,
-}
-_PROTO_TO_KIND: dict[int, drv.FrameKind] = {v: k for k, v in _KIND_TO_PROTO.items()}
-
-
-def _frame_to_proto(frame: drv.Frame) -> pb.Frame:
-    return pb.Frame(
-        timestamp_ns=frame.timestamp_ns,
-        can_id=frame.can_id,
-        extended=frame.extended,
-        direction=pb.DIRECTION_RX if frame.is_rx else pb.DIRECTION_TX,
-        kind=_KIND_TO_PROTO[frame.kind],
-        data=frame.data,
-        brs=frame.brs,
-        esi=frame.esi,
-        dlc=frame.dlc,
-    )
-
-
-def _proto_to_frame(p: pb.Frame) -> drv.Frame:
-    """Decode a wire ``Frame`` into a driver :class:`~cannet_python_can.driver.Frame`.
-
-    Raises :class:`ValueError` on ``FRAME_KIND_UNSPECIFIED`` or an
-    unrecognised kind tag rather than silently coercing it to classic —
-    mirroring the Rust decoder (``crates/cannet-wire/src/convert.rs``,
-    which errors with ``UnknownKind``). The ``_handle_tx`` path turns the
-    raise into a ``CODE_TX_REJECTED`` for the submitting session.
-    """
-    kind = _PROTO_TO_KIND.get(p.kind)
-    if kind is None:
-        raise ValueError(f"unspecified or unrecognised frame kind {p.kind}")
-    return drv.Frame(
-        timestamp_ns=p.timestamp_ns or _now_ns(),
-        can_id=p.can_id,
-        extended=p.extended,
-        is_rx=p.direction == pb.DIRECTION_RX,
-        data=bytes(p.data),
-        kind=kind,
-        brs=p.brs,
-        esi=p.esi,
-        dlc=p.dlc,
-    )
 
 
 def _log_envelope(level: "pb.LogLevel.V", message: str) -> pb.Envelope:

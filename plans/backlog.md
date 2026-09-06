@@ -42,7 +42,7 @@ trip over it.
   [technology-inventory.md](technology-inventory.md)) before adopting.
 
 - `[ci]` **Guard the checked-in Python proto gencode against drift.**
-  `servers/cannet-python-can/cannet_python_can/_proto/cannet_pb2.py` is
+  `libs/cannet-python-wire/cannet_python_wire/_proto/cannet_pb2.py` is
   committed but nothing in CI regenerates it from the canonical
   `cannet.proto` and diffs — a proto change that skips the manual regen
   ships a silently stale sidecar. Add a CI step (or test) that runs the

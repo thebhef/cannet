@@ -26,9 +26,7 @@ from .helpers import (
 )
 from .helpers import _clock_reply_envelope as _clock_reply_envelope
 from .helpers import _configure_to_open_config as _configure_to_open_config
-from .helpers import _frame_to_proto as _frame_to_proto
 from .helpers import _log_envelope as _log_envelope
-from .helpers import _proto_to_frame as _proto_to_frame
 from .service import CannetServerService, bind_with_retry, serve
 from .service import _split_address as _split_address
 from .shared_interface import _BATCH_MAX_FRAMES as _BATCH_MAX_FRAMES

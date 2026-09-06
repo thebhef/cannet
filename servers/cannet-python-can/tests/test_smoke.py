@@ -27,7 +27,7 @@ def test_package_imports() -> None:
 
 
 def test_proto_stubs_importable() -> None:
-    from cannet_python_can._proto import cannet_pb2, cannet_pb2_grpc  # noqa: F401
+    from cannet_python_wire._proto import cannet_pb2, cannet_pb2_grpc  # noqa: F401
 
     # The proto file is the source of truth for the wire surface; if
     # we ever lose the LogMessage variant the host bridge stops
@@ -64,7 +64,7 @@ def test_subscribe_unknown_interface_yields_error_envelope() -> None:
     Rust client relies on."""
 
     from cannet_python_can import server
-    from cannet_python_can._proto import cannet_pb2 as pb
+    from cannet_python_wire._proto import cannet_pb2 as pb
 
     class EmptyDriver:
         def list_channels(self):
@@ -97,7 +97,7 @@ def test_log_envelope_factory_tags_with_wire_source() -> None:
     `sidecar:python-can` source tag the GUI host watches for."""
 
     from cannet_python_can import server
-    from cannet_python_can._proto import cannet_pb2 as pb
+    from cannet_python_wire._proto import cannet_pb2 as pb
 
     env = server._log_envelope(pb.LOG_LEVEL_INFO, "hello")
     assert env.WhichOneof("body") == "log"

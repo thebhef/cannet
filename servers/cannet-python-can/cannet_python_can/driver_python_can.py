@@ -36,8 +36,9 @@ still enumerate. The wire-level surface stays vendor-agnostic.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Iterable, List, Optional
+
+from cannet_python_wire import frame_to_message, message_to_frame
 
 from .driver import (
     Channel,
@@ -416,7 +417,7 @@ class PythonCanChannel:
         self._unreachable = False
         if msg is None:
             return None
-        frame = _msg_to_frame(msg)
+        frame = message_to_frame(msg)
         if self._is_pcan and frame.kind == FrameKind.ERROR:
             self._note_pcan_counters(frame.data)
         return frame
@@ -452,7 +453,7 @@ class PythonCanChannel:
         if self._listen_only:
             raise TxRejected("listen-only configuration")
         self._reject_if_incompatible(frame)
-        msg = _frame_to_msg(frame)
+        msg = frame_to_message(frame)
         try:
             self._bus.send(msg)  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
@@ -1182,70 +1183,7 @@ def _build_fd_timing(config: OpenConfig):
     )
 
 
-#: Hardware timestamps further than this from the current wall clock
-#: are treated as garbage and replaced with the wall-clock fallback.
-#: Generous enough for any real buffering delay or clock skew; tight
-#: enough to reject driver garbage (PEAK's macOS PCBUSB library has
-#: been seen handing python-can classic-CAN timestamps millennia in
-#: the future, which overflow the wire format's uint64 ns field).
-_TS_PLAUSIBLE_SLACK_S = 86_400.0
-
-
-def _msg_to_frame(msg) -> Frame:
-    """python-can ``Message`` → driver ``Frame``.
-
-    The fallback for missing timestamps uses :func:`time.time_ns`
-    (Unix-epoch ns), not :func:`time.monotonic_ns` — python-can's
-    hardware-stamped path produces Unix-epoch ns too (boot epoch +
-    PEAK's µs counter). Mixing those two clocks within one session
-    produced timestamps three orders of magnitude apart, which broke
-    the trace view's "first frame is the zero point" assumption and
-    showed up as wildly-negative deltas the moment a fallback-stamped
-    frame slipped in after a hardware-stamped one.
-
-    Timestamps outside ``_TS_PLAUSIBLE_SLACK_S`` of the current wall
-    clock take the same fallback: they are driver garbage, and passing
-    them through either overflows the wire encode (killing the frame
-    stream) or wrecks the trace view's timing the same way a
-    mixed-clock stamp does.
-    """
-    ts_s = float(getattr(msg, "timestamp", 0.0) or 0.0)
-    if ts_s and abs(ts_s - time.time()) <= _TS_PLAUSIBLE_SLACK_S:
-        timestamp_ns = int(ts_s * 1_000_000_000)
-    else:
-        timestamp_ns = int(time.time_ns())
-    data = bytes(getattr(msg, "data", b"") or b"")
-    return Frame(
-        timestamp_ns=timestamp_ns,
-        can_id=int(getattr(msg, "arbitration_id", 0)),
-        extended=bool(getattr(msg, "is_extended_id", False)),
-        is_rx=not bool(getattr(msg, "is_tx", False)),
-        data=data,
-        kind=FrameKind.from_flags(
-            is_error=bool(getattr(msg, "is_error_frame", False)),
-            is_remote=bool(getattr(msg, "is_remote_frame", False)),
-            is_fd=bool(getattr(msg, "is_fd", False)),
-        ),
-        brs=bool(getattr(msg, "bitrate_switch", False)),
-        esi=bool(getattr(msg, "error_state_indicator", False)),
-        dlc=int(getattr(msg, "dlc", len(data))),
-    )
-
-
-def _frame_to_msg(frame: Frame):
-    """driver ``Frame`` → python-can ``Message``."""
-    assert can is not None  # callable only after import succeeded
-    return can.Message(  # type: ignore[union-attr]
-        arbitration_id=frame.can_id,
-        is_extended_id=frame.extended,
-        is_fd=frame.kind == FrameKind.FD,
-        bitrate_switch=frame.brs,
-        error_state_indicator=frame.esi,
-        is_remote_frame=frame.kind == FrameKind.REMOTE,
-        is_error_frame=frame.kind == FrameKind.ERROR,
-        data=frame.data,
-        dlc=frame.dlc or len(frame.data),
-    )
-
-
-__all__ = ["PythonCanChannel", "PythonCanDriver"]
+__all__ = [
+    "PythonCanChannel",
+    "PythonCanDriver",
+]

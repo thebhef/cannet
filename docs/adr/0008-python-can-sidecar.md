@@ -59,10 +59,12 @@ vendor's, not cannet's.
 
 ## Consequences
 
-- **`grpcio`** + **`grpcio-tools`** (Apache-2.0) become runtime
-  deps of the sidecar — the Python implementation of gRPC, used
-  to generate stubs from `cannet-wire`'s `.proto`. No realistic
-  alternative for gRPC in Python.
+- **`grpcio`** + **`grpcio-tools`** (Apache-2.0) become deps of
+  the repository's Python packages — the Python implementation of
+  gRPC, used to generate stubs from `cannet-wire`'s `.proto`. The
+  stubs are checked in, and they and the frame mappers live in
+  `libs/cannet-python-wire`, shared by the sidecar and the
+  python-can client. No realistic alternative for gRPC in Python.
 - **Sidecar lifecycle and venv management ride on `uv`** per
   ADR 0015 — the **developer** flow. The sidecar's first launch
   materialises the venv; subsequent launches reuse it. End users

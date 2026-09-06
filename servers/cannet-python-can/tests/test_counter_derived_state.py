@@ -32,7 +32,7 @@ _ensure_on_path()
 from cannet_python_can import driver as drv  # noqa: E402
 from cannet_python_can.driver_python_can import PythonCanChannel  # noqa: E402
 from cannet_python_can.server.helpers import _state_name_to_proto  # noqa: E402
-from cannet_python_can._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
 
 
 #: The transmit-error-counter values the bench run recorded, in order:

@@ -29,6 +29,35 @@ repos:
         types: [text]
         entry: python scripts/check_local_paths.py
 
+      # --- Shared wire package (libs/cannet-python-wire) ---
+      #
+      # The same four hooks its two consumers have, and the same split
+      # between the file-argument ones and the whole-project ones.
+      - id: ruff-check-wire
+        name: ruff check (wire)
+        language: system
+        files: '^libs/cannet-python-wire/.*\.py$'
+        exclude: '/_proto/'
+        entry: uv run --project libs/cannet-python-wire --frozen --extra dev ruff check --force-exclude
+      - id: ruff-format-wire
+        name: ruff format (wire)
+        language: system
+        files: '^libs/cannet-python-wire/.*\.py$'
+        exclude: '/_proto/'
+        entry: uv run --project libs/cannet-python-wire --frozen --extra dev ruff format --check --force-exclude
+      - id: mypy-wire
+        name: mypy (wire)
+        language: system
+        files: '^libs/cannet-python-wire/.*\.py$'
+        pass_filenames: false
+        entry: "bash -c 'cd libs/cannet-python-wire && uv run --frozen --extra dev mypy'"
+      - id: pytest-wire
+        name: pytest (wire)
+        language: system
+        files: '^libs/cannet-python-wire/.*\.py$'
+        pass_filenames: false
+        entry: "bash -c 'cd libs/cannet-python-wire && uv run --frozen --extra dev pytest'"
+
       # --- Python sidecar (servers/cannet-python-can) ---
 
       # ruff takes file arguments, so these run on the staged files only.
@@ -36,29 +65,65 @@ repos:
         name: ruff check (sidecar)
         language: system
         files: '^servers/cannet-python-can/.*\.py$'
-        exclude: '/_proto/'
         entry: uv run --project servers/cannet-python-can --frozen --extra dev ruff check --force-exclude
       - id: ruff-format
         name: ruff format (sidecar)
         language: system
         files: '^servers/cannet-python-can/.*\.py$'
-        exclude: '/_proto/'
         entry: uv run --project servers/cannet-python-can --frozen --extra dev ruff format --check --force-exclude
 
       # mypy / pytest need the sidecar as their working directory (config
       # discovery), so they run the whole sidecar when any of its files change.
+      #
+      # Both also watch the shared wire package: a change there can
+      # break either consumer, which is the price of the package being
+      # shared.
       - id: mypy
         name: mypy (sidecar)
         language: system
-        files: '^servers/cannet-python-can/.*\.py$'
+        files: '^(servers/cannet-python-can|libs/cannet-python-wire)/.*\.py$'
         pass_filenames: false
         entry: "bash -c 'cd servers/cannet-python-can && uv run --frozen --extra dev mypy'"
       - id: pytest
         name: pytest (sidecar)
         language: system
-        files: '^servers/cannet-python-can/.*\.py$'
+        files: '^(servers/cannet-python-can|libs/cannet-python-wire)/.*\.py$'
         pass_filenames: false
         entry: "bash -c 'cd servers/cannet-python-can && uv run --frozen --extra dev pytest'"
+
+      # --- Python client (clients/cannet-python-client) ---
+      #
+      # Same shape as the sidecar's four hooks above, and the same
+      # reasons for the split between the file-argument ones and the
+      # whole-project ones. The pytest hook's integration half needs a
+      # built `cannet-server`; the fixtures skip when there is none, so
+      # a commit on a fresh clone is not blocked by a missing binary —
+      # CI builds it and runs them for real.
+      - id: ruff-check-client
+        name: ruff check (client)
+        language: system
+        files: '^clients/cannet-python-client/.*\.py$'
+        entry: uv run --project clients/cannet-python-client --frozen --extra dev ruff check --force-exclude
+      - id: ruff-format-client
+        name: ruff format (client)
+        language: system
+        files: '^clients/cannet-python-client/.*\.py$'
+        entry: uv run --project clients/cannet-python-client --frozen --extra dev ruff format --check --force-exclude
+      - id: mypy-client
+        name: mypy (client)
+        language: system
+        files: '^(clients/cannet-python-client|libs/cannet-python-wire)/.*\.py$'
+        pass_filenames: false
+        entry: "bash -c 'cd clients/cannet-python-client && uv run --frozen --extra dev mypy'"
+      # The client imports the shared gencode and frame mappers, so a
+      # change to the wire package can break it — hence its paths in
+      # `files` alongside the client's.
+      - id: pytest-client
+        name: pytest (client)
+        language: system
+        files: '^(clients/cannet-python-client|libs/cannet-python-wire)/.*\.py$'
+        pass_filenames: false
+        entry: "bash -c 'cd clients/cannet-python-client && uv run --frozen --extra dev pytest'"
 
       # The freeze is heavy relative to the other hooks (~15 s warm,
       # ~60 s cold), so it fires only on the files that can actually
@@ -68,7 +133,7 @@ repos:
       - id: freeze-sidecar
         name: freeze + smoke sidecar
         language: system
-        files: '^servers/cannet-python-can/(pyproject\.toml|uv\.lock|pyinstaller_entry\.py)$|^scripts/(build-sidecar|gen-licenses)\.py$'
+        files: '^servers/cannet-python-can/(pyproject\.toml|uv\.lock|pyinstaller_entry\.py)$|^libs/cannet-python-wire/(pyproject\.toml|uv\.lock)$|^scripts/(build-sidecar|gen-licenses)\.py$'
         pass_filenames: false
         entry: uv run --no-project scripts/build-sidecar.py
 
