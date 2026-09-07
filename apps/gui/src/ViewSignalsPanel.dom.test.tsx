@@ -47,6 +47,7 @@ function row(over: Partial<ViewSignalRow> = {}): ViewSignalRow {
     messageName: "Chassis",
     signalName: "VehicleSpeed",
     unit: "km/h",
+    unitUnrecognized: false,
     servingDbc: "powertrain.dbc",
     pickedDbc: null,
     usedBy: ["Plot 1"],
@@ -84,6 +85,23 @@ const DEFAULT_ROWS: ViewSignalRow[] = [
 
 let ROWS: ViewSignalRow[] = DEFAULT_ROWS;
 let ATTENTION_COUNT = 2;
+/// The project's unit-customization dict as the host holds it: the
+/// mocked `set_settings` writes it and the mocked `list_view_signals`
+/// reads it, so a row's `unitUnrecognized` is computed on the host side
+/// of the boundary from the dict in force — the same shape
+/// `view_signals.rs` has, which is what makes the refresh path
+/// observable from here.
+let CUSTOMIZATIONS: Record<string, string> = {};
+/// Stand-in for the host's built-in recognitions — every spelling the
+/// fixtures use that needs no customization.
+const RECOGNISED = new Set(["km/h", "V", "degC", "degF"]);
+function flagUnit(r: ViewSignalRow): ViewSignalRow {
+  return {
+    ...r,
+    unitUnrecognized:
+      r.unit.trim() !== "" && !RECOGNISED.has(r.unit) && CUSTOMIZATIONS[r.unit] === undefined,
+  };
+}
 /// The host's transmit pool, as `list_transmit_frames` answers it — the
 /// one store the remap operation reaches through a command rather than
 /// through the element registry.
@@ -134,10 +152,20 @@ vi.mock("@tauri-apps/api/core", () => ({
     calls.push({ cmd, args });
     if (cmd === "list_view_signals") {
       if (REGISTRY) {
-        const rows = registryRows();
+        const rows = registryRows().map(flagUnit);
         return { rows, attentionCount: 0, total: rows.length };
       }
-      return { rows: ROWS, attentionCount: ATTENTION_COUNT, total: ROWS.length };
+      return {
+        rows: ROWS.map(flagUnit),
+        attentionCount: ATTENTION_COUNT,
+        total: ROWS.length,
+      };
+    }
+    if (cmd === "get_settings") return { unit_customizations: CUSTOMIZATIONS };
+    if (cmd === "set_settings") {
+      const sent = args?.settings as { unit_customizations: Record<string, string> };
+      CUSTOMIZATIONS = sent.unit_customizations;
+      return sent;
     }
     if (cmd === "set_view_signals" && REGISTRY) {
       REGISTRY.set(args?.viewId as string, {
@@ -170,6 +198,7 @@ function emitHostEvent(event: string) {
 }
 
 import { ViewSignalsPanel } from "./ViewSignalsPanel";
+import { updateSettings } from "./hostSettings";
 import { usePushViewSignals } from "./viewSignalsPush";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { makeLiveRegistry } from "./registryTestKit";
@@ -210,11 +239,15 @@ function lastListCall() {
   return [...calls].reverse().find((c) => c.cmd === "list_view_signals");
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   ROWS = DEFAULT_ROWS;
   ATTENTION_COUNT = 2;
   REGISTRY = null;
   POOL = [];
+  // The settings cache is module state, so an earlier test's
+  // customization would otherwise carry into the next one.
+  CUSTOMIZATIONS = {};
+  await updateSettings({ unit_customizations: {} });
   calls.length = 0;
   setSignalColor.mockClear();
   mockListeners.clear();
@@ -886,5 +919,77 @@ describe("ViewSignalsPanel mounted after the views that push", () => {
       expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument(),
     );
     expect(screen.getByText("Plot 1")).toBeInTheDocument();
+  });
+});
+
+describe("ViewSignalsPanel — unrecognised units", () => {
+  const UNIT_ROWS: ViewSignalRow[] = [
+    row({ id: "a", signalName: "VehicleSpeed", unit: "km/h" }),
+    row({ id: "b", signalName: "PackVolts", unit: "furlongs" }),
+    row({ id: "c", signalName: "Counter", unit: "" }),
+  ];
+
+  beforeEach(() => {
+    ROWS = UNIT_ROWS;
+    ATTENTION_COUNT = 0;
+  });
+
+  it("flags only the row whose unit string the host could not place", async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument(),
+    );
+    // The badge names the string and says where to fix it.
+    const flag = screen.getByRole("img", { name: /furlongs/ });
+    expect(flag).toHaveAttribute("title", expect.stringContaining("furlongs"));
+    expect(flag).toHaveAttribute("title", expect.stringContaining("Settings → Units"));
+    // The recognised unit and the blank one carry nothing.
+    expect(screen.getAllByRole("img", { name: /is not recognised/ })).toHaveLength(1);
+  });
+
+  it("the unknown-unit chip filters to the flagged rows and back", async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText("VehicleSpeed", { selector: ".col-vs-signal" })).toBeInTheDocument(),
+    );
+    const chip = screen.getByRole("button", { name: /Unknown unit \(1\)/ });
+    fireEvent.click(chip);
+    await waitFor(() =>
+      expect(screen.queryByText("VehicleSpeed", { selector: ".col-vs-signal" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument();
+    expect(screen.queryByText("Counter", { selector: ".col-vs-signal" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Unknown unit \(1\)/ }));
+    await waitFor(() =>
+      expect(screen.getByText("VehicleSpeed", { selector: ".col-vs-signal" })).toBeInTheDocument(),
+    );
+  });
+
+  it("the chip's pressed state persists as panel params", async () => {
+    const { api } = renderPanel();
+    await waitFor(() =>
+      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Unknown unit \(1\)/ }));
+    await waitFor(() =>
+      expect(api.updateParameters).toHaveBeenCalledWith(
+        expect.objectContaining({ unknownUnitFilter: true }),
+      ),
+    );
+  });
+
+  it("a unit customization clears the flag without a remount", async () => {
+    renderPanel();
+    await waitFor(() => expect(screen.getByRole("img", { name: /furlongs/ })).toBeInTheDocument());
+
+    // The settings section's write, made from outside the panel — the
+    // panel refetches because the dict is one of its fetch's inputs.
+    await updateSettings({ unit_customizations: { furlongs: "meter" } });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("img", { name: /furlongs/ })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument();
   });
 });
