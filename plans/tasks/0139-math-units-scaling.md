@@ -122,20 +122,20 @@ badge.
 
 ## Exit criteria
 
-- [ ] A set function over a pattern whose members carry mixed units
+- [x] A set function over a pattern whose members carry mixed units
       (mA next to A) computes in the definition's target unit, each
       member converted by its own factor; changing a customization
       rescales the channel on the next serve.
-- [ ] Manual gain/offset works on operands and output with no units
+- [x] Manual gain/offset works on operands and output with no units
       anywhere; source-unit override converts a mislabelled operand.
-- [ ] Unconvertible members pass through unscaled and the editor
+- [x] Unconvertible members pass through unscaled and the editor
       shows which; nothing converts silently wrong.
-- [ ] °C/°F/K convert correctly (affine, absolute temperature).
-- [ ] Old project files load unchanged; a definition saved with the
+- [x] °C/°F/K convert correctly (affine, absolute temperature).
+- [x] Old project files load unchanged; a definition saved with the
       new fields round-trips.
-- [ ] The settings-view units section lists the library's units and
+- [x] The settings-view units section lists the library's units and
       persists only the user's customizations, with the project.
-- [ ] Technology inventory records the dependency decision; docs
+- [x] Technology inventory records the dependency decision; docs
       match shipped behaviour.
 - [x] An integration reaches a target its operand only reaches through
       time: `A`→`Ah` and `mA`→`Ah`, `W`→`kWh`. A target in the
@@ -371,6 +371,67 @@ customization dict on the settings model.
 
 Tests: 1145 → 1180 host lib tests (1173 passing, 7 ignored;
 `a_thousand_member_set_benchmark` left `#[ignore]`).
+
+**2026-09-06 — Phase 2 (editor and settings section), branch
+`task139-editor`.** Landed: the math editor's scaling controls (a
+target-unit picker over the library, per-operand gain/offset and
+source-unit override, output gain/offset, and the flag on a member the
+host could not convert), and the settings-view units section grown into
+the library-picker + add path the grooming ruled.
+
+- **One host command, and one host *policy* it forced.**
+  `units::list_units` serves a `UnitListing` — a `UnitInfo` plus the
+  dimension's picker label and a `spelling`. The spelling exists
+  because of an observation: *a target-unit picker has to commit a unit
+  **string**, and `recognize` is what reads it back.* Probing every
+  unit's `display` through `recognize` found three that do not round
+  trip — `coulomb` ("C"), `newton-millimeter` ("Nmm") and `scalar`. A
+  picker offering those would have committed a unit that silently
+  converts nothing. Rather than guess `C` into the recognition table
+  (it is the Celsius spelling too, and Phase 1's rule is that nothing
+  is guessed), `recognize` now also matches a unit's **own id**
+  exactly, and `spelling` is the display where that recognises back and
+  the id otherwise. `every_listed_spelling_recognises_back_to_its_unit`
+  pins the contract the editor depends on. The id pass is placed after
+  the exact-spelling pass and before the case-insensitive one, so no
+  existing recognition changes meaning
+  (`an_unrecognised_string_is_nothing_rather_than_a_guess` still holds,
+  "C" included).
+- **The flag is keyed by reference, not by index.**
+  `ResolvedMath::unconverted` indexes the *host's* resolution order,
+  and a section renders its picks plus its own JS-side pattern
+  resolution, whose order need not be that one. The editor turns the
+  indices into a set of `operandRefKey`s and each row asks the set, so
+  a pattern-collected member is flagged correctly too.
+- **Scaling rides only a pick.** A pattern match is not a stored
+  operand (the host wraps it with `MathOperand::new` and it takes the
+  conversion alone), so no scaling row is offered on one — the editor
+  would otherwise show three controls with nowhere to write.
+- **Two spellings, deliberately not one.** The target-unit picker
+  commits `spelling` (a unit *string*, which becomes the series' label);
+  the source-unit override and the settings customization commit `id` (a
+  unit *id*, which the host resolves with `units::get`). Options whose
+  two differ say so in the row — `C (coulomb)` — so what the field ends
+  up holding is never a surprise.
+- **A latent bug found and fixed with a test.** `definitionOf` — the
+  stored half of a listing record, which every editor commit is built
+  from — did not carry `outputGain`/`outputOffset`, so any edit through
+  the editor would have silently dropped a definition's output scalars
+  the moment Phase 2 let a user set them.
+- **Free text kept.** The Units control is the shared `Combobox` with
+  `freeText`, so the library is offered but anything typed still
+  commits, and a stored unit the library does not carry is listed under
+  a "not in the library" heading rather than falling back to the
+  placeholder.
+- **Three test fixtures were missing the Phase-1 fields.**
+  `DatabasePanel.math.dom`, `PlotPanel.dom` built listing records
+  without `operandAffines`/`unconverted`, which the host always sends;
+  they were completed rather than the component made defensive against
+  a shape the host cannot produce.
+
+Tests: host lib 1173 → 1177 passing (7 ignored, unchanged); frontend
+3359 → 3380 across 243 files (23 added, 2 replaced — the free-text unit
+box's two tests became the picker's six).
 
 ## Blockers / side effects
 
