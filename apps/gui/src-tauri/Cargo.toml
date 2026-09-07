@@ -87,6 +87,31 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # timestamps (`crash.rs`), shared with `cannet-server` so the two hosts'
 # logs cannot drift apart in their semantics.
 cannet-log = { path = "../../../crates/cannet-log" }
+# The unit list, the per-unit multiplier to its quantity's base, and
+# the abbreviation/name spellings behind `units.rs` — so the numbers
+# nobody wants to hand-curate (5/9 for °F, 0.44704 for mph, 6894.757
+# for psi, 2π/60 for rpm) come from a maintained table rather than ours.
+# Feature-gated per quantity; only the automotive set is enabled, which
+# keeps the generated unit enums (and the compile) small. Wrapped
+# behind `crate::units` so this is the only place the crate is named.
+runtime_units = { version = "0.6", default-features = false, features = [
+    "std",
+    "Dimensionless",
+    "ElectricPotential",
+    "ElectricCurrent",
+    "ElectricCharge",
+    "Power",
+    "Energy",
+    "Torque",
+    "AngularVelocity",
+    "Pressure",
+    "Frequency",
+    "Ratio",
+    "TemperatureInterval",
+    "Velocity",
+    "Time",
+    "Length",
+] }
 # Export / logger name-template resolution (`export_template.rs`): an
 # explicit `{start:%…}` / `{now:%…}` format passes straight through to
 # chrono's strftime formatter, and the bare-token ISO-8601-basic form

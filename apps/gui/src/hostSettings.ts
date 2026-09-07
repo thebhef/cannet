@@ -175,6 +175,13 @@ export interface Settings {
   /// Decimals the mantissa carries in exponential form, trailing zeros
   /// kept: `5` gives `1.00000e-6`, `0` gives `1e-6`.
   float_mantissa_decimals: number;
+  /// What this project's DBC unit strings mean: a sparse map from the
+  /// string a database writes to a host unit id, used when a math
+  /// signal converts its operands to a target unit. The common
+  /// spellings are recognised without an entry; this holds only what
+  /// the user changed. The one **workspace-scoped** setting — it
+  /// travels with the project (ADR 0042 §3).
+  unit_customizations: Record<string, string>;
 }
 
 /// One column of a stored default table layout — the wire mirror of
@@ -228,6 +235,7 @@ export function defaultSettings(): Settings {
     float_exponential_below: 1e-4,
     float_exponential_from: 1e6,
     float_mantissa_decimals: 5,
+    unit_customizations: {},
   };
 }
 

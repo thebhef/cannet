@@ -55,6 +55,7 @@ use std::collections::VecDeque;
 
 use crate::math_signals::{MathFunction, Statistic};
 use crate::signal_sampler::SamplePoint;
+use crate::units::Affine;
 
 /// The operands resampled onto one timeline: `t[i]` is a sample time
 /// and `columns[k][i]` operand `k`'s value there.
@@ -194,6 +195,24 @@ pub fn merge_hold(
         }
     }
     Merged { block, consumed }
+}
+
+/// Apply `affine` to `values` in place — the operand scaling that runs
+/// **before** the function, and the output scaling that runs after it
+/// ([`crate::math_signals`]).
+///
+/// The identity returns without touching the slice, which is the
+/// overwhelmingly common case: a definition that scales nothing pays one
+/// comparison per block, not one multiply per sample. NaN — the marker
+/// [`merge_hold`] writes for an absent set member — stays NaN through
+/// the multiply, so scaling cannot make an absent member look present.
+pub fn scale(values: &mut [f64], affine: Affine) {
+    if affine.is_identity() {
+        return;
+    }
+    for v in values {
+        *v = affine.apply(*v);
+    }
 }
 
 /// State a stateful kernel keeps between blocks.
@@ -1023,6 +1042,22 @@ mod tests {
     #[test]
     fn a_statistic_over_nothing_is_nothing() {
         assert_eq!(statistic(Vec::new(), Statistic::Mean, 0.0), None);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn scaling_leaves_the_identity_and_an_absent_member_alone() {
+        let original = vec![1.0, -2.0, f64::NAN];
+        let mut values = original.clone();
+        scale(&mut values, Affine::IDENTITY);
+        assert_eq!(values[..2], original[..2]);
+        assert!(values[2].is_nan());
+        scale(&mut values, Affine::new(2.0, 1.0));
+        assert_eq!(values[..2], [3.0, -3.0]);
+        // NaN is `merge_hold`'s "not a member at this row" marker, and
+        // it has to survive the multiply or scaling would conjure a
+        // member out of an absent one.
+        assert!(values[2].is_nan());
     }
 
     #[test]
