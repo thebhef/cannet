@@ -1680,6 +1680,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
           <Icon name="search" />
           <GridviewFilterBox
             filter={filter}
+            className="dbc-panel-search-input"
             placeholder="search messages, signals, comments, attributes…"
             ariaLabel="search database content"
             matchCountClassName="dbc-panel-match-count"
