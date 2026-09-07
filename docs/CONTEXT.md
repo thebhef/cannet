@@ -245,8 +245,9 @@ Transmitting a configured set of DBC messages on a cadence with live,
 editable signal values — cannet plays every node except the device
 under test. The config is a sparse-override `.cannet_rbs` document
 the user owns — in memory until first saved, a file thereafter; the
-project references it by path through an RBS element whose Run flag
-(default off) is project-persisted.
+project references it by path through an RBS element. The Run flag is
+session state, never persisted — no project file can arm one, so
+opening a project never transmits (ADR 0028).
 _Avoid_: "remaining bus simulation" (Vector's term) in code — the
 repo's name is RBS / rest-of-bus.
 
