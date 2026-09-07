@@ -160,6 +160,8 @@ vi.mock("@tauri-apps/api/core", () => ({
           arity: "set",
           resolvedOperands: [],
           operandPaths: [],
+          operandAffines: [],
+          unconverted: [],
           unitResolved: "",
           busIds: [],
           invalid: "name it — names aren't derived from selections",

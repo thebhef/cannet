@@ -29,6 +29,16 @@
 /// the same `SignalPatternEditor` a signal view's section uses, so a
 /// pattern behaves identically wherever it is typed (ADR 0038).
 ///
+/// **Scaling is intent, not arithmetic.** The definition's Units field
+/// is the *conversion target*: each member converts to it from its own
+/// database unit, and the editor offers the host's unit library there
+/// while still taking any string typed into it. Beside that sits the
+/// unit-free path — a manual gain and offset on each picked operand and
+/// on the output — for what a database describes wrongly or not at all,
+/// plus a per-operand source-unit override for the operand it mislabels.
+/// A member the host could not convert is flagged on its row; the
+/// numbers themselves are never computed here (ADR 0025).
+///
 /// **The host judges.** Arity, parameter ranges, an uncompilable
 /// pattern and a missing name do not refuse an edit — the registry
 /// stores the unfinished definition and says what is missing, which is
@@ -42,6 +52,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   MathDefinition,
   MathFunctionKind,
+  MathOperand,
   MathOperandRef,
   MathSignalRecord,
   SignalDescriptorRecord,
@@ -55,14 +66,18 @@ import {
   parameterEnabled,
   setValidity,
   slotValidity,
+  withOperandScaling,
+  withOutputScaling,
   withParam,
   withPatterns,
   withPick,
   withoutPick,
   type MathParamSpec,
+  type OperandScaling,
   type OperandSection,
   type SectionValidity,
 } from "./mathSignals";
+import { unitOptions, useUnitLibrary } from "./unitLibrary";
 import { catalogPath, resolvePatterns } from "./signalSelection";
 import { recordSignalKey } from "./plotData";
 import { dragHasSignals, parseSignalDragData, SIGNAL_DND_MIME } from "./dragSignals";
@@ -106,13 +121,17 @@ export function mathEditorLines(record: MathSignalRecord): number {
     0,
   );
   const params = spec.params.filter((p) => parameterEnabled(p, record.function)).length;
-  return 6 + sections + 2 * params;
+  // Each *picked* operand carries a second line of scaling controls, and
+  // the output gain/offset fields sit under the target unit.
+  const scaling = (record.operands?.picks.length ?? 0) + 4;
+  return 6 + sections + scaling + 2 * params;
 }
 
 export function MathSignalEditor({ record, definitions }: MathSignalEditorProps) {
   const { buses } = useProjectContext();
   const { catalog } = useSignalCatalog();
   const recordPanelEdit = usePanelEditRecorder();
+  const units = useUnitLibrary();
   const [error, setError] = useState<string | null>(null);
   const spec = mathFunctionSpec(record.function.kind);
   const sections = operandSections(spec);
@@ -221,6 +240,50 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
     }
   }
 
+  /// The members the host could not convert to the target unit, keyed by
+  /// reference rather than by index: `unconverted` indexes the *host's*
+  /// resolution order, and a section renders its picks and its own live
+  /// pattern matches, whose order need not be that one.
+  const unconvertedKeys = useMemo(() => {
+    const out = new Set<string>();
+    for (const i of record.unconverted) {
+      const ref = record.resolvedOperands[i];
+      if (ref) out.add(operandRefKey(ref));
+    }
+    return out;
+  }, [record.unconverted, record.resolvedOperands]);
+
+  /// The target unit: what the definition's `unit` string may be set to.
+  /// Blank derives it, the library is offered, and anything typed is
+  /// still accepted — a DBC unit the library does not carry is exactly
+  /// the case the manual scalars exist for.
+  const targetUnitOptions = useMemo<ComboboxOption[]>(() => {
+    const out: ComboboxOption[] = [
+      {
+        value: "",
+        label: record.unitResolved
+          ? `${record.unitResolved} (from the operands)`
+          : "(from the operands)",
+      },
+      ...unitOptions(units, (u) => u.spelling),
+    ];
+    if (record.unit && !out.some((o) => o.value === record.unit)) {
+      out.push({ value: record.unit, label: record.unit, path: ["not in the library"] });
+    }
+    return out;
+  }, [units, record.unit, record.unitResolved]);
+
+  /// A source-unit override names a library unit by **id** — there is no
+  /// free text here, because an override the host cannot resolve would
+  /// convert nothing while looking as though it did.
+  const sourceUnitOptions = useMemo<ComboboxOption[]>(
+    () => [
+      { value: "", label: "(from the database)" },
+      ...unitOptions(units, (u) => u.id),
+    ],
+    [units],
+  );
+
   const onDrop = (section: OperandSection, e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes(SIGNAL_DND_MIME)) return;
     e.preventDefault();
@@ -278,11 +341,14 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
           busNames={busNames}
           catalog={catalog}
           options={options}
+          sourceUnitOptions={sourceUnitOptions}
+          unconvertedKeys={unconvertedKeys}
           onPick={(value) => {
             const ref = refByValue.get(value);
             if (ref) commit(withPick(stored, section.slot, ref));
           }}
           onRemove={(index) => commit(withoutPick(stored, index))}
+          onScaling={(index, patch) => commit(withOperandScaling(stored, index, patch))}
           onPatterns={(patterns) => commit(withPatterns(stored, patterns))}
           onDrop={(e) => onDrop(section, e)}
         />
@@ -314,17 +380,41 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
       </label>
       <label className="math-editor-field">
         <span>Units</span>
-        <ValidatedInput
+        <Combobox
+          options={targetUnitOptions}
           value={record.unit ?? ""}
           ariaLabel="Units"
-          placeholder={
-            record.unitResolved ? `${record.unitResolved} (from the operands)` : "(from the operands)"
-          }
-          title="the unit this series carries; blank derives it from the operands"
-          parse={(text) => text}
-          onCommit={(unit) => commit({ ...stored, unit: unit === "" ? null : unit })}
+          proseLabels
+          freeText
+          className="math-unit-combobox"
+          title="the unit this series carries — every operand the host can convert is converted to it; blank derives it from the operands"
+          onChange={(unit) => commit({ ...stored, unit: unit === "" ? null : unit })}
         />
       </label>
+      <div className="math-editor-scaling" role="group" aria-label="Output scaling">
+        <label className="math-editor-field">
+          <span>Output gain</span>
+          <ValidatedInput
+            value={String(stored.outputGain ?? 1)}
+            ariaLabel="Output gain"
+            title="multiplies this series after the function — Enter or clicking away applies it"
+            parse={parseFiniteNumber}
+            onCommit={(gain) => commit(withOutputScaling(stored, { outputGain: Number(gain) }))}
+          />
+        </label>
+        <label className="math-editor-field">
+          <span>Output offset</span>
+          <ValidatedInput
+            value={String(stored.outputOffset ?? 0)}
+            ariaLabel="Output offset"
+            title="added to this series after the gain"
+            parse={parseFiniteNumber}
+            onCommit={(offset) =>
+              commit(withOutputScaling(stored, { outputOffset: Number(offset) }))
+            }
+          />
+        </label>
+      </div>
       {error && (
         <div className="math-editor-error" role="alert">
           {error}
@@ -396,8 +486,11 @@ function OperandSectionView({
   busNames,
   catalog,
   options,
+  sourceUnitOptions,
+  unconvertedKeys,
   onPick,
   onRemove,
+  onScaling,
   onPatterns,
   onDrop,
 }: {
@@ -409,8 +502,12 @@ function OperandSectionView({
   busNames: ReadonlyMap<string, string>;
   catalog: readonly SignalDescriptorRecord[];
   options: readonly ComboboxOption[];
+  sourceUnitOptions: readonly ComboboxOption[];
+  /// Reference keys of the members the host left unconverted.
+  unconvertedKeys: ReadonlySet<string>;
   onPick: (value: string) => void;
   onRemove: (index: number) => void;
+  onScaling: (index: number, patch: OperandScaling) => void;
   onPatterns: (patterns: string[]) => void;
   onDrop: (e: React.DragEvent) => void;
 }) {
@@ -520,22 +617,28 @@ function OperandSectionView({
       {filled.map(({ ref, index }) => {
         const d = describe(ref);
         return (
-          <div
-            className={`math-operand-row${d.missing ? " missing" : ""}`}
-            key={`${operandRefKey(ref)}-${index}`}
-          >
-            <span className="math-operand-name" title={d.path}>
-              {d.label}
-            </span>
-            <span className="math-operand-unit">{d.unit}</span>
-            <button
-              type="button"
-              aria-label={`remove ${d.label}`}
-              title="remove this operand"
-              onClick={() => onRemove(index)}
-            >
-              <Icon name="x" />
-            </button>
+          <div className="math-operand" key={`${operandRefKey(ref)}-${index}`}>
+            <div className={`math-operand-row${d.missing ? " missing" : ""}`}>
+              <span className="math-operand-name" title={d.path}>
+                {d.label}
+              </span>
+              <span className="math-operand-unit">{d.unit}</span>
+              <UnconvertedFlag label={d.label} shown={unconvertedKeys.has(operandRefKey(ref))} />
+              <button
+                type="button"
+                aria-label={`remove ${d.label}`}
+                title="remove this operand"
+                onClick={() => onRemove(index)}
+              >
+                <Icon name="x" />
+              </button>
+            </div>
+            <OperandScalingRow
+              label={d.label}
+              operand={picks[index]}
+              sourceUnitOptions={sourceUnitOptions}
+              onScaling={(patch) => onScaling(index, patch)}
+            />
           </div>
         );
       })}
@@ -546,11 +649,95 @@ function OperandSectionView({
               {s.signal_name}
             </span>
             <span className="math-operand-unit">{s.unit}</span>
+            <UnconvertedFlag
+              label={s.signal_name}
+              shown={unconvertedKeys.has(recordSignalKey(s))}
+            />
             <span className="math-operand-derived" title="collected by a pattern">
               ◇
             </span>
           </div>
         ))}
+    </div>
+  );
+}
+
+/// The flag on a member the host could not convert to the definition's
+/// target unit.
+///
+/// It passes through **unscaled** rather than converted wrongly, and
+/// this is where the resolve says so (`ResolvedMath::unconverted`).
+/// Quiet by design — an operand with no unit in a definition that names
+/// one is ordinary, and the manual scalars beside it are the repair — so
+/// it is a glyph with the explanation on hover, in the same register as
+/// the ◇ a pattern-collected row wears.
+function UnconvertedFlag({ label, shown }: { label: string; shown: boolean }) {
+  if (!shown) return null;
+  return (
+    <span
+      className="math-operand-unconverted"
+      role="img"
+      aria-label={`${label} is not converted`}
+      title="this operand's unit does not convert to the target unit — it passes through unscaled"
+    >
+      ≠
+    </span>
+  );
+}
+
+/// One picked operand's unit-free corrections: the manual `(gain,
+/// offset)` applied to its samples before any conversion, and the
+/// source-unit override that says what unit those samples are then in.
+///
+/// Only a *pick* gets one. A member a pattern collected is not stored,
+/// so there is nothing to hang a scalar on — the host takes it with the
+/// conversion alone.
+function OperandScalingRow({
+  label,
+  operand,
+  sourceUnitOptions,
+  onScaling,
+}: {
+  label: string;
+  operand: MathOperand | undefined;
+  sourceUnitOptions: readonly ComboboxOption[];
+  onScaling: (patch: OperandScaling) => void;
+}) {
+  if (operand === undefined) return null;
+  return (
+    <div className="math-operand-scaling">
+      <span className="hint" aria-hidden="true">
+        ×
+      </span>
+      <ValidatedInput
+        value={String(operand.gain ?? 1)}
+        ariaLabel={`gain for ${label}`}
+        title="multiplies this operand's samples before any unit conversion"
+        parse={parseFiniteNumber}
+        onCommit={(gain) => onScaling({ gain: Number(gain) })}
+      />
+      <span className="hint" aria-hidden="true">
+        +
+      </span>
+      <ValidatedInput
+        value={String(operand.offset ?? 0)}
+        ariaLabel={`offset for ${label}`}
+        title="added to this operand's samples after the gain"
+        parse={parseFiniteNumber}
+        onCommit={(offset) => onScaling({ offset: Number(offset) })}
+      />
+      <span className="hint" aria-hidden="true">
+        as
+      </span>
+      <Combobox
+        options={sourceUnitOptions}
+        value={operand.sourceUnit ?? ""}
+        ariaLabel={`source unit for ${label}`}
+        className="math-operand-source-unit"
+        proseLabels
+        title="read this operand as being in this unit, whatever its database says — local to this definition"
+        onChange={(id) => onScaling({ sourceUnit: id })}
+      />
     </div>
   );
 }

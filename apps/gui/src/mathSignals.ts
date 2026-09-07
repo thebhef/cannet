@@ -193,6 +193,10 @@ export function definitionOf(record: MathSignalRecord): MathDefinition {
     id: record.id,
     name: record.name,
     unit: record.unit,
+    // Omitted when unset, matching what the host serialises — a
+    // definition that scales nothing writes the JSON it always did.
+    ...(record.outputGain == null ? {} : { outputGain: record.outputGain }),
+    ...(record.outputOffset == null ? {} : { outputOffset: record.outputOffset }),
     function: { ...record.function },
     operands: {
       picks: [...(record.operands?.picks ?? [])],
@@ -270,6 +274,71 @@ export function withPatterns(
   return {
     ...definition,
     operands: { ...definition.operands, patterns: [...patterns] },
+  };
+}
+
+/// One operand's scaling, as the editor's three controls commit it.
+export interface OperandScaling {
+  gain?: number;
+  offset?: number;
+  /// A unit **id** from the library, or `""` to read the operand's own
+  /// database unit again.
+  sourceUnit?: string;
+}
+
+/// The definition's own output scaling, applied after the function.
+export interface OutputScaling {
+  outputGain?: number;
+  outputOffset?: number;
+}
+
+/// A scalar that scales nothing is **omitted**, not stored as 1 or 0:
+/// the host reads an absent field as the identity, and a definition that
+/// corrects nothing has to write the JSON it always did.
+function kept(value: number | null | undefined, identity: number): number | undefined {
+  return value == null || value === identity ? undefined : value;
+}
+
+/// One operand's manual gain, offset or source unit changed.
+///
+/// Only a *pick* can carry scaling — a member a pattern collected is not
+/// stored, so there is nothing to hang a scalar on and an index past the
+/// picks changes nothing.
+export function withOperandScaling(
+  definition: MathDefinition,
+  index: number,
+  patch: OperandScaling,
+): MathDefinition {
+  const before = definition.operands.picks[index];
+  if (before === undefined) return definition;
+  const { gain, offset, sourceUnit, ...reference } = before;
+  const nextGain = kept("gain" in patch ? patch.gain : gain, 1);
+  const nextOffset = kept("offset" in patch ? patch.offset : offset, 0);
+  // `""` is the picker's "read the database's own unit again".
+  const nextUnit = ("sourceUnit" in patch ? patch.sourceUnit : sourceUnit) || undefined;
+  const picks = [...definition.operands.picks];
+  picks[index] = {
+    ...reference,
+    ...(nextGain === undefined ? {} : { gain: nextGain }),
+    ...(nextOffset === undefined ? {} : { offset: nextOffset }),
+    ...(nextUnit === undefined ? {} : { sourceUnit: nextUnit }),
+  };
+  return { ...definition, operands: { ...definition.operands, picks } };
+}
+
+/// The definition's output gain or offset changed, under the same
+/// omit-the-identity rule.
+export function withOutputScaling(
+  definition: MathDefinition,
+  patch: OutputScaling,
+): MathDefinition {
+  const { outputGain, outputOffset, ...rest } = definition;
+  const gain = kept("outputGain" in patch ? patch.outputGain : outputGain, 1);
+  const offset = kept("outputOffset" in patch ? patch.outputOffset : outputOffset, 0);
+  return {
+    ...rest,
+    ...(gain === undefined ? {} : { outputGain: gain }),
+    ...(offset === undefined ? {} : { outputOffset: offset }),
   };
 }
 

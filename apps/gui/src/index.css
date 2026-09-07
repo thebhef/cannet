@@ -6390,7 +6390,28 @@ button.color-chip {
 .unit-customization-spelling {
   min-width: 6rem;
 }
-.unit-customization-row button {
+/* The add path: the spelling a database writes, and the unit from the
+   host's library it means. */
+.unit-customization-add {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+.unit-customization-add input {
+  background: var(--surface-control);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font: inherit;
+  padding: 0.1rem 0.25rem;
+  width: 8rem;
+}
+.unit-customization-add .combobox-trigger {
+  min-width: 9rem;
+}
+.unit-customization-row button,
+.unit-customization-add button {
   background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: 3px;
@@ -6400,6 +6421,10 @@ button.color-chip {
   line-height: 1;
   padding: 0.15rem 0.35rem;
   cursor: pointer;
+}
+.unit-customization-add button:disabled {
+  color: var(--text-dim);
+  cursor: default;
 }
 .setting-meta {
   display: flex;
@@ -7806,6 +7831,49 @@ button.color-chip {
 }
 .math-operand-row button svg {
   display: block;
+}
+/* One picked operand: its row, and the line of unit-free corrections
+   under it. Two lines rather than one, because the narrowest surface
+   this editor has to fit is a plot's side list. */
+.math-operand {
+  display: flex;
+  flex-direction: column;
+}
+.math-operand-scaling {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.25rem 0.15rem 0.6rem;
+}
+.math-operand-scaling input {
+  background: var(--surface-control);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font: inherit;
+  padding: 0 0.2rem;
+  min-width: 0;
+  width: 3.5rem;
+}
+.math-operand-source-unit {
+  flex: 1;
+  min-width: 0;
+}
+/* A member the host could not convert to the target unit: it passes
+   through unscaled, which is ordinary enough that the flag is a glyph
+   with its explanation on hover rather than a warning banner. */
+.math-operand-unconverted {
+  color: var(--warn-text);
+  cursor: help;
+}
+/* The definition's own output scalars, side by side under the unit. */
+.math-editor-scaling {
+  display: flex;
+  gap: 0.35rem;
+}
+.math-editor-scaling > .math-editor-field {
+  flex: 1;
+  min-width: 0;
 }
 
 /* The creation menu — every function, on the surface that was
