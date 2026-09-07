@@ -36,6 +36,8 @@ function record(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     arity: "set",
     resolvedOperands: [dbcRef("Cell01"), dbcRef("Cell02")],
     operandPaths: ["CAN1/BMS/Cells/Cell01", "CAN1/BMS/Cells/Cell02"],
+    operandAffines: [],
+    unconverted: [],
     unitResolved: "V",
     busIds: ["bus-a"],
     invalid: null,
