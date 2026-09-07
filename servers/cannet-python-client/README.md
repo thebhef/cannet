@@ -125,6 +125,37 @@ a peer that has reported no controller state reads as `ACTIVE`, since
 the enum has no "unknown". `bus.controller_state` is where that
 difference survives — it is `None` until the peer says something.
 
+## Clock correction
+
+Every frame's `timestamp` is stamped on the *server's* clock. A session
+measures how far that clock is from this machine's with the same SNTP
+probe (RFC 4330 § 5) `crates/cannet-client` runs — a burst of exchanges
+over the `Session` stream at start-up and every 30 s after, the
+least-delayed of which sets the correction — and slews delivered
+timestamps towards it at a bounded rate, so a trace never sees the
+correction jump. A peer that never answers a probe (built before the
+envelopes existed) degrades to raw, uncorrected timestamps rather than
+holding the session up. `cannet_python_client.clock` is the algorithm;
+`Session.clock` is the per-session reading of it, for anything that
+wants to show the offset rather than just have it applied.
+
+## Detecting servers
+
+`can.detect_available_configs(interfaces="cannet")` dials every server
+the trust store names, with a short timeout, and returns one config per
+interface it offers:
+
+```python
+import can
+
+# [{"interface": "cannet", "channel": "blf:0", "server": "bench:50051"}, ...]
+can.detect_available_configs(interfaces="cannet")
+```
+
+A server that is off, unreachable, or refuses the handshake — including
+one nothing is trusted for yet — contributes nothing rather than
+failing the scan; `can.Bus(**config)` opens the bus it named.
+
 ## Running it
 
 Always through `uv`, never `pip`:

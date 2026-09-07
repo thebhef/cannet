@@ -18,14 +18,19 @@ credential is ever pasted into an application.
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from collections.abc import Mapping
+from typing import Any, cast
 
 import can
+import can.typechecking
 from cannet_python_can._proto import cannet_pb2 as pb
 
 from . import session as _session
 from .session import BusConfig, PerFrameErrors, Session, SessionError
-from .trust import ServerTarget, TrustError, resolve
+from .trust import ServerTarget, TrustEntry, TrustError, read_servers, resolve
+
+_log = logging.getLogger(__name__)
 
 #: Wire ``ControllerState`` -> python-can ``BusState``.
 #:
@@ -42,6 +47,44 @@ _BUS_STATES = {
     pb.CONTROLLER_STATE_BUS_OFF: can.BusState.ERROR,
     pb.CONTROLLER_STATE_UNAVAILABLE: can.BusState.ERROR,
 }
+
+#: How long `_detect_available_configs` waits for one trusted server to
+#: answer `ListInterfaces` before moving on to the next. Short: the
+#: whole scan runs on one thread inside `can.detect_available_configs`,
+#: serially, so a handful of unreachable servers must not eat that
+#: call's own overall timeout (5 s by default) between them.
+DETECT_TIMEOUT_S = _session.DEFAULT_LIST_TIMEOUT_S
+
+
+def _detect_configs(
+    servers: Mapping[str, TrustEntry], *, timeout: float
+) -> list[dict[str, Any]]:
+    """One config per interface offered by each reachable server in
+    ``servers``.
+
+    The seam :meth:`CannetBus._detect_available_configs` calls with the
+    real trust store; a test calls it directly with a mapping, the way
+    :func:`cannet_python_client.trust.resolve` takes one.
+
+    A server that is off, unreachable, or refuses the handshake
+    contributes nothing — `BusABC` promises detection never raises for
+    one bad interface, and a first-contact server nothing is pinned for
+    yet is exactly that: nobody has accepted it, so nothing here can
+    reach it.
+    """
+    configs: list[dict[str, Any]] = []
+    for address in servers:
+        try:
+            target = resolve(address, servers=servers)
+            interfaces = _session.list_interfaces(target, timeout)
+        except Exception:  # noqa: BLE001 - an unreachable server contributes nothing
+            _log.debug("cannet detection: could not reach %r", address, exc_info=True)
+            continue
+        configs.extend(
+            {"interface": "cannet", "channel": interface.id, "server": address}
+            for interface in interfaces
+        )
+    return configs
 
 
 class CannetBus(can.BusABC):
@@ -181,3 +224,16 @@ class CannetBus(can.BusABC):
     def shutdown(self) -> None:
         super().shutdown()
         self._session.close()
+
+    @staticmethod
+    def _detect_available_configs() -> list[can.typechecking.AutoDetectedConfig]:
+        """One config per interface offered by each reachable trusted
+        server (`BusABC` hook behind ``can.detect_available_configs()``).
+
+        Each config carries a ``server`` key beyond what
+        ``AutoDetectedConfig`` requires — this interface cannot be
+        reopened without it — so the cast, not the TypedDict, is the
+        contract with ``can.Bus(**config)``.
+        """
+        configs = _detect_configs(read_servers(), timeout=DETECT_TIMEOUT_S)
+        return cast("list[can.typechecking.AutoDetectedConfig]", configs)
