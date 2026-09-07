@@ -49,6 +49,8 @@ mod dbc_watcher;
 mod diag;
 mod emitters;
 mod event_text;
+mod export_state;
+mod export_template;
 mod trace_query;
 // `filter` and `trace_store` are `pub` so the `cannet-perf-measurement` performance
 // harness can drive the real host model — the same `TraceStore` and
@@ -588,6 +590,9 @@ pub fn run() -> ! {
             frame_indices_at_ns,
             filtered_positions_at_ns,
             save_capture,
+            export_template::preview_export_template,
+            export_state::get_export_state,
+            export_state::set_export_state,
             sidecar::restart_sidecar,
             sidecar::get_sidecar_status,
             interfaces::get_interfaces,
