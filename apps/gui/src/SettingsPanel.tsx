@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
+import { SETTINGS_PANEL_ID } from "./dockLayout";
+import { usePanelCommands } from "./panelCommands";
 import { SettingControl } from "./settingControls";
 import {
   DEVELOPER_GROUP,
@@ -64,6 +66,18 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
   const [typed, setTyped] = useState("");
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState<SurfaceId | null>(null);
+
+  /// The search box, so `panel.find` (Mod+F, ADR 0018) can focus and
+  /// select it. Registered under the panel's fixed dockview id — the
+  /// Settings panel is a singleton with no element id of its own
+  /// (`runFocusedPanelCommand` in `useCommands.tsx` falls back to it).
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  usePanelCommands(SETTINGS_PANEL_ID, {
+    "panel.find": () => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    },
+  });
 
   useEffect(() => {
     const unsubscribe = subscribeSettings(setSettings);
@@ -150,6 +164,7 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
     <div className="settings-view">
       <div className="settings-header">
         <input
+          ref={searchInputRef}
           type="search"
           className="settings-search"
           placeholder="Search settings"

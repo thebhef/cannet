@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 // A stand-in for the host. `stored` plays `settings.json` (mutable, so a
 // test can change it mid-flight the way a second writer — the shortcuts
@@ -98,7 +98,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import type { IDockviewPanelProps } from "dockview";
 
+import { SETTINGS_PANEL_ID } from "./dockLayout";
 import { hydrateSettings } from "./hostSettings";
+import { createPanelCommandRegistry, PanelCommandsContext } from "./panelCommands";
 import { CUSTOM_SETTING_RENDERERS } from "./settingControls";
 import { SettingsPanel } from "./SettingsPanel";
 
@@ -314,5 +316,29 @@ describe("developer settings", () => {
       "true",
     );
     expect(screen.getByText("Show developer settings")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsPanel command registration (panel.find)", () => {
+  it("focuses and selects the search box", async () => {
+    const commands = createPanelCommandRegistry();
+    render(
+      <PanelCommandsContext.Provider value={commands}>
+        <SettingsPanel {...({} as IDockviewPanelProps)} />
+      </PanelCommandsContext.Provider>,
+    );
+    await screen.findByText("Cache size cap");
+
+    const box = screen.getByRole("searchbox") as HTMLInputElement;
+    fireEvent.change(box, { target: { value: "cache" } });
+    expect(document.activeElement).not.toBe(box);
+
+    act(() => {
+      commands.invoke(SETTINGS_PANEL_ID, "panel.find");
+    });
+
+    expect(document.activeElement).toBe(box);
+    expect(box.selectionStart).toBe(0);
+    expect(box.selectionEnd).toBe(box.value.length);
   });
 });
