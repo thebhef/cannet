@@ -237,6 +237,23 @@ apps/
                      fan into alongside `tracing-subscriber`; the
                      System Messages panel renders it.
 
+servers/
+  cannet-python-can/
+                 The python-can sidecar: a gRPC *server* that exposes
+                 the host's Vector / Kvaser / PEAK adapters over the
+                 wire protocol. `cannet-server` supervises one; the GUI
+                 does too. Owns the checked-in `_proto` gencode.
+  cannet-python-client/
+                 A python-can *client*: `CannetBus`, registered under
+                 python-can's `can.interface` entry-point group, so
+                 `can.Bus(interface="cannet", server=…, channel=…)`
+                 opens a bus on a cannet server with no cannet-specific
+                 import. Resolves the server against the GUI's trust
+                 store (`servers.json`) for the pinned certificate and
+                 bearer token, and reuses the sidecar's gencode and
+                 frame mappers rather than growing a second copy. See
+                 its README.
+
 plans/           Living planning docs (see CLAUDE.md).
 ```
 
@@ -3196,6 +3213,25 @@ is checked with [ruff](https://docs.astral.sh/ruff/) (lint + format),
 [mypy](https://mypy-lang.org/), and pytest — run from that directory:
 
 ```sh
+uv sync --extra dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest
+```
+
+The Python client
+([`servers/cannet-python-client`](servers/cannet-python-client)) takes
+the same four checks, from *its* directory. Its suite is hardware-free:
+the unit half (the trust-store read contract, the fingerprint form, the
+session's envelope order) needs nothing, and the integration half opens
+real buses against `cannet-server debug vbus` and `debug replay` on
+loopback. Those need the server binary and skip when it is not built,
+so build it first:
+
+```sh
+cargo build -p cannet-server
+cd servers/cannet-python-client
 uv sync --extra dev
 uv run ruff check .
 uv run ruff format --check .

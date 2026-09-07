@@ -60,6 +60,40 @@ repos:
         pass_filenames: false
         entry: "bash -c 'cd servers/cannet-python-can && uv run --frozen --extra dev pytest'"
 
+      # --- Python client (servers/cannet-python-client) ---
+      #
+      # Same shape as the sidecar's four hooks above, and the same
+      # reasons for the split between the file-argument ones and the
+      # whole-project ones. The pytest hook's integration half needs a
+      # built `cannet-server`; the fixtures skip when there is none, so
+      # a commit on a fresh clone is not blocked by a missing binary —
+      # CI builds it and runs them for real.
+      - id: ruff-check-client
+        name: ruff check (client)
+        language: system
+        files: '^servers/cannet-python-client/.*\.py$'
+        entry: uv run --project servers/cannet-python-client --frozen --extra dev ruff check --force-exclude
+      - id: ruff-format-client
+        name: ruff format (client)
+        language: system
+        files: '^servers/cannet-python-client/.*\.py$'
+        entry: uv run --project servers/cannet-python-client --frozen --extra dev ruff format --check --force-exclude
+      - id: mypy-client
+        name: mypy (client)
+        language: system
+        files: '^servers/cannet-python-client/.*\.py$'
+        pass_filenames: false
+        entry: "bash -c 'cd servers/cannet-python-client && uv run --frozen --extra dev mypy'"
+      # The client imports the sidecar's gencode and frame mappers, so a
+      # change to either package can break it — hence the sidecar's own
+      # paths in `files` alongside the client's.
+      - id: pytest-client
+        name: pytest (client)
+        language: system
+        files: '^servers/cannet-python-(client|can)/.*\.py$'
+        pass_filenames: false
+        entry: "bash -c 'cd servers/cannet-python-client && uv run --frozen --extra dev pytest'"
+
       # The freeze is heavy relative to the other hooks (~15 s warm,
       # ~60 s cold), so it fires only on the files that can actually
       # break it: the sidecar's dependency set, the freeze entry point,

@@ -306,9 +306,9 @@ describe("RbsPanel on the gridview", () => {
     expect(rowOf("PackVoltage")).toHaveAttribute("data-active");
   });
 
-  // task 129: every edit the panel makes records an undo step whose
+  // every edit the panel makes records an undo step whose
   // inverse was read from the tree before the write.
-  it("records an enable toggle with its inverse (task 129)", async () => {
+  it("records an enable toggle with its inverse", async () => {
     const { recorded } = renderPanel();
     await screen.findByText("PackStatus");
     const tree = screen.getByRole("tree");

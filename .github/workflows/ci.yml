@@ -166,6 +166,44 @@ jobs:
       - run: uv run mypy
       - run: uv run pytest
 
+  python-client:
+    name: Python client (ruff + mypy + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      # `lfs: true` for the same reason as the `rust` job: the client's
+      # replay tests point `cannet-server debug replay` at
+      # examples/cannet-demo.blf, which is a Git LFS object. Without the
+      # object it is pointer text and the server fails to open it.
+      - uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      # The integration half of the suite runs against `cannet-server`'s
+      # debug modes on loopback, so the binary has to exist. The
+      # fixtures skip when it does not, and a suite that silently
+      # skipped its integration tests here would be worth very little.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p cannet-server
+
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          version: "0.9.21"
+          enable-cache: true
+          cache-dependency-glob: servers/cannet-python-client/uv.lock
+
+      - run: uv sync --extra dev --frozen
+        working-directory: servers/cannet-python-client
+      - run: uv run ruff check .
+        working-directory: servers/cannet-python-client
+      - run: uv run ruff format --check .
+        working-directory: servers/cannet-python-client
+      - run: uv run mypy
+        working-directory: servers/cannet-python-client
+      - run: uv run pytest
+        working-directory: servers/cannet-python-client
+
   sidecar-freeze:
     name: Frozen sidecar (freeze + smoke)
     runs-on: ubuntu-latest

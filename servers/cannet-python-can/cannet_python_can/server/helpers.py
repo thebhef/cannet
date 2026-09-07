@@ -114,6 +114,13 @@ def _proto_to_frame(p: pb.Frame) -> drv.Frame:
     )
 
 
+#: Public names for the driver ``Frame`` <-> wire ``Frame`` seam above.
+#: The in-repo python-can client speaks the same wire and imports these
+#: rather than growing a second encoding of it, which could only drift.
+frame_to_proto = _frame_to_proto
+proto_to_frame = _proto_to_frame
+
+
 def _log_envelope(level: "pb.LogLevel.V", message: str) -> pb.Envelope:
     return pb.Envelope(
         log=pb.LogMessage(

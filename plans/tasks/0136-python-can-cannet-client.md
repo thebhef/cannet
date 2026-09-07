@@ -50,3 +50,81 @@ Drop-in replacement for python-can; should be easy to compose alongside it.
    rejections surfaced per-message while session-fatal errors raise.
 6. A hardware-free test suite runs against `cannet-server debug replay` / `debug vbus`; CI guards the shared gencode against drift.
 7. Docs: README names the new package and how to run its tests; the package carries a usage example for a stafl-style app.
+
+## Status log
+
+### 2026-09-06 — phase 1 of 2, "core bus" (branch `task136-core-bus`)
+
+Criteria **1, 2, 5** met, plus the hardware-free test suite half of **6**
+and — because the package build needed a README and the README needed the
+example it names — **7**. Criteria **3** (SNTP clock sync), **4**
+(`detect_available_configs`), and the gencode drift-guard half of **6**
+are phase 2 and were deliberately not built.
+
+**Landed.** `servers/cannet-python-client/`, a uv-managed sibling of the
+sidecar: `CannetBus(can.BusABC)` under python-can's `can.interface`
+entry point as `cannet`, a `trust` module that reads the GUI's
+`servers.json`, a `tls` module that pins by certificate, and a `session`
+module that owns the gRPC `Session` stream. 52 tests + 1 platform-gated
+skip. The sidecar gained four public aliases (`message_to_frame` /
+`frame_to_message`, `frame_to_proto` / `proto_to_frame`) and nothing
+else: the client imports its gencode and its mappers by path dependency,
+so there is one encoding of the wire in the repo and nothing to drift.
+
+**Judgment calls, and why.**
+
+- **Pinning is by certificate, not by fingerprint.** Python's gRPC
+  exposes no verifier hook, so the library fetches the server's
+  certificate over an unverified handshake, checks its SHA-256 against
+  the stored fingerprint, and hands that exact certificate to gRPC as
+  the channel's sole trust root. Equivalent in what it accepts. A second
+  handshake — trusting the fetched certificate as its own root — reads
+  back its SAN list, which is the only honest way to pick a
+  `ssl_target_name_override` a self-signed certificate actually carries.
+  Not exercisable in the hardware-free suite: both debug servers
+  terminate no TLS, so the fingerprint form, the pin comparison and the
+  name selection are unit-tested and the handshake is not. **Phase 2
+  should know the TLS path has no end-to-end coverage.**
+- **An ordinary subscribe is ready as soon as it is sent.** The wire
+  does not acknowledge `Subscribe`, so a session-fatal
+  `CODE_UNKNOWN_INTERFACE` surfaces as `can.CanOperationError` on the
+  first `recv`, not out of the constructor — exactly `cannet-client`'s
+  split. A *factory* subscribe is acknowledged, so its errors do come
+  out of the constructor as `can.CanInitializationError`. The
+  alternative (a settle window, or using `ClockProbe` as an ack) trades
+  a definite behaviour for a stall against a peer that never answers.
+- **`state` reads `ACTIVE` when the peer has reported nothing.**
+  python-can's `BusState` has three members and no "unknown". The
+  difference survives on `CannetBus.controller_state`, which is `None`
+  until an `InterfaceState` arrives. The setter raises: the wire has no
+  envelope for setting a fault-confinement state.
+- **A bare name resolves only when the store holds exactly one entry for
+  it**; two ports under one name raise `AmbiguousServer` rather than
+  picking. Bare *loopback* names take port 50051, since nothing is ever
+  stored for loopback and the debug servers all sit there.
+- **Per-frame rejections log the first of a code at `warning` and the
+  rest at `debug`.** `cannet-client` warns on every one; a lone
+  rest-of-bus simulation on an empty virtual bus produces one per
+  transmit, and the example proved it buries everything else. The tally
+  (`bus.rejections`) is unchanged and is where the count lives.
+
+**CI wiring.** A `python-client` job in `.github/workflows/ci.yml` and
+four hooks in `.pre-commit-config.yaml`. The job builds
+`cannet-server` and checks out LFS, because a suite that silently
+skipped its integration half would be worth very little.
+
+## Blockers / side effects
+
+- **`cargo fmt --all --check` was already red on `feedback-capture`**, in
+  `apps/gui/src-tauri/src/interfaces.rs`, introduced by `7d18a421` (#460)
+  and still unformatted through `0dfbe070` (#461) and `128cecfd` (#462) —
+  three commits that used `--no-verify` in the shared tree. Not fixed
+  here: it is not one of the six CI jobs (there is no fmt job), the file
+  belongs to work another branch in this tree is actively on, and the
+  next commit that touches Rust will have the hook sweep it. Named so it
+  does not ride another chain.
+- **17 inherited `(task 129)` references in `apps/gui/src/` comments**,
+  from `24e76fb6` (#450), which `CLAUDE.md` § Documentation forbids.
+  Fixed here: every one was a bare parenthetical carrying only the task
+  number, so dropping it loses nothing. The `comment-references` grep is
+  clean over `apps/` and `crates/`.

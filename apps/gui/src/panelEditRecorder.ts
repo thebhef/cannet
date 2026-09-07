@@ -1,4 +1,4 @@
-// How a panel hands its undo step to the app (task 129). The default
+// How a panel hands its undo step to the app. The default
 // is a no-op, like `UndoGestureContext`'s: a panel rendered on its own
 // (a DOM test, a storybook) still writes to the host exactly as before
 // — recording is additive, never load-bearing for the edit itself.

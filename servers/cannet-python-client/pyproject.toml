@@ -1,0 +1,63 @@
+[project]
+name = "cannet-python-client"
+version = "0.1.0"
+description = "python-can interface plugin that opens a CAN bus on a trusted cannet server."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+
+# `cannet-python-can` is a path dependency (see `[tool.uv.sources]`),
+# not a published package. It is where the checked-in `_proto` gencode
+# and the `can.Message` <-> wire `Frame` mappers live, and depending on
+# it is what keeps exactly one encoding of the wire in this repository:
+# a second copy here could only drift. It drags in `grpcio`,
+# `protobuf`, `python-can` and `uptime`, which is the whole of what
+# this package needs at runtime, so nothing else is declared.
+dependencies = [
+    "cannet-python-can",
+]
+
+[project.optional-dependencies]
+# Pulled in by `uv sync --extra dev`, matching the sidecar's split so
+# the runtime venv stays small.
+dev = [
+    "pytest>=9",
+    "ruff>=0.9",
+    "mypy>=1.15",
+]
+
+[tool.uv.sources]
+cannet-python-can = { path = "../cannet-python-can" }
+
+# python-can discovers third-party backends through this entry-point
+# group, so `can.Bus(interface="cannet", ...)` resolves without the
+# caller importing anything from this package. Only an *installed*
+# distribution is discoverable, which is why the tests run under
+# `uv run` rather than off a bare `sys.path` entry.
+[project.entry-points."can.interface"]
+cannet = "cannet_python_client.bus:CannetBus"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cannet_python_client"]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.mypy]
+python_version = "3.13"
+files = ["cannet_python_client"]
+# python-can and grpc ship without type stubs, and the protobuf
+# gencode is dynamically populated; the sidecar takes the same posture.
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "cannet_python_can._proto.*"
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -467,7 +467,7 @@ describe("ViewSignalsPanel source picker", () => {
     ]);
   });
 
-  it("records the pick as an undo step whose inverse is the pick in force (task 129)", async () => {
+  it("records the pick as an undo step whose inverse is the pick in force", async () => {
     // A first pick's inverse is null — undoing it returns the row to
     // unresolved, not to an explicit pick of the old winner.
     ROWS = [AMBIGUOUS];
