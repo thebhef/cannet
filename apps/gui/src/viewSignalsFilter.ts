@@ -69,19 +69,26 @@ export function viewSignalBusOptions(rows: readonly ViewSignalRow[]): ViewSignal
   });
 }
 
-/// Apply both filters: a row passes when its status is in
+/// Apply the toolbar filters: a row passes when its status is in
 /// `statusFilter` (or nothing is selected) *and* its bus is in
-/// `busFilter` (or nothing is selected). The two filters AND together;
-/// each filter alone ORs its selection.
+/// `busFilter` (or nothing is selected) *and* — while `unknownUnitOnly`
+/// is on — the host flagged its unit string as unplaceable. The filters
+/// AND together; each selection filter alone ORs its selection.
+///
+/// `unknownUnitOnly` is a plain toggle rather than a selection set
+/// because it has exactly two states: a row's unit either needs a
+/// customization or it does not.
 export function applyViewSignalFilters(
   rows: readonly ViewSignalRow[],
   statusFilter: ReadonlySet<ViewSignalStatus>,
   busFilter: ReadonlySet<string>,
+  unknownUnitOnly = false,
 ): ViewSignalRow[] {
   return rows.filter(
     (r) =>
       (statusFilter.size === 0 || statusFilter.has(r.status)) &&
-      (busFilter.size === 0 || busFilter.has(busFilterKey(r.busId))),
+      (busFilter.size === 0 || busFilter.has(busFilterKey(r.busId))) &&
+      (!unknownUnitOnly || r.unitUnrecognized),
   );
 }
 

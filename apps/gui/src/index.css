@@ -6993,6 +6993,19 @@ button.color-chip {
   color: var(--text-faint);
   margin: 0 0.35rem;
 }
+/* The unit string nothing can place — the badge after a signal name,
+   and the same glyph on the toolbar chip that filters to those rows.
+   Same register as the math editor's unconverted-operand flag. */
+.view-signals-unknown-unit {
+  margin-left: 0.35rem;
+  color: var(--warn-text);
+  cursor: help;
+  font-style: normal;
+}
+.chip-button[aria-pressed="false"] .view-signals-unknown-unit {
+  opacity: 0.45;
+}
+
 /* The drifted row's one-click repair, sitting after its diff text. */
 .view-signals-accept {
   margin-left: 0.6rem;
