@@ -1519,6 +1519,24 @@ describe("DatabasePanel file-backed branches", () => {
   });
 });
 
+describe("DatabasePanel search box", () => {
+  it("hands the whole chip to the input, so the drawn box is the click target", async () => {
+    renderPanel();
+    await screen.findByText("EngineData");
+    const search = screen.getByLabelText("search database content");
+    // The chip is the element that draws the box and it stretches
+    // across the toolbar; the input inside it is intrinsically sized.
+    // Without a grow of its own the input covers only the first ~20
+    // characters of that box and a click past the placeholder lands on
+    // the chip, focusing nothing. jsdom cannot measure the widths, so
+    // what is pinned is the structure the CSS keys on: the input is a
+    // direct child of the stretched chip and carries the class that
+    // makes it fill it.
+    expect(search).toHaveClass("dbc-panel-search-input");
+    expect(search.parentElement).toHaveClass("dbc-panel-search");
+  });
+});
+
 describe("DatabasePanel command registration (panel.find)", () => {
   function renderWithCommands() {
     const api = fakePanelApi();
