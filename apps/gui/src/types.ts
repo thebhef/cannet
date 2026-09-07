@@ -1489,6 +1489,13 @@ export interface ViewSignalRow {
   messageName: string;
   signalName: string;
   unit: string;
+  /// Whether {@link unit} is a non-blank string the host's unit facade
+  /// cannot place — no built-in recognition and no entry in the
+  /// project's unit-customization dict. The panel flags such a row: the
+  /// string needs a customization in Settings → Units before anything
+  /// can convert through it. Host-computed (`view_signals.rs`) against
+  /// the customizations in force at fetch time.
+  unitUnrecognized: boolean;
   servingDbc: string | null;
   /// The database the user chose for this signal, while that choice is
   /// in force; `null` is the load-order default. The picker shows it as
