@@ -1568,6 +1568,27 @@ export interface MathOperandRef {
   math?: boolean;
 }
 
+/// One operand as a definition *picks* it (`math_signals::MathOperand`):
+/// the reference, flattened, plus the scaling that rides beside it. Every
+/// added field is optional and omitted when unset, so a pick written
+/// before any of this existed is exactly this shape.
+export interface MathOperand extends MathOperandRef {
+  /// Manual gain on this operand's samples, applied before any unit
+  /// conversion. Absent is 1.
+  gain?: number | null;
+  /// Manual offset, alongside `gain`. Absent is 0.
+  offset?: number | null;
+  /// Read this operand as being in this unit id whatever its database
+  /// says — local to this definition.
+  sourceUnit?: string | null;
+}
+
+/// `units::Affine` — a conversion as `gain·x + offset`.
+export interface UnitAffine {
+  gain: number;
+  offset: number;
+}
+
 /// The function a math signal computes, mirroring
 /// `math_signals::MathFunction`: an internally tagged enum whose
 /// parameters ride in the variant, so a definition cannot carry a
@@ -1599,7 +1620,7 @@ export interface MathFunction {
 /// — the live regex patterns whose matches join them (ADR 0020,
 /// ADR 0038). Mirrors `math_signals::MathOperands`.
 export interface MathOperands {
-  picks: MathOperandRef[];
+  picks: MathOperand[];
   patterns: string[];
 }
 
@@ -1610,7 +1631,15 @@ export interface MathOperands {
 export interface MathDefinition {
   id: string;
   name: string;
+  /// The display unit, and the **conversion target**: recognised, every
+  /// operand whose own unit is recognised converts to it; unset or
+  /// unrecognised, nothing converts.
   unit: string | null;
+  /// Gain applied to the series' output, after the function. Absent is
+  /// 1. Distinct from the `scale` function, which mints its own series.
+  outputGain?: number | null;
+  /// Offset applied to the output, alongside `outputGain`. Absent is 0.
+  outputOffset?: number | null;
   function: MathFunction;
   operands: MathOperands;
 }
@@ -1637,6 +1666,15 @@ export interface MathSignalRecord extends MathDefinition {
   /// with `resolvedOperands`; empty for one the catalog no longer
   /// holds, which is how an editor shows a missing operand.
   operandPaths: string[];
+  /// Each resolved operand's effective `(gain, offset)`, index-parallel
+  /// with `resolvedOperands`: the target-unit conversion, the
+  /// source-unit override and the manual scalars composed. Derived by
+  /// the host, never stored.
+  operandAffines: UnitAffine[];
+  /// Indices into `resolvedOperands` of the members that could not be
+  /// converted to the target unit and pass through unscaled. Empty when
+  /// the definition names no target unit.
+  unconverted: number[];
   /// The unit the series carries: the user's, or the derived one.
   unitResolved: string;
   /// Every bus contributing input to this series, transitively and

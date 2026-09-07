@@ -644,11 +644,13 @@ mod tests {
                 id: "0f0c1f9a".into(),
                 name: "PackPower".into(),
                 unit: Some("W".into()),
+                output_gain: None,
+                output_offset: None,
                 function: MathFunction::Product,
                 operands: MathOperands {
                     picks: vec![
-                        MathOperandRef::dbc("p", 256, false, "PackVolts"),
-                        MathOperandRef::dbc("p", 256, false, "PackCurrent"),
+                        MathOperandRef::dbc("p", 256, false, "PackVolts").into(),
+                        MathOperandRef::dbc("p", 256, false, "PackCurrent").into(),
                     ],
                     patterns: Vec::new(),
                 },
@@ -657,6 +659,8 @@ mod tests {
                 id: "3b21ee07".into(),
                 name: r"max(Cell\d+)".into(),
                 unit: None,
+                output_gain: None,
+                output_offset: None,
                 function: MathFunction::Max,
                 operands: MathOperands {
                     picks: Vec::new(),
@@ -667,11 +671,13 @@ mod tests {
                 id: "88f0a1b2".into(),
                 name: "Filtered".into(),
                 unit: None,
+                output_gain: None,
+                output_offset: None,
                 function: MathFunction::ExpFilter { tau_seconds: 2.5 },
                 operands: MathOperands {
                     // Math on math, referenced by id — so renaming the
                     // definition below never rewrites this one.
-                    picks: vec![MathOperandRef::math("0f0c1f9a")],
+                    picks: vec![MathOperandRef::math("0f0c1f9a").into()],
                     patterns: Vec::new(),
                 },
             },
@@ -686,7 +692,7 @@ mod tests {
         renamed.math_signals[0].name = "Power".into();
         let back = parse_project(&serde_json::to_string(&renamed).unwrap()).unwrap();
         assert_eq!(
-            back.math_signals[2].operands.picks[0].signal_name,
+            back.math_signals[2].operands.picks[0].reference.signal_name,
             "0f0c1f9a"
         );
         assert_eq!(back.math_signals[0].name, "Power");

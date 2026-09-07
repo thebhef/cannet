@@ -193,6 +193,15 @@ id**, which is what everything referencing it stores, so the display
 name is free to change. A definition may take another math signal as
 an operand; cycles are refused when a definition is written.
 
+A definition stores **intent, not numbers**: its unit is the
+conversion *target*, and each operand's factor is derived at serve time
+from that operand's own unit — so a set whose members carry different
+units gets a correct factor per member, and editing what a unit string
+means rescales every dependent channel. An operand that cannot be
+converted passes through unscaled and is reported, never converted
+wrongly. Manual per-operand and per-definition `(gain, offset)` pairs
+sit beside that for what a database does not describe cleanly.
+
 A math signal exists from the moment its function is picked and is
 filled in field by field, each field committing as it is left — so an
 **unfinished** definition is stored rather than refused. The registry
