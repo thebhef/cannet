@@ -118,15 +118,17 @@ const renameablePanelFocused = (ctx: CommandContext) =>
   RENAMEABLE_PANEL_KINDS.includes(ctx.focusedPanelKind);
 
 /// The panel kinds that carry a find/filter box `panel.find` can focus:
-/// the plot panel's solo box, the RBS panel's tree filter, and the DBC
-/// panel's search box (a singleton, routed by its fixed panel id — see
-/// `runFocusedPanelCommand` in `useCommands.tsx`). Settings has no
-/// find/filter affordance at all, so it stays out rather than binding a
-/// key to nothing.
+/// the plot panel's solo box, the RBS panel's tree filter, and the
+/// search boxes of the Database and Settings panels. The last two are
+/// singletons with no element id of their own, so they register under
+/// their fixed panel id — see `runFocusedPanelCommand` in
+/// `useCommands.tsx`. A kind stays out of this list only when its panel
+/// has no find affordance to focus, so the chord never binds to nothing.
 export const FINDABLE_PANEL_KINDS: readonly (FocusedPanelKind | null)[] = [
   "plot",
   "rbs",
   "dbc",
+  "settings",
 ];
 const findablePanelFocused = (ctx: CommandContext) =>
   FINDABLE_PANEL_KINDS.includes(ctx.focusedPanelKind);
