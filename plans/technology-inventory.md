@@ -631,16 +631,30 @@ crate retained long-term).
     offers a conversion only within one; a test pins that every
     facade dimension is still one library-convertible family, so the
     multipliers it composes always share a base.
-  - **No dimensional algebra to ask "what is a rate times time".**
-    `UnitDefinition`'s base bitfield could in principle be multiplied,
-    but the crate exposes no such operation and no way back from a
-    computed base to a *named* unit — and naming it is the whole
-    point, since a math channel integrating amps has to be offered
-    amp-hours. So the facade carries its own rate↔integral pairing
-    table (`units::integral_of`: current × t = charge, canonical
-    coulomb; power × t = energy, canonical joule). Two entries, added
-    where a bus carries the rate; the library still supplies every
-    multiplier the pairing then converts through.
+  - **Dimensional algebra exists; the way *back* does not.**
+    Corrected 2026-09-07, replacing an earlier note here that said the
+    multiplication was missing. `UnitDefinition` *does* implement `Mul`
+    and `Div` — the base bitfield's exponents add and the multipliers
+    multiply — which is standard dimensional analysis, and is what
+    `units::Composed` is built on, so nanoampere × hour is computed
+    rather than tabulated. What the crate has no operation for is
+    **naming** the result: nothing maps a computed base back to a unit.
+    Naming it is the whole point (a math channel integrating amps has
+    to be *offered* amp-hours), so the facade searches its own table —
+    base unit × SI prefix — for the entry whose definition matches.
+    The hand-written rate/integral pairing table the earlier note
+    described is gone; composition subsumes it.
+  - **The enumerated prefix ladder stops short of the compound
+    units.** Each SI base quantity carries the whole yocto–yotta
+    ladder, but the compound entries do not: `ElectricCharge`
+    enumerates `microampere_hour` through `petaampere_hour` and no
+    `nanoampere_hour` — which is exactly the unit that prompted this
+    work. The facade takes the crate's enumerated variant where there
+    is one and composes base × 10ⁿ where there is not, and
+    `every_prefixed_variant_the_crate_enumerates_matches_the_composed_factor`
+    cross-checks the composed factor against every pair the crate does
+    enumerate (several hundred), so the two never become a second
+    source of truth.
 
   What the library is used for, then: the unit multipliers, the
   abbreviation/name spellings, and the per-quantity unit enums. Those

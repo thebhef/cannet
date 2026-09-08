@@ -1774,12 +1774,21 @@ mod tests {
     }
 
     fn math_catalog(names: &[&str]) -> Vec<MathCatalogEntry> {
+        math_catalog_with(names, &crate::units::Customizations::new())
+    }
+
+    /// [`math_catalog`] read under a customization dict — the catalog is
+    /// where a database's wording is placed, so a dict edit rebuilds it.
+    fn math_catalog_with(
+        names: &[&str],
+        customizations: &crate::units::Customizations,
+    ) -> Vec<MathCatalogEntry> {
         names
             .iter()
             .map(|name| MathCatalogEntry {
                 reference: math_operand(name),
                 path: format!("{FP_BUS}//Msg/{name}"),
-                unit: "V".to_string(),
+                unit: crate::units::UnitReading::declared("V", customizations),
             })
             .collect()
     }
@@ -1912,7 +1921,7 @@ mod tests {
         let mut definition = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
         let before = math_stamp_of(&definition, &catalog, &dbcs);
         definition.name = "Something Else".to_string();
-        definition.unit = Some("widgets".to_string());
+        definition.unit = Some("widgets".into());
         assert_eq!(math_stamp_of(&definition, &catalog, &dbcs), before);
     }
 
@@ -1973,19 +1982,23 @@ mod tests {
         let catalog: Vec<MathCatalogEntry> = math_catalog(&["A"])
             .into_iter()
             .map(|entry| MathCatalogEntry {
-                unit: "A".to_string(),
+                unit: crate::units::UnitReading::declared(
+                    "A",
+                    &crate::units::Customizations::new(),
+                ),
                 ..entry
             })
             .collect();
-        let mut definition = math_definition(MathFunction::Integration, &[math_operand("A")], &[]);
+        let mut definition =
+            math_definition(MathFunction::integration(), &[math_operand("A")], &[]);
         // No target: the operand and the output are both untouched.
         let derived = math_stamp_of(&definition, &catalog, &dbcs);
 
-        definition.unit = Some("Ah".to_string());
+        definition.unit = Some("Ah".into());
         let hours = math_stamp_of(&definition, &catalog, &dbcs);
         assert_ne!(hours, derived, "amp-hours scale the output by 1/3600");
 
-        definition.unit = Some("mAh".to_string());
+        definition.unit = Some("mAh".into());
         assert_ne!(
             math_stamp_of(&definition, &catalog, &dbcs),
             hours,
@@ -2005,14 +2018,15 @@ mod tests {
         // The catalog calls A volts; the definition asks for millivolts.
         let catalog = math_catalog(&["A"]);
         let mut definition = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
-        definition.unit = Some("mV".to_string());
+        definition.unit = Some("mV".into());
         let stock = math_stamp_of(&definition, &catalog, &dbcs);
 
         // Re-reading "V" as kilovolts changes A's factor by a thousand.
         let dict: crate::units::Customizations = [("V".to_string(), "kilovolt".to_string())]
             .into_iter()
             .collect();
-        assert_ne!(math_stamp_with(&definition, &catalog, &dbcs, &dict), stock);
+        let remapped = math_catalog_with(&["A"], &dict);
+        assert_ne!(math_stamp_with(&definition, &remapped, &dbcs, &dict), stock);
     }
 
     #[test]

@@ -253,6 +253,17 @@ pub struct Project {
     /// existed. Additive; no schema-version bump.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks,
+    /// Per-signal **unit reinterpretation** ([`crate::signal_units`]):
+    /// signal identity (ADR 0038) → the unit that signal is read in,
+    /// whatever its database says. No scaling: the database's *label*
+    /// was wrong, and correcting a label does not move a number.
+    ///
+    /// Host-managed like [`Self::signal_dbc_picks`], and omitted
+    /// entirely when nothing has been reinterpreted — a project that
+    /// never needed one serialises exactly as it did before this
+    /// existed. Additive; no schema-version bump.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub signal_units: crate::signal_units::SignalUnits,
     /// The project's **math signal** definitions
     /// ([`crate::math_signals`]), by stable id and in creation order.
     ///
@@ -367,6 +378,7 @@ pub fn open_project(
             // owns them because the decoder consumes them, so the open
             // path installs the project's map wholesale.
             *state.signal_dbc_picks() = std::sync::Arc::new(p.signal_dbc_picks.clone());
+            *state.signal_units() = std::sync::Arc::new(p.signal_units.clone());
             // Take up the disk watch on this file, recording the text
             // just read as the content the app has for it (ADR 0053 §1;
             // `crate::project_watch`). Registered here rather than in
@@ -424,6 +436,7 @@ pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_s
     // The picks belong to the project that is closing, exactly as its
     // view-signal references do; a new project starts with none.
     *state.signal_dbc_picks() = std::sync::Arc::default();
+    *state.signal_units() = std::sync::Arc::default();
     // The math definitions belong to the project that is closing too.
     state.math.replace(Vec::new());
     *state.math_model_cache() = None;
@@ -465,6 +478,9 @@ pub fn save_project(
     project
         .signal_dbc_picks
         .clone_from(state.signal_dbc_picks().as_ref());
+    project
+        .signal_units
+        .clone_from(state.signal_units().as_ref());
     // Through the watch record: the file cannet just wrote *is* the open
     // project file, and the watch has to know that this write was
     // cannet's own rather than announce a change on every Save
@@ -584,6 +600,7 @@ mod tests {
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
             signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
+            signal_units: crate::signal_units::SignalUnits::new(),
             math_signals: Vec::new(),
         }
     }
@@ -1060,6 +1077,7 @@ mod tests {
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
             signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
+            signal_units: crate::signal_units::SignalUnits::new(),
             math_signals: Vec::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();
@@ -1097,6 +1115,7 @@ mod tests {
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
             signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
+            signal_units: crate::signal_units::SignalUnits::new(),
             math_signals: Vec::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();

@@ -508,6 +508,10 @@ pub(crate) fn decode_resolved<'a>(
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
     let dbs = state.databases();
+    // What each signal is *read in*: a reinterpretation the project
+    // records, and the database's own string otherwise
+    // (`crate::signal_units`).
+    let signal_units = state.signal_units_snapshot();
     // Shared enumeration with `fetch_signal_page` (per-bus assignment
     // expansion + descriptor-key dedup), so the picker catalog and the
     // signal-view rows can't disagree about what exists.
@@ -516,13 +520,18 @@ pub(crate) fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRe
     )
     .into_iter()
     .map(|(bus_id, d)| SignalDescriptorRecord {
+        unit: crate::signal_units::label_of_signal(
+            &signal_units,
+            bus_id.as_deref(),
+            (d.message_id, d.extended, &d.signal_name),
+            &d.unit,
+        ),
         bus_id,
         message_id: d.message_id,
         extended: d.extended,
         message_name: d.message_name,
         transmitter: d.transmitter,
         signal_name: d.signal_name,
-        unit: d.unit,
         is_enum: d.is_enum,
         display_hex: d.display_hex,
         decimals: d.decimals,

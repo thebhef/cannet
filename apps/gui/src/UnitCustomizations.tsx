@@ -3,9 +3,15 @@
 //
 // A DBC's unit field is free text, so the host recognises the common
 // spellings ("V", "mV", "degC", "rpm", …) built in and this setting
-// holds only what the user changed. It is the one workspace-scoped
-// setting — it interprets *this project's* databases and travels with
-// them (ADR 0042 §3) — so the panel shows the project's own rows.
+// holds only what the user changed.
+//
+// It renders **two** settings, one per scope, because the mappings live
+// at both: `unit_customizations` is workspace-scoped — it interprets
+// *this project's* databases and travels with them (ADR 0042 §3) — and
+// `unit_customizations_user` is the same map promoted to every project
+// the person opens. The host joins them, and **the project wins** where
+// both map one string. The renderer is key-agnostic: it edits whichever
+// dict its descriptor names.
 //
 // A customization is a DBC unit string mapped onto a unit the host's
 // library carries, so the add path is that pair: the spelling as the

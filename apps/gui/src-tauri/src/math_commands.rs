@@ -72,6 +72,18 @@ pub(crate) struct MathSignalRecord {
     pub unconverted: Vec<usize>,
     /// The unit the series carries: the user's, or the derived one.
     pub unit_resolved: String,
+    /// The **kind** the resolved unit belongs to — the composed
+    /// dimension for an integration or a derivative, the operands' own
+    /// for a pointwise function. What a kind-locked unit picker offers
+    /// against; `None` where nothing places it. Deliberately not called
+    /// `kind`: that is already the function's discriminant.
+    pub unit_kind: Option<crate::units::Dimension>,
+    /// What the host made of each operand's unit string,
+    /// index-parallel with `resolved_operands` — the parse state the
+    /// editor shows at edit time, which `unconverted` does not say
+    /// (an unplaceable string and a placeable one of the wrong kind
+    /// are different problems with different repairs).
+    pub recognition: Vec<math_signals::UnitRecognition>,
     /// Every bus contributing input to this series, transitively and
     /// deduped — the color chips a row wears, and what makes its label
     /// read "Math - Multiple Busses" when there is more than one. The
@@ -150,6 +162,8 @@ pub(crate) fn list_math_signals(
                 unconverted: resolved.unconverted.clone(),
                 resolved_operands: resolved.operands.clone(),
                 unit_resolved: resolved.unit.clone(),
+                unit_kind: resolved.kind,
+                recognition: resolved.recognition.clone(),
                 bus_ids: resolved.bus_ids.clone(),
                 invalid: candidate.validate().err().map(|e| e.to_string()),
                 definition: resolved.definition.clone(),
@@ -261,6 +275,11 @@ mod tests {
             unconverted: vec![1],
             operand_paths: vec!["CAN1/BMS/Cells/Cell01".to_string()],
             unit_resolved: "V".to_string(),
+            unit_kind: Some(crate::units::Dimension::Voltage),
+            recognition: vec![math_signals::UnitRecognition::Recognized {
+                unit: crate::units::UnitId::base("volt"),
+                display: "V".to_string(),
+            }],
             bus_ids: vec!["bus-a".to_string()],
             invalid: None,
             definition,
@@ -291,6 +310,12 @@ mod tests {
         assert_eq!(json["kind"], "sum");
         assert_eq!(json["arity"], "set");
         assert_eq!(json["unitResolved"], "V");
+        // The kind a unit picker locks to, and the parse state the
+        // operand chip shows — both the model's, neither re-derived.
+        assert_eq!(json["unitKind"], "voltage");
+        assert_eq!(json["recognition"][0]["state"], "recognized");
+        assert_eq!(json["recognition"][0]["unit"]["base"], "volt");
+        assert_eq!(json["recognition"][0]["display"], "V");
         assert_eq!(json["busIds"][0], "bus-a");
         assert_eq!(json["invalid"], serde_json::Value::Null);
     }

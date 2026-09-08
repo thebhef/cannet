@@ -60,7 +60,7 @@
 //! ([`MathDefinition::output_gain`], applied after the function).
 //!
 //! Convertibility accounts for the **function's time dimension**
-//! (owner ruling). [`MathFunction::Integration`] multiplies by seconds,
+//! (owner ruling). [`MathFunction::integration()`] multiplies by seconds,
 //! so a current operand asked for amp-hours is not the mismatch a
 //! pointwise comparison of dimensions makes it: the operand converts
 //! only as far as its family's canonical rate and the *output* carries
@@ -174,9 +174,36 @@ pub enum MathFunction {
     /// First-order exponential filter with time constant `tau_seconds`.
     #[serde(rename = "expfilter")]
     ExpFilter { tau_seconds: f64 },
-    /// Running integral of the operand, held between samples. The
-    /// result's unit is the operand's with `·s` appended.
-    Integration,
+    /// Running integral of the operand, held between samples.
+    ///
+    /// **Time is the function's parameter.** The output unit is the
+    /// operand's composed with [`time_unit`](Self::Integration::time_unit)
+    /// — `operand · h` derives `Ah` — and the accumulation is scaled to
+    /// match, so integrating amps over hours yields amp-hours rather
+    /// than amp-seconds relabelled.
+    Integration {
+        /// The time unit the integral accumulates in. Defaults to
+        /// seconds, which is what every definition written before this
+        /// existed deserialises to and exactly what it used to do.
+        #[serde(default = "seconds")]
+        time_unit: crate::units::UnitId,
+    },
+    /// Slope between consecutive samples: `(x - x_prev) / Δt`, with Δt
+    /// read in [`time_unit`](Self::Derivative::time_unit).
+    ///
+    /// Plain consecutive-sample slope — no smoothing and no window
+    /// (owner ruling). Smoothing is composed downstream by taking an
+    /// exponential filter over this, the same way RMS leaves its
+    /// averaging to the user.
+    ///
+    /// Its output unit is `operand / [t]`, and a division can land in a
+    /// *named* family: an `Ah` counter over `d/ds` is `Ah/s`, which is
+    /// dimensionally a current, so the picker offers `A` and the ×3600
+    /// falls out of the analysis.
+    Derivative {
+        #[serde(default = "seconds")]
+        time_unit: crate::units::UnitId,
+    },
     /// Percentage of the trailing `window_seconds` the operand spent
     /// above `threshold`.
     Duty { threshold: f64, window_seconds: f64 },
@@ -202,6 +229,24 @@ pub enum MathFunction {
 }
 
 impl MathFunction {
+    /// An integration accumulating in **seconds** — the default, and
+    /// what every definition written before the time parameter existed
+    /// means.
+    #[must_use]
+    pub fn integration() -> Self {
+        Self::Integration {
+            time_unit: seconds(),
+        }
+    }
+
+    /// A derivative per **second** — the default.
+    #[must_use]
+    pub fn derivative() -> Self {
+        Self::Derivative {
+            time_unit: seconds(),
+        }
+    }
+
     /// The wire/persistence discriminant — the same string the `kind`
     /// tag serialises as, so a listing can name a function without
     /// round-tripping the whole variant.
@@ -218,7 +263,8 @@ impl MathFunction {
             Self::Median => "median",
             Self::Range => "range",
             Self::ExpFilter { .. } => "expfilter",
-            Self::Integration => "integration",
+            Self::Integration { .. } => "integration",
+            Self::Derivative { .. } => "derivative",
             Self::Duty { .. } => "duty",
             Self::Frequency { .. } => "frequency",
             Self::Statistic { .. } => "statistic",
@@ -246,8 +292,15 @@ impl MathFunction {
             | Self::Average
             | Self::Median
             | Self::Range
-            | Self::Integration
             | Self::Rms => Vec::new(),
+            // The time unit is a *parameter*, not a label: it decides
+            // what the accumulation and the slope divide by, so it has
+            // to move the fingerprint. Mixed as seconds-per-unit, a
+            // number stable across builds where a serialised enum is
+            // not (see this vector's docs).
+            Self::Integration { time_unit } | Self::Derivative { time_unit } => {
+                vec![seconds_per(time_unit)]
+            }
             Self::Scale { gain, offset } => vec![*gain, *offset],
             Self::ExpFilter { tau_seconds } => vec![*tau_seconds],
             Self::Duty {
@@ -280,7 +333,8 @@ impl MathFunction {
             Self::Difference => Arity::Pair,
             Self::Scale { .. }
             | Self::ExpFilter { .. }
-            | Self::Integration
+            | Self::Integration { .. }
+            | Self::Derivative { .. }
             | Self::Duty { .. }
             | Self::Frequency { .. }
             | Self::Statistic { .. }
@@ -289,64 +343,108 @@ impl MathFunction {
         }
     }
 
-    /// The unit this function produces where the user has not named
-    /// one, given the operands' units (`None` for an operand whose own
-    /// unit is unknown or empty).
+    /// **The unit this function produces**, by dimensional analysis over
+    /// the operands' own units — a [`Composed`](crate::units::Composed),
+    /// which may be one named unit or a product/quotient of several.
     ///
-    /// Three rules, and nothing else guesses:
+    /// Every function derives one where analysis can name one; deriving
+    /// nothing where it can is unhelpful, so the cases are:
     ///
-    /// - a function whose result is a **fixed** physical quantity
-    ///   states it: duty is `%`, frequency is `Hz`;
-    /// - **integration** names the integral of the operand's unit where
-    ///   [`crate::units`] carries one — amps integrate into coulombs,
-    ///   watts into joules — and appends `·s` to the operand's own
-    ///   string where it does not;
-    /// - everything else inherits the operand unit when every operand
-    ///   agrees on one, and yields nothing when they disagree — a sum
-    ///   of volts and amps has no unit anyone can name.
+    /// - a function whose result is a **fixed** physical quantity states
+    ///   it: duty is `%`, frequency is `Hz`;
+    /// - **[`HLine`](Self::HLine)** has no operands to read, so it is
+    ///   `scalar` until the user names something;
+    /// - **[`Product`](Self::Product)** composes its operands' units —
+    ///   `A` by `s` is `A·s`, dimensionally a charge;
+    /// - **[`Integration`](Self::Integration)** composes the operand's
+    ///   unit with the function's time unit (`A · h` is `Ah`), and
+    ///   **[`Derivative`](Self::Derivative)** divides by it (`Ah / s`,
+    ///   dimensionally a current);
+    /// - everything else — the pointwise sets, the statistics, the
+    ///   filters, scale and RMS — **inherits** the first placed
+    ///   operand's unit, provided every other placed operand is
+    ///   like-kind and so converts to it (`mA` beside `A` derives, the
+    ///   members converting).
     ///
-    /// A product of two different units is deliberately *not* composed
-    /// (`V` · `A` is not `V·A` to this function): the user names it.
+    /// An operand the project cannot place — a blank unit, an unknown
+    /// spelling — is silence, not disagreement, so it is skipped rather
+    /// than vetoing what the placed members inherit; a wide pattern
+    /// match keeps its unit when one member arrives blank. The unplaced
+    /// member stays badged as unplaced, which is where that is
+    /// reported.
     ///
-    /// `customizations` is what reads the operand's DBC string, so an
-    /// in-house spelling the user has placed derives the same integral
-    /// the built-in one does.
+    /// The one no-derivation case is dimensionally honest: an additive
+    /// set mixing dimensions (`V` beside `A`) cannot be summed, so it
+    /// derives nothing and resolve badges its members.
+    ///
+    /// `operand_units` are **units**, not spellings: each member's has
+    /// already been placed, whether by recognition of its database's
+    /// string, by a reinterpretation the project records, or by the
+    /// target another definition names. Nothing is parsed here — a unit
+    /// recovered from its own rendering would lose exactly the ones
+    /// whose spelling recognition refuses (`C`, `Nmm`).
     #[must_use]
     pub fn derived_unit(
         &self,
-        operand_units: &[Option<&str>],
-        customizations: &crate::units::Customizations,
-    ) -> Option<String> {
+        operand_units: &[Option<crate::units::UnitId>],
+    ) -> Option<crate::units::Composed> {
+        use crate::units::{Composed, UnitId};
         match self {
-            Self::Duty { .. } => return Some("%".to_string()),
-            Self::Frequency { .. } => return Some("Hz".to_string()),
+            Self::Duty { .. } => return Some(Composed::of(UnitId::base("percent"))),
+            Self::Frequency { .. } => return Some(Composed::of(UnitId::base("hertz"))),
+            Self::HLine { .. } => return Some(Composed::of(UnitId::base("scalar"))),
             _ => {}
         }
-        let mut units = operand_units.iter().map(|u| u.filter(|s| !s.is_empty()));
-        let first = units.next().flatten()?;
-        if !units.all(|u| u == Some(first)) {
-            return None;
-        }
         match self {
-            Self::Integration => {
-                Some(integrated_unit(first, customizations).unwrap_or_else(|| format!("{first}·s")))
+            Self::Product => {
+                let mut composed = Composed::of(operand_units.first()?.clone()?);
+                for unit in operand_units.iter().skip(1) {
+                    composed = composed.times(unit.clone()?);
+                }
+                Some(composed)
             }
-            _ => Some(first.to_string()),
+            Self::Integration { time_unit } => {
+                Some(Composed::of(operand_units.first()?.clone()?).times(time_unit.clone()))
+            }
+            Self::Derivative { time_unit } => {
+                Some(Composed::of(operand_units.first()?.clone()?).over(time_unit.clone()))
+            }
+            _ => {
+                // Pointwise: the first *placed* member's unit, and only
+                // where every other placed member converts to it. That
+                // is what makes a mixed `mA`/`A` set derive at all —
+                // resolve then converts the members to what was
+                // derived. Members the project cannot place are skipped
+                // rather than fatal: silence is not a dimension
+                // disagreement, and one blank unit in a wide pattern
+                // must not cost the rest their unit. They stay badged
+                // as unplaced, which is where that is reported.
+                let mut placed = operand_units.iter().flatten();
+                let first = placed.next()?.clone();
+                for unit in placed {
+                    crate::units::convert_units(unit, &first)?;
+                }
+                Some(Composed::of(first))
+            }
         }
     }
 }
 
-/// The unit an integral of `unit` carries, where the facade names one.
+/// The default time unit of [`MathFunction::integration()`] and
+/// [`MathFunction::Derivative`]: seconds, which is what a definition
+/// written before the parameter existed always meant.
+fn seconds() -> crate::units::UnitId {
+    crate::units::UnitId::base("second")
+}
+
+/// How many seconds one of `time_unit` is — the number the kernels
+/// divide and multiply by, and the one the fingerprint mixes.
 ///
-/// Only where `unit` **is** its family's canonical rate: nothing
-/// converts when no target unit is set, so integrating milliamps
-/// produces milliampere-seconds — millicoulombs, which the unit table
-/// does not carry — and a label reading `coulomb` would be a hundredth
-/// of a lie per sample. That case keeps the `·s` suffix, which is true.
-fn integrated_unit(unit: &str, customizations: &crate::units::Customizations) -> Option<String> {
-    let id = crate::units::recognize(unit, customizations)?;
-    let pairing = crate::units::integral_of(id)?;
-    (pairing.rate == id).then(|| pairing.integral.to_string())
+/// One for anything that is not a time at all, which is what a
+/// hand-edited project file can carry: a definition whose time unit
+/// names no unit behaves exactly as it did before the parameter existed.
+fn seconds_per(time_unit: &crate::units::UnitId) -> f64 {
+    crate::units::convert_units(time_unit, &seconds()).map_or(1.0, |a| a.gain)
 }
 
 /// A reference to one operand series, mirroring the series key's four
@@ -509,6 +607,74 @@ pub struct MathOperands {
     pub patterns: Vec<String>,
 }
 
+/// What a definition names as its unit: **the typed form**, or a
+/// spelling.
+///
+/// Units are typed values in the model and strings exist only at the
+/// DBC-ingest boundary, so a picker commits [`Self::Typed`] and that is
+/// what persists. [`Self::Spelled`] is the other two cases, and both are
+/// read rather than written: a project file saved before the typed form
+/// existed, and the free-text "not in the library" path, which has
+/// always been a **label** rather than a unit.
+///
+/// `serde(untagged)`, so the two are told apart by shape — a JSON string
+/// is a spelling, an object is a typed unit — and neither an old file
+/// nor a new one needs a version marker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum UnitTarget {
+    Typed(crate::units::UnitId),
+    Spelled(String),
+}
+
+impl From<&str> for UnitTarget {
+    /// A spelling, which is what a database and a free-text field carry.
+    fn from(raw: &str) -> Self {
+        Self::Spelled(raw.to_string())
+    }
+}
+
+impl From<crate::units::UnitId> for UnitTarget {
+    fn from(unit: crate::units::UnitId) -> Self {
+        Self::Typed(unit)
+    }
+}
+
+impl UnitTarget {
+    /// The unit this names, where anything places it: the typed form
+    /// directly, and a spelling through [`crate::units::recognize`] —
+    /// which is the one place a string becomes a unit.
+    #[must_use]
+    pub fn resolve(
+        &self,
+        customizations: &crate::units::Customizations,
+    ) -> Option<crate::units::UnitId> {
+        match self {
+            Self::Typed(unit) => crate::units::dimension_of(unit).map(|_| unit.clone()),
+            Self::Spelled(raw) => crate::units::recognize(raw, customizations),
+        }
+    }
+
+    /// How this reads on a label, whether or not anything places it —
+    /// an unrecognised spelling is still what the user typed.
+    #[must_use]
+    pub fn spelling(&self, customizations: &crate::units::Customizations) -> String {
+        match self {
+            Self::Typed(unit) => crate::units::display_of(unit),
+            Self::Spelled(raw) => self
+                .resolve(customizations)
+                .map_or_else(|| raw.clone(), |u| crate::units::display_of(&u)),
+        }
+    }
+
+    /// Whether this names nothing at all — an empty spelling, which is
+    /// what an editor commits when the field is cleared.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::Spelled(raw) if raw.is_empty())
+    }
+}
+
 /// One math signal, as it is defined and as it persists.
 ///
 /// This is the record the project file stores and the registry owns.
@@ -525,16 +691,15 @@ pub struct MathDefinition {
     /// selection; a pattern-only set may default to `fn(pattern)`,
     /// which [`default_name`] spells.
     pub name: String,
-    /// The unit the user typed. `None` means "derive it" —
+    /// The unit the user chose. `None` means "derive it" —
     /// [`MathFunction::derived_unit`] over the operands' units.
     ///
     /// It is also the **conversion target** (owner ruling, ADR-free —
-    /// see this module's `Units` section): set and recognised by
-    /// [`crate::units::recognize`], every operand whose own unit is
-    /// recognised converts to it; unset or unrecognised, nothing
-    /// converts and the samples are the operands' own.
+    /// see this module's `Units` section): where it places a unit, every
+    /// operand whose own unit is recognised converts to it; where it
+    /// does not, nothing converts and the samples are the operands' own.
     #[serde(default)]
-    pub unit: Option<String>,
+    pub unit: Option<UnitTarget>,
     /// Gain applied to this series' **output**, after the function.
     /// `None` is 1. Distinct from [`MathFunction::Scale`], which is a
     /// function in its own right and mints its own series; this is a
@@ -774,9 +939,29 @@ impl MathDefinition {
 pub struct MathCatalogEntry {
     pub reference: MathOperandRef,
     pub path: String,
-    /// The signal's unit, for [`MathFunction::derived_unit`]. Empty
-    /// where the database names none.
-    pub unit: String,
+    /// **The unit that signal is read in**, for
+    /// [`MathFunction::derived_unit`] — the unit itself and how it
+    /// reads, never a spelling something downstream has to place again
+    /// (`crate::units::UnitReading`). Blank where nothing names one.
+    pub unit: crate::units::UnitReading,
+}
+
+/// What the host made of one operand's unit string — the parse state an
+/// editor shows beside the operand, before any conversion is attempted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum UnitRecognition {
+    /// The operand's database names no unit. Ordinary, not a defect.
+    Blank,
+    /// Its unit string places a unit.
+    Recognized {
+        unit: crate::units::UnitId,
+        /// How that unit reads — what a chip shows.
+        display: String,
+    },
+    /// Its unit string is not one this project can place. The repair is
+    /// a mapping in Settings → Units, or a source-unit override here.
+    Unrecognized { spelling: String },
 }
 
 /// One definition with its membership resolved against a live catalog.
@@ -819,12 +1004,30 @@ pub struct ResolvedMath {
     pub unconverted: Vec<usize>,
     /// The definition's output `(gain, offset)`, applied after the
     /// function — the manual pair the user typed, followed by the
-    /// conversion an [integration](MathFunction::Integration) needs to
+    /// conversion an [integration](MathFunction::integration()) needs to
     /// land in a target unit its operand only reaches *through time*
     /// (coulombs to amp-hours).
     pub output_affine: crate::units::Affine,
     /// The unit the series carries: the user's, or the derived one.
     pub unit: String,
+    /// The **kind** the series' unit belongs to — the composed dimension
+    /// for an integration or a derivative, the operands' own for a
+    /// pointwise function. `None` where nothing places it.
+    ///
+    /// This is what locks the override picker: an integration of a
+    /// current is a charge, so the picker offers charges and nothing
+    /// else. Derived here rather than in the picker, because the
+    /// composition that names it is the model's (`CLAUDE.md`).
+    pub kind: Option<crate::units::Dimension>,
+    /// **What the host made of each operand's unit string**,
+    /// index-parallel with [`Self::operands`].
+    ///
+    /// Convertibility is not the whole story at edit time: an operand
+    /// whose unit string nothing recognises and one whose unit measures
+    /// the wrong thing are different problems with different repairs
+    /// (a customization in Settings → Units, versus a source-unit
+    /// override on the row). The editor shows which.
+    pub recognition: Vec<UnitRecognition>,
     /// Every bus that contributes input to this series, **transitively**
     /// and deduped, in bus-id order.
     ///
@@ -920,9 +1123,9 @@ impl MathModel {
                     picked.push(MathOperand::new(entry.reference.clone()));
                 }
             }
-            let units: Vec<Option<&str>> = operands
+            let units: Vec<crate::units::UnitReading> = operands
                 .iter()
-                .map(|r| operand_unit(r, catalog, definitions))
+                .map(|r| operand_unit(r, catalog, definitions, customizations))
                 .collect();
             let operand_paths: Vec<String> = operands
                 .iter()
@@ -934,17 +1137,22 @@ impl MathModel {
                         .unwrap_or_default()
                 })
                 .collect();
-            let unit = definition
-                .unit
-                .clone()
-                .filter(|u| !u.is_empty())
-                .or_else(|| definition.function.derived_unit(&units, customizations))
-                .unwrap_or_default();
+            let placed: Vec<Option<crate::units::UnitId>> =
+                units.iter().map(|u| u.unit.clone()).collect();
+            let derived = definition.function.derived_unit(&placed);
+            let (target, unit, kind) = labelling(definition, derived.as_ref(), customizations);
+            let recognition = units.iter().map(recognition_of).collect();
             let Scaling {
                 operands: operand_affines,
                 unconverted,
                 output: output_affine,
-            } = effective_affines(definition, &picked, &units, customizations);
+            } = effective_affines(
+                definition,
+                &picked,
+                &placed,
+                derived.as_ref(),
+                target.as_ref(),
+            );
             model.order.push(definition.id.clone());
             model.by_id.insert(
                 definition.id.clone(),
@@ -956,6 +1164,8 @@ impl MathModel {
                     unconverted,
                     output_affine,
                     unit,
+                    kind,
+                    recognition,
                     // Filled below: a definition may read one listed
                     // after it, so attribution needs the whole model.
                     bus_ids: Vec::new(),
@@ -1075,6 +1285,62 @@ impl MathModel {
     }
 }
 
+/// What a definition's unit **reads as**, what it converts **to**, and
+/// what **kind** that is.
+///
+/// The label is the user's choice spelled where they made one — and a
+/// free-text unit the library does not carry stays exactly what they
+/// typed, because that path has always been a label — and the
+/// derivation where they made none. The kind is the target's family, or
+/// the composition's, and is what locks a picker.
+fn labelling(
+    definition: &MathDefinition,
+    derived: Option<&crate::units::Composed>,
+    customizations: &crate::units::Customizations,
+) -> (
+    Option<crate::units::UnitId>,
+    String,
+    Option<crate::units::Dimension>,
+) {
+    let named = definition
+        .unit
+        .as_ref()
+        .filter(|t| !t.is_empty())
+        .map(|t| (t.resolve(customizations), t.spelling(customizations)));
+    let target = named.as_ref().and_then(|(unit, _)| unit.clone());
+    let unit = match &named {
+        Some((_, spelling)) => spelling.clone(),
+        None => derived
+            .map(crate::units::Composed::display)
+            .unwrap_or_default(),
+    };
+    let kind = target
+        .as_ref()
+        .and_then(crate::units::dimension_of)
+        .or_else(|| derived.and_then(crate::units::Composed::dimension));
+    (target, unit, kind)
+}
+
+/// What the host makes of one operand's unit — the state an editor
+/// shows, which is not the same question as convertibility.
+///
+/// A reading, not a string: the placing already happened, at ingest or
+/// at the picker, so this only reports it. `display` is the unit's own
+/// spelling where one was placed — what the host made of the database's
+/// wording — and the wording itself where nothing was.
+fn recognition_of(reading: &crate::units::UnitReading) -> UnitRecognition {
+    match &reading.unit {
+        Some(unit) => UnitRecognition::Recognized {
+            display: crate::units::display_of(unit),
+            unit: unit.clone(),
+        },
+        None if reading.display.trim().is_empty() => UnitRecognition::Blank,
+        None => UnitRecognition::Unrecognized {
+            spelling: reading.display.clone(),
+        },
+    }
+}
+
 /// What one resolve derives for a definition: an affine per operand, the
 /// indices a target unit was asked for and not reached, and the affine
 /// its output carries.
@@ -1088,28 +1354,40 @@ struct Scaling {
 /// and the indices of the members a target unit was asked for and not
 /// reached.
 ///
-/// `catalog_units` is index-parallel with `operands` — each member's
-/// unit as its database names it, or `None` where nothing does.
+/// `catalog_units` is index-parallel with `operands` — the unit each
+/// member is **read in**, already placed, or `None` where nothing
+/// places one.
+/// `derived` is what the function's own analysis produces from those
+/// units, and `target` the unit the definition names, where it names one
+/// the facade places.
 ///
-/// Three rules, and nothing else scales anything:
+/// Four rules, and nothing else scales anything:
 ///
 /// - the operand's manual `(gain, offset)` always applies, and applies
 ///   **first**: it corrects the raw value into the unit the operand
 ///   claims to be in; the definition's own output `(gain, offset)` is
 ///   the same correction on what the function computed;
-/// - if and only if the definition names a target unit the facade
-///   recognises, the conversion from that operand's own source unit
-///   (its override, else its database's string) is composed after it.
-///   A member with no source unit, or one measuring something else, is
-///   left as the manual affine alone and reported;
-/// - **integration multiplies by time**, so a target it cannot reach
-///   pointwise may still be reachable through the operand's integral —
-///   see [`integrated_conversion`].
+/// - operands convert to the target where there is one, and otherwise
+///   to the **derived** unit where the derivation is a single unit —
+///   which is what makes a mixed `mA`/`A` set compute in one unit with
+///   no target set at all;
+/// - a target the operands cannot reach pointwise may still be what the
+///   *function* produces: integrating amps over seconds is coulombs, so
+///   asking for amp-hours is ÷3600 on the **output**, and
+///   differentiating amp-hours per second is amps, so asking for `A` is
+///   ×3600. The pointwise try comes first, so a target in the operand's
+///   own family (`mA` on an amp operand) keeps pointwise semantics and
+///   integrates in milliamps;
+/// - a member a target was asked for and not reached passes through
+///   unscaled and is **reported**, as is every member of a set whose
+///   units are all placed and disagree in kind — the additive set that
+///   derives nothing.
 fn effective_affines(
     definition: &MathDefinition,
     operands: &[MathOperand],
-    catalog_units: &[Option<&str>],
-    customizations: &crate::units::Customizations,
+    catalog_units: &[Option<crate::units::UnitId>],
+    derived: Option<&crate::units::Composed>,
+    target: Option<&crate::units::UnitId>,
 ) -> Scaling {
     let mut scaling = Scaling {
         operands: Vec::with_capacity(operands.len()),
@@ -1119,97 +1397,92 @@ fn effective_affines(
             definition.output_offset.unwrap_or(0.0),
         ),
     };
-    // Unset or unrecognised means nothing converts — which is what a
-    // definition written before any of this existed does.
-    let target = definition
-        .unit
-        .as_deref()
-        .and_then(|u| crate::units::recognize(u, customizations));
+    // Where the definition names no target, the derivation is one: a
+    // set of like-kind members computes in the unit it derived, each
+    // member converting to it.
+    let asked = target.is_some();
+    let inherited = derived.and_then(crate::units::Composed::single).cloned();
+    let target = target.cloned().or(inherited);
+    let sources: Vec<Option<crate::units::UnitId>> = operands
+        .iter()
+        .enumerate()
+        .map(|(i, operand)| match operand.source_unit.as_deref() {
+            Some(id) => crate::units::typed(id),
+            None => catalog_units.get(i).cloned().flatten(),
+        })
+        .collect();
+    // An additive set whose members are all placed and do not agree in
+    // kind derives nothing — `V` beside `A` cannot be summed — and every
+    // member is badged, whether or not a target was asked for.
+    let mixed_kinds =
+        derived.is_none() && operands.len() > 1 && sources.iter().all(Option::is_some);
     for (i, operand) in operands.iter().enumerate() {
         let manual = operand.manual();
-        let Some(target) = target else {
-            scaling.operands.push(manual);
-            continue;
-        };
-        let source = match operand.source_unit.as_deref() {
-            Some(id) => crate::units::get(id).map(|u| u.id),
-            None => catalog_units
-                .get(i)
-                .copied()
-                .flatten()
-                .and_then(|u| crate::units::recognize(u, customizations)),
-        };
-        if let Some(conversion) = source.and_then(|source| crate::units::convert(source, target)) {
+        let conversion = target.as_ref().and_then(|target| {
+            sources[i]
+                .as_ref()
+                .and_then(|source| crate::units::convert_units(source, target))
+        });
+        if let Some(conversion) = conversion {
             scaling.operands.push(manual.then(conversion));
-        } else if let Some((to_rate, to_target)) =
-            integrated_conversion(&definition.function, source, target)
-        {
-            scaling.operands.push(manual.then(to_rate));
-            // The time conversion belongs to the function, so it runs
-            // after the output scalars the user typed, which correct
-            // the value the function computed in the unit it computed
-            // it in. Integration takes one operand, so no second member
-            // can want a different output.
-            scaling.output = scaling.output.then(to_target);
         } else {
-            scaling.unconverted.push(i);
             scaling.operands.push(manual);
+            if asked || mixed_kinds {
+                scaling.unconverted.push(i);
+            }
+        }
+    }
+    // Nothing reached the target pointwise, so the question becomes what
+    // the *function* produces: the composition carries the whole
+    // conversion on the output. It runs after the manual output scalars,
+    // which correct the value the function computed in the unit it
+    // computed it in.
+    if asked && !operands.is_empty() && scaling.unconverted.len() == operands.len() {
+        if let Some(conversion) = derived
+            .zip(target.as_ref())
+            .and_then(|(derived, target)| derived.convert_to(target))
+        {
+            scaling.unconverted.clear();
+            scaling.output = scaling.output.then(conversion);
         }
     }
     scaling
 }
 
-/// The two conversions that carry an [integrated](MathFunction::Integration)
-/// operand in `source` to a series in `target`, or `None` where the
-/// function is not an integration or the target is not what integrating
-/// `source` produces.
+/// The unit the signal an operand names is **read in**, for unit
+/// derivation and for the conversion to the definition's target.
 ///
-/// Owner ruling: convertibility accounts for the function's time
-/// dimension. An integration multiplies by seconds, so a current operand
-/// asked for amp-hours is not the mismatch a pointwise comparison of
-/// dimensions makes it — the question is whether *current × time*
-/// reaches the requested unit. The answer is a pair: the operand only
-/// has to reach its family's canonical rate (identity for amps, ÷1000
-/// for milliamps), and the **output** carries the canonical integral to
-/// the target (coulombs to amp-hours is ÷3600).
-///
-/// The caller tries the operand's own family first, so a target in it —
-/// `mA` on an amp operand — keeps the pointwise semantics and integrates
-/// in milliamps.
-fn integrated_conversion(
-    function: &MathFunction,
-    source: Option<&str>,
-    target: &str,
-) -> Option<(crate::units::Affine, crate::units::Affine)> {
-    if !matches!(function, MathFunction::Integration) {
-        return None;
-    }
-    let source = source?;
-    let pairing = crate::units::integral_of(source)?;
-    Some((
-        crate::units::convert(source, pairing.rate)?,
-        crate::units::convert(pairing.integral, target)?,
-    ))
-}
-
-/// The unit of the signal an operand names, for unit derivation.
-fn operand_unit<'a>(
+/// A math operand answers with its own target as a *unit* — resolved
+/// once, where the target is a spelling an old project file carries,
+/// and passed straight through where a picker committed the typed form.
+/// A catalog signal answers with the reading the catalog holds. Neither
+/// hand-off goes through a spelling: a target picked as `coulomb` reads
+/// `C`, and `C` is not a string anything can place back.
+fn operand_unit(
     reference: &MathOperandRef,
-    catalog: &'a [MathCatalogEntry],
-    definitions: &'a [MathDefinition],
-) -> Option<&'a str> {
+    catalog: &[MathCatalogEntry],
+    definitions: &[MathDefinition],
+    customizations: &crate::units::Customizations,
+) -> crate::units::UnitReading {
     if let Some(id) = reference.math_id() {
         return definitions
             .iter()
             .find(|d| d.id == id)
-            .and_then(|d| d.unit.as_deref())
-            .filter(|u| !u.is_empty());
+            .and_then(|d| d.unit.as_ref())
+            .filter(|t| !t.is_empty())
+            .map(|t| {
+                crate::units::UnitReading::placed(
+                    t.resolve(customizations),
+                    t.spelling(customizations),
+                )
+            })
+            .unwrap_or_default();
     }
     catalog
         .iter()
         .find(|e| &e.reference == reference)
-        .map(|e| e.unit.as_str())
-        .filter(|u| !u.is_empty())
+        .map(|e| e.unit.clone())
+        .unwrap_or_default()
 }
 
 /// Whether following `from`'s math operands reaches `target`, over the
@@ -1427,7 +1700,7 @@ pub fn math_identity(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::units::Affine;
+    use crate::units::{Affine, UnitId};
 
     fn def(id: &str, function: MathFunction, operands: MathOperands) -> MathDefinition {
         MathDefinition {
@@ -1477,11 +1750,34 @@ mod tests {
         MathOperandRef::dbc("bus", 256, false, name)
     }
 
+    /// A catalog entry for a signal whose database declares `unit` —
+    /// the ingest boundary, read once here as it is in the app.
     fn entry(name: &str, unit: &str) -> MathCatalogEntry {
+        entry_with(name, unit, &crate::units::Customizations::new())
+    }
+
+    /// [`entry`] under a customization dict. The dict is read **where
+    /// the catalog is built**, which is the boundary a database's
+    /// wording crosses; `set_settings` drops the math model cache, so
+    /// editing one rebuilds every entry and re-resolves every channel.
+    fn entry_with(
+        name: &str,
+        unit: &str,
+        customizations: &crate::units::Customizations,
+    ) -> MathCatalogEntry {
+        entry_reading(
+            name,
+            crate::units::UnitReading::declared(unit, customizations),
+        )
+    }
+
+    /// A catalog entry carrying a unit the project already placed —
+    /// a reinterpretation, or another definition's target.
+    fn entry_reading(name: &str, unit: crate::units::UnitReading) -> MathCatalogEntry {
         MathCatalogEntry {
             reference: sig(name),
             path: format!("bus/ECU/Msg/{name}"),
-            unit: unit.to_string(),
+            unit,
         }
     }
 
@@ -1504,7 +1800,7 @@ mod tests {
                 Arity::One,
             ),
             (MathFunction::ExpFilter { tau_seconds: 1.0 }, Arity::One),
-            (MathFunction::Integration, Arity::One),
+            (MathFunction::integration(), Arity::One),
             (
                 MathFunction::Duty {
                     threshold: 0.5,
@@ -1708,7 +2004,7 @@ mod tests {
         registry
             .define(def(
                 "m3",
-                MathFunction::Integration,
+                MathFunction::integration(),
                 picks(&[MathOperandRef::math("m2")]),
             ))
             .expect("m3 over m2");
@@ -1808,7 +2104,7 @@ mod tests {
             MathCatalogEntry {
                 reference: MathOperandRef::math("m2"),
                 path: "//Computed/m2".to_string(),
-                unit: String::new(),
+                unit: crate::units::UnitReading::default(),
             },
             entry("mA", "V"),
         ];
@@ -1824,18 +2120,22 @@ mod tests {
     }
 
     #[test]
-    fn a_uniform_set_inherits_its_operand_unit_and_a_mixed_one_does_not() {
+    fn a_uniform_set_inherits_its_operand_unit_and_a_product_composes_them() {
         let uniform = vec![def("m1", MathFunction::Sum, pattern(r"Cell\d+"))];
         let model = resolve(&uniform, &[entry("Cell01", "V"), entry("Cell02", "V")]);
         assert_eq!(model.get("m1").expect("m1").unit, "V");
 
-        let mixed = vec![def(
+        // A product is dimensional analysis, not agreement: volts by
+        // amps is `V·A`, which is a power.
+        let product = vec![def(
             "m1",
             MathFunction::Product,
             picks(&[sig("PackVolts"), sig("Current")]),
         )];
-        let model = resolve(&mixed, &[entry("PackVolts", "V"), entry("Current", "A")]);
-        assert_eq!(model.get("m1").expect("m1").unit, "");
+        let model = resolve(&product, &[entry("PackVolts", "V"), entry("Current", "A")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "V·A");
+        assert_eq!(r.kind, Some(crate::units::Dimension::Power));
     }
 
     /// The buses a math signal's row wears as color chips. A math
@@ -1907,7 +2207,7 @@ mod tests {
     fn integration_derives_a_charge_and_duty_and_frequency_state_their_own() {
         let catalog = [entry("Current", "A")];
         let cases = [
-            (MathFunction::Integration, "coulomb"),
+            (MathFunction::integration(), "A·s"),
             (
                 MathFunction::Duty {
                     threshold: 0.5,
@@ -1932,25 +2232,25 @@ mod tests {
         }
     }
 
-    /// The derived unit names the integral where the facade knows one
-    /// and keeps the `·s` suffix where it does not — the honest label
-    /// in both directions, since nothing converts when no target is set.
+    /// An integration's derived unit is the **composition**, spelled
+    /// as its factors: `A · s` reads `A·s`, not the coulomb it is
+    /// dimensionally (a contraction is used only where the named unit
+    /// spells the same thing the factors do, which is what makes
+    /// `A · h` read `Ah`). An operand the project cannot place derives
+    /// nothing at all — nothing is guessed.
     #[test]
-    fn an_integral_derives_a_real_unit_only_where_one_is_nameable() {
+    fn an_integral_derives_the_composition_of_its_operand_and_its_time_unit() {
         let cases = [
-            ("A", "coulomb"),
-            ("W", "joule"),
-            // Milliamp-seconds are millicoulombs, which the unit table
-            // does not carry — so the suffix stays rather than the
-            // label claiming coulombs the samples are not in.
+            ("A", "A·s"),
+            ("W", "W·s"),
             ("mA", "mA·s"),
-            ("widgets", "widgets·s"),
+            ("widgets", ""),
             ("V", "V·s"),
         ];
         for (unit, derived) in cases {
             let definitions = vec![def(
                 "m1",
-                MathFunction::Integration,
+                MathFunction::integration(),
                 picks(&[sig("Current")]),
             )];
             let model = resolve(&definitions, &[entry("Current", unit)]);
@@ -1964,22 +2264,343 @@ mod tests {
     fn a_customization_reaches_the_derived_integral() {
         let definitions = vec![def(
             "m1",
-            MathFunction::Integration,
+            MathFunction::integration(),
             picks(&[sig("Current")]),
         )];
         let dict: crate::units::Customizations = [("Amperes".to_string(), "ampere".to_string())]
             .into_iter()
             .collect();
-        let model = MathModel::resolve(&definitions, &[entry("Current", "Amperes")], &dict);
-        assert_eq!(model.get("m1").expect("m1").unit, "coulomb");
+        let model = MathModel::resolve(
+            &definitions,
+            &[entry_with("Current", "Amperes", &dict)],
+            &dict,
+        );
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "A·s");
+        assert_eq!(r.kind, Some(crate::units::Dimension::Charge));
     }
 
     #[test]
     fn a_user_specified_unit_wins_over_the_derived_one() {
-        let mut d = def("m1", MathFunction::Integration, picks(&[sig("Current")]));
-        d.unit = Some("C".to_string());
+        let mut d = def("m1", MathFunction::integration(), picks(&[sig("Current")]));
+        d.unit = Some("C".into());
         let model = resolve(std::slice::from_ref(&d), &[entry("Current", "A")]);
         assert_eq!(model.get("m1").expect("m1").unit, "C");
+    }
+
+    // ---- derivation, time units, the derivative, recognition state ----
+
+    /// Every function derives something. The three that state a fixed
+    /// quantity state it; the composing ones compose; everything else
+    /// inherits its operand's unit.
+    #[test]
+    fn every_function_derives_an_output_unit() {
+        let cases: &[(MathFunction, &str)] = &[
+            (MathFunction::Sum, "A"),
+            (MathFunction::Min, "A"),
+            (MathFunction::Max, "A"),
+            (MathFunction::Average, "A"),
+            (MathFunction::Median, "A"),
+            (MathFunction::Range, "A"),
+            (MathFunction::Rms, "A"),
+            (
+                MathFunction::Scale {
+                    gain: 2.0,
+                    offset: 0.0,
+                },
+                "A",
+            ),
+            (MathFunction::ExpFilter { tau_seconds: 1.0 }, "A"),
+            (
+                MathFunction::Statistic {
+                    statistic: Statistic::Mean,
+                    percentile: 0.0,
+                },
+                "A",
+            ),
+            (MathFunction::integration(), "A·s"),
+            (MathFunction::derivative(), "A/s"),
+            (
+                MathFunction::Duty {
+                    threshold: 1.0,
+                    window_seconds: 5.0,
+                },
+                "%",
+            ),
+            (
+                MathFunction::Frequency {
+                    threshold: 1.0,
+                    window_seconds: 5.0,
+                },
+                "Hz",
+            ),
+        ];
+        for (function, unit) in cases {
+            let kind = function.kind();
+            let definitions = vec![def("m1", function.clone(), picks(&[sig("Current")]))];
+            let model = resolve(&definitions, &[entry("Current", "A")]);
+            assert_eq!(model.get("m1").expect("m1").unit, *unit, "{kind}");
+        }
+        // Two operands, so they get their own definitions.
+        let pair = vec![def(
+            "m1",
+            MathFunction::Difference,
+            picks(&[sig("A1"), sig("A2")]),
+        )];
+        let model = resolve(&pair, &[entry("A1", "A"), entry("A2", "A")]);
+        assert_eq!(model.get("m1").expect("m1").unit, "A");
+        // HLine has no operand to read, so it is a bare number.
+        let hline = vec![def("m1", MathFunction::HLine { value: 1.0 }, picks(&[]))];
+        assert_eq!(resolve(&hline, &[]).get("m1").expect("m1").unit, "scalar");
+    }
+
+    /// The exit criterion: a set whose members are like-kind converts
+    /// and inherits **with no target set at all** â the derivation is
+    /// what the members are summed in.
+    #[test]
+    fn a_mixed_like_kind_set_converts_to_the_unit_it_derives() {
+        let definitions = vec![def("m1", MathFunction::Sum, pattern("Cell"))];
+        let model = resolve(&definitions, &[entry("CellA", "A"), entry("CellB", "mA")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "A");
+        assert_eq!(
+            r.operand_affines,
+            [Affine::IDENTITY, Affine::new(0.001, 0.0)]
+        );
+        assert!(r.unconverted.is_empty(), "{:?}", r.unconverted);
+    }
+
+    /// â¦and the honest opposite: an additive set mixing dimensions
+    /// cannot be summed, so it derives nothing and every member is
+    /// badged.
+    #[test]
+    fn an_additive_set_mixing_dimensions_derives_nothing_and_badges_its_members() {
+        let definitions = vec![def("m1", MathFunction::Sum, pattern("Any"))];
+        let model = resolve(
+            &definitions,
+            &[entry("AnyVolts", "V"), entry("AnyAmps", "A")],
+        );
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "");
+        assert_eq!(r.kind, None);
+        assert_eq!(r.unconverted, [0, 1]);
+    }
+
+    /// A member the project cannot place is **not** a dimension
+    /// disagreement — it is silence — so it does not veto what the
+    /// members that *are* placed inherit. A wide pattern picks up a
+    /// blank-unit signal sooner or later; the set still derives the
+    /// volts its recognized members agree on, wherever the silent one
+    /// falls in the order.
+    #[test]
+    fn an_unplaced_member_does_not_veto_the_unit_its_set_inherits() {
+        let definitions = vec![def("m1", MathFunction::Range, pattern("Cell"))];
+        // The unplaced member first, in the middle, and last: the
+        // inherited unit is the same one every time.
+        let cases: [&[(&str, &str)]; 3] = [
+            &[("CellA", ""), ("CellB", "V"), ("CellC", "mV")],
+            &[("CellA", "V"), ("CellB", "widgets"), ("CellC", "mV")],
+            &[("CellA", "V"), ("CellB", "mV"), ("CellC", "")],
+        ];
+        for case in cases {
+            let catalog: Vec<MathCatalogEntry> = case.iter().map(|(n, u)| entry(n, u)).collect();
+            let model = resolve(&definitions, &catalog);
+            assert_eq!(model.get("m1").expect("m1").unit, "V", "{case:?}");
+        }
+
+        // And a pattern-fed set derives exactly what the same members
+        // picked by hand derive — membership is membership.
+        let picked = vec![def(
+            "m1",
+            MathFunction::Range,
+            picks(&[sig("CellA"), sig("CellB")]),
+        )];
+        let catalog = [entry("CellA", ""), entry("CellB", "V")];
+        assert_eq!(resolve(&picked, &catalog).get("m1").expect("m1").unit, "V");
+    }
+
+    /// The other side of that line: silence is forgiven, disagreement
+    /// is not. A set that mixes `V` with `A` derives nothing whether or
+    /// not an unplaced member sits beside them.
+    #[test]
+    fn an_unplaced_member_does_not_rescue_a_set_that_mixes_dimensions() {
+        let definitions = vec![def("m1", MathFunction::Sum, pattern("Any"))];
+        let model = resolve(
+            &definitions,
+            &[
+                entry("AnyBlank", ""),
+                entry("AnyVolts", "V"),
+                entry("AnyAmps", "A"),
+            ],
+        );
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "");
+        assert_eq!(r.kind, None);
+    }
+
+    /// Time is the function's parameter: `operand · h` derives `Ah`,
+    /// which is just `A · h` spelled the familiar way.
+    #[test]
+    fn an_integration_follows_its_function_row_time_unit() {
+        let hours = MathFunction::Integration {
+            time_unit: crate::units::UnitId::base("hour"),
+        };
+        let definitions = vec![def("m1", hours, picks(&[sig("Current")]))];
+        let model = resolve(&definitions, &[entry("Current", "A")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "Ah");
+        assert_eq!(r.kind, Some(crate::units::Dimension::Charge));
+        // Nothing is asked for, so nothing converts â the kernel
+        // accumulates in hours instead.
+        assert_eq!(r.operand_affines, [Affine::IDENTITY]);
+        assert!(r.output_affine.is_identity(), "{:?}", r.output_affine);
+    }
+
+    /// The derivative's unit is `operand / [t]`, and the division lands
+    /// in a **named** family: an `Ah` counter over `d/ds` is `Ah/s`,
+    /// dimensionally a current â so `A` is reachable, at ×3600.
+    #[test]
+    fn a_derivative_of_an_amp_hour_counter_reaches_amps() {
+        let mut d = def("m1", MathFunction::derivative(), picks(&[sig("Charge")]));
+        let model = resolve(std::slice::from_ref(&d), &[entry("Charge", "Ah")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "Ah/s");
+        assert_eq!(r.kind, Some(crate::units::Dimension::Current));
+
+        d.unit = Some("A".into());
+        let model = resolve(std::slice::from_ref(&d), &[entry("Charge", "Ah")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "A");
+        assert!(r.unconverted.is_empty(), "{:?}", r.unconverted);
+        assert_eq!(r.operand_affines, [Affine::IDENTITY]);
+        assert!(
+            (r.output_affine.gain - 3600.0).abs() < 1e-9,
+            "{:?}",
+            r.output_affine
+        );
+    }
+
+    /// The composition the crate never enumerates, end to end: a
+    /// nanoamp operand integrated over hours is `nAh`, and asking for
+    /// `Ah` is the billionth the analysis produces.
+    #[test]
+    fn a_nanoamp_integrated_over_hours_is_a_nanoamp_hour_and_reaches_amp_hours() {
+        let hours = MathFunction::Integration {
+            time_unit: crate::units::UnitId::base("hour"),
+        };
+        let mut d = def("m1", hours, picks(&[sig("Leak")]));
+        let model = resolve(std::slice::from_ref(&d), &[entry("Leak", "nA")]);
+        assert_eq!(model.get("m1").expect("m1").unit, "nAh");
+
+        d.unit = Some("Ah".into());
+        let model = resolve(std::slice::from_ref(&d), &[entry("Leak", "nA")]);
+        let r = model.get("m1").expect("m1");
+        assert!(r.unconverted.is_empty(), "{:?}", r.unconverted);
+        let whole = r.operand_affines[0].gain * r.output_affine.gain;
+        assert!((1.0 - whole / 1e-9).abs() < 1e-9, "{whole}");
+    }
+
+    /// **Recognition state, per operand.** Convertibility is not the
+    /// whole story at edit time: an unplaceable unit string and a
+    /// placeable one of the wrong kind are different problems.
+    #[test]
+    fn resolve_reports_each_operands_recognition_state() {
+        let definitions = vec![def("m1", MathFunction::Sum, pattern("Any"))];
+        let model = resolve(
+            &definitions,
+            &[
+                entry("AnyAmps", "mA"),
+                entry("AnyBlank", ""),
+                entry("AnyOdd", "widgets"),
+            ],
+        );
+        let r = model.get("m1").expect("m1");
+        assert_eq!(
+            r.recognition,
+            [
+                UnitRecognition::Recognized {
+                    unit: crate::units::UnitId::new("ampere", crate::units::Prefix::Milli),
+                    display: "mA".to_string(),
+                },
+                UnitRecognition::Blank,
+                UnitRecognition::Unrecognized {
+                    spelling: "widgets".to_string(),
+                },
+            ]
+        );
+    }
+
+    /// A customization changes the parse state, which is what makes the
+    /// editor's chip clear itself when the user maps the string.
+    #[test]
+    fn a_customization_moves_an_operand_from_unrecognised_to_recognised() {
+        let definitions = vec![def("m1", MathFunction::Sum, picks(&[sig("Odd")]))];
+        let plain = MathModel::resolve(
+            &definitions,
+            &[entry("Odd", "Amperes")],
+            &crate::units::Customizations::new(),
+        );
+        assert!(matches!(
+            plain.get("m1").expect("m1").recognition[0],
+            UnitRecognition::Unrecognized { .. }
+        ));
+        let dict: crate::units::Customizations = [("Amperes".to_string(), "ampere".to_string())]
+            .into_iter()
+            .collect();
+        let mapped =
+            MathModel::resolve(&definitions, &[entry_with("Odd", "Amperes", &dict)], &dict);
+        assert!(matches!(
+            mapped.get("m1").expect("m1").recognition[0],
+            UnitRecognition::Recognized { .. }
+        ));
+    }
+
+    /// **Old files load unchanged.** A definition written before the
+    /// time parameter and the typed unit existed deserialises to
+    /// seconds and to a spelling, and means exactly what it did.
+    #[test]
+    fn an_old_definition_deserialises_to_seconds_and_a_spelled_unit() {
+        let json = r#"{
+            "id": "m1", "name": "Charge", "unit": "Ah",
+            "function": {"kind": "integration"},
+            "operands": {"picks": [], "patterns": []}
+        }"#;
+        let d: MathDefinition = serde_json::from_str(json).expect("old definition");
+        assert_eq!(d.function, MathFunction::integration());
+        assert_eq!(d.unit, Some(UnitTarget::Spelled("Ah".to_string())));
+        assert_eq!(d.function.parameters(), [1.0]);
+    }
+
+    /// â¦and a definition saved with the typed form round-trips.
+    #[test]
+    fn a_typed_unit_target_round_trips_through_json() {
+        let mut d = def("m1", MathFunction::derivative(), picks(&[sig("Charge")]));
+        d.unit = Some(UnitTarget::Typed(crate::units::UnitId::new(
+            "ampere-hour",
+            crate::units::Prefix::Nano,
+        )));
+        let json = serde_json::to_string(&d).expect("serialize");
+        let back: MathDefinition = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, d);
+        // A typed target places a unit the same way a spelling does.
+        let model = resolve(std::slice::from_ref(&d), &[entry("Charge", "Ah")]);
+        assert_eq!(model.get("m1").expect("m1").unit, "nAh");
+    }
+
+    /// The time unit is a parameter, so changing it moves the
+    /// fingerprint's parameter vector and rebuilds the series.
+    #[test]
+    fn the_time_unit_is_a_parameter_the_fingerprint_reads() {
+        assert_eq!(MathFunction::integration().parameters(), [1.0]);
+        assert_eq!(
+            MathFunction::Integration {
+                time_unit: crate::units::UnitId::base("hour"),
+            }
+            .parameters(),
+            [3600.0]
+        );
+        assert_eq!(MathFunction::derivative().kind(), "derivative");
+        assert_eq!(MathFunction::derivative().arity(), Arity::One);
     }
 
     #[test]
@@ -2001,7 +2622,7 @@ mod tests {
             def("m1", MathFunction::Rms, picks(&[sig("A")])),
             def(
                 "m2",
-                MathFunction::Integration,
+                MathFunction::integration(),
                 picks(&[MathOperandRef::math("m1")]),
             ),
             def(
@@ -2025,7 +2646,7 @@ mod tests {
     #[test]
     fn a_target_unit_converts_each_member_by_its_own_factor() {
         let mut d = def("m1", MathFunction::Sum, pattern("Cell"));
-        d.unit = Some("A".to_string());
+        d.unit = Some("A".into());
         let model = resolve(&[d], &[entry("CellA", "A"), entry("CellB", "mA")]);
         let r = model.get("m1").expect("m1");
         assert_eq!(names(&model, "m1"), ["CellA", "CellB"]);
@@ -2051,7 +2672,7 @@ mod tests {
         let bare = crate::units::get("ratio").expect("the bare ratio").display;
         for (target, gain) in [(bare, 1.0), ("%", 100.0), ("ppm", 1e6)] {
             let mut d = def("m1", MathFunction::Sum, pattern("Cell"));
-            d.unit = Some(target.to_string());
+            d.unit = Some(UnitTarget::from(target));
             let model = resolve(&[d], &[entry("CellA", bare), entry("CellB", bare)]);
             let r = model.get("m1").expect("m1");
             assert!(r.unconverted.is_empty(), "{target}: {:?}", r.unconverted);
@@ -2075,7 +2696,7 @@ mod tests {
     fn a_database_declaring_the_ratio_percent_spelling_reads_at_the_bare_scale() {
         for (declared, target, gain) in [("%1.0", "%", 100.0), ("%", "%1.0", 0.01)] {
             let mut d = def("m1", MathFunction::Sum, pattern("Cell"));
-            d.unit = Some(target.to_string());
+            d.unit = Some(UnitTarget::from(target));
             let model = resolve(&[d], &[entry("CellA", declared)]);
             let r = model.get("m1").expect("m1");
             assert!(
@@ -2091,22 +2712,26 @@ mod tests {
         }
     }
 
-    /// Unset or unrecognised, the unit is a label and nothing converts —
-    /// which is exactly what every definition written before any of
-    /// this existed does.
+    /// A unit string the library does not carry is a **label**: it names
+    /// the series and changes no number. What the members are summed in
+    /// is the derivation's answer, not the label's.
     #[test]
-    fn no_target_unit_means_no_conversion() {
-        for unit in [None, Some("widgets".to_string())] {
+    fn an_unplaceable_label_names_the_series_and_converts_nothing() {
+        for unit in [None, Some(UnitTarget::from("widgets"))] {
             let mut d = def("m1", MathFunction::Sum, pattern("Cell"));
             d.unit.clone_from(&unit);
-            let model = resolve(&[d], &[entry("CellA", "A"), entry("CellB", "mA")]);
+            let model = resolve(
+                &[d],
+                &[entry("CellA", "widgets"), entry("CellB", "widgets")],
+            );
             let r = model.get("m1").expect("m1");
             assert_eq!(
                 r.operand_affines,
                 [Affine::IDENTITY, Affine::IDENTITY],
                 "{unit:?}"
             );
-            // Nothing was asked for, so nothing is reported as missed.
+            // Nothing was asked for and nothing was placed, so nothing
+            // is reported as missed.
             assert!(r.unconverted.is_empty(), "{unit:?}");
         }
     }
@@ -2118,7 +2743,7 @@ mod tests {
     #[test]
     fn an_unconvertible_member_passes_through_unscaled_and_is_reported() {
         let mut d = def("m1", MathFunction::Sum, pattern("Cell"));
-        d.unit = Some("A".to_string());
+        d.unit = Some("A".into());
         let model = resolve(
             &[d],
             &[
@@ -2139,13 +2764,99 @@ mod tests {
     #[test]
     fn a_source_unit_override_converts_a_mislabelled_operand() {
         let mut d = def("m1", MathFunction::Sum, picks(&[sig("Cell")]));
-        d.unit = Some("A".to_string());
+        d.unit = Some("A".into());
         d.operands.picks[0].source_unit = Some("milliampere".to_string());
         // The database calls it nothing the host knows; the override is
         // what makes it convertible, and it is local to this definition.
         let model = resolve(&[d], &[entry("Cell", "widgets")]);
         let r = model.get("m1").expect("m1");
         assert_eq!(r.operand_affines, [Affine::new(0.001, 0.0)]);
+        assert!(r.unconverted.is_empty());
+    }
+
+    /// **A unit chosen in the model is a unit, not the string it reads
+    /// as.** A signal the project reinterpreted as coulomb converts as
+    /// a coulomb even though `C` is deliberately absent from the
+    /// recognition table (it would be a guess against Celsius).
+    #[test]
+    fn a_reinterpreted_charge_operand_converts_to_the_target_it_was_given() {
+        let store: crate::signal_units::SignalUnits =
+            [("bus|s:256:Q".to_string(), UnitId::base("coulomb"))]
+                .into_iter()
+                .collect();
+        let reinterpreted = crate::signal_units::unit_of(
+            &store,
+            "bus|s:256:Q",
+            "A",
+            &crate::units::Customizations::new(),
+        );
+        assert_eq!(reinterpreted.display, "C", "it still reads as C");
+        let mut d = def("m1", MathFunction::Sum, picks(&[sig("Q")]));
+        d.unit = Some(UnitTarget::Typed(UnitId::new(
+            "coulomb",
+            crate::units::Prefix::Milli,
+        )));
+        let model = resolve(&[d], &[entry_reading("Q", reinterpreted)]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.operand_affines, [Affine::new(1000.0, 0.0)]);
+        assert!(r.unconverted.is_empty());
+    }
+
+    /// The same, for the other unit whose spelling recognition refuses:
+    /// `newton-millimeter` reads `Nmm`.
+    #[test]
+    fn a_reinterpreted_torque_operand_converts_to_the_target_it_was_given() {
+        let store: crate::signal_units::SignalUnits = [(
+            "bus|s:256:T".to_string(),
+            UnitId::new("newton-meter", crate::units::Prefix::Milli),
+        )]
+        .into_iter()
+        .collect();
+        let reinterpreted = crate::signal_units::unit_of(
+            &store,
+            "bus|s:256:T",
+            "Nm",
+            &crate::units::Customizations::new(),
+        );
+        assert_eq!(reinterpreted.display, "Nmm", "it still reads as Nmm");
+        let mut d = def("m1", MathFunction::Sum, picks(&[sig("T")]));
+        d.unit = Some(UnitTarget::Typed(UnitId::base("newton-meter")));
+        let model = resolve(&[d], &[entry_reading("T", reinterpreted)]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.operand_affines, [Affine::new(0.001, 0.0)]);
+        assert!(r.unconverted.is_empty());
+    }
+
+    /// An integration of amps targeted at coulombs is the conversion
+    /// the *function* produces, and it costs nothing.
+    #[test]
+    fn an_integration_of_amps_targeted_at_coulombs_converts_on_the_output() {
+        let mut d = def("m1", MathFunction::integration(), picks(&[sig("I")]));
+        d.unit = Some(UnitTarget::Typed(UnitId::base("coulomb")));
+        let model = resolve(&[d], &[entry("I", "A")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.output_affine, Affine::IDENTITY);
+        assert!(r.unconverted.is_empty());
+    }
+
+    /// A definition hands its own target on to the definitions that
+    /// read it as a **unit**, so a chain through coulombs converts.
+    #[test]
+    fn a_definition_targeted_at_coulombs_hands_that_unit_to_its_readers() {
+        let mut source = def("m1", MathFunction::integration(), picks(&[sig("I")]));
+        source.unit = Some(UnitTarget::Typed(UnitId::base("coulomb")));
+        let mut consumer = def(
+            "m2",
+            MathFunction::Sum,
+            picks(&[MathOperandRef::math("m1")]),
+        );
+        consumer.unit = Some(UnitTarget::Typed(UnitId::new(
+            "coulomb",
+            crate::units::Prefix::Milli,
+        )));
+        let model = resolve(&[source, consumer], &[entry("I", "A")]);
+        let r = model.get("m2").expect("m2");
+        assert_eq!(r.operand_affines, [Affine::new(1000.0, 0.0)]);
         assert!(r.unconverted.is_empty());
     }
 
@@ -2167,7 +2878,7 @@ mod tests {
     #[test]
     fn a_manual_scalar_composes_ahead_of_the_conversion() {
         let mut d = def("m1", MathFunction::Sum, picks(&[sig("Cell")]));
-        d.unit = Some("A".to_string());
+        d.unit = Some("A".into());
         d.operands.picks[0].gain = Some(0.5);
         let model = resolve(&[d], &[entry("Cell", "mA")]);
         let affine = model.get("m1").expect("m1").operand_affines[0];
@@ -2181,8 +2892,8 @@ mod tests {
     /// the canonical integral to what the user asked for.
     #[test]
     fn integrating_a_current_reaches_a_charge_through_time() {
-        let mut d = def("m1", MathFunction::Integration, picks(&[sig("Current")]));
-        d.unit = Some("Ah".to_string());
+        let mut d = def("m1", MathFunction::integration(), picks(&[sig("Current")]));
+        d.unit = Some("Ah".into());
         let model = resolve(std::slice::from_ref(&d), &[entry("Current", "A")]);
         let r = model.get("m1").expect("m1");
         // Amps are already the canonical rate, so the operand is
@@ -2195,27 +2906,25 @@ mod tests {
         assert!((out.offset).abs() < 1e-15, "{out:?}");
     }
 
-    /// Both halves at once: the operand reaches amps, the output
-    /// reaches amp-hours.
+    /// A milliamp operand reaches amp-hours too, and by the whole
+    /// factor: the composition `mA · s` is what converts, so the
+    /// thousandth and the 3600th ride the output together and the
+    /// operand's samples stay in the unit its database names.
     #[test]
-    fn a_milliamp_operand_integrates_into_amp_hours_by_both_factors() {
-        let mut d = def("m1", MathFunction::Integration, picks(&[sig("Current")]));
-        d.unit = Some("Ah".to_string());
+    fn a_milliamp_operand_integrates_into_amp_hours() {
+        let mut d = def("m1", MathFunction::integration(), picks(&[sig("Current")]));
+        d.unit = Some("Ah".into());
         let model = resolve(std::slice::from_ref(&d), &[entry("Current", "mA")]);
         let r = model.get("m1").expect("m1");
-        assert_eq!(r.operand_affines, [Affine::new(0.001, 0.0)]);
         assert!(r.unconverted.is_empty(), "{:?}", r.unconverted);
-        assert!(
-            (r.output_affine.gain - 1.0 / 3600.0).abs() < 1e-15,
-            "{:?}",
-            r.output_affine
-        );
+        let whole = r.operand_affines[0].gain * r.output_affine.gain;
+        assert!((whole - 0.001 / 3600.0).abs() < 1e-18, "{whole}");
     }
 
     #[test]
     fn integrating_a_power_reaches_an_energy() {
-        let mut d = def("m1", MathFunction::Integration, picks(&[sig("Power")]));
-        d.unit = Some("kWh".to_string());
+        let mut d = def("m1", MathFunction::integration(), picks(&[sig("Power")]));
+        d.unit = Some("kWh".into());
         let model = resolve(std::slice::from_ref(&d), &[entry("Power", "W")]);
         let r = model.get("m1").expect("m1");
         assert_eq!(r.operand_affines, [Affine::IDENTITY]);
@@ -2232,8 +2941,8 @@ mod tests {
     /// (The owner's workaround before the ruling, which stays valid.)
     #[test]
     fn a_target_in_the_operands_own_family_still_converts_the_operand() {
-        let mut d = def("m1", MathFunction::Integration, picks(&[sig("Current")]));
-        d.unit = Some("mA".to_string());
+        let mut d = def("m1", MathFunction::integration(), picks(&[sig("Current")]));
+        d.unit = Some("mA".into());
         let model = resolve(std::slice::from_ref(&d), &[entry("Current", "A")]);
         let r = model.get("m1").expect("m1");
         assert_eq!(r.operand_affines, [Affine::new(1000.0, 0.0)]);
@@ -2245,8 +2954,8 @@ mod tests {
     /// which still passes through unscaled and is still reported.
     #[test]
     fn an_integration_target_of_another_dimension_is_still_unconverted() {
-        let mut d = def("m1", MathFunction::Integration, picks(&[sig("Current")]));
-        d.unit = Some("V".to_string());
+        let mut d = def("m1", MathFunction::integration(), picks(&[sig("Current")]));
+        d.unit = Some("V".into());
         let model = resolve(std::slice::from_ref(&d), &[entry("Current", "A")]);
         let r = model.get("m1").expect("m1");
         assert_eq!(r.unconverted, [0]);
@@ -2259,8 +2968,8 @@ mod tests {
     /// function computed, in the unit it computed it in.
     #[test]
     fn the_integrated_conversion_composes_with_the_manual_output_scalars() {
-        let mut d = def("m1", MathFunction::Integration, picks(&[sig("Current")]));
-        d.unit = Some("Ah".to_string());
+        let mut d = def("m1", MathFunction::integration(), picks(&[sig("Current")]));
+        d.unit = Some("Ah".into());
         d.output_gain = Some(2.0);
         d.output_offset = Some(3600.0);
         let model = resolve(std::slice::from_ref(&d), &[entry("Current", "A")]);
@@ -2274,7 +2983,7 @@ mod tests {
     #[test]
     fn a_pointwise_function_does_not_reach_the_integrated_dimension() {
         let mut d = def("m1", MathFunction::Rms, picks(&[sig("Current")]));
-        d.unit = Some("Ah".to_string());
+        d.unit = Some("Ah".into());
         let model = resolve(std::slice::from_ref(&d), &[entry("Current", "A")]);
         let r = model.get("m1").expect("m1");
         assert_eq!(r.unconverted, [0]);
@@ -2286,11 +2995,10 @@ mod tests {
     #[test]
     fn a_customization_decides_what_a_member_converts_from() {
         let mut d = def("m1", MathFunction::Sum, picks(&[sig("Cell")]));
-        d.unit = Some("A".to_string());
-        let catalog = [entry("Cell", "counts")];
+        d.unit = Some("A".into());
         let plain = MathModel::resolve(
             std::slice::from_ref(&d),
-            &catalog,
+            &[entry("Cell", "counts")],
             &crate::units::Customizations::new(),
         );
         assert_eq!(plain.get("m1").expect("m1").unconverted, [0]);
@@ -2299,7 +3007,11 @@ mod tests {
             [("counts".to_string(), "milliampere".to_string())]
                 .into_iter()
                 .collect();
-        let customized = MathModel::resolve(std::slice::from_ref(&d), &catalog, &dict);
+        let customized = MathModel::resolve(
+            std::slice::from_ref(&d),
+            &[entry_with("Cell", "counts", &dict)],
+            &dict,
+        );
         let r = customized.get("m1").expect("m1");
         assert_eq!(r.operand_affines, [Affine::new(0.001, 0.0)]);
         assert!(r.unconverted.is_empty());
@@ -2311,7 +3023,7 @@ mod tests {
     #[test]
     fn a_temperature_member_converts_absolutely() {
         let mut d = def("m1", MathFunction::Average, pattern("Cell"));
-        d.unit = Some("degC".to_string());
+        d.unit = Some("degC".into());
         let model = resolve(&[d], &[entry("CellA", "K"), entry("CellB", "degF")]);
         let r = model.get("m1").expect("m1");
         assert!((r.operand_affines[0].apply(273.15) - 0.0).abs() < 1e-9);
@@ -2327,9 +3039,9 @@ mod tests {
             MathFunction::Rms,
             picks(&[MathOperandRef::math("m1")]),
         );
-        over.unit = Some("A".to_string());
+        over.unit = Some("A".into());
         let mut under = def("m1", MathFunction::Sum, picks(&[sig("Cell")]));
-        under.unit = Some("mA".to_string());
+        under.unit = Some("mA".into());
         let model = resolve(&[over, under], &[entry("Cell", "mA")]);
         assert_eq!(
             model.get("m2").expect("m2").operand_affines,
@@ -2371,7 +3083,7 @@ mod tests {
     #[test]
     fn a_scaled_definition_round_trips_through_json() {
         let mut d = def("m1", MathFunction::Sum, picks(&[sig("A")]));
-        d.unit = Some("A".to_string());
+        d.unit = Some("A".into());
         d.output_gain = Some(2.0);
         d.output_offset = Some(0.5);
         d.operands.picks[0].gain = Some(0.25);

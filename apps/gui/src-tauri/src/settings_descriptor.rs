@@ -570,6 +570,17 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "unit_customizations_user",
+        backing: Backing::Field,
+        label: "Unit customizations (all projects)",
+        help: "The same mappings, promoted out of one project so they                hold in every project you open. Where a project maps the                same string, the project wins.",
+        surfaces: &[Surface::Dbc],
+        kind: Kind::Behaviour,
+        control: Control::Custom {
+            renderer: "unit-customizations",
+        },
+    },
+    Spec {
         key: "notice_dwell_ms",
         backing: Backing::Field,
         label: "Status notice dwell",
