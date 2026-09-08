@@ -69,6 +69,8 @@ describe("Icon registry", () => {
       "link",
       "help",
       "x",
+      "enter",
+      "refresh",
     ];
     expect([...ICON_NAMES].sort()).toEqual([...expected].sort());
   });
