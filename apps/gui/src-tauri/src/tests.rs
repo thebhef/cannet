@@ -650,6 +650,7 @@ pub(crate) fn test_state() -> AppState {
         watched_project: Mutex::new(crate::watched_file::WatchedFile::default()),
         view_signals: Mutex::new(crate::view_signals::ViewSignalRegistry::default()),
         signal_dbc_picks: Mutex::new(std::sync::Arc::default()),
+        signal_units: Mutex::new(std::sync::Arc::default()),
     }
 }
 
