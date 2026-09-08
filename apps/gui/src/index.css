@@ -7349,6 +7349,38 @@ input.unit-customization-add {
   background: var(--danger-surface);
 }
 
+/* The quiet single-click icon button (`IconButton`): same idiom as
+   `.two-stage-remove` but no arm step — for a registry-undoable
+   remove, "go to this element", a refresh, and the RBS/Logger run
+   toggle. */
+.icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  line-height: 1;
+  flex: none;
+}
+.icon-btn svg {
+  display: block;
+}
+.icon-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.icon-btn-trash:hover {
+  color: var(--danger-text);
+}
+.icon-btn-run.running {
+  color: var(--ok-text);
+}
+.icon-btn-run.armed {
+  color: var(--warn-text);
+}
+
 .rbs-signals-footer {
   display: flex;
   align-items: center;
