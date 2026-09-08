@@ -66,6 +66,8 @@ function mathRecord(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     operandAffines: [],
     unconverted: [],
     unitResolved: "V",
+    unitKind: null,
+    recognition: [],
     busIds: ["p"],
     invalid: null,
     ...over,
