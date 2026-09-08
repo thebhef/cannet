@@ -18,6 +18,7 @@ import { Combobox, type ComboboxOption } from "./Combobox";
 import { describeBusConnState } from "./connectionStates";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { hostSettings } from "./hostSettings";
+import { IconButton } from "./IconButton";
 import {
   formatClockOffset,
   serverKey,
@@ -748,9 +749,13 @@ export function LocalInterfacesRow({
               ? "starting…"
               : "offline"}
         </span>
-        <button type="button" onClick={onRefresh} disabled={!ready}>
-          Discover
-        </button>
+        <IconButton
+          name="refresh"
+          label="discover local interfaces"
+          title="Discover local interfaces"
+          onClick={onRefresh}
+          disabled={!ready}
+        />
         <button type="button" onClick={handleRestart}>
           Restart
         </button>
@@ -966,13 +971,12 @@ export function ServerSection({
           </span>
         )}
         {server.online && (
-          <button
-            type="button"
-            aria-label={`discover interfaces on ${server.address}`}
+          <IconButton
+            name="refresh"
+            label={`discover interfaces on ${server.address}`}
+            title="Discover interfaces"
             onClick={onRefresh}
-          >
-            Discover
-          </button>
+          />
         )}
       </div>
       {expanded &&
