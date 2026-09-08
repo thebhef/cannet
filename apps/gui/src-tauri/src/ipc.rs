@@ -718,6 +718,17 @@ pub struct SignalDescriptorRecord {
     pub transmitter: Option<String>,
     pub signal_name: String,
     pub unit: String,
+    /// **The unit [`Self::unit`] is**, typed — the project's
+    /// reinterpretation where there is one, and what recognition makes
+    /// of the database's own string otherwise; `None` where nothing
+    /// places it.
+    ///
+    /// Carried beside the spelling rather than recovered from it: a
+    /// signal read as a coulomb spells `C`, which recognition refuses on
+    /// purpose, so a view handed only the spelling could not convert the
+    /// series. Omitted from the wire when nothing places the unit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit_typed: Option<crate::units::UnitId>,
     /// True if the signal's `VAL_` table makes it an enum — per
     /// `cannet_dbc::is_enum`, at least two members. A single-member
     /// table (an SNA sentinel) leaves this false: the signal renders

@@ -51,10 +51,56 @@ const UNITS = [
     spelling: "coulomb",
   },
 ];
+/// The base × prefix picker model, as `list_unit_picker` serves it —
+/// abridged to the bases and rungs these tests name.
+const rung = (base: string, prefix: string | undefined, label: string, display: string) => ({
+  unit: prefix === undefined ? { base } : { base, prefix },
+  label,
+  display,
+  exponent: prefix === undefined ? 0 : prefix === "milli" ? -3 : null,
+});
+const PICKER = [
+  {
+    id: "volt",
+    display: "V",
+    dimension: "voltage",
+    dimensionLabel: "voltage",
+    scales: [rung("volt", "milli", "m", "mV"), rung("volt", undefined, "", "V")],
+  },
+  {
+    id: "coulomb",
+    display: "C",
+    dimension: "charge",
+    dimensionLabel: "charge",
+    scales: [rung("coulomb", undefined, "", "C")],
+  },
+  {
+    id: "ampere-hour",
+    display: "Ah",
+    dimension: "charge",
+    dimensionLabel: "charge",
+    scales: [rung("ampere-hour", undefined, "", "Ah")],
+  },
+  {
+    id: "second",
+    display: "s",
+    dimension: "time",
+    dimensionLabel: "time",
+    scales: [rung("second", undefined, "", "s")],
+  },
+  {
+    id: "hour",
+    display: "h",
+    dimension: "time",
+    dimensionLabel: "time",
+    scales: [rung("hour", undefined, "", "h")],
+  },
+];
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
     invoked.push({ cmd, args });
     if (cmd === "list_units") return UNITS;
+    if (cmd === "list_unit_picker") return PICKER;
     if (hostRefusal) throw hostRefusal;
     return undefined;
   }),
@@ -351,11 +397,35 @@ describe("a set section's patterns", () => {
     expect(writtenDefinition().operands.patterns).toEqual(["Cell\\d+"]);
   });
 
-  it("shows a stored pattern's live matches under the picks", () => {
+  /// A pattern over a pack is 24 rows the user did not ask to read, so
+  /// it folds to one that says what it collects and how much.
+  it("folds a pattern's matches into one row that counts them", () => {
     renderEditor(setRecord(["Cell\\d+"]));
+    const signals = within(section("Signals"));
+    // The section still counts every member it holds.
+    expect(section("Signals")).toHaveTextContent("2 signals");
+    expect(signals.getByText("Cell\\d+")).toBeInTheDocument();
+    const fold = signals.getByRole("button", { name: /2 matches/ });
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    expect(signals.queryByText("Cell01")).not.toBeInTheDocument();
+  });
+
+  it("shows a stored pattern's live matches under the picks once expanded", () => {
+    renderEditor(setRecord(["Cell\\d+"]));
+    fireEvent.click(within(section("Signals")).getByRole("button", { name: /2 matches/ }));
     expect(section("Signals")).toHaveTextContent("Cell01");
     expect(section("Signals")).toHaveTextContent("Cell02");
     expect(section("Signals")).toHaveTextContent("2 signals");
+  });
+
+  /// One fold per pattern, and each is its own: expanding what a pattern
+  /// collects says nothing about the others.
+  it("folds each pattern on its own", () => {
+    renderEditor(setRecord(["Cell\\d+", "PackCurrent"]));
+    const signals = within(section("Signals"));
+    fireEvent.click(signals.getByRole("button", { name: /1 match\)/ }));
+    expect(signals.getAllByTitle("collected by a pattern")).toHaveLength(1);
+    expect(signals.queryByText("Cell01")).not.toBeInTheDocument();
   });
 
   it("says so when the regex does not compile", () => {
@@ -437,56 +507,225 @@ describe("naming and units", () => {
     expect(writtenDefinition().name).toBe("PackSum");
   });
 
-  it("offers the library's units and commits the spelling the host gave", async () => {
-    renderEditor(mathRecord());
-    fireEvent.click(screen.getByRole("combobox", { name: "Units" }));
-    // Grouped by the dimension the host labelled, not one flat list.
-    expect(screen.getByText("voltage")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("option", { name: "mV" }));
+  const openUnits = () => fireEvent.click(screen.getByRole("button", { name: "Units" }));
+  const bases = () => screen.getByRole("listbox", { name: "unit" });
+  const scales = () => screen.getByRole("listbox", { name: "scale" });
+
+  it("offers the base × prefix picker and commits the whole unit identity", async () => {
+    renderEditor(mathRecord({ unitKind: "voltage", unitComposed: { base: "volt" } }));
+    openUnits();
+    fireEvent.click(within(scales()).getByText("mV"));
     await waitFor(() => expect(lastWrite()).toBeDefined());
-    expect(writtenDefinition().unit).toBe("mV");
+    expect(writtenDefinition().unit).toEqual({ base: "volt", prefix: "milli" });
   });
 
-  it("commits the id where the display is not a spelling of its own", async () => {
-    // `C` would be a guess between coulomb and Celsius, so the host's
-    // listing says to commit `coulomb` — the editor writes what it is
-    // given rather than the label it shows.
-    renderEditor(mathRecord());
-    fireEvent.click(screen.getByRole("combobox", { name: "Units" }));
-    fireEvent.click(screen.getByRole("option", { name: /^C \(coulomb\)$/ }));
-    await waitFor(() => expect(lastWrite()).toBeDefined());
-    expect(writtenDefinition().unit).toBe("coulomb");
+  /// Kind-locked: choosing here is a conversion, so a charge is not on
+  /// offer beside a voltage.
+  it("locks the picker to the kind the host resolved", () => {
+    renderEditor(mathRecord({ unitKind: "voltage" }));
+    openUnits();
+    expect(within(bases()).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Vvolt",
+    ]);
   });
 
-  it("still takes a unit the library does not carry", async () => {
-    renderEditor(mathRecord());
-    fireEvent.click(screen.getByRole("combobox", { name: "Units" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Units filter" }), {
-      target: { value: "widgets" },
-    });
-    fireEvent.click(screen.getByRole("option", { name: 'use "widgets"' }));
-    await waitFor(() => expect(lastWrite()).toBeDefined());
-    expect(writtenDefinition().unit).toBe("widgets");
+  /// The composed dimension, not the operand's: an integration of a
+  /// current is a charge, so charges are what the picker offers.
+  it("offers the composed dimension for an integration", () => {
+    renderEditor(
+      mathRecord({
+        kind: "integration",
+        function: { kind: "integration" },
+        unitKind: "charge",
+        unitResolved: "Ah",
+        unitDerived: "A·h",
+        unitComposed: { base: "ampere-hour" },
+      }),
+    );
+    openUnits();
+    expect(within(bases()).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Ccoulomb",
+      "Ahampere-hour",
+    ]);
   });
 
-  it("shows a stored unit the library does not carry rather than the placeholder", () => {
-    renderEditor(mathRecord({ unit: "widgets" }));
-    expect(screen.getByRole("combobox", { name: "Units" })).toHaveTextContent("widgets");
-  });
-
-  it("clears the target back to the derived unit", async () => {
-    renderEditor(mathRecord({ unit: "mV" }));
-    fireEvent.click(screen.getByRole("combobox", { name: "Units" }));
-    fireEvent.click(screen.getByRole("option", { name: /from the operands/ }));
+  /// There is no reset affordance (design ruling): picking the
+  /// composition again is how an override is cleared.
+  it("clears the override by picking the composition again", async () => {
+    renderEditor(
+      mathRecord({
+        unit: { base: "volt", prefix: "milli" },
+        unitKind: "voltage",
+        unitResolved: "mV",
+        unitDerived: "V",
+        unitComposed: { base: "volt" },
+      }),
+    );
+    openUnits();
+    fireEvent.click(within(scales()).getByText("V"));
     await waitFor(() => expect(lastWrite()).toBeDefined());
     expect(writtenDefinition().unit).toBeNull();
   });
 
+  /// A set whose members mix dimensions derives nothing, so there is no
+  /// composition row to pick back to. The picker grows an explicit
+  /// derived row for exactly that case, because an override that cannot
+  /// be cleared is a trap.
+  it("clears an override no derivation can answer for", async () => {
+    renderEditor(
+      mathRecord({
+        kind: "sum",
+        function: { kind: "sum" },
+        unit: { base: "volt" },
+        unitResolved: "V",
+      }),
+    );
+    openUnits();
+    fireEvent.click(within(bases()).getByText("from the operands"));
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().unit).toBeNull();
+  });
+
+  it("offers no derived row while nothing is overridden", () => {
+    renderEditor(mathRecord({ kind: "sum", function: { kind: "sum" } }));
+    openUnits();
+    expect(within(bases()).queryByText("from the operands")).not.toBeInTheDocument();
+  });
+
+  /// The button is the unit and nothing else (owner ruling): where the
+  /// derivation came from and what it converts by are hover detail, not
+  /// a second line of arrows beside the control.
+  it("says the unit on the button and keeps the derivation to its tooltip", () => {
+    const integration = {
+      kind: "integration" as const,
+      function: { kind: "integration" as const },
+      unitKind: "charge",
+      unitDerived: "A·h",
+      unitComposed: { base: "ampere-hour" },
+    };
+    renderEditor(mathRecord({ ...integration, unitResolved: "Ah" }));
+    const button = screen.getByRole("button", { name: "Units" });
+    expect(button).toHaveTextContent("Ah");
+    expect(button.textContent).toBe("Ah");
+    expect(button).toHaveAttribute("title", expect.stringContaining("A·h"));
+    expect(screen.queryByText(/composed:/)).not.toBeInTheDocument();
+    cleanup();
+    renderEditor(
+      mathRecord({
+        ...integration,
+        unit: { base: "coulomb" },
+        unitResolved: "C",
+        unitConversion: { gain: 3600, offset: 0 },
+      }),
+    );
+    const converted = screen.getByRole("button", { name: "Units" });
+    expect(converted.textContent).toBe("C");
+    expect(converted).toHaveAttribute("title", expect.stringContaining("A·h → C (×3600)"));
+    expect(screen.queryByText("A·h → C (×3600)")).not.toBeInTheDocument();
+  });
+
+  /// The library is the only way to name a unit (owner ruling): there is
+  /// no box to type one that nothing converts through.
+  it("offers no free-text unit box", () => {
+    renderEditor(mathRecord());
+    expect(screen.queryByLabelText("Unit label")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("or a label")).not.toBeInTheDocument();
+  });
+
+  it("still shows a label an old file stored", () => {
+    renderEditor(mathRecord({ unit: "widgets", unitResolved: "widgets" }));
+    expect(screen.getByRole("button", { name: "Units" })).toHaveTextContent("widgets");
+  });
+
   it("shows the host's derived unit when nothing is set", () => {
     renderEditor(mathRecord({ unitResolved: "V" }));
-    expect(screen.getByRole("combobox", { name: "Units" })).toHaveTextContent(
-      "V (from the operands)",
+    expect(screen.getByRole("button", { name: "Units" })).toHaveTextContent("V");
+  });
+});
+
+describe("the function's time unit", () => {
+  const integration = (over: Partial<MathSignalRecord> = {}) =>
+    mathRecord({
+      kind: "integration",
+      arity: "one",
+      function: { kind: "integration" },
+      unitKind: "charge",
+      unitResolved: "A·s",
+      unitDerived: "A·s",
+      ...over,
+    });
+
+  it("spells the expression the function is, and opens on its time unit", () => {
+    renderEditor(integration());
+    const row = screen.getByRole("group", { name: "Time unit" });
+    expect(row).toHaveTextContent("operand ·");
+    // A definition written before the parameter existed means seconds.
+    expect(within(row).getByRole("button", { name: "Time unit" })).toHaveTextContent("s");
+  });
+
+  it("offers time units only, and re-derives — clearing any named override", async () => {
+    renderEditor(integration({ unit: { base: "coulomb" }, unitResolved: "C" }));
+    fireEvent.click(screen.getByRole("button", { name: "Time unit" }));
+    expect(
+      within(screen.getByRole("listbox", { name: "unit" }))
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["ssecond", "hhour"]);
+    fireEvent.click(within(screen.getByRole("listbox", { name: "unit" })).getByText("hour"));
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().function).toEqual({
+      kind: "integration",
+      time_unit: { base: "hour" },
+    });
+    expect(writtenDefinition().unit).toBeNull();
+  });
+
+  it("is offered on a derivative and on nothing else", () => {
+    renderEditor(mathRecord({ kind: "derivative", function: { kind: "derivative" } }));
+    expect(screen.getByRole("group", { name: "Time unit" })).toHaveTextContent(
+      "d(operand) / d",
     );
+    cleanup();
+    renderEditor(mathRecord());
+    expect(screen.queryByRole("group", { name: "Time unit" })).toBeNull();
+  });
+});
+
+describe("an operand's unit chip", () => {
+  const pair = (recognition: MathSignalRecord["recognition"]) =>
+    mathRecord({
+      kind: "sum",
+      function: { kind: "sum" },
+      operands: { picks: [dbcRef("Cell01"), dbcRef("Cell02")], patterns: [] },
+      // Deliberately the reverse of the editor's own row order: the
+      // host's arrays are index-parallel with the *host's* resolution,
+      // and the chip must follow the reference, not the row.
+      resolvedOperands: [dbcRef("Cell02"), dbcRef("Cell01")],
+      recognition,
+    });
+
+  it("shows the parse state the host reported, keyed by reference", () => {
+    renderEditor(
+      pair([
+        { state: "unrecognized", spelling: "wobbles" },
+        { state: "recognized", unit: { base: "volt" }, display: "V" },
+      ]),
+    );
+    const rows = screen
+      .getAllByText(/^Cell0[12]$/)
+      .map((el) => el.closest(".math-operand-row") as HTMLElement);
+    // Cell01 is the first row and the *second* resolved operand.
+    expect(within(rows[0]).getByText("V")).toBeInTheDocument();
+    expect(within(rows[1]).getByLabelText("Cell02 is in an unrecognised unit")).toHaveTextContent(
+      "wobbles",
+    );
+  });
+
+  it("says nothing at all for an operand whose database names no unit", () => {
+    renderEditor(pair([{ state: "blank" }, { state: "blank" }]));
+    for (const chip of document.querySelectorAll(".math-operand-unit")) {
+      expect(chip.textContent).toBe("");
+    }
   });
 });
 
@@ -627,6 +866,8 @@ describe("scaling", () => {
         unconverted: [2],
       }),
     );
+    // The flag rides the member's row, so its pattern's fold is opened.
+    for (const fold of screen.getAllByRole("button", { name: /match/ })) fireEvent.click(fold);
     expect(screen.getByLabelText(/PackCurrent is not converted/)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Cell01 is not converted/)).not.toBeInTheDocument();
   });

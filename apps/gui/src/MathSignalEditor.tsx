@@ -29,15 +29,29 @@
 /// the same `SignalPatternEditor` a signal view's section uses, so a
 /// pattern behaves identically wherever it is typed (ADR 0038).
 ///
-/// **Scaling is intent, not arithmetic.** The definition's Units field
+/// **Scaling is intent, not arithmetic.** The definition's Units control
 /// is the *conversion target*: each member converts to it from its own
-/// database unit, and the editor offers the host's unit library there
-/// while still taking any string typed into it. Beside that sits the
+/// database unit. It is the base × prefix picker (`UnitPicker.tsx`),
+/// **kind-locked** to the dimension the host resolved for this series —
+/// choosing a unit here is a real conversion, so only like-kind units
+/// are on offer, and for an integration or a derivative that dimension
+/// is the *composed* one (a current integrated over time is a charge).
+/// The library is the only way to name a unit: there is no box to type
+/// one of your own (a stored spelling from an older file still
+/// displays, and the picker replaces it the moment one is chosen). The
+/// button reads the unit and nothing else — where the derivation came
+/// from and what it converts by are its hover text. Beside it sits the
 /// unit-free path — a manual gain and offset on each picked operand and
-/// on the output — for what a database describes wrongly or not at all,
-/// plus a per-operand source-unit override for the operand it mislabels.
-/// A member the host could not convert is flagged on its row; the
-/// numbers themselves are never computed here (ADR 0025).
+/// on the output — plus a per-operand source-unit override for the
+/// operand a database mislabels. A member the host could not convert is
+/// flagged on its row; the numbers themselves are never computed here
+/// (ADR 0025).
+///
+/// **Time is the function's parameter** for integration and derivative,
+/// so their function row carries the choice (`operand · [t]`,
+/// `d(operand) / d[t]`) and the output unit follows as the composition.
+/// Changing it re-derives, so it clears any named override — the target
+/// the user picked was a unit of the old composition's dimension.
 ///
 /// **The host judges.** Arity, parameter ranges, an uncompilable
 /// pattern and a missing name do not refuse an edit — the registry
@@ -56,9 +70,12 @@ import type {
   MathOperandRef,
   MathSignalRecord,
   SignalDescriptorRecord,
+  UnitId,
+  UnitRecognition,
 } from "./types";
 import {
   MATH_FUNCTIONS,
+  TIME_UNIT_KEY,
   definitionOf,
   mathFunctionSpec,
   operandRefKey,
@@ -66,7 +83,6 @@ import {
   parameterEnabled,
   setValidity,
   slotValidity,
-  unitTargetSpelling,
   withOperandScaling,
   withOutputScaling,
   withParam,
@@ -78,7 +94,9 @@ import {
   type OperandSection,
   type SectionValidity,
 } from "./mathSignals";
-import { unitOptions, useUnitLibrary } from "./unitLibrary";
+import { unitOptions, useUnitLibrary, useUnitPickerModel } from "./unitLibrary";
+import { UnitButton } from "./UnitButton";
+import { sameUnit, unitDisplay } from "./unitSelection";
 import { catalogPath, resolvePatterns } from "./signalSelection";
 import { recordSignalKey } from "./plotData";
 import { dragHasSignals, parseSignalDragData, SIGNAL_DND_MIME } from "./dragSignals";
@@ -89,6 +107,7 @@ import { SignalPatternEditor } from "./SignalPatternEditor";
 import { ValidatedInput, parseFiniteNumber } from "./ValidatedInput";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { useDismissableMenu } from "./useDismissableMenu";
+import { DisclosureToggle } from "./DisclosureToggle";
 import { Icon } from "./Icon";
 
 export interface MathSignalEditorProps {
@@ -98,6 +117,13 @@ export interface MathSignalEditorProps {
   /// them too (math signals are selectable as inputs to math signals;
   /// the host refuses the cycles that would make).
   definitions: readonly MathSignalRecord[];
+}
+
+/// The signals one pattern collects, as the section folds them: one
+/// disclosure row per pattern, expanded to its members.
+interface MatchGroup {
+  pattern: string;
+  matches: SignalDescriptorRecord[];
 }
 
 /// One operand as a row renders it.
@@ -116,9 +142,13 @@ interface OperandDescription {
 /// is honest here in a way it would not be for a fixed-height row.
 export function mathEditorLines(record: MathSignalRecord): number {
   const spec = mathFunctionSpec(record.function.kind);
+  // A set lists its picks and *one fold per pattern* — the members a
+  // pattern collects are behind that fold until asked for — so the
+  // estimate counts folds rather than matches.
+  const setRows =
+    (record.operands?.picks.length ?? 0) + (record.operands?.patterns.length ?? 0);
   const sections = operandSections(spec).reduce(
-    (n, s) =>
-      n + 3 + (s.slot === "set" ? Math.max(1, record.resolvedOperands.length) : 1),
+    (n, s) => n + 3 + (s.slot === "set" ? Math.max(1, setRows) : 1),
     0,
   );
   const params = spec.params.filter((p) => parameterEnabled(p, record.function)).length;
@@ -133,6 +163,7 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
   const { catalog } = useSignalCatalog();
   const recordPanelEdit = usePanelEditRecorder();
   const units = useUnitLibrary();
+  const pickerModel = useUnitPickerModel();
   const [error, setError] = useState<string | null>(null);
   const spec = mathFunctionSpec(record.function.kind);
   const sections = operandSections(spec);
@@ -226,19 +257,24 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
   }, [catalog, others]);
 
   /// Each pattern's live resolution, and the matches the section shows
-  /// beneath its picks. Manual picks win, exactly as they do host-side
-  /// — a pattern that matches one adds nothing.
+  /// beneath its picks — **grouped by the pattern that collected
+  /// them**, because that is the unit the section folds. Manual picks
+  /// win, exactly as they do host-side — a pattern that matches one
+  /// adds nothing — and a signal two patterns both match belongs to the
+  /// first, so the section lists it once.
   const picked = new Set(stored.operands.picks.map(operandRefKey));
   const resolutions = resolvePatterns(stored.operands.patterns, catalog, busNames);
-  const matched: SignalDescriptorRecord[] = [];
+  const matchGroups: MatchGroup[] = [];
   const seenMatch = new Set(picked);
   for (const res of resolutions) {
+    const matches: SignalDescriptorRecord[] = [];
     for (const s of res.matches) {
       const k = recordSignalKey(s);
       if (seenMatch.has(k)) continue;
       seenMatch.add(k);
-      matched.push(s);
+      matches.push(s);
     }
+    if (matches.length > 0) matchGroups.push({ pattern: res.pattern, matches });
   }
 
   /// The members the host could not convert to the target unit, keyed by
@@ -254,26 +290,38 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
     return out;
   }, [record.unconverted, record.resolvedOperands]);
 
-  /// The target unit: what the definition's `unit` string may be set to.
-  /// Blank derives it, the library is offered, and anything typed is
-  /// still accepted — a DBC unit the library does not carry is exactly
-  /// the case the manual scalars exist for.
-  const targetUnitOptions = useMemo<ComboboxOption[]>(() => {
-    const out: ComboboxOption[] = [
-      {
-        value: "",
-        label: record.unitResolved
-          ? `${record.unitResolved} (from the operands)`
-          : "(from the operands)",
-      },
-      ...unitOptions(units, (u) => u.spelling),
-    ];
-    const spelled = unitTargetSpelling(record.unit, record.unitResolved);
-    if (spelled && !out.some((o) => o.value === spelled)) {
-      out.push({ value: spelled, label: spelled, path: ["not in the library"] });
-    }
+  /// The parse state the host made of each operand's unit string, keyed
+  /// by reference for the same reason `unconvertedKeys` is: `recognition`
+  /// is index-parallel with the *host's* resolution order, and a section
+  /// renders its picks plus its own JS-side pattern matches, whose order
+  /// need not be that one.
+  const recognitionByKey = useMemo(() => {
+    const out = new Map<string, UnitRecognition>();
+    record.resolvedOperands.forEach((ref, i) => {
+      const state = record.recognition[i];
+      if (state) out.set(operandRefKey(ref), state);
+    });
     return out;
-  }, [units, record.unit, record.unitResolved]);
+  }, [record.recognition, record.resolvedOperands]);
+
+  /// The typed target the picker shows as current: the definition's,
+  /// where it set one, and the composition otherwise — which is what
+  /// "derived" looks like in a picker.
+  const typedTarget: UnitId | null =
+    record.unit != null && typeof record.unit !== "string"
+      ? record.unit
+      : record.unit == null
+        ? record.unitComposed ?? null
+        : null;
+
+  /// One unit chosen. Picking the composition again is how an override
+  /// is cleared (design ruling) — there is no reset affordance, because
+  /// the composition is already in the list.
+  const commitUnit = (unit: UnitId | null) =>
+    commit({
+      ...stored,
+      unit: unit == null || sameUnit(unit, record.unitComposed ?? null) ? null : unit,
+    });
 
   /// A source-unit override names a library unit by **id** — there is no
   /// free text here, because an override the host cannot resolve would
@@ -322,6 +370,35 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
           {record.invalid}
         </div>
       )}
+      {spec.timeExpression && (
+        <div className="math-editor-field" role="group" aria-label="Time unit">
+          <span>Function</span>
+          <span className="unit-note">{spec.timeExpression}</span>
+          <UnitButton
+            value={timeUnitOf(stored)}
+            kind="time"
+            ariaLabel="Time unit"
+            closeOnPick
+            title="the time this function integrates or differentiates over — the output unit follows as the composition"
+            onPick={(unit) => {
+              if (unit == null) return;
+              // Re-deriving invalidates a target the user picked
+              // against the old composition, so it is cleared with it
+              // (design ruling).
+              commit({
+                ...stored,
+                unit: null,
+                function: { ...stored.function, [TIME_UNIT_KEY]: unit },
+              });
+            }}
+          >
+            {/* The spelling is the host's; a unit the picker model does
+                not carry falls back to its own id rather than to a
+                spelling composed here. */}
+            {unitDisplay(pickerModel, timeUnitOf(stored)) ?? timeUnitOf(stored).base}
+          </UnitButton>
+        </div>
+      )}
       {sections.map((section) => (
         <OperandSectionView
           key={section.label}
@@ -339,12 +416,13 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
               : slotValidity(stored.operands.picks[section.slot])
           }
           describe={describe}
-          matched={matched}
+          matchGroups={matchGroups}
           busNames={busNames}
           catalog={catalog}
           options={options}
           sourceUnitOptions={sourceUnitOptions}
           unconvertedKeys={unconvertedKeys}
+          recognitionByKey={recognitionByKey}
           onPick={(value) => {
             const ref = refByValue.get(value);
             if (ref) commit(withPick(stored, section.slot, ref));
@@ -380,19 +458,26 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
           onCommit={(name) => commit({ ...stored, name })}
         />
       </label>
-      <label className="math-editor-field">
+      <div className="math-editor-field" role="group" aria-label="Units">
         <span>Units</span>
-        <Combobox
-          options={targetUnitOptions}
-          value={unitTargetSpelling(record.unit, record.unitResolved)}
+        <UnitButton
+          value={typedTarget}
+          kind={record.unitKind}
+          composition={
+            record.unitDerived == null
+              ? undefined
+              : { label: record.unitDerived, unit: record.unitComposed ?? null }
+          }
+          // An override with no composition behind it would otherwise
+          // have no row to clear it with.
+          clearable={record.unit != null}
           ariaLabel="Units"
-          proseLabels
-          freeText
-          className="math-unit-combobox"
-          title="the unit this series carries — every operand the host can convert is converted to it; blank derives it from the operands"
-          onChange={(unit) => commit({ ...stored, unit: unit === "" ? null : unit })}
-        />
-      </label>
+          title={unitTitle(record)}
+          onPick={commitUnit}
+        >
+          {record.unitResolved || "—"}
+        </UnitButton>
+      </div>
       <div className="math-editor-scaling" role="group" aria-label="Output scaling">
         <label className="math-editor-field">
           <span>Output gain</span>
@@ -458,6 +543,79 @@ export function MathFunctionMenu({
   );
 }
 
+/// A function's time unit, defaulting to seconds — which is what the
+/// host reads for a definition written before the parameter existed, and
+/// exactly what such a definition always meant.
+function timeUnitOf(definition: MathDefinition): UnitId {
+  const stored = definition.function[TIME_UNIT_KEY];
+  return typeof stored === "object" && stored !== null ? stored : { base: "second" };
+}
+
+/// What the Units button says on hover.
+///
+/// The button itself reads the unit and nothing else (owner ruling): a
+/// row that said `Ah` beside `composed: A · s` beside `A·s → Ah (÷3600)`
+/// asked the reader to hold three spellings of one answer. Where the
+/// derivation came from, and what it converts by, is the explanation
+/// behind the control rather than a second line beside it.
+///
+/// Both halves are the host's (`unitDerived`, `unitConversion`): the
+/// composition and the factor it converts by are model facts, and this
+/// only spells the arrow.
+function unitTitle(record: MathSignalRecord): string {
+  const base =
+    "the unit this series carries — every operand the host can convert is converted to it; the picker offers this dimension only, because choosing here is a conversion";
+  if (record.unitDerived == null) return base;
+  const gain = record.unit == null ? null : record.unitConversion?.gain;
+  if (gain == null) return `${base}. Composed from the operands: ${record.unitDerived}`;
+  const factor = gain === 1 ? "×1" : gain > 1 ? `×${gain}` : `÷${1 / gain}`;
+  return `${base}. ${record.unitDerived} → ${record.unitResolved} (${factor})`;
+}
+
+/// The operand's unit chip: **what the host made of its unit string**,
+/// at edit time rather than at conversion time.
+///
+/// An unplaceable string and a placeable one of the wrong kind are
+/// different problems with different repairs — a mapping in Settings →
+/// Units versus a source-unit override on this row — so the chip says
+/// which. A blank unit is ordinary and wears nothing.
+function OperandUnitChip({
+  label,
+  state,
+  fallback,
+}: {
+  label: string;
+  state: UnitRecognition | undefined;
+  /// The catalog's own unit string, for a pick the host has not resolved
+  /// yet (a fresh drop, before the listing comes back).
+  fallback: string;
+}) {
+  if (state === undefined) {
+    return <span className="math-operand-unit">{fallback}</span>;
+  }
+  if (state.state === "blank") return <span className="math-operand-unit" />;
+  if (state.state === "recognized") {
+    return (
+      <span
+        className="math-operand-unit ok"
+        title={`from the database — read as ${state.display}`}
+      >
+        {state.display}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="math-operand-unit warn"
+      role="img"
+      aria-label={`${label} is in an unrecognised unit`}
+      title={`"${state.spelling}" is not a unit cannet recognises — map it in Settings → Units, or say what this operand is in below`}
+    >
+      {state.spelling} ≠
+    </span>
+  );
+}
+
 /// A reference to another math signal, by its stable id.
 function mathRef(id: string): MathOperandRef {
   return { busId: null, messageId: 0, extended: false, signalName: id, math: true };
@@ -479,17 +637,25 @@ function refOfDescriptor(s: SignalDescriptorRecord): MathOperandRef {
 /// (disclosure glyph, label, count) with its rename, delete, drag and
 /// add affordances gone, its own validity, and the rows it holds
 /// stacked underneath at full width.
+///
+/// A pattern's members are **folded** behind one disclosure row that
+/// names the pattern and counts what it collects (owner ruling): a
+/// pattern over a pack is two dozen rows nobody asked to read, and what
+/// the section is *for* is the pattern. Picks stay listed — they were
+/// each chosen by hand. Which folds are open is view-local state and
+/// nothing the definition carries, so a remount starts them collapsed.
 function OperandSectionView({
   section,
   definition,
   validity,
   describe,
-  matched,
+  matchGroups,
   busNames,
   catalog,
   options,
   sourceUnitOptions,
   unconvertedKeys,
+  recognitionByKey,
   onPick,
   onRemove,
   onScaling,
@@ -500,13 +666,16 @@ function OperandSectionView({
   definition: MathDefinition;
   validity: SectionValidity;
   describe: (ref: MathOperandRef) => OperandDescription;
-  matched: readonly SignalDescriptorRecord[];
+  /// What each pattern collects, in the section's own fold order.
+  matchGroups: readonly MatchGroup[];
   busNames: ReadonlyMap<string, string>;
   catalog: readonly SignalDescriptorRecord[];
   options: readonly ComboboxOption[];
   sourceUnitOptions: readonly ComboboxOption[];
   /// Reference keys of the members the host left unconverted.
   unconvertedKeys: ReadonlySet<string>;
+  /// What the host made of each member's unit string, by reference key.
+  recognitionByKey: ReadonlyMap<string, UnitRecognition>;
   onPick: (value: string) => void;
   onRemove: (index: number) => void;
   onScaling: (index: number, patch: OperandScaling) => void;
@@ -521,6 +690,9 @@ function OperandSectionView({
   const popoverRef = useDismissableMenu<HTMLDivElement>(patternsAt !== null, () =>
     setPatternsAt(null),
   );
+  // Which pattern's members are unfolded. View-local and unpersisted:
+  // it is a way of reading the section, not part of the definition.
+  const [expanded, setExpanded] = useState<readonly string[]>([]);
   const isSet = section.slot === "set";
   const picks = definition.operands.picks;
   const filled = isSet
@@ -528,7 +700,8 @@ function OperandSectionView({
     : picks[section.slot as number] === undefined
       ? []
       : [{ ref: picks[section.slot as number], index: section.slot as number }];
-  const count = filled.length + (isSet ? matched.length : 0);
+  const matchedCount = isSet ? matchGroups.reduce((n, g) => n + g.matches.length, 0) : 0;
+  const count = filled.length + matchedCount;
   return (
     <div
       className="math-operand-section"
@@ -609,7 +782,7 @@ function OperandSectionView({
           {validity.message}
         </span>
       </div>
-      {filled.length === 0 && matched.length === 0 && (
+      {filled.length === 0 && matchedCount === 0 && (
         <div className="math-operand-empty">
           {isSet
             ? "drag signals here, or add a pattern (/…/)"
@@ -624,7 +797,11 @@ function OperandSectionView({
               <span className="math-operand-name" title={d.path}>
                 {d.label}
               </span>
-              <span className="math-operand-unit">{d.unit}</span>
+              <OperandUnitChip
+                label={d.label}
+                state={recognitionByKey.get(operandRefKey(ref))}
+                fallback={d.unit}
+              />
               <UnconvertedFlag label={d.label} shown={unconvertedKeys.has(operandRefKey(ref))} />
               <button
                 type="button"
@@ -645,21 +822,48 @@ function OperandSectionView({
         );
       })}
       {isSet &&
-        matched.map((s) => (
-          <div className="math-operand-row derived" key={recordSignalKey(s)}>
-            <span className="math-operand-name" title={catalogPath(s, busNames)}>
-              {s.signal_name}
-            </span>
-            <span className="math-operand-unit">{s.unit}</span>
-            <UnconvertedFlag
-              label={s.signal_name}
-              shown={unconvertedKeys.has(recordSignalKey(s))}
-            />
-            <span className="math-operand-derived" title="collected by a pattern">
-              ◇
-            </span>
-          </div>
-        ))}
+        matchGroups.map((group) => {
+          const open = expanded.includes(group.pattern);
+          return (
+            <div className="math-operand-matches" key={group.pattern}>
+              <DisclosureToggle
+                className="math-operand-matches-header"
+                expanded={open}
+                title="the signals this pattern collects — change the pattern to change them"
+                onToggle={() =>
+                  setExpanded((cur) =>
+                    open ? cur.filter((p) => p !== group.pattern) : [...cur, group.pattern],
+                  )
+                }
+              >
+                <span className="math-operand-name">{group.pattern}</span>
+                <span className="hint">
+                  ({group.matches.length} match{group.matches.length === 1 ? "" : "es"})
+                </span>
+              </DisclosureToggle>
+              {open &&
+                group.matches.map((s) => (
+                  <div className="math-operand-row derived" key={recordSignalKey(s)}>
+                    <span className="math-operand-name" title={catalogPath(s, busNames)}>
+                      {s.signal_name}
+                    </span>
+                    <OperandUnitChip
+                      label={s.signal_name}
+                      state={recognitionByKey.get(recordSignalKey(s))}
+                      fallback={s.unit}
+                    />
+                    <UnconvertedFlag
+                      label={s.signal_name}
+                      shown={unconvertedKeys.has(recordSignalKey(s))}
+                    />
+                    <span className="math-operand-derived" title="collected by a pattern">
+                      ◇
+                    </span>
+                  </div>
+                ))}
+            </div>
+          );
+        })}
     </div>
   );
 }

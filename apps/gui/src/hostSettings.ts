@@ -182,6 +182,12 @@ export interface Settings {
   /// the user changed. The one **workspace-scoped** setting — it
   /// travels with the project (ADR 0042 §3).
   unit_customizations: Record<string, string>;
+  /// The same map at **user** scope: mappings promoted out of one
+  /// project so they hold in every project this person opens. The two
+  /// are one dict to everything that reads units, and **the project
+  /// wins** where both map the same string. Edited from the units
+  /// section's per-row scope checkboxes, which is its only editor.
+  unit_customizations_user: Record<string, string>;
 }
 
 /// One column of a stored default table layout — the wire mirror of
@@ -236,6 +242,7 @@ export function defaultSettings(): Settings {
     float_exponential_from: 1e6,
     float_mantissa_decimals: 5,
     unit_customizations: {},
+    unit_customizations_user: {},
   };
 }
 

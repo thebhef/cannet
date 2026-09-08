@@ -499,6 +499,40 @@ pub fn unit_customizations() -> crate::units::Customizations {
     )
 }
 
+/// The settings view's units table: every base unit, plus any unit a
+/// customization names, each carrying the DBC unit strings that read as
+/// it and the scope each of those comes from.
+///
+/// The table is the facade's answer ([`crate::units::mappings`]), joined
+/// here because the two scopes live here — so the view renders rows and
+/// re-derives no recognition of its own (ADR 0025).
+#[tauri::command]
+#[must_use]
+pub fn list_unit_mappings() -> Vec<crate::units::UnitMappingRow> {
+    let settings = effective();
+    crate::units::mappings(
+        &settings.unit_customizations_user,
+        &settings.unit_customizations,
+    )
+}
+
+/// How each of `series` reads and converts for display: what its
+/// declared unit string means, the family a kind-locked picker offers,
+/// and the affine carrying it to the display unit the view chose.
+///
+/// Asked once per series set by the plot's readout chip
+/// (`plotAxisDerivation.ts`, ADR 0026), which re-derives none of it.
+/// Joined here for the same reason [`list_unit_mappings`] is: the
+/// customization dict that reads a DBC string lives at this layer.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+#[must_use]
+pub fn resolve_display_units(
+    series: Vec<crate::units::DisplayUnitQuery>,
+) -> Vec<crate::units::DisplayUnit> {
+    crate::units::display_units(&series, &unit_customizations())
+}
+
 /// One column of a table's default layout — the on-disk mirror of the
 /// frontend's `ColumnState`. Its `key` names a column of whichever
 /// table the setting belongs to; the host does not interpret it (see

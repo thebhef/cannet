@@ -137,6 +137,19 @@ served to every consumer; the user-scope mapping store (project wins on
 conflict); resolve reports recognition state per operand; the
 View-signals nAh flag investigation and fix.
 
+**Phase 6 — selection UI and the settings rework** (frontend; after the
+prototype gate). The base + prefix picker replaces the flat unit list in
+the math editor; integration/derivative get the function-row time-unit
+choice, their unit pickers offering the resulting composition or a named
+unit of the dimension, kind-locked to that dimension; the function
+select gains Derivative; the operand's "from DBC" chip shows parse state
+at edit time; the View-signals reinterpretation picker on the
+resolved-unit chip; the plot's per-unit readout chip converts a series'
+display unit (persisted per-series in plot config); the settings units
+section is rebuilt to the accepted prototype as ruled — the library's
+full base-unit list plus config-added units, matched-string rows, and
+project/user scope checkboxes on every row.
+
 ## Exit criteria
 
 - [x] A set function over a pattern whose members carry mixed units
@@ -179,6 +192,18 @@ View-signals nAh flag investigation and fix.
 - [x] A mapping promoted to user scope is effective in another project,
       and project wins where both scopes map one string.
 - [x] The owner's `nAh` View-signals flag case is explained and fixed.
+- [x] Unit pickers in applied contexts are kind-locked — for
+      integration/derivative to the composed dimension, offering the
+      composition plus named units only; View signals reassigns
+      arbitrarily with no scaling.
+- [x] The plot's per-unit lanes converge through the readout-chip
+      conversion (an mV series joins the V lane at ÷1000).
+- [x] The settings units section lists the library's full base-unit
+      set plus config-added units, one row per unit with its matched
+      strings and project/user scope checkboxes; promoting a mapping
+      to user scope makes it effective in another project, and
+      project wins where both scopes map one string.
+- [x] Derivative is usable end to end from the UI.
 
 ## Status log
 
@@ -271,6 +296,196 @@ is below because the answer was not where it looked.
   notion of "how a unit is spelled": `display_of` renders one-way,
   while the string a signal reports has to survive `recognize`. Two
   more units still fail that round trip — see Blockers.
+
+**2026-09-07 — Phase 6 (selection UI and the settings rework), branch
+`task139-apply`.** Landed: the base × prefix picker in place of the flat
+unit list, the function-row time-unit choice with Derivative in the
+creation menu, the operand chip's parse state, the View-signals
+reinterpretation picker, the plot's display-unit conversion and lane
+merge, and the settings units table with per-row scope checkboxes.
+
+- **One picker, three callers, and the kind is what tells them apart.**
+  `UnitPicker.tsx` is two columns over `units::list_unit_picker`, and
+  `UnitButton.tsx` is the anchor every surface hangs it off. The caller
+  passes a `kind` or `null`, and that single argument *is* the design
+  ruling: `null` is the View-signals chip (reinterpretation — kinds may
+  cross, no scaling), a dimension is the math target and the plot chip
+  (conversion — like-kind only). Nothing about which units exist, how
+  they group or how a `(base, prefix)` pair is spelled is decided in JS;
+  `list_unit_picker` serves the whole model including the composed
+  display (`nAh`), because composing a spelling is the facade's table to
+  read.
+- **The ratio family is one row, host-side.** `percent`,
+  `part-per-million` and `ratio` are three base entries, but a picker
+  showing three rows would be showing one quantity three times. The
+  collapse happens in `list_unit_picker` rather than in the view, so the
+  rule ("a proportion takes a scale choice, not an SI ladder") lives with
+  the units.
+- **Clearing an override needed no affordance, and got none.** The
+  ruling forbids a reset button and says clearing is picking the
+  composition again. That only works if the composition is *in* the
+  picker, so: `ResolvedMath` now carries `composed` (the `UnitId` the
+  derivation **is**, where the table names one) and the editor maps a
+  pick equal to it onto `unit: null`. A composition nothing names
+  (`Ah/s`) has no such row to reuse, so `pickerEntries` synthesises one
+  whose single rung commits nothing — and *only* then, so a named
+  composition is never listed twice. A set whose members mix dimensions
+  derives nothing at all, and there `clearable` (the caller saying an
+  override is in force) grows the same kind of row, so no override is
+  ever unclearable.
+- **The derivation is hover text, not a note.** `Composed::display`
+  contracts `A · h` to `Ah`, which is right on a button and useless in
+  saying where `Ah` came from. `Composed::factors` is the
+  uncontracted spelling and is what `ResolvedMath::derived` carries;
+  `target_conversion` beside it is the unit conversion **alone**, without
+  the user's output gain, because that is what the explanation is about.
+  Both land in the Units button's `title`: the button reads the unit it
+  resolves to and nothing else.
+- **Two host arrays, one indexing rule, twice.** Phase 2 recorded that
+  `unconverted` indexes the *host's* resolution order; `recognition` is
+  index-parallel with the same array, so the operand chip is keyed by
+  `operandRefKey` exactly as the unconverted flag is. A test pins it with
+  the fixture's resolved order deliberately reversed against the row
+  order — indexing the rows would pass every other way of writing that
+  test.
+- **The plot's conversion is one host question, asked once per series
+  set.** `resolve_display_units` answers what a declared string means,
+  the family a kind-locked picker offers, the spelling the result reads
+  as, and the affine — so the frontend applies a factor and derives
+  none. It is applied at exactly two points in `PlotArea`: the paged
+  series (`convertSeries`) and the host's all-time extent
+  (`convertExtent`), because the axis scales to the values it draws. A
+  series nobody converted passes the very same arrays through.
+- **A render-count test caught a real churn bug.** *Observation*:
+  `reordering rows inside one area re-renders only that area` failed at
+  3 renders against a limit of 2. *Hypothesis*: the display-unit memo key
+  was order-dependent, so a reorder re-asked the host, and the fresh
+  answer map re-rendered every area. *Experiment*: sorted the key's
+  entries and re-ran. *Data*: back to 2. *Conclusion*: the key is a set
+  of `(series, declared, chosen)` triples and must be spelled as one —
+  now `.sort()`ed, with the reasoning in `displayUnitsKey`'s doc.
+- **The lane merge is a resolver, not a rewritten ref.**
+  `deriveAxesForArea` and `retainedAxisIds` take a `unitOf` (defaulting
+  to the declared string) rather than the panel swapping `unit` on the
+  `SignalRef`s it hands down — those refs are also what a hidden or
+  recolored pattern row materialises from, so a display spelling written
+  into one would have been persisted as the recorded unit.
+- **The settings table is two scopes and one editor.** The ruling puts
+  project/user checkboxes on every row, so `unit_customizations_user`
+  cannot also have a row of its own — that would be the second editor
+  `EDITED_ELSEWHERE` exists to forbid, and it moved there. The rows
+  themselves are `units::mappings`, which places every string through
+  `recognize` and so cannot disagree with the app; a string both scopes
+  map appears once, on the project's reading. Promoting is a **copy**,
+  not a move: the project's own reading of its databases stays in force,
+  and the host's join settles the overlap.
+- **The Phase 5 seam is gone, and so is the free-text target.** The
+  editor commits `UnitTarget::Typed`; `unitTargetSpelling` (which
+  rendered a typed target for a picker that could only hold strings)
+  went with the combobox it fed, and the free-text box that briefly
+  replaced it went too, with the `unitTargetLabel` that read it — the
+  library is the only way to name a unit (owner ruling, reversing the
+  keep decision). `UnitTarget::Spelling`
+  and the untagged union stay host-side — an old project file's string
+  still loads, still resolves and still displays; there is simply no
+  affordance to type a new one, and picking from the library replaces
+  it.
+- **One deviation, small.** The View-signals resolved unit is a
+  **column**, not a badge beside the signal name: the chip has to be
+  clickable and wide enough to read, and `columnsFromParamsFor` inserts a
+  new column into a saved layout without resetting it.
+- **2026-09-07 — four fixes from the owner's bench test of the math
+  editor**, each with its test written first and watched fail. *Units
+  could not be cleared*: the host-side veto is fixed on
+  `task139-derive` (a pattern one of whose members has a blank unit
+  derives again), and the frontend half is the `clearable` row above —
+  a set that derives nothing now still offers a way back to derived.
+  *The free-text unit box is gone*: the ruling that kept it is
+  reversed, and a stored spelling still displays. *The dim-note read as
+  arithmetic nobody asked for* ("the units and a·s → ah box is
+  mental"): the button says the unit it resolves to and the derivation
+  and its factor moved into its `title`. *A pattern's matches drowned
+  the section*: each pattern folds to one `DisclosureToggle` row
+  reading the pattern and its count (`Cell.* (24 matches)`), opening to
+  the members; picks stay listed, and which folds are open is
+  view-local.
+
+- **Perf (ADR 0031), six render-tier captures** —
+  `docs/performance-measurements/frontend/2026-09-07-8bce0245-run{1..6}.json`,
+  `ev-zonal`, `--perf-capture-secs 60 --perf-interact scrub`. Load real
+  on every one: `rx_fps` 1604–1621 (baseline 1602), `rx_gap.ids_measured`
+  174, `interact.performed` 266 with nothing missing. Memory is flat
+  against baseline — renderer peak 316–326 MB (316.5), tree 746–758 MB
+  (741.7), jsheap 87–94 MB (83.6) — and every drift median is *below*
+  baseline (jsheap 5.97 vs 8.95, renderer 40.8 vs 45.8, tree 71.8 vs
+  74.8). `longtask_ms_per_s` p95 0 throughout.
+
+  `cannet-perf-measurement check` nonetheless reports **FAILED on
+  `tx_late_ms_max`** and on nothing else. *Observation*: across six
+  captures of **one unchanged build** that metric reads 85.3, 12.0, 81.9,
+  28.3, 9.5, 72.5 ms against a 55.7 ms limit — three over, three under,
+  a 9× spread. *Hypothesis*: it is the spike-class tail its own doc
+  describes ("a generous floor keeps one-off OS writeback noise from
+  flapping what the mean rows were deliberately designed not to gate"),
+  not a regression. *Experiment*: the first three runs were taken, the
+  gate failed, and three more were taken on the identical binary with
+  nothing else changed. *Data*: the spread above; the systematic-stall
+  rows the mean gate exists for stay clean on every run
+  (`tx_late_ms_mean` 5.05–8.92 against an 18 ms ceiling, `flush_ms_mean`
+  4.28–4.45 against 25 ms, `flush_ms_max` 11.8–18.4 against 64.5).
+  *Conclusion*: not reproducible, and not reachable from this diff —
+  `tx_late_ms` is the transmit scheduler's wake lateness and nothing here
+  touches the scheduler, the flush path or the append lock. Recorded
+  rather than acted on; the series across builds is the overseer's to
+  read. `lag_ms_max` bounces the same way (4.1–47.8 ms, median 19.05
+  against a 40.8 limit) and its median passes.
+
+- **2026-09-08 — the plot's display-unit chip is handed the unit, not
+  the spelling** (owner ruling: units are consumed from a lossless and
+  unambiguous representation, never re-parsed). `resolve_display_units`
+  answered what a *declared string* means, and the string the panel sent
+  was `SignalRef.unit` — which for a reinterpreted signal is the
+  rendering of a unit the project had already placed. For the two units
+  whose spelling recognition refuses (`C`, `Nmm`) that lost the choice
+  outright: no source, no kind, so the chip had no picker and the series
+  converted nothing. *Fix*: `DisplayUnitQuery` carries a `source` — the
+  unit the model placed — which `display_units` uses outright,
+  recognising `declared` only when a caller has none (still ingest).
+  `SignalDescriptorRecord` and `MathSignalRecord` gained the typed half
+  of the unit they already reported (`unit_typed`), so the panel has one
+  to give: `plotDisplayUnits::seriesUnitSources` keys the catalog and
+  the math listing by `signalKey` and answers per series. `ResolvedMath`
+  keeps the placed target it was already computing, which is what a math
+  series' typed unit is (target, else the derivation's own unit).
+  Nothing in the frontend reads a unit out of a spelling; the fetch key
+  now covers the placed unit too, so reinterpreting a signal re-asks
+  without the stored ref moving — which it never did.
+  *Kept as it is, and audited*: `MathOperand::source_unit` still names a
+  library unit by its stable **id**, resolved with an exact
+  `units::typed` lookup and never through recognition — the same
+  mechanism the customization dict's values use. It is not a spelling
+  and not re-parsed. Its one limit is that an id cannot name a
+  composition the table has no entry for (`nAh`), so the operand
+  override list is narrower than the target picker's; changing that is a
+  redesign of the operand row and an owner call.
+
+Tests: host lib 1231 → 1244 passing (7 ignored, unchanged): 8 in `units`,
+2 in `math_signals`, 1 in `view_signals`, 1 in `math_commands`, 1 in
+`settings_descriptor`'s existing guards. Frontend 3388 → 3444 across 246
+files (57 added, 11 replaced, 1 removed — the target-unit combobox's six
+tests became the picker's, the settings section's rows-and-add tests
+became the table's, and the free-text label's commit test went with the
+box). The 2026-09-08 correction adds one host test (`units`, the placed
+source) and four frontend ones (the fetch key over a placed unit, and
+`seriesUnitSources` over a catalog signal, a missing one and a math
+one), measured 1255 → 1256 and 3446 → 3450 on this branch. Every new
+module's tests were written first and watched fail:
+`unitSelection`, `UnitPicker`, `plotDisplayUnits`, and the two host
+surfaces (which failed to compile, the pickers' fields not existing yet).
+Two written-first tests failed on their first run for real reasons — the
+picker ladder's unprefixed rung carried no exponent, and the mapping
+table's `mA` row already existed from a built-in recognition — and both
+findings are in the code and the test names.
 
 **2026-09-07 — Phase 5 (composition, prefixes, recognition,
 derivation), branch `task139-derive`.** Landed: base x prefix unit
@@ -719,6 +934,57 @@ strings that need a customization are visible where the signals are.
 Tests: host lib 1177 → 1182 passing (7 ignored, unchanged); frontend
 3380 → 3386 across 243 files.
 
+**2026-09-09 — bench fixes folded into `task139-apply`.** Three owner
+findings from the same walk over the units surfaces, all fixed in place
+on the branch that introduced them.
+
+- **The View-signals unit column now sorts.** It was in
+  `VIEW_SIGNAL_UNSORTABLE` on the reasoning that "the chip is a picker
+  over a host-side store" — but what the chip *reads* is a value, and
+  the host already carries it as `ViewSignalRow::unit`. A `unit` arm
+  joins `view_signals::sort_rows`, case-folded so `mV` and `MV` sit
+  beside `V` instead of on either side of it, with the raw string as
+  tiebreak; a row that declares no unit groups at the end either way,
+  the rule `database` already follows for a row nothing decodes.
+- **The settings units table refreshes live.** *Observation:* a
+  spelling added or removed did not appear or disappear until the
+  settings panel was reopened. *Hypothesis:* the table re-asks the host
+  too early to see its own write. *Experiment:* mount the section under
+  `SettingsPanel`'s real `commit` — optimistic `setSettings`, then
+  `updateSettings` — and add a spelling. *Data:* the row did not change
+  until remount. *Conclusion, confirmed:* the fetch was keyed on the
+  dict this component is handed, which the panel sets **optimistically**
+  the instant a commit is made; `updateSettings` is still a
+  read-modify-write round trip from the host, so `list_unit_mappings`
+  answered out of the pre-write cache, and when the write did land the
+  value was already what the component held — the key never changed
+  again, so it was never re-asked. The fetch is now keyed on the
+  settings store's own publish, which fires when a write is *accepted*
+  (and on a re-hydrate after a hand-edit).
+- **One order for every unit list.** *Current order, measured:* the
+  settings table listed 30 base rows in `UNITS` declaration order
+  (`voltage, current, charge, charge, power, energy, …`) and then a
+  21-row tail of prefixed units in the ASCII order of whichever spelling
+  reached them first (`frequency, pressure, voltage, power, length,
+  current, …`) — so `mV` sat 30 rows below `V`, and the picker's base
+  column and the source-unit combobox each inherited the hand-grouped
+  table order. *After:* every list surface sorts through one
+  `units::list_order` — dimension label alphabetically, then the base
+  unit's display, then up the prefix ladder — so voltage reads
+  `mV, V, kV, MV`, charge `mAh, Ah, C`, time `d, h, min, µs, ms, s`, and
+  the picker and the table agree. `UNITS` stays grouped by hand for
+  reading; nothing now inherits its order. The alternative considered
+  was keeping the curated dimension sequence (electrical first) and
+  sorting only within it; alphabetical groups won because the surfaces
+  then need no key to read.
+- **One doc-vs-code fix in passing.** `UnitMappingRow::mappings` claimed
+  "built-ins first then the two customization scopes"; the code has
+  always emitted one alphabetical spelling order regardless of source
+  (the chip says which scope). The comment now says what the code does.
+
+Tests: host lib 1260 → 1262 passing (7 ignored, unchanged); frontend
+3462 → 3463 across 246 files. All four were written red first.
+
 ## Blockers / side effects
 
 - **`coulomb` and `newton-millimeter` still read `C` and `Nmm`**, and
@@ -730,7 +996,25 @@ Tests: host lib 1177 → 1182 passing (7 ignored, unchanged); frontend
   that writes `C` still places nothing and is still flagged for a
   mapping in Settings → Units, which is the ingest question and a
   different one.
-
+- **`unit_customizations_user` no longer has a settings row.** The
+  ruling puts project/user checkboxes on every row of the units table,
+  which makes that table the editor of both dicts; a second row would be
+  the second editor `EDITED_ELSEWHERE` exists to forbid, and two tests
+  enforce that. The key is unchanged in `settings.json` and still
+  hand-editable — it is only the row that is gone. Flagged because a user
+  who went looking for it will not find it.
+- **The View-signals panel gained a `unit` column.** The chip has to be
+  clickable and wide enough to read a unit, so it is a column rather than
+  a badge in the signal cell (Phase 3 put the unplaceable-unit flag
+  there, and that flag stays). A saved layout takes the new column
+  without resetting (`columnsFromParamsFor` inserts it where a fresh
+  panel would put it), but every open panel's layout does move.
+- **The math editor's free-text unit box is gone.** It was kept here
+  (the ruling then said free text "stays as a label path") and flagged
+  as the one place the shipped editor differed from the accepted
+  prototype; the owner ruled on it at the bench and it was removed on
+  `task139-apply`. A spelling an old file stored still loads and
+  displays — only the affordance to type a new one is gone.
 - **A project's `.cannet/settings.json` now always carries
   `unit_customizations`**, empty or not, and the settings view
   therefore marks it as project-overridden. That is what

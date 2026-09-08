@@ -179,6 +179,34 @@ describe("deriveAxesForArea", () => {
   });
 });
 
+describe("per-unit lanes and the display unit", () => {
+  /// The convert affordance's whole point: a series read in another
+  /// unit stops being its own lane and joins the target unit's.
+  it("merges a converted series into the target unit's lane", () => {
+    const sigs = [s("Pack", "V"), s("Cell", "mV")];
+    const apart = deriveAxesForArea("a", sigs, "per-unit");
+    expect(apart.map((ax) => ax.subtitle)).toEqual(["[V]", "[mV]"]);
+
+    // Cell is now read in volts, so there is one lane.
+    const unitOf = (x: SignalRef) => (x.signalName === "Cell" ? "V" : x.unit);
+    const merged = deriveAxesForArea("a", sigs, "per-unit", undefined, unitOf);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].subtitle).toBe("[V]");
+    expect(merged[0].id).toBe("a/u:unit:V");
+    expect(merged[0].signals.map((x) => x.signalName)).toEqual(["Pack", "Cell"]);
+  });
+
+  it("retains the ids the display units actually mint", () => {
+    const sigs = [s("Pack", "V"), s("Cell", "mV")];
+    const unitOf = (x: SignalRef) => (x.signalName === "Cell" ? "V" : x.unit);
+    const retained = new Set(retainedAxisIds("a", sigs, unitOf));
+    for (const ax of deriveAxesForArea("a", sigs, "per-unit", undefined, unitOf)) {
+      expect(retained.has(ax.id)).toBe(true);
+    }
+    expect(retained).not.toContain("a/u:unit:mV");
+  });
+});
+
 describe("retainedAxisIds", () => {
   it("covers every id the area's signals could mint, in any mode", () => {
     const ids = new Set(retainedAxisIds("a", [s("A", "V"), s("B", "V"), s("C", "")]));

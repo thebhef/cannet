@@ -18,7 +18,7 @@ import { signalKey } from "./plotData";
 import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKey } from "./plotCursors";
 import type { YAxisMode } from "./plotAxisDerivation";
 import type { AxisScalePatch } from "./plotAxisScale";
-import type { SignalDescriptorRecord } from "./types";
+import type { SignalDescriptorRecord, UnitId } from "./types";
 // Type-only, so the cycle with `plotAreaTransfer` (which parses areas
 // through this module) is erased at build time.
 import type { PlotAreaDragPayload } from "./plotAreaTransfer";
@@ -66,6 +66,16 @@ export interface SignalRef {
    * `signalName` is its definition's stable id — so a rename of the
    * definition leaves every reference to it alone. Absent ⇒ not one. */
   math?: boolean;
+  /** The unit this series is **read in**, where the user converted it
+   * through the side list's readout chip. A typed unit (`base ×
+   * prefix`), never a spelling — the host owns unit identity and the
+   * spelling it reads as.
+   *
+   * A real conversion (the chip's picker is kind-locked), so the values
+   * drawn and the extents the axis scales to are both carried through
+   * it, and the series joins the lane of the unit it now reads in
+   * (ADR 0026). Absent ⇒ read as the database declared it. */
+  displayUnit?: UnitId;
 }
 
 export interface PlotAreaConfig {
@@ -209,6 +219,10 @@ export interface AxisHandlers {
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (ref: SignalRef) => void;
   onSetSignalColor: (ref: SignalRef, color: string) => void;
+  /** Read one series in another unit, or as its database declared it
+   * again (`null`). The picker is kind-locked, so this is always a
+   * conversion the host can make. */
+  onSetDisplayUnit: (ref: SignalRef, unit: UnitId | null) => void;
   onSetPatterns: (patterns: string[] | undefined) => void;
   onMaterializePatterns: () => void;
   /** Set / clear this axis's manual y bounds or log flag. A `null`
@@ -299,8 +313,13 @@ export function signalRefFromRaw(
   if (s.viaPattern) ref.viaPattern = true;
   if (s.fileBacked) ref.fileBacked = true;
   if (s.math) ref.math = true;
-  if (s.math) ref.math = true;
   if (typeof s.colorPick === "string") ref.colorPick = s.colorPick;
+  // A display unit is a typed unit; anything else in the slot is a
+  // hand-edit or an older shape, and reads as "no choice made".
+  const chosen = (s as { displayUnit?: unknown }).displayUnit;
+  if (chosen != null && typeof chosen === "object" && typeof (chosen as UnitId).base === "string") {
+    ref.displayUnit = chosen as UnitId;
+  }
   return ref;
 }
 

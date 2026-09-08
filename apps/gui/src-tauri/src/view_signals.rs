@@ -304,6 +304,19 @@ pub struct ViewSignalRow {
     /// it is only ever as current as the last fetch — editing the dict
     /// re-fetches.
     pub unit_unrecognized: bool,
+    /// The unit [`Self::unit`] **is**, typed — the project's
+    /// reinterpretation where there is one
+    /// ([`crate::signal_units`]), and what recognition makes of the
+    /// database's own string otherwise. `None` where nothing places it.
+    ///
+    /// The row's unit chip is a picker, and this is what it opens on.
+    /// Served rather than re-derived, so the chip and the flag beside it
+    /// cannot disagree about what the string means (ADR 0025).
+    pub unit_typed: Option<crate::units::UnitId>,
+    /// Whether [`Self::unit_typed`] came from the reinterpretation store
+    /// rather than from the database. The chip says so: a unit the
+    /// project overrode is not what the database claims.
+    pub unit_reinterpreted: bool,
     /// The database that decodes this signal today: the one the user
     /// picked for it, or — with no pick — the first assigned to the bus
     /// that defines it. `None` when nothing does.
@@ -670,12 +683,13 @@ fn row(
     // comparisons above deliberately stay on the declared string, since
     // drift is a statement about the database.
     //
-    // The unplaceable flag is that answer's, so it judges both what the
-    // row shows and where it came from: a database's wording nothing
-    // recognises is flagged, and Settings → Units is where it is
-    // repaired, while a unit the user chose is placed by construction —
-    // even one, like the coulomb's `C`, whose spelling recognition
-    // deliberately refuses.
+    // The chip is a **picker**, so it opens on the unit that answer
+    // carries — no second reading of anything, and in particular no
+    // attempt to recover a unit from the string it renders as. The
+    // unplaceable flag is the same answer's, so it judges a database's
+    // wording, which Settings → Units repairs, and never a unit the
+    // user chose — including one like the coulomb's `C`, whose spelling
+    // recognition deliberately refuses.
     let reading =
         crate::signal_units::unit_of(project.signal_units, id, &declared, project.customizations);
 
@@ -698,6 +712,8 @@ fn row(
         ),
         signal_name: reference.signal_name.clone(),
         unit_unrecognized: reading.is_unplaceable(),
+        unit_reinterpreted: project.signal_units.contains_key(id),
+        unit_typed: reading.unit,
         unit: reading.display,
         serving_dbc: serving.map(|(p, _, _)| p.to_owned()),
         picked_dbc: picked.map(ToOwned::to_owned),
@@ -780,6 +796,13 @@ fn bus_sort_key(row: &ViewSignalRow) -> &str {
     row.bus_name.as_deref().unwrap_or("\u{7f}")
 }
 
+/// The unit column's sort subject: the resolved reading the row's chip
+/// shows, case-folded so the prefix ladder is not split by case — `mV`
+/// and `MV` belong beside `V`, not on either side of it.
+fn unit_sort_key(row: &ViewSignalRow) -> String {
+    row.unit.trim().to_lowercase()
+}
+
 /// Sort rows host-side by one column, as the by-id and signal views
 /// already do (`CLAUDE.md`: the host sorts, the frontend renders). A
 /// `None` key keeps the build order; an unknown key compares equal, so
@@ -809,9 +832,27 @@ pub fn sort_rows(rows: &mut [ViewSignalRow], key: Option<&str>, dir: Option<&str
                 .cmp(&b.serving_dbc.is_none())
                 .then_with(|| flip(a.serving_dbc.cmp(&b.serving_dbc), desc)),
             "used" => a.used_by.cmp(&b.used_by),
+            // A row that declares no unit has nothing to order by, so
+            // the blanks group at the end whichever way the sort runs —
+            // the same rule `database` follows for a row nothing
+            // decodes. Equal readings fall back to the raw string, so a
+            // case-fold collision still orders deterministically.
+            "unit" => a
+                .unit
+                .trim()
+                .is_empty()
+                .cmp(&b.unit.trim().is_empty())
+                .then_with(|| {
+                    flip(
+                        unit_sort_key(a)
+                            .cmp(&unit_sort_key(b))
+                            .then_with(|| a.unit.cmp(&b.unit)),
+                        desc,
+                    )
+                }),
             _ => std::cmp::Ordering::Equal,
         };
-        let primary = if key == "database" {
+        let primary = if matches!(key, "database" | "unit") {
             primary
         } else {
             flip(primary, desc)
@@ -1820,6 +1861,39 @@ mod tests {
         assert!(!rows[0].unit_unrecognized);
     }
 
+    /// The chip is a **picker**, so a row carries the typed unit it
+    /// opens on — the reinterpretation where there is one, and what
+    /// recognition makes of the database's own string otherwise — and
+    /// says which of the two it is.
+    #[test]
+    fn a_row_carries_the_typed_unit_its_chip_opens_on() {
+        let db = plain();
+        let buses = power();
+        let reg = registry(&[("v1", "Plot 1", vec![recorded("Volts", "Msg", "V", 1.0)])]);
+        let rows = build(&reg, &[("a.dbc", &db, &buses)]);
+        assert_eq!(rows[0].unit_typed, Some(crate::units::UnitId::base("volt")));
+        assert!(!rows[0].unit_reinterpreted);
+
+        let mut units = crate::signal_units::SignalUnits::new();
+        units.insert(rows[0].id.clone(), crate::units::UnitId::base("ampere"));
+        let rows = build_rows(
+            &reg,
+            &[("a.dbc", &db, &buses)],
+            &names(),
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+            &crate::units::Customizations::new(),
+            &units,
+        );
+        // Kinds may cross: the database's label was wrong about what
+        // the signal measures, which is the case the store exists for.
+        assert_eq!(
+            rows[0].unit_typed,
+            Some(crate::units::UnitId::base("ampere"))
+        );
+        assert!(rows[0].unit_reinterpreted);
+        assert_eq!(rows[0].unit, "A");
+    }
+
     #[test]
     fn the_attention_count_is_not_decoded_plus_scale_plus_ambiguous() {
         let a = plain();
@@ -1879,6 +1953,37 @@ mod tests {
         sort_rows(&mut rows, Some("nonsense"), Some("desc"));
         let unknown: Vec<&str> = rows.iter().map(|r| r.signal_name.as_str()).collect();
         assert_eq!(unknown, vec!["Other", "PackVolts"]);
+    }
+
+    #[test]
+    fn the_unit_column_sorts_by_what_the_chip_reads() {
+        // The chip shows `unit` — the resolved reading — so that string
+        // is the sort subject. A row declaring no unit has nothing to
+        // order by, so the blanks group at the end whichever way the
+        // sort runs, the way an undecoded row does on `database`.
+        let db = dbc("PackStatus", "PackVolts", "mV", "0.1");
+        let buses = power();
+        let reg = registry(&[(
+            "v1",
+            "Plot 1",
+            vec![
+                // "mV" from the database, "A" on its sibling signal.
+                bare(Some("power"), "PackVolts"),
+                bare(Some("power"), "Other"),
+                // Nothing decodes this one, so it falls back to the
+                // blank unit the view recorded.
+                recorded("Gone", "PackStatus", "", 1.0),
+            ],
+        )]);
+        let mut rows = build(&reg, &[("a.dbc", &db, &buses)]);
+
+        sort_rows(&mut rows, Some("unit"), Some("asc"));
+        let up: Vec<&str> = rows.iter().map(|r| r.unit.as_str()).collect();
+        assert_eq!(up, vec!["A", "mV", ""]);
+
+        sort_rows(&mut rows, Some("unit"), Some("desc"));
+        let down: Vec<&str> = rows.iter().map(|r| r.unit.as_str()).collect();
+        assert_eq!(down, vec!["mV", "A", ""]);
     }
 
     #[test]

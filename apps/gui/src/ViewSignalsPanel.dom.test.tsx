@@ -181,9 +181,33 @@ vi.mock("@tauri-apps/api/core", () => ({
       return undefined;
     }
     if (cmd === "list_transmit_frames") return POOL;
+    if (cmd === "list_unit_picker") return PICKER;
+    if (cmd === "set_signal_unit") return undefined;
     return undefined;
   }),
 }));
+/// The base × prefix picker model, as `list_unit_picker` serves it —
+/// two dimensions, so a test can see that the chip's picker offers
+/// both (reinterpretation crosses kinds).
+const PICKER = [
+  {
+    id: "volt",
+    display: "V",
+    dimension: "voltage",
+    dimensionLabel: "voltage",
+    scales: [
+      { unit: { base: "volt", prefix: "milli" }, label: "m", display: "mV", exponent: -3 },
+      { unit: { base: "volt" }, label: "", display: "V", exponent: 0 },
+    ],
+  },
+  {
+    id: "ampere",
+    display: "A",
+    dimension: "current",
+    dimensionLabel: "current",
+    scales: [{ unit: { base: "ampere" }, label: "", display: "A", exponent: 0 }],
+  },
+];
 const mockListeners = new Map<string, Set<() => void>>();
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (event: string, handler: () => void) => {
@@ -199,6 +223,7 @@ function emitHostEvent(event: string) {
 
 import { ViewSignalsPanel } from "./ViewSignalsPanel";
 import { updateSettings } from "./hostSettings";
+import { hydrateUnits } from "./unitLibrary";
 import { usePushViewSignals } from "./viewSignalsPush";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { makeLiveRegistry } from "./registryTestKit";
@@ -248,6 +273,7 @@ beforeEach(async () => {
   // customization would otherwise carry into the next one.
   CUSTOMIZATIONS = {};
   await updateSettings({ unit_customizations: {} });
+  await hydrateUnits();
   calls.length = 0;
   setSignalColor.mockClear();
   mockListeners.clear();
@@ -377,7 +403,9 @@ describe("ViewSignalsPanel", () => {
     expect(screen.getByText("Mapped as:")).toBeInTheDocument();
     expect(screen.getByText("degC")).toBeInTheDocument();
     expect(screen.getByText("Decoded by:")).toBeInTheDocument();
-    expect(screen.getByText("degF")).toBeInTheDocument();
+    // Scoped to the detail cell: the unit column's chip shows the
+    // decoded string too, which is the point of that column.
+    expect(screen.getByText("degF", { selector: ".col-vs-detail *" })).toBeInTheDocument();
   });
 
   it("shows a status-keyed note for Not Decoded, which carries no diffs", async () => {
@@ -991,5 +1019,62 @@ describe("ViewSignalsPanel — unrecognised units", () => {
       expect(screen.queryByRole("img", { name: /furlongs/ })).not.toBeInTheDocument(),
     );
     expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument();
+  });
+});
+
+describe("the resolved-unit chip", () => {
+  const volts = row({
+    id: "power|s:256:PackVolts",
+    signalName: "PackVolts",
+    unit: "V",
+    unitTyped: { base: "volt" },
+  });
+
+  it("shows what the row's unit string means, and opens on it", async () => {
+    ROWS = [volts];
+    renderPanel();
+    const chip = await screen.findByRole("button", { name: "unit for PackVolts" });
+    expect(chip).toHaveTextContent("V");
+    fireEvent.click(chip);
+    const scales = screen.getByRole("listbox", { name: "scale" });
+    expect(
+      [...scales.querySelectorAll("[role=option]")].find(
+        (o) => o.getAttribute("aria-selected") === "true",
+      ),
+    ).toHaveTextContent("V");
+  });
+
+  /// Reinterpretation, not conversion: the picker is **not** kind-locked
+  /// here, because the database's label may be wrong about what the
+  /// signal measures.
+  it("offers every unit, kinds crossing, and records the choice", async () => {
+    ROWS = [volts];
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "unit for PackVolts" }));
+    const bases = screen.getByRole("listbox", { name: "unit" });
+    expect(bases.querySelectorAll("[role=option]")).toHaveLength(2);
+    fireEvent.click(screen.getByText("ampere"));
+    await waitFor(() =>
+      expect(calls.find((c) => c.cmd === "set_signal_unit")?.args).toEqual({
+        signal: "power|s:256:PackVolts",
+        unit: { base: "ampere" },
+      }),
+    );
+  });
+
+  it("says when a unit was reinterpreted rather than read from the database", async () => {
+    ROWS = [row({ ...volts, unit: "A", unitTyped: { base: "ampere" }, unitReinterpreted: true })];
+    renderPanel();
+    const chip = await screen.findByRole("button", { name: "unit for PackVolts" });
+    expect(chip).toHaveClass("reinterpreted");
+    expect(chip.title).toMatch(/no scaling/);
+  });
+
+  it("offers to assign one where nothing places the string", async () => {
+    ROWS = [row({ ...volts, unit: "furlongs", unitTyped: null })];
+    renderPanel();
+    const chip = await screen.findByRole("button", { name: "unit for PackVolts" });
+    expect(chip).toHaveClass("unknown");
+    expect(chip).toHaveTextContent("furlongs");
   });
 });

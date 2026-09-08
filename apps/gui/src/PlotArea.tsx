@@ -16,7 +16,22 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent
 import { invoke } from "@tauri-apps/api/core";
 import uPlot from "uplot";
 
-import { isEnumValueTable, type SignalDescriptorRecord, type SignalExtent, type ValueTableEntryRecord } from "./types";
+import {
+  isEnumValueTable,
+  type SignalDescriptorRecord,
+  type SignalExtent,
+  type UnitId,
+  type ValueTableEntryRecord,
+} from "./types";
+import {
+  convertExtent,
+  convertSeries,
+  displayAffineOf,
+  displayUnitOf,
+  type SeriesDisplayUnit,
+} from "./plotDisplayUnits";
+import { UnitButton } from "./UnitButton";
+import { sameUnit } from "./unitSelection";
 import { type ColorResolver, type ColorTarget, colorMapLaneFill } from "./colorMap";
 import {
   axisAutoRange,
@@ -388,6 +403,51 @@ function SignalSwatch({
         e.stopPropagation();
       }}
     />
+  );
+}
+
+/** The unit beside a signal row's value, which is also the **convert**
+ * affordance (ADR 0026).
+ *
+ * Its picker is **kind-locked**: choosing here is a real conversion, so
+ * only like-kind units are offered and both the values drawn and the
+ * axis's extent go through the factor. The converted series then belongs
+ * to the lane of the unit it reads in, which is how per-unit lanes
+ * converge — an mV series joins the V lane at ÷1000. Picking the
+ * declared unit again clears the choice.
+ *
+ * A series whose declared string the project cannot place has no family
+ * to offer and no factor to convert by, so its unit is plain text. */
+function DisplayUnitChip({
+  signal,
+  resolved,
+  onPick,
+}: {
+  signal: SignalRef;
+  resolved: SeriesDisplayUnit | undefined;
+  onPick: (unit: UnitId | null) => void;
+}) {
+  const shown = resolved?.display ?? signal.unit;
+  if (!resolved?.source) {
+    return shown ? <span className="plot-signal-unit">{shown}</span> : null;
+  }
+  const converted = signal.displayUnit != null;
+  return (
+    <UnitButton
+      value={signal.displayUnit ?? resolved.source}
+      kind={resolved.kind}
+      closeOnPick
+      ariaLabel={`display unit for ${signal.signalName}`}
+      className={`plot-signal-unit-chip${converted ? " converted" : ""}`}
+      title={
+        converted
+          ? `converted for display — read in ${shown}; pick the declared unit again to undo`
+          : "the unit this series reads in — click to convert it (like-kind only)"
+      }
+      onPick={(unit) => onPick(unit == null || sameUnit(unit, resolved.source) ? null : unit)}
+    >
+      {shown}
+    </UnitButton>
   );
 }
 
@@ -778,6 +838,17 @@ interface PlotAreaProps {
   /** Set a series' color to the given `#rrggbb` value (ADR 0026
    * per-series color picker). */
   onSetSignalColor: (ref: SignalRef, color: string) => void;
+  /** `signalKey` → how that series reads and converts for display: what
+   * its declared unit string means, the family a kind-locked picker
+   * offers, the spelling it reads as, and the affine carrying it there.
+   * All four are the host's answers (`resolve_display_units`, ADR 0025);
+   * this applies them to the already-paged data it draws. A series with
+   * no entry reads as its database declared it and scales by nothing. */
+  displayUnits: ReadonlyMap<string, SeriesDisplayUnit>;
+  /** Read this series in another unit, or `null` to read it as declared
+   * again. Kind-locked at the picker, so this is always a conversion the
+   * host can make. */
+  onSetDisplayUnit: (ref: SignalRef, unit: UnitId | null) => void;
   /** Replace this area's regex pattern list (`signalSelection.ts`);
    * `undefined` / empty clears it, leaving just the manual picks. */
   onSetPatterns: (patterns: string[] | undefined) => void;
@@ -1290,6 +1361,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onDropSignal,
     onToggleHidden,
     onSetSignalColor,
+    displayUnits,
+    onSetDisplayUnit,
     onSetPatterns,
     onMaterializePatterns,
     yScale,
@@ -1436,6 +1509,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * Keyed by signal, like the decimation cache, so it survives a
    * reorder of the very list the sidecar answered in. */
   const hostExtentsRef = useRef<ReadonlyMap<string, SignalExtent> | null>(null);
+  /** Read through a ref for the same reason the color resolver is: the
+   * fetch loop applies it, and closing over the prop would rebuild that
+   * loop whenever any series' display unit moved. */
+  const displayUnitsRef = useRef(displayUnits);
+  displayUnitsRef.current = displayUnits;
   const lastResampleTsRef = useRef(0);
   const rateEmaRef = useRef(0);
   /** Synchronous cost (ms) of the last resample's render section — what
@@ -1999,7 +2077,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         const extents = new Map<string, SignalExtent>();
         signals.forEach((s, i) => {
           const e = outcome.extra?.[i];
-          if (e) extents.set(signalRefKey(s), e);
+          const key = signalRefKey(s);
+          // The host's extent is in the unit the signal decodes in, and
+          // the axis scales to the unit the series is *drawn* in — so a
+          // converted series' all-time extent converts with its values.
+          if (e) extents.set(key, convertExtent(e, displayAffineOf(displayUnitsRef.current, key)));
         });
         hostExtentsRef.current = extents;
       }
@@ -2010,9 +2092,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // session-scoped notes project onto this panel's x-axis.
       lr.reports.base(areaId, base);
 
-      const seriesRel: RawSeries[] = signals.map(
-        (s) => snapshot.byKey.get(signalRefKey(s)) ?? { t: [], v: [] },
-      );
+      // Already-paged data shaped for the renderer that draws it: each
+      // series carried into the unit it is *read* in. The affine is the
+      // host's (ADR 0025); a series nobody converted passes the very
+      // same arrays through, allocating nothing.
+      const seriesRel: RawSeries[] = signals.map((s) => {
+        const key = signalRefKey(s);
+        const raw = snapshot.byKey.get(key) ?? { t: [], v: [] };
+        return convertSeries(raw, displayAffineOf(displayUnitsRef.current, key));
+      });
       // Auto-normalisation: every series on this axis is re-mapped to
       // [0, 1] from the *axis's* min/max — the union of what each
       // visible series holds (ADR 0026 — an axis draws one scale). One
@@ -2325,7 +2413,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       if (labelKey) {
         const r = effective.get(labelKey)!;
         const sig = signals.find((s) => signalRefKey(s) === labelKey);
-        primaryAxisRef.current = { ...r, unit: sig?.unit ?? null };
+        // The axis states the unit its ticks are in, and its ticks are
+        // the values as drawn — so a converted primary labels the axis
+        // with its display unit.
+        primaryAxisRef.current = { ...r, unit: sig ? displayUnitOf(displayUnitsRef.current, sig) : null };
       } else {
         primaryAxisRef.current = null;
       }
@@ -3435,7 +3526,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       const r = effectiveRangesRef.current.get(primaryKey);
       if (r) {
         const sig = signals.find((s) => signalRefKey(s) === primaryKey);
-        primaryAxisRef.current = { ...r, unit: sig?.unit ?? null };
+        // The axis states the unit its ticks are in, and its ticks are
+        // the values as drawn — so a converted primary labels the axis
+        // with its display unit.
+        primaryAxisRef.current = { ...r, unit: sig ? displayUnitOf(displayUnitsRef.current, sig) : null };
       } else {
         primaryAxisRef.current = null;
       }
@@ -4212,21 +4306,31 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                     <div className="plot-signal-readout">
                       <span className="plot-signal-value" title={valueTitle}>
                         {formatValueFor(key, v)}
-                        {/* Unit suffix is only meaningful for numeric
-                         * readouts — an enum row already self-labels via
-                         * `<label> (<raw>)` and tacking on a unit string
-                         * (often the empty string anyway) reads as noise.
-                         * A single-member table is not an enum
-                         * (`isEnumValueTable`), so its signal keeps the
-                         * unit. */}
-                        {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
                       </span>
+                      {/* The unit beside the value is the **convert**
+                        * affordance (ADR 0026): a kind-locked picker,
+                        * and the converted series' lane merges into the
+                        * target unit's. Only meaningful for numeric
+                        * readouts — an enum row already self-labels via
+                        * `<label> (<raw>)`, and a unit there (often the
+                        * empty string) reads as noise. A single-member
+                        * table is not an enum (`isEnumValueTable`), so
+                        * its signal keeps the chip. */}
+                      {!isEnumValueTable(valueTables.get(key)) && (
+                        <DisplayUnitChip
+                          signal={s}
+                          resolved={displayUnits.get(key)}
+                          onPick={(unit) => onSetDisplayUnit(s, unit)}
+                        />
+                      )}
                       {showAbDelta && (
                         <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
                           {/* A difference, not a reading — the plain float
                             * rule, as in the measurement strip. */}
                           Δ {fmtVal(deltaAbFor(key))}
-                          {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
+                          {!isEnumValueTable(valueTables.get(key))
+                            ? ` ${displayUnitOf(displayUnits, s)}`
+                            : ""}
                         </small>
                       )}
                     </div>

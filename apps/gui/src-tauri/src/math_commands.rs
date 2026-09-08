@@ -72,6 +72,28 @@ pub(crate) struct MathSignalRecord {
     pub unconverted: Vec<usize>,
     /// The unit the series carries: the user's, or the derived one.
     pub unit_resolved: String,
+    /// What dimensional analysis makes of this function, spelled —
+    /// whatever the user has named on top. The editor's unit button
+    /// states it: `composed: A · h` while nothing is set, and the
+    /// conversion once something is.
+    pub unit_derived: Option<String>,
+    /// The unit that derivation **is**, where the table names one — what
+    /// a picker offers as "the composition, prefixable". `None` for a
+    /// composition no unit names (`Ah/s`).
+    pub unit_composed: Option<crate::units::UnitId>,
+    /// **The unit this series is read in**, typed — the definition's
+    /// target where it names one, and the derivation's own unit
+    /// otherwise. `None` where nothing places one.
+    ///
+    /// The typed half of `unit_resolved`, carried beside it rather than
+    /// recovered from it: a series targeted at a coulomb reads `C`, and
+    /// `C` is a spelling recognition refuses on purpose. A plot's
+    /// display-unit chip converts through this.
+    pub unit_typed: Option<crate::units::UnitId>,
+    /// The unit conversion the button's note states once a target is
+    /// named: derivation → target, without the user's own output
+    /// scalars.
+    pub unit_conversion: Option<crate::units::Affine>,
     /// The **kind** the resolved unit belongs to — the composed
     /// dimension for an integration or a derivative, the operands' own
     /// for a pointwise function. What a kind-locked unit picker offers
@@ -162,6 +184,13 @@ pub(crate) fn list_math_signals(
                 unconverted: resolved.unconverted.clone(),
                 resolved_operands: resolved.operands.clone(),
                 unit_resolved: resolved.unit.clone(),
+                unit_derived: resolved.derived.clone(),
+                unit_composed: resolved.composed.clone(),
+                unit_typed: resolved
+                    .target
+                    .clone()
+                    .or_else(|| resolved.composed.clone()),
+                unit_conversion: resolved.target_conversion,
                 unit_kind: resolved.kind,
                 recognition: resolved.recognition.clone(),
                 bus_ids: resolved.bus_ids.clone(),
@@ -275,6 +304,10 @@ mod tests {
             unconverted: vec![1],
             operand_paths: vec!["CAN1/BMS/Cells/Cell01".to_string()],
             unit_resolved: "V".to_string(),
+            unit_derived: Some("V".to_string()),
+            unit_composed: Some(crate::units::UnitId::base("volt")),
+            unit_typed: Some(crate::units::UnitId::base("volt")),
+            unit_conversion: None,
             unit_kind: Some(crate::units::Dimension::Voltage),
             recognition: vec![math_signals::UnitRecognition::Recognized {
                 unit: crate::units::UnitId::base("volt"),
@@ -310,6 +343,11 @@ mod tests {
         assert_eq!(json["kind"], "sum");
         assert_eq!(json["arity"], "set");
         assert_eq!(json["unitResolved"], "V");
+        // The derivation the unit button states, beside the unit the
+        // series carries — two facts, never one.
+        assert_eq!(json["unitDerived"], "V");
+        assert_eq!(json["unitComposed"]["base"], "volt");
+        assert_eq!(json["unitConversion"], serde_json::Value::Null);
         // The kind a unit picker locks to, and the parse state the
         // operand chip shows — both the model's, neither re-derived.
         assert_eq!(json["unitKind"], "voltage");
