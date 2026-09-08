@@ -207,7 +207,7 @@ impl Dimension {
 /// enumerate: a picker offers a base unit and a prefix, so an exponent
 /// the crate has no variant for is composed rather than missing (design
 /// ruling — enumeration gaps do not dictate the model).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Prefix {
     Yocto,
@@ -378,7 +378,7 @@ impl Prefix {
 /// unit *string* exists only at the DBC-ingest boundary, where
 /// [`recognize`] reads one; from there nothing is spelled until it is
 /// displayed.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnitId {
     /// The base unit's stable id — an entry of this module's unit table
@@ -541,7 +541,11 @@ pub struct UnitListing {
     pub spelling: &'static str,
 }
 
-/// Every unit the app offers, in picker order.
+/// Every unit the app offers, grouped by hand for reading.
+///
+/// This order is **not** the order anything is listed in: every list
+/// surface sorts by [`list_order`] on its way out, so a row can be added
+/// beside the ones it belongs with without moving anything a user sees.
 ///
 /// Deliberately a **curated subset** of what the library carries: the
 /// library has the whole SI prefix ladder for each quantity, and a
@@ -1251,6 +1255,17 @@ impl Composed {
                 return display;
             }
         }
+        self.factors()
+    }
+
+    /// The composition spelled as its **factors**, never contracted —
+    /// `A·h` where [`Self::display`] would say `Ah`.
+    ///
+    /// This is what an editor's unit note states (`composed: A·h`): the
+    /// button already carries the name, and what the note adds is where
+    /// that name came from.
+    #[must_use]
+    pub fn factors(&self) -> String {
         let join = |units: &[UnitId]| units.iter().map(display_of).collect::<Vec<_>>().join("·");
         let numerator = if self.numerator.is_empty() {
             "1".to_string()
@@ -1306,10 +1321,38 @@ pub fn merge_customizations(user: &Customizations, project: &Customizations) -> 
     merged
 }
 
-/// Every selectable unit, in picker order.
+/// **Where a unit falls in every list this facade serves** — the
+/// picker's base column, the settings view's units table, the flat
+/// source-unit list.
+///
+/// [`UNITS`] is grouped by hand and a reader cannot predict where a unit
+/// sits in it, so no surface inherits that order: they are all sorted by
+/// this one rule, and a unit is looked for in the same place wherever it
+/// is offered. Dimension label alphabetically, then the **base** unit's
+/// display, then up the prefix ladder — so `mV` sits under `V` on the
+/// voltage rung rather than in a tail of prefixed rows after every base.
+fn list_order(unit: &UnitId) -> (&'static str, String, i32) {
+    (
+        dimension_of(unit).map_or("", Dimension::label),
+        find(&unit.base).map_or_else(
+            || unit.base.to_lowercase(),
+            |base| base.display.to_lowercase(),
+        ),
+        unit.prefix.exponent(),
+    )
+}
+
+/// The unit table in [`list_order`].
+fn ordered_entries() -> Vec<&'static Entry> {
+    let mut entries: Vec<&'static Entry> = UNITS.iter().collect();
+    entries.sort_by_key(|e| list_order(&UnitId::new(e.base, e.prefix)));
+    entries
+}
+
+/// Every selectable unit, in list order.
 #[must_use]
 pub fn all() -> Vec<UnitInfo> {
-    UNITS.iter().map(Entry::info).collect()
+    ordered_entries().into_iter().map(Entry::info).collect()
 }
 
 /// Every selectable unit as a picker offers it — the module's `Listing
@@ -1317,7 +1360,310 @@ pub fn all() -> Vec<UnitInfo> {
 #[tauri::command]
 #[must_use]
 pub fn list_units() -> Vec<UnitListing> {
-    UNITS.iter().map(Entry::listing).collect()
+    ordered_entries().into_iter().map(Entry::listing).collect()
+}
+
+/// One row of the **base × prefix picker**: a base unit, and the scale
+/// choices its second column offers.
+///
+/// A unit's identity is base × prefix, so the picker is two columns and
+/// this is the first. The crate's enumerated prefixed variants are
+/// *scales* here, not rows — a `millivolt` row beside a `volt` row is
+/// the flat list this replaces.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitPickerEntry {
+    /// The base unit's stable id.
+    pub id: &'static str,
+    /// How the base reads unscaled.
+    pub display: &'static str,
+    pub dimension: Dimension,
+    /// [`Dimension::label`] — the group heading.
+    pub dimension_label: &'static str,
+    /// The second column, in the order it renders: the whole SI ladder
+    /// for a prefixable base, the ratio family's three scale choices for
+    /// `ratio`, and the base alone for anything that takes neither.
+    /// Never empty, so a pick is always a whole unit.
+    pub scales: Vec<UnitScale>,
+}
+
+/// One choice in the picker's second column.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitScale {
+    /// What picking this commits.
+    pub unit: UnitId,
+    /// What the column shows — a prefix symbol, or a ratio scale's own
+    /// words.
+    pub label: &'static str,
+    /// How the composed unit reads — `mV`, `nAh`, `%`. Spelled here so
+    /// a picker never composes a unit string of its own.
+    pub display: String,
+    /// The power of ten this scale carries, for the `×10ⁿ` its row
+    /// shows. `None` for a scale that is not one — a base that takes no
+    /// prefix.
+    pub exponent: Option<i32>,
+}
+
+/// The ratio family as the picker offers it: one row, three scales
+/// (design ruling — a proportion takes a scale choice, not an SI
+/// ladder). The first is the row's own identity.
+static RATIO_SCALES: &[(&str, &str)] = &[
+    ("ratio", "0–1"),
+    ("percent", "%"),
+    ("part-per-million", "ppm"),
+];
+
+/// The base × prefix picker's whole model.
+///
+/// Everything a picker needs and must not derive: which bases exist, how
+/// they group, what scales each takes, and how each `(base, scale)` pair
+/// is **spelled** — `nAh` is composed here, never in a view.
+#[tauri::command]
+#[must_use]
+pub fn list_unit_picker() -> Vec<UnitPickerEntry> {
+    let mut out = Vec::new();
+    for entry in UNITS.iter().filter(|e| e.is_base()) {
+        if entry.dimension == Dimension::Ratio {
+            // One row for the whole family, minted at its own id.
+            if entry.id != RATIO_SCALES[0].0 {
+                continue;
+            }
+            out.push(UnitPickerEntry {
+                id: entry.id,
+                display: entry.display,
+                dimension: entry.dimension,
+                dimension_label: entry.dimension.label(),
+                scales: RATIO_SCALES
+                    .iter()
+                    .map(|(id, label)| scale_of(UnitId::base(*id), label, None))
+                    .collect(),
+            });
+            continue;
+        }
+        let scales = if entry.prefixable {
+            PREFIXES
+                .iter()
+                .map(|p| scale_of(UnitId::new(entry.base, *p), p.symbol(), Some(p.exponent())))
+                .collect()
+        } else {
+            vec![scale_of(UnitId::base(entry.base), "", None)]
+        };
+        out.push(UnitPickerEntry {
+            id: entry.id,
+            display: entry.display,
+            dimension: entry.dimension,
+            dimension_label: entry.dimension.label(),
+            scales,
+        });
+    }
+    out.sort_by_key(|e| list_order(&UnitId::base(e.id)));
+    out
+}
+
+/// One scale row: the unit, how it reads, and its power of ten where it
+/// is one rung of the SI ladder.
+fn scale_of(unit: UnitId, label: &'static str, exponent: Option<i32>) -> UnitScale {
+    UnitScale {
+        display: display_of(&unit),
+        exponent,
+        label,
+        unit,
+    }
+}
+
+/// One series' declared unit string, and the display unit a view has
+/// chosen for it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayUnitQuery {
+    /// **The unit the series is read in**, where the model already
+    /// placed one — a reinterpretation, a math definition's target, or
+    /// what recognition made of a database's own string. Handed over
+    /// rather than recovered from [`Self::declared`]: a series read as a
+    /// coulomb spells `C`, which recognition refuses on purpose, so a
+    /// query that carried only the spelling could not convert it.
+    #[serde(default)]
+    pub source: Option<UnitId>,
+    /// How the series reads today — a DBC's free text, or a math
+    /// signal's resolved label. The label a view falls back to, and the
+    /// **ingest** reading for a caller that has no placed unit to give.
+    pub declared: String,
+    /// The unit the view wants it read in, where the user chose one.
+    #[serde(default)]
+    pub chosen: Option<UnitId>,
+}
+
+/// How one series reads and converts for display.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayUnit {
+    /// The unit the declared string places, typed — what a picker opens
+    /// on when nothing has been chosen. `None` where nothing places it,
+    /// which is also why no conversion is possible.
+    pub source: Option<UnitId>,
+    /// The dimension a **kind-locked** picker offers against. Converting
+    /// a display unit is a real conversion, so only like-kind units are
+    /// on offer; `None` disables the affordance entirely.
+    pub kind: Option<Dimension>,
+    /// How the series reads after the choice — the declared string
+    /// verbatim where nothing was chosen or nothing places it, and the
+    /// chosen unit's spelling otherwise.
+    pub display: String,
+    /// The affine carrying a value in the declared unit to one in the
+    /// display unit. [`Affine::IDENTITY`] where nothing was chosen, and
+    /// **also** where the choice cannot be reached — a view must not
+    /// rescale by a factor nothing computed.
+    pub affine: Affine,
+}
+
+/// [`DisplayUnit`] for each query, index-parallel.
+///
+/// The whole per-series unit question in one answer: a plot asks it once
+/// per series set and re-derives none of it (ADR 0025 — recognition, the
+/// kind and the factor are all the model's).
+#[must_use]
+pub fn display_units(
+    queries: &[DisplayUnitQuery],
+    customizations: &Customizations,
+) -> Vec<DisplayUnit> {
+    queries
+        .iter()
+        .map(|q| {
+            // The caller's placed unit wins outright; recognition is the
+            // fallback for a query that carries only a string, which is
+            // ingest and the one place a spelling becomes a unit.
+            let source = q
+                .source
+                .clone()
+                .or_else(|| recognize(&q.declared, customizations));
+            let kind = source.as_ref().and_then(dimension_of);
+            let conversion = match (&source, &q.chosen) {
+                (Some(from), Some(to)) => convert_units(from, to).map(|a| (a, to.clone())),
+                _ => None,
+            };
+            match conversion {
+                Some((affine, to)) => DisplayUnit {
+                    display: display_of(&to),
+                    source,
+                    kind,
+                    affine,
+                },
+                None => DisplayUnit {
+                    display: q.declared.clone(),
+                    source,
+                    kind,
+                    affine: Affine::IDENTITY,
+                },
+            }
+        })
+        .collect()
+}
+
+/// Where one unit-string mapping comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MappingSource {
+    /// A recognition this module ships — not stored anywhere, and not
+    /// removable.
+    BuiltIn,
+    /// The project's customization dict (workspace scope).
+    Project,
+    /// The person's own dict, in force in every project they open.
+    User,
+}
+
+/// One DBC unit string that reads as a unit, and where that reading
+/// comes from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitMapping {
+    pub spelling: String,
+    pub source: MappingSource,
+}
+
+/// One row of the settings view's units table: a unit, and every string
+/// this project reads as it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitMappingRow {
+    pub unit: UnitId,
+    /// The **stored id** a customization writes to name this unit — what
+    /// the row's add path commits. `None` for a unit the table
+    /// enumerates no id for, which cannot be a mapping target; such a
+    /// row is listed but takes no new spelling.
+    pub id: Option<&'static str>,
+    /// How the unit reads — the row's heading.
+    pub display: String,
+    /// [`Dimension::label`].
+    pub dimension_label: &'static str,
+    /// The strings that reach this unit, in spelling order whatever
+    /// scope each comes from — the chip says which, and grouping by
+    /// source as well would make one string hard to find in a row that
+    /// carries several.
+    pub mappings: Vec<UnitMapping>,
+}
+
+/// The settings table: **every base unit**, plus any unit a
+/// customization names that the base list has no row for, each carrying
+/// the strings that read as it.
+///
+/// Which row a string lands on is [`recognize`]'s answer and nothing
+/// else, so the table cannot disagree with what the app actually does —
+/// and a string both scopes map appears once, on the reading that wins
+/// (the project's).
+///
+/// Rows come out in the picker's own order — dimension, then the base
+/// unit's display, then up the prefix ladder — so a unit a customization
+/// earned a row for lands beside the units it belongs with rather than
+/// in a tail after every base unit.
+#[must_use]
+pub fn mappings(user: &Customizations, project: &Customizations) -> Vec<UnitMappingRow> {
+    let merged = merge_customizations(user, project);
+    let mut order: Vec<UnitId> = UNITS
+        .iter()
+        .filter(|e| e.is_base())
+        .map(|e| UnitId::base(e.base))
+        .collect();
+    let mut rows: BTreeMap<UnitId, Vec<UnitMapping>> =
+        order.iter().map(|u| (u.clone(), Vec::new())).collect();
+    let scoped = |spelling: &str| {
+        if project.contains_key(spelling) {
+            MappingSource::Project
+        } else if user.contains_key(spelling) {
+            MappingSource::User
+        } else {
+            MappingSource::BuiltIn
+        }
+    };
+    let spellings = RECOGNITIONS
+        .iter()
+        .map(|(s, _)| (*s).to_string())
+        .chain(user.keys().cloned())
+        .chain(project.keys().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    for spelling in spellings {
+        let Some(unit) = recognize(&spelling, &merged) else {
+            continue;
+        };
+        let source = scoped(&spelling);
+        let row = rows.entry(unit.clone()).or_insert_with(|| {
+            order.push(unit.clone());
+            Vec::new()
+        });
+        row.push(UnitMapping { spelling, source });
+    }
+    order.sort_by_key(list_order);
+    order
+        .into_iter()
+        .map(|unit| UnitMappingRow {
+            id: stored_id(&unit),
+            display: display_of(&unit),
+            dimension_label: dimension_of(&unit).map_or("", Dimension::label),
+            mappings: rows.remove(&unit).unwrap_or_default(),
+            unit,
+        })
+        .collect()
 }
 
 /// The unit with this stable id.
@@ -1562,6 +1908,359 @@ mod tests {
 
     fn none() -> Customizations {
         Customizations::new()
+    }
+
+    fn picker_entry(id: &str) -> UnitPickerEntry {
+        list_unit_picker()
+            .into_iter()
+            .find(|e| e.id == id)
+            .unwrap_or_else(|| panic!("no picker entry `{id}`"))
+    }
+
+    /// The picker's first column is **base units**, never the crate's
+    /// enumerated prefixed variants: a row for `millivolt` beside one
+    /// for `volt` is the flat list this replaces.
+    #[test]
+    fn the_picker_lists_base_units_and_never_a_prefixed_variant() {
+        let entries = list_unit_picker();
+        assert!(entries.iter().any(|e| e.id == "volt"));
+        assert!(
+            !entries.iter().any(|e| e.id == "millivolt"),
+            "a prefixed variant is a scale of its base, not a row of its own"
+        );
+    }
+
+    /// Whether `labels` runs through its dimension groups
+    /// alphabetically, each group contiguous.
+    fn grouped_alphabetically(labels: &[&str]) -> bool {
+        let mut sorted = labels.to_vec();
+        sorted.sort_unstable();
+        labels == sorted.as_slice()
+    }
+
+    /// **One order for every unit list.** The table this file declares is
+    /// grouped by hand and a reader cannot predict where a unit sits in
+    /// it, so every list surface is sorted before it leaves: dimension
+    /// label alphabetically, then the base unit's display, then up the
+    /// prefix ladder.
+    #[test]
+    fn every_unit_list_runs_in_dimension_then_display_order() {
+        let picker = list_unit_picker();
+        let labels: Vec<&str> = picker.iter().map(|e| e.dimension_label).collect();
+        assert!(grouped_alphabetically(&labels), "{labels:?}");
+
+        let shown = |dimension: &str| -> Vec<&str> {
+            picker
+                .iter()
+                .filter(|e| e.dimension_label == dimension)
+                .map(|e| e.display)
+                .collect()
+        };
+        assert_eq!(shown("charge"), vec!["Ah", "C"]);
+        assert_eq!(shown("time"), vec!["d", "h", "min", "s"]);
+        assert_eq!(shown("pressure"), vec!["bar", "Pa", "psi"]);
+
+        // The flat list the source-unit combobox reads groups the same
+        // way — it is the same table, so it cannot answer differently.
+        let flat: Vec<&str> = list_units().iter().map(|u| u.dimension_label).collect();
+        assert!(grouped_alphabetically(&flat), "{flat:?}");
+    }
+
+    /// The settings table orders by the same rule, which puts a prefixed
+    /// row on its base unit's ladder instead of in a tail after every
+    /// base row.
+    #[test]
+    fn the_mapping_table_puts_a_prefixed_row_on_its_bases_ladder() {
+        let rows = mappings(&none(), &none());
+        let labels: Vec<&str> = rows.iter().map(|r| r.dimension_label).collect();
+        assert!(grouped_alphabetically(&labels), "{labels:?}");
+
+        let shown = |dimension: &str| -> Vec<&str> {
+            rows.iter()
+                .filter(|r| r.dimension_label == dimension)
+                .map(|r| r.display.as_str())
+                .collect()
+        };
+        assert_eq!(shown("voltage"), vec!["mV", "V", "kV", "MV"]);
+        assert_eq!(shown("charge"), vec!["mAh", "Ah", "C"]);
+        assert_eq!(shown("length"), vec!["mm", "cm", "m", "km"]);
+    }
+
+    /// The second column is the whole SI ladder, exponent-ordered, each
+    /// row carrying its power of ten and the composed spelling — which
+    /// is what the picker renders and must not compose itself.
+    #[test]
+    fn a_prefixable_base_offers_the_whole_exponent_ordered_ladder() {
+        let volt = picker_entry("volt");
+        assert_eq!(volt.scales.len(), Prefix::all().len());
+        let exponents: Vec<Option<i32>> = volt.scales.iter().map(|s| s.exponent).collect();
+        assert_eq!(exponents.first().copied().flatten(), Some(-24));
+        assert_eq!(exponents.last().copied().flatten(), Some(24));
+        assert!(exponents.windows(2).all(|w| w[0] < w[1]));
+        let milli = volt
+            .scales
+            .iter()
+            .find(|s| s.unit.prefix == Prefix::Milli)
+            .expect("milli");
+        assert_eq!(milli.display, "mV");
+        assert_eq!(milli.label, "m");
+        assert_eq!(milli.unit, UnitId::new("volt", Prefix::Milli));
+    }
+
+    /// The ratio family is **one** row taking a scale choice, not three
+    /// rows of its own: `0–1`, `%` and `ppm` are the same quantity read
+    /// at three scales (design ruling).
+    #[test]
+    fn the_ratio_family_is_one_row_with_three_scale_choices() {
+        let entries = list_unit_picker();
+        let ratios: Vec<&UnitPickerEntry> = entries
+            .iter()
+            .filter(|e| e.dimension == Dimension::Ratio)
+            .collect();
+        assert_eq!(ratios.len(), 1, "{ratios:?}");
+        let scales: Vec<(&str, &str)> = ratios[0]
+            .scales
+            .iter()
+            .map(|s| (s.unit.base.as_str(), s.label))
+            .collect();
+        assert_eq!(
+            scales,
+            [
+                ("ratio", "0–1"),
+                ("percent", "%"),
+                ("part-per-million", "ppm")
+            ]
+        );
+    }
+
+    /// A base that takes no ladder still offers exactly one choice, so
+    /// the picker's second column is never empty and a pick is always a
+    /// whole unit.
+    #[test]
+    fn a_base_that_takes_no_prefix_offers_itself_alone() {
+        let celsius = picker_entry("degree-celsius");
+        assert_eq!(celsius.scales.len(), 1);
+        assert_eq!(celsius.scales[0].unit, UnitId::base("degree-celsius"));
+        assert_eq!(celsius.scales[0].display, "°C");
+        assert_eq!(celsius.scales[0].exponent, None);
+    }
+
+    /// Every scale the picker offers is a unit the facade places, so a
+    /// pick can always be converted, spelled and stored.
+    #[test]
+    fn every_offered_scale_is_a_unit_the_facade_places() {
+        for entry in list_unit_picker() {
+            for scale in &entry.scales {
+                assert!(
+                    dimension_of(&scale.unit).is_some(),
+                    "{:?} places nothing",
+                    scale.unit
+                );
+                assert_eq!(scale.display, display_of(&scale.unit));
+            }
+        }
+    }
+
+    fn placed_queries(rows: &[(Option<UnitId>, &str, Option<UnitId>)]) -> Vec<DisplayUnitQuery> {
+        rows.iter()
+            .map(|(source, declared, chosen)| DisplayUnitQuery {
+                source: source.clone(),
+                declared: (*declared).to_string(),
+                chosen: chosen.clone(),
+            })
+            .collect()
+    }
+
+    fn queries(pairs: &[(&str, Option<UnitId>)]) -> Vec<DisplayUnitQuery> {
+        pairs
+            .iter()
+            .map(|(declared, chosen)| DisplayUnitQuery {
+                source: None,
+                declared: (*declared).to_string(),
+                chosen: chosen.clone(),
+            })
+            .collect()
+    }
+
+    /// The plot's display-unit chip asks one question per series: what
+    /// does the declared string mean, what family does a kind-locked
+    /// picker offer, how does it read, and by what factor.
+    #[test]
+    fn a_display_unit_answers_the_whole_per_series_question() {
+        let asked = queries(&[
+            ("mV", None),
+            ("mV", Some(UnitId::base("volt"))),
+            ("widgets", Some(UnitId::base("volt"))),
+        ]);
+        let answers = display_units(&asked, &none());
+
+        // Nothing chosen: the string reads as it stands and nothing
+        // scales, but the picker still knows where to open and what to
+        // offer.
+        assert_eq!(answers[0].display, "mV");
+        assert_eq!(answers[0].source, Some(UnitId::new("volt", Prefix::Milli)));
+        assert_eq!(answers[0].kind, Some(Dimension::Voltage));
+        assert_eq!(answers[0].affine, Affine::IDENTITY);
+
+        // Chosen: a real conversion — an mV series joins the V lane at
+        // ÷1000.
+        assert_eq!(answers[1].display, "V");
+        close(answers[1].affine.gain, 0.001);
+
+        // A string nothing places converts by nothing: a view must not
+        // rescale by a factor nobody computed.
+        assert_eq!(answers[2].display, "widgets");
+        assert_eq!(answers[2].source, None);
+        assert_eq!(answers[2].kind, None);
+        assert_eq!(answers[2].affine, Affine::IDENTITY);
+    }
+
+    /// **A unit the model already placed is used, not re-read.** A
+    /// series reinterpreted as a coulomb spells `C`, which recognition
+    /// refuses on purpose (it would be a guess against Celsius) — so
+    /// the query carries the unit, and the chip converts and offers the
+    /// charge family exactly as it would for any other unit.
+    #[test]
+    fn a_placed_source_unit_converts_whatever_its_spelling_reads_as() {
+        let asked = placed_queries(&[
+            (Some(UnitId::base("coulomb")), "C", None),
+            (
+                Some(UnitId::base("coulomb")),
+                "C",
+                Some(UnitId::new("coulomb", Prefix::Milli)),
+            ),
+            (
+                Some(UnitId::new("newton-meter", Prefix::Milli)),
+                "Nmm",
+                Some(UnitId::base("newton-meter")),
+            ),
+        ]);
+        assert_eq!(recognize("C", &none()), None, "by design");
+        let answers = display_units(&asked, &none());
+
+        assert_eq!(answers[0].display, "C", "it still reads as C");
+        assert_eq!(answers[0].source, Some(UnitId::base("coulomb")));
+        assert_eq!(answers[0].kind, Some(Dimension::Charge));
+
+        assert_eq!(answers[1].display, "mC");
+        close(answers[1].affine.gain, 1000.0);
+
+        assert_eq!(answers[2].display, "Nm");
+        close(answers[2].affine.gain, 0.001);
+    }
+
+    /// A choice of the wrong kind is refused the same way — the picker
+    /// is kind-locked, so this is a hand-edited project file rather than
+    /// something the UI can produce, and it must not scale.
+    #[test]
+    fn a_display_unit_of_another_kind_scales_nothing() {
+        let answers = display_units(&queries(&[("V", Some(UnitId::base("ampere")))]), &none());
+        assert_eq!(answers[0].display, "V");
+        assert_eq!(answers[0].affine, Affine::IDENTITY);
+    }
+
+    /// The settings table's rows: every base unit, and every string that
+    /// reads as one — the built-ins and the two customization scopes,
+    /// each labelled with where it comes from.
+    #[test]
+    fn the_mapping_table_puts_each_string_on_the_row_it_recognises_to() {
+        let rows = mappings(&none(), &none());
+        assert!(rows.iter().any(|r| r.unit == UnitId::base("volt")));
+        let celsius = rows
+            .iter()
+            .find(|r| r.unit == UnitId::base("degree-celsius"))
+            .expect("celsius row");
+        let spellings: Vec<&str> = celsius
+            .mappings
+            .iter()
+            .map(|m| m.spelling.as_str())
+            .collect();
+        assert!(spellings.contains(&"degC"), "{spellings:?}");
+        assert!(celsius
+            .mappings
+            .iter()
+            .all(|m| m.source == MappingSource::BuiltIn));
+        // The id the row's add path commits — a customization names a
+        // unit by id, never by spelling.
+        assert_eq!(celsius.id, Some("degree-celsius"));
+        assert!(
+            rows.iter().all(|r| r.id.is_some()),
+            "every listed row is a mapping target"
+        );
+    }
+
+    /// A customization joins the row its unit names, wearing the scope
+    /// it is stored at — and **the project wins**, so a string both
+    /// scopes map is listed once, as the project's.
+    #[test]
+    fn a_customization_joins_its_units_row_wearing_its_scope() {
+        let user: Customizations = [
+            ("widgets".to_string(), "volt".to_string()),
+            ("Deg C".to_string(), "kelvin".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let project: Customizations = [("Deg C".to_string(), "degree-celsius".to_string())]
+            .into_iter()
+            .collect();
+        let rows = mappings(&user, &project);
+        let find = |unit: UnitId| {
+            rows.iter()
+                .find(|r| r.unit == unit)
+                .unwrap_or_else(|| panic!("no row for {unit:?}"))
+                .mappings
+                .iter()
+                .map(|m| (m.spelling.as_str(), m.source))
+                .collect::<Vec<_>>()
+        };
+        let volt = find(UnitId::base("volt"));
+        assert!(volt.contains(&("widgets", MappingSource::User)), "{volt:?}");
+        assert!(!volt.contains(&("widgets", MappingSource::Project)));
+        let celsius = find(UnitId::base("degree-celsius"));
+        assert!(
+            celsius.contains(&("Deg C", MappingSource::Project)),
+            "{celsius:?}"
+        );
+        let kelvin = find(UnitId::base("kelvin"));
+        assert!(
+            !kelvin.iter().any(|(s, _)| *s == "Deg C"),
+            "the project's reading wins outright: {kelvin:?}"
+        );
+    }
+
+    /// A **prefixed** unit is not a base, so the table has no row for it
+    /// until something maps a string to it — then it earns one, and the
+    /// string is never invisible. (`mA` is such a row already: a
+    /// built-in recognition reaches a unit the base list does not
+    /// list.)
+    #[test]
+    fn a_customization_naming_a_prefixed_unit_earns_its_own_row() {
+        let milliampere = UnitId::new("ampere", Prefix::Milli);
+        assert!(
+            !list_unit_picker().iter().any(|e| e.id == "milliampere"),
+            "the base list carries no prefixed row"
+        );
+        let project: Customizations = [("mAmp".to_string(), "milliampere".to_string())]
+            .into_iter()
+            .collect();
+        let rows = mappings(&none(), &project);
+        let row = rows
+            .iter()
+            .find(|r| r.unit == milliampere)
+            .expect("a row for the milliampere");
+        assert_eq!(row.display, "mA");
+        assert_eq!(row.dimension_label, "current");
+        assert!(row
+            .mappings
+            .iter()
+            .any(|m| m.spelling == "mAmp" && m.source == MappingSource::Project));
+        assert!(
+            row.mappings
+                .iter()
+                .any(|m| m.spelling == "mA" && m.source == MappingSource::BuiltIn),
+            "the built-in that reaches the same unit shares the row: {:?}",
+            row.mappings
+        );
     }
 
     #[test]

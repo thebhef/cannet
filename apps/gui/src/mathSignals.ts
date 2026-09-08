@@ -48,7 +48,17 @@ export interface MathFunctionSpec {
   label: string;
   arity: MathArity;
   params: readonly MathParamSpec[];
+  /// How the function reads its **time unit**, for the two that take
+  /// one: time is the function's parameter, so the editor's function row
+  /// spells the expression around the choice (`operand · [t]`,
+  /// `d(operand) / d[t]`). Absent for every other function.
+  timeExpression?: string;
 }
+
+/// The parameter name a function's time unit travels under, inside the
+/// tagged function object. The Rust enum renames its *variants*, not the
+/// fields inside them, so this is the field's own name.
+export const TIME_UNIT_KEY = "time_unit";
 
 /// Every function the host computes, in the order the creation menu
 /// lists them (`math_signals::MathFunction`). Arity decides the fixed
@@ -78,7 +88,20 @@ export const MATH_FUNCTIONS: readonly MathFunctionSpec[] = [
     arity: "one",
     params: [{ key: "tau_seconds", label: "τ (s)", kind: "number", default: 2 }],
   },
-  { kind: "integration", label: "Integration", arity: "one", params: [] },
+  {
+    kind: "integration",
+    label: "Integration",
+    arity: "one",
+    params: [],
+    timeExpression: "operand ·",
+  },
+  {
+    kind: "derivative",
+    label: "Derivative",
+    arity: "one",
+    params: [],
+    timeExpression: "d(operand) / d",
+  },
   {
     kind: "duty",
     label: "Duty cycle",
@@ -203,18 +226,6 @@ export function definitionOf(record: MathSignalRecord): MathDefinition {
       patterns: [...(record.operands?.patterns ?? [])],
     },
   };
-}
-
-/// How a definition's unit target reads. A spelling is itself; a typed
-/// unit is spelled by the host, which is what `unitResolved` carries —
-/// the frontend does not spell units, because prefix + base is the
-/// host's table to read.
-export function unitTargetSpelling(
-  unit: MathDefinition["unit"],
-  resolved: string,
-): string {
-  if (unit == null) return "";
-  return typeof unit === "string" ? unit : resolved;
 }
 
 /// Is this parameter field live, given what the definition's governing

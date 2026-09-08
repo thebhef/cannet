@@ -5,7 +5,8 @@
 /// `source` and `detail` carry no host sort (there is nothing to order
 /// a candidate picker or a free-text detail by), so the panel's own
 /// `onSortColumn` no-ops for them the way the signals view's `section`
-/// column does.
+/// column does. The `unit` column does sort: the chip is a picker, but
+/// the reading it shows is a value, and the host orders rows by it.
 
 import {
   type ColumnDef,
@@ -22,6 +23,7 @@ export type ViewSignalColumnKey =
   | "bus"
   | "signal"
   | "msg"
+  | "unit"
   | "database"
   | "source"
   | "used"
@@ -41,6 +43,11 @@ export const VIEW_SIGNAL_COLUMN_DEFS: readonly ColumnDef<ViewSignalColumnKey>[] 
   { key: "bus", label: "bus", className: "col-vs-bus", defaultWidth: 110 },
   { key: "signal", label: "signal", className: "col-vs-signal", defaultWidth: 160 },
   { key: "msg", label: "message", className: "col-vs-msg", defaultWidth: 170 },
+  // The **resolved** unit — what the row's unit string means after
+  // recognition and the project's customizations — and the affordance
+  // that reassigns it (`signal_units`). Narrow: a unit is two or three
+  // characters.
+  { key: "unit", label: "unit", className: "col-vs-unit", defaultWidth: 90 },
   { key: "database", label: "database", className: "col-vs-database", defaultWidth: 150 },
   { key: "source", label: "source", className: "col-vs-source", defaultWidth: 190 },
   { key: "used", label: "applies to", className: "col-vs-used", defaultWidth: 150 },

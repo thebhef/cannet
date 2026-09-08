@@ -36,6 +36,7 @@ import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { NameText } from "./NameText";
 import { ChipButton } from "./ChipButton";
+import { UnitButton } from "./UnitButton";
 
 /// This panel's persisted view state — the column layout, sort, the
 /// toolbar filters and the wash toggle. All workspace state (nothing
@@ -611,6 +612,44 @@ function UnknownUnitFlag({ unit, shown }: { unit: string; shown: boolean }) {
   );
 }
 
+/// The **resolved-unit chip**: what this signal's unit string means
+/// after recognition and the project's customizations, and the control
+/// that reassigns it.
+///
+/// Reassignment here is **reinterpretation, not conversion**
+/// (`signal_units`): any unit may be chosen and kinds may cross — the
+/// database's label was wrong about what the signal *measures*, so a
+/// like-kind picker could not express the repair — and **no scaling is
+/// applied**. That is why this picker passes no kind, where the plot's
+/// and the math editor's are locked to one.
+function ResolvedUnitChip({ row }: { row: ViewSignalRow }) {
+  const reinterpreted = row.unitReinterpreted === true;
+  const placed = row.unitTyped ?? null;
+  return (
+    <UnitButton
+      value={placed}
+      kind={null}
+      closeOnPick
+      ariaLabel={`unit for ${row.signalName}`}
+      className={`view-signals-unit-chip${reinterpreted ? " reinterpreted" : ""}${
+        row.unitUnrecognized ? " unknown" : ""
+      }`}
+      title={
+        reinterpreted
+          ? `reinterpreted — read as ${row.unit} from here on, with no scaling applied`
+          : row.unitUnrecognized
+            ? `"${row.unit}" is not a unit cannet recognises — map it in Settings → Units, or assign one here`
+            : "click to read this signal as a different unit — no scaling is applied"
+      }
+      onPick={(unit) => {
+        void invoke("set_signal_unit", { signal: row.id, unit });
+      }}
+    >
+      {row.unit || (placed == null ? "assign" : "")}
+    </UnitButton>
+  );
+}
+
 interface ViewSignalRowLineProps {
   row: ViewSignalRow;
   columns: readonly ViewSignalColumnState[];
@@ -673,6 +712,12 @@ function ViewSignalRowLine({
             return (
               <span className={className}>
                 0x{formatCanIdHex(row.messageId, row.extended)} <NameText name={row.messageName} />
+              </span>
+            );
+          case "unit":
+            return (
+              <span className={className} onClick={(e) => e.stopPropagation()}>
+                <ResolvedUnitChip row={row} />
               </span>
             );
           case "database":

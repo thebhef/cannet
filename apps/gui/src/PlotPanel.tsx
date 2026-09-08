@@ -14,10 +14,18 @@ import { listen } from "@tauri-apps/api/event";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import { isEnumValueTable, type Bus } from "./types";
+import { isEnumValueTable, type Bus, type UnitId } from "./types";
+import {
+  displayUnitOf,
+  displayUnitsKey,
+  loadDisplayUnits,
+  seriesUnitSources,
+  type SeriesDisplayUnit,
+} from "./plotDisplayUnits";
 import { useTraceLive, useTraceModel } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
+import { useMathSignals } from "./mathSignalsContext";
 import { defaultBusColor } from "./busColor";
 import { theme, useThemeName } from "./theme";
 import { buildColorResolver } from "./colorMap";
@@ -441,8 +449,11 @@ function deriveAreaConfigs(
   soloMatched: ReadonlySet<string>,
   soloMatchCount: number,
   axisCollapsed: AxisCollapsed,
+  /// The unit a series is **drawn** in — a display-unit choice moves it
+  /// onto that unit's lane, which is how per-unit lanes converge.
+  unitOf: (s: SignalRef) => string,
 ): DerivedAreaConfig[] {
-  const axes = deriveAxesForArea(a.id, a.signals, a.yAxisMode ?? "unified", isEnum);
+  const axes = deriveAxesForArea(a.id, a.signals, a.yAxisMode ?? "unified", isEnum, unitOf);
   return axes.map((ax, i) => {
     // Solo masks *after* the axes are derived, never before: the axis
     // set (and so every id keyed by it — weights, manual ranges, uPlot
@@ -1579,6 +1590,90 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
 
+  /// How each plotted series reads and converts (`plotDisplayUnits.ts`):
+  /// what its declared unit string means, the family its kind-locked
+  /// picker offers, the spelling it reads as, and the affine that
+  /// carries it there. All four are the host's (ADR 0025) — the panel
+  /// only applies them.
+  ///
+  /// Re-asked when a declared unit or a display choice moves, and not
+  /// otherwise: the key covers exactly those, so a recolor, a reorder or
+  /// a hide re-asks nothing.
+  const [displayUnits, setDisplayUnits] = useState<ReadonlyMap<string, SeriesDisplayUnit>>(
+    () => new Map(),
+  );
+  const seriesForUnits = useMemo(
+    () => effectiveAreas.flatMap((a) => a.signals),
+    [effectiveAreas],
+  );
+  /// The unit each series is **read in**, as the host answers it — the
+  /// catalog's typed unit, and a math signal's resolved one. Sent with
+  /// the query rather than left to be read back out of the spelling a
+  /// saved layout stored: a series reinterpreted as a coulomb reads
+  /// `C`, which the host refuses to read back, so the spelling alone
+  /// would convert nothing. It is also what makes a reinterpretation
+  /// take effect here without the stored ref moving.
+  const { mathSignals } = useMathSignals();
+  const unitSourceOf = useMemo(
+    () => seriesUnitSources(scopedCatalog, mathSignals),
+    [scopedCatalog, mathSignals],
+  );
+  const unitsKey = useMemo(
+    () => displayUnitsKey(seriesForUnits, unitSourceOf),
+    [seriesForUnits, unitSourceOf],
+  );
+  // The dict is the answer's other input — a customization edit changes
+  // what a declared string means — and settings announce themselves only
+  // through their own subscriber list. Held here to re-trigger the
+  // fetch; the recognition itself stays host-side.
+  const unitCustomizations = useSetting("unit_customizations");
+  useEffect(() => {
+    let live = true;
+    void loadDisplayUnits(seriesForUnits, unitSourceOf).then((m) => {
+      if (live) setDisplayUnits(m);
+    });
+    return () => {
+      live = false;
+    };
+    // `unitsKey` is the dependency, not the list: the list is a fresh
+    // array on every render of the panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitsKey, unitCustomizations]);
+  /// The unit a series is **drawn** in — what a per-unit lane groups by
+  /// (ADR 0026), so converting a series moves it onto the target unit's
+  /// lane.
+  const unitOfSeries = useCallback(
+    (s: SignalRef) => displayUnitOf(displayUnits, s),
+    [displayUnits],
+  );
+
+  /// Read one series in another unit, or as declared again (`null`).
+  /// Written into the stored area like every other per-series choice —
+  /// and a pattern-derived row materialises as a manual pick, exactly as
+  /// hiding or recoloring one does.
+  const setDisplayUnit = useCallback(
+    (areaId: string, ref: SignalRef, unit: UnitId | null) => {
+      const key = signalRefKey(ref);
+      const applied = (s: SignalRef): SignalRef => {
+        const { displayUnit: _dropped, ...rest } = s;
+        return unit == null ? rest : { ...rest, displayUnit: unit };
+      };
+      setAreas((prev) =>
+        prev.map((a) => {
+          if (a.id !== areaId) return a;
+          if (a.signals.some((s) => signalRefKey(s) === key)) {
+            return {
+              ...a,
+              signals: a.signals.map((s) => (signalRefKey(s) === key ? applied(s) : s)),
+            };
+          }
+          return { ...a, signals: [...a.signals, { ...applied(ref), viaPattern: true }] };
+        }),
+      );
+    },
+    [],
+  );
+
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
   /// The subject solo matches against: the same canonical path (ADR
@@ -2097,9 +2192,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
       out.push(
         ...derivedAreaMemo.get(
           a.id,
-          [a, enumKeys, soloMask, soloMatchedForArea, soloMatchCount, axisCollapsed],
+          [a, enumKeys, soloMask, soloMatchedForArea, soloMatchCount, axisCollapsed, unitOfSeries],
           () =>
-            deriveAreaConfigs(a, isEnum, soloMask, soloMatchedForArea, soloMatchCount, axisCollapsed),
+            deriveAreaConfigs(
+              a,
+              isEnum,
+              soloMask,
+              soloMatchedForArea,
+              soloMatchCount,
+              axisCollapsed,
+              unitOfSeries,
+            ),
         ),
       );
     }
@@ -2107,6 +2210,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return out;
   }, [
     effectiveAreas,
+    unitOfSeries,
     enumKeys,
     soloActive,
     soloMatchedAreas,
@@ -2185,8 +2289,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // ids regenerate identically, so switching to `individual` and back
   // must restore it (`retainedAxisIds`, ADR 0026).
   const retainedScaleIds = useMemo(
-    () => effectiveAreas.flatMap((a) => retainedAxisIds(a.id, a.signals)),
-    [effectiveAreas],
+    () => effectiveAreas.flatMap((a) => retainedAxisIds(a.id, a.signals, unitOfSeries)),
+    [effectiveAreas, unitOfSeries],
   );
   useEffect(() => {
     setAxisScales((prev) => pruneAxisScales(prev, retainedScaleIds));
@@ -2275,6 +2379,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
             placeSignal,
             toggleSignalHidden,
             setSignalColor,
+            setDisplayUnit,
             setAreaPatterns,
             materializePatterns,
             setSelectionHidden,
@@ -2297,6 +2402,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               placeSignal(ref, parent.id, beforeKey, isInternalMove),
             onToggleHidden: (ref) => toggleSignalHidden(parent.id, ref),
             onSetSignalColor: (ref, color) => setSignalColor(parent.id, ref, color),
+            onSetDisplayUnit: (ref, unit) => setDisplayUnit(parent.id, ref, unit),
             onSetPatterns: (ps) => setAreaPatterns(parent.id, ps),
             onMaterializePatterns: () => materializePatterns(parent.id, parent.signals),
             onSetYScale: (patch) => setAxisScales((prev) => setAxisScale(prev, axisId, patch)),
@@ -2325,6 +2431,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     placeSignal,
     toggleSignalHidden,
     setSignalColor,
+    setDisplayUnit,
     setAreaPatterns,
     materializePatterns,
     setSelectionHidden,
@@ -2706,6 +2813,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               )}
               <PlotArea
                 area={d.area}
+                displayUnits={displayUnits}
                 flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
                 collapsed={d.collapsed}
                 collapsedBySolo={d.collapsedBySolo}
