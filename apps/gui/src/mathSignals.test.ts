@@ -65,6 +65,7 @@ describe("the function set", () => {
       "range",
       "expfilter",
       "integration",
+      "derivative",
       "duty",
       "frequency",
       "statistic",
