@@ -70,6 +70,21 @@ mod licenses;
 mod local_buses;
 mod log_files;
 mod logger;
+mod math_commands;
+// `math_signals` and `math_kernels` are `pub` for the same reason
+// `signal_cache` below is: the `cannet-perf-measurement` harness drives
+// the real model rather than a stand-in, and a math series is part of
+// it. `signal_cache`'s and `project`'s own public docs also name these
+// types, which a private module could not carry.
+// The `.expect` on the registry mutex is an internally-upheld
+// invariant (a panic under a held lock), not a caller-reachable
+// condition, so the pedantic missing-panics lint is suppressed here
+// rather than papered over with a `# Panics` section per accessor —
+// the same treatment `signal_cache` gets below.
+#[allow(clippy::missing_panics_doc, clippy::new_without_default)]
+pub mod math_kernels;
+#[allow(clippy::missing_panics_doc, clippy::new_without_default)]
+pub mod math_signals;
 mod notes;
 mod persisted_json;
 mod project;
@@ -648,6 +663,10 @@ pub fn run() -> ! {
             diag::diag_enabled,
             diag::exit_process,
             report_js_heap,
+            math_commands::list_math_signals,
+            math_commands::define_math_signal,
+            math_commands::update_math_signal,
+            math_commands::delete_math_signal,
             signal_generator::validate_signal_generator,
             signal_generator::evaluate_signal_generators,
             logger::set_loggers,
@@ -708,6 +727,9 @@ pub fn run() -> ! {
                 watched_project: Mutex::new(watched_file::WatchedFile::default()),
                 view_signals: Mutex::new(view_signals::ViewSignalRegistry::default()),
                 signal_dbc_picks: Mutex::new(std::sync::Arc::default()),
+                math: math_signals::MathRegistry::new(),
+                math_model: Mutex::new(None),
+                math_bus_names: Mutex::new(Vec::new()),
             });
             // Make sure the main window has the id our capabilities expect.
             // Tauri assigns "main" by default for the first window in the

@@ -961,6 +961,7 @@ mod tests {
 
     fn key(bus: Option<&str>, id: u32, name: &str) -> SignalQuery {
         SignalQuery {
+            math: false,
             bus_id: bus.map(Into::into),
             message_id: id,
             extended: false,

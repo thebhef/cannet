@@ -369,18 +369,22 @@ function firstAtOrAfter(xs: readonly number[], x: number): number {
  * "any bus" path). Byte-for-byte `signal_snapshot::signal_identity`
  * host-side.
  *
- * The flag slot carries provenance as well as id width. A file-backed
- * signal (`docs/CONTEXT.md`) has no message and no bus, so `messageId`
- * is its source signal channel group index; `f` keeps that number out
- * of the message-id namespace, which is free to hold the same value. */
+ * The flag slot carries provenance as well as id width, over the set
+ * `s|x|f|m`. A file-backed signal (`docs/CONTEXT.md`) has no message
+ * and no bus, so `messageId` is its source signal channel group index;
+ * a **math** signal (`docs/CONTEXT.md`) has neither either, and its
+ * `signalName` is its definition's stable id. Each flag keeps its
+ * numbers out of the message-id namespace, which is free to hold the
+ * same value. */
 export function signalKey(
   busId: string | null,
   messageId: number,
   extended: boolean,
   signalName: string,
   fileBacked = false,
+  math = false,
 ): string {
-  const flag = fileBacked ? "f" : extended ? "x" : "s";
+  const flag = math ? "m" : fileBacked ? "f" : extended ? "x" : "s";
   return `${busId ?? "*"}|${flag}:${messageId}:${signalName}`;
 }
 
@@ -393,8 +397,9 @@ export function recordSignalKey(r: {
   extended: boolean;
   signal_name: string;
   file_backed?: boolean;
+  math?: boolean;
 }): string {
-  return signalKey(r.bus_id, r.message_id, r.extended, r.signal_name, r.file_backed);
+  return signalKey(r.bus_id, r.message_id, r.extended, r.signal_name, r.file_backed, r.math);
 }
 
 /**

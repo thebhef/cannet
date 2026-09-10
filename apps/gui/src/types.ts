@@ -851,6 +851,11 @@ export interface SignalSelectionWire {
     /// `messageId` is a signal channel group index. Omitted is the
     /// DBC-backed signal every key used to be.
     fileBacked?: boolean;
+    /// Names a **math** signal (`docs/CONTEXT.md`), a series computed
+    /// host-side from other signals; `signalName` is then the
+    /// definition's stable id. The fourth member of the series key's
+    /// provenance flag set `s|x|f|m`.
+    math?: boolean;
   }[];
   patterns: string[];
 }
@@ -1427,6 +1432,9 @@ export interface ViewSignalRef {
   /** A file-backed series (`docs/CONTEXT.md`) — never becomes a row,
    * since no database ever bore on it. */
   fileBacked?: boolean;
+  /** A math series (`docs/CONTEXT.md`) — never becomes a row either,
+   * for the same reason; `signalName` is its definition's stable id. */
+  math?: boolean;
   messageName?: string;
   unit?: string;
   factor?: number;

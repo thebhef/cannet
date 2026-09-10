@@ -170,7 +170,10 @@ pub struct DbcRef {
 }
 
 /// A saved project.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` but not `Eq`: a math signal's parameters are `f64`, and
+/// a project is compared for "did this change", never used as a key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     /// Schema version — see [`PROJECT_SCHEMA_VERSION`].
     pub schema_version: u32,
@@ -250,6 +253,18 @@ pub struct Project {
     /// existed. Additive; no schema-version bump.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks,
+    /// The project's **math signal** definitions
+    /// ([`crate::math_signals`]), by stable id and in creation order.
+    ///
+    /// Host-owned like `transmit_frames`: loaded into the registry on
+    /// open, snapshotted back on save. Keyed on the id rather than the
+    /// display name, so a rename is a field edit and nothing that
+    /// points at the definition — an operand of another math signal, a
+    /// plot series, a signal view's pick — has to be rewritten.
+    /// Additive; absent means a project with no math signals, and no
+    /// schema-version bump.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub math_signals: Vec<crate::math_signals::MathDefinition>,
 }
 
 /// A fresh random project identity. The serde default for
@@ -343,6 +358,11 @@ pub fn open_project(
             // never fires traffic onto a bus the user hasn't
             // intentionally reconnected.
             state.transmit_frames().load(p.transmit_frames.clone());
+            // The math definitions are the project's, so the registry
+            // holds exactly what the file says and nothing from the
+            // project being left. The resolved model goes with them.
+            state.math.replace(p.math_signals.clone());
+            *state.math_model_cache() = None;
             // Same shape for the per-signal database picks: the host
             // owns them because the decoder consumes them, so the open
             // path installs the project's map wholesale.
@@ -404,6 +424,9 @@ pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_s
     // The picks belong to the project that is closing, exactly as its
     // view-signal references do; a new project starts with none.
     *state.signal_dbc_picks() = std::sync::Arc::default();
+    // The math definitions belong to the project that is closing too.
+    state.math.replace(Vec::new());
+    *state.math_model_cache() = None;
     crate::project_watch::clear_open_project(&app);
     crate::sys_info!(&app, "project", "closed the open project");
 }
@@ -435,6 +458,7 @@ pub fn save_project(
     // project it submits. Snapshot the registry into the project before
     // writing so save captures the current pool + order.
     project.transmit_frames = state.transmit_frames().snapshot();
+    project.math_signals = state.math.list();
     // Likewise the per-signal database picks: host-owned because the
     // decoder consumes them, and absent from the file entirely when no
     // ambiguity has been resolved.
@@ -560,6 +584,7 @@ mod tests {
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
             signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
+            math_signals: Vec::new(),
         }
     }
 
@@ -594,6 +619,77 @@ mod tests {
                 .map(String::as_str),
             Some("/some/where/private.dbc")
         );
+    }
+
+    #[test]
+    fn a_project_with_no_math_signal_carries_no_such_field() {
+        let text = serde_json::to_string_pretty(&sample()).unwrap();
+        assert!(
+            !text.contains("math_signals"),
+            "an empty math set must not reach the file: {text}"
+        );
+        assert!(parse_project(&text).unwrap().math_signals.is_empty());
+    }
+
+    #[test]
+    fn math_signals_round_trip_by_stable_id() {
+        // Definitions persist keyed on the id, so the mutable display
+        // name is a field rather than the thing everything points at
+        // (ADR 0038's split between what a signal is called and what it
+        // is). A rename is then a field edit and nothing else moves.
+        use crate::math_signals::{MathDefinition, MathFunction, MathOperandRef, MathOperands};
+        let mut p = sample();
+        p.math_signals = vec![
+            MathDefinition {
+                id: "0f0c1f9a".into(),
+                name: "PackPower".into(),
+                unit: Some("W".into()),
+                function: MathFunction::Product,
+                operands: MathOperands {
+                    picks: vec![
+                        MathOperandRef::dbc("p", 256, false, "PackVolts"),
+                        MathOperandRef::dbc("p", 256, false, "PackCurrent"),
+                    ],
+                    patterns: Vec::new(),
+                },
+            },
+            MathDefinition {
+                id: "3b21ee07".into(),
+                name: r"max(Cell\d+)".into(),
+                unit: None,
+                function: MathFunction::Max,
+                operands: MathOperands {
+                    picks: Vec::new(),
+                    patterns: vec![r"Cell\d+".into()],
+                },
+            },
+            MathDefinition {
+                id: "88f0a1b2".into(),
+                name: "Filtered".into(),
+                unit: None,
+                function: MathFunction::ExpFilter { tau_seconds: 2.5 },
+                operands: MathOperands {
+                    // Math on math, referenced by id — so renaming the
+                    // definition below never rewrites this one.
+                    picks: vec![MathOperandRef::math("0f0c1f9a")],
+                    patterns: Vec::new(),
+                },
+            },
+        ];
+        let text = serde_json::to_string_pretty(&p).unwrap();
+        assert!(text.contains("0f0c1f9a"), "keyed by id: {text}");
+        let parsed = parse_project(&text).unwrap();
+        assert_eq!(parsed, p);
+
+        // A rename touches the name and nothing that points at it.
+        let mut renamed = parsed;
+        renamed.math_signals[0].name = "Power".into();
+        let back = parse_project(&serde_json::to_string(&renamed).unwrap()).unwrap();
+        assert_eq!(
+            back.math_signals[2].operands.picks[0].signal_name,
+            "0f0c1f9a"
+        );
+        assert_eq!(back.math_signals[0].name, "Power");
     }
 
     #[test]
@@ -958,6 +1054,7 @@ mod tests {
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
             signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
+            math_signals: Vec::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();
         let parsed = parse_project(&text).unwrap();
@@ -994,6 +1091,7 @@ mod tests {
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
             signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
+            math_signals: Vec::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();
         let parsed = parse_project(&text).unwrap();

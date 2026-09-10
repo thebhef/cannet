@@ -61,6 +61,11 @@ export interface SignalRef {
    * `messageId` is then a signal channel group index and `messageName`
    * that group's label. Absent ⇒ DBC-backed. */
   fileBacked?: boolean;
+  /** A **math** signal (`docs/CONTEXT.md`): computed host-side from
+   * other signals. It has no bus and no message either, and
+   * `signalName` is its definition's stable id — so a rename of the
+   * definition leaves every reference to it alone. Absent ⇒ not one. */
+  math?: boolean;
 }
 
 export interface PlotAreaConfig {
@@ -251,7 +256,7 @@ export const SIGNALS_WIDTH_MAX = 600;
 export const RESAMPLE_INTERVAL_MS = 67;
 
 export function signalRefKey(s: SignalRef): string {
-  return signalKey(s.busId, s.messageId, s.extended, s.signalName, s.fileBacked);
+  return signalKey(s.busId, s.messageId, s.extended, s.signalName, s.fileBacked, s.math);
 }
 
 export function isSignalRefCore(v: unknown): v is Omit<SignalRef, "colorPick"> {
