@@ -1362,7 +1362,14 @@ and whether that still matches what the view was configured against
 (Not Decoded / Scale / Ambiguous / Stale / Decoded, most severe first).
 The button is badged with the count needing attention (Not Decoded,
 Scale, Ambiguous) and is quiet when there is nothing to look at. Assigning or
-unassigning a database moves rows without a reopen. It is a repair
+unassigning a database moves rows without a reopen. A signal whose unit
+string the app cannot place — neither a built-in spelling nor one of the
+project's own customizations — wears a **≠** beside its name naming the
+string, and the toolbar's **Unknown unit** chip filters to exactly those
+rows: each needs a mapping under Settings → Units before anything can
+convert through it (a signal that declares no unit is not flagged —
+there is nothing to map). Adding the mapping clears the flag without a
+reopen. It is a repair
 surface as well as a report, and the **source** column is where both
 repairs are made, with no apply step. Choosing the *same* signal under a
 different database settles the ambiguous case: the choice is recorded in
