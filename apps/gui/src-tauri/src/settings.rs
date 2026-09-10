@@ -111,6 +111,8 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("float_mantissa_decimals", Scope::UserOverridable),
     ("unit_customizations", Scope::Workspace),
     ("unit_customizations_user", Scope::User),
+    ("unit_definitions", Scope::Workspace),
+    ("unit_definitions_user", Scope::User),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -483,6 +485,22 @@ pub struct Settings {
     /// map the same string: a project's own reading of its databases is
     /// more specific than a habit carried between them.
     pub unit_customizations_user: crate::units::Customizations,
+    /// The units this project's user **composed** out of ones the app
+    /// already knows: a name against the composition it stands for
+    /// (`"VA": "V * A"`). Workspace-scoped for the same reason
+    /// [`Settings::unit_customizations`] is — a unit invented to read
+    /// these databases travels with them.
+    ///
+    /// Round-tripped, **not validated**: a composition naming a unit
+    /// this build does not know simply defines nothing, and the units
+    /// table says why on the row it would have made. Dropping the line
+    /// at the read boundary would delete the user's work on the next
+    /// write.
+    pub unit_definitions: crate::units::Definitions,
+    /// The same map at **user** scope — a unit the person carries into
+    /// every project they open. Merged exactly as the two customization
+    /// scopes are, and the **project wins** where both define one name.
+    pub unit_definitions_user: crate::units::Definitions,
 }
 
 /// The unit-string mappings in force: the user's, overlaid by this
@@ -513,7 +531,38 @@ pub fn list_unit_mappings() -> Vec<crate::units::UnitMappingRow> {
     crate::units::mappings(
         &settings.unit_customizations_user,
         &settings.unit_customizations,
+        &unit_definitions(),
     )
+}
+
+/// The composed units in force, installed from both scopes.
+///
+/// Installing is idempotent and the dicts are tiny, so the table asks
+/// for it rather than trusting that [`cache`] already ran — the one
+/// place the answer and the registry serving it cannot disagree.
+fn unit_definitions() -> Vec<crate::units::DefinedUnit> {
+    let settings = effective();
+    crate::units::install_definitions(
+        &settings.unit_definitions_user,
+        &settings.unit_definitions,
+        &unit_customizations(),
+    )
+}
+
+/// Whether `composition` would define a unit called `name`, and why it
+/// would not.
+///
+/// The settings entry asks before it writes, so a malformed composition
+/// or a name already taken is reported where it was typed instead of
+/// becoming a row that does nothing.
+///
+/// # Errors
+///
+/// One sentence naming what is wrong.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn check_unit_definition(name: String, composition: String) -> Result<(), String> {
+    crate::units::check_definition(&name, &composition, &unit_customizations())
 }
 
 /// How each of `series` reads and converts for display: what its
@@ -669,6 +718,8 @@ impl Default for Settings {
             float_mantissa_decimals: 5,
             unit_customizations: crate::units::Customizations::new(),
             unit_customizations_user: crate::units::Customizations::new(),
+            unit_definitions: crate::units::Definitions::new(),
+            unit_definitions_user: crate::units::Definitions::new(),
         }
     }
 }
@@ -704,10 +755,23 @@ pub fn effective() -> Arc<Settings> {
 }
 
 fn cache(settings: &Settings) {
-    let mut guard = effective_cell()
-        .write()
-        .unwrap_or_else(PoisonError::into_inner);
-    *guard = Arc::new(settings.clone());
+    {
+        let mut guard = effective_cell()
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        *guard = Arc::new(settings.clone());
+    }
+    // The user's composed units are a process-wide part of the unit
+    // model, recognised deep inside database loading — so they are
+    // installed wherever settings land, not asked for at each use.
+    let _ = crate::units::install_definitions(
+        &settings.unit_definitions_user,
+        &settings.unit_definitions,
+        &crate::units::merge_customizations(
+            &settings.unit_customizations_user,
+            &settings.unit_customizations,
+        ),
+    );
 }
 
 /// Fill the [`effective`] cache from disk. Called once during setup, so
@@ -1223,6 +1287,13 @@ mod tests {
             // A user-scope key, so it belongs to the personal file and
             // is never written into a project's.
             unit_customizations_user: crate::units::Customizations::new(),
+            // Workspace-only, like the mapping dict above it.
+            unit_definitions: crate::units::Definitions::new(),
+            // A composed unit carried between projects, so the personal
+            // file has to hold it verbatim across a round trip.
+            unit_definitions_user: [("VA".to_string(), "V * A".to_string())]
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -1647,6 +1718,15 @@ mod tests {
             unit_customizations_user: [("widgets".to_string(), "volt".to_string())]
                 .into_iter()
                 .collect(),
+            // The composed-unit dicts split the same way, for the same
+            // reason: a unit invented to read this project's databases
+            // travels with them.
+            unit_definitions: [("VA".to_string(), "V * A".to_string())]
+                .into_iter()
+                .collect(),
+            unit_definitions_user: [("Nm2".to_string(), "N * m".to_string())]
+                .into_iter()
+                .collect(),
             ..Settings::default()
         };
         write_settings(&user, &workspace, &settings).unwrap();
@@ -1656,10 +1736,16 @@ mod tests {
         assert!(project.contains("counts"), "{project}");
         assert!(!project.contains("notice_dwell_ms"), "{project}");
         assert!(!project.contains("widgets"), "{project}");
+        assert!(project.contains("\"unit_definitions\""), "{project}");
+        assert!(project.contains("V * A"), "{project}");
+        assert!(!project.contains("N * m"), "{project}");
         let personal = std::fs::read_to_string(user.join(SETTINGS_FILE)).unwrap();
         assert!(personal.contains("unit_customizations_user"), "{personal}");
         assert!(personal.contains("widgets"), "{personal}");
         assert!(!personal.contains("counts"), "{personal}");
+        assert!(personal.contains("unit_definitions_user"), "{personal}");
+        assert!(personal.contains("N * m"), "{personal}");
+        assert!(!personal.contains("V * A"), "{personal}");
 
         // And the two resolve back to what was written.
         assert_eq!(resolved(&user, &workspace), settings);
@@ -1784,7 +1870,11 @@ mod tests {
 
         let project = std::fs::read_to_string(workspace.join(SETTINGS_FILE)).unwrap();
         let declared = crate::persisted_json::declared_keys(&workspace.join(SETTINGS_FILE));
-        assert_eq!(declared, ["unit_customizations"], "{project}");
+        assert_eq!(
+            declared,
+            ["unit_customizations", "unit_definitions"],
+            "{project}"
+        );
         for (key, scope) in SCOPES {
             if *scope != Scope::Workspace {
                 assert!(!project.contains(key), "{key} was promoted: {project}");

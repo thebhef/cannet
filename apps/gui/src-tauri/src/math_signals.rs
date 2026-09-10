@@ -2759,6 +2759,7 @@ mod tests {
     #[test]
     fn a_ratio_set_converts_to_the_scale_its_target_names() {
         let bare = crate::units::get("ratio").expect("the bare ratio").display;
+        let bare = bare.as_str();
         for (target, gain) in [(bare, 1.0), ("%", 100.0), ("ppm", 1e6)] {
             let mut d = def("m1", MathFunction::Sum, pattern("Cell"));
             d.unit = Some(UnitTarget::from(target));

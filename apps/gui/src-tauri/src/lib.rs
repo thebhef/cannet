@@ -686,6 +686,7 @@ pub fn run() -> ! {
             units::list_units,
             units::list_unit_picker,
             settings::list_unit_mappings,
+            settings::check_unit_definition,
             settings::resolve_display_units,
             signal_generator::validate_signal_generator,
             signal_generator::evaluate_signal_generators,

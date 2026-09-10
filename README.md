@@ -2477,6 +2477,24 @@ databases, user scope holds in every project you open, and **the
 project wins** where both map one string. Changing an entry rescales
 every math signal that depends on it on the next serve.
 
+The same table's **two-field entry** composes a unit out of ones the
+app already knows: a name, and the string it stands for — `VA` =
+`V * A`, `Nm` = `N * m`, `kVA` = `1000 * V * A`, `perSec` = `1 / s`.
+Terms are separated by `*` (or `·`) and `/`, and a term that reads as a
+number is a plain factor; a definition may name another one, whichever
+order they were entered in. The dimension and the conversion factor
+fall out of dimensional analysis, so a composed unit is a unit in every
+respect: it is recognised when a database spells its name, it is
+offered in the pickers in the same place its dimension puts it, and it
+converts against the units it composes (`VA` reads in watts, `kVA` at
+×1000). It gets a row of the table like any other, carrying what it was
+composed from, a delete control, and the same project / user checkboxes
+— so a unit invented for this project's databases can be promoted to
+every project you open. A name already taken, a term that names
+nothing, or a malformed string is refused where it was typed and says
+why; a stored definition that stops holding (a term you later deleted)
+says why on its own row rather than silently doing nothing.
+
 A math signal drags to plots and signal views like any other signal.
 Its row there wears one **color chip per bus feeding it** —
 transitively, through any math operands — and reads

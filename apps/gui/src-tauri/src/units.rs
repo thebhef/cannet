@@ -51,8 +51,19 @@
 //! (so a picker can lock to it), and what it
 //! [converts to](Composed::convert_to) (which is how a target reachable
 //! only *through* the function — amp-hours from an integrated current —
-//! is reached at all). Compositions are rendered one-way and never
-//! parsed or persisted.
+//! is reached at all). Compositions the *host* builds are rendered
+//! one-way and never parsed or persisted.
+//!
+//! ## Units the user composes
+//!
+//! A person may also name a composition themselves — `VA` is `V * A` —
+//! in the settings view's units section. That string is a **second
+//! ingest boundary**, read exactly once by [`install_definitions`],
+//! which turns the pair into a unit the model holds like any other —
+//! from there it is a [`UnitId`] like everything else. Nothing
+//! downstream ever sees the composition string again; the row that shows
+//! it in the settings table shows what the user typed, not something
+//! re-derived from the model.
 //!
 //! ## Recognising a DBC unit string
 //!
@@ -77,6 +88,7 @@
 //! to make.
 
 use std::collections::BTreeMap;
+use std::sync::{PoisonError, RwLock};
 
 use runtime_units::units::{
     AngularVelocityUnit, DimensionlessUnit, ElectricChargeUnit, ElectricCurrentUnit,
@@ -513,11 +525,14 @@ impl Entry {
 }
 
 /// One selectable unit, as a caller outside this module sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+///
+/// Owned strings rather than `&'static str`: a unit the user composed is
+/// as selectable as a tabulated one, and its name is theirs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnitInfo {
-    pub id: &'static str,
-    pub display: &'static str,
+    pub id: String,
+    pub display: String,
     pub dimension: Dimension,
 }
 
@@ -526,7 +541,7 @@ pub struct UnitInfo {
 ///
 /// A view renders this and derives nothing: which units exist, how they
 /// group and how they are spelled are all the facade's answers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnitListing {
     #[serde(flatten)]
@@ -538,7 +553,7 @@ pub struct UnitListing {
     /// carries it back to this unit, the id otherwise. Never used where
     /// a unit **id** is stored (a customization's value, an operand's
     /// source-unit override) — that is [`UnitInfo::id`].
-    pub spelling: &'static str,
+    pub spelling: String,
 }
 
 /// Every unit the app offers, grouped by hand for reading.
@@ -1289,8 +1304,8 @@ impl Composed {
     /// temperature is refused — an offset has no meaning in a product.
     #[must_use]
     pub fn convert_to(&self, target: &UnitId) -> Option<Affine> {
-        let entry = find(&target.base)?;
-        if entry.constant != 0.0 {
+        let (_, constant) = family(target)?;
+        if constant != 0.0 {
             return None;
         }
         let (ours, theirs) = (self.definition()?, definition_of(target)?);
@@ -1321,6 +1336,258 @@ pub fn merge_customizations(user: &Customizations, project: &Customizations) -> 
     merged
 }
 
+/// The user's composed-unit definitions: a unit's **name**, and the
+/// string it is composed from (`"VA"` → `"V * A"`).
+///
+/// The same shape and the same two scopes as [`Customizations`], and
+/// ordered for the same reason — the settings file it persists in is a
+/// hand-editable contract (ADR 0034).
+pub type Definitions = BTreeMap<String, String>;
+
+/// One unit the user composed, as the model holds it: the identity is
+/// the **name** alone (`UnitId::base(name)`), and everything else was
+/// settled when the composition string was read.
+#[derive(Clone, Debug)]
+struct Custom {
+    name: String,
+    dimension: Dimension,
+    /// What dimensional analysis made of the composition, times its
+    /// numeric factor — the one number every conversion needs.
+    definition: UnitDefinition,
+}
+
+/// **The units the user composed, in force.** Written whole by
+/// [`install_definitions`] and read by every lookup in this module, so a
+/// composed unit behaves exactly as a tabulated one does.
+///
+/// A process global for the same reason the settings cache is: a unit
+/// string is recognised deep inside database loading and signal serving,
+/// far from any settings handle, and threading the dict to all of it
+/// would put the user's units on a different footing from the shipped
+/// ones.
+static CUSTOM: RwLock<Vec<Custom>> = RwLock::new(Vec::new());
+
+fn with_custom<R>(name: &str, read: impl FnOnce(&Custom) -> R) -> Option<R> {
+    let guard = CUSTOM.read().unwrap_or_else(PoisonError::into_inner);
+    guard.iter().find(|c| c.name == name).map(read)
+}
+
+fn custom_units() -> Vec<Custom> {
+    CUSTOM
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// The composition string, read **once**: a product of terms, each
+/// either a unit this project already knows or a plain number.
+///
+/// The grammar is the whole of what the settings entry accepts: terms
+/// separated by `*` (or `·`) and `/`, whitespace ignored around them.
+/// `1000 * V * A` is a kilovolt-ampere; `1 / s` is a hertz. Nothing
+/// nests — a composition is a product over a product, which is what
+/// [`Composed`] is and all dimensional analysis needs.
+///
+/// Returns the composition and the numeric factor separately, because
+/// [`Composed`] is dimensional and a factor is not.
+fn parse_composition(
+    source: &str,
+    customizations: &Customizations,
+) -> Result<(Composed, f64), String> {
+    if source.trim().is_empty() {
+        return Err("the composition is empty — name what it is built from, like `V * A`".into());
+    }
+    let mut terms: Vec<(bool, String)> = Vec::new();
+    let mut divide = false;
+    let mut current = String::new();
+    for ch in source.chars() {
+        match ch {
+            '*' | '·' | '/' => {
+                terms.push((divide, std::mem::take(&mut current)));
+                divide = ch == '/';
+            }
+            _ => current.push(ch),
+        }
+    }
+    terms.push((divide, current));
+
+    let mut composed = Composed::default();
+    let mut factor = 1.0_f64;
+    for (divide, term) in terms {
+        let term = term.trim();
+        if term.is_empty() {
+            return Err(format!(
+                "`{source}` has an empty term — every `*` and `/` needs a unit or a number on \
+                 both sides"
+            ));
+        }
+        if let Ok(number) = term.parse::<f64>() {
+            if !number.is_finite() || (divide && number == 0.0) {
+                return Err(format!("`{term}` is not a factor anything can scale by"));
+            }
+            if divide {
+                factor /= number;
+            } else {
+                factor *= number;
+            }
+            continue;
+        }
+        let Some(unit) = recognize(term, customizations) else {
+            return Err(format!("`{term}` is not a unit this project knows"));
+        };
+        composed = if divide {
+            composed.over(unit)
+        } else {
+            composed.times(unit)
+        };
+    }
+    Ok((composed, factor))
+}
+
+/// Read one `name = composition` pair into a unit, or say why it is not
+/// one.
+///
+/// Every refusal names what is wrong with it, because this is the only
+/// place the user finds out: past here the unit is typed, and a typed
+/// unit cannot be malformed.
+fn define(
+    name: &str,
+    composition: &str,
+    customizations: &Customizations,
+) -> Result<Custom, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("the unit needs a name".into());
+    }
+    if name.contains(['*', '/', '·']) {
+        return Err(format!(
+            "`{name}` cannot be a unit name — `*`, `·` and `/` are what compose one"
+        ));
+    }
+    // Recognition, not the id table: `W` is not an id but every
+    // database that writes it means the watt, so taking that name would
+    // quietly change what this project reads.
+    if let Some(existing) = recognize(name, customizations) {
+        return Err(format!(
+            "`{name}` already names {} — pick another name",
+            display_of(&existing)
+        ));
+    }
+    let (composed, factor) = parse_composition(composition, customizations)?;
+    let definition = composed
+        .definition()
+        .ok_or_else(|| format!("`{composition}` does not compose to a unit"))?
+        * UnitDefinition::new(factor, 0, 0, 0, 0, 0, 0, 0);
+    let dimension = composed
+        .dimension()
+        .ok_or_else(|| format!("`{composition}` lands on no dimension this app names"))?;
+    Ok(Custom {
+        name: name.to_string(),
+        dimension,
+        definition,
+    })
+}
+
+/// Whether this `name = composition` pair would define a unit, and why
+/// it would not.
+///
+/// The settings entry asks before it persists, so a refusal is shown
+/// where it was typed rather than becoming a broken row.
+///
+/// # Errors
+///
+/// One sentence saying what is wrong with the name or the composition.
+pub fn check_definition(
+    name: &str,
+    composition: &str,
+    customizations: &Customizations,
+) -> Result<(), String> {
+    define(name, composition, customizations).map(|_| ())
+}
+
+/// Where one composed unit's definition is stored, and why it is not in
+/// force where it is not.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefinedUnit {
+    pub name: String,
+    pub composition: String,
+    /// [`MappingSource::Project`] or [`MappingSource::User`] — never
+    /// built in, since nothing here ships with the app.
+    pub scope: MappingSource,
+    pub error: Option<String>,
+}
+
+/// **Install the user's composed units**, replacing whatever was in
+/// force, and report what each definition did.
+///
+/// The two scopes merge exactly as [`merge_customizations`] does, so a
+/// project's definition of a name wins over the user's. Definitions may
+/// build on one another (`Wh = VA * h` after `VA = V * A`) whatever
+/// order the dict happens to be in, so this runs to a fixpoint: each
+/// pass installs whatever now resolves, and stops when a pass adds
+/// nothing. Whatever is left over is reported with the reason it did not
+/// resolve.
+#[must_use]
+pub fn install_definitions(
+    user: &Definitions,
+    project: &Definitions,
+    customizations: &Customizations,
+) -> Vec<DefinedUnit> {
+    let merged = merge_customizations(user, project);
+    let mut installed: Vec<Custom> = Vec::new();
+    loop {
+        CUSTOM
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone_from(&installed);
+        let before = installed.len();
+        for (name, composition) in &merged {
+            if installed.iter().any(|c| c.name == name.trim()) {
+                continue;
+            }
+            if let Ok(custom) = define(name, composition, customizations) {
+                installed.push(custom);
+            }
+        }
+        if installed.len() == before {
+            break;
+        }
+    }
+    merged
+        .iter()
+        .map(|(name, composition)| DefinedUnit {
+            error: if installed.iter().any(|c| c.name == name.trim()) {
+                None
+            } else {
+                define(name, composition, customizations).err()
+            },
+            scope: if project.contains_key(name) {
+                MappingSource::Project
+            } else {
+                MappingSource::User
+            },
+            name: name.clone(),
+            composition: composition.clone(),
+        })
+        .collect()
+}
+
+/// The dimension a unit measures and the constant that makes it an
+/// absolute reading, from the table or from the user's own units.
+///
+/// One lookup rather than two because the pair is what a conversion
+/// needs, and because it is the one place a composed unit has to be
+/// treated as a peer of a tabulated one.
+fn family(unit: &UnitId) -> Option<(Dimension, f64)> {
+    if let Some(entry) = find(&unit.base) {
+        return Some((entry.dimension, entry.constant));
+    }
+    // A composed unit is its own base and takes no prefix: the user
+    // named the whole thing.
+    with_custom(&unit.base, |c| (c.dimension, 0.0))
+}
+
 /// **Where a unit falls in every list this facade serves** — the
 /// picker's base column, the settings view's units table, the flat
 /// source-unit list.
@@ -1342,17 +1609,32 @@ fn list_order(unit: &UnitId) -> (&'static str, String, i32) {
     )
 }
 
-/// The unit table in [`list_order`].
-fn ordered_entries() -> Vec<&'static Entry> {
-    let mut entries: Vec<&'static Entry> = UNITS.iter().collect();
-    entries.sort_by_key(|e| list_order(&UnitId::new(e.base, e.prefix)));
-    entries
+/// Everything selectable — the shipped table and the user's own
+/// compositions — each with the identity [`list_order`] sorts on.
+///
+/// The two are one list from here on: a unit someone composed is offered
+/// wherever a tabulated one is, in the same place its dimension puts it.
+fn ordered_rows<T>(
+    of_entry: impl Fn(&'static Entry) -> T,
+    of_custom: impl Fn(&Custom) -> T,
+) -> Vec<T> {
+    let mut rows: Vec<(UnitId, T)> = UNITS
+        .iter()
+        .map(|e| (UnitId::new(e.base, e.prefix), of_entry(e)))
+        .chain(
+            custom_units()
+                .iter()
+                .map(|c| (UnitId::base(&c.name), of_custom(c))),
+        )
+        .collect();
+    rows.sort_by(|a, b| list_order(&a.0).cmp(&list_order(&b.0)));
+    rows.into_iter().map(|(_, row)| row).collect()
 }
 
 /// Every selectable unit, in list order.
 #[must_use]
 pub fn all() -> Vec<UnitInfo> {
-    ordered_entries().into_iter().map(Entry::info).collect()
+    ordered_rows(Entry::info, Custom::info)
 }
 
 /// Every selectable unit as a picker offers it — the module's `Listing
@@ -1360,7 +1642,7 @@ pub fn all() -> Vec<UnitInfo> {
 #[tauri::command]
 #[must_use]
 pub fn list_units() -> Vec<UnitListing> {
-    ordered_entries().into_iter().map(Entry::listing).collect()
+    ordered_rows(Entry::listing, Custom::listing)
 }
 
 /// One row of the **base × prefix picker**: a base unit, and the scale
@@ -1374,9 +1656,9 @@ pub fn list_units() -> Vec<UnitListing> {
 #[serde(rename_all = "camelCase")]
 pub struct UnitPickerEntry {
     /// The base unit's stable id.
-    pub id: &'static str,
+    pub id: String,
     /// How the base reads unscaled.
-    pub display: &'static str,
+    pub display: String,
     pub dimension: Dimension,
     /// [`Dimension::label`] — the group heading.
     pub dimension_label: &'static str,
@@ -1430,8 +1712,8 @@ pub fn list_unit_picker() -> Vec<UnitPickerEntry> {
                 continue;
             }
             out.push(UnitPickerEntry {
-                id: entry.id,
-                display: entry.display,
+                id: entry.id.to_string(),
+                display: entry.display.to_string(),
                 dimension: entry.dimension,
                 dimension_label: entry.dimension.label(),
                 scales: RATIO_SCALES
@@ -1450,14 +1732,31 @@ pub fn list_unit_picker() -> Vec<UnitPickerEntry> {
             vec![scale_of(UnitId::base(entry.base), "", None)]
         };
         out.push(UnitPickerEntry {
-            id: entry.id,
-            display: entry.display,
+            id: entry.id.to_string(),
+            display: entry.display.to_string(),
             dimension: entry.dimension,
             dimension_label: entry.dimension.label(),
             scales,
         });
     }
-    out.sort_by_key(|e| list_order(&UnitId::base(e.id)));
+    // A unit the user composed is one row with one scale: they named the
+    // whole thing, so there is no ladder under it.
+    for custom in custom_units() {
+        let unit = UnitId::base(&custom.name);
+        out.push(UnitPickerEntry {
+            id: custom.name.clone(),
+            display: custom.name.clone(),
+            dimension: custom.dimension,
+            dimension_label: custom.dimension.label(),
+            scales: vec![UnitScale {
+                display: custom.name.clone(),
+                exponent: None,
+                label: "",
+                unit,
+            }],
+        });
+    }
+    out.sort_by(|a, b| list_order(&UnitId::base(&a.id)).cmp(&list_order(&UnitId::base(&b.id))));
     out
 }
 
@@ -1592,7 +1891,7 @@ pub struct UnitMappingRow {
     /// the row's add path commits. `None` for a unit the table
     /// enumerates no id for, which cannot be a mapping target; such a
     /// row is listed but takes no new spelling.
-    pub id: Option<&'static str>,
+    pub id: Option<String>,
     /// How the unit reads — the row's heading.
     pub display: String,
     /// [`Dimension::label`].
@@ -1602,6 +1901,17 @@ pub struct UnitMappingRow {
     /// source as well would make one string hard to find in a row that
     /// carries several.
     pub mappings: Vec<UnitMapping>,
+    /// The string this unit was **composed** from, where the user
+    /// defined it rather than the app shipping it — shown back
+    /// verbatim, never re-read.
+    pub composition: Option<String>,
+    /// Which scope holds that definition, so the row's checkboxes can
+    /// move it and its delete can remove it from the right dict.
+    pub definition_scope: Option<MappingSource>,
+    /// Why a definition is not in force. A row carrying one names no
+    /// working unit — it is here so the entry that failed can be seen
+    /// and fixed rather than silently doing nothing.
+    pub error: Option<String>,
 }
 
 /// The settings table: **every base unit**, plus any unit a
@@ -1617,14 +1927,25 @@ pub struct UnitMappingRow {
 /// unit's display, then up the prefix ladder — so a unit a customization
 /// earned a row for lands beside the units it belongs with rather than
 /// in a tail after every base unit.
+///
+/// `defined` is what [`install_definitions`] made of the user's
+/// compositions. Each one gets a row: a working definition's row is the
+/// unit's own, and a refused one's carries the reason instead — a
+/// failed entry has to be visible somewhere or it silently does nothing,
+/// and its own row is where the user will look.
 #[must_use]
-pub fn mappings(user: &Customizations, project: &Customizations) -> Vec<UnitMappingRow> {
+pub fn mappings(
+    user: &Customizations,
+    project: &Customizations,
+    defined: &[DefinedUnit],
+) -> Vec<UnitMappingRow> {
     let merged = merge_customizations(user, project);
     let mut order: Vec<UnitId> = UNITS
         .iter()
         .filter(|e| e.is_base())
         .map(|e| UnitId::base(e.base))
         .collect();
+    order.extend(defined.iter().map(|d| UnitId::base(d.name.trim())));
     let mut rows: BTreeMap<UnitId, Vec<UnitMapping>> =
         order.iter().map(|u| (u.clone(), Vec::new())).collect();
     let scoped = |spelling: &str| {
@@ -1654,14 +1975,26 @@ pub fn mappings(user: &Customizations, project: &Customizations) -> Vec<UnitMapp
         row.push(UnitMapping { spelling, source });
     }
     order.sort_by_key(list_order);
+    order.dedup();
     order
         .into_iter()
-        .map(|unit| UnitMappingRow {
-            id: stored_id(&unit),
-            display: display_of(&unit),
-            dimension_label: dimension_of(&unit).map_or("", Dimension::label),
-            mappings: rows.remove(&unit).unwrap_or_default(),
-            unit,
+        .map(|unit| {
+            let definition = defined.iter().find(|d| d.name.trim() == unit.base);
+            UnitMappingRow {
+                id: stored_id(&unit),
+                // A refused definition names no unit, so nothing can
+                // render it — it reads as the name the user typed.
+                display: match definition.filter(|d| d.error.is_some()) {
+                    Some(refused) => refused.name.clone(),
+                    None => display_of(&unit),
+                },
+                dimension_label: dimension_of(&unit).map_or("", Dimension::label),
+                mappings: rows.remove(&unit).unwrap_or_default(),
+                composition: definition.map(|d| d.composition.clone()),
+                definition_scope: definition.map(|d| d.scope),
+                error: definition.and_then(|d| d.error.clone()),
+                unit,
+            }
         })
         .collect()
 }
@@ -1669,7 +2002,9 @@ pub fn mappings(user: &Customizations, project: &Customizations) -> Vec<UnitMapp
 /// The unit with this stable id.
 #[must_use]
 pub fn get(id: &str) -> Option<UnitInfo> {
-    find(id).map(Entry::info)
+    find(id)
+        .map(Entry::info)
+        .or_else(|| with_custom(id, Custom::info))
 }
 
 fn find(id: &str) -> Option<&'static Entry> {
@@ -1698,7 +2033,16 @@ fn prefix_definition(prefix: Prefix) -> UnitDefinition {
 /// `None` for a base id nothing knows, and for a prefix on a base that
 /// takes none.
 fn definition_of(unit: &UnitId) -> Option<UnitDefinition> {
-    let base = find(&unit.base).filter(|e| e.is_base())?;
+    let Some(base) = find(&unit.base).filter(|e| e.is_base()) else {
+        // A unit the user composed: dimensional analysis already
+        // settled its factor, and the SI ladder does not apply to a
+        // name someone chose.
+        return unit
+            .prefix
+            .is_none()
+            .then(|| with_custom(&unit.base, |c| c.definition))
+            .flatten();
+    };
     if !unit.prefix.is_none() && !base.prefixable {
         return None;
     }
@@ -1711,18 +2055,30 @@ fn definition_of(unit: &UnitId) -> Option<UnitDefinition> {
 /// The typed identity of a **stored** unit id — what every project file
 /// written before prefixes existed carries. `millivolt` has always been
 /// `{volt, milli}`; this is where it says so.
+///
+/// A unit the user composed is named by itself, so its own name is its
+/// stored id too.
 #[must_use]
 pub fn typed(id: &str) -> Option<UnitId> {
-    find(id).map(|e| UnitId::new(e.base, e.prefix))
+    find(id)
+        .map(|e| UnitId::new(e.base, e.prefix))
+        .or_else(|| with_custom(id, |c| UnitId::base(&c.name)))
 }
 
-/// The stored id for a typed unit, where the table enumerates the pair.
+/// The stored id for a typed unit, where the table enumerates the pair
+/// or the user named it.
 ///
 /// `None` for a composition the crate has no variant of (`nAh`), which
 /// is exactly why the model carries the typed form and not this string.
 #[must_use]
-pub fn stored_id(unit: &UnitId) -> Option<&'static str> {
-    find_typed(unit).map(|e| e.id)
+pub fn stored_id(unit: &UnitId) -> Option<String> {
+    if let Some(entry) = find_typed(unit) {
+        return Some(entry.id.to_string());
+    }
+    unit.prefix
+        .is_none()
+        .then(|| with_custom(&unit.base, |c| c.name.clone()))
+        .flatten()
 }
 
 /// How a typed unit reads: the enumerated variant's own spelling where
@@ -1733,40 +2089,48 @@ pub fn display_of(unit: &UnitId) -> String {
     if let Some(enumerated) = find_typed(unit) {
         return enumerated.display.to_string();
     }
-    find(&unit.base).map_or_else(String::new, |base| {
-        format!("{}{}", unit.prefix.symbol(), base.display)
-    })
+    if let Some(base) = find(&unit.base) {
+        return format!("{}{}", unit.prefix.symbol(), base.display);
+    }
+    // A composed unit reads as the name the user gave it, and nothing
+    // else — the composition is how it was defined, not how it reads.
+    unit.prefix
+        .is_none()
+        .then(|| with_custom(&unit.base, |c| c.name.clone()))
+        .flatten()
+        .unwrap_or_default()
 }
 
 /// The family a typed unit belongs to — what a kind-locked picker
 /// offers against.
 #[must_use]
 pub fn dimension_of(unit: &UnitId) -> Option<Dimension> {
-    find(&unit.base).map(|e| e.dimension)
+    family(unit).map(|(dimension, _)| dimension)
 }
 
 /// The affine carrying a value in `from` to one in `to`, or `None` when
 /// either names nothing or the two measure different things.
 #[must_use]
 pub fn convert_units(from: &UnitId, to: &UnitId) -> Option<Affine> {
-    let (from_base, to_base) = (find(&from.base)?, find(&to.base)?);
-    if from_base.dimension != to_base.dimension {
+    let ((from_dimension, from_constant), (to_dimension, to_constant)) =
+        (family(from)?, family(to)?);
+    if from_dimension != to_dimension {
         return None;
     }
     if from == to {
         return Some(Affine::IDENTITY);
     }
     let (a, b) = (definition_of(from)?, definition_of(to)?);
-    let a = Affine::new(a.multiplier(), from_base.constant * a.multiplier());
-    let b = Affine::new(b.multiplier(), to_base.constant * b.multiplier());
+    let a = Affine::new(a.multiplier(), from_constant * a.multiplier());
+    let b = Affine::new(b.multiplier(), to_constant * b.multiplier());
     Some(Affine::new(a.gain / b.gain, (a.offset - b.offset) / b.gain))
 }
 
 impl Entry {
     fn info(&self) -> UnitInfo {
         UnitInfo {
-            id: self.id,
-            display: self.display,
+            id: self.id.to_string(),
+            display: self.display.to_string(),
             dimension: self.dimension,
         }
     }
@@ -1776,10 +2140,30 @@ impl Entry {
             info: self.info(),
             dimension_label: self.dimension.label(),
             spelling: if recognize(self.display, &Customizations::new()) == typed(self.id) {
-                self.display
+                self.display.to_string()
             } else {
-                self.id
+                self.id.to_string()
             },
+        }
+    }
+}
+
+impl Custom {
+    fn info(&self) -> UnitInfo {
+        UnitInfo {
+            id: self.name.clone(),
+            display: self.name.clone(),
+            dimension: self.dimension,
+        }
+    }
+
+    /// A composed unit's name is its id, its display **and** the string
+    /// that reads back to it, so all three are the same word.
+    fn listing(&self) -> UnitListing {
+        UnitListing {
+            info: self.info(),
+            dimension_label: self.dimension.label(),
+            spelling: self.name.clone(),
         }
     }
 }
@@ -1922,6 +2306,7 @@ mod tests {
     /// for `volt` is the flat list this replaces.
     #[test]
     fn the_picker_lists_base_units_and_never_a_prefixed_variant() {
+        let _shared = listing();
         let entries = list_unit_picker();
         assert!(entries.iter().any(|e| e.id == "volt"));
         assert!(
@@ -1945,6 +2330,7 @@ mod tests {
     /// prefix ladder.
     #[test]
     fn every_unit_list_runs_in_dimension_then_display_order() {
+        let _shared = listing();
         let picker = list_unit_picker();
         let labels: Vec<&str> = picker.iter().map(|e| e.dimension_label).collect();
         assert!(grouped_alphabetically(&labels), "{labels:?}");
@@ -1953,7 +2339,7 @@ mod tests {
             picker
                 .iter()
                 .filter(|e| e.dimension_label == dimension)
-                .map(|e| e.display)
+                .map(|e| e.display.as_str())
                 .collect()
         };
         assert_eq!(shown("charge"), vec!["Ah", "C"]);
@@ -1971,7 +2357,8 @@ mod tests {
     /// base row.
     #[test]
     fn the_mapping_table_puts_a_prefixed_row_on_its_bases_ladder() {
-        let rows = mappings(&none(), &none());
+        let _shared = listing();
+        let rows = mappings(&none(), &none(), &[]);
         let labels: Vec<&str> = rows.iter().map(|r| r.dimension_label).collect();
         assert!(grouped_alphabetically(&labels), "{labels:?}");
 
@@ -1991,6 +2378,7 @@ mod tests {
     /// is what the picker renders and must not compose itself.
     #[test]
     fn a_prefixable_base_offers_the_whole_exponent_ordered_ladder() {
+        let _shared = listing();
         let volt = picker_entry("volt");
         assert_eq!(volt.scales.len(), Prefix::all().len());
         let exponents: Vec<Option<i32>> = volt.scales.iter().map(|s| s.exponent).collect();
@@ -2012,6 +2400,7 @@ mod tests {
     /// at three scales (design ruling).
     #[test]
     fn the_ratio_family_is_one_row_with_three_scale_choices() {
+        let _shared = listing();
         let entries = list_unit_picker();
         let ratios: Vec<&UnitPickerEntry> = entries
             .iter()
@@ -2038,6 +2427,7 @@ mod tests {
     /// whole unit.
     #[test]
     fn a_base_that_takes_no_prefix_offers_itself_alone() {
+        let _shared = listing();
         let celsius = picker_entry("degree-celsius");
         assert_eq!(celsius.scales.len(), 1);
         assert_eq!(celsius.scales[0].unit, UnitId::base("degree-celsius"));
@@ -2049,6 +2439,7 @@ mod tests {
     /// pick can always be converted, spelled and stored.
     #[test]
     fn every_offered_scale_is_a_unit_the_facade_places() {
+        let _shared = listing();
         for entry in list_unit_picker() {
             for scale in &entry.scales {
                 assert!(
@@ -2087,6 +2478,7 @@ mod tests {
     /// picker offer, how does it read, and by what factor.
     #[test]
     fn a_display_unit_answers_the_whole_per_series_question() {
+        let _shared = listing();
         let asked = queries(&[
             ("mV", None),
             ("mV", Some(UnitId::base("volt"))),
@@ -2122,6 +2514,7 @@ mod tests {
     /// charge family exactly as it would for any other unit.
     #[test]
     fn a_placed_source_unit_converts_whatever_its_spelling_reads_as() {
+        let _shared = listing();
         let asked = placed_queries(&[
             (Some(UnitId::base("coulomb")), "C", None),
             (
@@ -2154,6 +2547,7 @@ mod tests {
     /// something the UI can produce, and it must not scale.
     #[test]
     fn a_display_unit_of_another_kind_scales_nothing() {
+        let _shared = listing();
         let answers = display_units(&queries(&[("V", Some(UnitId::base("ampere")))]), &none());
         assert_eq!(answers[0].display, "V");
         assert_eq!(answers[0].affine, Affine::IDENTITY);
@@ -2164,7 +2558,8 @@ mod tests {
     /// each labelled with where it comes from.
     #[test]
     fn the_mapping_table_puts_each_string_on_the_row_it_recognises_to() {
-        let rows = mappings(&none(), &none());
+        let _shared = listing();
+        let rows = mappings(&none(), &none(), &[]);
         assert!(rows.iter().any(|r| r.unit == UnitId::base("volt")));
         let celsius = rows
             .iter()
@@ -2182,7 +2577,7 @@ mod tests {
             .all(|m| m.source == MappingSource::BuiltIn));
         // The id the row's add path commits — a customization names a
         // unit by id, never by spelling.
-        assert_eq!(celsius.id, Some("degree-celsius"));
+        assert_eq!(celsius.id.as_deref(), Some("degree-celsius"));
         assert!(
             rows.iter().all(|r| r.id.is_some()),
             "every listed row is a mapping target"
@@ -2194,6 +2589,7 @@ mod tests {
     /// scopes map is listed once, as the project's.
     #[test]
     fn a_customization_joins_its_units_row_wearing_its_scope() {
+        let _shared = listing();
         let user: Customizations = [
             ("widgets".to_string(), "volt".to_string()),
             ("Deg C".to_string(), "kelvin".to_string()),
@@ -2203,7 +2599,7 @@ mod tests {
         let project: Customizations = [("Deg C".to_string(), "degree-celsius".to_string())]
             .into_iter()
             .collect();
-        let rows = mappings(&user, &project);
+        let rows = mappings(&user, &project, &[]);
         let find = |unit: UnitId| {
             rows.iter()
                 .find(|r| r.unit == unit)
@@ -2235,6 +2631,7 @@ mod tests {
     /// list.)
     #[test]
     fn a_customization_naming_a_prefixed_unit_earns_its_own_row() {
+        let _shared = listing();
         let milliampere = UnitId::new("ampere", Prefix::Milli);
         assert!(
             !list_unit_picker().iter().any(|e| e.id == "milliampere"),
@@ -2243,7 +2640,7 @@ mod tests {
         let project: Customizations = [("mAmp".to_string(), "milliampere".to_string())]
             .into_iter()
             .collect();
-        let rows = mappings(&none(), &project);
+        let rows = mappings(&none(), &project, &[]);
         let row = rows
             .iter()
             .find(|r| r.unit == milliampere)
@@ -2265,6 +2662,7 @@ mod tests {
 
     #[test]
     fn every_unit_has_a_unique_id_and_is_findable_by_it() {
+        let _shared = listing();
         let mut ids: Vec<&str> = UNITS.iter().map(|e| e.id).collect();
         let count = ids.len();
         ids.sort_unstable();
@@ -2285,6 +2683,7 @@ mod tests {
     /// grouping — the library calls `rpm` and `Hz` convertible.)
     #[test]
     fn every_dimension_is_one_convertible_family() {
+        let _shared = listing();
         for a in UNITS {
             for b in UNITS.iter().filter(|b| b.dimension == a.dimension) {
                 let (da, db) = (UnitDefinition::from(a.unit), UnitDefinition::from(b.unit));
@@ -2300,6 +2699,7 @@ mod tests {
 
     #[test]
     fn a_conversion_within_a_dimension_is_the_ratio_of_the_multipliers() {
+        let _shared = listing();
         let a = convert("milliampere", "ampere").expect("mA to A");
         close(a.gain, 0.001);
         close(a.offset, 0.0);
@@ -2310,12 +2710,14 @@ mod tests {
 
     #[test]
     fn the_same_unit_both_sides_is_the_identity_exactly() {
+        let _shared = listing();
         let a = convert("volt", "volt").expect("V to V");
         assert!(a.is_identity(), "{a:?}");
     }
 
     #[test]
     fn units_of_different_dimensions_do_not_convert() {
+        let _shared = listing();
         assert!(convert("volt", "ampere").is_none());
         // The library would happily convert these two — both s⁻¹, and
         // both kg·m²·s⁻² — which is exactly what the facade's own
@@ -2326,12 +2728,14 @@ mod tests {
 
     #[test]
     fn an_unknown_unit_id_does_not_convert() {
+        let _shared = listing();
         assert!(convert("volt", "furlong").is_none());
         assert!(convert("furlong", "volt").is_none());
     }
 
     #[test]
     fn temperature_converts_affinely_across_celsius_kelvin_and_fahrenheit() {
+        let _shared = listing();
         let c_to_k = convert("degree-celsius", "kelvin").expect("°C to K");
         close(c_to_k.apply(0.0), 273.15);
         close(c_to_k.apply(25.0), 298.15);
@@ -2349,6 +2753,7 @@ mod tests {
 
     #[test]
     fn a_percentage_converts_to_a_bare_ratio() {
+        let _shared = listing();
         let a = convert("percent", "ratio").expect("% to ratio");
         close(a.apply(50.0), 0.5);
         let b = convert("ratio", "percent").expect("ratio to %");
@@ -2369,6 +2774,7 @@ mod tests {
     /// can say. Both ship as defaults here.
     #[test]
     fn the_two_percent_spellings_read_at_the_scales_they_name() {
+        let _shared = listing();
         assert!(recognize("%1.0", &none()).is_some(), "%1.0 places nothing");
         assert_eq!(recognize("%", &none()), recognize("percent", &none()));
         assert_eq!(recognize("%1.0", &none()), recognize("ratio", &none()));
@@ -2383,6 +2789,7 @@ mod tests {
     /// built-in spelling.
     #[test]
     fn a_customization_remaps_either_percent_spelling() {
+        let _shared = listing();
         let mut dict = Customizations::new();
         dict.insert("%".to_string(), "ratio".to_string());
         dict.insert("%1.0".to_string(), "percent".to_string());
@@ -2395,6 +2802,7 @@ mod tests {
     /// shares a multiplier with another.
     #[test]
     fn the_ratio_family_converts_by_its_powers_of_ten() {
+        let _shared = listing();
         let gain = |from: &str, to: &str| {
             convert(from, to)
                 .unwrap_or_else(|| panic!("{from} to {to}"))
@@ -2415,10 +2823,11 @@ mod tests {
     /// the whole defect the bare scale's `ratio 0–1` display caused.
     #[test]
     fn every_ratio_scale_reads_as_a_string_that_recognises_back_to_it() {
+        let _shared = listing();
         for id in ["ratio", "percent", "part-per-million"] {
             let display = get(id).unwrap_or_else(|| panic!("{id}")).display;
             assert_eq!(
-                recognize(display, &none()),
+                recognize(&display, &none()),
                 typed(id),
                 "{id} reads {display}"
             );
@@ -2431,6 +2840,7 @@ mod tests {
     /// millicoulomb for a milliamp-second to be one.
     #[test]
     fn integrating_a_rate_composes_into_the_unit_its_integral_carries() {
+        let _shared = listing();
         let seconds = UnitId::base("second");
         let charge = Composed::of(UnitId::base("ampere")).times(seconds.clone());
         assert_eq!(charge.named(), Some(UnitId::base("coulomb")));
@@ -2452,6 +2862,7 @@ mod tests {
 
     #[test]
     fn an_integrated_unit_converts_onward_to_what_a_user_asks_for() {
+        let _shared = listing();
         // The output half of the integration path: amp-seconds to
         // amp-hours is ÷3600, watt-seconds to kilowatt-hours ÷3.6e6.
         let charge = Composed::of(UnitId::base("ampere")).times(UnitId::base("second"));
@@ -2474,6 +2885,7 @@ mod tests {
 
     #[test]
     fn composing_two_affines_is_applying_them_in_order() {
+        let _shared = listing();
         let a = Affine::new(2.0, 1.0);
         let b = Affine::new(10.0, -3.0);
         let composed = a.then(b);
@@ -2484,6 +2896,7 @@ mod tests {
 
     #[test]
     fn the_common_dbc_spellings_are_recognised() {
+        let _shared = listing();
         let cases = [
             ("V", "volt"),
             ("mV", "millivolt"),
@@ -2509,11 +2922,13 @@ mod tests {
 
     #[test]
     fn a_unit_string_is_recognised_around_its_padding() {
+        let _shared = listing();
         assert_eq!(recognize("  rpm ", &none()), typed("revolution-per-minute"));
     }
 
     #[test]
     fn recognition_is_case_insensitive_only_where_one_spelling_matches() {
+        let _shared = listing();
         assert_eq!(recognize("RPM", &none()), typed("revolution-per-minute"));
         assert_eq!(recognize("Bar", &none()), typed("bar"));
         assert_eq!(recognize("DEGC", &none()), typed("degree-celsius"));
@@ -2528,6 +2943,7 @@ mod tests {
 
     #[test]
     fn an_unrecognised_string_is_nothing_rather_than_a_guess() {
+        let _shared = listing();
         for raw in ["", "   ", "C", "Nm/rad", "widgets"] {
             assert_eq!(recognize(raw, &none()), None, "{raw:?}");
         }
@@ -2535,6 +2951,7 @@ mod tests {
 
     #[test]
     fn a_customization_wins_over_the_built_in_recognitions() {
+        let _shared = listing();
         let mut dict = Customizations::new();
         dict.insert("V".to_string(), "millivolt".to_string());
         dict.insert("widgets".to_string(), "percent".to_string());
@@ -2546,6 +2963,7 @@ mod tests {
 
     #[test]
     fn a_customization_naming_no_unit_recognises_nothing() {
+        let _shared = listing();
         // A hand-edited settings file, or a unit id a later build
         // dropped. It is refused here rather than resolving to a
         // conversion nobody described.
@@ -2558,6 +2976,7 @@ mod tests {
     /// and the unit list cannot drift apart.
     #[test]
     fn every_recognition_names_a_real_unit() {
+        let _shared = listing();
         for (spelling, id) in RECOGNITIONS {
             assert!(get(id).is_some(), "{spelling} names unknown unit {id}");
         }
@@ -2569,6 +2988,7 @@ mod tests {
     /// carry without guessing at `C`.
     #[test]
     fn a_units_own_id_names_it() {
+        let _shared = listing();
         for entry in UNITS {
             assert_eq!(
                 recognize(entry.id, &none()),
@@ -2583,12 +3003,13 @@ mod tests {
     /// picker would offer units whose choice converts nothing.
     #[test]
     fn every_listed_spelling_recognises_back_to_its_unit() {
+        let _shared = listing();
         let listed = list_units();
         assert_eq!(listed.len(), UNITS.len());
         for listing in listed {
             assert_eq!(
-                recognize(listing.spelling, &none()),
-                typed(listing.info.id),
+                recognize(&listing.spelling, &none()),
+                typed(&listing.info.id),
                 "{}",
                 listing.info.id
             );
@@ -2600,6 +3021,7 @@ mod tests {
     /// the id only where the display is not a recognition of its own.
     #[test]
     fn a_listing_spells_a_unit_the_way_a_database_would() {
+        let _shared = listing();
         let listed = list_units();
         let spelling = |id: &str| {
             listed
@@ -2607,6 +3029,7 @@ mod tests {
                 .find(|l| l.info.id == id)
                 .unwrap_or_else(|| panic!("{id}"))
                 .spelling
+                .as_str()
         };
         assert_eq!(spelling("volt"), "V");
         assert_eq!(spelling("degree-celsius"), "°C");
@@ -2619,6 +3042,7 @@ mod tests {
     /// the grouping is the facade's and not re-derived by a view.
     #[test]
     fn every_listing_carries_its_dimensions_picker_label() {
+        let _shared = listing();
         let listed = list_units();
         let rpm = listed
             .iter()
@@ -2680,6 +3104,7 @@ mod tests {
     /// would be invisible.
     #[test]
     fn every_prefixed_variant_the_crate_enumerates_matches_the_composed_factor() {
+        let _shared = listing();
         let mut checked = 0usize;
         for entry in UNITS.iter().filter(|e| e.is_base() && e.prefixable) {
             for prefix in Prefix::all().iter().filter(|p| !p.is_none()) {
@@ -2710,6 +3135,7 @@ mod tests {
     /// read and is composed — nano × ampere-hour — and converts.
     #[test]
     fn a_prefix_the_crate_does_not_enumerate_is_composed_and_converts() {
+        let _shared = listing();
         assert!(enumerated(
             Units::ElectricCharge(ElectricChargeUnit::ampere_hour),
             "nAh"
@@ -2726,6 +3152,7 @@ mod tests {
 
     #[test]
     fn a_prefixed_dbc_spelling_is_recognised_exact_case() {
+        let _shared = listing();
         assert_eq!(
             recognize("nAh", &none()),
             Some(unit("ampere-hour", Prefix::Nano))
@@ -2744,6 +3171,7 @@ mod tests {
     /// means.
     #[test]
     fn the_prefix_pass_never_overrides_an_exact_recognition() {
+        let _shared = listing();
         assert_eq!(recognize("mV", &none()), Some(unit("volt", Prefix::Milli)));
         assert_eq!(recognize("MV", &none()), Some(unit("volt", Prefix::Mega)));
         assert_eq!(recognize("Pa", &none()), Some(unit("pascal", Prefix::None)));
@@ -2761,6 +3189,7 @@ mod tests {
     /// for one is refused rather than composed.
     #[test]
     fn a_base_unit_that_takes_no_prefix_refuses_one() {
+        let _shared = listing();
         assert!(definition_of(&unit("degree-celsius", Prefix::Milli)).is_none());
         assert!(definition_of(&unit("percent", Prefix::Kilo)).is_none());
         assert!(definition_of(&unit("hour", Prefix::Milli)).is_none());
@@ -2771,6 +3200,7 @@ mod tests {
     /// existed carries — reads back as the typed pair it always was.
     #[test]
     fn a_stored_unit_id_reads_back_as_a_base_and_a_prefix() {
+        let _shared = listing();
         assert_eq!(typed("millivolt"), Some(unit("volt", Prefix::Milli)));
         assert_eq!(typed("volt"), Some(unit("volt", Prefix::None)));
         assert_eq!(
@@ -2789,6 +3219,7 @@ mod tests {
     /// *is* the charge the table already names.
     #[test]
     fn a_product_of_two_units_composes_into_the_unit_it_names() {
+        let _shared = listing();
         let amp_hour = Composed::of(unit("ampere", Prefix::None)).times(unit("hour", Prefix::None));
         assert_eq!(amp_hour.named(), Some(unit("ampere-hour", Prefix::None)));
         assert_eq!(amp_hour.display(), "Ah");
@@ -2810,6 +3241,7 @@ mod tests {
     /// a kind-locked picker offers against.
     #[test]
     fn a_composition_with_no_name_renders_its_factors_and_keeps_its_kind() {
+        let _shared = listing();
         let volt_second =
             Composed::of(unit("volt", Prefix::None)).times(unit("second", Prefix::None));
         assert_eq!(volt_second.named(), None);
@@ -2832,6 +3264,7 @@ mod tests {
     /// mismatch is.
     #[test]
     fn a_composition_does_not_convert_to_a_unit_of_another_kind() {
+        let _shared = listing();
         let amp_second =
             Composed::of(unit("ampere", Prefix::None)).times(unit("second", Prefix::None));
         close(
@@ -2849,6 +3282,7 @@ mod tests {
     /// renders (design: opened with the current selection centered).
     #[test]
     fn the_prefix_ladder_is_the_full_si_range_in_exponent_order() {
+        let _shared = listing();
         let all = Prefix::all();
         assert_eq!(all.len(), 21);
         assert_eq!(all.first().map(|p| p.exponent()), Some(-24));
@@ -2864,6 +3298,7 @@ mod tests {
     /// it rather than on a percentage.
     #[test]
     fn a_count_is_a_scalar_and_not_a_ratio() {
+        let _shared = listing();
         let scalar = recognize("counts", &none()).expect("counts");
         assert_eq!(scalar, unit("scalar", Prefix::None));
         assert_eq!(recognize("count", &none()), Some(scalar.clone()));
@@ -2873,10 +3308,316 @@ mod tests {
         assert!(convert("scalar", "percent").is_none());
     }
 
+    // ---- Units the user composes ------------------------------------
+    //
+    // The registry these exercise is a process global that changes what
+    // `recognize`, `convert_units` and every list surface answer — so an
+    // installing test cannot run beside any other test in this module.
+    //
+    // The rule is therefore blanket, not a judgement call: **every test
+    // here takes `REGISTRY`**, the ones below exclusively (`install`,
+    // which undoes itself when its guard drops) and every other one
+    // shared (`listing`). Reads do not exclude each other, so the only
+    // thing serialized is an install. Scoping the shared guard to the
+    // tests that "obviously" read a list is what made this flaky the
+    // first time: a test asserting why an empty composition is refused
+    // reads the registry too, through the name-collision check.
+
+    static REGISTRY: RwLock<()> = RwLock::new(());
+
+    fn listing() -> std::sync::RwLockReadGuard<'static, ()> {
+        REGISTRY.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    struct Installed(#[allow(dead_code)] std::sync::RwLockWriteGuard<'static, ()>);
+
+    impl Drop for Installed {
+        fn drop(&mut self) {
+            let _ = install_definitions(&Definitions::new(), &Definitions::new(), &none());
+        }
+    }
+
+    fn dict(pairs: &[(&str, &str)]) -> Definitions {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    /// Install `project`-scope definitions for the life of the guard.
+    fn install(pairs: &[(&str, &str)]) -> (Installed, Vec<DefinedUnit>) {
+        install_scoped(&[], pairs)
+    }
+
+    fn install_scoped(
+        user: &[(&str, &str)],
+        project: &[(&str, &str)],
+    ) -> (Installed, Vec<DefinedUnit>) {
+        let guard = Installed(REGISTRY.write().unwrap_or_else(PoisonError::into_inner));
+        let defined = install_definitions(&dict(user), &dict(project), &none());
+        (guard, defined)
+    }
+
+    fn refusal(defined: &[DefinedUnit], name: &str) -> String {
+        defined
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("no definition `{name}`"))
+            .error
+            .clone()
+            .unwrap_or_else(|| panic!("`{name}` was accepted"))
+    }
+
+    /// A composed unit is a unit: it measures what dimensional analysis
+    /// says its composition measures, and reads as the name its author
+    /// gave it.
+    #[test]
+    fn a_composed_unit_takes_the_dimension_its_composition_implies() {
+        let (_guard, defined) = install(&[("VA", "V * A")]);
+        assert_eq!(defined.iter().filter(|d| d.error.is_some()).count(), 0);
+        let volt_amp = UnitId::base("VA");
+        assert_eq!(dimension_of(&volt_amp), Some(Dimension::Power));
+        assert_eq!(display_of(&volt_amp), "VA");
+        assert_eq!(typed("VA"), Some(volt_amp));
+    }
+
+    /// The factor is the composition's, so a volt-ampere *is* a watt and
+    /// a leading number scales it.
+    #[test]
+    fn a_composed_unit_converts_by_the_factor_its_composition_implies() {
+        let (_guard, _) = install(&[("VA", "V * A"), ("kVA", "1000 * V * A")]);
+        let watt = UnitId::base("watt");
+        close(
+            convert_units(&UnitId::base("VA"), &watt)
+                .expect("VA→W")
+                .gain,
+            1.0,
+        );
+        close(
+            convert_units(&UnitId::base("kVA"), &watt)
+                .expect("kVA→W")
+                .gain,
+            1000.0,
+        );
+        // And back the other way, since a composed unit is a peer.
+        close(
+            convert_units(&watt, &UnitId::base("kVA"))
+                .expect("W→kVA")
+                .gain,
+            0.001,
+        );
+        // Not across dimensions, no more than for a tabulated unit.
+        assert!(convert_units(&UnitId::base("VA"), &UnitId::base("volt")).is_none());
+    }
+
+    /// Division composes too, so a reciprocal second is a hertz.
+    #[test]
+    fn a_composition_may_divide() {
+        let (_guard, defined) = install(&[("per-sec", "1 / s")]);
+        assert_eq!(refusals(&defined), Vec::<String>::new());
+        let per_second = UnitId::base("per-sec");
+        assert_eq!(dimension_of(&per_second), Some(Dimension::Frequency));
+        close(
+            convert_units(&per_second, &UnitId::base("hertz"))
+                .expect("per-sec→Hz")
+                .gain,
+            1.0,
+        );
+    }
+
+    fn refusals(defined: &[DefinedUnit]) -> Vec<String> {
+        defined.iter().filter_map(|d| d.error.clone()).collect()
+    }
+
+    /// A database that spells the user's own unit gets it back — the
+    /// name is the spelling, and recognition is where a string becomes
+    /// a unit.
+    #[test]
+    fn a_composed_unit_is_recognised_when_a_database_spells_it() {
+        let (_guard, _) = install(&[("VA", "V * A")]);
+        assert_eq!(recognize("VA", &none()), Some(UnitId::base("VA")));
+        assert_eq!(recognize(" VA ", &none()), Some(UnitId::base("VA")));
+        assert_eq!(recognize("va", &none()), None, "nothing is guessed");
+        // And a customization can point an in-house spelling at it.
+        let mapped = dict(&[("VoltAmps", "VA")]);
+        assert_eq!(recognize("VoltAmps", &mapped), Some(UnitId::base("VA")));
+    }
+
+    /// Composed units are offered wherever tabulated ones are, in the
+    /// one order every list surface uses.
+    #[test]
+    fn a_composed_unit_is_offered_in_the_lists_in_normalized_order() {
+        let (_guard, _) = install(&[("VA", "V * A")]);
+        let listed = list_units();
+        let row = listed
+            .iter()
+            .find(|u| u.info.id == "VA")
+            .expect("VA is selectable");
+        assert_eq!(row.dimension_label, "power");
+        assert_eq!(row.spelling, "VA", "its name is what a picker commits");
+        // It sits inside its dimension's run rather than in a tail
+        // after every shipped unit — the whole point of `list_order`.
+        let power: Vec<usize> = listed
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| u.dimension_label == "power")
+            .map(|(i, _)| i)
+            .collect();
+        let composed = listed.iter().position(|u| u.info.id == "VA").expect("VA");
+        assert!(power.contains(&composed));
+        assert_eq!(
+            power.last().copied().unwrap_or(0) - power[0] + 1,
+            power.len(),
+            "the power group is contiguous"
+        );
+        let picker = list_unit_picker();
+        let entry = picker.iter().find(|e| e.id == "VA").expect("VA in picker");
+        assert_eq!(entry.scales.len(), 1, "the user named the whole unit");
+        assert_eq!(entry.scales[0].unit, UnitId::base("VA"));
+    }
+
+    /// Every refusal says what is wrong, because the entry that typed it
+    /// is the only place the user finds out.
+    #[test]
+    fn a_composition_naming_an_unknown_unit_is_refused() {
+        let (_guard, defined) = install(&[("VA", "V * bananas")]);
+        assert!(
+            refusal(&defined, "VA").contains("bananas"),
+            "{:?}",
+            refusal(&defined, "VA")
+        );
+        assert_eq!(typed("VA"), None, "a refused definition installs nothing");
+    }
+
+    /// A shipped unit's spelling is not free to take: `W` is already
+    /// the watt, and quietly shadowing it would change what every
+    /// database in the project reads as.
+    #[test]
+    fn a_name_that_already_names_a_unit_is_refused() {
+        let (_guard, defined) = install(&[("W", "V * A"), ("VA", "V * A"), ("VA2", "VA * 1")]);
+        assert!(
+            refusal(&defined, "W").contains("already names"),
+            "{}",
+            refusal(&defined, "W")
+        );
+        assert_eq!(recognize("W", &none()), typed("watt"));
+        // A name built on another composed unit is fine — it is only
+        // *taking* an existing name that is not.
+        assert_eq!(refusals(&defined).len(), 1);
+        assert_eq!(dimension_of(&UnitId::base("VA2")), Some(Dimension::Power));
+    }
+
+    #[test]
+    fn an_empty_name_or_an_empty_composition_is_refused() {
+        let _shared = listing();
+        assert!(check_definition("  ", "V * A", &none())
+            .unwrap_err()
+            .contains("name"));
+        assert!(check_definition("VA", "   ", &none())
+            .unwrap_err()
+            .contains("empty"));
+        assert!(check_definition("VA", "V *", &none())
+            .unwrap_err()
+            .contains("empty term"));
+        assert!(check_definition("V/A", "V * A", &none())
+            .unwrap_err()
+            .contains("cannot be a unit name"));
+    }
+
+    /// A definition may name another, whichever way round the dict
+    /// happens to sort — the install runs to a fixpoint.
+    #[test]
+    fn a_definition_may_build_on_another_whatever_order_the_dict_is_in() {
+        // `VA` sorts after `Ah-ish`, so a single pass in dict order
+        // would leave the dependent one unresolved.
+        let (_guard, defined) = install(&[("AVh", "VA * h"), ("VA", "V * A")]);
+        assert_eq!(refusals(&defined), Vec::<String>::new());
+        close(
+            convert_units(&UnitId::base("AVh"), &typed("kilowatt-hour").expect("kWh"))
+                .expect("AVh→kWh")
+                .gain,
+            0.001,
+        );
+    }
+
+    /// The two scopes join exactly as the mapping scopes do.
+    #[test]
+    fn the_project_scope_wins_where_both_define_one_name() {
+        let (_guard, defined) = install_scoped(&[("VA", "1000 * V * A")], &[("VA", "V * A")]);
+        assert_eq!(refusals(&defined), Vec::<String>::new());
+        close(
+            convert_units(&UnitId::base("VA"), &UnitId::base("watt"))
+                .expect("VA→W")
+                .gain,
+            1.0,
+        );
+        let row = defined.iter().find(|d| d.name == "VA").expect("VA");
+        assert_eq!(row.scope, MappingSource::Project);
+        assert_eq!(row.composition, "V * A");
+    }
+
+    /// The settings table is where a composed unit lives: its own row,
+    /// carrying what it was composed from — and a refused definition
+    /// gets a row too, saying why, so it can be seen and fixed.
+    #[test]
+    fn the_units_table_carries_a_composed_unit_and_why_a_refused_one_failed() {
+        let (_guard, defined) = install_scoped(&[("VA", "V * A")], &[("Nope", "V * bananas")]);
+        let rows = mappings(&none(), &none(), &defined);
+        let volt_amp = rows
+            .iter()
+            .find(|r| r.unit == UnitId::base("VA"))
+            .expect("a row for VA");
+        assert_eq!(volt_amp.composition.as_deref(), Some("V * A"));
+        assert_eq!(volt_amp.definition_scope, Some(MappingSource::User));
+        assert_eq!(volt_amp.error, None);
+        assert_eq!(
+            volt_amp.id.as_deref(),
+            Some("VA"),
+            "spellings can map to it"
+        );
+        assert_eq!(volt_amp.dimension_label, "power");
+
+        let refused = rows
+            .iter()
+            .find(|r| r.display == "Nope")
+            .expect("a row for the refused definition");
+        assert_eq!(refused.composition.as_deref(), Some("V * bananas"));
+        assert_eq!(refused.definition_scope, Some(MappingSource::Project));
+        assert!(refused
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("bananas"));
+        assert_eq!(refused.id, None, "it names no unit to map a spelling to");
+
+        // No shipped row grew a composition it does not have.
+        let volt = rows
+            .iter()
+            .find(|r| r.unit == UnitId::base("volt"))
+            .expect("volt");
+        assert_eq!(volt.composition, None);
+        assert_eq!(volt.error, None);
+    }
+
+    /// Deleting the definition deletes the unit: the registry is
+    /// replaced whole, never added to.
+    #[test]
+    fn removing_a_definition_removes_the_unit() {
+        let (guard, _) = install(&[("VA", "V * A")]);
+        assert!(typed("VA").is_some());
+        let defined = install_definitions(&Definitions::new(), &Definitions::new(), &none());
+        assert!(defined.is_empty());
+        assert_eq!(typed("VA"), None);
+        assert_eq!(recognize("VA", &none()), None);
+        assert!(!list_units().iter().any(|u| u.info.id == "VA"));
+        drop(guard);
+    }
+
     /// No two recognitions spell the same string, which would make the
     /// exact-match pass depend on table order.
     #[test]
     fn no_two_recognitions_spell_the_same_string() {
+        let _shared = listing();
         let mut seen: Vec<&str> = RECOGNITIONS.iter().map(|(s, _)| *s).collect();
         let count = seen.len();
         seen.sort_unstable();

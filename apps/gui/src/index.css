@@ -6518,6 +6518,54 @@ input.unit-customization-add {
 .unit-customizations-empty {
   color: var(--text-faint);
 }
+/* The two-field entry that composes a unit: `VA` = `V * A`. */
+.unit-definition-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.unit-definition-entry input {
+  background: var(--surface-control);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font: inherit;
+  padding: 0.1rem 0.3rem;
+}
+.unit-definition-entry input:first-of-type {
+  width: 7rem;
+}
+.unit-definition-entry input:last-of-type {
+  width: 14rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.unit-definition-entry span {
+  color: var(--text-faint);
+}
+.unit-definition-refusal,
+.unit-customization-error {
+  color: var(--danger-text);
+}
+.unit-customization-composition {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.unit-customization-composition button {
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  padding: 0 0.25rem;
+}
+.unit-customization-composition button:hover {
+  color: var(--danger-text);
+}
+.unit-customization-error {
+  white-space: normal;
+}
 .setting-meta {
   display: flex;
   align-items: center;
