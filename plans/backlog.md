@@ -1057,3 +1057,8 @@ next planning pass.
   is mostly this. A shared single scan across the batch's groups would
   cut it roughly by the group count. (Found benchmarking task 135's
   pattern-set fix, 2026-09-06.)
+- `[units]` **Complex unit definitions.** Composing new units from
+  existing ones (A × h, Wh / km) was prototyped for task 139 and
+  dropped as spec'd (owner, 2026-09-07: YAGNI). The library's
+  Quantity-multiplication machinery makes it cheap if a real need
+  appears; the prototype round recorded the shape.

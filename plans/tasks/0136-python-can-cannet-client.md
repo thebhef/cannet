@@ -203,3 +203,19 @@ further.
   for the same reason — re-checked, not newly introduced; this phase
   touched no Rust. The `comment-references` grep is still clean,
   including over this phase's new files.
+
+## Exit criteria verdicts (orchestrator walk, 2026-09-06)
+
+1. **Met** (phase 1): `can.Bus(interface="cannet", ...)` via the entry point; recv/iteration/Listener/Notifier/send/shutdown/state
+   exercised by the vbus/replay suites.
+2. **Met** (phase 1): read contract documented in the package README + `trust.py`; resolution by name or host:port with pin + token.
+3. **Met** (phase 2): `clock.py` ports `clock.rs` (RFC 4330 math, `SessionClock`/`OffsetSlew`); no-answer peers degrade to raw
+   stamps without blocking (fake-peer test).
+4. **Met** (phase 2): `_detect_available_configs` dials trusted servers via `list_interfaces`; unreachable servers contribute nothing.
+5. **Met** (phase 1): ConfigureBus-before-Subscribe, factory ids await `InterfaceAllocated`, per-frame vs session-fatal split.
+6. **Met** (phases 1+2): hardware-free suites against debug replay/vbus (87 client tests); `python` CI job re-runs `regen_proto.sh`
+   and diffs `_proto` as the drift guard.
+7. **Met** (phases 1+2): top-level README names the package; package README + `examples/rest_bus_sim.py` carry the stafl-style usage.
+
+**Caveat carried in the review queue**: the TLS handshake has no end-to-end coverage (both debug servers are plaintext).
+Awaiting owner acceptance.
