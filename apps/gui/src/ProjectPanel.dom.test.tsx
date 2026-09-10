@@ -528,9 +528,11 @@ describe("ElementRow", () => {
       <ElementRow
         element={traceEl}
         panel={undefined}
+        connected={false}
         onOpen={() => {}}
         onRename={() => {}}
         onRemove={() => {}}
+        onToggleLoggerEnabled={() => {}}
       />,
     );
     expect(screen.getByLabelText("element el-1 name")).toHaveValue("Trace 1");
@@ -545,9 +547,11 @@ describe("ElementRow", () => {
       <ElementRow
         element={traceEl}
         panel={undefined}
+        connected={false}
         onOpen={() => {}}
         onRename={onRename}
         onRemove={() => {}}
+        onToggleLoggerEnabled={() => {}}
       />,
     );
     fireEvent.change(screen.getByLabelText("element el-1 name"), {
@@ -562,9 +566,11 @@ describe("ElementRow", () => {
       <ElementRow
         element={traceEl}
         panel={undefined}
+        connected={false}
         onOpen={onOpen}
         onRename={() => {}}
         onRemove={() => {}}
+        onToggleLoggerEnabled={() => {}}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
@@ -575,12 +581,124 @@ describe("ElementRow", () => {
       <ElementRow
         element={traceEl}
         panel={{ api: { setActive } } as unknown as IDockviewPanel}
+        connected={false}
         onOpen={() => {}}
         onRename={() => {}}
         onRemove={() => {}}
+        onToggleLoggerEnabled={() => {}}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Focus" }));
     expect(setActive).toHaveBeenCalled();
+  });
+
+  it("removes in a single click — no arm step, unlike the bus/DBC rows' two-stage remove", () => {
+    const onRemove = vi.fn();
+    render(
+      <ElementRow
+        element={traceEl}
+        panel={undefined}
+        connected={false}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onRemove={onRemove}
+        onToggleLoggerEnabled={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no run toggle for a non-runnable kind", () => {
+    render(
+      <ElementRow
+        element={traceEl}
+        panel={undefined}
+        connected={true}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onRemove={() => {}}
+        onToggleLoggerEnabled={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /^start$|^stop/ })).not.toBeInTheDocument();
+  });
+
+  describe("a logger row's run toggle", () => {
+    const loggerEl: ProjectElement = {
+      kind: "logger",
+      id: "logger-1",
+      name: "Drive Log",
+      enabled: false,
+      folder: "logs",
+      file: "{start}",
+      format: "blf",
+      maxFileSizeMb: 500,
+    };
+
+    it("shows play, unlit, while disabled", () => {
+      render(
+        <ElementRow
+          element={loggerEl}
+          panel={undefined}
+          connected={true}
+          onOpen={() => {}}
+          onRename={() => {}}
+          onRemove={() => {}}
+          onToggleLoggerEnabled={() => {}}
+        />,
+      );
+      const toggle = screen.getByRole("button", { name: "start" });
+      expect(toggle.className).not.toMatch(/running|armed/);
+    });
+
+    it("turns green (running) when enabled and connected", () => {
+      render(
+        <ElementRow
+          element={{ ...loggerEl, enabled: true }}
+          panel={undefined}
+          connected={true}
+          onOpen={() => {}}
+          onRename={() => {}}
+          onRemove={() => {}}
+          onToggleLoggerEnabled={() => {}}
+        />,
+      );
+      const toggle = screen.getByRole("button", { name: "stop (logging)" });
+      expect(toggle.className).toMatch(/running/);
+    });
+
+    it("turns amber (armed) when enabled but nothing is connected yet", () => {
+      render(
+        <ElementRow
+          element={{ ...loggerEl, enabled: true }}
+          panel={undefined}
+          connected={false}
+          onOpen={() => {}}
+          onRename={() => {}}
+          onRemove={() => {}}
+          onToggleLoggerEnabled={() => {}}
+        />,
+      );
+      const toggle = screen.getByRole("button", { name: "stop (armed — starts on connect)" });
+      expect(toggle.className).toMatch(/armed/);
+    });
+
+    it("calls onToggleLoggerEnabled — the same bit the logger's own panel checkbox writes", () => {
+      const onToggle = vi.fn();
+      render(
+        <ElementRow
+          element={loggerEl}
+          panel={undefined}
+          connected={true}
+          onOpen={() => {}}
+          onRename={() => {}}
+          onRemove={() => {}}
+          onToggleLoggerEnabled={onToggle}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "start" }));
+      expect(onToggle).toHaveBeenCalledTimes(1);
+    });
   });
 });

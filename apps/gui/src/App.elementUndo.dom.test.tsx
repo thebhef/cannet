@@ -284,10 +284,12 @@ function areaDragTransfer() {
   };
 }
 
-/// A button inside `root`, by label.
+/// A button inside `root`, by label — its text, or its accessible
+/// name (some project-panel row buttons are icon-only, with no
+/// visible text).
 function buttonIn(root: ParentNode, label: string): HTMLButtonElement {
   const btn = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
-    (b) => b.textContent === label,
+    (b) => b.textContent === label || b.getAttribute("aria-label") === label,
   );
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;

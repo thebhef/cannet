@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import type { IDockviewPanel, IDockviewPanelProps } from "dockview";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   describeAppliedConfig,
@@ -15,11 +16,14 @@ import {
 } from "./connectionStates";
 import { ColorChip } from "./ColorChip";
 import { DisclosureToggle } from "./DisclosureToggle";
+import { IconButton } from "./IconButton";
+import { TwoStageRemoveButton } from "./TwoStageRemoveButton";
+import { useHostMirror } from "./useHostMirror";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry, type RegistryEntry } from "./projectElements";
 import { useSidecarStatus } from "./sidecarStatus";
 import { useUndoGesture } from "./undoGesture";
-import type { Bus, ProjectElement, ProjectElementKind } from "./types";
+import type { Bus, ProjectElement, ProjectElementKind, RbsView } from "./types";
 import { elementKindLabel, elementLabel } from "./elementLabel";
 import {
   isLocalBinding,
@@ -227,6 +231,14 @@ export function ProjectPanel(props: IDockviewPanelProps) {
   // Connection state is the host's model, not ours: we subscribe and
   // render, never derive.
   const connStates = useConnectionStates();
+  // Whether anything is connected right now — the same "something is
+  // connected" the logger panel itself uses to color its own message
+  // (LoggerPanel.tsx): a logger writes while enabled and *something*
+  // is connected, not while a particular bus is.
+  const anyBusConnected = useMemo(
+    () => Object.values(connStates).some((s) => s.kind === "connected"),
+    [connStates],
+  );
 
   const panelFor = (id: string): IDockviewPanel | undefined =>
     containerApi.panels.find(
@@ -324,9 +336,16 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                 key={entry.element.id}
                 element={entry.element}
                 panel={panelFor(entry.element.id)}
+                connected={anyBusConnected}
                 onOpen={() => openElement(entry.element)}
                 onRename={(name) => reg.update(entry.element.id, { name })}
                 onRemove={() => reg.remove(entry.element.id)}
+                onToggleLoggerEnabled={() =>
+                  reg.update(entry.element.id, {
+                    kind: "logger",
+                    enabled: !(entry.element.kind === "logger" && entry.element.enabled),
+                  })
+                }
               />
             ))}
           </CollapsibleSection>
@@ -384,9 +403,11 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                     pending
                   </span>
                 )}
-                <button type="button" onClick={() => p.onRemoveBus(bus.id)}>
-                  Remove
-                </button>
+                <TwoStageRemoveButton
+                  label={`remove bus ${bus.name}`}
+                  title={`Remove bus ${bus.name} (not undoable)`}
+                  onRemove={() => p.onRemoveBus(bus.id)}
+                />
               </div>
               {appliedText !== null && (
                 <div
@@ -546,9 +567,11 @@ export function ProjectPanel(props: IDockviewPanelProps) {
               <span className="project-dbc-name" title={path}>
                 {basename(path)}
               </span>
-              <button type="button" onClick={() => p.onRemoveDbc(path)}>
-                Remove
-              </button>
+              <TwoStageRemoveButton
+                label={`remove ${basename(path)}`}
+                title={`Remove ${basename(path)} (not undoable)`}
+                onRemove={() => p.onRemoveDbc(path)}
+              />
               {p.buses.length > 0 && (
                 <div className="project-dbc-scoping">
                   <span className="project-dbc-scoping-label">
@@ -633,21 +656,35 @@ function CollapsibleSection({
 /// id).
 /// One row in the project panel's Elements inventory: an inline-rename
 /// input bound to the element's model-owned `name` (the project panel
-/// is the canonical edit surface — ADR 0019), and Open / Focus /
-/// Remove. The kind isn't repeated per row — the row sits under its
-/// kind's group header.
+/// is the canonical edit surface — ADR 0019); a play/stop run toggle
+/// on a logger or RBS row; Focus/Open as the `enter` icon (one "take
+/// me to it" affordance); and Remove as a single-click trash icon —
+/// element removal rides the registry's undo (`App.tsx`'s
+/// `removeElement`), so it needs no arm step, unlike the bus and DBC
+/// rows' `TwoStageRemoveButton`. The kind isn't repeated on the row —
+/// it sits under its kind's group header.
 export function ElementRow({
   element,
   panel,
+  connected,
   onOpen,
   onRename,
   onRemove,
+  onToggleLoggerEnabled,
 }: {
   element: ProjectElement;
   panel: IDockviewPanel | undefined;
+  /// Whether anything is connected right now — only the logger row's
+  /// toggle reads this (a running RBS row asks the host for its own
+  /// buses' connection state instead; see `RbsRunToggle`).
+  connected: boolean;
   onOpen: () => void;
   onRename: (name: string) => void;
   onRemove: () => void;
+  /// Flips a logger element's `enabled` bit — the same field its own
+  /// panel's checkbox writes (`LoggerPanel.tsx`). Ignored for every
+  /// other kind.
+  onToggleLoggerEnabled: () => void;
 }) {
   // A rename writes the element on every keystroke, so the edit is an
   // undo *gesture* the way a drag is: focus opens it and blur closes
@@ -667,19 +704,94 @@ export function ElementRow({
         onBlur={() => undoGesture.end()}
         aria-label={`element ${element.id} name`}
       />
-      {panel ? (
-        <button type="button" onClick={() => panel.api.setActive()}>
-          Focus
-        </button>
-      ) : (
-        <button type="button" onClick={onOpen}>
-          Open
-        </button>
+      {element.kind === "logger" && (
+        <RunToggle
+          running={element.enabled && connected}
+          armed={element.enabled && !connected}
+          verb="logging"
+          onToggle={onToggleLoggerEnabled}
+        />
       )}
-      <button type="button" onClick={onRemove}>
-        Remove
-      </button>
+      {element.kind === "rbs" && <RbsRunToggle elementId={element.id} />}
+      <IconButton
+        name="enter"
+        label={panel ? "Focus" : "Open"}
+        title={
+          panel
+            ? "Go to this element's panel"
+            : "Open this element's panel"
+        }
+        onClick={panel ? () => panel.api.setActive() : onOpen}
+      />
+      <IconButton
+        name="clear"
+        label="Remove"
+        title={`Remove ${element.name ?? elementKindLabel(element.kind)} (undoable)`}
+        className="icon-btn-trash"
+        onClick={onRemove}
+      />
     </div>
+  );
+}
+
+/// The RBS/Logger row's play/stop toggle: the button alone conveys
+/// state, with no text label — play when idle, stop while enabled;
+/// green while enabled and connected (running), amber while enabled
+/// but awaiting connection (armed). The toggle changes no behavior
+/// beyond the enable it reads and writes (owner ruling).
+function RunToggle({
+  running,
+  armed,
+  verb,
+  onToggle,
+}: {
+  running: boolean;
+  armed: boolean;
+  verb: string;
+  onToggle: () => void;
+}) {
+  const active = running || armed;
+  const title = !active
+    ? "start"
+    : armed
+      ? "stop (armed — starts on connect)"
+      : `stop (${verb})`;
+  return (
+    <IconButton
+      name={active ? "stop" : "play"}
+      label={title}
+      className={`icon-btn-run${armed ? " armed" : running ? " running" : ""}`}
+      onClick={onToggle}
+    />
+  );
+}
+
+/// An RBS element's row in the Elements inventory: the run toggle
+/// reads and writes the same `run` flag its own panel's Run chip does
+/// (`rbs_view` / `rbs_set_run` — host session state, ADR 0028, never
+/// persisted with the project). "Connected" is this element's own
+/// buses, not the project's — a config scoped to an idle bus reads
+/// armed even while some other bus is live.
+function RbsRunToggle({ elementId }: { elementId: string }) {
+  const fetchView = useCallback(
+    () => invoke<RbsView | null>("rbs_view", { elementId }),
+    [elementId],
+  );
+  const { value: view } = useHostMirror<RbsView | null, string>({
+    fetch: fetchView,
+    fallback: null,
+    event: "rbs-changed",
+    matches: (payload) => payload === elementId || payload === "*",
+  });
+  const run = view?.run === true;
+  const connected = view?.buses.some((b) => b.connected) ?? false;
+  return (
+    <RunToggle
+      running={run && connected}
+      armed={run && !connected}
+      verb="transmitting"
+      onToggle={() => void invoke("rbs_set_run", { elementId, run: !run }).catch(() => {})}
+    />
   );
 }
 

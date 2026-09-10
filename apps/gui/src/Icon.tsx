@@ -81,6 +81,8 @@ export const ICON_NAMES = [
   "link",
   "help",
   "x",
+  "enter",
+  "refresh",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -223,6 +225,19 @@ export const ICON_REGISTRY: Readonly<Record<IconName, readonly IconShape[]>> = {
     { tag: "path", d: "M8.5 8.5l2-2a2.1 2.1 0 0 0-3-3l-2 2M5.5 5.5l-2 2a2.1 2.1 0 0 0 3 3l2-2" },
   ],
   x: [{ tag: "path", d: "M3.5 3.5l7 7M10.5 3.5l-7 7" }],
+  // The Focus/Open "take me to it" glyph: an arrow into a doorway,
+  // owner-ruled from a candidate gallery in the design prototype this
+  // shape is copied from verbatim.
+  enter: [
+    { tag: "path", d: "M7.5 2.5H11.5v9H7.5" },
+    { tag: "path", d: "M1.5 7h6M5 4.5L7.5 7 5 9.5" },
+  ],
+  // The Discover glyph: a circular arrow, distinct from `loop`'s
+  // bidirectional cycle — one direction of travel, one arrowhead.
+  refresh: [
+    { tag: "path", d: "M7 2.5A4.5 4.5 0 1 1 3.4 4.3" },
+    { tag: "path", d: "M4.3 1.6L3.4 4.3 6.2 4.9" },
+  ],
 };
 
 export interface IconProps {
