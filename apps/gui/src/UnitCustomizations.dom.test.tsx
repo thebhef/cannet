@@ -17,6 +17,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 /// The two dicts, as the host holds them.
 let PROJECT: Record<string, string> = {};
 let USER: Record<string, string> = {};
+/// The composed-unit definitions, at the same two scopes.
+let DEFS: Record<string, string> = {};
+let DEFS_USER: Record<string, string> = {};
 
 /// A stand-in for `units::mappings`: every base unit of this abridged
 /// table, carrying the strings that reach it — the built-ins, then each
@@ -32,6 +35,34 @@ const BASES = [
   { unit: { base: "ampere" }, id: "ampere", display: "A", dimensionLabel: "current" },
 ];
 const BUILT_IN: Record<string, string> = { V: "volt", degC: "degree-celsius", A: "ampere" };
+
+/// User scope overlaid by project — the host's join, the project winning.
+const merged = () => ({ ...DEFS_USER, ...DEFS });
+
+/// A stand-in for `units::define`: a term is a number or something this
+/// abridged model already knows, and a name may not take one.
+function define(name: string, composition: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed === "") return "the unit needs a name";
+  // A definition is not in force while it is being read, so it never
+  // collides with itself — the host clears the registry per pass.
+  const others = { ...merged() };
+  delete others[trimmed];
+  const known = (term: string) =>
+    term in BUILT_IN ||
+    BASES.some((b) => b.id === term || b.display === term) ||
+    term in others;
+  if (known(trimmed)) return trimmed + " already names a unit — pick another name";
+  if (composition.trim() === "") return "the composition is empty";
+  for (const term of composition.split(/[*/]/)) {
+    const t = term.trim();
+    if (t === "") return "the composition has an empty term";
+    if (t !== "" && Number.isFinite(Number(t))) continue;
+    if (!known(t)) return t + " is not a unit this project knows";
+  }
+  return null;
+}
+
 function mappings() {
   const spellings = new Map<string, { id: string; source: string }>();
   for (const [spelling, id] of Object.entries(BUILT_IN)) {
@@ -43,27 +74,67 @@ function mappings() {
   for (const [spelling, id] of Object.entries(PROJECT)) {
     spellings.set(spelling, { id, source: "project" });
   }
-  return BASES.map((b) => ({
-    ...b,
+  const rowFrom = (
+    base: { unit: { base: string }; id: string | null; display: string; dimensionLabel: string },
+    composition: string | null,
+    definitionScope: string | null,
+    error: string | null,
+  ) => ({
+    ...base,
+    composition,
+    definitionScope,
+    error,
     mappings: [...spellings.entries()]
-      .filter(([, v]) => v.id === b.id)
+      .filter(([, v]) => v.id === base.id)
       .map(([spelling, v]) => ({ spelling, source: v.source })),
-  }));
+  });
+  const rows = BASES.map((b) => rowFrom(b, null, null, null));
+  for (const [name, composition] of Object.entries(merged())) {
+    const error = define(name, composition);
+    rows.push(
+      rowFrom(
+        {
+          unit: { base: name },
+          id: error === null ? name : null,
+          display: name,
+          dimensionLabel: error === null ? "power" : "",
+        },
+        composition,
+        name in DEFS ? "project" : "user",
+        error,
+      ),
+    );
+  }
+  return rows;
 }
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "list_unit_mappings") return mappings();
+    if (cmd === "check_unit_definition") {
+      const error = define(args?.name as string, args?.composition as string);
+      if (error !== null) throw new Error(error);
+      return undefined;
+    }
     if (cmd === "get_settings") {
-      return { unit_customizations: PROJECT, unit_customizations_user: USER };
+      return {
+        unit_customizations: PROJECT,
+        unit_customizations_user: USER,
+        unit_definitions: DEFS,
+        unit_definitions_user: DEFS_USER,
+      };
     }
     if (cmd === "set_settings") {
       const sent = args?.settings as {
         unit_customizations: Record<string, string>;
         unit_customizations_user: Record<string, string>;
+        unit_definitions: Record<string, string>;
+        unit_definitions_user: Record<string, string>;
       };
       PROJECT = sent.unit_customizations;
       USER = sent.unit_customizations_user;
+      DEFS = sent.unit_definitions;
+      DEFS_USER = sent.unit_definitions_user;
       return sent;
     }
     return undefined;
@@ -110,6 +181,8 @@ const rowFor = (unit: string) =>
 beforeEach(async () => {
   PROJECT = {};
   USER = {};
+  DEFS = {};
+  DEFS_USER = {};
   await hydrateSettings();
 });
 afterEach(cleanup);
@@ -232,5 +305,97 @@ describe("filtering", () => {
     });
     expect(rowFor("°C")).toBeInTheDocument();
     expect(screen.queryByText("V", { selector: ".unit-customization-unit" })).toBeNull();
+  });
+});
+
+describe("composing a unit", () => {
+  /// The two-field entry: a name, and the string it is composed from.
+  /// The host is the only thing that reads that string, so the section
+  /// asks it before it persists anything.
+  const compose = (name: string, composition: string) => {
+    fireEvent.change(screen.getByLabelText("New unit name"), { target: { value: name } });
+    fireEvent.change(screen.getByLabelText("Composed from"), {
+      target: { value: composition },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Define unit" }));
+  };
+
+  it("defines a unit from a name and a composition, and gives it a row", async () => {
+    show();
+    await waitFor(() => expect(rowFor("V")).toBeInTheDocument());
+    compose("  VA  ", "V * A");
+    await waitFor(() => expect(DEFS).toEqual({ VA: "V * A" }));
+    await waitFor(() => expect(rowFor("VA")).toBeInTheDocument());
+    const row = within(rowFor("VA"));
+    expect(row.getByText("V * A")).toBeInTheDocument();
+    expect(row.getByText("power")).toBeInTheDocument();
+    // And it takes a spelling like any other unit.
+    expect(row.getByLabelText("Map a unit string to VA")).toBeEnabled();
+    // The entry is emptied, ready for the next one.
+    expect(screen.getByLabelText("New unit name")).toHaveValue("");
+  });
+
+  it("says what is wrong with a composition where it was typed, and persists nothing", async () => {
+    show();
+    await waitFor(() => expect(rowFor("V")).toBeInTheDocument());
+    compose("VA", "V * bananas");
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("bananas"));
+    expect(DEFS).toEqual({});
+    // The text stays put so it can be corrected rather than retyped.
+    expect(screen.getByLabelText("Composed from")).toHaveValue("V * bananas");
+  });
+
+  it("refuses a name that already names a unit, and an empty one", async () => {
+    show();
+    await waitFor(() => expect(rowFor("V")).toBeInTheDocument());
+    compose("V", "V * A");
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("already names"));
+    expect(DEFS).toEqual({});
+    compose("   ", "V * A");
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("name"));
+    expect(DEFS).toEqual({});
+  });
+
+  it("shows the reason a stored definition does not hold, on its own row", async () => {
+    DEFS = { Nope: "V * bananas" };
+    await hydrateSettings();
+    show();
+    await waitFor(() => expect(rowFor("Nope")).toBeInTheDocument());
+    const row = within(rowFor("Nope"));
+    expect(row.getByText(/is not a unit this project knows/)).toBeInTheDocument();
+    // It names no unit, so nothing can be mapped to it.
+    expect(row.getByLabelText("Map a unit string to Nope")).toBeDisabled();
+  });
+
+  it("deletes a composed unit from wherever it is defined", async () => {
+    DEFS = { VA: "V * A" };
+    DEFS_USER = { VA: "V * A" };
+    await hydrateSettings();
+    show();
+    await waitFor(() => expect(rowFor("VA")).toBeInTheDocument());
+    fireEvent.click(within(rowFor("VA")).getByLabelText("Delete the unit VA"));
+    await waitFor(() => expect(DEFS).toEqual({}));
+    expect(DEFS_USER).toEqual({});
+    await waitFor(() =>
+      expect(screen.queryByText("VA", { selector: ".unit-customization-unit" })).toBeNull(),
+    );
+  });
+
+  /// The same checkbox semantics the row's mappings have: ticking user
+  /// promotes the definition to every project, unticking project takes
+  /// it out of this one.
+  it("moves a definition between scopes with the row's checkboxes", async () => {
+    DEFS = { VA: "V * A" };
+    await hydrateSettings();
+    show();
+    await waitFor(() => expect(rowFor("VA")).toBeInTheDocument());
+    expect(within(rowFor("VA")).getByLabelText("Keep VA mappings in this project")).toBeChecked();
+    fireEvent.click(within(rowFor("VA")).getByLabelText("Keep VA mappings in every project"));
+    await waitFor(() => expect(DEFS_USER).toEqual({ VA: "V * A" }));
+    expect(DEFS).toEqual({ VA: "V * A" });
+
+    fireEvent.click(within(rowFor("VA")).getByLabelText("Keep VA mappings in this project"));
+    await waitFor(() => expect(DEFS).toEqual({}));
+    expect(DEFS_USER).toEqual({ VA: "V * A" });
   });
 });
