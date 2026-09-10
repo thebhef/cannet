@@ -80,10 +80,11 @@ behaviour (date/time + suffix/format string).
     not a text button.
 16. **Logger file field.** The logger's template field is labelled
     **File** and may carry a path relative to the folder — separators
-    are allowed (e.g. folder `logs\{logger}`, file `{start}\{now}`
-    makes a per-start subdirectory). Defaults: folder
-    `logs\{logger}`, file `{start}`. Panel row order: folder, file,
-    preview, format.
+    are allowed (e.g. folder `logs/{logger}`, file `{start}/{now}`
+    makes a per-start subdirectory), written with either separator and
+    resolved to the one the running OS uses. Defaults: folder
+    `logs/{logger}`, file `{start}`. Panel row order: folder, file,
+    preview, max size (ruling 21 amended 2026-09-09: no format row).
 17. **The file list recurses.** Because the File template can carry
     subpaths, the folder listing walks subdirectories and shows them
     as branch nodes in the gridview (the layer's existing branch
@@ -118,6 +119,11 @@ removes the partial file, and the strftime subset
     nothing, so the opening-a-project-never-transmits rule is
     untouched.)
 21. **BLF-only live logging for now**; export keeps both formats.
+    **Amended 2026-09-09:** the panel therefore shows **no format
+    control** — a two-option select with MDF disabled asks a question
+    that has one answer. The element, the project file and the
+    preview's extension keep the `format` field, so the control can
+    return when live MDF logging exists.
 22. **Unanchored capture: no wall-clock bounds.** The range picker
     displays and parses seconds-from-start when the capture has no
     anchor (relative time is likely the most useful form anyway).
@@ -440,6 +446,181 @@ Reported for the overseer to coordinate rather than retried in a loop.
 - The status bar has one export chip. A logger's "writing…" status is
   the file gridview's live row (ruling 13), not a second chip.
 
+### 2026-09-06 — phase 3 of 4, "project loggers" (branch `task137-loggers`)
+
+Criterion **4** met, and criterion **6**'s glossary line. A **logger** is
+now a project element with its own panel: templated folder and file, a
+host-resolved preview, BLF, a size cap, and a live write that runs
+exactly while the logger is enabled and something is connected. The
+folder's file gridview is phase 4 — this phase carries the controls and
+the writing, nothing that lists files.
+
+**Landed, host** (`apps/gui/src-tauri/src/`):
+
+- `logger.rs` — the whole subsystem. `LoggerConfig` (id, name, enabled,
+  folder, file, `maxFileSizeMb`) is pushed wholesale by the frontend
+  through `set_loggers`; `reconcile` recomputes "should this logger be
+  writing" for every logger and starts or stops the difference. Its
+  decision is `plan`, a pure function over (configs, running ids,
+  connected) so the rule is tested without an app, a filesystem, or a
+  connection. `LogWriter` is the split-aware BLF sink: `split_path`
+  puts `-002`, `-003`… on the last path segment before its extension,
+  and `first_free_part` is applied both at the start of a run (ruling
+  19's collision) and at every roll, so the rule is stated once.
+  `StopSignal` is a condvar-backed stop flag — the thread is woken
+  rather than polled out, which is what makes stopping cheap enough to
+  wait for. 22 tests.
+- `connection_state.rs` — `emit` (the one write path both `set_and_emit`
+  and `remove_and_emit` funnel through) now reconciles the loggers. That
+  is the whole of "start on connect, stop on disconnect": there is no
+  second place where connection state changes.
+- `project.rs` — `open_project` / `close_project` stop every running
+  logger, beside the RBS stop that is already there. `lib.rs` stops them
+  on exit, after `disconnect_on_exit`.
+- `capture.rs` — `raw_to_core_frame` became `pub(crate)`; the logger
+  writes frames with the same bus→channel mapping an export does.
+- `crates/cannet-blf` — `BlfFileWriter::bytes_on_disk` /
+  `BlfCaptureWriter::bytes_on_disk`: the header plus every flushed
+  `LOG_CONTAINER`, counted rather than seeked, so a size-capped writer
+  can ask per frame. `FinishedCapture::byte_size` is only correct after
+  `finish` consumes the writer, which is no use to a file that has to
+  decide whether to keep going.
+
+**Landed, frontend** (`apps/gui/src/`):
+
+- `logger.ts` — the element's defaults (`logs/{logger}`, `{start}`, 500
+  MB), the load-time coercion (`normalizeLoggerFields` — only an
+  explicit `true` enables), the preview's extension, and
+  `loggerConfigs`, the host push payload. 11 tests.
+- `LoggerPanel.tsx` — folder (+ Browse… + the host's resolved path under
+  the field), file, preview-as-a-label, max size, in ruling 16's
+  order, plus one message line for a template error, a host start
+  failure, or "waiting for connection". 13 tests.
+- The element-kind registration points: `types.ts`, `projectElements.ts`
+  (`isProjectElement` — the silent dropper — and `normalizeElement`),
+  `elementLabel.ts`, `dockLayout.ts`, `ProjectPanel.tsx`'s `KIND_ORDER`,
+  `elementHistory.ts`, `commands.ts`, `Toolbar.tsx`, `App.tsx`, and the
+  ambient-kind exclusions in `projectGraph.ts`, `ProjectGraphPanel.tsx`,
+  `sinkPredicate.ts`, `insertFilterUpstream.ts`, `useElementPanel.ts`,
+  `SignalsPanel.tsx`.
+
+**Design choices not spelled out by a ruling:**
+
+- **The logger does not sit on the ingest path.** `run_pump` is the one
+  production append site and the obvious hook, but tapping it would put a
+  probe and a frame clone on the hot path of every session, logger or
+  not. Instead a writer thread follows the capture model's own index:
+  remember how far you have written, ask the trace store for whatever
+  has been appended since, write that. Zero cost when nothing is
+  logging, every frame source covered without naming one, and the
+  perf runs below show no change in rx/tx or lag with a logger writing.
+  The one thing it gives up is a guarantee against eviction outrunning
+  the writer; `settle_cursor` detects exactly that and says so on the
+  system log rather than leaving a silent gap.
+- **A logger is ambient**, like a colormap or a generator: no `sources`,
+  no graph node. It writes the capture, not a selection from it, so
+  there is no edge to draw. (It therefore writes *both* directions —
+  216k frames over a 60 s ev-zonal run, which is rx plus the RBS's tx,
+  exactly what the trace holds.)
+- **The host's `LoggerConfig` has no format field.** Live logging is BLF
+  (ruling 21), so there is no branch to make on one. The element still
+  carries `format: "blf"` — the project should record what was written,
+  and the preview's extension reads it — even though the panel no
+  longer offers a control for it.
+- **The panel has no name field.** The prototype has one because it is a
+  standalone page; here the element name is the dockview tab title and
+  is renamed through `panel.rename` (ADR 0019), as every other
+  element-backed panel does.
+- **`enabled` is outside undo** (`elementHistory.ts` — ADR 0050's
+  allowlist). Folder, file and the size cap are document edits and are
+  undoable; a chord that starts or stops a file being written on disk is
+  not what undo is for. Same reasoning that puts RBS's whole payload
+  outside it, applied to the one field with an external effect.
+- **The status is polled, not pushed.** `loggers-changed` fires on a
+  start, a stop, or a failure; a running file's growing size is read
+  through `get_logger_statuses`. A file that grows for an hour should
+  not be an hour of events.
+
+**Investigation — the first live run left an unfinalized file:**
+
+- *Observation.* After the first 60 s run with a logger enabled, the BLF
+  it wrote read `file_size = 0` and `object_count = 0` in its
+  `FileStatistics` header, and `cannet.log` carried the
+  "logging to …" line but no "finished …" line.
+- *Hypothesis.* The writer thread never reached `finish()`, because
+  `stop_one` set a flag and returned without waiting, and the harness
+  exited while the thread was still asleep between 250 ms polls.
+- *Experiment.* Made stopping wait for the thread (`StopSignal` wakes it
+  out of the sleep; `stop_one` joins), added a `logger::stop_all` on the
+  exit path beside `disconnect_on_exit`, and re-ran the same 60 s
+  capture.
+- *Data.* `Perf log: finished …\logs\perf-log-20260906T073325-0700.blf
+  (216209 frame(s))`, and the header now reads `file_size = 1515020`
+  against an actual 1515020 bytes, `object_count = 216209`.
+- *Conclusion.* Confirmed. Regression-guarded by
+  `a_finished_run_leaves_a_finalized_file_and_an_abandoned_one_does_not`
+  (which pins both halves — finished vs. abandoned) and by the two
+  `StopSignal` tests.
+
+**Verification**, from the repo root unless noted:
+
+| Job | Command | Result |
+| --- | --- | --- |
+| rust (test) | `cargo test --workspace` | pass (52 suites, 0 failures) |
+| rust (clippy) | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+| mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass |
+| frontend | `pnpm --dir apps/gui test` (3239) then `pnpm --dir apps/gui build` | pass |
+| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-python-can` | pass (225) |
+| python (client) | `cargo build -p cannet-server`, then the same five in `servers/cannet-python-client` | pass (86, 1 skipped) |
+| proto gencode | `uv run --extra dev bash scripts/regen_proto.sh` + `git diff` | pass — CRLF-only on Windows (`git diff --ignore-cr-at-eol` empty) |
+| sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass |
+| comment-references | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
+
+`cargo fmt --all --check` is clean over the whole tree.
+
+**Perf reading (ADR 0031 render tier), reported not judged.** Four runs,
+`ev-zonal`, `--perf-interact scrub`, 60 s, release host from `pnpm --dir
+apps/gui tauri build --no-bundle`. Reports at
+`docs/performance-measurements/frontend/2026-09-06-bdd49487-task137p3*.json`
+(left untracked). Every run measured real load — rx ≈ 1608, 174 ids in
+`rx_gap`, 266 gestures performed and 0 missing.
+
+| run | rx / tx | lag mean / max | longtask p95 | jank | jsheap max | renderer max | host max | tree max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| run 1 | 1607.8 / 1614.7 | −0.017 / 20.2 ms | 0.0 | 0.0 | 93.5 MB | 313.5 MB | 59.6 MB | 718.7 MB |
+| run 2 | 1607.3 / 1612.5 | −0.018 / 2.7 ms | 0.0 | 0.0 | 92.2 MB | 322.0 MB | 59.9 MB | 729.3 MB |
+| run 3 | 1607.1 / 1612.0 | −0.017 / 1.6 ms | 0.0 | 0.0 | 91.3 MB | 313.8 MB | 59.3 MB | 720.9 MB |
+| **logging** | 1605.7 / 1611.7 | +0.100 / 27.0 ms | 0.0 | 0.0 | 106.7 MB | 317.7 MB | 60.8 MB | 725.7 MB |
+
+Runs 1–2 are the pre-fix binary and run 3 the shipped one; the fix
+touches only logger shutdown, and the control project has no logger.
+The **logging** run had a logger enabled and writing the whole time
+(216 209 frames, 1.5 MB of BLF — the format compresses to about 7 bytes
+a frame). Frame rates and mean lag are unchanged with the write running;
+`lag_ms.max` is a single-sample tail that moved between 1.6 and 27 ms
+across the four runs with no relation to what was running.
+
+**What phase 4 inherits:**
+
+- `get_logger_statuses` is the read side the file gridview needs:
+  `{ id, writing, path, bytes, frameCount, error }` per logger, with
+  `path`/`bytes` following the file *currently* being written. Poll it
+  for the growing row; `loggers-changed` announces only start / stop /
+  failure.
+- The panel renders folder → file → preview → max size and then stops.
+  The file list goes under that, and the writing row is where the
+  logging status belongs (ruling 13) — the panel has no status line and
+  should not gain one.
+- `LogWriter::parts()` (test-only today) is the list of files one run
+  opened, if the gridview wants to mark them as this run's.
+- The `logger-panel` CSS block in `index.css` holds the row/label
+  geometry the list should sit beneath.
+- A run writes **both directions** — the capture holds rx and tx alike —
+  so a file's frame count is roughly twice the rx rate on a project with
+  an RBS running. Worth saying in the column header's tooltip if the
+  number looks surprising.
+
 ### 2026-09-09 — bench fix, day-scale range bounds (branch `task137-export-dialog`)
 
 Owner, testing a four-day trace: "it won't accept anything beyond
@@ -485,6 +666,31 @@ four-day capture exports that bound and the field reads back
 `3d 12:30:00`). The field tooltip and the parse-failure message name the
 prefix; README's export-range paragraph documents it.
 
+### 2026-09-09 — bench fix, no format control on the logger panel (branch `task137-loggers`)
+
+Owner ruling on the panel's Format row: hide it. A two-option select
+whose second option is permanently disabled is a control that asks a
+question with one answer, and it reads as a feature that is broken
+rather than one that does not exist yet.
+
+Landed: the `<select>` and its label are gone from `LoggerPanel.tsx`;
+**Max size** moves up to be that row's own label (its own `id`, so the
+control is still found by its label). `format` stays on the element and
+in the project file — the host's `LoggerConfig` never had it, but the
+preview's extension reads it and the project should record what was
+written, so the control can return when live MDF logging exists. The
+`.logger-lbl-inline` rule and the `select:disabled` selector in the
+panel's CSS block went with it — nothing else in the panel used either.
+
+Tests: 3 in `LoggerPanel.dom.test.tsx` changed red-first — the row-order
+case now expects folder → file → preview → **max size**, the
+writing-lock case no longer asserts a disabled Format, and the
+"offers BLF and refuses MDF" case is replaced by one asserting no
+Format control renders, neither format name appears, and the panel
+issues no element update on mount. README's logger table loses its
+Format row and says in prose that a logger writes BLF; `docs/CONTEXT.md`'s
+Logger entry and rulings 16 and 21 follow.
+
 ## Blockers / side effects
 
 - **`cargo fmt --all --check` is still red** on
@@ -508,3 +714,60 @@ prefix; README's export-range paragraph documents it.
   is a real ordering dependency, not this phase's change (nothing here
   renders during a plot slide; `publishPlotWindow` is a module-value
   write).
+
+- **A logger's file was left unfinalized when the process exited** —
+  found by inspecting the first live run's output, fixed in this phase
+  (see the investigation in the phase-3 status log). Stopping a logger
+  now waits for its writer thread, and the exit path stops every logger
+  after `disconnect_on_exit`. Worth knowing because the failure was
+  silent: the capture is still readable, just through the BLF reader's
+  recovery path rather than as a clean file.
+- **The live split is covered by unit tests, not by a live run.** BLF
+  compresses a frame to about 7 bytes, so a 60 s ev-zonal run produces
+  1.5 MB and the smallest cap the control offers is 1 MB — a live split
+  needs roughly half an hour of traffic. `LogWriter`'s tests drive the
+  same code path with a 4 KB cap, which is the behaviour; only the
+  MB → bytes multiply is untested end to end.
+
+### 2026-09-08 — bench fix: path separators followed Windows on every OS (branch `task137-loggers`)
+
+**Observation.** On macOS the logger panel's file-path preview read
+with `\` separators — the folder line and the Preview label both.
+
+**Hypothesis.** The separator is chosen where the code is written, not
+where it runs: the frontend rewrites `/` to `\` for display, and the
+defaults are spelled with `\`.
+
+**Experiment.** `git blame` on every hardcoded `\` under the logger
+surfaces, then a test per site asserting the running OS's separator.
+Three sites, all introduced by this branch's commit `e3c13001`:
+`logger.ts`'s `loggerPreviewName` (`resolvedFile.replace(/\//g, "\\")`),
+`DEFAULT_LOGGER_FOLDER` (`logs\{logger}`), and `logger.rs`'s
+`resolve_run_path` (`file.text.replace('/', "\\")`) — the *written*
+path, so the preview was at least honest about the file it would make.
+The Rust test failed on Windows too (`logs/{logger}` resolved to
+`…\logs/front-ecu`, mixing both), which falsifies "this is only a mac
+problem": the resolution had no separator policy at all.
+
+**Conclusion.** Template resolution now has one:
+`export_template::to_native_separators` renders every resolved template
+in `MAIN_SEPARATOR`, whichever separator it was typed with, so a
+project written on one OS opens correctly on the other. With that in
+the model, the two frontend rewrites disappear — the preview passes the
+host's text through — and `resolve_run_path` joins the two halves
+plainly. The cost, documented on the helper: a literal `\` cannot
+appear *in* a name on Unix, since a template separator is a separator
+everywhere.
+
+Ruling **16**'s default folder is now `logs/{logger}` rather than
+`logs\{logger}` (the ruling and the landed-work list are updated to
+match). It is the same folder on Windows — the host renders it — and a
+real subdirectory on macOS instead of a file named `logs\bench-log`.
+
+**Tests.** `export_template.rs`:
+`a_template_written_with_either_separator_resolves_in_the_host_os_separator`,
+`a_folder_template_roots_in_the_host_os_separator` (27 in the module).
+`LoggerPanel.dom.test.tsx`: `shows the paths in the host OS's
+separators, not Windows' always` — the stand-in host now has an OS
+(`host.sep` / `host.root`), and the test drives it as a mac. Verified
+red against the old `loggerPreviewName` before the fix stayed in.

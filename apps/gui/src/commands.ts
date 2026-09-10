@@ -24,6 +24,7 @@ export const FOCUSED_PANEL_KINDS = [
   "rbs-signals",
   "colormap",
   "generator",
+  "logger",
   "project",
   "project-graph",
   "system-messages",
@@ -113,6 +114,7 @@ const RENAMEABLE_PANEL_KINDS: readonly (FocusedPanelKind | null)[] = [
   "rbs",
   "colormap",
   "generator",
+  "logger",
 ];
 const renameablePanelFocused = (ctx: CommandContext) =>
   RENAMEABLE_PANEL_KINDS.includes(ctx.focusedPanelKind);
@@ -216,6 +218,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     label: "Add generator",
     category: "Panels",
     bar: { label: "Generator" },
+  },
+  {
+    id: "panel.add.logger",
+    label: "Add logger",
+    category: "Panels",
+    bar: { label: "Logger" },
   },
   // The bar's Save is Save All (project plus every dirty RBS — ADR
   // 0028); the project-only save stays a palette action above.

@@ -393,7 +393,8 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     element.kind !== "transmit" &&
     element.kind !== "rbs" &&
     element.kind !== "colormap" &&
-    element.kind !== "generator"
+    element.kind !== "generator" &&
+    element.kind !== "logger"
       ? element.sources ?? ["*"]
       : ["*"];
   const availableFilters = useMemo(

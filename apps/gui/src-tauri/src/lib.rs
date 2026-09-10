@@ -68,6 +68,7 @@ mod interfaces;
 mod ipc;
 mod licenses;
 mod local_buses;
+mod logger;
 mod notes;
 mod persisted_json;
 mod project;
@@ -513,6 +514,7 @@ pub fn run() -> ! {
         .manage(diag::DiagState::default())
         .manage(diag::AutomationState(autostart))
         .manage(diag::DiagEnabled(diag_on))
+        .manage(logger::LoggerRuntime::default())
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -645,6 +647,8 @@ pub fn run() -> ! {
             report_js_heap,
             signal_generator::validate_signal_generator,
             signal_generator::evaluate_signal_generators,
+            logger::set_loggers,
+            logger::get_logger_statuses,
         ])
         .setup(move |app| {
             // Resolve the session's project directory (ADR 0042) now that
@@ -774,6 +778,12 @@ pub fn run() -> ! {
             // `session::disconnect_on_exit`. First, so no more frames
             // land while the flush below runs.
             session::disconnect_on_exit(app_handle);
+            // Then finish whatever a project logger has open. A logger
+            // streams straight into its destination, so a file the
+            // process walks away from is left unfinalized — readable
+            // only through the reader's recovery path. Stopping waits
+            // for the writer, so the capture on disk is complete.
+            logger::stop_all(app_handle);
             // Opt-in "clear scratch cache on exit" (Settings, ADR 0002
             // DS-7): wipe the session buffer so the prior session isn't
             // reloaded next launch. This is the same reset the Clear

@@ -172,7 +172,8 @@ export function useElementSources(
     element.kind !== "transmit" &&
     element.kind !== "rbs" &&
     element.kind !== "colormap" &&
-    element.kind !== "generator"
+    element.kind !== "generator" &&
+    element.kind !== "logger"
       ? element.sources ?? ALL_BUSES
       : ALL_BUSES;
   // Filters available to wire upstream of this element. Exclude any
