@@ -39,9 +39,22 @@
 //! [`recognize`] answers a unit id or **nothing**; it never guesses. The
 //! order is: the user's customization dict (which is what makes an
 //! arbitrary in-house spelling work at all), then the built-in
-//! recognitions exactly, then the built-in recognitions
-//! case-insensitively — that last only where exactly one recognition
-//! matches, so `mV` and `MV` cannot silently collapse into each other.
+//! recognitions exactly, then a unit's own id exactly, then the built-in
+//! recognitions case-insensitively — that last only where exactly one
+//! recognition matches, so `mV` and `MV` cannot silently collapse into
+//! each other.
+//!
+//! ## Listing the units for a picker
+//!
+//! [`list_units`] is the command a picker reads. A [`UnitListing`] is a
+//! [`UnitInfo`] plus the two things a picker needs and must not derive
+//! for itself: the heading its dimension groups under, and the
+//! **spelling** to commit for it. That spelling is the unit's display
+//! form where that recognises back to the unit (so a definition's target
+//! unit reads `°C`, not `degree-celsius`) and the id otherwise — which
+//! is why the id is a spelling at all: `coulomb` displays as `C`, and
+//! `C` is a guess between coulomb and Celsius that this module refuses
+//! to make.
 
 use std::collections::BTreeMap;
 
@@ -187,6 +200,26 @@ pub struct UnitInfo {
     pub id: &'static str,
     pub display: &'static str,
     pub dimension: Dimension,
+}
+
+/// One selectable unit as a **picker** lists it: the unit, the heading
+/// it groups under, and the string to commit when it is chosen.
+///
+/// A view renders this and derives nothing: which units exist, how they
+/// group and how they are spelled are all the facade's answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitListing {
+    #[serde(flatten)]
+    pub info: UnitInfo,
+    /// [`Dimension::label`] — the group heading.
+    pub dimension_label: &'static str,
+    /// What a picker writes where a unit *string* is stored (a math
+    /// definition's target unit): the display form where [`recognize`]
+    /// carries it back to this unit, the id otherwise. Never used where
+    /// a unit **id** is stored (a customization's value, an operand's
+    /// source-unit override) — that is [`UnitInfo::id`].
+    pub spelling: &'static str,
 }
 
 /// Every unit the app offers, in picker order.
@@ -677,6 +710,14 @@ pub fn all() -> Vec<UnitInfo> {
     UNITS.iter().map(Entry::info).collect()
 }
 
+/// Every selectable unit as a picker offers it — the module's `Listing
+/// the units for a picker` section is the contract.
+#[tauri::command]
+#[must_use]
+pub fn list_units() -> Vec<UnitListing> {
+    UNITS.iter().map(Entry::listing).collect()
+}
+
 /// The unit with this stable id.
 #[must_use]
 pub fn get(id: &str) -> Option<UnitInfo> {
@@ -693,6 +734,18 @@ impl Entry {
             id: self.id,
             display: self.display,
             dimension: self.dimension,
+        }
+    }
+
+    fn listing(&self) -> UnitListing {
+        UnitListing {
+            info: self.info(),
+            dimension_label: self.dimension.label(),
+            spelling: if recognize(self.display, &Customizations::new()) == Some(self.id) {
+                self.display
+            } else {
+                self.id
+            },
         }
     }
 
@@ -728,8 +781,13 @@ pub fn convert(from: &str, to: &str) -> Option<Affine> {
 /// The user's `customizations` win — that is the point of them — and are
 /// consulted on the raw string and on its trimmed form, since a DBC
 /// commonly carries padding the user did not type. Then the built-in
-/// recognitions exactly, then case-insensitively where exactly one of
-/// them matches.
+/// recognitions exactly, then a unit's **own id** exactly, then the
+/// built-in recognitions case-insensitively where exactly one of them
+/// matches.
+///
+/// The id pass is what lets a picker offer a unit the recognition table
+/// has no conventional spelling for (`coulomb`, whose display `C` would
+/// be a guess between charge and Celsius) — see [`UnitListing::spelling`].
 ///
 /// **Nothing is guessed.** An unrecognised string means the operand
 /// carries no unit the host can reason about, which resolve reports
@@ -747,6 +805,9 @@ pub fn recognize(raw: &str, customizations: &Customizations) -> Option<&'static 
     }
     if let Some((_, id)) = RECOGNITIONS.iter().find(|(s, _)| *s == trimmed) {
         return Some(id);
+    }
+    if let Some(entry) = find(trimmed) {
+        return Some(entry.id);
     }
     let lowered = trimmed.to_lowercase();
     let mut hit = None;
@@ -1070,6 +1131,66 @@ mod tests {
         for (spelling, id) in RECOGNITIONS {
             assert!(get(id).is_some(), "{spelling} names unknown unit {id}");
         }
+    }
+
+    /// A unit's own id names it. The pickers need one string that is
+    /// guaranteed to recognise back to the unit they offered, and the id
+    /// is it — `coulomb` has no conventional spelling the table could
+    /// carry without guessing at `C`.
+    #[test]
+    fn a_units_own_id_names_it() {
+        for entry in UNITS {
+            assert_eq!(recognize(entry.id, &none()), Some(entry.id), "{}", entry.id);
+        }
+    }
+
+    /// What a target-unit picker commits round-trips. Without this the
+    /// picker would offer units whose choice converts nothing.
+    #[test]
+    fn every_listed_spelling_recognises_back_to_its_unit() {
+        let listed = list_units();
+        assert_eq!(listed.len(), UNITS.len());
+        for listing in listed {
+            assert_eq!(
+                recognize(listing.spelling, &none()),
+                Some(listing.info.id),
+                "{}",
+                listing.info.id
+            );
+        }
+    }
+
+    /// A listing prefers the unit's own display spelling, so a plot's
+    /// axis reads `°C` rather than `degree-celsius`, and falls back to
+    /// the id only where the display is not a recognition of its own.
+    #[test]
+    fn a_listing_spells_a_unit_the_way_a_database_would() {
+        let listed = list_units();
+        let spelling = |id: &str| {
+            listed
+                .iter()
+                .find(|l| l.info.id == id)
+                .unwrap_or_else(|| panic!("{id}"))
+                .spelling
+        };
+        assert_eq!(spelling("volt"), "V");
+        assert_eq!(spelling("degree-celsius"), "°C");
+        // `C` is deliberately unrecognised — it would be a guess between
+        // coulomb and Celsius — so the picker commits the id.
+        assert_eq!(spelling("coulomb"), "coulomb");
+    }
+
+    /// Every listing carries the heading a picker groups it under, so
+    /// the grouping is the facade's and not re-derived by a view.
+    #[test]
+    fn every_listing_carries_its_dimensions_picker_label() {
+        let listed = list_units();
+        let rpm = listed
+            .iter()
+            .find(|l| l.info.id == "revolution-per-minute")
+            .expect("rpm");
+        assert_eq!(rpm.dimension_label, "angular velocity");
+        assert_eq!(rpm.info.display, "rpm");
     }
 
     /// No two recognitions spell the same string, which would make the

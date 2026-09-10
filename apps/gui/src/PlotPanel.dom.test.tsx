@@ -8571,6 +8571,8 @@ describe("PlotPanel math signals", () => {
     arity: "set",
     resolvedOperands: [],
     operandPaths: [],
+    operandAffines: [],
+    unconverted: [],
     unitResolved: "V",
     busIds: ["bus-a"],
     invalid: null,

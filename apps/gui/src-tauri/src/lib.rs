@@ -680,6 +680,7 @@ pub fn run() -> ! {
             math_commands::define_math_signal,
             math_commands::update_math_signal,
             math_commands::delete_math_signal,
+            units::list_units,
             signal_generator::validate_signal_generator,
             signal_generator::evaluate_signal_generators,
             logger::set_loggers,

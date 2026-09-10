@@ -15,6 +15,8 @@ import {
   withPatterns,
   withPick,
   withoutPick,
+  withOperandScaling,
+  withOutputScaling,
 } from "./mathSignals";
 
 const dbcRef = (name: string) => ({
@@ -123,6 +125,70 @@ describe("the stored half of a listing record", () => {
       // through the pattern and is not a pick.
       operands: { picks: [dbcRef("Cell01")], patterns: ["Cell\\d+"] },
     });
+  });
+
+  it("carries the output scalars, so an unrelated edit does not drop them", () => {
+    expect(definitionOf(record({ outputGain: 2, outputOffset: -1 }))).toMatchObject({
+      outputGain: 2,
+      outputOffset: -1,
+    });
+    // Absent when unset, so a definition that scales nothing writes the
+    // JSON it always did.
+    expect(definitionOf(record())).not.toHaveProperty("outputGain");
+    expect(definitionOf(record())).not.toHaveProperty("outputOffset");
+  });
+});
+
+describe("scaling an operand", () => {
+  const set = () =>
+    withPick(withPick(newMathDefinition("sum", "m1"), "set", dbcRef("Cell01")), "set", dbcRef("Cell02"));
+
+  it("writes one operand's gain, offset and source unit, leaving the others alone", () => {
+    const before = set();
+    const after = withOperandScaling(before, 1, {
+      gain: 2,
+      offset: -0.5,
+      sourceUnit: "milliampere",
+    });
+    expect(after.operands.picks[1]).toEqual({
+      ...dbcRef("Cell02"),
+      gain: 2,
+      offset: -0.5,
+      sourceUnit: "milliampere",
+    });
+    expect(after.operands.picks[0]).toEqual(dbcRef("Cell01"));
+    // Pure — the caller still holds the inverse its undo step needs.
+    expect(before.operands.picks[1]).toEqual(dbcRef("Cell02"));
+  });
+
+  it("omits a scalar that scales nothing rather than storing an identity", () => {
+    const scaled = withOperandScaling(set(), 0, { gain: 2, offset: 3 });
+    const back = withOperandScaling(scaled, 0, { gain: 1, offset: 0 });
+    expect(back.operands.picks[0]).toEqual(dbcRef("Cell01"));
+  });
+
+  it("clears a source-unit override with the empty choice", () => {
+    const overridden = withOperandScaling(set(), 0, { sourceUnit: "milliampere" });
+    const cleared = withOperandScaling(overridden, 0, { sourceUnit: "" });
+    expect(cleared.operands.picks[0]).toEqual(dbcRef("Cell01"));
+  });
+
+  it("ignores an index no pick answers", () => {
+    const before = set();
+    expect(withOperandScaling(before, 7, { gain: 2 })).toBe(before);
+  });
+});
+
+describe("scaling the output", () => {
+  it("writes the definition's own gain and offset, and omits an identity", () => {
+    const scaled = withOutputScaling(newMathDefinition("sum", "m1"), {
+      outputGain: 10,
+      outputOffset: 1,
+    });
+    expect(scaled).toMatchObject({ outputGain: 10, outputOffset: 1 });
+    const back = withOutputScaling(scaled, { outputGain: 1, outputOffset: 0 });
+    expect(back).not.toHaveProperty("outputGain");
+    expect(back).not.toHaveProperty("outputOffset");
   });
 });
 

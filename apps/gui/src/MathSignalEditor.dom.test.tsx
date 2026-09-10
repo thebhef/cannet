@@ -5,11 +5,14 @@
 // Computed branch here; a signal panel row and a plot's side list
 // later). What is pinned: the fixed prepopulated operand sections and
 // their per-section validity, the three ways a section is filled
-// (combobox, drag, pattern), the parameter fields, and the rule that
-// makes all of it one component — **every field commits as it is
-// left**, one host write and one undo step, with no Save to press.
+// (combobox, drag, pattern), the parameter fields, the scaling controls
+// (per-operand gain/offset and source unit, the definition's target unit
+// and output scalars, and the flag on a member the host could not
+// convert), and the rule that makes all of it one component — **every
+// field commits as it is left**, one host write and one undo step, with
+// no Save to press.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
@@ -20,15 +23,45 @@ const invoked: { cmd: string; args: Record<string, unknown> }[] = [];
 /// What the next write answers with — a rejection models the host
 /// refusing an edit (a cycle or a duplicate id; nothing else refuses).
 let hostRefusal: string | null = null;
+/// The unit library, as `list_units` serves it — a handful of the real
+/// listing, including the one unit whose display (`C`) is deliberately
+/// unrecognised so its picker spelling is its id.
+const UNITS = [
+  { id: "volt", display: "V", dimension: "voltage", dimensionLabel: "voltage", spelling: "V" },
+  {
+    id: "millivolt",
+    display: "mV",
+    dimension: "voltage",
+    dimensionLabel: "voltage",
+    spelling: "mV",
+  },
+  { id: "ampere", display: "A", dimension: "current", dimensionLabel: "current", spelling: "A" },
+  {
+    id: "milliampere",
+    display: "mA",
+    dimension: "current",
+    dimensionLabel: "current",
+    spelling: "mA",
+  },
+  {
+    id: "coulomb",
+    display: "C",
+    dimension: "charge",
+    dimensionLabel: "charge",
+    spelling: "coulomb",
+  },
+];
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
     invoked.push({ cmd, args });
+    if (cmd === "list_units") return UNITS;
     if (hostRefusal) throw hostRefusal;
     return undefined;
   }),
 }));
 
 import { MathSignalEditor } from "./MathSignalEditor";
+import { hydrateUnits } from "./unitLibrary";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogContext } from "./signalCatalogContext";
 import { PanelEditRecorderContext } from "./panelEditRecorder";
@@ -172,6 +205,11 @@ function lastWrite() {
 function writtenDefinition() {
   return lastWrite()!.args.definition as MathSignalRecord;
 }
+
+// The library is loaded once for the session, like the settings are.
+beforeAll(async () => {
+  await hydrateUnits();
+});
 
 afterEach(() => {
   cleanup();
@@ -397,22 +435,198 @@ describe("naming and units", () => {
     expect(writtenDefinition().name).toBe("PackSum");
   });
 
-  it("commits a unit, and a cleared one derives again", async () => {
+  it("offers the library's units and commits the spelling the host gave", async () => {
+    renderEditor(mathRecord());
+    fireEvent.click(screen.getByRole("combobox", { name: "Units" }));
+    // Grouped by the dimension the host labelled, not one flat list.
+    expect(screen.getByText("voltage")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "mV" }));
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().unit).toBe("mV");
+  });
+
+  it("commits the id where the display is not a spelling of its own", async () => {
+    // `C` would be a guess between coulomb and Celsius, so the host's
+    // listing says to commit `coulomb` — the editor writes what it is
+    // given rather than the label it shows.
+    renderEditor(mathRecord());
+    fireEvent.click(screen.getByRole("combobox", { name: "Units" }));
+    fireEvent.click(screen.getByRole("option", { name: /^C \(coulomb\)$/ }));
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().unit).toBe("coulomb");
+  });
+
+  it("still takes a unit the library does not carry", async () => {
+    renderEditor(mathRecord());
+    fireEvent.click(screen.getByRole("combobox", { name: "Units" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Units filter" }), {
+      target: { value: "widgets" },
+    });
+    fireEvent.click(screen.getByRole("option", { name: 'use "widgets"' }));
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().unit).toBe("widgets");
+  });
+
+  it("shows a stored unit the library does not carry rather than the placeholder", () => {
+    renderEditor(mathRecord({ unit: "widgets" }));
+    expect(screen.getByRole("combobox", { name: "Units" })).toHaveTextContent("widgets");
+  });
+
+  it("clears the target back to the derived unit", async () => {
     renderEditor(mathRecord({ unit: "mV" }));
-    const unit = screen.getByLabelText("Units");
-    expect(unit).toHaveValue("mV");
-    fireEvent.change(unit, { target: { value: "" } });
-    fireEvent.blur(unit);
+    fireEvent.click(screen.getByRole("combobox", { name: "Units" }));
+    fireEvent.click(screen.getByRole("option", { name: /from the operands/ }));
     await waitFor(() => expect(lastWrite()).toBeDefined());
     expect(writtenDefinition().unit).toBeNull();
   });
 
-  it("shows the host's derived unit as the placeholder", () => {
+  it("shows the host's derived unit when nothing is set", () => {
     renderEditor(mathRecord({ unitResolved: "V" }));
-    expect(screen.getByLabelText("Units")).toHaveAttribute(
-      "placeholder",
+    expect(screen.getByRole("combobox", { name: "Units" })).toHaveTextContent(
       "V (from the operands)",
     );
+  });
+});
+
+describe("scaling", () => {
+  const sumOf = (over: Partial<MathSignalRecord> = {}) =>
+    mathRecord({
+      kind: "sum",
+      function: { kind: "sum" },
+      operands: { picks: [dbcRef("Cell01"), dbcRef("Cell02")], patterns: [] },
+      resolvedOperands: [dbcRef("Cell01"), dbcRef("Cell02")],
+      ...over,
+    });
+
+  it("commits one operand's manual gain, and omits it again when it scales nothing", async () => {
+    renderEditor(sumOf());
+    const gain = screen.getByLabelText("gain for Cell02");
+    fireEvent.change(gain, { target: { value: "2" } });
+    // Nothing is written until the field is left.
+    expect(lastWrite()).toBeUndefined();
+    fireEvent.blur(gain);
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().operands.picks).toEqual([
+      dbcRef("Cell01"),
+      { ...dbcRef("Cell02"), gain: 2 },
+    ]);
+
+    cleanup();
+    invoked.length = 0;
+    renderEditor(sumOf({ operands: { picks: [dbcRef("Cell01"), { ...dbcRef("Cell02"), gain: 2 }], patterns: [] } }));
+    const back = screen.getByLabelText("gain for Cell02");
+    expect(back).toHaveValue("2");
+    fireEvent.change(back, { target: { value: "1" } });
+    fireEvent.blur(back);
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().operands.picks[1]).toEqual(dbcRef("Cell02"));
+  });
+
+  it("commits one operand's manual offset", async () => {
+    renderEditor(sumOf());
+    const offset = screen.getByLabelText("offset for Cell01");
+    fireEvent.change(offset, { target: { value: "-0.5" } });
+    fireEvent.blur(offset);
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().operands.picks[0]).toEqual({
+      ...dbcRef("Cell01"),
+      offset: -0.5,
+    });
+  });
+
+  it("overrides one operand's source unit with a library unit id, and clears it", async () => {
+    renderEditor(sumOf());
+    fireEvent.click(screen.getByRole("combobox", { name: "source unit for Cell01" }));
+    // The row names the library unit the id stands for.
+    fireEvent.click(screen.getByRole("option", { name: "mA (milliampere)" }));
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    // The *id*, not the spelling: an override names a library unit.
+    expect(writtenDefinition().operands.picks[0]).toEqual({
+      ...dbcRef("Cell01"),
+      sourceUnit: "milliampere",
+    });
+
+    cleanup();
+    invoked.length = 0;
+    renderEditor(
+      sumOf({
+        operands: {
+          picks: [{ ...dbcRef("Cell01"), sourceUnit: "milliampere" }, dbcRef("Cell02")],
+          patterns: [],
+        },
+      }),
+    );
+    fireEvent.click(screen.getByRole("combobox", { name: "source unit for Cell01" }));
+    fireEvent.click(screen.getByRole("option", { name: /from the database/ }));
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().operands.picks[0]).toEqual(dbcRef("Cell01"));
+  });
+
+  it("offers no manual scaling on a member a pattern collected", () => {
+    // A pattern match is not a stored operand, so there is nothing to
+    // hang a scalar on — the host takes it with the conversion alone.
+    renderEditor(
+      mathRecord({
+        kind: "sum",
+        function: { kind: "sum" },
+        operands: { picks: [], patterns: ["Cell\\d+"] },
+      }),
+    );
+    expect(screen.queryByLabelText("gain for Cell01")).not.toBeInTheDocument();
+  });
+
+  it("commits the definition's output gain and offset", async () => {
+    renderEditor(sumOf());
+    const gain = screen.getByLabelText("Output gain");
+    fireEvent.change(gain, { target: { value: "10" } });
+    fireEvent.blur(gain);
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().outputGain).toBe(10);
+    const offset = screen.getByLabelText("Output offset");
+    fireEvent.change(offset, { target: { value: "3" } });
+    fireEvent.blur(offset);
+    await waitFor(() => expect(writtenDefinition().outputOffset).toBe(3));
+  });
+
+  it("keeps the output scalars through an edit that is not about them", async () => {
+    renderEditor(sumOf({ outputGain: 2, outputOffset: -1 }));
+    const name = screen.getByLabelText("Name");
+    fireEvent.change(name, { target: { value: "PackSum" } });
+    fireEvent.blur(name);
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition()).toMatchObject({
+      name: "PackSum",
+      outputGain: 2,
+      outputOffset: -1,
+    });
+  });
+
+  it("flags exactly the members the host could not convert", () => {
+    renderEditor(sumOf({ unit: "V", unconverted: [1] }));
+    expect(screen.queryByLabelText(/Cell01 is not converted/)).not.toBeInTheDocument();
+    const flag = screen.getByLabelText(/Cell02 is not converted/);
+    // Quiet, but it says why on hover.
+    expect(flag).toHaveAttribute("title", expect.stringMatching(/unscaled/));
+  });
+
+  it("flags a pattern-collected member the host could not convert", () => {
+    renderEditor(
+      mathRecord({
+        kind: "sum",
+        function: { kind: "sum" },
+        unit: "V",
+        operands: { picks: [], patterns: ["Cell\\d+", "PackCurrent"] },
+        // The host's own resolution order, which the flag is indexed on.
+        resolvedOperands: [
+          dbcRef("Cell01"),
+          dbcRef("Cell02"),
+          { busId: "bus-a", messageId: 0x121, extended: false, signalName: "PackCurrent" },
+        ],
+        unconverted: [2],
+      }),
+    );
+    expect(screen.getByLabelText(/PackCurrent is not converted/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Cell01 is not converted/)).not.toBeInTheDocument();
   });
 });
 
