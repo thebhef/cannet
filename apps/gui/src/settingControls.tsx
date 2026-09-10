@@ -14,6 +14,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { ColumnDefaultsEditor } from "./ColumnDefaultsEditor";
 import { ProjectCachesList } from "./ProjectCachesList";
+import { UnitCustomizations } from "./UnitCustomizations";
 import type { SettingDescriptor } from "./settingDescriptors";
 
 export interface CustomRendererProps {
@@ -45,6 +46,9 @@ export const CUSTOM_SETTING_RENDERERS: Record<
   "project-caches": () => <ProjectCachesList />,
   "column-defaults": ({ descriptor, value, onCommit }) => (
     <ColumnDefaultsEditor descriptor={descriptor} value={value} onCommit={onCommit} />
+  ),
+  "unit-customizations": ({ descriptor, value, onCommit }) => (
+    <UnitCustomizations descriptor={descriptor} value={value} onCommit={onCommit} />
   ),
 };
 

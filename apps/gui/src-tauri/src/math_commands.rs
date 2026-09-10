@@ -60,6 +60,16 @@ pub(crate) struct MathSignalRecord {
     /// index-parallel with `resolved_operands`; empty for one the catalog no
     /// longer holds, which is how an editor shows a missing operand.
     pub operand_paths: Vec<String>,
+    /// Each resolved operand's effective `(gain, offset)` —
+    /// index-parallel with `resolved_operands` — as the definition's
+    /// target unit, the per-operand source-unit override and the manual
+    /// scalars compose to. Derived by the model, never stored.
+    pub operand_affines: Vec<crate::units::Affine>,
+    /// Indices into `resolved_operands` of the members that could
+    /// **not** be converted to the target unit and pass through
+    /// unscaled. Empty when the definition names no target unit. The
+    /// editor flags these: nothing converts silently wrong.
+    pub unconverted: Vec<usize>,
     /// The unit the series carries: the user's, or the derived one.
     pub unit_resolved: String,
     /// Every bus contributing input to this series, transitively and
@@ -125,12 +135,19 @@ pub(crate) fn list_math_signals(
             // Validity is judged against the *resolved* membership: a
             // pattern-defined set whose matches have all gone no longer
             // satisfies its arity, and the editor says so.
-            candidate.operands.picks.clone_from(&resolved.operands);
+            candidate.operands.picks = resolved
+                .operands
+                .iter()
+                .cloned()
+                .map(math_signals::MathOperand::new)
+                .collect();
             MathSignalRecord {
                 identity: math_signals::math_identity(&resolved.definition.id),
                 kind: resolved.definition.function.kind(),
                 arity: resolved.definition.function.arity(),
                 operand_paths: resolved.operand_paths.clone(),
+                operand_affines: resolved.operand_affines.clone(),
+                unconverted: resolved.unconverted.clone(),
                 resolved_operands: resolved.operands.clone(),
                 unit_resolved: resolved.unit.clone(),
                 bus_ids: resolved.bus_ids.clone(),
@@ -222,9 +239,11 @@ mod tests {
             id: "m1".to_string(),
             name: "CellSpread".to_string(),
             unit: None,
+            output_gain: None,
+            output_offset: None,
             function: MathFunction::Sum,
             operands: MathOperands {
-                picks: vec![MathOperandRef::dbc("bus-a", 0x120, false, "Cell01")],
+                picks: vec![MathOperandRef::dbc("bus-a", 0x120, false, "Cell01").into()],
                 patterns: vec![r"Cell\d+".to_string()],
             },
         };
@@ -232,7 +251,14 @@ mod tests {
             identity: math_signals::math_identity(&definition.id),
             kind: definition.function.kind(),
             arity: definition.function.arity(),
-            resolved_operands: definition.operands.picks.clone(),
+            resolved_operands: definition
+                .operands
+                .picks
+                .iter()
+                .map(|p| p.reference.clone())
+                .collect(),
+            operand_affines: vec![crate::units::Affine::new(0.001, 0.0)],
+            unconverted: vec![1],
             operand_paths: vec!["CAN1/BMS/Cells/Cell01".to_string()],
             unit_resolved: "V".to_string(),
             bus_ids: vec!["bus-a".to_string()],

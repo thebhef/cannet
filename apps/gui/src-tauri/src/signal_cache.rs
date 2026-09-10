@@ -1819,6 +1819,12 @@ struct MathFill {
     /// moves the fingerprint, which parks this pyramid and mints a new
     /// one (ADR 0047).
     operands: Vec<SignalKey>,
+    /// Each operand's effective affine, index-parallel with
+    /// [`Self::operands`] — filtered alongside them, so an operand
+    /// reference that names no cache takes its factor out with it.
+    /// Fixed for the life of the cache for the same reason: a changed
+    /// factor moves the fingerprint.
+    affines: Vec<crate::units::Affine>,
     /// The level-0 slot each operand has been read through — an
     /// **absolute** slot index, so it stays valid across the front
     /// trimming eviction does.
@@ -1960,7 +1966,20 @@ fn ensure_math(caches: &mut Caches, dbcs: &DecodeModel<'_>, id: &str) {
     let Some(resolved) = dbcs.math().get(id) else {
         return;
     };
-    let operands: Vec<SignalKey> = resolved.operands.iter().filter_map(operand_key).collect();
+    let (operands, affines): (Vec<SignalKey>, Vec<crate::units::Affine>) = resolved
+        .operands
+        .iter()
+        .enumerate()
+        .filter_map(|(i, reference)| {
+            let key = operand_key(reference)?;
+            let affine = resolved
+                .operand_affines
+                .get(i)
+                .copied()
+                .unwrap_or(crate::units::Affine::IDENTITY);
+            Some((key, affine))
+        })
+        .unzip();
     let root = caches.root.clone();
     for key in &operands {
         if !key.is_dbc() {
@@ -1991,6 +2010,7 @@ fn ensure_math(caches: &mut Caches, dbcs: &DecodeModel<'_>, id: &str) {
         cursors: vec![0; operands.len()],
         held: vec![None; operands.len()],
         operands,
+        affines,
         carry: MathCarry::new(),
         // Nothing has been read yet, so a serve answering off this
         // cache before its first fold is answering off a prefix.
@@ -3864,7 +3884,7 @@ impl SignalCacheStore {
         let mut fill = caches.by_key.get_mut(key)?.math.take()?;
         let mine_last = caches.by_key.get(key).and_then(SignalCache::latest);
 
-        let (points, consumed) = match &resolved.definition.function {
+        let (mut points, consumed) = match &resolved.definition.function {
             // Neither of these is a function of the operands' samples
             // over time, and neither reads a chunk.
             MathFunction::HLine { value } => (
@@ -3877,6 +3897,14 @@ impl SignalCacheStore {
             } => statistic_round(&caches, &mut fill, *statistic, *percentile),
             function => streaming_round(&caches, &mut fill, function, store_len),
         };
+        // The output scaling runs here rather than inside each round, so
+        // every function gets it once and none can forget it — a
+        // constant series is scaled exactly like a computed one.
+        if !resolved.output_affine.is_identity() {
+            for point in &mut points {
+                point.value = resolved.output_affine.apply(point.value);
+            }
+        }
 
         let cache = caches.by_key.get_mut(key).expect("held across the lock");
         if !points.is_empty() {
@@ -3932,7 +3960,14 @@ fn streaming_round(
         .iter()
         .map(|c| lenient && c.newest.is_none() && c.caught_up)
         .collect();
-    let merged = math_kernels::merge_hold(&slices, &mut fill.held, &newest, &absent);
+    let mut merged = math_kernels::merge_hold(&slices, &mut fill.held, &newest, &absent);
+    // Each operand into the definition's target unit (and through
+    // whatever the user typed by hand) **before** the function sees it —
+    // which is what lets one set hold milliamps beside amps. An
+    // identity affine costs one comparison per column and no multiply.
+    for (column, affine) in merged.block.columns.iter_mut().zip(&fill.affines) {
+        math_kernels::scale(column, *affine);
+    }
     let values = math_kernels::apply(function, &merged.block, &mut fill.carry);
     let points: Vec<SamplePoint> = merged
         .block
@@ -3987,9 +4022,18 @@ fn statistic_round(
     if level.len() <= cursor || level.live_len() == 0 {
         return (Vec::new(), 0);
     }
-    let values: Vec<f64> = (level.first_slot()..level.len())
+    let mut values: Vec<f64> = (level.first_slot()..level.len())
         .map(|k| level.get(k).1)
         .collect();
+    // The same pre-function operand scaling the streaming path applies,
+    // on the one path that does not go through a merged block.
+    math_kernels::scale(
+        &mut values,
+        fill.affines
+            .first()
+            .copied()
+            .unwrap_or(crate::units::Affine::IDENTITY),
+    );
     let read = values.len();
     let Some(value) = math_kernels::statistic(values, statistic, percentile) else {
         return (Vec::new(), 0);
@@ -9856,7 +9900,8 @@ mod tests {
     // operands' level-0 samples instead of frames or an import.
 
     use crate::math_signals::{
-        MathDefinition, MathFunction, MathModel, MathOperandRef, MathOperands, Statistic,
+        MathDefinition, MathFunction, MathModel, MathOperand, MathOperandRef, MathOperands,
+        Statistic,
     };
 
     /// A capture in which `A` counts up by one per frame and `B` holds
@@ -9890,9 +9935,11 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             unit: None,
+            output_gain: None,
+            output_offset: None,
             function,
             operands: MathOperands {
-                picks: picks.to_vec(),
+                picks: picks.iter().cloned().map(MathOperand::new).collect(),
                 patterns: Vec::new(),
             },
         }
@@ -9912,6 +9959,30 @@ mod tests {
         on_test_bus(&[db]).with_math(std::sync::Arc::new(MathModel::resolve(
             definitions,
             &catalog,
+            &crate::units::Customizations::new(),
+        )))
+    }
+
+    /// [`with_math`] with a unit per catalog signal, so a set can hold
+    /// members the databases describe differently.
+    fn with_math_units<'a>(
+        db: &'a Database,
+        definitions: &[MathDefinition],
+        units: [&str; 2],
+    ) -> DecodeModel<'a> {
+        let catalog: Vec<crate::math_signals::MathCatalogEntry> = ["A", "B"]
+            .iter()
+            .zip(units)
+            .map(|(name, unit)| crate::math_signals::MathCatalogEntry {
+                reference: operand(name),
+                path: format!("{TEST_BUS}//Msg/{name}"),
+                unit: unit.to_string(),
+            })
+            .collect();
+        on_test_bus(&[db]).with_math(std::sync::Arc::new(MathModel::resolve(
+            definitions,
+            &catalog,
+            &crate::units::Customizations::new(),
         )))
     }
 
@@ -10139,6 +10210,8 @@ mod tests {
             id: "m1".to_string(),
             name: "range".to_string(),
             unit: None,
+            output_gain: None,
+            output_offset: None,
             function: MathFunction::Range,
             operands: MathOperands {
                 picks: Vec::new(),
@@ -10149,6 +10222,7 @@ mod tests {
         let dbs = on_test_bus(&[&db]).with_math(std::sync::Arc::new(MathModel::resolve(
             &definitions,
             &catalog,
+            &crate::units::Customizations::new(),
         )));
         assert_eq!(
             dbs.math().get("m1").expect("resolved").operands.len(),
@@ -10191,7 +10265,11 @@ mod tests {
     /// ```
     #[test]
     #[ignore = "benchmark: run by hand, release, with --nocapture"]
-    #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
+    #[allow(
+        clippy::float_cmp,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation
+    )]
     fn a_thousand_member_set_benchmark() {
         let messages = 125; // × 8 = 1000 signals
         let db = Database::parse(&wide_dbc_text(messages)).unwrap();
@@ -10200,6 +10278,8 @@ mod tests {
             id: "m1".to_string(),
             name: "range".to_string(),
             unit: None,
+            output_gain: None,
+            output_offset: None,
             function: MathFunction::Range,
             operands: MathOperands {
                 picks: Vec::new(),
@@ -10209,6 +10289,7 @@ mod tests {
         let dbs = on_test_bus(&[&db]).with_math(std::sync::Arc::new(MathModel::resolve(
             &definitions,
             &catalog,
+            &crate::units::Customizations::new(),
         )));
         for (label, cycles, live) in [
             ("1000 matched / 32 live", 1000u64, 4u32),
@@ -10662,6 +10743,173 @@ mod tests {
         );
     }
 
+    /// The exit criterion, end to end through the fill: a set whose
+    /// members carry milliamps beside amps is computed **in the
+    /// definition's target unit**, each member scaled by its own
+    /// factor before the function sees it.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_target_unit_converts_each_member_before_the_function() {
+        // A counts 0,1,2…; B is ten times A's raw value, decoded at a
+        // further factor of ten — so B is 100·i where A is i.
+        let trace = ab_capture(10);
+        let db = dbc_ab(10);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let mut definitions = vec![math_def("m1", MathFunction::Sum, &[])];
+        definitions[0].operands.patterns = vec!["/Msg/".to_string()];
+
+        // Unconverted, the sum is A + B — 101·i.
+        let dbs = with_math_units(&db, &definitions, ["A", "mA"]);
+        let raw = math_series(&store, "m1", &trace, &dbs);
+        assert_eq!(raw.last().map(|p| p.1), Some(101.0 * 9.0));
+
+        // In amps, B is worth a thousandth of what it reads: 1.1·i.
+        definitions[0].unit = Some("A".to_string());
+        let dbs = with_math_units(&db, &definitions, ["A", "mA"]);
+        store.invalidate_dbcs(&dbs);
+        let converted = math_series(&store, "m1", &trace, &dbs);
+        let last = converted.last().map(|p| p.1).expect("points");
+        assert!((last - 1.1 * 9.0).abs() < 1e-9, "{last}");
+        assert_eq!(converted.len(), raw.len());
+    }
+
+    /// The output scalar runs after the function, on every provenance —
+    /// including the two that are not functions of a block at all.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn the_output_scalar_applies_after_the_function() {
+        let trace = ab_capture(10);
+        let db = dbc_ab(10);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+
+        let mut definitions = vec![math_def("m1", MathFunction::Rms, &[operand("A")])];
+        definitions[0].output_gain = Some(2.0);
+        definitions[0].output_offset = Some(1.0);
+        let dbs = with_math(&db, &definitions);
+        let scaled = math_series(&store, "m1", &trace, &dbs);
+        assert_eq!(scaled.last().map(|p| p.1), Some(2.0 * 9.0 + 1.0));
+
+        // An `hline` has no operands and no block; its output is still
+        // the definition's, so the scalar reaches it too.
+        let mut constant = vec![math_def("m2", MathFunction::HLine { value: 4.0 }, &[])];
+        constant[0].output_gain = Some(0.5);
+        let dbs = with_math(&db, &constant);
+        let line = math_series(&store, "m2", &trace, &dbs);
+        assert!(!line.is_empty(), "the line spans the capture");
+        assert!(line.iter().all(|p| p.1 == 2.0), "{line:?}");
+    }
+
+    /// The ruling, end to end through the fill: integration multiplies
+    /// by time, so amp-hours from an amp operand is a conversion the
+    /// **output** carries — the operand is already in the canonical
+    /// rate and stays untouched.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn integrating_a_current_serves_amp_hours() {
+        // A counts 0,1,2…9, one sample per second, so the integral
+        // (left rectangles) tops out at 0+1+…+8 = 36 ampere-seconds.
+        let trace = ab_capture(10);
+        let db = dbc_ab(10);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let mut definitions = vec![math_def("m1", MathFunction::Integration, &[operand("A")])];
+
+        let dbs = with_math_units(&db, &definitions, ["A", "A"]);
+        assert_eq!(
+            math_series(&store, "m1", &trace, &dbs).last().map(|p| p.1),
+            Some(36.0),
+            "the unconverted integral, in ampere-seconds",
+        );
+
+        definitions[0].unit = Some("Ah".to_string());
+        let dbs = with_math_units(&db, &definitions, ["A", "A"]);
+        store.invalidate_dbcs(&dbs);
+        let ah = math_series(&store, "m1", &trace, &dbs);
+        let last = ah.last().map(|p| p.1).expect("points");
+        assert!((last - 36.0 / 3600.0).abs() < 1e-15, "{last}");
+        assert_eq!(ah.len(), 10, "the same samples, in the asked-for unit");
+    }
+
+    /// Both halves of the integrated path at once, and the other
+    /// pairing: milliamps reach amps before the function and joules
+    /// reach kilowatt-hours after it.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn an_integrated_operand_is_converted_before_and_after_the_function() {
+        let trace = ab_capture(10);
+        let db = dbc_ab(10);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let mut definitions = vec![math_def("m1", MathFunction::Integration, &[operand("A")])];
+        definitions[0].unit = Some("Ah".to_string());
+
+        let dbs = with_math_units(&db, &definitions, ["mA", "mA"]);
+        let last = math_series(&store, "m1", &trace, &dbs)
+            .last()
+            .map(|p| p.1)
+            .expect("points");
+        assert!((last - 36.0 * 0.001 / 3600.0).abs() < 1e-18, "{last}");
+
+        definitions[0].unit = Some("kWh".to_string());
+        let dbs = with_math_units(&db, &definitions, ["W", "W"]);
+        store.invalidate_dbcs(&dbs);
+        let last = math_series(&store, "m1", &trace, &dbs)
+            .last()
+            .map(|p| p.1)
+            .expect("points");
+        assert!((last - 36.0 / 3_600_000.0).abs() < 1e-18, "{last}");
+    }
+
+    /// A target in the operand's **own** family keeps the pointwise
+    /// semantics: integrate in milliamps, output untouched. (The
+    /// workaround that existed before the time-dimension ruling, which
+    /// it must not have broken.)
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn integrating_toward_the_operands_own_family_still_scales_the_operand() {
+        let trace = ab_capture(10);
+        let db = dbc_ab(10);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let mut definitions = vec![math_def("m1", MathFunction::Integration, &[operand("A")])];
+        definitions[0].unit = Some("mA".to_string());
+        let dbs = with_math_units(&db, &definitions, ["A", "A"]);
+        let last = math_series(&store, "m1", &trace, &dbs)
+            .last()
+            .map(|p| p.1)
+            .expect("points");
+        assert_eq!(last, 36_000.0, "milliampere-seconds");
+    }
+
+    /// A manual per-operand scalar needs no units at all, and reaches
+    /// the samples on the same path a conversion does.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_manual_operand_scalar_reaches_the_samples() {
+        let trace = ab_capture(10);
+        let db = dbc_ab(10);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let mut definitions = vec![math_def(
+            "m1",
+            MathFunction::Statistic {
+                statistic: Statistic::Max,
+                percentile: 0.0,
+            },
+            &[operand("A")],
+        )];
+        definitions[0].operands.picks[0].gain = Some(3.0);
+        definitions[0].operands.picks[0].offset = Some(-1.0);
+        let dbs = with_math(&db, &definitions);
+        // A tops out at 9, so the maximum of 3·A − 1 is 26. The
+        // statistic path reads its operand's samples directly rather
+        // than through a merged block, and has to scale them too.
+        let series = math_series(&store, "m1", &trace, &dbs);
+        assert!(series.iter().all(|p| p.1 == 26.0), "{series:?}");
+    }
+
     #[test]
     fn a_rename_leaves_the_pyramid_where_it_is() {
         // The display name is not part of the fingerprint, so renaming
@@ -10676,7 +10924,11 @@ mod tests {
         let before = math_series(&store, "m1", &trace, &dbs);
 
         definitions[0].name = "Something Else".to_string();
-        definitions[0].unit = Some("mV".to_string());
+        // A unit string nothing recognises is a pure label, so it is
+        // free too. (A *recognised* one is a conversion target and
+        // does move the stamp — see
+        // `a_target_unit_converts_each_member_by_its_own_factor`.)
+        definitions[0].unit = Some("widgets".to_string());
         let dbs = with_math(&db, &definitions);
         store.invalidate_dbcs(&dbs);
         assert_eq!(store.usage().retained, 0, "nothing was parked");

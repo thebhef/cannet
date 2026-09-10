@@ -502,9 +502,15 @@ impl AppState {
                 reference: crate::math_signals::MathOperandRef::math(definition.id.clone()),
             });
         }
+        // The unit-customization dict takes part in every member's
+        // conversion, so it is read here, once per model build. It is
+        // workspace-scoped, and `set_settings` drops this cache — which
+        // is what makes editing a customization rescale the channels
+        // that depend on it.
         let built = Arc::new(crate::math_signals::MathModel::resolve(
             &definitions,
             &catalog,
+            &crate::settings::effective().unit_customizations,
         ));
         *self.math_model_cache() = Some(Arc::clone(&built));
         built

@@ -738,11 +738,19 @@ pub fn file_source(info: &FileSignalInfo) -> String {
 /// and ADR 0047 parks the dependent pyramid exactly as it parks a
 /// decoded one whose definition changed.
 ///
+/// It also covers the **scaling**: each operand's effective
+/// `(gain, offset)` and the definition's output pair, as resolve derived
+/// them. That is what makes a changed manual scalar — or a changed
+/// unit-customization three definitions down, which moves a member's
+/// conversion factor without touching any definition — rebuild the
+/// cache instead of serving samples computed under the old numbers.
+///
 /// What is deliberately **not** mixed is everything that cannot move a
-/// sample: the definition's display name, its unit, and its id. A
-/// rename is free, a unit is a label, and the id is already the key
-/// this fingerprint is stored against — mixing it would only stop two
-/// identical definitions from sharing a parked pyramid.
+/// sample: the definition's display name, its unit *string*, and its id.
+/// A rename is free, the unit reaches the stamp through the conversion
+/// factors it produced rather than as a label, and the id is already the
+/// key this fingerprint is stored against — mixing it would only stop
+/// two identical definitions from sharing a parked pyramid.
 ///
 /// An operand whose own fingerprint is unavailable — a reference to a
 /// definition that has been deleted — is mixed as the empty string,
@@ -769,7 +777,20 @@ pub fn math_encoding(resolved: &ResolvedMath, operand_encodings: &[&str]) -> Str
         h.mix_bool(operand.math);
         h.mix_str(&operand.signal_name);
         h.mix_str(operand_encodings.get(i).copied().unwrap_or(""));
+        // An operand resolve produced no affine for cannot happen (the
+        // two vectors are built in one pass), but a stamp must be
+        // defined for whatever it is handed: the identity is the same
+        // thing "no scaling" means.
+        let affine = resolved
+            .operand_affines
+            .get(i)
+            .copied()
+            .unwrap_or(crate::units::Affine::IDENTITY);
+        h.mix_f64(affine.gain);
+        h.mix_f64(affine.offset);
     }
+    h.mix_f64(resolved.output_affine.gain);
+    h.mix_f64(resolved.output_affine.offset);
     h.mix_u8(TAG_END);
     h.finish()
 }
@@ -1733,7 +1754,8 @@ mod tests {
     // move for anything else.
 
     use crate::math_signals::{
-        MathCatalogEntry, MathDefinition, MathFunction, MathModel, MathOperandRef, MathOperands,
+        MathCatalogEntry, MathDefinition, MathFunction, MathModel, MathOperand, MathOperandRef,
+        MathOperands,
     };
 
     /// A one-message DBC declaring `sigs`, assigned to [`FP_BUS`] —
@@ -1771,9 +1793,11 @@ mod tests {
             id: "m1".to_string(),
             name: "Derived".to_string(),
             unit: None,
+            output_gain: None,
+            output_offset: None,
             function,
             operands: MathOperands {
-                picks: picks.to_vec(),
+                picks: picks.iter().cloned().map(MathOperand::new).collect(),
                 patterns: patterns.iter().map(|p| (*p).to_string()).collect(),
             },
         }
@@ -1787,7 +1811,23 @@ mod tests {
         catalog: &[MathCatalogEntry],
         dbcs: &DecodeModel<'_>,
     ) -> String {
-        let model = MathModel::resolve(std::slice::from_ref(definition), catalog);
+        math_stamp_with(
+            definition,
+            catalog,
+            dbcs,
+            &crate::units::Customizations::new(),
+        )
+    }
+
+    /// [`math_stamp_of`] with the user's unit-customization dict, which
+    /// takes part in deriving the conversion factors the stamp mixes.
+    fn math_stamp_with(
+        definition: &MathDefinition,
+        catalog: &[MathCatalogEntry],
+        dbcs: &DecodeModel<'_>,
+        customizations: &crate::units::Customizations,
+    ) -> String {
+        let model = MathModel::resolve(std::slice::from_ref(definition), catalog, customizations);
         let resolved = model.get(&definition.id).expect("just resolved");
         let stamps: Vec<String> = resolved
             .operands
@@ -1860,9 +1900,11 @@ mod tests {
     }
 
     #[test]
-    fn a_math_stamp_does_not_move_for_a_rename_or_a_unit() {
+    fn a_math_stamp_does_not_move_for_a_rename_or_an_inert_unit() {
         // What a series is *called* is not what it is (ADR 0038), so a
-        // rename must not cost the user their pyramid.
+        // rename must not cost the user their pyramid — and neither
+        // does a unit string that names no unit the host knows, which
+        // is a pure label and converts nothing.
         let db = fp_db(&["A : 0|16@1+ (1,0) [0|0] \"\" ECU"]);
         let bus = fp_bus();
         let dbcs = on_fp_bus(&db, &bus);
@@ -1870,8 +1912,107 @@ mod tests {
         let mut definition = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
         let before = math_stamp_of(&definition, &catalog, &dbcs);
         definition.name = "Something Else".to_string();
-        definition.unit = Some("mV".to_string());
+        definition.unit = Some("widgets".to_string());
         assert_eq!(math_stamp_of(&definition, &catalog, &dbcs), before);
+    }
+
+    /// The scaling is part of what computes a sample, so it is part of
+    /// the stamp: a manual scalar, an output scalar, and a conversion
+    /// factor all park the pyramid computed under the old numbers.
+    #[test]
+    fn a_math_stamp_moves_when_a_manual_scalar_does() {
+        let db = fp_db(&["A : 0|16@1+ (1,0) [0|0] \"\" ECU"]);
+        let bus = fp_bus();
+        let dbcs = on_fp_bus(&db, &bus);
+        let catalog = math_catalog(&["A"]);
+        let plain = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
+        let before = math_stamp_of(&plain, &catalog, &dbcs);
+
+        let mut operand_scaled = plain.clone();
+        operand_scaled.operands.picks[0].gain = Some(2.0);
+        assert_ne!(
+            math_stamp_of(&operand_scaled, &catalog, &dbcs),
+            before,
+            "an operand gain"
+        );
+
+        let mut operand_shifted = plain.clone();
+        operand_shifted.operands.picks[0].offset = Some(1.0);
+        assert_ne!(
+            math_stamp_of(&operand_shifted, &catalog, &dbcs),
+            before,
+            "an operand offset"
+        );
+
+        let mut output_scaled = plain.clone();
+        output_scaled.output_gain = Some(0.5);
+        assert_ne!(
+            math_stamp_of(&output_scaled, &catalog, &dbcs),
+            before,
+            "an output gain"
+        );
+
+        let mut output_shifted = plain;
+        output_shifted.output_offset = Some(-3.0);
+        assert_ne!(
+            math_stamp_of(&output_shifted, &catalog, &dbcs),
+            before,
+            "an output offset"
+        );
+    }
+
+    /// An integration reaches its target through time, so the factor
+    /// rides the **output** affine rather than the operand's — and the
+    /// stamp has to move for it, or a channel switched from coulombs to
+    /// amp-hours would keep serving the samples computed in the other.
+    #[test]
+    fn a_math_stamp_moves_when_an_integrations_charge_target_does() {
+        let db = fp_db(&["A : 0|16@1+ (1,0) [0|0] \"\" ECU"]);
+        let bus = fp_bus();
+        let dbcs = on_fp_bus(&db, &bus);
+        let catalog: Vec<MathCatalogEntry> = math_catalog(&["A"])
+            .into_iter()
+            .map(|entry| MathCatalogEntry {
+                unit: "A".to_string(),
+                ..entry
+            })
+            .collect();
+        let mut definition = math_definition(MathFunction::Integration, &[math_operand("A")], &[]);
+        // No target: the operand and the output are both untouched.
+        let derived = math_stamp_of(&definition, &catalog, &dbcs);
+
+        definition.unit = Some("Ah".to_string());
+        let hours = math_stamp_of(&definition, &catalog, &dbcs);
+        assert_ne!(hours, derived, "amp-hours scale the output by 1/3600");
+
+        definition.unit = Some("mAh".to_string());
+        assert_ne!(
+            math_stamp_of(&definition, &catalog, &dbcs),
+            hours,
+            "milliamp-hours are a different series again"
+        );
+    }
+
+    /// The customization dict is not part of any definition, so this is
+    /// the one input that moves a stamp without anything the user
+    /// edited on the channel itself moving — and it has to, or the
+    /// channel would keep serving samples converted the old way.
+    #[test]
+    fn a_math_stamp_moves_when_a_unit_customization_does() {
+        let db = fp_db(&["A : 0|16@1+ (1,0) [0|0] \"\" ECU"]);
+        let bus = fp_bus();
+        let dbcs = on_fp_bus(&db, &bus);
+        // The catalog calls A volts; the definition asks for millivolts.
+        let catalog = math_catalog(&["A"]);
+        let mut definition = math_definition(MathFunction::Rms, &[math_operand("A")], &[]);
+        definition.unit = Some("mV".to_string());
+        let stock = math_stamp_of(&definition, &catalog, &dbcs);
+
+        // Re-reading "V" as kilovolts changes A's factor by a thousand.
+        let dict: crate::units::Customizations = [("V".to_string(), "kilovolt".to_string())]
+            .into_iter()
+            .collect();
+        assert_ne!(math_stamp_with(&definition, &catalog, &dbcs, &dict), stock);
     }
 
     #[test]

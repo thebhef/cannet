@@ -610,6 +610,42 @@ crate retained long-term).
   host-side facade (unit id, dimension, affine gain/offset per
   conversion) so the surface we depend on is narrow and a swap stays
   contained. Features trimmed to the quantities the UI exposes.
+
+  **What 0.6.3 actually delivers, measured while integrating it**
+  (2026-09-06) — the adoption stands, with two gaps the facade
+  absorbs:
+
+  - **No offsets anywhere.** `UnitDefinition` is a base-dimension
+    bitfield plus a single multiplier, and `ThermodynamicTemperature`
+    — the quantity whose unit table carries the °C/°F constants — is
+    **commented out** of the crate's `system!` invocation, so enabling
+    its feature builds nothing. Only `TemperatureInterval` ships, and
+    it has the multipliers (K 1, °C 1, °F 5/9) but not the constants.
+    The facade therefore owns the three temperature offsets (0,
+    273.15, 459.67) over the library's interval multipliers, and DBC
+    temperature readings are absolute as ruled.
+  - **Base-dimension equality is too coarse to be our conversion
+    rule.** The library calls `rpm` convertible to `Hz` (both s⁻¹,
+    differing by 2π) and `N·m` convertible to `J` (both kg·m²·s⁻²).
+    The facade groups units into its own dimensions instead and
+    offers a conversion only within one; a test pins that every
+    facade dimension is still one library-convertible family, so the
+    multipliers it composes always share a base.
+  - **No dimensional algebra to ask "what is a rate times time".**
+    `UnitDefinition`'s base bitfield could in principle be multiplied,
+    but the crate exposes no such operation and no way back from a
+    computed base to a *named* unit — and naming it is the whole
+    point, since a math channel integrating amps has to be offered
+    amp-hours. So the facade carries its own rate↔integral pairing
+    table (`units::integral_of`: current × t = charge, canonical
+    coulomb; power × t = energy, canonical joule). Two entries, added
+    where a bus carries the rate; the library still supplies every
+    multiplier the pairing then converts through.
+
+  What the library is used for, then: the unit multipliers, the
+  abbreviation/name spellings, and the per-quantity unit enums. Those
+  are the parts nobody wants to hand-curate, and they are what the
+  adoption was for.
 - **`rink-core`** — `rejected` 2026-09-06: the code is MPL-2.0 but its
   units database (`definitions.units`) is GPL-3; shipping a GPL data
   file inside the MIT-licensed app is a licensing entanglement.

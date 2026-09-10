@@ -111,8 +111,8 @@ output scalar/unit controls in the math editor, unconverted-member
 flags, the settings-view units section (library-provided selectable
 list + customization rows over the workspace-scoped dict). DOM tests.
 
-**Phase 4 — integration units** (host; opened from the evening bench,
-ruling 6). The rate<->integral pairing table in the facade;
+**Phase 4 — integration units** — *landed 2026-09-07* (host; opened
+from the evening bench, ruling 6). The rate<->integral pairing in the facade;
 Integration-aware resolve (integrated-dimension target => output
 affine, own-family target => operand semantics, else badge); derived
 unit becomes the canonical integrated unit for recognised operands.
@@ -137,11 +137,264 @@ badge.
       persists only the user's customizations, with the project.
 - [ ] Technology inventory records the dependency decision; docs
       match shipped behaviour.
+- [x] An integration reaches a target its operand only reaches through
+      time: `A`→`Ah` and `mA`→`Ah`, `W`→`kWh`. A target in the
+      operand's own family (`mA` on an `A` operand) still converts the
+      operand; a target in neither dimension is still badged; with no
+      target, a recognised rate derives its integral's unit.
 
 ## Status log
 
-(none yet)
+**2026-09-10 — the percent scale is settled by the spelling** (owner
+ruling 2026-09-09, `plans/owner-review-queue.md` § 2). Folded into
+`task139-units`, the branch that introduces the recognition table.
+
+- **`%` already read as the 0–100 percent unit** before this change,
+  twice over: it is the `percent` entry's `display`, and it is a
+  built-in row of `RECOGNITIONS` (`("%", "percent")`), pinned by
+  `the_common_dbc_spellings_are_recognised`. No change was needed
+  there, and the new test asserts it so it stays true.
+- **`%1.0` is new**, added as a built-in spelling of `ratio`, the bare
+  0–1 scale. One row in the same table: the observed range of a
+  number is data, not a declaration, so the string is the only thing
+  that can say which scale a proportion is on — which is why range
+  inference and a `BA_` attribute were both dropped.
+- **Precedence needed no work.** `recognize` consults the
+  customization dict before the built-in table, so both spellings are
+  defaults a project or user remaps like any other
+  (`a_customization_remaps_either_percent_spelling` passed before the
+  table row was added, which is the point).
+- **The settings table is derived, not enumerated.** `mappings` (which
+  lands later in the stack, on `task139-apply`) builds every row's
+  spellings from `RECOGNITIONS` through `recognize` itself, and
+  `the_mapping_table_puts_each_string_on_the_row_it_recognises_to`
+  pins that derivation — so a new built-in row appears on its unit's
+  row as `BuiltIn` by construction, with no second list to keep in
+  step.
+- **Composed units are unaffected.** `units-composition` has
+  `recognize` fall through to custom *definitions* only after the
+  built-in table, and the customization dict still precedes both, so
+  the ordering the ruling asks for holds above and below that branch.
+- Tests: `the_two_percent_spellings_read_at_the_scales_they_name` and
+  `a_customization_remaps_either_percent_spelling` (units), and
+  `a_database_declaring_the_ratio_percent_spelling_reads_at_the_bare_scale`
+  (math_signals — a database string of `%1.0` reaching a `%` target
+  ×100, and the reverse ×0.01). All three red first; the first two
+  failed only on the `%1.0` assertions, confirming `%` was already
+  right.
+
+> Phase 4 was absorbed into `task139-units` after the later phases
+> had already landed above it in the stack, so its entry leads this
+> log rather than closing it.
+
+**2026-09-07 — owner defect: a ratio target converted nothing.**
+Reported from the bench: signals read on the bare 0–1 scale were
+collected by a pattern filter, and the math editor served the *same*
+value whether the target was left derived, set to the bare scale
+explicitly, to `%`, or to `ppm` — where `%` should be ×100 and `ppm`
+×10⁶. Investigated by falsifying one hypothesis at a time; the record
+is below because the answer was not where it looked.
+
+- **Observation.** Four target choices, one served value.
+- **H1 — the facade returns the identity inside the ratio family.**
+  *Falsified.* `convert` gives `ratio`→`%` ×100, `ratio`→`ppm` ×10⁶,
+  `%`→`ppm` ×10⁴, each the plain power of ten
+  (`the_ratio_family_converts_by_its_powers_of_ten`, which passed
+  against the unfixed table).
+- **H2 — the three spellings recognise to one unit.** *Falsified.*
+  `percent`, `part-per-million` and `ratio` are three ids with three
+  multipliers.
+- **H3 — resolve skips the conversion for this dimension.**
+  *Falsified.* With operands whose unit string is `%` or `ppm`, a
+  target in the family converts every member correctly.
+- **H4 — the operands' unit strings do not recognise, so no
+  conversion is possible.** *Confirmed, and the cause is ours.* The
+  bare scale's **display string was `ratio 0–1`**, which
+  `recognize` cannot place. Every surface that reports a signal's
+  unit hands on a string (a database's own, or the one a reinterpreted
+  unit renders as), and resolve reads that string back — so a signal
+  read on the bare scale arrived carrying a unit nothing could place.
+  Derivation then yielded nothing, no member converted, and each of
+  the four targets served the operands' own numbers.
+- **The fix, in one place.** The bare scale reads as `ratio` — which
+  is also how a DBC spells it and what the recognition table already
+  carried — so the string it renders is one recognition carries
+  straight back. Both tests that pin it fail against `ratio 0–1` and
+  pass after: the facade round trip
+  (`every_ratio_scale_reads_as_a_string_that_recognises_back_to_it`)
+  and the end-to-end resolve
+  (`a_ratio_set_converts_to_the_scale_its_target_names` — a set
+  collected on the bare scale serves ×100 for a `%` target and ×10⁶
+  for `ppm`). This also settles the owner's separate dislike of the
+  `ratio 0-1` display: the picker's ratio row now reads `ratio`.
+- **One conversion path, confirmed.** There is exactly one:
+  `units::convert` over the facade's multiplier table, reached by
+  `math_signals::effective_affines`. Nothing else scales a member, so
+  there is no duplicate to clean up. What *is* duplicated is the
+  notion of "how a unit is spelled": `display_of` renders one-way,
+  while the string a signal reports has to survive `recognize`. Two
+  more units still fail that round trip — see Blockers.
+
+**2026-09-07 — Phase 4 (integration units), absorbed into
+`task139-units`.** Landed: the rate↔integral pairing in the facade,
+Integration-aware resolve, and the derived integrated unit. The owner's
+report — an integration of an `A` operand asked for `Ah` badged
+unconvertible — now converts.
+
+- **Where the factor rides.** A pointwise conversion cannot express
+  `A`→`Ah`, because the operand is not what changes: integrating amps
+  over seconds already produces coulombs, and coulombs are amp-hours
+  ÷3600. So the operand converts only as far as its family's canonical
+  rate (identity for `A`, ÷1000 for `mA`) and the **output affine**
+  carries canonical-integral → target. That lands the whole change on
+  data the model already had — `ResolvedMath::output_affine` is applied
+  post-function in `signal_cache` and mixed into
+  `signal_fingerprint::math_encoding` — so no kernel and no fill
+  changed, and a target edit parks the pyramid computed under the old
+  factor (a new fingerprint test pins that:
+  `a_math_stamp_moves_when_an_integrations_charge_target_does`).
+- **Order of the try, and why it is that way.** Resolve attempts the
+  operand's own family *first*, so `mA` on an `A` operand keeps the
+  pointwise semantics and integrates in milliamps — the owner's
+  pre-ruling workaround stays valid — and only a target the family
+  cannot reach is offered to the integral path. Neither: unconverted,
+  reported, badged, exactly as before.
+- **The manual output scalars compose ahead of it.** The user's
+  `(output_gain, output_offset)` corrects the value the function
+  computed, in the unit it computed it in; the time conversion is the
+  function's own and runs last, so the series ends in the unit the
+  definition names. Same rule as the operand side, where the manual
+  pair runs ahead of the conversion.
+- **The pairing is the facade's, not the library's** —
+  `units::integral_of(unit_id) -> Option<RateIntegral {rate, integral}>`,
+  keyed on the *dimension* so every unit of a rate family answers the
+  same pairing. *Observation*: `runtime_units` 0.6.3 exposes no
+  multiplication of base dimensions and no way back from a computed
+  base to a named unit. *Conclusion*: the two pairings (current × t =
+  charge, canonical coulomb; power × t = energy, canonical joule) are
+  ours; the library still supplies every multiplier they convert
+  through. Recorded as the third gap in
+  `plans/technology-inventory.md`. **No unit table entry and no
+  `runtime_units` feature had to be added** — `coulomb`, `ampere-hour`,
+  `milliampere-hour`, `joule`, `kilojoule`, `watt-hour` and
+  `kilowatt-hour` were all already curated, and `Energy` and
+  `ElectricCharge` already on.
+- **The derived unit is the integral's id, and only where it is
+  true.** With no target set nothing converts, so integrating `mA`
+  produces milliampere-seconds — millicoulombs, which the table does
+  not carry — and claiming `coulomb` there would be wrong by a
+  thousand. `MathFunction::derived_unit` therefore names the integral
+  only when the operand's unit *is* its family's canonical rate (`A` →
+  `coulomb`, `W` → `joule`) and keeps the `·s` suffix otherwise
+  (`mA·s`, `widgets·s`). The **id** rather than the display, because
+  coulomb's display is `C`, which Phase 1 deliberately refuses to
+  recognise (a DBC saying `C` means Celsius as often as coulomb) — and
+  because Phase 2's id pass makes `coulomb` a string that reads back to
+  the unit it names. `derived_unit` gained the customization dict as an
+  argument for the same reason resolve has it: an in-house spelling the
+  user has placed must derive the same integral `A` does.
+
+Tests: 1173 → 1190 host lib tests passing (7 ignored, unchanged): 4 in
+`units`, 9 in `math_signals`, 3 in `signal_cache`, 1 in
+`signal_fingerprint`. All 17 were written first: the facade and resolve
+tests were watched fail before the code existed, and the end-to-end
+`signal_cache` ones were falsified afterwards by short-circuiting
+`integrated_conversion` to `None` — `integrating_a_current_serves_amp_hours`
+failed, `integrating_toward_the_operands_own_family_still_scales_the_operand`
+stayed green, which is the split the ruling asks for.
+
+**2026-09-06 — Phase 1 (model, engine, conversion), branch
+`task139-units`.** Landed: the `runtime_units` dependency behind a
+`units` facade; the per-operand wrapper schema and definition-level
+output scalars; resolve-time per-member conversion with unconverted
+members reported; fingerprint mixing; kernels applying operand affine
+pre-function and output affine post-function; the workspace-scoped
+customization dict on the settings model.
+
+- **Facade surface** (`apps/gui/src-tauri/src/units.rs`): `Affine
+  {gain, offset}` with `IDENTITY` / `apply` / `then` / `is_identity`;
+  `Dimension` (14 groups); `UnitInfo {id, display, dimension}` with
+  `all()` and `get(id)`; `convert(from_id, to_id) -> Option<Affine>`;
+  `Customizations` (a `BTreeMap<String, String>`); `recognize(raw,
+  &Customizations) -> Option<&'static str>`.
+- **Two library gaps, absorbed by the facade rather than worked
+  around** — both recorded in `plans/technology-inventory.md` in this
+  commit:
+  1. *Observation*: `runtime_units` 0.6.3's `UnitDefinition` is
+     `{base bitfield, multiplier}` with no offset field, and
+     `ThermodynamicTemperature` is commented out of its `system!`
+     invocation. *Experiment*: built the crate with the
+     `ThermodynamicTemperature` feature on and grepped
+     `src/unit_definitions.rs`; the feature exists, the quantity does
+     not. *Conclusion*: the °C/°F constants cannot come from the
+     library, so the facade carries the three temperature offsets over
+     the library's `TemperatureInterval` multipliers. Absolute
+     readings, per the grooming ruling.
+  2. *Observation*: a probe printing `is_convertible` said `rpm` ↔
+     `Hz` and `N·m` ↔ `J`. *Conclusion*: the library's base-dimension
+     equality is not a usable conversion rule for a user-facing
+     picker; the facade groups units into its own dimensions and
+     converts only within one. `every_dimension_is_one_convertible_family`
+     pins that the grouping is never *looser* than the library's.
+- **Where the dict landed.** `Settings::unit_customizations`, the
+  first `Scope::Workspace` key — writes always go to the project's
+  `.cannet/settings.json` (ADR 0042 §3), which is what makes it travel
+  with the project as ruled. Consequence, and the one behaviour change
+  outside math: a project's settings file now always carries that key
+  (empty or not), because a workspace-scoped key's home *is* that
+  file. `a_project_that_overrides_nothing_never_gets_its_settings_file_written`
+  asserted the old, stronger invariant and was rewritten as
+  `a_project_overriding_nothing_gets_only_the_workspace_scoped_keys`,
+  which still forbids promoting any user or user-overridable key into
+  the project's file.
+- **Two tests asserted the contract this task deliberately changes**
+  and were narrowed rather than deleted:
+  `signal_fingerprint::a_math_stamp_does_not_move_for_a_rename_or_a_unit`
+  and `signal_cache::a_rename_leaves_the_pyramid_where_it_is` both set
+  `unit = "mV"` on a definition whose operand is in volts. That is now
+  a conversion, so the stamp must move; both keep testing the rename
+  with an *unrecognised* unit string (still a pure label), and new
+  tests cover the converting case.
+- **Scope deviation, small and deliberate.** The settings-view units
+  section is Phase 2, but a `Backing::Field` setting must have a
+  descriptor or an `EDITED_ELSEWHERE` entry
+  (`descriptors_and_settings_name_the_same_keys`), and a descriptor
+  naming an unregistered custom renderer renders a visible "No
+  renderer registered" error. So Phase 1 ships the descriptor plus a
+  minimal `UnitCustomizations` renderer that lists the project's rows
+  and removes one; Phase 2 grows it into the section with the
+  library-provided unit picker and an add path.
+- **Kernel cost.** `math_kernels::scale` returns on
+  `Affine::is_identity()` before touching the slice, so a definition
+  that scales nothing pays one comparison per column per block and no
+  multiply. Nothing else was added to the per-sample path.
+
+Tests: 1145 → 1180 host lib tests (1173 passing, 7 ignored;
+`a_thousand_member_set_benchmark` left `#[ignore]`).
 
 ## Blockers / side effects
 
-(none yet)
+- **Two units still render a string recognition cannot place**, by the
+  same mechanism the ratio defect had: `coulomb` reads `C` (left out of
+  the recognition table on purpose — it would be a guess between charge
+  and Celsius) and `newton-millimeter` reads `Nmm`. Wherever a unit is
+  *chosen* and then reported onward as a string, choosing either of
+  those two yields a unit string nothing places, so it converts nothing
+  and the mapping panel flags it as unplaceable — while the user picked
+  it from a kind-locked picker. Not fixed here: the repair changes what
+  the unit column renders for those two, which is an owner call. The
+  ratio family is clean, and a facade test pins it.
+
+- **A project's `.cannet/settings.json` now always carries
+  `unit_customizations`**, empty or not, and the settings view
+  therefore marks it as project-overridden. That is what
+  `Scope::Workspace` means (the key's home is the project's file) and
+  `unit_customizations` is the first key to use it; the alternative —
+  omitting an empty map — would break ADR 0034's "the file lists every
+  knob", which two tests enforce. Flagged because it is a visible
+  change to a file users hand-edit.
+- **`runtime_units` 0.6.3 ships no absolute-temperature quantity and
+  no offsets at all**, so the °C/°F constants are ours (see the status
+  log and `plans/technology-inventory.md`). A future release that
+  builds `ThermodynamicTemperature` would let the facade drop that
+  table; nothing else changes.

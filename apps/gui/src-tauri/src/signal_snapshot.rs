@@ -1470,10 +1470,12 @@ mod tests {
             id: "m1".into(),
             name: "CellSpread".into(),
             unit: Some("V".into()),
+            output_gain: None,
+            output_offset: None,
             function: MathFunction::Range,
             operands: MathOperands::default(),
         }];
-        let model = MathModel::resolve(&definitions, &[]);
+        let model = MathModel::resolve(&definitions, &[], &crate::units::Customizations::new());
         let resolved: Vec<_> = model.iter().collect();
         let latest = vec![Some((
             crate::signal_sampler::SamplePoint {
@@ -1512,10 +1514,12 @@ mod tests {
             id: "m1".into(),
             name: "CellSpread".into(),
             unit: None,
+            output_gain: None,
+            output_offset: None,
             function: MathFunction::Range,
             operands: MathOperands::default(),
         }];
-        let model = MathModel::resolve(&definitions, &[]);
+        let model = MathModel::resolve(&definitions, &[], &crate::units::Customizations::new());
         let resolved: Vec<_> = model.iter().collect();
         assert!(select_math(&resolved, &[None], Some(&["pack".to_string()])).is_empty());
     }

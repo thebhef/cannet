@@ -125,6 +125,7 @@ pub mod trace_store;
 mod transmit_commands;
 mod transmit_frames;
 mod transmit_scheduler;
+pub mod units;
 mod verification;
 mod view_signals;
 mod watched_file;
@@ -418,6 +419,18 @@ pub(crate) fn apply_cache_caps(app: &AppHandle) {
     state
         .signal_caches
         .set_retention_cap(settings.pyramid_retention_bytes);
+}
+
+/// Drop the resolved math model, so the next serve rebuilds it against
+/// what just changed.
+///
+/// The definition CRUD does this for itself (`math_commands`); this is
+/// the other input — the unit-customization dict, which is a setting and
+/// so changes without any definition being touched.
+pub(crate) fn math_model_needs_rebuilding(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    *state.math_model_cache() = None;
+    app_state::invalidate_derived_caches(&state);
 }
 
 /// The directory the live filter index roots in: a `filter/` subdir of

@@ -2391,6 +2391,37 @@ offer a fuzzy-searched combobox over the database tree, and every slot
 also accepts a signal dragged in from anywhere. Math signals can take
 other math signals as operands; cycles are refused at definition time.
 
+**Units and scaling.** A math signal's *unit* is also its conversion
+**target**. Name one cannet recognises ("V", "mV", "A", "mA", "degC",
+"°C", "K", "rpm", "km/h", "%", "Nm", "bar", "kPa", "Hz", "s", "ms", …)
+and every operand whose own database unit is recognised is converted
+to it before the function runs — so a set that matches milliamps beside
+amps computes correctly, each member scaled by its own factor.
+Conversions are affine, so °C, °F and K convert as absolute readings.
+Leave the unit blank, or type something cannet does not recognise, and
+nothing converts: the unit is a label, exactly as it was before.
+
+Proportions come at two scales, and the **spelling** is what says
+which: `%` is the 0–100 reading, and `%1.0` is the same quantity on the
+bare 0–1 scale (`ratio`). Both ship as default spellings; a project
+whose databases mean the other thing by either remaps it in Settings →
+DBC → Unit customizations like any other spelling.
+
+An operand cannet cannot convert **passes through unscaled and is
+reported** rather than converted wrongly. For those, and for a database
+that describes a signal loosely or not at all, each operand also takes
+a manual gain and offset (applied before any conversion) and a
+source-unit override — "read this one as mA" — local to the definition.
+The definition itself takes an output gain and offset, applied after
+the function.
+
+What a DBC's unit *string* means is per project, since the field is
+free text: Settings → DBC → **Unit customizations** holds this
+project's own spellings (`counts` → percent, say). The list is
+workspace-scoped, so it lives in the project's `.cannet/settings.json`
+and travels with it; changing an entry rescales every math signal that
+depends on it on the next serve.
+
 A math signal drags to plots and signal views like any other signal.
 Its row there wears one **color chip per bus feeding it** —
 transitively, through any math operands — and reads

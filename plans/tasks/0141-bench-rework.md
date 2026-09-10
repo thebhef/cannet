@@ -105,6 +105,25 @@
   absorption (computed signals in the Database panel's value column,
   over the shared math listing). `gt restack` after each.
 
+**2026-09-07 — item 4 absorbed.**
+
+- **Item 4 → `task139-units`.** Integration produces `Ah` from an `A`
+  operand. Convertibility now accounts for the function's time
+  dimension exactly as ruling 6 describes: the facade carries the
+  rate↔integral pairing (`units::integral_of`), resolve tries the
+  operand's own family first and the integral second, and the factor a
+  charge target needs rides the **output** affine rather than the
+  operand's. The design, the tests and the two decisions taken inside
+  the ruling (the derived unit is the integral's *id*, and only where
+  it is true of the samples; the manual output scalars compose ahead of
+  the time conversion) are written up in
+  `plans/tasks/0139-math-units-scaling.md` § Status log. Host lib tests
+  1173 → 1190 passing on that branch; no frontend change was needed.
+- The amend rewrote `task139-units`' message to cover the branch's full
+  content, including the previously unmentioned ratio absorption (the
+  bare 0–1 `ratio` unit and percent↔ratio conversion) and this item.
+  `gt restack` after it.
+
 **2026-09-08 — items 5 and 6 absorbed.**
 
 - **Item 5 → `task135-surfaces`.** Scientific method:

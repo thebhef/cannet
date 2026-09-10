@@ -6376,6 +6376,31 @@ button.color-chip {
   color: var(--text-dim);
   cursor: default;
 }
+.unit-customizations {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  align-items: flex-start;
+}
+.unit-customization-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.unit-customization-spelling {
+  min-width: 6rem;
+}
+.unit-customization-row button {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.15rem 0.35rem;
+  cursor: pointer;
+}
 .setting-meta {
   display: flex;
   align-items: center;

@@ -109,6 +109,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("float_exponential_below", Scope::UserOverridable),
     ("float_exponential_from", Scope::UserOverridable),
     ("float_mantissa_decimals", Scope::UserOverridable),
+    ("unit_customizations", Scope::Workspace),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -454,6 +455,25 @@ pub struct Settings {
     /// carries the digits are noise, and the renderer's
     /// `Number.toExponential` refuses a wide enough width outright.
     pub float_mantissa_decimals: u64,
+    /// What this project's DBC unit strings mean: a **sparse** map from
+    /// the string a database writes to a [`crate::units`] unit id.
+    ///
+    /// A DBC's unit field is free text, so the host recognises the
+    /// common spellings ("V", "mV", "degC", "rpm", …) built in and this
+    /// holds only what the user changed — an in-house spelling, or an
+    /// override of a recognition that is wrong for this project.
+    ///
+    /// The one **workspace-scoped** setting (ADR 0042 §3): it
+    /// interprets *this project's* databases and travels with them,
+    /// which is not a preference that could follow the person.
+    ///
+    /// Stored and round-tripped, **not validated**, like
+    /// [`Settings::keybindings`]: a value naming no unit the app knows
+    /// simply recognises nothing (and the math editor reports the
+    /// operand as unconverted), which is recoverable — dropping the row
+    /// at the read boundary would delete the user's line on the next
+    /// write, so a build that renamed a unit would eat their work.
+    pub unit_customizations: crate::units::Customizations,
 }
 
 /// One column of a table's default layout — the on-disk mirror of the
@@ -590,6 +610,7 @@ impl Default for Settings {
             float_exponential_below: 1e-4,
             float_exponential_from: 1e6,
             float_mantissa_decimals: 5,
+            unit_customizations: crate::units::Customizations::new(),
         }
     }
 }
@@ -1026,6 +1047,11 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
     // Apply the windowed-ring scratch cap (ADR 0002 DS-8) to the live store
     // so a changed cap takes effect on the next flush, not just next launch.
     crate::apply_cache_caps(&app);
+    // `unit_customizations` is an input to every math signal's resolved
+    // conversion factors, so the resolved model has to be rebuilt: the
+    // new factors move each dependent series' fingerprint, and ADR 0047
+    // parks the pyramids computed under the old ones.
+    crate::math_model_needs_rebuilding(&app);
     Ok(settings)
 }
 
@@ -1131,6 +1157,11 @@ mod tests {
             float_exponential_below: 1e-3,
             float_exponential_from: 1e5,
             float_mantissa_decimals: 3,
+            // Left empty deliberately: this sample is written and read
+            // back at **user** scope, and `unit_customizations` is the
+            // one workspace-only key — it is exercised by
+            // `unit_customizations_are_written_to_the_project_not_the_user`.
+            unit_customizations: crate::units::Customizations::new(),
         }
     }
 
@@ -1535,6 +1566,37 @@ mod tests {
     }
 
     #[test]
+    fn unit_customizations_are_written_to_the_project_not_the_user() {
+        // The dict interprets *this project's* DBCs, so it is the one
+        // `Scope::Workspace` key: a write lands in `.cannet/`, never in
+        // the settings that follow the person to their next project.
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("config");
+        let workspace = tmp.path().join("project").join(".cannet");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let settings = Settings {
+            // A user-scope key alongside it, so the split is visible.
+            notice_dwell_ms: 1234,
+            unit_customizations: [("counts".to_string(), "percent".to_string())]
+                .into_iter()
+                .collect(),
+            ..Settings::default()
+        };
+        write_settings(&user, &workspace, &settings).unwrap();
+
+        let project = std::fs::read_to_string(workspace.join(SETTINGS_FILE)).unwrap();
+        assert!(project.contains("unit_customizations"), "{project}");
+        assert!(project.contains("counts"), "{project}");
+        assert!(!project.contains("notice_dwell_ms"), "{project}");
+        let personal = std::fs::read_to_string(user.join(SETTINGS_FILE)).unwrap();
+        assert!(!personal.contains("unit_customizations"), "{personal}");
+
+        // And the two resolve back to what was written.
+        assert_eq!(resolved(&user, &workspace), settings);
+    }
+
+    #[test]
     fn an_empty_workspace_file_leaves_the_user_settings_exactly_as_they_were() {
         // What a freshly created project directory holds. A user who
         // never touches workspace settings must see no change at all.
@@ -1609,10 +1671,15 @@ mod tests {
     }
 
     #[test]
-    fn a_project_that_overrides_nothing_never_gets_its_settings_file_written() {
-        // ADR 0042 §2 as it applies to writes: cannet fills `.cannet/`
-        // once, and a settings change with no override in play leaves
-        // that empty file exactly as created.
+    fn a_project_overriding_nothing_gets_only_the_workspace_scoped_keys() {
+        // ADR 0042 §2 as it applies to writes: a settings change with
+        // no *override* in play leaves the project's file holding
+        // nothing but the keys that belong to it outright — no
+        // user-scope or user-overridable key is promoted into it.
+        //
+        // `unit_customizations` is `Scope::Workspace`, so it is always
+        // one of those, empty or not: its home is the project, and a
+        // hand-editable file that lists the knob teaches it (ADR 0034).
         let tmp = tempfile::tempdir().unwrap();
         let user = tmp.path().join("config");
         let workspace = tmp.path().join("project").join(".cannet");
@@ -1622,10 +1689,14 @@ mod tests {
 
         write_settings(&user, &workspace, &sample()).unwrap();
 
-        assert_eq!(
-            std::fs::read_to_string(workspace.join(SETTINGS_FILE)).unwrap(),
-            "{}\n"
-        );
+        let project = std::fs::read_to_string(workspace.join(SETTINGS_FILE)).unwrap();
+        let declared = crate::persisted_json::declared_keys(&workspace.join(SETTINGS_FILE));
+        assert_eq!(declared, ["unit_customizations"], "{project}");
+        for (key, scope) in SCOPES {
+            if *scope != Scope::Workspace {
+                assert!(!project.contains(key), "{key} was promoted: {project}");
+            }
+        }
         assert_eq!(resolved(&user, &workspace), sample());
     }
 

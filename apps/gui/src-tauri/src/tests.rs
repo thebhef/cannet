@@ -4497,12 +4497,14 @@ fn an_mdf_save_carries_math_signals_as_decoded_channels() {
             id: "m1".into(),
             name: "HalfSpeed".into(),
             unit: Some("rpm".into()),
+            output_gain: None,
+            output_offset: None,
             function: MathFunction::Scale {
                 gain: 0.5,
                 offset: 0.0,
             },
             operands: MathOperands {
-                picks: vec![MathOperandRef::file(1, "EngineSpeed")],
+                picks: vec![MathOperandRef::file(1, "EngineSpeed").into()],
                 patterns: Vec::new(),
             },
         })
@@ -8155,6 +8157,8 @@ fn math_hline(id: &str, name: &str, value: f64) -> crate::math_signals::MathDefi
         id: id.to_string(),
         name: name.to_string(),
         unit: None,
+        output_gain: None,
+        output_offset: None,
         function: crate::math_signals::MathFunction::HLine { value },
         operands: crate::math_signals::MathOperands::default(),
     }
@@ -8213,6 +8217,8 @@ fn a_math_pattern_matches_the_canonical_path_with_the_projects_bus_name() {
             id: "m1".into(),
             name: "max".into(),
             unit: None,
+            output_gain: None,
+            output_offset: None,
             function: crate::math_signals::MathFunction::Max,
             operands: crate::math_signals::MathOperands {
                 picks: Vec::new(),
