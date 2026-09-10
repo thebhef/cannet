@@ -729,6 +729,181 @@ Logger entry and rulings 16 and 21 follow.
   same code path with a 4 KB cap, which is the behaviour; only the
   MB → bytes multiply is untested end to end.
 
+### 2026-09-06 — phase 4 of 4, "the logger folder's file gridview + ranged import" (branch `task137-file-grid`)
+
+Criterion **5** met in full, plus the README half of criterion **6** (the
+logger section now covers the file list; rustdoc covers the new host
+modules — the CONTEXT.md glossary line was already phase 3's). This
+closes out the panel phase 3 built: it now lists what its folder holds,
+recursively, with the writing file as the list's own live row and no
+separate status line.
+
+**Landed, host** (`apps/gui/src-tauri/src/`):
+
+- `log_files.rs` — `LogFileCache` (a `Mutex<HashMap<PathBuf, …>>`,
+  in-memory, host-state scoped) keyed by absolute path and invalidated by
+  `(size, modified time)`; `list_logger_files` walks a folder recursively,
+  sorted by name, building a `LogFileNode` tree (`Dir { children }` /
+  `File { … }`, internally tagged for a TS discriminated union). A
+  finished file's start/end/message-count is [`cannet_blf::scan_blf`] —
+  the same header-only walk `scan_blf_channels` already pays for on
+  import — cached so a listing that finds nothing changed about a file
+  pays nothing for it. The file any logger is writing right now is never
+  scanned: its path is read off `LoggerRuntime::statuses()` (now
+  `pub(crate)`) and its row instead carries that status's live bytes and
+  frame count — the same numbers `get_logger_statuses` already tracks,
+  so a growing file costs one status read, not a header walk of an
+  unfinalized file. 12 tests over `LogFileCache::get_or_scan` (reuse vs.
+  rescan on a moved size or modified time), `writing_files` (the pure
+  status → path-map projection), and `list_files` (the walk, over real
+  files `LogWriter` wrote) — none needs an `AppHandle` in a test-built
+  struct.
+- `reveal.rs` — `reveal_in_file_manager`: `explorer /select,` /
+  `open -R` / `xdg-open <dir>` per platform, the command line factored
+  into a pure `reveal_command` so the platform rule is tested without
+  actually popping a file-manager window (nothing spawns a process in a
+  test).
+- `lib.rs` — the two modules registered, `LogFileCache` managed state,
+  `list_logger_files` / `reveal_in_file_manager` added to the invoke
+  handler.
+
+**Landed, frontend** (`apps/gui/src/`):
+
+- `logFileGrid.ts` — pure logic over the host's tree: `flattenLogTree`
+  (branch children spliced in only while expanded, ADR 0044),
+  `findLogNode`, `isSelectableLogNode` (a leaf that isn't the writing
+  row), and the column formatters — `formatLogTimestamp` renders a UTC
+  ISO 8601 string (the column is "trace start/end **as ISO
+  timestamps**"; the export dialog's own informational start/end labels
+  render local time instead, for a different reason — see below).
+  17 tests.
+- `LoggerFileGrid.tsx` — the gridview itself, built on `useGridview` /
+  `arrayRowSpace` / `gridviewSelection`: the same non-virtualized
+  scroll-into-view adapter `BlfChannelMapModal`'s markers list uses (a
+  log folder is small enough to render every row). Renders the host's
+  tree with a caret-toggled branch per directory; the writing row carries
+  a ● and no import button; the per-row button is the `Icon.tsx`
+  registry's `import` shape with an "Import" tooltip; a right-click opens
+  a small context menu (Import + Show in Explorer for a file, Show in
+  Explorer alone for a directory); Space on the cursor row imports it
+  through the same `onPrimaryAction` path Space already means everywhere
+  else in the app. Polls `list_logger_files` while the logger is writing
+  (`loggers-changed` fires only on start/stop/failure, not on a split
+  roll, so a newly-finished part would otherwise sit unlisted until the
+  run stops) and refetches on the event otherwise. 9 tests.
+- `LoggerPanel.tsx` — renders `<LoggerFileGrid>` beneath the message
+  line, folder resolved to the same string the "→ …" line under the
+  Folder field shows, `writing` from the status it already reads for
+  locking, `onImport` wired to the project context's new
+  `onImportCapture`.
+- `projectContext.ts` / `App.tsx` — `ProjectContextValue.onImportCapture`
+  is `handleImportTrace` itself: the grid's import affordances call the
+  exact function "Import trace…" does, with a preset path instead of
+  opening the file picker — the census, the channel-mapping/range dialog
+  and the unsaved-capture guard (inside `resetSession`, which
+  `handleBlfMapConfirm` already runs before the pump starts) are all the
+  one flow, never forked.
+- `index.css` — the `.logger-file-*` block, styled off the same tokens
+  `.blf-map-marker-row` (cursor/selected) and `.combobox-pop` (the
+  context menu) already use — no new tokens invented.
+- Six `.dom.test.tsx` files that build a strict `ProjectContextValue`
+  literal gained the new required field (`onImportCapture: () =>
+  {}`/`noop`); the others already narrow through `as unknown as
+  ProjectContextValue` and needed nothing.
+
+**Design choices not spelled out by a ruling:**
+
+- **`LogFileCache` is in-memory, not a persisted document.** The task
+  pointed at "the repo's existing per-file-cache precedents", and the
+  closest one — the pyramid cache's old whole-DBC-set stamp
+  (`signal_cache.rs`'s `PyramidValidity` docs) — is explicitly a
+  cautionary tale the codebase *moved away from*: a coarse file-metadata
+  stamp discarded good caches on a copy or checkout that touched nothing
+  a decode cares about. Persisting this cache to disk would have to
+  answer the same "what identifies a session" questions
+  `SignalCacheStore::persist`/`restore` do (ADR 0047) for a cache whose
+  whole job is cheaper than the read it is caching (an `fs::metadata`
+  stat plus a `HashMap` lookup) — not worth inventing a document format
+  for. A session that lists a folder it has never listed before pays one
+  scan per file, same as today; the ruling's requirement ("never a
+  header scan per listing") is about repeat listings within a session,
+  which this satisfies without touching disk.
+- **The writing file is found by path match, not reconstructed
+  client-side.** The prototype (client-side, no real backing store)
+  inserts a synthetic node into the tree at the writing file's directory.
+  Here the file is already a real file on disk the moment `LogWriter`
+  opens it (`create_dir_all` then `File::create`), so the host's own
+  recursive walk finds it in its real place; `list_logger_files` only
+  has to recognise the path (from `LoggerRuntime::statuses()`) and answer
+  with the status's numbers instead of a header scan. No path-splicing
+  logic exists on either side.
+- **"Show in Explorer" is a hand-rolled process spawn, not a new
+  dependency.** `tauri-plugin-opener`'s `reveal_item_in_dir` would do
+  this in one call, but bringing in a plugin mid-phase for one context-
+  menu action is exactly what CLAUDE.md's "surface that decision first"
+  asks not to do quietly. Three platform command lines is a small enough
+  surface to hand-write and the part worth getting right — which command
+  line — is a pure function the tests cover without spawning anything.
+  Left for the owner to weigh against the plugin at task close-out if a
+  second reveal site ever wants one.
+- **The context menu is hand-rolled**, matching `SignalsPanel`'s own
+  `sourcesMenu` (`{x, y}` state, `position: fixed`, dismissed on the next
+  document click) — there is no shared `ContextMenu` component in the
+  app to reuse.
+
+**Verification**, from the repo root unless noted:
+
+| Job | Command | Result |
+| --- | --- | --- |
+| rust (test) | `cargo test --workspace` | pass (52 suites, 0 failures) |
+| rust (clippy) | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+| mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass |
+| frontend | `pnpm --dir apps/gui test` (3265) then `pnpm --dir apps/gui build` | pass |
+| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-python-can` | pass (225) |
+| python (client) | `cargo build -p cannet-server`, then the same five in `servers/cannet-python-client` | pass (86, 1 skipped) |
+| proto gencode | `uv run --extra dev bash scripts/regen_proto.sh` + `git diff` | pass — CRLF-only on Windows (`git diff --ignore-cr-at-eol` empty); reverted before committing |
+| sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass |
+| comment-references | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
+
+`cargo fmt --all --check` is clean over the whole tree.
+
+**Perf reading (ADR 0031 render tier), reported not judged.** One run,
+`ev-zonal`, `--perf-interact scrub`, 60 s, release host from `pnpm --dir
+apps/gui tauri build --no-bundle`. Report at
+`docs/performance-measurements/frontend/2026-09-06-30876139-task137p4.json`
+(left untracked). Real load: `rx_fps.overall` 1603.3, `tx_fps.overall`
+1609.9, 174 ids in `rx_gap`, 266 gestures performed and 0 missing.
+
+| metric | value |
+| --- | --- |
+| `longtask_ms_per_s` mean / p95 | 0.0 / 0.0 |
+| `lag_ms` mean / max | 0.057 / 3.5 ms |
+| `jank_fraction` | 0.0 |
+| `rx_fps` / `tx_fps` overall | 1603.3 / 1609.9 |
+| `jsheap_mb` max | 90.2 MB |
+| `mem.webview_renderer_mb` max | 328.9 MB |
+| `mem.tree_mb` max | 728.6 MB |
+| `mem.host_mb` max | 59.5 MB |
+
+Every number sits inside the band phase 3's four runs already showed
+(renderer 313.5–322.0 MB, host 59.3–59.9 MB, tree 718.7–729.3 MB, lag
+mean within ±0.1 ms) — nothing here moved by the file gridview or the
+extra `list_logger_files` polling while a logger writes.
+
+**What task 137's close-out inherits:**
+
+- Every exit criterion with code (1–5) is now met; criterion 6
+  (documentation) has README and rustdoc done, and the CONTEXT.md
+  glossary line from phase 3 — nothing outstanding there either, though
+  closing the task is the overseer's call, not this phase's.
+- `reveal_in_file_manager` is one command shared by every file and
+  directory row; a future "Show in Explorer" elsewhere in the app can
+  reuse it as-is.
+- The context menu and the caret button are hand-rolled per this phase's
+  design-choices section — worth folding into a shared component if a
+  third gridview wants either.
+
 ### 2026-09-08 — bench fix: path separators followed Windows on every OS (branch `task137-loggers`)
 
 **Observation.** On macOS the logger panel's file-path preview read
@@ -771,3 +946,11 @@ real subdirectory on macOS instead of a file named `logs\bench-log`.
 separators, not Windows' always` — the stand-in host now has an OS
 (`host.sep` / `host.root`), and the test drives it as a mac. Verified
 red against the old `loggerPreviewName` before the fix stayed in.
+
+**A second site, one branch up** (`task137-file-grid`): the gridview
+marked a directory row with a hardcoded `\`. It has no host call of its
+own to read a separator from, but it is handed the resolved folder — an
+absolute path in the running OS's own form — so `logPathSeparator`
+reads the marker off that (`logFileGrid.ts`, tested both ways, plus a
+DOM test rendering a mac folder). The dom test's stand-in folder was
+`C:/logs`, a shape the host no longer produces; it is `C:\logs` now.

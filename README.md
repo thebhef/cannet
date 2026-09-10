@@ -2668,6 +2668,23 @@ enabled starts logging again the next time it connects.
 sits takes the next suffix the same way, so a second run never
 overwrites the first.
 
+**The panel lists the folder's files**, recursively — a subdirectory the
+File template made (e.g. a per-start `{start}\{now}` layout) shows as a
+branch you expand, same as any other file's parent folder. Each file's
+columns are **name, size, trace start/end** (ISO timestamps), **duration,
+message count** (both directions — rx and tx alike, since a logger writes
+the whole capture) **and filesystem modified time**; start/end/count are
+served from a per-file cache the host keeps, invalidated the moment a
+file's modified time moves, so listing the folder again costs nothing for
+a file nobody has touched. The file currently being written shows as the
+list's own live row — a ● beside its name, with its size and message
+count growing — instead of a separate status line. Importing a file from
+the list — the per-row button, its context menu, or Space on the
+selected row — opens the same import dialog "Import trace…" does, range
+picker included, so you can bring in a slice of an old run without
+leaving the panel. A directory's context menu offers only *Show in
+Explorer*; a file's adds *Import* beside it.
+
 **Bus assignment governs decode**. Each DBC entry in the project panel
 grows a row of checkboxes — one per defined logical bus — that control
 which buses the DBC decodes for. A DBC with no boxes checked is

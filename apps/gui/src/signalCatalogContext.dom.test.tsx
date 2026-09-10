@@ -63,6 +63,7 @@ function baseProjectCtx(over: Partial<ProjectContextValue> = {}): ProjectContext
     blfPath: null,
     onNewProject: () => {},
     onOpenProject: () => {},
+    onImportCapture: () => {},
     onSaveProject: () => {},
     onSaveProjectAs: () => {},
     onAddDbc: () => {},

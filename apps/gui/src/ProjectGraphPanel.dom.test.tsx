@@ -77,6 +77,7 @@ const projectCtx: ProjectContextValue = {
   blfPath: null,
   onNewProject: noop,
   onOpenProject: noop,
+  onImportCapture: noop,
   onSaveProject: noop,
   onSaveProjectAs: noop,
   onAddDbc: noop,

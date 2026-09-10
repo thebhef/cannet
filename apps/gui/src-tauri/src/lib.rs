@@ -68,6 +68,7 @@ mod interfaces;
 mod ipc;
 mod licenses;
 mod local_buses;
+mod log_files;
 mod logger;
 mod notes;
 mod persisted_json;
@@ -76,6 +77,7 @@ mod project_dir;
 mod project_registry;
 mod project_watch;
 mod rbs;
+mod reveal;
 mod sampling;
 mod server_browse;
 mod server_list;
@@ -515,6 +517,7 @@ pub fn run() -> ! {
         .manage(diag::AutomationState(autostart))
         .manage(diag::DiagEnabled(diag_on))
         .manage(logger::LoggerRuntime::default())
+        .manage(log_files::LogFileCache::default())
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -649,6 +652,8 @@ pub fn run() -> ! {
             signal_generator::evaluate_signal_generators,
             logger::set_loggers,
             logger::get_logger_statuses,
+            log_files::list_logger_files,
+            reveal::reveal_in_file_manager,
         ])
         .setup(move |app| {
             // Resolve the session's project directory (ADR 0042) now that

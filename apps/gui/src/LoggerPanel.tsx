@@ -20,6 +20,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import { useConnectionStates } from "./connectionStates";
 import { LOGGERS_CHANGED_EVENT, loggerPreviewName, type LoggerElement } from "./logger";
+import { LoggerFileGrid } from "./LoggerFileGrid";
+import type { LogFileColumnState } from "./logFileColumns";
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
 import { projectName } from "./windowTitle";
@@ -49,9 +51,9 @@ const NO_PREVIEW: TemplatePreview = { resolved: null, error: null, startResolved
 const NO_STATUSES: readonly LoggerStatus[] = [];
 
 export function LoggerPanel(props: IDockviewPanelProps) {
-  const { elementId, registry, element } = useElementPanel(props, "logger");
+  const { elementId, registry, element, persist } = useElementPanel(props, "logger");
   const { update } = registry;
-  const { projectPath } = useProjectContext();
+  const { projectPath, onImportCapture } = useProjectContext();
   const connectionStates = useConnectionStates();
   const connected = useMemo(
     () => Object.values(connectionStates).some((s) => s.kind === "connected"),
@@ -129,6 +131,13 @@ export function LoggerPanel(props: IDockviewPanelProps) {
   const patch = useCallback(
     (fields: Partial<LoggerElement>) => update(elementId, { kind: "logger", ...fields }),
     [update, elementId],
+  );
+
+  // The file grid's column layout is workspace state: it rides this
+  // panel's dockview params, never the element.
+  const persistFileColumns = useCallback(
+    (fileColumns: LogFileColumnState[]) => persist(undefined, { fileColumns }),
+    [persist],
   );
 
   const browse = useCallback(() => {
@@ -239,6 +248,14 @@ export function LoggerPanel(props: IDockviewPanelProps) {
           {message}
         </div>
       )}
+
+      <LoggerFileGrid
+        folder={folderPreview.error ? null : folderPreview.resolved}
+        writing={writing}
+        onImport={onImportCapture}
+        initialColumns={(props.params as { fileColumns?: unknown } | undefined)?.fileColumns}
+        onColumnsChange={persistFileColumns}
+      />
     </div>
   );
 }
