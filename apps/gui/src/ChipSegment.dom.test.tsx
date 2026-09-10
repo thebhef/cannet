@@ -18,7 +18,15 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import css from "./index.css?raw";
 import { ChipButton } from "./ChipButton";
 import { ChipSegment } from "./ChipSegment";
-import { geometryOf, installStylesheet } from "./chipCssTestKit";
+import {
+  PAINT,
+  contrastRatio,
+  declarationsOf,
+  geometryOf,
+  installStylesheet,
+  resolveToken,
+  themeTokens,
+} from "./chipCssTestKit";
 
 afterEach(cleanup);
 
@@ -93,6 +101,84 @@ describe("ChipSegment", () => {
     expect(Object.keys(off).length).toBeGreaterThan(4);
     const on = geometryOf(renderSegment("x").querySelectorAll("button")[0]);
     expect(on).toEqual(off);
+  });
+
+  // Every theme the theme setting can write, by its `data-theme` value
+  // — `null` being the default dark block on bare `:root`. A colour is
+  // only ever right or wrong per theme, so a fill that has to read as
+  // "this one is on" has to be checked in all three.
+  const THEMES: readonly (string | null)[] = [null, "light", "lighthk"];
+
+  /// A pressed chip standing on its own — the plot toolbar's Follow, and
+  /// the treatment a pressed segment has to match.
+  function renderLoneChip() {
+    cleanup();
+    render(<ChipButton label="Follow" ariaLabel="Follow Live" pressed onPress={() => {}} />);
+    return screen.getByRole("button", { name: "Follow Live" });
+  }
+
+  it("wears the same pressed treatment as a chip standing alone", () => {
+    // Follow is a bare `ChipButton`, so what it does when pressed is
+    // what `.chip-button[aria-pressed="true"]` does: an accent hairline,
+    // an `--surface-hover` fill and `--text-label` over it. A pressed
+    // segment is the same decision and has to look like it.
+    const lone = declarationsOf(renderLoneChip(), PAINT);
+    const loneEdge = declarationsOf(renderLoneChip(), ["border-color"])["border-color"];
+    const seg = declarationsOf(renderSegment("x").querySelectorAll("button")[0], PAINT);
+
+    expect(seg.background).toBe(lone.background);
+    expect(seg.color).toBe(lone.color);
+    // The one thing it cannot copy verbatim is the edge: the chips in a
+    // segment have no border to tint, and giving one back would move the
+    // box. Same token, same 1px, drawn inside instead.
+    expect(loneEdge).toBe("var(--accent-marker)");
+    expect(seg["box-shadow"]).toBe(`inset 0 0 0 1px ${loneEdge}`);
+  });
+
+  it("says which segment is on, legibly, in every theme", () => {
+    const offFill = declarationsOf(renderSegment().querySelectorAll("button")[0], PAINT).background;
+    const on = declarationsOf(renderSegment("x").querySelectorAll("button")[0], PAINT);
+    const edge = /var\((--[\w-]+)\)/.exec(on["box-shadow"])![0];
+
+    for (const theme of THEMES) {
+      const tokens = themeTokens(theme);
+      const name = theme ?? "dark";
+      const offHex = resolveToken(offFill, tokens);
+      const edgeHex = resolveToken(edge, tokens);
+      const onHex = resolveToken(on.background, tokens);
+      // The edge is what carries the state, so the edge is what has to
+      // read. The fill alone sits at 1.03 against the unpressed chips
+      // beside it — 1.0 being literally the same colour — and that on
+      // its own is what made a placed cursor's mode unreadable.
+      expect(
+        contrastRatio(edgeHex, offHex),
+        `${name}: pressed edge ${edgeHex} vs unpressed chip ${offHex}`,
+      ).toBeGreaterThan(3);
+      // And the icon has to survive the pressed fill.
+      expect(
+        contrastRatio(resolveToken(on.color, tokens), onHex),
+        `${name}: pressed label on pressed fill`,
+      ).toBeGreaterThan(4.5);
+    }
+  });
+
+  it("keeps the pressed treatment while the pressed segment is hovered or held", () => {
+    // Hover and :active restate the chip's own background at a higher
+    // specificity, so a pressed treatment that does not restate them
+    // washes out the moment the pointer is over it — the state
+    // disappearing exactly when it is being read.
+    const pressedRules = [];
+    for (const sheet of Array.from(document.styleSheets)) {
+      for (const rule of Array.from(sheet.cssRules) as CSSStyleRule[]) {
+        if (typeof rule.selectorText !== "string") continue;
+        if (!rule.selectorText.includes(".chip-seg .chip-button[aria-pressed=")) continue;
+        if (rule.style.getPropertyValue("box-shadow") === "") continue;
+        pressedRules.push(rule.selectorText);
+      }
+    }
+    const selectors = pressedRules.join(" ");
+    expect(selectors).toContain(":hover");
+    expect(selectors).toContain(":active");
   });
 
   it("passes a press through to the chip that was pressed", () => {

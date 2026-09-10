@@ -1113,12 +1113,30 @@ ul.status-bar-menu .status-chip {
    controls that happen to be adjacent.
 
    The inner chips lose their border rather than having it made
-   transparent, so a pressed segment says so with its fill and its text
-   — the accent hairline is the *group's* to spend, and re-colouring
-   one segment's edge inside a shared outline reads as a rendering
-   fault. Losing the border costs 2px of height, which the 20px here
-   gives back: the group is the same 22px as a chip standing alone, and
-   a bar of mixed chips and segments keeps one baseline. */
+   transparent — the accent hairline is the *group's* to spend, and
+   re-colouring one segment's edge inside a shared outline reads as a
+   rendering fault. Losing the border costs 2px of height, which the
+   20px here gives back: the group is the same 22px as a chip standing
+   alone, and a bar of mixed chips and segments keeps one baseline.
+
+   Dropping the border must not drop the *pressed* state with it. A
+   lone chip on the same bar — the plot toolbar's Follow — says it is
+   on three ways: an `--accent-marker` hairline, an `--surface-hover`
+   fill and `--text-label` over it. Losing the border leaves a pressed
+   segment with only the last two, and the fill alone is a contrast of
+   1.03 against the chip's own surface in the dark theme — the same
+   colour, to a reader.
+
+   So a pressed segment takes all three, Follow's exactly: the two
+   `.chip-button[aria-pressed="true"]` already gives it, plus the
+   accent edge, drawn here as a 1px inset ring rather than a border.
+   The ring is the same token and the same 1px the border was; what it
+   is not is a box model change, so the pressed chip stays 20px, its
+   icon does not shift by a pixel, and the group's own outline still
+   owns the geometry. Hover and :active restate the lot because the
+   chip's own rules for those set the background at a higher
+   specificity, and a state that washes out under the pointer is worse
+   than one that was never drawn. */
 .chip-seg {
   display: inline-flex;
   align-items: center;
@@ -1137,6 +1155,13 @@ ul.status-bar-menu .status-chip {
 }
 .chip-seg .chip-button + .chip-button {
   border-left: 1px solid var(--border-wash);
+}
+.chip-seg .chip-button[aria-pressed="true"],
+.chip-seg .chip-button[aria-pressed="true"]:hover:not(:disabled),
+.chip-seg .chip-button[aria-pressed="true"]:active:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-label);
+  box-shadow: inset 0 0 0 1px var(--accent-marker);
 }
 /* === end segmented chip group === */
 
