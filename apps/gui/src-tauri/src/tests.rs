@@ -8374,7 +8374,7 @@ fn a_unit_customization_change_announces_the_decode_model_change() {
     // effective settings are process-global and the suite runs in
     // parallel, so a test that mutated them could not be deterministic.
     let mut after = before.clone();
-    after.insert("counts".to_string(), "percent".to_string());
+    after.0.insert("counts".to_string(), "percent".to_string());
 
     let sink = MathChangeRecorder::default();
     assert!(crate::settings::apply_unit_change(
@@ -8384,6 +8384,31 @@ fn a_unit_customization_change_announces_the_decode_model_change() {
         sink.0.into_inner(),
         vec!["math-signals-changed", "dbc-changed"],
         "the listing's conversions moved, and so did the decoded model",
+    );
+}
+
+/// **A composed unit is a conversion input too.**
+///
+/// A unit the user composed is what a customization can name, so
+/// editing the composition moves a dependent series' factors exactly as
+/// editing the mapping does — and `unit_inputs` has to carry it, or a
+/// composition edit rescales the host's series while the plots keep the
+/// old ones. The half of that list a test can pin is that a move in it
+/// is announced.
+#[test]
+fn a_composed_unit_change_announces_the_decode_model_change() {
+    let state = test_state();
+    let before = crate::settings::unit_inputs();
+    let mut after = before.clone();
+    after.1.insert("VA".to_string(), "V * A".to_string());
+
+    let sink = MathChangeRecorder::default();
+    assert!(crate::settings::apply_unit_change(
+        &sink, &state, &before, &after
+    ));
+    assert_eq!(
+        sink.0.into_inner(),
+        vec!["math-signals-changed", "dbc-changed"],
     );
 }
 

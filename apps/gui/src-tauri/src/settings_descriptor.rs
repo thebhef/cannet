@@ -229,6 +229,17 @@ const EDITED_ELSEWHERE: &[(&str, &str)] = &[
          promotes a mapping into it — one table edits both scopes, so a \
          second row would be a second editor of the same fact",
     ),
+    (
+        "unit_definitions",
+        "the Unit customizations row, whose two-field entry defines a unit \
+         and whose per-unit checkboxes say which scope holds it — the \
+         composed unit is a row of the same table",
+    ),
+    (
+        "unit_definitions_user",
+        "the Unit customizations row, for the same reason its project-scope \
+         twin is: one table edits both scopes",
+    ),
 ];
 
 /// One setting's descriptor, as written in [`DESCRIPTORS`]. The scope

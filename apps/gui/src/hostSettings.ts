@@ -188,6 +188,15 @@ export interface Settings {
   /// wins** where both map the same string. Edited from the units
   /// section's per-row scope checkboxes, which is its only editor.
   unit_customizations_user: Record<string, string>;
+  /// The units this project's user composed out of ones the app already
+  /// knows: a name against the string it stands for (`"VA": "V * A"`).
+  /// Workspace-scoped for the same reason the mapping dict is — a unit
+  /// invented to read these databases travels with them.
+  unit_definitions: Record<string, string>;
+  /// The same map at **user** scope, joined the same way: the project
+  /// wins where both scopes define one name. Edited from the units
+  /// section's two-field entry and its per-row scope checkboxes.
+  unit_definitions_user: Record<string, string>;
 }
 
 /// One column of a stored default table layout — the wire mirror of
@@ -243,6 +252,8 @@ export function defaultSettings(): Settings {
     float_mantissa_decimals: 5,
     unit_customizations: {},
     unit_customizations_user: {},
+    unit_definitions: {},
+    unit_definitions_user: {},
   };
 }
 
