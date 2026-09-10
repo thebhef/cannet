@@ -2531,11 +2531,63 @@ labelled with their source channel group — and never in the trace
 views, which list frames. Loading, reloading or removing a DBC leaves
 them exactly as they are, in the session and across a relaunch.
 
+**Export opens a dialog, then the OS picker.** *Export* (toolbar, or
+*Save capture…* in the palette) opens a dialog that settles two things
+— what the file is called and which slice of the capture goes into it —
+and then hands off to the ordinary Save As.
+
+The **name** is a template with a live preview beside it. Four tokens
+resolve host-side:
+
+| token | resolves to |
+| --- | --- |
+| `{project}` | the slugified project name |
+| `{start}` | the capture's wall-clock start |
+| `{now}` | the moment of export |
+| `{start:%…}` / `{now:%…}` | either time in an explicit `strftime` format, e.g. `{start:%Y%m%d-%H%M%S}` |
+
+A bare `{start}` / `{now}` renders as ISO 8601 in *basic* form with the
+UTC offset (`20260905T091502-0600`) — extended ISO's colons cannot
+appear in a Windows file name. On a capture with no wall-clock anchor
+`{start}` resolves as the export time and the dialog says so. An invalid
+token or format string is rejected in the preview, with the reason. The
+default template is `{project}-{start}`; whatever you leave it as is
+remembered for the next export, along with the folder and the format.
+
+The **range** defaults to the whole capture: both bounds empty means
+everything up to the live edge when the write finishes. A timeline over
+the capture's extent takes the two bounds directly (drag a handle to the
+outer edge to return that bound to its default, or move it with the
+arrow keys; Home/End restores the default), with presets for the whole
+capture, the last 1 / 5 / 30 minutes, and the window the plot is
+currently showing. Each bound is also a text field: type `HH:MM[:SS]` as
+wall clock, or bare seconds from the capture's start, or open the
+dropdown and pick one of the capture's own events. A bound sitting on an
+event reads back as that event. A capture with no wall-clock anchor
+takes and shows seconds-from-start only — there are no instants to name.
+
+A capture that runs **longer than a day** needs the day too, or a clock
+could only ever name an instant in its first 24 hours: prefix the clock
+with the capture day, counted from the day it started — `3d 12:30:00` is
+half past noon on the capture's fourth day. A bound past the first
+midnight reads back with its prefix, so what the field shows is what it
+takes. A bare clock keeps its short meaning — the capture's own day, or
+the next one if that clock is earlier than the start — and
+seconds-from-start works at any magnitude, prefix or no prefix.
+
 **Save Capture writes BLF or MDF.** One gesture, one host command; the
-save dialog's filter list offers **Vector BLF (`.blf`)** and **ASAM MDF
-(`.mf4`)**, and the filter you pick travels to the host as an explicit
-format — nothing is inferred from the path, so a "save as MDF" can
-never produce a BLF wearing an `.mf4` name.
+picker's filter list offers **Vector BLF (`.blf`)** and **ASAM MDF
+(`.mf4`)** with the last-used format first, and the filter you pick
+travels to the host as an explicit format — nothing is inferred from the
+path, so a "save as MDF" can never produce a BLF wearing an `.mf4` name.
+
+**The export runs in the background and the GUI stays live.** A chip in
+the status bar names the file and its progress, with a Cancel beside it;
+cancelling stops the write and removes the partial file. When the write
+finishes the chip says so briefly, and the capture joins Recent
+captures. The capture model keeps serving every view throughout, so
+frames keep arriving and panels keep rendering while the file is
+written.
 
 | | BLF | MDF |
 | --- | --- | --- |

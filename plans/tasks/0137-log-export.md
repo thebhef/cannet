@@ -252,6 +252,239 @@ gridview on top of this.
 
 `cargo fmt --all --check` is clean over every file this phase touched.
 
+### 2026-09-06 — phase 2 of 4, "export dialog + background export" (branch `task137-export-dialog`)
+
+Criteria **1** and **2** met. Phase 1's sticky state and template
+machinery now have the dialog that reads and writes them; `save_capture`
+runs on its own thread with progress, cancellation and partial-file
+removal. No logger concepts and no file gridview — phases 3 and 4.
+
+**Landed, host** (`apps/gui/src-tauri/src/`):
+
+- `capture.rs` — `ExportRange` (inclusive `[start_ns, end_ns]`, either
+  side `None` for unbounded), `ExportRun` (the range predicate + the
+  paced progress sink + the cooperative cancel flag), `ExportOutcome`
+  (`Written` | `Cancelled`), `discard_partial_export`,
+  `cancel_export` / `cancel_export_now`, `capture_extent` /
+  `capture_extent_now`, and `run_export` — `save_capture`'s body, now on
+  a `cannet-export` thread. The command returns as soon as the write
+  starts and refuses a second concurrent export (one slot, one chip).
+  Both writers take `&mut ExportRun` and apply the range to *every*
+  content kind — frames, notes, and MDF's file-backed signal samples —
+  so an exported slice is one consistent capture and its file starts
+  where the slice does.
+- `ipc.rs` — `ExportProgress { written, total }` and `ExportFinished`
+  (`ok` / `cancelled` / `error`), on `export-progress` /
+  `export-finished`.
+- `app_state.rs` — `export_cancel`, its own slot rather than a share of
+  `import_cancel`: exporting the capture you are still importing into is
+  legal, so one Cancel must not stop the other.
+- Fixed a stale doc line on `save_capture` claiming both writers are
+  "atomic (temp file + rename)". Neither is — both stream straight into
+  the destination (`BlfCaptureWriter::create` / `MdfCaptureWriter::create`
+  document this), which is exactly why a cancelled export has a partial
+  file to remove.
+
+**Landed, frontend** (`apps/gui/src/`):
+
+- `ExportDialog.tsx` — the modal: name template + host-resolved preview
+  (a label, ruling 10), informational full date-time labels for the
+  capture's start and last message (ruling 24), and the range picker —
+  dual-handle timeline over the extent with event ticks (click sets the
+  nearer bound), presets, and two bound fields. 18 tests.
+- `exportRange.ts` — all the range arithmetic, pure: `parseRangeBound`
+  (empty = the default, `HH:MM[:SS]` wall clock, bare seconds;
+  wall clock refused on an unanchored capture per ruling 22),
+  `formatRangeBound`, `boundText` (a bound on an event reads as the
+  event), `applyRangePreset`, `rangeSpanSeconds`, `exportRangeNs`.
+  21 tests.
+- `ExportProgressChip.tsx` — the status-bar chip: name + percent +
+  Cancel, then the brief "Exported `<name>`". 4 tests.
+- `plotWindow.ts` — the one read of a plot panel's x window from outside
+  the panel, for the "Plot window" preset. A module value, not context:
+  the window moves every animation frame while following the live edge.
+  `PlotPanel`'s `applyXAll` publishes it. 4 tests.
+- `saveFormat.ts` — `saveCaptureFilters(preferred)` (the sticky format
+  reaches the OS picker as filter *order*, the only handle there is on
+  which one it opens with), `saveCaptureExtension`, `joinExportPath`,
+  `exportFolderOf`. `DEFAULT_SAVE_CAPTURE_NAME` / `SAVE_CAPTURE_FILTERS`
+  stay for the tests that pin the offer order.
+- `App.tsx` — `capture.save` now opens the dialog (reading
+  `get_export_state` + `capture_extent` at open time), then the picker,
+  then `set_export_state` and the background `save_capture`; listeners
+  for the two new events drive the chip. `App.saveCapture.dom.test.tsx`
+  rewritten around the new flow, 8 tests.
+- `windowTitle.ts` — `projectName` exported (it is what `{project}`
+  resolves against).
+
+**Design choices not spelled out by a ruling:**
+
+- **The bound fields are not the shared `Combobox`.** That control is a
+  filtered *select*: its text box is an fzf filter and Enter takes the
+  best-matching option over what was typed. Measured, not assumed —
+  typing `09:20` selected the event labelled "fault injected" because
+  its rendered time fuzzy-matched. Here the typed text is the primary
+  input and the options are shortcuts, so `BoundField` is an editable
+  field with a dropdown beneath it: same anatomy as ruling 14's
+  "combobox", opposite precedence, and what the prototype implements.
+- **The timeline handles answer the keyboard** (arrows nudge by 1% of
+  the capture, Home/End restore the bound's default). The prototype
+  gives them `tabindex` and no key handling; a focusable control that
+  does nothing on a key press is a defect, and this was cheaper to add
+  than to leave.
+- **A trailing preset leaves the end bound at its default** rather than
+  freezing it at the live edge of the moment it was picked, so "last 5
+  min" of a running capture still reaches the edge when the write
+  finishes (ruling 6).
+- **Cancel is announced by the host, not assumed by the chip.** The chip
+  stays up until `export-finished` arrives, because that is the moment
+  the partial file is actually gone.
+- Range bounds cross the wire as absolute nanoseconds computed in JS
+  (`sessionStartSeconds + bound) * 1e9`), which at wall-clock magnitudes
+  is f64-exact only to ~256 ns. Immaterial for a range boundary, and the
+  same arithmetic the import dialog's range already uses.
+
+**Investigation — the lib test binary would not load** (recorded because
+the failure mode is non-obvious and the trap is easy to walk back into):
+
+- *Observation.* After the first host-side edit, `cargo test -p
+  cannet-gui --lib` exited `0xc0000139` (`STATUS_ENTRYPOINT_NOT_FOUND`)
+  before running a single test. `cargo test -p cannet-blf` was fine, and
+  the previous build's test exe still ran.
+- *Hypothesis 1: stale artifact.* Falsified — deleting the exe and
+  relinking, and a full `CARGO_INCREMENTAL=0` rebuild, both reproduced.
+- *Hypothesis 2: pre-existing.* Falsified — reverting the five touched
+  files to `HEAD` produced a binary that ran all 1009 tests.
+- *Experiment.* Diffed the PE import tables of the working and broken
+  exes. The broken one newly imports `user32`, `gdi32`, `ole32`,
+  `dwmapi` and `comctl32` — the whole windowing stack — and resolving
+  each imported name against `System32` showed exactly one missing:
+  `comctl32!TaskDialogIndirect`, which lives only in the side-by-side
+  ComCtl32 v6 assembly a test binary has no manifest for.
+- *Conclusion.* `ExportRun` held an `Option<AppHandle>`, and the writers'
+  tests construct an `ExportRun`. A field is part of a struct's drop
+  glue, so naming `AppHandle` in a type the tests instantiate linked
+  Tauri's app/window graph — and the dialog plugin's `rfd` calls — into
+  the test binary for the first time. Confirmed by replacing the field
+  with a `Box<dyn Fn(u64, u64) + Send>` sink built by the command that
+  owns the handle: 1019 tests ran. The field carries a comment saying
+  so.
+- Bisecting also caught a real bug the same change masked: `advance()`
+  only consulted the cancel flag on the 16384-frame progress checkpoint,
+  so a cancel never landed on a small capture. It now reads the flag
+  every frame — one relaxed load — and checkpoints only the clock read,
+  which is the split `ImportProgress` already makes.
+
+**Verification**, from the repo root unless noted:
+
+| Job | Command | Result |
+| --- | --- | --- |
+| rust (test) | `cargo test --workspace` | pass |
+| rust (clippy) | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+| mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass |
+| frontend | `pnpm --dir apps/gui test` (3215) then `pnpm --dir apps/gui build` | pass |
+| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-python-can` | pass (225) |
+| python (client) | `cargo build -p cannet-server`, then the same five in `servers/cannet-python-client` | pass (86, 1 skipped) |
+| proto gencode | `uv run --extra dev bash scripts/regen_proto.sh` + `git diff` | pass — the diff it leaves on Windows is CRLF-only (`git diff --ignore-cr-at-eol` is empty) |
+| sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass |
+| comment-references | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
+
+`cargo fmt --all --check` is clean over the whole tree.
+
+**Perf reading (ADR 0031 render tier), reported not judged.** One
+self-driving run, `ev-zonal`, `--perf-interact scrub`, 60 s, release
+host built with `pnpm --dir apps/gui tauri build --no-bundle`. Report at
+`docs/performance-measurements/frontend/<date>-<hash>-task137p2.json`
+(left untracked).
+
+| metric | value |
+| --- | --- |
+| `longtask_ms_per_s` mean / p95 | 0.0 / 0.0 |
+| `lag_ms` mean / max | −0.003 / 1.3 |
+| `jank_fraction` | 0.0 |
+| `rx_fps` / `tx_fps` overall | **0.0 / 0.0** |
+| `rx_gap` | `null` |
+| `jsheap_mb` peak / drift | 43.4 / −7.6 MB/min |
+| `mem.webview_renderer_mb` peak / drift | 201.7 / −22.0 MB/min |
+| `mem.tree_mb` peak / drift | 609.2 / −15.8 MB/min |
+| `mem.host_mb` peak / drift | 52.2 / +1.2 MB/min |
+| `interact` | scrub, 266 performed, 0 missing |
+
+**The run measured no load**, so every timing row above describes a
+resting app and none of them is comparable with a loaded baseline. The
+interaction script did run (266 gestures, none missing) and the plot
+resampled ~67/s, so the render tier was exercised — but no frames
+arrived: `frame source ended cleanly (0 frames)`.
+
+Not the usual "the dongles are held elsewhere" cause: both PEAK adapters
+enumerated and opened (`discovered 2 interface(s)`, `PCAN_USBBUS1` /
+`PCAN_USBBUS2`, `connected to 127.0.0.1:62100 (2 interface(s))`), and no
+cannet was running before the launch. `tx_fps` is zero too, so nothing
+was transmitted either — the rest-of-bus simulation produced no traffic
+despite `--rbs-run-on-start`. The start of `cannet.log` carries no error;
+its only warnings are the routine absent Vector/Kvaser libraries.
+Reported for the overseer to coordinate rather than retried in a loop.
+
+**What phases 3 and 4 inherit:**
+
+- `ExportRun` / `ExportRange` / `ExportOutcome` are the writers' contract
+  now. A logger writing live gets its splitting and its cancel from the
+  same shape — but **never put an `AppHandle` in a struct the tests
+  construct** (see the investigation above); pass a sink.
+- `AppState::export_cancel` holds one flag and `save_capture` refuses a
+  second concurrent export. A logger writing in parallel with an export
+  needs its own slot, not this one.
+- `capture_extent` is the host-side extent reader; `plotWindow.ts` is the
+  published plot window. Both are small and reusable.
+- The status bar has one export chip. A logger's "writing…" status is
+  the file gridview's live row (ruling 13), not a second chip.
+
+### 2026-09-09 — bench fix, day-scale range bounds (branch `task137-export-dialog`)
+
+Owner, testing a four-day trace: "it won't accept anything beyond
+h:m:s."
+
+**Observation.** `parseRangeBound`'s clock pattern was
+`/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/` with `h > 23` refused, and the
+offset came from `at.setHours(h, m, sec, 0)` on the capture's start
+*date* — so every clock resolved inside `[0, 86400)`. `formatRangeBound`
+rendered `HH:MM:SS` with nothing above hours.
+
+**Experiment** (red-first, `apps/gui/src/exportRange.test.ts` against a
+capture starting 2026-09-05T09:15:02 and running four days):
+
+| input | expected | measured before the fix |
+| --- | --- | --- |
+| `parseRangeBound("3d 12:30")` | 270898 | `undefined` |
+| `formatRangeBound(270898)` | `3d 12:30:00` | `12:30:00` |
+| `parseRangeBound(formatRangeBound(270898))` | 270898 | 11698 |
+
+**Conclusion.** Two defects, one cause: the clock form carries no day.
+Entry past the first midnight is impossible, and — worse, because it is
+silent — a bound that *is* past it renders as a first-day clock, so
+reading the field back and committing it moves the bound three days.
+
+**Fix.** The clock takes an optional capture-day prefix, `[Nd ]HH:MM[:SS]`
+(`3d 12:30:00`, `3d12:30`), counted in local calendar days from the day
+the capture started, and `formatRangeBound` emits the prefix whenever
+the bound is not on the capture's own day. Calendar days rather than
+86400-second blocks, so a DST transition inside a long capture does not
+shift every later day's index. A bare clock is unchanged: still the
+capture's own day, still rolling to the next when it is earlier than the
+start. An explicit day never rolls — it says which day it is — so a
+day-prefixed clock landing before the start is refused rather than
+quietly pushed forward. Seconds-from-start was never magnitude-limited
+and stays the escape hatch.
+
+Tests: 7 added in `exportRange.test.ts` (parse with and without the
+prefix, the out-of-range and before-the-start refusals, seconds at day
+scale, prefixed and unprefixed display, round trip) and 1 in
+`ExportDialog.dom.test.tsx` (typing `3d 12:30` into the start field on a
+four-day capture exports that bound and the field reads back
+`3d 12:30:00`). The field tooltip and the parse-failure message name the
+prefix; README's export-range paragraph documents it.
+
 ## Blockers / side effects
 
 - **`cargo fmt --all --check` is still red** on
@@ -259,3 +492,19 @@ gridview on top of this.
   #460, already flagged in task 136's own status log). Not fixed here:
   the file is untouched by this phase and belongs to work another
   branch owns in this shared tree.
+
+- **`cargo fmt --all --check` was red** on
+  `apps/gui/src-tauri/src/interfaces.rs` (pre-existing since `7d18a421`
+  #460; flagged by task 136 and by this task's phase 1). **Fixed here** —
+  `rustfmt` reaches it through `lib.rs`'s module tree, so formatting this
+  phase's files formatted it too. Whitespace only (12 insertions, 3
+  deletions), and the pre-commit hook would have made the same change on
+  any commit that ran it.
+- One run of the full frontend suite showed
+  `PlotPanel.dom.test.tsx > re-renders no plot area that holds none of
+  the affected rows` failing (expected 2 renders, saw 8). It did not
+  recur: the file passes alone (265 tests) and the full suite passed
+  twice afterwards. Recorded rather than dismissed — if it reappears it
+  is a real ordering dependency, not this phase's change (nothing here
+  renders during a plot slide; `publishPlotWindow` is a module-value
+  write).

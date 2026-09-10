@@ -1463,3 +1463,49 @@ export interface ViewSignalPage {
   attentionCount: number;
   total: number;
 }
+
+/// The sticky export state (`get_export_state` / `set_export_state`,
+/// mirrors `export_state::ExportState`): what the next export pre-fills
+/// with. `folder` is `null` until the first export, which leaves the OS
+/// picker to open wherever it last was rather than at an invented path.
+export interface ExportStateRecord {
+  folder: string | null;
+  format: "blf" | "mdf";
+  nameTemplate: string;
+}
+
+/// The capture's timeline as `capture_extent` reports it (mirrors
+/// `capture::CaptureExtent`) — what the export dialog's range picker
+/// spans. Nanoseconds, because that is what the timeline is stored in;
+/// the dialog converts once.
+export interface CaptureExtentRecord {
+  /// The oldest *retained* frame's timestamp; `null` for an empty
+  /// capture. Not the session origin — a windowed store has dropped
+  /// everything before this.
+  firstNs: number | null;
+  /// The capture's live edge: the store's running max, not the last row
+  /// appended (ADR 0024).
+  liveEdgeNs: number | null;
+  /// The session origin, or `null` when no session has started — a
+  /// different fact from an origin of zero.
+  sessionStartNs: number | null;
+  frameCount: number;
+}
+
+/// How far the background export has got (`export-progress`, mirrors
+/// `ipc::ExportProgress`): frames written against the frames the export's
+/// range holds. Determinate from the first report — the writer counts the
+/// slice before it writes any of it.
+export interface ExportProgressRecord {
+  written: number;
+  total: number;
+}
+
+/// How the background export ended (`export-finished`, mirrors
+/// `ipc::ExportFinished`). `cancelled` is its own ending rather than an
+/// error: nothing failed, and the host has already removed the partial
+/// file by the time this arrives.
+export type ExportFinishedRecord =
+  | { status: "ok"; path: string; frameCount: number; byteSize: number }
+  | { status: "cancelled" }
+  | { status: "error"; message: string };

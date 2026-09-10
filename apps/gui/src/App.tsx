@@ -9,8 +9,12 @@ import type { DockviewApi, DockviewReadyEvent } from "dockview";
 import type {
   BlfScanResult,
   Bus,
+  CaptureExtentRecord,
   DbcInfo,
   DbcRef,
+  ExportFinishedRecord,
+  ExportProgressRecord,
+  ExportStateRecord,
   ImportMdfResult,
   InterfaceBinding,
   InterfaceRecord,
@@ -42,7 +46,7 @@ import {
   relativizeProjectPath,
   resolveProjectPath,
 } from "./projectPaths";
-import { captureLabel, windowTitle } from "./windowTitle";
+import { basename, captureLabel, projectName, windowTitle } from "./windowTitle";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
@@ -52,6 +56,9 @@ import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
 import { RbsSignalsPanel } from "./RbsSignalsPanel";
 import { ChangedOnDiskNotice } from "./ChangedOnDiskNotice";
+import { ExportDialog, type CaptureExtentView, type ExportChoice } from "./ExportDialog";
+import { ExportProgressChip, type ExportStatus } from "./ExportProgressChip";
+import { exportRangeNs, type RangeEvent } from "./exportRange";
 import { LoadProgressChip } from "./LoadProgressChip";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { GeneratorPanel } from "./GeneratorPanel";
@@ -99,8 +106,10 @@ import { KeybindingsContext } from "./keybindingsContext";
 import { recordRecentCapture, forgetRecentCapture } from "./recentCaptures";
 import { recordRecentProject, forgetRecentProject } from "./recentProjects";
 import {
-  DEFAULT_SAVE_CAPTURE_NAME,
-  SAVE_CAPTURE_FILTERS,
+  exportFolderOf,
+  joinExportPath,
+  saveCaptureExtension,
+  saveCaptureFilters,
   saveFormatFor,
 } from "./saveFormat";
 import { IMPORT_TRACE_FILTERS, importFormatFor } from "./importFormat";
@@ -323,6 +332,44 @@ function withStoredPaths(project: Project, projectFilePath: string): Project {
   };
 }
 
+/// How long the status bar keeps saying "Exported <name>" after a write
+/// finishes. Long enough to read from across the desk, short enough that
+/// it is gone before it becomes furniture.
+const EXPORT_DONE_DWELL_MS = 5_000;
+
+/// The export dialog in flight, with the two host facts it was opened
+/// on. Held together so a dialog and its picker seeding can never
+/// disagree about which export they belong to.
+interface PendingExport {
+  sticky: ExportStateRecord;
+  extent: CaptureExtentRecord;
+}
+
+/// The host's nanosecond extent as the dialog's seconds. One conversion,
+/// here, so nothing downstream carries two units for the same timeline.
+function captureExtentView(extent: CaptureExtentRecord): CaptureExtentView {
+  const seconds = (ns: number | null) => (ns === null ? null : ns / 1e9);
+  return {
+    sessionStartSeconds: seconds(extent.sessionStartNs),
+    firstSeconds: seconds(extent.firstNs),
+    liveEdgeSeconds: seconds(extent.liveEdgeNs),
+    frameCount: extent.frameCount,
+  };
+}
+
+/// The capture's events as range bounds — elapsed seconds from the
+/// session origin, the same timescale every renderer shares (ADR 0024).
+/// An unstarted session has no origin to measure against, so it offers
+/// no events.
+function exportRangeEvents(notes: readonly Note[], sessionStartNs: number | null): RangeEvent[] {
+  if (sessionStartNs === null) return [];
+  return notes.map((n) => ({
+    id: n.id,
+    label: n.label,
+    seconds: (n.timestampNs - sessionStartNs) / 1e9,
+  }));
+}
+
 export function App() {
   diagCount("render.App"); // DIAG
   // Dockview paints its own chrome from its own theme object rather
@@ -502,6 +549,19 @@ export function App() {
       return next;
     });
   }, []);
+  // The export dialog in flight, with the two host facts it was opened
+  // on: the sticky folder / format / template, and the capture's extent.
+  const [pendingExport, setPendingExport] = useState<PendingExport | null>(null);
+  // The background export in flight, as the status bar shows it.
+  const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null);
+  /// Clears the brief "Exported <name>" state. Held so an unmount (or a
+  /// second export) cancels a pending clear rather than letting it fire
+  /// into a dead component.
+  const exportDoneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /// Read by the once-mounted `export-finished` listener, which must not
+  /// re-register just because a callback identity changed.
+  const rememberRecentCaptureRef = useRef(rememberRecentCapture);
+  rememberRecentCaptureRef.current = rememberRecentCapture;
   const dropRecentCapture = useCallback((path: string) => {
     setRecentCaptures((current) => {
       const next = forgetRecentCapture(current, path);
@@ -1211,6 +1271,39 @@ export function App() {
       }),
     );
 
+    // The background export (`save_capture`). Progress only advances a
+    // chip that is already running: a report arriving after the export
+    // ended must not resurrect one.
+    unlistens.push(
+      listen<ExportProgressRecord>("export-progress", (event) => {
+        setExportStatus((prev) =>
+          prev === null || prev.phase !== "running"
+            ? prev
+            : { ...prev, written: event.payload.written, total: event.payload.total },
+        );
+      }),
+    );
+    unlistens.push(
+      listen<ExportFinishedRecord>("export-finished", (event) => {
+        const finished = event.payload;
+        if (finished.status !== "ok") {
+          // Cancelled (the partial file is already gone) or failed (the
+          // host logged why). Either way there is nothing to report.
+          setExportStatus(null);
+          return;
+        }
+        // A capture the user just wrote is the archetypal "what did I
+        // just save?" re-open candidate — either format.
+        rememberRecentCaptureRef.current(finished.path);
+        setExportStatus({ phase: "done", name: basename(finished.path) });
+        if (exportDoneTimer.current !== null) clearTimeout(exportDoneTimer.current);
+        exportDoneTimer.current = setTimeout(
+          () => setExportStatus(null),
+          EXPORT_DONE_DWELL_MS,
+        );
+      }),
+    );
+
     unlistens.push(
       listen<LogFinished>("log-finished", (event) => {
         // Whatever the load did, it is over: the next one starts from no
@@ -1259,6 +1352,7 @@ export function App() {
 
     return () => {
       unlistens.forEach((p) => p.then((fn) => fn()));
+      if (exportDoneTimer.current !== null) clearTimeout(exportDoneTimer.current);
     };
   }, [invalidateCache]);
 
@@ -2327,15 +2421,17 @@ export function App() {
   const handleSaveAllRef = useRef(handleSaveAll);
   handleSaveAllRef.current = handleSaveAll;
 
-  // Save Capture: write the session buffer to a capture file.
-  // System Messages handle the user-visible success / failure
-  // feedback; this just routes through the host command.
+  // Export: the dialog decides the name and the range, the OS picker
+  // decides the folder and the format, and the host writes in the
+  // background. System Messages carry the user-visible success / failure
+  // detail; the status-bar chip carries the progress and the cancel.
   //
-  // One gesture, two formats: the dialog's filter list offers Vector BLF
-  // and ASAM MDF, and the chosen filter travels to the host as an
-  // explicit `format` (see `saveFormat.ts` for why the mapping lives on
-  // this side). BLF carries frames and notes; MDF also carries the
-  // capture's file-backed signals and the project's DBCs.
+  // One gesture, two formats: the picker's filter list offers Vector BLF
+  // and ASAM MDF with the last-used one first, and whichever filter
+  // stamped the path travels to the host as an explicit `format` (see
+  // `saveFormat.ts` for why the mapping lives on this side). BLF carries
+  // frames and notes; MDF also carries the capture's file-backed signals
+  // and the project's DBCs.
   //
   // The project's ordered `buses` list IS the channel order in either
   // format (see CLAUDE.md § File formats). Frames get re-channeled by
@@ -2343,27 +2439,69 @@ export function App() {
   // modal seeds matching pairs.
   const handleSaveCapture = useCallback(async () => {
     if (count === 0) return;
-    const path = await save({
-      defaultPath: DEFAULT_SAVE_CAPTURE_NAME,
-      filters: SAVE_CAPTURE_FILTERS,
-    });
-    if (typeof path !== "string" || path.length === 0) return;
-    const format = saveFormatFor(path);
+    // Both facts are the host's: the sticky folder / format / template
+    // (machine state, ADR 0032) and the capture's extent (ADR 0024).
+    // Read at open time so a dialog opened twice in one session reflects
+    // whatever the last export left behind.
     try {
-      await invoke("save_capture", {
-        path,
-        format,
-        buses: buses.map((b) => b.id),
-      });
-      // A newly-saved capture is a reasonable Recent-captures candidate
-      // (the user just produced this file; re-opening it is the
-      // archetypal "what did I just save?" gesture) — either format.
-      rememberRecentCapture(path);
+      const [sticky, extent] = await Promise.all([
+        invoke<ExportStateRecord>("get_export_state"),
+        invoke<CaptureExtentRecord>("capture_extent"),
+      ]);
+      setPendingExport({ sticky, extent });
     } catch {
-      // Failure surfaces in the System Messages panel via the
-      // host's `capture`-tagged error log; nothing more to do here.
+      // The host's own error log says what failed; without the sticky
+      // state or the extent there is no dialog to show.
     }
-  }, [buses, count, rememberRecentCapture]);
+  }, [count]);
+
+  /// Second half of the export gesture: the OS picker, then the
+  /// background write. Runs once the dialog has settled the name and the
+  /// range.
+  const handleExportConfirm = useCallback(
+    async (choice: ExportChoice) => {
+      const pending = pendingExport;
+      setPendingExport(null);
+      if (pending === null) return;
+      const format = pending.sticky.format;
+      const fileName = `${choice.resolvedName}${saveCaptureExtension(format)}`;
+      const path = await save({
+        // The sticky folder and the resolved name together: the picker
+        // opens where the last export went, with this export's name
+        // already in the field.
+        defaultPath:
+          pending.sticky.folder === null ? fileName : joinExportPath(pending.sticky.folder, fileName),
+        filters: saveCaptureFilters(format),
+      });
+      if (typeof path !== "string" || path.length === 0) return;
+      const chosen = saveFormatFor(path);
+      // Remember what this export decided, for the next one.
+      void invoke("set_export_state", {
+        folder: exportFolderOf(path),
+        format: chosen,
+        nameTemplate: choice.nameTemplate,
+      }).catch(() => {});
+      const origin = pending.extent.sessionStartNs;
+      const range = exportRangeNs(choice.range, origin === null ? 0 : origin / 1e9);
+      // Armed before the invoke: the host can report progress — or
+      // finish outright on a small capture — before the command's own
+      // promise resolves, and a report with no chip to land in is lost.
+      setExportStatus({ phase: "running", name: basename(path), written: 0, total: 0 });
+      try {
+        await invoke("save_capture", {
+          path,
+          format: chosen,
+          buses: buses.map((b) => b.id),
+          range,
+        });
+      } catch {
+        // Refused before it started (an export already running, or a
+        // thread that would not spawn); the host logged why.
+        setExportStatus(null);
+      }
+    },
+    [buses, pendingExport],
+  );
 
   // The close-on-quit handler is registered once; give it refs to the
   // current values rather than re-registering on every change.
@@ -3660,6 +3798,16 @@ export function App() {
   // that also carries the way out of what it reports.
   const statusNotices = (
     <>
+          {/* The capture being written out. The export runs on the
+              host's own thread and the GUI stays live throughout, so
+              this readout — and the Cancel beside it — is the only
+              place the write is visible. */}
+          {exportStatus !== null && (
+            <ExportProgressChip
+              status={exportStatus}
+              onCancel={() => void invoke("cancel_export").catch(() => {})}
+            />
+          )}
       {/* The load in flight: how far it has got, and the way out of
               it. Spans the census and the pump — it must not drop out
               just because data has started reaching the plot panel —
@@ -3856,6 +4004,17 @@ export function App() {
           format="MDF"
           decodedMessageGroups={pendingMdf.scan.decoded_message_groups}
           signalCount={pendingMdf.scan.signal_count}
+        />
+      )}
+      {pendingExport && (
+        <ExportDialog
+          project={projectName(projectPath) ?? "capture"}
+          nameTemplate={pendingExport.sticky.nameTemplate}
+          format={pendingExport.sticky.format}
+          extent={captureExtentView(pendingExport.extent)}
+          events={exportRangeEvents(notes, pendingExport.extent.sessionStartNs)}
+          onCancel={() => setPendingExport(null)}
+          onExport={(choice) => void handleExportConfirm(choice)}
         />
       )}
       <ServerTrustDialogs />

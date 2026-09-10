@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 //
-// One save gesture, two formats. The save dialog offers Vector BLF and
-// ASAM MDF; whichever filter the user picks reaches the host as an
-// explicit `format`, never as something the host infers from the path.
-// Mounts the REAL App with the Tauri IPC mocked, drives a session with a
-// synthetic `trace-grew` so Save Capture has something to save, and
-// pins the arguments the command goes out with.
+// The export gesture end to end, through the REAL App: the toolbar chip
+// opens the export dialog, the dialog's Export... opens the OS picker
+// seeded from the sticky state, and whichever filter stamped the
+// returned path reaches the host as an explicit `format` - never as
+// something the host infers from the path.
+//
+// Drives a session with a synthetic `trace-grew` so there is something
+// to export, and pins the arguments `save_capture` goes out with,
+// including the range (absent when neither bound was touched) and the
+// status-bar chip the write reports through.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -14,6 +18,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  screen,
   waitFor,
 } from "@testing-library/react";
 
@@ -41,6 +46,21 @@ vi.mock("@tauri-apps/api/core", () => ({
         return { count: 0, start: 0, rows: [] };
       case "app_version":
         return "0.0.0-test";
+      case "get_export_state":
+        return exportState;
+      case "capture_extent":
+        return {
+          firstNs: 1_000 * 1e9,
+          liveEdgeNs: 1_060 * 1e9,
+          sessionStartNs: 1_000 * 1e9,
+          frameCount: 1234,
+        };
+      case "preview_export_template":
+        return {
+          resolved: "demo-20260905T091502-0600",
+          error: null,
+          startResolvedAsNow: false,
+        };
       case "get_sidecar_status":
         return { phase: "offline", address: null };
       default:
@@ -74,6 +94,14 @@ vi.mock("@tauri-apps/api/window", () => ({
     destroy: async () => {},
   }),
 }));
+
+/// The sticky state the host reports. A case overrides it to pin how the
+/// remembered folder and format seed the picker.
+let exportState = {
+  folder: null as string | null,
+  format: "blf" as "blf" | "mdf",
+  nameTemplate: "{project}-{start}",
+};
 
 // What the dialog hands back — the test sets it per case, because the
 // stamped extension is the only way an OS save dialog reports the filter
@@ -146,8 +174,8 @@ function grew(count: number): TraceGrew {
   };
 }
 
-/// Mount the app, get a non-empty capture into it, and run Save Capture
-/// through the real toolbar button.
+/// Mount the app, get a non-empty capture into it, run Export through
+/// the real toolbar chip, and accept the dialog's defaults.
 async function saveThrough(path: string | null) {
   savedPath = path;
   render(<App />);
@@ -161,8 +189,26 @@ async function saveThrough(path: string | null) {
   await act(async () => {
     fireEvent.click(toolbarChip("Export"));
   });
+  // The export dialog now stands between the gesture and the picker.
+  const confirm = await screen.findByRole("button", { name: EXPORT_BUTTON });
+  await waitFor(() => {
+    if (confirm.hasAttribute("disabled")) throw new Error("preview not resolved yet");
+  });
+  await act(async () => {
+    fireEvent.click(confirm);
+  });
   await waitFor(() => {
     if (saveOptions.length === 0) throw new Error("save dialog not opened yet");
+  });
+}
+
+/// The dialog's confirm button, spelled with the ellipsis it carries.
+const EXPORT_BUTTON = "Export" + String.fromCharCode(0x2026);
+
+/// Wait for the export command to have gone out.
+async function waitForSave() {
+  await waitFor(() => {
+    if (!lastSaveCall()) throw new Error("save_capture not invoked yet");
   });
 }
 
@@ -178,6 +224,7 @@ beforeEach(() => {
   invokeCalls.length = 0;
   saveOptions.length = 0;
   savedPath = null;
+  exportState = { folder: null, format: "blf", nameTemplate: "{project}-{start}" };
 });
 
 afterEach(() => {
@@ -185,11 +232,79 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Save Capture", () => {
-  it("offers both capture formats in the dialog", async () => {
+describe("Export capture", () => {
+  it("offers both capture formats in the picker", async () => {
     await saveThrough(null);
     const filters = saveOptions[0].filters as Array<{ extensions: string[] }>;
     expect(filters.map((f) => f.extensions[0])).toEqual(["blf", "mf4"]);
+  });
+
+  it("seeds the picker with the resolved name, the sticky folder and format", async () => {
+    exportState = {
+      folder: "C:\\logs",
+      format: "mdf",
+      nameTemplate: "{project}-{start}",
+    };
+    await saveThrough(null);
+    const filters = saveOptions[0].filters as Array<{ extensions: string[] }>;
+    // The remembered format leads: an OS picker pre-selects whichever
+    // filter it is handed first, and that is the only handle on it.
+    expect(filters.map((f) => f.extensions[0])).toEqual(["mf4", "blf"]);
+    expect(saveOptions[0].defaultPath).toBe("C:\\logs\\demo-20260905T091502-0600.mf4");
+  });
+
+  it("remembers the folder, format and template the export used", async () => {
+    await saveThrough("/logs/run.mf4");
+    await waitFor(() => {
+      if (!invokeCalls.some((c) => c.cmd === "set_export_state"))
+        throw new Error("sticky state not written yet");
+    });
+    expect(invokeCalls.find((c) => c.cmd === "set_export_state")?.args).toMatchObject({
+      folder: "/logs",
+      format: "mdf",
+      nameTemplate: "{project}-{start}",
+    });
+  });
+
+  it("sends no range when neither bound was touched", async () => {
+    // An untouched range is "the whole capture", which the host spells
+    // as no filter at all rather than as the full span.
+    await saveThrough("/logs/run.blf");
+    await waitForSave();
+    expect(lastSaveCall()?.args.range).toBeNull();
+  });
+
+  it("reports the export in the status bar, and cancels it from there", async () => {
+    await saveThrough("/logs/run.blf");
+    await waitForSave();
+    await act(async () => {
+      emitTauri("export-progress", { written: 500, total: 1000 });
+    });
+    expect(await screen.findByTestId("export-chip")).toHaveTextContent("50%");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Cancel exporting/ }));
+    });
+    expect(invokeCalls.some((c) => c.cmd === "cancel_export")).toBe(true);
+    // The host answers a cancel with its own terminal event; only then
+    // does the chip go, because only then is the partial file gone.
+    await act(async () => {
+      emitTauri("export-finished", { status: "cancelled" });
+    });
+    expect(screen.queryByTestId("export-chip")).toBeNull();
+  });
+
+  it("settles into a done state when the export finishes", async () => {
+    await saveThrough("/logs/run.blf");
+    await waitForSave();
+    await act(async () => {
+      emitTauri("export-finished", {
+        status: "ok",
+        path: "/logs/run.blf",
+        frameCount: 1234,
+        byteSize: 4096,
+      });
+    });
+    expect(await screen.findByTestId("export-chip")).toHaveTextContent("Exported run.blf");
   });
 
   it("sends the format the chosen filter implies, not the path", async () => {
