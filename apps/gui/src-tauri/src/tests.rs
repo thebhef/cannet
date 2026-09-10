@@ -3348,14 +3348,33 @@ fn an_unparseable_embedded_database_is_reported_and_left_out() {
 #[test]
 fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
     let state = file_backed_state();
-    let warning = capture::dropped_file_backed_warning(&state.signal_caches.file_signals())
+    let warning = capture::dropped_file_backed_warning(&state.signal_caches.file_signals(), &[])
         .expect("a capture with file-backed signals warns");
     assert!(
-        warning.contains("2 file-backed signal(s) will not be in the saved file"),
+        warning.contains("2 computed or file-backed signal(s) will not be in the saved file"),
         "{warning}"
     );
     assert!(warning.contains("Analog/EngineSpeed"), "{warning}");
     assert!(warning.contains("Analog/CoolantTemp"), "{warning}");
+}
+
+/// A **math signal** (`docs/CONTEXT.md`) is dropped by BLF for the same
+/// reason and named in the same breath: both are series the format has
+/// no channel for, and the user asking for BLF needs the whole of what
+/// is being left behind, not half of it.
+#[test]
+fn a_blf_save_names_the_math_signals_it_drops_too() {
+    let state = file_backed_state();
+    let warning = capture::dropped_file_backed_warning(
+        &state.signal_caches.file_signals(),
+        &["CellSpread".to_string()],
+    )
+    .expect("a capture with computed signals warns");
+    assert!(
+        warning.contains("3 computed or file-backed signal(s)"),
+        "{warning}"
+    );
+    assert!(warning.contains("Computed/CellSpread"), "{warning}");
 }
 
 /// Both BLF annotation record types round-trip: a note as a
@@ -4451,6 +4470,81 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
     assert_eq!(attachments[0].data, MUX_SNAPSHOT_DBC.as_bytes());
 }
 
+/// **MDF carries math signals; BLF carries none.**
+///
+/// A math series is already decoded — it is computed from decoded
+/// operands — so it rides the same `add_signal` path a file-backed
+/// series does, under its own `Computed` acquisition group. What is
+/// *not* written is the definition: MDF has no way to say "the median
+/// of these six signals" that a reader would understand, and the
+/// project file keeps it.
+///
+/// The series is computed by this very export: a math pyramid is
+/// session-scoped, so a definition nobody has plotted has no samples
+/// until the write drives its fill.
+#[test]
+fn an_mdf_save_carries_math_signals_as_decoded_channels() {
+    use crate::math_signals::{MathDefinition, MathFunction, MathOperandRef, MathOperands};
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("capture.mf4");
+    let state = file_backed_state();
+    // Scale a file-backed operand: the operand needs no frames, so what
+    // this pins is the export path rather than the decode.
+    state
+        .math
+        .define(MathDefinition {
+            id: "m1".into(),
+            name: "HalfSpeed".into(),
+            unit: Some("rpm".into()),
+            function: MathFunction::Scale {
+                gain: 0.5,
+                offset: 0.0,
+            },
+            operands: MathOperands {
+                picks: vec![MathOperandRef::file(1, "EngineSpeed")],
+                patterns: Vec::new(),
+            },
+        })
+        .unwrap();
+    invalidate_derived_caches(&state);
+
+    let mut run = capture::ExportRun::inert();
+    let outcome = capture::write_mdf_capture(
+        dest.to_str().unwrap(),
+        &state,
+        &[],
+        &[TEST_BUS.to_string()],
+        &mut run,
+    )
+    .unwrap();
+    assert!(matches!(outcome, capture::ExportOutcome::Written(_)));
+
+    let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
+    let groups = source.signal_groups();
+    let computed: Vec<_> = groups
+        .iter()
+        .filter(|g| g.name.as_deref() == Some("Computed"))
+        .collect();
+    assert_eq!(
+        computed.len(),
+        1,
+        "one acquisition group for every math signal"
+    );
+    assert_eq!(computed[0].signals.len(), 1);
+    let got = &computed[0].signals[0];
+    // Named as the user named it — never by the stable id, which means
+    // nothing to a reader.
+    assert_eq!(got.name, "HalfSpeed");
+    assert_eq!(got.unit.as_deref(), Some("rpm"));
+    // The operand runs 800..809; half of it is what came back.
+    assert_eq!(got.values.len(), 10);
+    assert!((got.values[0] - 400.0).abs() < 1e-9, "{:?}", got.values);
+    assert!((got.values[9] - 404.5).abs() < 1e-9, "{:?}", got.values);
+    // …and the file-backed operand is still there beside it, unchanged.
+    assert!(groups.iter().any(|g| g.name.as_deref() == Some("Analog")));
+}
+
 /// The committed demo capture (`examples/cannet-demo.mf4`) is the MDF
 /// twin of `cannet-demo.blf` — the same 10 s of traffic, plus the two
 /// things an MDF carries that a BLF cannot. It imports cleanly: frames,
@@ -4568,7 +4662,9 @@ fn an_mdf_event_without_a_cannet_id_gets_a_synthetic_one() {
 #[test]
 fn a_blf_save_of_a_frames_only_capture_warns_about_nothing() {
     let state = test_state();
-    assert!(capture::dropped_file_backed_warning(&state.signal_caches.file_signals()).is_none());
+    assert!(
+        capture::dropped_file_backed_warning(&state.signal_caches.file_signals(), &[]).is_none()
+    );
 }
 
 /// A scan of a capture whose writer never finalized it earns exactly

@@ -901,6 +901,11 @@ export interface SignalSnapshotRecord {
   /// than the trace window, since no frame in the window carries it.
   /// Absent when false.
   file_backed?: boolean;
+  /// A **math** signal (`docs/CONTEXT.md`): computed host-side. Then
+  /// `signal_name` is the definition's *stable id* and `message_name`
+  /// its display name; it has no bus, no message and no ECU, and its
+  /// value/count describe the whole computed series. Absent when false.
+  math?: boolean;
 }
 
 /// A signal view's user-authored sections, sent with its query. Mirrors
@@ -1634,6 +1639,12 @@ export interface MathSignalRecord extends MathDefinition {
   operandPaths: string[];
   /// The unit the series carries: the user's, or the derived one.
   unitResolved: string;
+  /// Every bus contributing input to this series, transitively and
+  /// deduped — one color chip per entry, and the label a row wears
+  /// (`mathBusLabel`). A math series has no bus of its own, so this is
+  /// where its input comes from; the walk through a math operand's own
+  /// operands is the host's (ADR 0025).
+  busIds: string[];
   /// Why the definition is unusable as it stands, or `null`.
   invalid: string | null;
 }

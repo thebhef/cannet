@@ -121,6 +121,26 @@ describe("plotViewSignalRefs", () => {
     expect(plotViewSignalRefs(areas, areas)).toEqual([]);
     expect(plotViewSignalRefs([], [])).toEqual([]);
   });
+
+  it("pushes nothing for a math series — no database bears on one", () => {
+    // A math series is defined in the project, not by a DBC, and its
+    // `signalName` is its definition's id. Pushed, it would appear in
+    // the View signals panel under that id, flagged over a unit its
+    // definition owns.
+    const math = signal({
+      busId: null,
+      messageId: 0,
+      signalName: "8f2c1a90-math",
+      messageName: "Math",
+      unit: "furlongs",
+      math: true,
+    });
+    const areas = [area([signal(), math])];
+    // Both loops drop it: the manual-pick pass, and the resolved pass
+    // that would otherwise re-emit the same pick identity-only.
+    expect(plotViewSignalRefs(areas, areas).map((r) => r.signalName)).toEqual(["VehicleSpeed"]);
+    expect(plotViewSignalRefs([area([math])], [area([math])])).toEqual([]);
+  });
 });
 
 describe("signalsViewSignalRefs", () => {
@@ -194,6 +214,21 @@ describe("signalsViewSignalRefs", () => {
 
   it("is empty for an empty selection", () => {
     expect(signalsViewSignalRefs([], [])).toEqual([]);
+  });
+
+  it("pushes nothing for a math selection key — no database bears on one", () => {
+    const math = key({
+      busId: null,
+      messageId: 0,
+      signalName: "8f2c1a90-math",
+      messageName: "Math",
+      unit: "furlongs",
+      math: true,
+    });
+    expect(signalsViewSignalRefs([key(), math], []).map((r) => r.signalName)).toEqual([
+      "AmbientTemp",
+    ]);
+    expect(signalsViewSignalRefs([math], [])).toEqual([]);
   });
 });
 

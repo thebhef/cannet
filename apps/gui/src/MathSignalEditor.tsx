@@ -233,6 +233,12 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
       extended: s.extended,
       signalName: s.signalName,
       ...(s.fileBacked ? { fileBacked: true as const } : {}),
+      // Provenance travels with the drop, exactly as it does on the
+      // combobox path: a math signal is a legal operand of another
+      // one, and a pick that dropped the flag would name a DBC
+      // identity nothing decodes — `signalName` is then a definition
+      // id, so the operand reads back as missing.
+      ...(s.math ? { math: true as const } : {}),
     }));
     // One drop is one gesture, so a set takes every signal it carries
     // in a single commit rather than one write per signal.

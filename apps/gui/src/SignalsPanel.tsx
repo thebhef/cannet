@@ -42,6 +42,7 @@ import {
   signalsFromPatterns,
 } from "./signalSelection";
 import { ColorChip } from "./ColorChip";
+import { defaultBusColor } from "./busColor";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { FILE_BACKED_BADGE, FILE_BACKED_TITLE } from "./fileBackedSignal";
 import { recordSignalKey, signalKey } from "./plotData";
@@ -59,7 +60,17 @@ import {
   type DraggableSignalRef,
   type SignalDragPayload,
 } from "./dragSignals";
-import { anchorFromScroll, maxScrollTop, ROW_HEIGHT, scrollForRow } from "./traceViewport";
+import {
+  anchorFromScroll,
+  expandedExtraHeightOf,
+  expandedRowHeight,
+  maxScrollTop,
+  ROW_HEIGHT,
+  scrollForRow,
+} from "./traceViewport";
+import { mathBusLabel } from "./mathSignals";
+import { useMathSignals } from "./mathSignalsContext";
+import { mathEditorLines, MathSignalEditor } from "./MathSignalEditor";
 import { useGridview } from "./useGridview";
 import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
 import { useDismissableMenu } from "./useDismissableMenu";
@@ -106,7 +117,8 @@ const keyOf = (k: {
   extended: boolean;
   signalName: string;
   fileBacked?: boolean;
-}) => signalKey(k.busId, k.messageId, k.extended, k.signalName, k.fileBacked);
+  math?: boolean;
+}) => signalKey(k.busId, k.messageId, k.extended, k.signalName, k.fileBacked, k.math);
 
 /// Gridview row ids (ADR 0044) for the two kinds of page row. Prefixed
 /// so a section literally named like a signal key can't collide with
@@ -221,6 +233,14 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   const project = useProjectContext();
   const buses = project.buses;
   const lookup = useMemo(() => busLookup(buses), [buses]);
+  /// Bus id -> render color, the same mapping a plot's side list uses
+  /// (`effectiveBusColor`), so a math row's chips read as the buses
+  /// they name wherever the row is shown.
+  const busColors = useMemo(() => {
+    const m = new Map<string, string>();
+    buses.forEach((b, i) => m.set(b.id, b.color ?? defaultBusColor(i)));
+    return m;
+  }, [buses]);
 
   // The fold set is the one persisted field that lives in the dockview
   // params rather than on the element; everything else this panel saves
@@ -513,6 +533,10 @@ export function SignalsPanel(props: IDockviewPanelProps) {
         extended: k.extended,
         signalName: k.signalName,
         ...(k.fileBacked ? { fileBacked: true as const } : {}),
+        // A math signal is keyed by its own provenance host-side, so a
+        // selection that dropped the flag would name a DBC identity
+        // nothing decodes and get no row at all.
+        ...(k.math ? { math: true as const } : {}),
       })),
       patterns: selection.patterns,
     }),
@@ -608,6 +632,42 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   // host-sorted, so the anchor only moves when the user scrolls.
   const [anchoredRow, setAnchoredRow] = useState(0);
   const count = view.count;
+  /// The **math signal** rows expanded into their editor, and how tall
+  /// each one's editor is in detail lines. **View-local**: an expansion
+  /// is a look at a definition, not a fact about it, so it is neither
+  /// persisted nor shared with the other surfaces showing the same
+  /// definition. The height is held here rather than looked up per
+  /// render because a row scrolled off the loaded page can no longer be
+  /// asked how tall it is, and the scroll range still has to account
+  /// for it — the by-id table's `expandedExtraHeightOf` shape.
+  const { mathSignals } = useMathSignals();
+  const mathById = useMemo(
+    () => new Map(mathSignals.map((m) => [m.id, m])),
+    [mathSignals],
+  );
+  const [expandedMath, setExpandedMath] = useState<ReadonlyMap<string, number>>(
+    () => new Map(),
+  );
+  const toggleMathRow = useCallback((key: string, lines: number) => {
+    setExpandedMath((prev) => {
+      const next = new Map(prev);
+      if (!next.delete(key)) next.set(key, lines);
+      return next;
+    });
+  }, []);
+  const mathViewportHeights = useMemo(
+    () => ({
+      extraHeight: expandedExtraHeightOf(expandedMath.values()),
+      rowHeightAt: (absIdx: number) => {
+        const s = signalOf(view.getRow(absIdx));
+        // A row outside the loaded page reads as a plain row, exactly
+        // as the trace's does: nothing can say how tall it is yet.
+        const lines = s ? expandedMath.get(recordSignalKey(s)) : undefined;
+        return lines == null ? ROW_HEIGHT : expandedRowHeight(lines);
+      },
+    }),
+    [expandedMath, view],
+  );
   const {
     containerRef,
     headerRef,
@@ -617,7 +677,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     anchorMax,
     firstVisibleRow,
     lastVisibleRow,
-  } = useTraceViewport(count, anchoredRow);
+  } = useTraceViewport(count, anchoredRow, undefined, mathViewportHeights);
   useEffect(() => {
     if (count === 0) return;
     view.ensureVisible(firstVisibleRow, lastVisibleRow);
@@ -763,6 +823,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
         messageName: s.message_name,
         unit: s.unit,
         ...(s.file_backed ? { fileBacked: true as const } : {}),
+        ...(s.math ? { math: true as const } : {}),
       });
     }
     return m;
@@ -892,11 +953,18 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     return (key: string) => resolve(key, signalColors[key]);
   }, [generatorIndexes, signalColors]);
 
-  const positions = [];
-  for (let i = 0; i < rows; i++) {
-    const abs = firstVisibleRow + i;
-    if (abs >= count) break;
-    positions.push(abs);
+  // Rows stack rather than sitting on a fixed pitch: an expanded math
+  // row carries its editor, so everything under it moves down by the
+  // editor's height. Same shape the trace's `buildPlacements` uses.
+  const positions: { abs: number; top: number }[] = [];
+  {
+    let top = 0;
+    for (let i = 0; i < rows; i++) {
+      const abs = firstVisibleRow + i;
+      if (abs >= count) break;
+      positions.push({ abs, top });
+      top += mathViewportHeights.rowHeightAt(abs);
+    }
   }
 
   return (
@@ -1035,7 +1103,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
             style={{ height: spacerHeight, position: "relative", ...contentWidthVar }}
           >
             <div style={{ position: "sticky", top: 0, height: viewportHeight, overflow: "hidden" }}>
-              {positions.map((abs, i) => {
+              {positions.map(({ abs, top }) => {
                 const pageRow = view.getRow(abs);
                 const header = sectionHeaderOf(pageRow);
                 if (header) {
@@ -1043,7 +1111,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                   return (
                     <SectionHeaderRow
                       key={abs}
-                      top={i * ROW_HEIGHT}
+                      top={top}
                       header={header}
                       domId={grid.rowDomId(rowId)}
                       selected={grid.selection.has(rowId)}
@@ -1069,20 +1137,27 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                 }
                 const signal = signalOf(pageRow);
                 const signalRow = signal
-                  ? signalRowId(
-                      signalKey(
-                        signal.bus_id,
-                        signal.message_id,
-                        signal.extended,
-                        signal.signal_name,
-                      ),
-                    )
+                  ? signalRowId(recordSignalKey(signal))
                   : null;
+                // A math row (`docs/CONTEXT.md`) names its definition
+                // by stable id; everything it *shows* — the display
+                // name, the buses feeding it, the definition its editor
+                // writes — comes from the shared listing.
+                const math = signal?.math ? mathById.get(signal.signal_name) ?? null : null;
+                const mathKey = signal ? recordSignalKey(signal) : "";
                 return (
                   <SignalRow
                     key={abs}
-                    top={i * ROW_HEIGHT}
+                    top={top}
                     row={signal}
+                    math={math}
+                    mathDefinitions={mathSignals}
+                    mathExpanded={expandedMath.has(mathKey)}
+                    onToggleMath={
+                      math == null
+                        ? undefined
+                        : () => toggleMathRow(mathKey, mathEditorLines(math))
+                    }
                     domId={signalRow == null ? undefined : grid.rowDomId(signalRow)}
                     selected={signalRow != null && grid.selection.has(signalRow)}
                     onRowClick={
@@ -1098,6 +1173,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                     gridTemplate={gridTemplate}
                     baseTimestamp={trace.baseTimestampSeconds}
                     busLookup={lookup}
+                    busColors={busColors}
                     resolveColor={resolveColor}
                     manual={manualKeys}
                     signalColor={signalColor}
@@ -1366,6 +1442,17 @@ function MoveToSectionMenu({
 interface SignalRowProps {
   top: number;
   row: SignalSnapshotRecord | null;
+  /// The math definition this row stands for, or `null` for an
+  /// ordinary one. The host's listing answers everything derived about
+  /// it (ADR 0025) — display name, resolved unit, contributing buses,
+  /// why it is not usable yet.
+  math?: import("./types").MathSignalRecord | null;
+  /// Every math definition the session holds — the editor offers them
+  /// as operand candidates.
+  mathDefinitions?: readonly import("./types").MathSignalRecord[];
+  mathExpanded?: boolean;
+  /// Open / close the editor. Absent ⇒ the row carries no disclosure.
+  onToggleMath?: () => void;
   /// The DOM id `aria-activedescendant` names this row by. Absent for a
   /// row whose page hasn't landed — it has no identity to name yet.
   domId?: string;
@@ -1384,6 +1471,9 @@ interface SignalRowProps {
   gridTemplate: string;
   baseTimestamp: number | null;
   busLookup: ReadonlyMap<string, string>;
+  /// Bus id -> render color, mirroring `effectiveBusColor`, so a math
+  /// row's chips match the buses' graph colors.
+  busColors: ReadonlyMap<string, string>;
   resolveColor: ReturnType<typeof buildColorResolver> | null;
   manual: ReadonlySet<string>;
   /// This row's name color, already resolved (ADR 0026).
@@ -1400,6 +1490,10 @@ interface SignalRowProps {
 function SignalRow({
   top,
   row,
+  math = null,
+  mathDefinitions = [],
+  mathExpanded = false,
+  onToggleMath,
   domId,
   selected = false,
   onRowClick,
@@ -1411,6 +1505,7 @@ function SignalRow({
   gridTemplate,
   baseTimestamp,
   busLookup: lookup,
+  busColors,
   resolveColor,
   manual,
   signalColor,
@@ -1418,17 +1513,45 @@ function SignalRow({
   onOpenSectionMenu,
 }: SignalRowProps) {
   useThemeName();
-  const key = row ? signalKey(row.bus_id, row.message_id, row.extended, row.signal_name) : "";
+  const key = row ? recordSignalKey(row) : "";
   const nameColor = row ? signalColor(key) : undefined;
   const colorInputRef = useRef<HTMLInputElement>(null);
+  // A math row's `signal_name` is its definition's stable id — what
+  // it *reads* as is the display name the listing carries, so a rename
+  // leaves every reference to the definition alone.
+  const displayName = math ? math.name || "(unnamed)" : row?.signal_name ?? "";
+  const mathOpen = math != null && mathExpanded;
   const cell = (column: SignalColumnKey): React.ReactNode => {
     if (!row) return null;
     switch (column) {
       case "bus":
+        // A math signal (`docs/CONTEXT.md`) is bound to no bus. Its
+        // chips ride in the message column, which is visible by
+        // default; this one just names what they say.
+        if (math) return mathBusLabel(math.busIds, lookup);
         return busDisplayName(row.bus_id, lookup);
       case "ecu":
         return row.transmitter ?? "";
       case "msg":
+        // A math signal has no message, so this column carries what a
+        // plot's side list puts on its message line: one color chip per
+        // bus feeding it — transitively, as the host resolved them
+        // (ADR 0025) — and the label that says so.
+        if (math) {
+          return (
+            <>
+              {math.busIds.map((busId) => (
+                <ColorChip
+                  key={busId}
+                  color={busColors.get(busId) ?? "var(--bus-unknown)"}
+                  size="dot"
+                  swatchClassName="plot-bus-swatch"
+                />
+              ))}
+              <NameText name={mathBusLabel(math.busIds, lookup)} />
+            </>
+          );
+        }
         // A file-backed signal (`docs/CONTEXT.md`) has no message, so
         // this column carries its source channel group plus the badge
         // that says the row is not decoded from frames.
@@ -1444,10 +1567,28 @@ function SignalRow({
         );
       case "signal":
         return (
+          <>
+            {/* The standard disclosure (ADR 0044) leads a math row and
+                opens its editor in place — expanding a math signal *is*
+                editing it, and there is no read-only stage in front. */}
+            {onToggleMath && (
+              <DisclosureToggle
+                className="signals-math-disclosure"
+                compact
+                tabIndex={-1}
+                expanded={mathExpanded}
+                ariaLabel={`edit ${displayName}`}
+                onToggle={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onToggleMath();
+                }}
+              />
+            )}
           <span
             className="signals-name"
             style={{ color: nameColor }}
-            title={`${row.signal_name} — drag to a plot; right-click to recolor`}
+            title={`${displayName} — drag to a plot; right-click to recolor`}
             onContextMenu={(e) => {
               // Right-click the name opens the native color picker —
               // the same affordance as a plot series swatch (ADR 0026).
@@ -1457,8 +1598,8 @@ function SignalRow({
             }}
           >
             <NameText
-              name={row.signal_name}
-              title={`${row.signal_name} — drag to a plot; right-click to recolor`}
+              name={displayName}
+              title={`${displayName} — drag to a plot; right-click to recolor`}
             />
             {manual.has(key) ? "" : " ◇"}
             <ColorChip
@@ -1468,6 +1609,7 @@ function SignalRow({
               hideBox
             />
           </span>
+          </>
         );
       case "section":
         // The cell *is* the control. Its own fixed-width column, outside
@@ -1478,9 +1620,9 @@ function SignalRow({
           <button
             type="button"
             className="signals-section-pick"
-            aria-label={`move ${row.signal_name} to section`}
+            aria-label={`move ${displayName} to section`}
             title="move this signal to a section"
-            onClick={(e) => onOpenSectionMenu(e, key, row.signal_name, row.section ?? null)}
+            onClick={(e) => onOpenSectionMenu(e, key, displayName, row.section ?? null)}
           >
             {row.section ?? "—"}
           </button>
@@ -1517,7 +1659,7 @@ function SignalRow({
       columns={columns}
       gridTemplate={gridTemplate}
       id={domId}
-      className={`trace-row ${row ? "" : "loading"}${selected ? " selected" : ""}`}
+      className={`trace-row ${row ? "" : "loading"}${selected ? " selected" : ""}${math ? " math" : ""}`}
       aria-selected={selected}
       onClick={onRowClick}
       draggable={onDragStart != null}
@@ -1525,8 +1667,30 @@ function SignalRow({
       onDragEnd={onDragEnd}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
+      style={{
+        position: "absolute",
+        top,
+        left: 0,
+        right: 0,
+        height: mathOpen ? expandedRowHeight(mathEditorLines(math)) : ROW_HEIGHT,
+      }}
       renderCell={(column, className) => <span className={className}>{cell(column)}</span>}
-    />
+    >
+      {/* The shared editor, disclosed under the row that opened it —
+          in place on this surface, never a dialog (owner ruling). The
+          row's own height grew to make room for it, so nothing below
+          is covered. */}
+      {mathOpen && (
+        <div
+          className="signals-math-detail"
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.stopPropagation()}
+          draggable={false}
+          onDragStart={(e) => e.stopPropagation()}
+        >
+          <MathSignalEditor record={math} definitions={mathDefinitions} />
+        </div>
+      )}
+    </GridviewRow>
   );
 }

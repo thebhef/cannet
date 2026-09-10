@@ -4052,7 +4052,11 @@ button.color-chip {
   white-space: nowrap;
   /* A long `VAL_` label ellipsizes here rather than running off the
      row: `.dbc-row` clips, but clipping alone cuts mid-glyph with
-     nothing to say the value continues. */
+     nothing to say the value continues. The ellipsis eats this cell
+     from its tail, and everything but the number is at the tail — the
+     unit first — so the cell keeps the default shrink factor of 1 and
+     `.dbc-row-comment` carries the high one: that ordering is what
+     keeps the unit visible on a row with a long comment. */
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -4612,6 +4616,28 @@ button.color-chip {
 /* Remove × spans both rows, vertically centred. */
 .plot-signal-remove {
   align-self: center;
+}
+
+/* A math signal's row (`docs/CONTEXT.md`) carries one extra leading
+ * column: the disclosure that opens its editor. It leads the row — as
+ * it does on a Database tree row — which is also what keeps it well
+ * away from the row's ✕ at the far end (owner ruling: expand and
+ * remove must not be neighbouring targets). */
+.plot-signal-row.math {
+  grid-template-columns: auto auto 1fr auto auto;
+}
+.plot-signal-row.math.hidden {
+  grid-template-columns: auto 1fr;
+}
+.plot-signal-mathdisc {
+  align-self: center;
+}
+/* The editor disclosed under the row, spanning every column: it is an
+ * in-place expansion of this row, never a floating panel. */
+.plot-signal-mathdetail {
+  grid-column: 1 / -1;
+  cursor: default;
+  padding-top: 0.2rem;
 }
 
 /* uPlot renders on a dark ground; nudge its chrome to match the app. */
@@ -5725,11 +5751,23 @@ button.color-chip {
 .dbc-row-meta {
   color: var(--text-faint);
 }
+/* The row's comment is the first thing to give up width. `.dbc-row` is
+   a flex row and flex shrinks its items in proportion to their content,
+   so an unweighted comment — usually the longest text on the row — keeps
+   a large share of the width while the name ellipsizes and the value
+   cell loses its tail, which is where the unit sits. The comment is the
+   least load-bearing part of the row, so its shrink factor swamps the
+   name's and the value's (both 1): it yields down to the floor below
+   before they lose anything worth seeing. The floor leaves a stub wide
+   enough to say a comment is there and to hover for the rest, rather
+   than collapsing to nothing. */
 .dbc-row-comment {
   color: var(--text-faint);
   font-style: italic;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex-shrink: 200;
+  min-width: 6ch;
 }
 
 /* The panel-wide "details" toggle is a ChipButton now; only the
@@ -7771,4 +7809,19 @@ button.color-chip {
 }
 .math-function-menu button:hover {
   background: var(--surface-hover);
+}
+
+/* A math signal's row (`docs/CONTEXT.md`) in a signal view: the
+ * disclosure leads its signal cell, and the editor it opens is
+ * disclosed under the row — the row's own height grew to make room, so
+ * nothing beneath it is covered. */
+.trace-row.math .signals-math-disclosure {
+  flex: none;
+  margin-right: 0.15rem;
+}
+.signals-math-detail {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  cursor: default;
+  padding: 0.2rem 0.4rem 0.4rem;
 }

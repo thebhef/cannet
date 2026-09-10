@@ -51,7 +51,8 @@ import {
   MathSignalEditor,
   mathEditorLines,
 } from "./MathSignalEditor";
-import { newMathDefinition } from "./mathSignals";
+import { MATH_MESSAGE_LABEL, newMathDefinition } from "./mathSignals";
+import { useMathSignals } from "./mathSignalsContext";
 import { usePanelEditRecorder } from "./panelEditRecorder";
 
 /**
@@ -1149,14 +1150,29 @@ function rowToSignalRefs(
     row.kind.tag === "ecu" ||
     row.kind.tag === "file" ||
     row.kind.tag === "filegroup" ||
-    row.kind.tag === "computed" ||
-    // A math signal drags like any other signal — but the drag payload
-    // has no math provenance slot yet, so dropping one would name a
-    // DBC-backed signal that does not exist. It stays undraggable until
-    // the payload carries the flag.
-    row.kind.tag === "mathsignal"
+    row.kind.tag === "computed"
   ) {
     return [];
+  }
+  if (row.kind.tag === "mathsignal") {
+    // A math signal drags like any other signal, on its own provenance
+    // (ADR 0052's rule, one flag further): no bus and no message carry
+    // it, so the reference is the definition's **stable id** in the
+    // signal-name slot — never its display name, which is mutable. The
+    // unit is the resolved one, so a drop target labels the series
+    // before it has looked the definition up for itself.
+    const { record } = row.kind;
+    return [
+      {
+        busId: null,
+        messageId: 0,
+        extended: false,
+        signalName: record.id,
+        messageName: MATH_MESSAGE_LABEL,
+        unit: record.unitResolved,
+        math: true,
+      },
+    ];
   }
   if (row.kind.tag === "filesignal") {
     // A file-backed signal's provenance-keyed reference (ADR 0052): no
@@ -1250,7 +1266,7 @@ function isSignalRow(row: RenderRow): boolean {
 /// `null` for a row that has no value (a bus / DBC / ECU / file /
 /// group container).
 ///
-/// One rule for both provenances (ADR 0052), so the key the panel asks
+/// One rule for every provenance (ADR 0052), so the key the panel asks
 /// the host for and the key it renders under cannot drift — and a
 /// file-backed signal whose source group index equals some message's id
 /// still keys distinctly, because the provenance is part of the key.
@@ -1259,6 +1275,10 @@ function valueColumnKey(kind: RenderRow["kind"]): string | null {
     return signalKey(kind.busId, kind.messageId, kind.extended, kind.signal.name);
   if (kind.tag === "filesignal")
     return signalKey(null, kind.group, false, kind.signal.name, true);
+  // A math signal has neither bus nor message, and its *id* — never its
+  // display name — is what every reference to it stores.
+  if (kind.tag === "mathsignal")
+    return signalKey(null, 0, false, kind.record.id, false, true);
   return null;
 }
 
@@ -1280,6 +1300,16 @@ function valueColorTarget(kind: RenderRow["kind"]): ColorTarget | null {
       messageId: kind.group,
       extended: false,
       signalName: kind.signal.name,
+      busId: null,
+    };
+  // The identity the signal view supplies for the same row, which is the
+  // snapshot row's own fields: no bus, message id 0, the definition's id
+  // in the signal slot.
+  if (kind.tag === "mathsignal")
+    return {
+      messageId: 0,
+      extended: false,
+      signalName: kind.record.id,
       busId: null,
     };
   return null;
@@ -1328,11 +1358,10 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   /// than off the project's DBC set.
   const [fileContent, setFileContent] = useState<FileBackedContentRecord[]>([]);
   /// The math signals the registry holds, with their membership
-  /// resolved (`list_math_signals`). Project-scoped like the DBC set —
-  /// the definitions live in the project file — but refetched off the
-  /// capture's signals too, since a set's membership resolves against
-  /// the live catalog.
-  const [mathSignals, setMathSignals] = useState<MathSignalRecord[]>([]);
+  /// resolved — the shared listing every surface showing one reads, so
+  /// this panel and a plot's side list cannot answer differently about
+  /// the same definition.
+  const { mathSignals, mathBusNames, refreshMath } = useMathSignals();
   /// Where the creation menu was opened, or `null`.
   const [createMenu, setCreateMenu] = useState<{ x: number; y: number } | null>(null);
   /// Whether the panel is on screen — false while it sits in a
@@ -1468,29 +1497,6 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     };
   }, [seedExpanded]);
 
-  /// The bus-name map every math command carries. A pattern is
-  /// evaluated against the canonical path (ADR 0038), whose first
-  /// segment is the bus *name*, and the host keeps no standing record
-  /// of one — so it travels with the call, exactly as it does on
-  /// `fetch_signal_page`.
-  const mathBusNames = useMemo(
-    () => buses.map((b) => [b.id, b.name] as [string, string]),
-    [buses],
-  );
-  const refreshMath = useCallback(() => {
-    let cancelled = false;
-    void invoke<MathSignalRecord[]>("list_math_signals", { busNames: mathBusNames })
-      .then((next) => {
-        if (!cancelled) setMathSignals(Array.isArray(next) ? next : []);
-      })
-      .catch(() => {
-        /* best effort — the database branches render regardless */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [mathBusNames]);
-
   // The capture's own change signals. `file-signals-changed` is the
   // host saying the file-backed set moved (an import filled it, a
   // cleared or restored capture replaced it); `log-finished` covers an
@@ -1520,24 +1526,6 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   useEffect(() => refreshContent(), [dbcPaths, dbcGeneration, refreshContent]);
   useEffect(() => refreshCollisions(), [dbcPaths, dbcGeneration, refreshCollisions]);
 
-  // The math listing follows the same triggers plus its own: the host
-  // emits `math-signals-changed` whenever a definition is added,
-  // changed or deleted — including by another surface editing the same
-  // registry — and the resolved membership moves with the catalog, so
-  // an import or a DBC edit changes what a pattern selects.
-  useEffect(() => refreshMath(), [dbcPaths, dbcGeneration, refreshMath]);
-  useEffect(() => {
-    const unlisten = Promise.all([
-      listen("math-signals-changed", () => refreshMath()),
-      listen("file-signals-changed", () => refreshMath()),
-      listen("log-finished", () => refreshMath()),
-    ]);
-    return () => {
-      void unlisten.then((fns) => {
-        for (const fn of fns) fn();
-      });
-    };
-  }, [refreshMath]);
 
   // Persist filter + expanded + showDetails into the dockview panel
   // params so the saved layout round-trips them. Selection
@@ -1613,11 +1601,13 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   /// not the whole tree, so the host's per-call snapshot work is bounded
   /// by the viewport like every other view over the model.
   ///
-  /// Both provenances (ADR 0052). A file-backed row is keyed the way it
+  /// Every provenance (ADR 0052). A file-backed row is keyed the way it
   /// is everywhere else — no bus, its source group index in the message
   /// slot, `fileBacked` keeping that number out of the message-id
   /// namespace — which is exactly the manual key the host's file-backed
-  /// selection matches on.
+  /// selection matches on. A math row is keyed the same way under its
+  /// own flag; only a manual key can select one, since a computed series
+  /// sits on no bus and in no message.
   const visibleSignalKeys = useMemo(() => {
     if (!showValues) return [];
     return visibleRows.flatMap((r) => {
@@ -1641,6 +1631,17 @@ export function DatabasePanel(props: IDockviewPanelProps) {
             extended: false,
             signalName: k.signal.name,
             fileBacked: true,
+          },
+        ];
+      }
+      if (r.kind.tag === "mathsignal") {
+        return [
+          {
+            busId: null,
+            messageId: 0,
+            extended: false,
+            signalName: r.kind.record.id,
+            math: true,
           },
         ];
       }
@@ -2075,9 +2076,7 @@ const DbcRow = memo(function DbcRow({
     row.kind.tag === "filegroup" ||
     row.kind.tag === "computed";
   const selectable = !isContainerRow;
-  // A math signal drags like any other signal once the drag payload
-  // carries a math provenance; until then its row is not a drag source.
-  const draggable = !isContainerRow && row.kind.tag !== "mathsignal";
+  const draggable = !isContainerRow;
   const baseClass = [
     "dbc-row",
     `dbc-row-${row.kind.tag}`,

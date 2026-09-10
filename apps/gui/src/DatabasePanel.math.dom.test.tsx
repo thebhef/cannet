@@ -95,10 +95,34 @@ function mathRecord(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     ],
     operandPaths: ["CAN1/BMS/BMS_Cells/Cell01", "CAN1/BMS/BMS_Cells/Cell02"],
     unitResolved: "V",
+    busIds: ["bus-a"],
     invalid: null,
     ...over,
   };
 }
+
+/// The snapshot row the host serves for `m1` — the shape `select_math`
+/// emits: no bus, message id 0, the *id* in the signal slot and the
+/// display name in the message slot, `math` set.
+const MATH_SNAPSHOT = {
+  bus_id: null,
+  transmitter: null,
+  message_id: 0,
+  extended: false,
+  message_name: "median(Cell\\d+)",
+  signal_name: "m1",
+  unit: "V",
+  is_enum: false,
+  display_hex: false,
+  math: true,
+  file_backed: false,
+  value: 3.71,
+  raw: null,
+  label: null,
+  rate: null,
+  count: 12,
+  time_seconds: 4,
+};
 
 /// What `list_math_signals` answers with; a test swaps it to model the
 /// registry moving underneath the panel.
@@ -112,6 +136,14 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "list_file_backed_content") return [];
     if (cmd === "list_math_signals") return mathSignals;
     if (cmd === "list_dbc_collisions") return [];
+    // The value column's keyed lookup. The host answers only for the
+    // keys it was asked for, so a row reaches the panel exactly when the
+    // panel named it — provenance flag included.
+    if (cmd === "fetch_signal_page") {
+      const sel = args.selection as { keys: { signalName: string; math?: boolean }[] };
+      const asked = sel.keys.some((k) => k.signalName === "m1" && k.math === true);
+      return { count: asked ? 1 : 0, start: 0, rows: asked ? [MATH_SNAPSHOT] : [] };
+    }
     // The registry stands in for the host's: it accepts an unfinished
     // definition and lists it back, which is what makes creation a
     // single step.
@@ -127,6 +159,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           resolvedOperands: [],
           operandPaths: [],
           unitResolved: "",
+          busIds: [],
           invalid: "name it — names aren't derived from selections",
         },
       ];
@@ -156,6 +189,8 @@ import { ElementRegistryContext, type ElementRegistry } from "./projectElements"
 import { PanelEditRecorderContext } from "./panelEditRecorder";
 import type { PanelEditStep } from "./panelEditHistory";
 import { SignalCatalogContext } from "./signalCatalogContext";
+import { parseSignalDragData, SIGNAL_DND_MIME } from "./dragSignals";
+import { MathSignalsProvider } from "./mathSignalsContext";
 
 const emptyRegistry = { entries: [] } as unknown as ElementRegistry;
 const projectCtx = {
@@ -194,11 +229,13 @@ function renderPanel() {
   render(
     <ProjectContext.Provider value={projectCtx}>
       <SignalCatalogContext.Provider value={{ catalog: CATALOG }}>
-        <ElementRegistryContext.Provider value={emptyRegistry}>
-          <PanelEditRecorderContext.Provider value={(step) => recorded.push(step)}>
-            <DatabasePanel {...props} />
-          </PanelEditRecorderContext.Provider>
-        </ElementRegistryContext.Provider>
+        <MathSignalsProvider>
+          <ElementRegistryContext.Provider value={emptyRegistry}>
+            <PanelEditRecorderContext.Provider value={(step) => recorded.push(step)}>
+              <DatabasePanel {...props} />
+            </PanelEditRecorderContext.Provider>
+          </ElementRegistryContext.Provider>
+        </MathSignalsProvider>
       </SignalCatalogContext.Provider>
     </ProjectContext.Provider>,
   );
@@ -280,6 +317,61 @@ describe("the Computed branch", () => {
     mathSignals = [mathRecord()];
     emitHostEvent("math-signals-changed");
     expect(await screen.findByText("median(Cell\d+)")).toBeInTheDocument();
+  });
+});
+
+/// A computed signal is a signal on this surface too: with the Values
+/// column on, its row shows a live value in the same cell a
+/// database-defined row does. The panel asked for neither the key nor
+/// the cell for math rows, so the column was blank for the whole
+/// Computed branch.
+describe("the live value column", () => {
+  const values = () => screen.getByLabelText(/values/i);
+
+  it("asks for a math row's value under its math-provenance key", async () => {
+    mathSignals = [mathRecord()];
+    renderPanel();
+    await screen.findByText("median(Cell\d+)");
+    fireEvent.click(values());
+    await waitFor(() => {
+      const calls = invoked.filter((c) => c.cmd === "fetch_signal_page");
+      expect(calls.length).toBeGreaterThan(0);
+      const sel = calls[calls.length - 1].args.selection as {
+        keys: { busId: string | null; messageId: number; signalName: string; math?: boolean }[];
+      };
+      // The **id**, never the display name, and keyed as math — a math
+      // series has no bus and no message, so nothing else keeps its
+      // `0` out of the message-id namespace.
+      expect(sel.keys).toContainEqual(
+        expect.objectContaining({
+          busId: null,
+          messageId: 0,
+          extended: false,
+          signalName: "m1",
+          math: true,
+        }),
+      );
+    });
+  });
+
+  it("renders the answer in the row's value cell, like any other signal", async () => {
+    mathSignals = [mathRecord()];
+    renderPanel();
+    await screen.findByText("median(Cell\d+)");
+    fireEvent.click(values());
+    const shown = await screen.findByText("3.71");
+    expect(shown.closest(".signal-value-cell")).toHaveTextContent(/^3\.71\s*V$/);
+    // In the row's own value cell, the same slot a DBC-backed row uses.
+    expect(mathRow("median(Cell\d+)").querySelector(".dbc-row-value")).toContainElement(shown);
+  });
+
+  it("leaves the Computed branch row itself valueless", async () => {
+    mathSignals = [mathRecord()];
+    renderPanel();
+    await screen.findByText("Computed");
+    fireEvent.click(values());
+    await screen.findByText("3.71");
+    expect(computedRow().querySelector(".dbc-row-value")).toBeNull();
   });
 });
 
@@ -421,5 +513,71 @@ describe("creating one", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Sum" }));
     expect(await screen.findByText("(unnamed)")).toBeInTheDocument();
     expect(mathRow("(unnamed)")).toHaveTextContent("name it");
+  });
+});
+
+describe("dragging one out", () => {
+  /// Minimal `DataTransfer` stand-in for jsdom — the same shape the
+  /// panel's other drag tests use.
+  function fakeTransfer(): DataTransfer {
+    const store: Record<string, string> = {};
+    return {
+      setData: (t: string, d: string) => {
+        store[t] = d;
+      },
+      getData: (t: string) => store[t] ?? "",
+      get types() {
+        return Object.keys(store);
+      },
+      effectAllowed: "none",
+    } as unknown as DataTransfer;
+  }
+
+  it("drags as a signal carrying its math provenance and its stable id", async () => {
+    mathSignals = [mathRecord()];
+    renderPanel();
+    await screen.findByText("median(Cell\d+)");
+    const row = mathRow("median(Cell\d+)") as HTMLElement;
+    expect(row).toHaveAttribute("draggable", "true");
+    const dt = fakeTransfer();
+    fireEvent.dragStart(row, { dataTransfer: dt });
+    const refs = parseSignalDragData(dt.getData(SIGNAL_DND_MIME)).signals;
+    expect(refs).toHaveLength(1);
+    // The **id**, never the display name: a rename must leave every
+    // reference to the definition alone.
+    expect(refs[0].signalName).toBe("m1");
+    expect(refs[0].math).toBe(true);
+    expect(refs[0].busId).toBeNull();
+    expect(refs[0].unit).toBe("V");
+  });
+
+  it("leaves the Computed branch itself undraggable", async () => {
+    mathSignals = [mathRecord()];
+    renderPanel();
+    await screen.findByText("Computed");
+    expect(computedRow()).not.toHaveAttribute("draggable", "true");
+  });
+});
+
+describe("the set section's pattern popover", () => {
+  it("opens from the expanded editor, viewport-positioned at the button", async () => {
+    mathSignals = [mathRecord()];
+    renderPanel();
+    await screen.findByText("median(Cell\d+)");
+    fireEvent.click(chevronOf(mathRow("median(Cell\d+)")));
+    const btn = screen.getByRole("button", { name: "patterns for Signals" });
+    fireEvent.click(btn);
+    const pop = screen.queryByRole("group", { name: "patterns in Signals" });
+    expect(pop).not.toBeNull();
+    // Fixed viewport coordinates, not anchored: an anchored popover is
+    // clipped by the hosting panel's scroll container and reads as the
+    // button doing nothing.
+    expect(pop!.style.left).not.toBe("");
+    expect(pop!.style.top).not.toBe("");
+    // …and portalled to <body>: rendered in place, the hosts' GPU-layer
+    // containers (will-change / translate3d) become the containing
+    // block for `position: fixed`, and the viewport coordinates land
+    // offset down into the panel.
+    expect(pop!.parentElement).toBe(document.body);
   });
 });

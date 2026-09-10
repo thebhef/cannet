@@ -11,6 +11,7 @@ import {
   setValidity,
   slotValidity,
   withParam,
+  mathBusLabel,
   withPatterns,
   withPick,
   withoutPick,
@@ -36,6 +37,7 @@ function record(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     resolvedOperands: [dbcRef("Cell01"), dbcRef("Cell02")],
     operandPaths: ["CAN1/BMS/Cells/Cell01", "CAN1/BMS/Cells/Cell02"],
     unitResolved: "V",
+    busIds: ["bus-a"],
     invalid: null,
     ...over,
   };
@@ -182,5 +184,27 @@ describe("per-section validity", () => {
       ok: false,
       message: "bad regex",
     });
+  });
+});
+
+/// A math series has no bus of its own, so what a row shows beside it
+/// is where its input comes from — the host answers *which* buses
+/// (transitively); this is only how they are worded.
+describe("the bus line a math row wears", () => {
+  const names = new Map([
+    ["pack", "Pack"],
+    ["zonal", "Zonal"],
+  ]);
+  it("says only Math when nothing feeds it yet", () => {
+    expect(mathBusLabel([], names)).toBe("Math");
+  });
+  it("names the one bus its input comes from", () => {
+    expect(mathBusLabel(["pack"], names)).toBe("Pack · Math");
+  });
+  it("says Multiple Busses once there is more than one", () => {
+    expect(mathBusLabel(["pack", "zonal"], names)).toBe("Math - Multiple Busses");
+  });
+  it("falls back to the bus id when the project has no name for it", () => {
+    expect(mathBusLabel(["ghost"], names)).toBe("ghost · Math");
   });
 });

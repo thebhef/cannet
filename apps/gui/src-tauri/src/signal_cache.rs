@@ -417,6 +417,35 @@ impl SignalCache {
         self.levels[0].push(t_seconds, value);
     }
 
+    /// Replace everything this series holds with `points`.
+    ///
+    /// The one provenance that needs it is a **capture-constant** math
+    /// series — an `hline` or a `statistic`. Such a series is one
+    /// horizontal line whose *whole* description moves as the capture
+    /// grows: the statistic over what has decoded changes, and the span
+    /// both stretch across widens. Appending each round's answer would
+    /// leave every earlier, partial one in the pyramid, so the line
+    /// would draw as the staircase that produced it rather than as the
+    /// line it is. A constant is two points, so rewriting is two
+    /// pushes.
+    ///
+    /// The level chain is minted fresh (the same append-only
+    /// [`SampleSeq`]s, starting over at the same file base — no files
+    /// are touched until the first push, so the old maps are dropped
+    /// before the new run opens a segment), and so is the widen-only
+    /// `[lo, hi]` extent: leaving it would leave the plot
+    /// auto-normalising against a value the series no longer holds.
+    fn rewrite(&mut self, points: &[SamplePoint]) {
+        self.levels = vec![SampleSeq::new(&self.dir, format!("{}.l0", self.base))];
+        self.folded = vec![0];
+        self.lo = f64::INFINITY;
+        self.hi = f64::NEG_INFINITY;
+        for point in points {
+            self.push_sample(point.t_seconds, point.value);
+        }
+        self.fold();
+    }
+
     /// Propagate newly-appended `levels[0]` points up the pyramid: for
     /// each level, fold every bucket of [`PYRAMID_BRANCH`] points that
     /// became complete since the last call into the level above, emitting
@@ -698,6 +727,15 @@ impl SignalCache {
         from: f64,
         to: f64,
     ) -> Vec<ExtrapolatedSpan> {
+        // A user-authored constant is data. An `hline` and a
+        // `statistic` are two points spanning the capture, and rule 1
+        // would dash both of their wings as a held horizontal line —
+        // but holding the value across the axis is not an inference
+        // here, it is what the user asked for. So it draws solid
+        // (ADR 0026, as this provenance settles its one-sample case).
+        if self.math.as_ref().is_some_and(|m| m.constant) {
+            return Vec::new();
+        }
         let (Some(first), Some(last)) = (served.first(), served.last()) else {
             // Nothing was served, so nothing is drawn — an empty series
             // is not extrapolated across the window, it is absent from
@@ -1793,6 +1831,27 @@ struct MathFill {
     /// A serve over a math series is incomplete while this is set, even
     /// when every operand has itself caught up (ADR 0049).
     pending: bool,
+    /// This series is a **constant the user authored** — an `hline`, or
+    /// a `statistic` over the capture — rather than a series sampled
+    /// over time.
+    ///
+    /// It decides two things, both of which a constant needs to draw as
+    /// the one line it is (ADR 0026).
+    ///
+    /// **What the series holds.** A round returns the whole line and
+    /// *replaces* what is there ([`SignalCache::rewrite`]). A capture
+    /// reaches a serve in pieces, so a statistic's answer over what has
+    /// decoded moves round to round; appending would leave the partial
+    /// answers under the line as a staircase.
+    ///
+    /// **How it is styled.** Two points spanning the capture is exactly
+    /// the shape ADR 0026's first rule dashes on both wings, as a
+    /// horizontal line held past its own data. The ruling for this
+    /// provenance runs the other way — a user-authored constant *is*
+    /// the data, and holding it across the axis is what it means — so
+    /// [`SignalCache::extrapolated_spans`] reports none and it draws
+    /// solid.
+    constant: bool,
 }
 
 /// The cache key an operand reference names, or `None` for a DBC-backed
@@ -1936,6 +1995,10 @@ fn ensure_math(caches: &mut Caches, dbcs: &DecodeModel<'_>, id: &str) {
         // Nothing has been read yet, so a serve answering off this
         // cache before its first fold is answering off a prefix.
         pending: true,
+        constant: matches!(
+            resolved.definition.function,
+            MathFunction::HLine { .. } | MathFunction::Statistic { .. }
+        ),
     });
     cache.encoding = Some(stamp);
     caches.by_key.insert(key, cache);
@@ -3561,6 +3624,111 @@ impl SignalCacheStore {
         }
     }
 
+    /// Every math series the model defines, whole and undecimated —
+    /// `(id, display name, unit, samples)`, in the registry's order.
+    ///
+    /// The export analogue of [`Self::file_signal_series`], and the
+    /// reason it cannot be that function's shape: a file-backed series
+    /// is already in the cache the moment its capture is imported,
+    /// while a math series is computed by a serve and its pyramid is
+    /// session-scoped — so this has to *drive the fill* rather than
+    /// read what happens to be there. A math signal nobody has plotted
+    /// still exports.
+    pub fn math_series(
+        &self,
+        store: &TraceStore,
+        dbs: &DecodeModel<'_>,
+    ) -> Vec<(String, String, String, Vec<SamplePoint>)> {
+        let resolved: Vec<_> = dbs.math().iter().collect();
+        if resolved.is_empty() {
+            return Vec::new();
+        }
+        let queries: Vec<CacheQuery<'_>> = resolved
+            .iter()
+            .map(|r| CacheQuery {
+                bus_id: None,
+                message_id: 0,
+                extended: false,
+                signal_name: &r.definition.id,
+                file_backed: false,
+                math: true,
+            })
+            .collect();
+        let keys = self.ensure_caches(&queries, dbs);
+        let store_len = store.len();
+        let limit = self.serve_limit();
+        let math = math_ids(&keys, dbs.math());
+        let mut decode = keys.clone();
+        decode.extend(math_operand_keys(&math, dbs.math()));
+        self.catch_up_keys(&decode, store_len, dbs, &store_fetch(store), &limit);
+        if !math.is_empty() {
+            self.fold_math(&math, dbs, capture_span(store), store_len, &limit);
+        }
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        resolved
+            .iter()
+            .zip(&keys)
+            .filter_map(|(r, key)| {
+                let cache = key.as_ref().and_then(|k| caches.by_key.get(k))?;
+                let samples = cache.all_samples();
+                if samples.is_empty() {
+                    return None;
+                }
+                Some((
+                    r.definition.id.clone(),
+                    r.definition.name.clone(),
+                    r.unit.clone(),
+                    samples,
+                ))
+            })
+            .collect()
+    }
+
+    /// The newest sample of each math series in `queries`, and how many
+    /// samples it holds — what a *row* of a signal view needs about a
+    /// computed series, as against the window a plot asks for.
+    ///
+    /// Runs the same prologue [`Self::slice_many`] does — catch the
+    /// operands up, fold the math — because a math pyramid is
+    /// session-scoped and materialises only on a serve (it is not
+    /// persisted; rebuilding it reads samples that are already
+    /// decoded). A view that never asked for one has nothing to read.
+    /// The fill is incremental with a watermark, so a second call over
+    /// a grown capture pays for the tail alone.
+    ///
+    /// Every query must name a math series; anything else answers
+    /// `None` in its own slot, so the result stays index-parallel with
+    /// the batch.
+    pub fn math_latest(
+        &self,
+        queries: &[CacheQuery<'_>],
+        store: &TraceStore,
+        dbs: &DecodeModel<'_>,
+    ) -> Vec<Option<(SamplePoint, usize)>> {
+        if queries.is_empty() {
+            return Vec::new();
+        }
+        let keys = self.ensure_caches(queries, dbs);
+        let store_len = store.len();
+        let limit = self.serve_limit();
+        let math = math_ids(&keys, dbs.math());
+        let mut decode = keys.clone();
+        decode.extend(math_operand_keys(&math, dbs.math()));
+        self.catch_up_keys(&decode, store_len, dbs, &store_fetch(store), &limit);
+        if !math.is_empty() {
+            self.fold_math(&math, dbs, capture_span(store), store_len, &limit);
+        }
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        keys.iter()
+            .map(|key| {
+                let cache = key.as_ref().and_then(|k| caches.by_key.get_mut(k))?;
+                cache.read = true;
+                let latest = cache.latest()?;
+                Some((latest, cache.sample_count()))
+            })
+            .collect()
+    }
+
     /// The signal's all-time value extent `(lo, hi)` over every decoded
     /// sample, catching the cache up to the store's tip first. `None`
     /// when no matching frame has decoded yet. This is the host-owned
@@ -3706,22 +3874,25 @@ impl SignalCacheStore {
             MathFunction::Statistic {
                 statistic,
                 percentile,
-            } => statistic_round(
-                &caches,
-                &mut fill,
-                mine_last.map(|s| s.t_seconds),
-                *statistic,
-                *percentile,
-            ),
+            } => statistic_round(&caches, &mut fill, *statistic, *percentile),
             function => streaming_round(&caches, &mut fill, function, store_len),
         };
 
         let cache = caches.by_key.get_mut(key).expect("held across the lock");
-        for point in &points {
-            cache.push_sample(point.t_seconds, point.value);
-        }
         if !points.is_empty() {
-            cache.fold();
+            if fill.constant {
+                // A capture-constant series is one line and the round
+                // returned the whole of it, so it replaces what is
+                // there rather than leaving a staircase of the partial
+                // answers behind it ([`SignalCache::rewrite`], which
+                // folds its own).
+                cache.rewrite(&points);
+            } else {
+                for point in &points {
+                    cache.push_sample(point.t_seconds, point.value);
+                }
+                cache.fold();
+            }
             caches.dirty = true;
         }
         let progress = points.len() + consumed;
@@ -3791,16 +3962,16 @@ fn streaming_round(
 ///
 /// The statistic is over **every sample the operand has decoded**, so
 /// it is recomputed whenever the operand has grown — which is what the
-/// cursor tracks here, rather than a consumption point. The series it
-/// produces carries one point per recomputation: two over a stopped
-/// capture (the operand's first and last sample time), and one more per
-/// serve while the capture is growing, because the answer is still
-/// moving. Once the operand stops, the value stops with it and what is
-/// left is the flat line the function is drawn as.
+/// cursor tracks here, rather than a consumption point. A round returns
+/// the **whole line** at the answer it has now, spanning the operand,
+/// and its caller *replaces* the series with it
+/// ([`SignalCache::rewrite`]): a capture reaches a serve in pieces, so
+/// the earlier rounds' answers are partial statistics that must not
+/// survive as a staircase under the line. Empty means the operand has
+/// not grown, so the answer cannot have moved.
 fn statistic_round(
     caches: &Caches,
     fill: &mut MathFill,
-    mine_last: Option<f64>,
     statistic: crate::math_signals::Statistic,
     percentile: f64,
 ) -> (Vec<SamplePoint>, usize) {
@@ -3825,32 +3996,38 @@ fn statistic_round(
     };
     let (first, last) = cache.time_span().unwrap_or((0.0, 0.0));
     fill.cursors[0] = level.len();
-    let mut points = Vec::new();
-    // The line starts where the operand does, and is extended to the
-    // operand's newest sample as it grows.
-    if mine_last.is_none() {
-        points.push(SamplePoint {
-            t_seconds: first,
-            value,
-        });
-    }
-    if last > mine_last.unwrap_or(first) {
+    // The line starts where the operand does and ends at its newest
+    // sample — the whole line, because the caller replaces rather than
+    // appends.
+    (constant_line(value, first, last), read)
+}
+
+/// The two points a capture-constant series is: `value` held from
+/// `first` to `last`, collapsing to one point on a span of no width
+/// (a capture of a single frame).
+fn constant_line(value: f64, first: f64, last: f64) -> Vec<SamplePoint> {
+    let mut points = vec![SamplePoint {
+        t_seconds: first,
+        value,
+    }];
+    if last > first {
         points.push(SamplePoint {
             t_seconds: last,
             value,
         });
     }
-    (points, read)
+    points
 }
 
-/// The points a horizontal line contributes this round.
+/// The whole line a horizontal line is this round, or empty when the
+/// capture has not grown past what the series already spans.
 ///
 /// An `hline` has no operands, so it has no timeline of its own to
-/// follow: it takes the capture's. The first sample anchors it at the
-/// capture's start and each later one extends it to the live edge, so
-/// it is two points over a stopped capture and grows by one per serve
-/// over a live one — the line spans the data without carrying a sample
-/// per frame.
+/// follow: it takes the capture's, anchored at the capture's start and
+/// extended to the live edge. Like a statistic's, the line is returned
+/// whole and *replaces* the series ([`SignalCache::rewrite`]) rather
+/// than being appended to it, so a live capture leaves two points
+/// behind rather than one per serve.
 fn hline_points(
     value: f64,
     mine_last: Option<f64>,
@@ -3859,20 +4036,10 @@ fn hline_points(
     let Some((first, last)) = capture_span else {
         return Vec::new();
     };
-    let mut points = Vec::new();
-    if mine_last.is_none() {
-        points.push(SamplePoint {
-            t_seconds: first,
-            value,
-        });
+    if mine_last.is_some_and(|held| last <= held) {
+        return Vec::new();
     }
-    if last > mine_last.unwrap_or(first) {
-        points.push(SamplePoint {
-            t_seconds: last,
-            value,
-        });
-    }
-    points
+    constant_line(value, first, last)
 }
 
 /// One stretch of a served window across which the renderer draws
@@ -10132,6 +10299,53 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)]
+    fn a_statistic_served_while_the_capture_grew_is_still_one_flat_line() {
+        // A capture reaches a serve in pieces — a live bus grows it, and
+        // a stopped one decodes under a budget — so a statistic's fill
+        // runs several rounds over one capture and each round's answer
+        // is the statistic over everything decoded *so far*. What the
+        // series holds afterwards has to be the one horizontal line the
+        // function names, at the value it holds now, not the staircase
+        // of the partial answers that produced it.
+        let db = dbc_ab(10);
+        let definitions = vec![math_def(
+            "m1",
+            MathFunction::Statistic {
+                statistic: Statistic::Max,
+                percentile: 0.0,
+            },
+            &[operand("A")],
+        )];
+        let dbs = with_math(&db, &definitions);
+
+        let whole = {
+            let dir = TempDir::new().unwrap();
+            let store = SignalCacheStore::new_unbounded(dir.path());
+            math_series(&store, "m1", &ab_capture(120), &dbs)
+        };
+
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let growing = TraceStore::new();
+        let mut piecewise = Vec::new();
+        for chunk in 0..4u64 {
+            #[allow(clippy::cast_possible_truncation)]
+            for i in chunk * 30..(chunk + 1) * 30 {
+                growing.append(ab_frame(i * S, i as u16, (i * 10) as u16));
+            }
+            piecewise = math_series(&store, "m1", &growing, &dbs);
+        }
+        assert_eq!(piecewise, whole, "{piecewise:?}");
+        // And the extent the plot auto-ranges against is the line's own
+        // value, not the span the partial answers swept.
+        assert_eq!(
+            store.min_max_many(&[math_query("m1")], &growing, &dbs),
+            vec![Some((119.0, 119.0))],
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
     fn an_hline_spans_the_capture_without_a_sample_per_frame() {
         let trace = ab_capture(500);
         let db = dbc_ab(10);
@@ -10143,6 +10357,24 @@ mod tests {
         assert_eq!(series.len(), 2, "{series:?}");
         assert!(series.iter().all(|(_, v)| *v == 3.5), "{series:?}");
         assert!(series[1].0 > series[0].0, "{series:?}");
+
+        // And it is still two points after the capture has grown under
+        // it across several serves — the line is rewritten to the new
+        // live edge, not extended by a point per serve.
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let growing = TraceStore::new();
+        let mut live = Vec::new();
+        for chunk in 0..4u64 {
+            #[allow(clippy::cast_possible_truncation)]
+            for i in chunk * 30..(chunk + 1) * 30 {
+                growing.append(ab_frame(i * S, i as u16, (i * 10) as u16));
+            }
+            live = math_series(&store, "m1", &growing, &dbs);
+        }
+        assert_eq!(live.len(), 2, "{live:?}");
+        assert_eq!(live[0], (0.0, 3.5), "{live:?}");
+        assert_eq!(live[1], (119.0, 3.5), "{live:?}");
     }
 
     #[test]
@@ -10188,6 +10420,82 @@ mod tests {
             }
             assert_eq!(piecewise, whole, "{kind}");
         }
+    }
+
+    /// **A user-authored constant is data, and draws solid.** ADR
+    /// 0026's first rule dashes a horizontal line held past its own
+    /// samples, and an `hline` / `statistic` is exactly that shape —
+    /// two points spanning the capture. This provenance settles the
+    /// one-sample-series question the other way: the user authored the
+    /// value, and holding it across the axis is what it means.
+    #[test]
+    fn a_user_authored_constant_is_never_extrapolation() {
+        let trace = ab_capture(60);
+        let db = dbc_ab(10);
+        let definitions = vec![
+            math_def("line", MathFunction::HLine { value: 7.5 }, &[]),
+            math_def(
+                "stat",
+                MathFunction::Statistic {
+                    statistic: crate::math_signals::Statistic::Mean,
+                    percentile: 0.0,
+                },
+                &[operand("A")],
+            ),
+            // The control: an ordinary computed series is classified
+            // exactly as a decoded one is.
+            math_def("sum", MathFunction::Sum, &[operand("A"), operand("B")]),
+        ];
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        // A window running well past the capture's live edge, which is
+        // what a follow-live serve asks for — the case that put a
+        // dashed tail on the constant.
+        let served = store.slice_many(
+            &[math_query("line"), math_query("stat"), math_query("sum")],
+            -10.0,
+            1_000.0,
+            0,
+            Reduction::MinMax,
+            &trace,
+            &dbs,
+        );
+        assert!(served.extrapolated[0].is_empty(), "hline");
+        assert!(served.extrapolated[1].is_empty(), "statistic");
+        assert!(
+            !served.extrapolated[2].is_empty(),
+            "an ordinary computed series still reports its wings",
+        );
+    }
+
+    /// What a *row* of a signal view needs about a math series, as
+    /// against the window a plot asks for: the newest sample and how
+    /// many there are. It has to drive the same fill — a math pyramid
+    /// is session-scoped and exists only once something has served it —
+    /// so a view that shows one without ever plotting it still reads a
+    /// value.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn the_latest_of_a_math_series_drives_its_own_fill() {
+        let trace = ab_capture(50);
+        let db = dbc_ab(10);
+        let definitions = vec![math_def(
+            "m1",
+            MathFunction::Sum,
+            &[operand("A"), operand("B")],
+        )];
+        let dbs = with_math(&db, &definitions);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+
+        // Nothing has served this series, so this call is what
+        // materialises it.
+        let latest = store.math_latest(&[math_query("m1")], &trace, &dbs);
+        let (point, count) = latest[0].expect("the fill produced samples");
+        assert_eq!(count, 50);
+        let whole = math_series(&store, "m1", &trace, &dbs);
+        assert_eq!((point.t_seconds, point.value), *whole.last().unwrap());
     }
 
     #[test]

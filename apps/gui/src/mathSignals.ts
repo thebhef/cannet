@@ -300,6 +300,28 @@ export function setValidity(
     : { ok: false, message: "needs ≥ 2" };
 }
 
+/// What a math signal's drag payload carries in the message slot: a
+/// math series has no message, and this is the word every surface
+/// falls back to before it can look the definition up for itself.
+export const MATH_MESSAGE_LABEL = "Math";
+
+/// The line a math row shows where a DBC-backed row shows its message
+/// path, given the buses feeding it (`MathSignalRecord.busIds`, which
+/// the host resolves transitively).
+///
+/// One bus reads like a normal row's provenance; **several read as
+/// "Math - Multiple Busses"** (owner ruling) rather than a list, which
+/// at a plot side list's width would truncate to nothing useful. The
+/// chips beside it name them individually either way.
+export function mathBusLabel(
+  busIds: readonly string[],
+  busNames: ReadonlyMap<string, string>,
+): string {
+  if (busIds.length === 0) return MATH_MESSAGE_LABEL;
+  if (busIds.length > 1) return `${MATH_MESSAGE_LABEL} - Multiple Busses`;
+  return `${busNames.get(busIds[0]) ?? busIds[0]} · ${MATH_MESSAGE_LABEL}`;
+}
+
 /// Identity of one operand reference — the series key its provenance
 /// puts it in (`plotData.ts::signalKey`'s shape), so a file-backed
 /// signal and a message's cannot collide on a shared message-id slot.

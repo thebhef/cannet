@@ -1139,6 +1139,20 @@ report is written.
   connects successfully to a *silent* bus: the capture succeeds, a
   normal-shaped report is written, and every gated metric passes on
   no load at all. On `ev-zonal` the simulation **is** the load.
+- `--math-on-start` defines the harness's **math signal** case over
+  whatever project the launch opened, once its databases have landed:
+  a set function over a live regex pattern, an exponential filter, a
+  capture-wide statistic, and one math-over-math chain
+  (`perfMathCase.ts`). It is a launch flag and not a project of its
+  own on purpose — the baseline project is the comparand for every
+  reading taken on this rig, and growing it would invalidate the
+  series. The controlled pair is the same launch twice, with and
+  without the flag. The definitions are session-lived: nothing is
+  written to the project file.
+  Defining a math signal costs nothing on its own — a math pyramid is
+  built by a *serve* — so the flag also puts the series into the open
+  plot areas and signal views, which is what a person measuring would
+  do by dragging them there.
 - `--perf-capture-secs <n>` captures the frontend diagnostics for `n`
   seconds after the session settles, then writes the report and exits.
 - `--perf-out <path>` is where the `RenderReport` JSON lands;
@@ -2339,6 +2353,59 @@ an unrecognised key or value.
 > its own but won't bring up a usable window — the host expects either
 > a Vite dev server (which `tauri dev` starts for you) or a built
 > frontend at `apps/gui/dist`. Use the `pnpm tauri` commands above.
+
+### Math signals (the Computed branch)
+
+The **Database** panel's **Computed** branch holds *math signals*:
+series cannet computes from other signals rather than decoding from
+frames. Right-click anywhere in the tree to pick a function; the
+definition is created immediately and edited in place — there is no
+dialog and no Save. Every field commits when you leave it (Enter or
+clicking away applies, Escape abandons) and every commit is one undo
+step, so `Ctrl`/`Cmd`+`Z` reverses a math edit like any other. A
+definition you have not finished is stored, marked with what is
+missing, and serves nothing until you finish it. **Delete** on the
+Computed row is two-stage: click to arm, click again to remove.
+
+The functions:
+
+| | takes | parameters |
+|---|---|---|
+| Sum, Product, Min, Max, Average, Median, Range | a **set** of signals | — |
+| Difference (A − B) | two signals | — |
+| Scale (g·x + b) | one signal | gain, offset |
+| Exponential filter | one signal | τ (s) |
+| Integration | one signal | — |
+| Duty cycle, Frequency | one signal | threshold, window (s) |
+| Statistic (over capture) | one signal | statistic (min / max / mean / median / percentile), percentile |
+| RMS (instantaneous) | one signal | — |
+| HLine | nothing | value |
+
+Set functions are **pointwise**: `max` over a group of cell voltages
+is the cell-max *curve*, not one number. A set's membership is your
+manual picks **plus** the live matches of any regex patterns you give
+it (the `/…/` button in the section header, over the same
+`bus/ecu/message/signal` path a signal view's patterns use), so a
+signal that starts matching joins on its own. Single-signal slots
+offer a fuzzy-searched combobox over the database tree, and every slot
+also accepts a signal dragged in from anywhere. Math signals can take
+other math signals as operands; cycles are refused at definition time.
+
+A math signal drags to plots and signal views like any other signal.
+Its row there wears one **color chip per bus feeding it** —
+transitively, through any math operands — and reads
+`Math - Multiple Busses` when more than one does. The row's disclosure
+opens the same editor in place, wherever it is. `HLine` and
+`Statistic` each draw as **one solid horizontal line** across the
+capture: a value you authored is data, not the plot extrapolating past
+it (ADR 0026). A `Statistic` is over everything captured so far, so on
+a live bus the whole line moves as the answer does — it never leaves
+the partial answers behind it on the plot.
+
+Definitions live in the project file by stable id, so renaming one is
+safe. **Save Capture** to MDF carries the computed series as channels
+in a `Computed` acquisition group; BLF carries frames only, and says
+which computed and file-backed signals it is leaving behind.
 
 ### Signal value→color maps
 
