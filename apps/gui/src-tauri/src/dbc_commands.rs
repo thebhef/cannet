@@ -512,6 +512,10 @@ pub(crate) fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRe
     // records, and the database's own string otherwise
     // (`crate::signal_units`).
     let signal_units = state.signal_units_snapshot();
+    // The dict that places a database's own wording — read once here,
+    // which with the reinterpretation store is the whole of what decides
+    // a catalog row's unit.
+    let customizations = crate::settings::unit_customizations();
     // Shared enumeration with `fetch_signal_page` (per-bus assignment
     // expansion + descriptor-key dedup), so the picker catalog and the
     // signal-view rows can't disagree about what exists.
@@ -519,23 +523,32 @@ pub(crate) fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRe
         dbs.iter().map(|l| (l.db.as_ref(), l.buses.as_slice())),
     )
     .into_iter()
-    .map(|(bus_id, d)| SignalDescriptorRecord {
-        unit: crate::signal_units::label_of_signal(
+    .map(|(bus_id, d)| {
+        // The unit *and* what it is: every consumer that converts —
+        // the plot's display-unit chip above all — takes the typed half
+        // rather than reading the spelling back, which would lose the
+        // units whose spelling recognition refuses (`C`, `Nmm`).
+        let reading = crate::signal_units::unit_of_signal(
             &signal_units,
             bus_id.as_deref(),
             (d.message_id, d.extended, &d.signal_name),
             &d.unit,
-        ),
-        bus_id,
-        message_id: d.message_id,
-        extended: d.extended,
-        message_name: d.message_name,
-        transmitter: d.transmitter,
-        signal_name: d.signal_name,
-        is_enum: d.is_enum,
-        display_hex: d.display_hex,
-        decimals: d.decimals,
-        file_backed: false,
+            &customizations,
+        );
+        SignalDescriptorRecord {
+            unit_typed: reading.unit,
+            unit: reading.display,
+            bus_id,
+            message_id: d.message_id,
+            extended: d.extended,
+            message_name: d.message_name,
+            transmitter: d.transmitter,
+            signal_name: d.signal_name,
+            is_enum: d.is_enum,
+            display_hex: d.display_hex,
+            decimals: d.decimals,
+            file_backed: false,
+        }
     })
     .collect();
     drop(dbs);
@@ -549,7 +562,7 @@ pub(crate) fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRe
             .signal_caches
             .file_signals()
             .into_iter()
-            .map(signal_snapshot::file_backed_descriptor),
+            .map(|entry| signal_snapshot::file_backed_descriptor(entry, &customizations)),
     );
     out
 }

@@ -423,7 +423,13 @@ fn coded_label(info: &crate::signal_cache::FileSignalInfo, value: f64) -> Option
 /// a value table, read from its own conversion, and reads as an enum
 /// here exactly as a DBC-backed one would.
 #[must_use]
-pub fn file_backed_descriptor(entry: FileSignalEntry) -> SignalDescriptorRecord {
+pub fn file_backed_descriptor(
+    entry: FileSignalEntry,
+    customizations: &crate::units::Customizations,
+) -> SignalDescriptorRecord {
+    // An imported channel's unit is a string out of its capture file,
+    // which is the same ingest boundary a DBC's unit field is.
+    let reading = crate::units::UnitReading::declared(&entry.info.unit, customizations);
     SignalDescriptorRecord {
         bus_id: None,
         message_id: entry.info.group,
@@ -432,7 +438,8 @@ pub fn file_backed_descriptor(entry: FileSignalEntry) -> SignalDescriptorRecord 
         transmitter: None,
         is_enum: is_coded(&entry.info),
         signal_name: entry.info.name,
-        unit: entry.info.unit,
+        unit_typed: reading.unit,
+        unit: reading.display,
         display_hex: false,
         decimals: None,
         file_backed: true,

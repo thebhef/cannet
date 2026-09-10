@@ -4844,7 +4844,9 @@ fn list_signals_offers_file_backed_signals_marked_by_source() {
         .signal_caches
         .file_signals()
         .into_iter()
-        .map(signal_snapshot::file_backed_descriptor)
+        .map(|entry| {
+            signal_snapshot::file_backed_descriptor(entry, &crate::units::Customizations::new())
+        })
         .collect();
     assert_eq!(
         rows.iter()
@@ -5001,7 +5003,9 @@ fn a_coded_file_backed_signal_carries_its_label_into_the_values_views() {
         .signal_caches
         .file_signals()
         .into_iter()
-        .map(signal_snapshot::file_backed_descriptor)
+        .map(|entry| {
+            signal_snapshot::file_backed_descriptor(entry, &crate::units::Customizations::new())
+        })
         .collect();
     assert_eq!(
         descriptors

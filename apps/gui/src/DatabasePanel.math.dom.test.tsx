@@ -487,7 +487,8 @@ describe("creating one", () => {
     expect(
       within(menu).getByRole("menuitem", { name: "Statistic (over capture)" }),
     ).toBeInTheDocument();
-    expect(within(menu).getAllByRole("menuitem")).toHaveLength(16);
+    expect(within(menu).getByRole("menuitem", { name: "Derivative" })).toBeInTheDocument();
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(17);
   });
 
   it("materializes the definition at once and expands its editor in place", async () => {

@@ -1369,7 +1369,14 @@ string, and the toolbar's **Unknown unit** chip filters to exactly those
 rows: each needs a mapping under Settings → Units before anything can
 convert through it (a signal that declares no unit is not flagged —
 there is nothing to map). Adding the mapping clears the flag without a
-reopen. It is a repair
+reopen. The **unit** column carries the resolved unit as a chip — what
+that string means after recognition and this project's customizations —
+and clicking it opens the unit picker: reassigning a unit here is
+**reinterpretation**, not conversion. Any unit may be chosen, kinds may
+cross (a current channel labelled `V` is exactly the case it exists
+for), and **no scaling is applied** — the decoded value is simply read
+as the unit you chose from then on, everywhere that signal appears, and
+the choice persists with the project. It is a repair
 surface as well as a report, and the **source** column is where both
 repairs are made, with no apply step. Choosing the *same* signal under a
 different database settles the ambiguous case: the choice is recorded in
@@ -1735,8 +1742,15 @@ resample at the end.
 - **Y-axis mode.** Each plot area carries a y-axis-mode selector
   (next to **fit y**) with three values per ADR 0026: **unified**
   (one axis; all series overlaid), **per-unit** (one axis per
-  declared unit; unitless series share an axis), and **individual**
-  (one axis per series). On any axis, series sharing a declared unit
+  display unit; unitless series share an axis), and **individual**
+  (one axis per series). `mV` is a different unit than `V`, so per-unit
+  collection stays honest by default and a cell voltage gets a lane of
+  its own; the **unit beside a row's value** is how they converge —
+  click it and pick a like-kind unit, and the series converts (values
+  and axis extent both) and merges into that unit's lane. The picker is
+  kind-locked because this is a real conversion, unlike the
+  signal-mapping panel's reinterpretation; the choice persists with the
+  series. On any axis, series sharing a declared unit
   share one y scale (the union of their observed ranges) and each
   unit group auto-scales independently to fill the axis; the y-tick
   labels always show the primary signal's real engineering values
@@ -2382,7 +2396,8 @@ The functions:
 | Difference (A − B) | two signals | — |
 | Scale (g·x + b) | one signal | gain, offset |
 | Exponential filter | one signal | τ (s) |
-| Integration | one signal | — |
+| Integration | one signal | time unit |
+| Derivative | one signal | time unit |
 | Duty cycle, Frequency | one signal | threshold, window (s) |
 | Statistic (over capture) | one signal | statistic (min / max / mean / median / percentile), percentile |
 | RMS (instantaneous) | one signal | — |
@@ -2399,16 +2414,38 @@ also accepts a signal dragged in from anywhere. Math signals can take
 other math signals as operands; cycles are refused at definition time.
 
 **Units and scaling.** A math signal's *unit* is also its conversion
-**target**. The editor's Units box offers cannet's unit library,
-grouped by what each measures, and still takes anything you type into
-it. Name a unit cannet recognises ("V", "mV", "A", "mA", "degC", "°C",
-"K", "rpm", "km/h", "%", "Nm", "bar", "kPa", "Hz", "s", "ms", …) and
-every operand whose own database unit is recognised is converted to it
-before the function runs — so a set that matches milliamps beside amps
-computes correctly, each member scaled by its own factor. Conversions
-are affine, so °C, °F and K convert as absolute readings. Leave the
-unit blank, or type something cannet does not recognise, and nothing
-converts: the unit is a label, exactly as it was before.
+**target**, and every function **derives one** by dimensional analysis
+when you name none: a product of amps and seconds ships as `A·s`, an
+integration of a current over hours as `Ah`, a derivative of an
+amp-hour counter per second as `Ah/s`. Every operand whose own database
+unit is recognised is converted to that unit before the function runs —
+so a set that matches milliamps beside amps computes correctly, each
+member scaled by its own factor. Conversions are affine, so °C, °F and
+K convert as absolute readings.
+
+A unit's identity is a **base unit and an SI prefix**, so the editor's
+Units button opens a two-column picker: the base on the left, the whole
+exponent-ordered prefix ladder on the right (each rung carrying its
+`×10ⁿ` and how the pair reads — `mV`, `nAh`). The ratio family takes a
+scale choice (0–1 / % / ppm) instead of prefixes. The picker is
+**kind-locked**: choosing here is a real conversion, so it offers the
+dimension the series is in and nothing else — for an integration or a
+derivative that is the *composed* dimension (a current integrated over
+time is a charge). Picking the derived unit again clears the override;
+there is no reset button because there is nothing else it would do, and
+where the operands compose nothing to pick — a set whose members are of
+mixed dimensions — the picker carries a **from the operands** row that
+does the same. The button reads the unit and nothing else; hover it for
+what the analysis composed and what it converts by (`A·h → C (×3600)`).
+The library is the only way to name a target: a spelling an older
+project file stored still displays and still resolves, but there is no
+box to type a new one.
+
+**Time is the function's parameter** for Integration and Derivative:
+the function row reads `operand · [t]` and `d(operand) / d[t]`, the
+choice is any of the library's time units (default `s`), and the output
+unit follows as the composition. Changing it re-derives, so it clears a
+target you had named against the old one.
 
 Proportions come at two scales, and the **spelling** is what says
 which: `%` is the 0–100 reading, and `%1.0` is the same quantity on the
@@ -2424,14 +2461,20 @@ or not at all, each picked operand carries a manual gain and offset
 one as mA" — local to the definition. The definition itself takes an
 output gain and offset, applied after the function. A member a *pattern*
 collected takes the conversion alone: it is not a stored operand, so
-there is nothing to hang a scalar on.
+there is nothing to hang a scalar on. Those members are **folded**: each
+pattern is one row saying what it collects and how much (`Cell.* (24
+matches)`), which opens to the signals themselves.
 
 What a DBC's unit *string* means is per project, since the field is
-free text: Settings → DBC → **Unit customizations** holds this
-project's own spellings. Type the string as the database writes it,
-pick what it means from the unit library, and Add (`counts` → percent,
-say). The list is workspace-scoped, so it lives in the project's
-`.cannet/settings.json` and travels with it; changing an entry rescales
+free text: Settings → DBC → **Unit customizations** is the table.
+One row per unit — the whole library, plus any unit your config names —
+carrying the strings that read as it, built-in recognitions dimmed
+beside your own. Type a spelling into the row it belongs on (`Deg C`
+onto the °C row) and it joins that unit. Each row's **project** and
+**user** checkboxes say where its own mappings persist: project scope
+lives in that project's `.cannet/settings.json` and travels with its
+databases, user scope holds in every project you open, and **the
+project wins** where both map one string. Changing an entry rescales
 every math signal that depends on it on the next serve.
 
 A math signal drags to plots and signal views like any other signal.

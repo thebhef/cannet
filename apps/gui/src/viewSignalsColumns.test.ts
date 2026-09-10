@@ -21,6 +21,9 @@ describe("viewSignalsColumns", () => {
     expect(VIEW_SIGNAL_UNSORTABLE.has("detail")).toBe(true);
     expect(VIEW_SIGNAL_UNSORTABLE.has("status")).toBe(false);
     expect(VIEW_SIGNAL_UNSORTABLE.has("bus")).toBe(false);
+    // The unit column sorts like the rest: the chip is a picker, but the
+    // string beside it is a value the host can order rows by.
+    expect(VIEW_SIGNAL_UNSORTABLE.has("unit")).toBe(false);
   });
 
   it("falls back to the built-in layout for a malformed saved value", () => {

@@ -218,10 +218,18 @@ pub(crate) enum Backing {
 // rather than behind `cfg(test)` so that a reader of the descriptor
 // table can see why `keybindings` is missing from it.
 #[allow(dead_code)]
-const EDITED_ELSEWHERE: &[(&str, &str)] = &[(
-    "keybindings",
-    "the Keyboard Shortcuts panel (ADR 0018), its only editor",
-)];
+const EDITED_ELSEWHERE: &[(&str, &str)] = &[
+    (
+        "keybindings",
+        "the Keyboard Shortcuts panel (ADR 0018), its only editor",
+    ),
+    (
+        "unit_customizations_user",
+        "the Unit customizations row, whose per-unit user checkbox is what \
+         promotes a mapping into it — one table edits both scopes, so a \
+         second row would be a second editor of the same fact",
+    ),
+];
 
 /// One setting's descriptor, as written in [`DESCRIPTORS`]. The scope
 /// and the default are *not* here — they are joined in from the places
@@ -560,20 +568,11 @@ const DESCRIPTORS: &[Spec] = &[
         key: "unit_customizations",
         backing: Backing::Field,
         label: "Unit customizations",
-        help: "What this project's DBC unit strings mean. The common \
-               spellings are recognised built in; this holds only what \
-               you changed, and travels with the project.",
-        surfaces: &[Surface::Dbc],
-        kind: Kind::Behaviour,
-        control: Control::Custom {
-            renderer: "unit-customizations",
-        },
-    },
-    Spec {
-        key: "unit_customizations_user",
-        backing: Backing::Field,
-        label: "Unit customizations (all projects)",
-        help: "The same mappings, promoted out of one project so they                hold in every project you open. Where a project maps the                same string, the project wins.",
+        help: "What this project's DBC unit strings mean — one row per \
+               unit, carrying the strings that read as it. The common \
+               spellings are recognised built in; the project and user \
+               checkboxes say where a row's own mappings persist, and \
+               the project wins where both scopes map one string.",
         surfaces: &[Surface::Dbc],
         kind: Kind::Behaviour,
         control: Control::Custom {

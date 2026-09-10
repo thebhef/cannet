@@ -1010,6 +1010,39 @@ pub struct ResolvedMath {
     pub output_affine: crate::units::Affine,
     /// The unit the series carries: the user's, or the derived one.
     pub unit: String,
+    /// **What dimensional analysis makes of this function**, spelled as
+    /// its factors — `A·s`, `A·h`, `Ah/s` — whatever the user has named
+    /// on top.
+    ///
+    /// Distinct from [`Self::unit`], which is the user's choice where
+    /// they made one, and from the contracted name that choice reads as:
+    /// the editor's unit button states the derivation either way
+    /// (`composed: A·h` while nothing is set, `A·h → C` once something
+    /// is), and what the note adds is where the name came from. `None`
+    /// where the analysis names nothing.
+    pub derived: Option<String>,
+    /// The unit that derivation **is**, where the table names one — so a
+    /// picker can offer the composition itself and prefix it (`Ah`,
+    /// `nAh`). `None` for a composition no unit names (`Ah/s`), which is
+    /// why this is not simply [`Self::derived`] parsed back: a
+    /// composition is rendered one way and never read.
+    pub composed: Option<crate::units::UnitId>,
+    /// **The unit the definition names**, where it names one anything
+    /// places — the conversion target every operand converts to, and
+    /// what a chip reading this series opens on.
+    ///
+    /// A unit, not the string [`Self::unit`] renders it as: a target
+    /// picked as a coulomb reads `C`, which recognition refuses, so the
+    /// spelling is a one-way rendering and this is the identity.
+    pub target: Option<crate::units::UnitId>,
+    /// The affine carrying the derivation to the **named** target, where
+    /// one is named and the analysis places it there — the conversion
+    /// the unit button's note states (`Ah → C (×3600)`).
+    ///
+    /// Not the same number as [`Self::output_affine`], which also
+    /// carries the user's own output gain and offset; this is the unit
+    /// conversion alone, because that is what the note is about.
+    pub target_conversion: Option<crate::units::Affine>,
     /// The **kind** the series' unit belongs to — the composed dimension
     /// for an integration or a derivative, the operands' own for a
     /// pointwise function. `None` where nothing places it.
@@ -1164,6 +1197,12 @@ impl MathModel {
                     unconverted,
                     output_affine,
                     unit,
+                    derived: derived.as_ref().map(crate::units::Composed::factors),
+                    composed: derived.as_ref().and_then(crate::units::Composed::named),
+                    target_conversion: target
+                        .as_ref()
+                        .and_then(|t| derived.as_ref()?.convert_to(t)),
+                    target,
                     kind,
                     recognition,
                     // Filled below: a definition may read one listed
@@ -2478,6 +2517,56 @@ mod tests {
             "{:?}",
             r.output_affine
         );
+    }
+
+    /// The three facts the unit **button** renders and must not derive:
+    /// what the analysis composed, the unit that composition *is* (so a
+    /// picker can offer it prefixed), and — once a target is named —
+    /// the conversion the note states.
+    #[test]
+    fn resolve_carries_the_derivation_the_unit_button_states() {
+        let hours = MathFunction::Integration {
+            time_unit: crate::units::UnitId::base("hour"),
+        };
+        let mut d = def("m1", hours, picks(&[sig("Current")]));
+        let model = resolve(std::slice::from_ref(&d), &[entry("Current", "A")]);
+        let r = model.get("m1").expect("m1");
+        // The **factors**, not the contraction: the button already says
+        // `Ah`, and what the note adds is where that came from.
+        assert_eq!(r.derived.as_deref(), Some("A·h"));
+        assert_eq!(r.composed, Some(crate::units::UnitId::base("ampere-hour")));
+        assert_eq!(
+            r.target_conversion, None,
+            "nothing is named, so nothing converts"
+        );
+
+        d.unit = Some(crate::units::UnitId::base("coulomb").into());
+        let model = resolve(std::slice::from_ref(&d), &[entry("Current", "A")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "C");
+        // The derivation stands whatever the user named — the note reads
+        // `A·h → C`, so both halves have to survive.
+        assert_eq!(r.derived.as_deref(), Some("A·h"));
+        let conversion = r.target_conversion.expect("Ah → C");
+        assert!((conversion.gain - 3600.0).abs() < 1e-9, "{conversion:?}");
+    }
+
+    /// A composition the table names no unit for still states its
+    /// derivation — the picker then offers the dimension's named units
+    /// and no prefixed composition, because there is none to prefix.
+    #[test]
+    fn a_composition_with_no_name_still_states_its_derivation() {
+        let model = resolve(
+            &[def(
+                "m1",
+                MathFunction::derivative(),
+                picks(&[sig("Charge")]),
+            )],
+            &[entry("Charge", "Ah")],
+        );
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.derived.as_deref(), Some("Ah/s"));
+        assert_eq!(r.composed, None);
     }
 
     /// The composition the crate never enumerates, end to end: a

@@ -813,6 +813,14 @@ export interface SignalDescriptorRecord {
   transmitter: string | null;
   signal_name: string;
   unit: string;
+  /// The unit {@link unit} **is**, typed — the project's
+  /// reinterpretation where there is one, and what recognition makes of
+  /// the database's own string otherwise; absent where nothing places
+  /// it. Carried beside the spelling because the spelling does not
+  /// recover it: a series read as a coulomb spells `C`, which the host
+  /// refuses to read back (it would be a guess against Celsius). Any
+  /// view that *converts* — the plot's display-unit chip — takes this.
+  unit_typed?: UnitId | null;
   /// True if the signal's `VAL_` table makes it an enum — per
   /// `cannet_dbc::is_enum`, at least two members. A single-member
   /// table (an SNA sentinel) leaves this false: the signal renders
@@ -1496,6 +1504,14 @@ export interface ViewSignalRow {
   /// can convert through it. Host-computed (`view_signals.rs`) against
   /// the customizations in force at fetch time.
   unitUnrecognized: boolean;
+  /// The unit {@link unit} **is**, typed — the project's
+  /// reinterpretation where there is one, and what recognition makes of
+  /// the database's own string otherwise; `null` where nothing places
+  /// it. The row's unit chip is a picker, and this is what it opens on.
+  unitTyped?: UnitId | null;
+  /// Whether {@link unitTyped} came from the reinterpretation store
+  /// rather than from the database.
+  unitReinterpreted?: boolean;
   servingDbc: string | null;
   /// The database the user chose for this signal, while that choice is
   /// in force; `null` is the load-order default. The picker shows it as
@@ -1638,9 +1654,10 @@ export type UnitRecognition =
 
 export interface MathFunction {
   kind: MathFunctionKind;
-  /// Integration and derivative carry a **time unit** here (`timeUnit`),
-  /// which is a typed unit rather than a number — `operand · [t]` and
-  /// `d(operand) / d[t]`.
+  /// Integration and derivative carry a **time unit** here
+  /// (`time_unit` — the Rust enum renames its variants, not the fields
+  /// inside them), which is a typed unit rather than a number:
+  /// `operand · [t]` and `d(operand) / d[t]`.
   [parameter: string]: number | string | UnitId | undefined;
 }
 
@@ -1710,6 +1727,27 @@ export interface MathSignalRecord extends MathDefinition {
   unconverted: number[];
   /// The unit the series carries: the user's, or the derived one.
   unitResolved: string;
+  /// What dimensional analysis makes of this function, spelled as its
+  /// **factors** — `A·s`, `A·h`, `Ah/s` — whatever the user named on
+  /// top. The unit button's note states it: `composed: A·h` while
+  /// nothing is set, and the conversion once something is. `null` where
+  /// the analysis names nothing.
+  unitDerived?: string | null;
+  /// The unit that derivation **is**, where the host's table names one —
+  /// what the picker offers as the composition, prefixable, and what
+  /// picking again clears an override back to. `null` for a composition
+  /// no unit names (`Ah/s`), which earns a row of its own instead.
+  unitComposed?: UnitId | null;
+  /// The unit this series is **read in**, typed — the definition's
+  /// target where it names one, the derivation's own unit otherwise,
+  /// and `null` where nothing places one. The typed half of
+  /// `unitResolved`, carried beside it because the spelling does not
+  /// recover it (a series targeted at a coulomb reads `C`). A plot's
+  /// display-unit chip converts through this.
+  unitTyped?: UnitId | null;
+  /// The unit conversion the button's note states once a target is
+  /// named: derivation → target, without the user's own output scalars.
+  unitConversion?: UnitAffine | null;
   /// The **kind** that unit belongs to — the composed dimension for an
   /// integration or a derivative, the operands' own for a pointwise
   /// function. What a kind-locked unit picker offers against; `null`

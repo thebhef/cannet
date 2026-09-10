@@ -17,6 +17,13 @@
  *   `isEnum(key)` predicate.
  * - `individual` — one axis per series.
  *
+ * **The unit a lane groups by is the series' *display* unit**, not the
+ * string its database declared. A series the readout chip converted
+ * reads in another unit from then on, so it belongs on that unit's lane
+ * — which is how the affordance converges lanes (an mV series joins the
+ * V lane at ÷1000). Callers pass `unitOf`; it defaults to the declared
+ * string, which is what every series with no display choice is.
+ *
  * The derivation is a pure function so it can be unit-tested without
  * uPlot / React.
  */
@@ -65,6 +72,7 @@ export function deriveAxesForArea(
   signals: SignalRef[],
   mode: YAxisMode,
   isEnum?: (key: string) => boolean,
+  unitOf: (s: SignalRef) => string = (s) => s.unit,
 ): DerivedAxis[] {
   if (signals.length === 0 || mode === "unified") {
     return [{ id: areaId, parentAreaId: areaId, kind: "numeric", subtitle: null, signals }];
@@ -84,7 +92,7 @@ export function deriveAxesForArea(
   const groups = new Map<string, SignalRef[]>();
   for (const s of signals) {
     const key = signalRefKey(s);
-    const groupKey = isEnum && isEnum(key) ? "enum" : `unit:${s.unit || ""}`;
+    const groupKey = isEnum && isEnum(key) ? "enum" : `unit:${unitOf(s) || ""}`;
     if (!groups.has(groupKey)) {
       groups.set(groupKey, []);
       order.push(groupKey);
@@ -98,8 +106,8 @@ export function deriveAxesForArea(
       ? group.length === 1
         ? `${group[0].signalName} (enum)`
         : "(enums)"
-      : group[0].unit
-        ? `[${group[0].unit}]`
+      : unitOf(group[0])
+        ? `[${unitOf(group[0])}]`
         : "(unitless)";
     return {
       id: isEnumGroup ? `${areaId}/u:enum` : `${areaId}/u:${key}`,
@@ -136,12 +144,16 @@ export function deriveAxesForArea(
  * from an async value-table fetch, and a set that briefly reads as
  * "no enums" must not delete a lane axis's settings.
  */
-export function retainedAxisIds(areaId: string, signals: readonly SignalRef[]): string[] {
+export function retainedAxisIds(
+  areaId: string,
+  signals: readonly SignalRef[],
+  unitOf: (s: SignalRef) => string = (s) => s.unit,
+): string[] {
   const out = [areaId];
   if (signals.length > 0) out.push(`${areaId}/u:enum`);
   const units = new Set<string>();
   for (const s of signals) {
-    units.add(s.unit || "");
+    units.add(unitOf(s) || "");
     out.push(`${areaId}/i:${signalRefKey(s)}`);
   }
   for (const u of units) out.push(`${areaId}/u:unit:${u}`);
