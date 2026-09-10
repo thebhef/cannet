@@ -501,9 +501,10 @@ describe("DatabasePanel", () => {
     fireEvent.keyDown(tree, { key: "End" });
     // Rows on load: (All DBCs) → powertrain.dbc → EngineEcu → EngineData
     // → (no transmitter) → GearState, then the file-backed branch
-    // drive.mf4 → Analog → group 2. One row space across both formats,
-    // so End lands on the last row of the last branch.
-    expect(screen.getByText("group 2").closest(".dbc-row")).toHaveClass(
+    // drive.mf4 → Analog → group 2, then the Computed branch (empty
+    // here, but always present — it is where a math signal is created).
+    // One row space across all three, so End lands on the last of them.
+    expect(screen.getByText("Computed").closest(".dbc-row")).toHaveClass(
       "dbc-row-active",
     );
     fireEvent.keyDown(tree, { key: "Home" });

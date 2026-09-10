@@ -45,6 +45,17 @@
 //! Math signals may take other math signals as operands. A definition
 //! that would make a math signal reach itself is **refused when it is
 //! defined**, so no serve can ever meet one.
+//!
+//! ## Unfinished definitions
+//!
+//! A definition is created the moment its function is picked and is
+//! filled in field by field, each field committing as it is left — so
+//! the registry **stores an unfinished definition** rather than
+//! refusing it. [`MathDefinition::validate`] says what is still missing
+//! (a name, an operand, a parameter in range, a pattern that compiles),
+//! every surface shows that, and the kernels answer such a series empty
+//! until it is finished. A duplicate id and a cycle are still refused:
+//! neither is a state the user could be left in and repair.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -424,8 +435,11 @@ pub enum MathError {
     /// names the cycle in the order it was walked, starting and ending
     /// at the same id.
     Cycle { chain: Vec<String> },
-    /// An operand names a math definition that does not exist.
-    UnknownOperand { id: String },
+    /// The definition has no display name. Only a set defined by a
+    /// single pattern gets one derived ([`default_name`]); every other
+    /// definition is named by the user, because a name composed from a
+    /// selection reads as authoritative while being a guess.
+    Unnamed,
     /// A parameter is outside the range its function can use.
     BadParameter {
         function: &'static str,
@@ -453,9 +467,7 @@ impl std::fmt::Display for MathError {
             Self::Cycle { chain } => {
                 write!(f, "that would make a cycle: {}", chain.join(" → "))
             }
-            Self::UnknownOperand { id } => {
-                write!(f, "operand names no math signal: {id}")
-            }
+            Self::Unnamed => write!(f, "name it — names aren't derived from selections"),
             Self::BadParameter {
                 function,
                 parameter,
@@ -494,6 +506,9 @@ impl MathDefinition {
     /// compilation. Cycles need the whole set and are checked by
     /// [`MathRegistry`].
     pub fn validate(&self) -> Result<(), MathError> {
+        if self.name.trim().is_empty() {
+            return Err(MathError::Unnamed);
+        }
         let function = self.function.kind();
         let picks = self.operands.picks.len();
         let patterns = self.operands.patterns.len();
@@ -904,8 +919,21 @@ impl MathRegistry {
             .expect("math registry mutex poisoned") = definitions;
     }
 
-    /// Add a definition, refusing a duplicate id, an unsatisfied arity,
-    /// an unknown math operand and a cycle.
+    /// Add a definition.
+    ///
+    /// **An incomplete definition is stored, not refused** (owner
+    /// ruling): a math signal is created the moment its function is
+    /// picked and filled in field by field, so a registry that only
+    /// accepted finished definitions would have nowhere to put the one
+    /// the user is writing. Such a definition is marked invalid by
+    /// [`MathDefinition::validate`] — every surface shows why — and the
+    /// kernels answer it empty ([`crate::math_kernels::apply`]), so it
+    /// serves nothing until it is finished.
+    ///
+    /// Only two things are still refused, because neither is a state
+    /// the user can be left in and repair: a **duplicate id** (which
+    /// would shadow another definition) and a **cycle** (which no serve
+    /// could ever answer).
     pub fn define(&self, definition: MathDefinition) -> Result<(), MathError> {
         let mut defs = self
             .definitions
@@ -914,7 +942,6 @@ impl MathRegistry {
         if defs.iter().any(|d| d.id == definition.id) {
             return Err(MathError::DuplicateId(definition.id));
         }
-        definition.validate()?;
         let mut candidate: Vec<&MathDefinition> = defs.iter().collect();
         candidate.push(&definition);
         check_graph(&candidate, &definition.id)?;
@@ -922,9 +949,10 @@ impl MathRegistry {
         Ok(())
     }
 
-    /// Replace the definition with `definition.id`, under the same
-    /// checks [`Self::define`] applies. The position in the list is
-    /// kept, so a listing does not reorder on an edit.
+    /// Replace the definition with `definition.id`, under the same two
+    /// refusals [`Self::define`] applies. The position in the list is
+    /// kept, so a listing does not reorder on an edit — which matters
+    /// when every field commits as it is left.
     pub fn update(&self, definition: MathDefinition) -> Result<(), MathError> {
         let mut defs = self
             .definitions
@@ -933,7 +961,6 @@ impl MathRegistry {
         let Some(at) = defs.iter().position(|d| d.id == definition.id) else {
             return Err(MathError::NoSuchDefinition(definition.id));
         };
-        definition.validate()?;
         let candidate: Vec<&MathDefinition> = defs
             .iter()
             .enumerate()
@@ -961,21 +988,17 @@ impl MathRegistry {
     }
 }
 
-/// Check the whole definition set for unknown math operands and for a
-/// cycle through `changed` — the id whose definition is being added or
-/// replaced, and so the only one that can have created one.
+/// Check the whole definition set for a cycle through `changed` — the
+/// id whose definition is being added or replaced, and so the only one
+/// that can have created one.
+///
+/// An operand naming no definition is **not** an error here: deleting a
+/// definition leaves its dependents holding a dangling reference by
+/// design, and they have to stay editable so the user can repair them.
+/// The listing reports such an operand as missing.
 fn check_graph(definitions: &[&MathDefinition], changed: &str) -> Result<(), MathError> {
     let by_id: HashMap<&str, &MathDefinition> =
         definitions.iter().map(|d| (d.id.as_str(), *d)).collect();
-    for definition in definitions {
-        for operand in &definition.operands.picks {
-            if let Some(id) = operand.math_id() {
-                if !by_id.contains_key(id) {
-                    return Err(MathError::UnknownOperand { id: id.to_string() });
-                }
-            }
-        }
-    }
     let mut chain = vec![changed.to_string()];
     let mut seen: HashSet<&str> = HashSet::new();
     if walk(&by_id, changed, changed, &mut chain, &mut seen) {
@@ -1144,71 +1167,88 @@ mod tests {
     }
 
     #[test]
-    fn arity_is_enforced_at_definition_time() {
+    fn an_unfinished_definition_is_stored_and_marked_invalid() {
+        // A math signal exists from the moment its function is picked
+        // and is filled in field by field, so the registry has to hold
+        // one that is not finished yet. It says why, and serves nothing
+        // meanwhile.
         let registry = MathRegistry::new();
-        let err = registry
-            .define(def("m1", MathFunction::Difference, picks(&[sig("A")])))
-            .expect_err("a difference needs two operands");
-        assert!(matches!(err, MathError::Arity { .. }), "{err:?}");
+        let half = def("m1", MathFunction::Difference, picks(&[sig("A")]));
+        assert!(matches!(half.validate(), Err(MathError::Arity { .. })));
+        registry.define(half).expect("stored, unfinished");
+        assert_eq!(registry.list().len(), 1);
         registry
-            .define(def(
+            .update(def(
                 "m1",
                 MathFunction::Difference,
                 picks(&[sig("A"), sig("B")]),
             ))
-            .expect("two operands is a difference");
+            .expect("finished in place");
+        assert!(registry.list()[0].validate().is_ok());
+    }
+
+    #[test]
+    fn a_definition_with_no_name_is_invalid_until_it_has_one() {
+        // The one name the host derives is a pattern-only set's
+        // `fn(pattern)`; every other definition is named by the user,
+        // and is unusable until it is.
+        let mut d = def("m1", MathFunction::Rms, picks(&[sig("A")]));
+        d.name = String::new();
+        assert!(matches!(d.validate(), Err(MathError::Unnamed)), "{d:?}");
+        d.name = "Rectified".to_string();
+        assert!(d.validate().is_ok());
     }
 
     #[test]
     fn only_a_set_function_takes_a_pattern() {
-        let registry = MathRegistry::new();
         let mut d = def("m1", MathFunction::Rms, picks(&[sig("A")]));
         d.operands.patterns = vec!["Cell".to_string()];
-        let err = registry.define(d).expect_err("rms takes one signal");
         assert!(
-            matches!(err, MathError::PatternsNotAllowed { .. }),
-            "{err:?}"
+            matches!(d.validate(), Err(MathError::PatternsNotAllowed { .. })),
+            "{d:?}"
         );
     }
 
     #[test]
-    fn an_uncompilable_pattern_is_refused() {
-        let registry = MathRegistry::new();
-        let err = registry
-            .define(def("m1", MathFunction::Max, pattern("Cell(")))
-            .expect_err("that pattern does not compile");
-        assert!(matches!(err, MathError::BadPattern { .. }), "{err:?}");
+    fn an_uncompilable_pattern_is_reported_on_the_definition_holding_it() {
+        let d = def("m1", MathFunction::Max, pattern("Cell("));
+        assert!(
+            matches!(d.validate(), Err(MathError::BadPattern { .. })),
+            "{d:?}"
+        );
+        // Stored anyway: a half-typed regex is a state the editor shows.
+        MathRegistry::new().define(d).expect("stored");
     }
 
     #[test]
-    fn a_zero_or_negative_time_constant_is_refused() {
-        let registry = MathRegistry::new();
+    fn a_zero_or_negative_time_constant_is_invalid() {
         for tau in [0.0, -1.0] {
-            let err = registry
-                .define(def(
-                    "m1",
-                    MathFunction::ExpFilter { tau_seconds: tau },
-                    picks(&[sig("A")]),
-                ))
-                .expect_err("τ must be positive");
-            assert!(matches!(err, MathError::BadParameter { .. }), "{err:?}");
+            let d = def(
+                "m1",
+                MathFunction::ExpFilter { tau_seconds: tau },
+                picks(&[sig("A")]),
+            );
+            assert!(
+                matches!(d.validate(), Err(MathError::BadParameter { .. })),
+                "{tau}"
+            );
         }
     }
 
     #[test]
-    fn a_percentile_outside_zero_to_a_hundred_is_refused() {
-        let registry = MathRegistry::new();
-        let err = registry
-            .define(def(
-                "m1",
-                MathFunction::Statistic {
-                    statistic: Statistic::Percentile,
-                    percentile: 150.0,
-                },
-                picks(&[sig("A")]),
-            ))
-            .expect_err("a percentile is a percentage");
-        assert!(matches!(err, MathError::BadParameter { .. }), "{err:?}");
+    fn a_percentile_outside_zero_to_a_hundred_is_invalid() {
+        let d = def(
+            "m1",
+            MathFunction::Statistic {
+                statistic: Statistic::Percentile,
+                percentile: 150.0,
+            },
+            picks(&[sig("A")]),
+        );
+        assert!(
+            matches!(d.validate(), Err(MathError::BadParameter { .. })),
+            "{d:?}"
+        );
     }
 
     #[test]
@@ -1280,16 +1320,19 @@ mod tests {
     }
 
     #[test]
-    fn an_operand_naming_no_definition_is_refused() {
+    fn an_operand_naming_no_definition_is_kept() {
+        // Deleting a definition leaves its dependents holding a
+        // dangling reference by design; they stay editable, so the user
+        // can repair them. The listing shows the operand as missing.
         let registry = MathRegistry::new();
-        let err = registry
+        registry
             .define(def(
                 "m1",
                 MathFunction::Rms,
                 picks(&[MathOperandRef::math("gone")]),
             ))
-            .expect_err("no such definition");
-        assert!(matches!(err, MathError::UnknownOperand { .. }), "{err:?}");
+            .expect("stored with the dangling reference");
+        assert_eq!(registry.list().len(), 1);
     }
 
     #[test]

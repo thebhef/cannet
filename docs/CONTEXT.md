@@ -192,6 +192,14 @@ differing only in how it is filled. Its definition carries a **stable
 id**, which is what everything referencing it stores, so the display
 name is free to change. A definition may take another math signal as
 an operand; cycles are refused when a definition is written.
+
+A math signal exists from the moment its function is picked and is
+filled in field by field, each field committing as it is left — so an
+**unfinished** definition is stored rather than refused. The registry
+says what is still missing (a name, an operand, a parameter in range, a
+pattern that compiles), every surface shows that, and the series serves
+nothing meanwhile. Only a duplicate id and a cycle are refused: neither
+is a state the user could be left in and repair.
 _Avoid_: "computed channel", "virtual signal", "formula" — in the
 model the term is math signal (the Database view's branch for them is
 labelled Computed).

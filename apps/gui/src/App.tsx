@@ -3303,6 +3303,24 @@ export function App() {
       case "signalColor":
         handleSetSignalColor(op.key, op.color);
         return;
+      // The math registry's three writes. Every one carries the
+      // bus-name map, since a definition's patterns are anchored on the
+      // bus *name* and the host keeps no standing record of one.
+      case "mathDefine":
+        void invoke("define_math_signal", {
+          definition: op.definition,
+          busNames: op.busNames,
+        }).catch(() => { /* best effort */ });
+        return;
+      case "mathUpdate":
+        void invoke("update_math_signal", {
+          definition: op.definition,
+          busNames: op.busNames,
+        }).catch(() => { /* best effort */ });
+        return;
+      case "mathDelete":
+        void invoke("delete_math_signal", { id: op.id }).catch(() => { /* best effort */ });
+        return;
     }
   }, [handleSetSignalColor]);
   const { recordPanelEdit, applyPanelEditHistory } = usePanelEditUndo({

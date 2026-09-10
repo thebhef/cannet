@@ -12,6 +12,8 @@
 // override), and a snapshot of host state the frontend doesn't own
 // would be strictly more to hold and put back.
 
+import type { MathDefinition } from "./types";
+
 /// Bound on the stack, matching the other histories'.
 export const PANEL_EDIT_HISTORY_CAP = 50;
 
@@ -62,7 +64,22 @@ export type PanelEditOp =
     }
   /// The project-level signal-colour override (`null` clears) — the
   /// remap moves a colour with the rename, so its undo moves it back.
-  | { kind: "signalColor"; key: string; color: string | null };
+  | { kind: "signalColor"; key: string; color: string | null }
+  /// `define_math_signal` — a math signal created, or one restored
+  /// after a delete. The inverse is `mathDelete`.
+  | { kind: "mathDefine"; definition: MathDefinition; busNames: [string, string][] }
+  /// `update_math_signal` — one committed field of a math signal's
+  /// definition (`docs/CONTEXT.md`). The whole definition rides on the
+  /// op rather than the one field that moved: an edit's inverse is the
+  /// definition as it stood, which is exactly this shape, and every
+  /// field commits as it is left, so there is no gesture boundary a
+  /// finer op would buy anything at.
+  | { kind: "mathUpdate"; definition: MathDefinition; busNames: [string, string][] }
+  /// `delete_math_signal`. The inverse is `mathDefine` with the
+  /// definition as it stood — which lands at the end of the listing
+  /// rather than back in its old place, the one thing an undo here does
+  /// not restore.
+  | { kind: "mathDelete"; id: string };
 
 /// One user gesture's worth of edits: the ops that made it (`redo`) and
 /// the ops that reverse it (`undo`), each applied in order as one unit —
