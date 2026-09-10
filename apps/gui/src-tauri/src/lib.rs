@@ -115,6 +115,7 @@ pub mod signal_fingerprint;
 mod signal_generator;
 pub mod signal_sampler;
 mod signal_snapshot;
+pub mod signal_units;
 mod system_log;
 #[allow(
     clippy::missing_panics_doc,
@@ -591,6 +592,8 @@ pub fn run() -> ! {
             view_signals::remove_view_signals,
             view_signals::clear_view_signals,
             view_signals::set_signal_dbc_pick,
+            signal_units::set_signal_unit,
+            signal_units::list_signal_units,
             list_file_backed_content,
             sample_signals,
             signal_min_max,
@@ -741,6 +744,7 @@ pub fn run() -> ! {
                 watched_project: Mutex::new(watched_file::WatchedFile::default()),
                 view_signals: Mutex::new(view_signals::ViewSignalRegistry::default()),
                 signal_dbc_picks: Mutex::new(std::sync::Arc::default()),
+                signal_units: Mutex::new(std::sync::Arc::default()),
                 math: math_signals::MathRegistry::new(),
                 math_model: Mutex::new(None),
                 math_bus_names: Mutex::new(Vec::new()),

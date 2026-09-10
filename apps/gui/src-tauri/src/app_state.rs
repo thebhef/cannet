@@ -215,6 +215,13 @@ pub(crate) struct AppState {
     /// carries it, and cloning a map per serve is a cost the ordinary
     /// project should not pay.
     pub(crate) signal_dbc_picks: Mutex<Arc<crate::signal_fingerprint::SignalDbcPicks>>,
+    /// Per-signal **unit reinterpretation**
+    /// ([`crate::signal_units`]): what a signal is read in where the
+    /// database is wrong about it. Host state for the same reason the
+    /// picks are — every surface that reports a unit reads it, and a
+    /// math definition converts from it. Loaded from the project on
+    /// open, snapshotted back on save.
+    pub(crate) signal_units: Mutex<Arc<crate::signal_units::SignalUnits>>,
     /// The central store of **math signal** definitions
     /// ([`crate::math_signals`]). One per app: the Database panel's
     /// Computed branch, a signal panel row and a plot's side list are
@@ -320,6 +327,19 @@ impl AppState {
         self.signal_dbc_picks
             .lock()
             .expect("signal_dbc_picks mutex poisoned")
+    }
+
+    /// The per-signal unit reinterpretations. Same shape as
+    /// [`Self::signal_dbc_picks`]: every reader wants the `Arc`.
+    pub(crate) fn signal_units(&self) -> MutexGuard<'_, Arc<crate::signal_units::SignalUnits>> {
+        self.signal_units
+            .lock()
+            .expect("signal_units mutex poisoned")
+    }
+
+    /// A snapshot of the reinterpretations, for a serve or for a save.
+    pub(crate) fn signal_units_snapshot(&self) -> Arc<crate::signal_units::SignalUnits> {
+        Arc::clone(&self.signal_units())
     }
 
     /// A snapshot of the picks, for a decode model or for a save.
@@ -452,6 +472,16 @@ impl AppState {
             return hit;
         }
         let bus_names: HashMap<String, String> = self.math_bus_names().iter().cloned().collect();
+        // A signal reinterpreted in View signals is *in* its new unit
+        // everywhere, so that is the unit a math definition converts
+        // from (`crate::signal_units`).
+        let signal_units = self.signal_units_snapshot();
+        // The unit-customization dict takes part in every member's
+        // conversion, so it is read here, once per model build. It is
+        // workspace-scoped, and `set_settings` drops this cache — which
+        // is what makes editing a customization rescale the channels
+        // that depend on it.
+        let customizations = crate::settings::unit_customizations();
         let mut catalog = Vec::new();
         for descriptor in signal_snapshot::scoped_descriptors(
             dbcs.iter().map(|l| (l.db.as_ref(), l.buses.as_slice())),
@@ -467,7 +497,13 @@ impl AppState {
                     &d.message_name,
                     &d.signal_name,
                 ),
-                unit: d.unit.clone(),
+                unit: crate::signal_units::unit_of_signal(
+                    &signal_units,
+                    bus_id.as_deref(),
+                    (d.message_id, d.extended, &d.signal_name),
+                    &d.unit,
+                    &customizations,
+                ),
                 reference: crate::math_signals::MathOperandRef {
                     bus_id,
                     message_id: d.message_id,
@@ -484,7 +520,9 @@ impl AppState {
             let group = entry.info.group_label();
             catalog.push(crate::math_signals::MathCatalogEntry {
                 path: signal_snapshot::signal_path(None, None, &group, &entry.info.name),
-                unit: entry.info.unit.clone(),
+                // An imported series carries a unit *string* out of its
+                // capture file, which is ingest exactly as a DBC's is.
+                unit: crate::units::UnitReading::declared(&entry.info.unit, &customizations),
                 reference: crate::math_signals::MathOperandRef {
                     bus_id: None,
                     message_id: entry.info.group,
@@ -498,19 +536,28 @@ impl AppState {
         for definition in &definitions {
             catalog.push(crate::math_signals::MathCatalogEntry {
                 path: signal_snapshot::signal_path(None, None, "Computed", &definition.name),
-                unit: definition.unit.clone().unwrap_or_default(),
+                // A definition's own target is already a unit, and is
+                // handed on as one: rendering it and reading the
+                // rendering back would lose every unit whose spelling
+                // recognition refuses (`C` for a coulomb).
+                unit: definition
+                    .unit
+                    .as_ref()
+                    .filter(|t| !t.is_empty())
+                    .map(|t| {
+                        crate::units::UnitReading::placed(
+                            t.resolve(&customizations),
+                            t.spelling(&customizations),
+                        )
+                    })
+                    .unwrap_or_default(),
                 reference: crate::math_signals::MathOperandRef::math(definition.id.clone()),
             });
         }
-        // The unit-customization dict takes part in every member's
-        // conversion, so it is read here, once per model build. It is
-        // workspace-scoped, and `set_settings` drops this cache — which
-        // is what makes editing a customization rescale the channels
-        // that depend on it.
         let built = Arc::new(crate::math_signals::MathModel::resolve(
             &definitions,
             &catalog,
-            &crate::settings::effective().unit_customizations,
+            &customizations,
         ));
         *self.math_model_cache() = Some(Arc::clone(&built));
         built

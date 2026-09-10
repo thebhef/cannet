@@ -9953,7 +9953,10 @@ mod tests {
             .map(|name| crate::math_signals::MathCatalogEntry {
                 reference: operand(name),
                 path: format!("{TEST_BUS}//Msg/{name}"),
-                unit: "V".to_string(),
+                unit: crate::units::UnitReading::declared(
+                    "V",
+                    &crate::units::Customizations::new(),
+                ),
             })
             .collect();
         on_test_bus(&[db]).with_math(std::sync::Arc::new(MathModel::resolve(
@@ -9976,7 +9979,10 @@ mod tests {
             .map(|(name, unit)| crate::math_signals::MathCatalogEntry {
                 reference: operand(name),
                 path: format!("{TEST_BUS}//Msg/{name}"),
-                unit: unit.to_string(),
+                unit: crate::units::UnitReading::declared(
+                    unit,
+                    &crate::units::Customizations::new(),
+                ),
             })
             .collect();
         on_test_bus(&[db]).with_math(std::sync::Arc::new(MathModel::resolve(
@@ -10084,7 +10090,7 @@ mod tests {
             (MathFunction::Median, &ab),
             (MathFunction::Range, &ab),
             (MathFunction::ExpFilter { tau_seconds: 2.0 }, &a),
-            (MathFunction::Integration, &a),
+            (MathFunction::integration(), &a),
             (
                 MathFunction::Duty {
                     threshold: 10.0,
@@ -10169,7 +10175,7 @@ mod tests {
                             &format!("Sig{n:04}"),
                         ),
                         path: format!("{TEST_BUS}//Wide{m}/Sig{n:04}"),
-                        unit: String::new(),
+                        unit: crate::units::UnitReading::default(),
                     }
                 })
             })
@@ -10468,7 +10474,7 @@ mod tests {
         let db = dbc_ab(10);
         for function in [
             MathFunction::ExpFilter { tau_seconds: 3.0 },
-            MathFunction::Integration,
+            MathFunction::integration(),
             MathFunction::Duty {
                 threshold: 20.0,
                 window_seconds: 7.0,
@@ -10759,13 +10765,14 @@ mod tests {
         let mut definitions = vec![math_def("m1", MathFunction::Sum, &[])];
         definitions[0].operands.patterns = vec!["/Msg/".to_string()];
 
-        // Unconverted, the sum is A + B — 101·i.
-        let dbs = with_math_units(&db, &definitions, ["A", "mA"]);
+        // With units nothing can place, nothing converts and the sum
+        // is A + B — 101·i.
+        let dbs = with_math_units(&db, &definitions, ["widgets", "widgets"]);
         let raw = math_series(&store, "m1", &trace, &dbs);
         assert_eq!(raw.last().map(|p| p.1), Some(101.0 * 9.0));
 
         // In amps, B is worth a thousandth of what it reads: 1.1·i.
-        definitions[0].unit = Some("A".to_string());
+        definitions[0].unit = Some("A".into());
         let dbs = with_math_units(&db, &definitions, ["A", "mA"]);
         store.invalidate_dbcs(&dbs);
         let converted = math_series(&store, "m1", &trace, &dbs);
@@ -10814,7 +10821,7 @@ mod tests {
         let db = dbc_ab(10);
         let dir = TempDir::new().unwrap();
         let store = SignalCacheStore::new_unbounded(dir.path());
-        let mut definitions = vec![math_def("m1", MathFunction::Integration, &[operand("A")])];
+        let mut definitions = vec![math_def("m1", MathFunction::integration(), &[operand("A")])];
 
         let dbs = with_math_units(&db, &definitions, ["A", "A"]);
         assert_eq!(
@@ -10823,7 +10830,7 @@ mod tests {
             "the unconverted integral, in ampere-seconds",
         );
 
-        definitions[0].unit = Some("Ah".to_string());
+        definitions[0].unit = Some("Ah".into());
         let dbs = with_math_units(&db, &definitions, ["A", "A"]);
         store.invalidate_dbcs(&dbs);
         let ah = math_series(&store, "m1", &trace, &dbs);
@@ -10842,8 +10849,8 @@ mod tests {
         let db = dbc_ab(10);
         let dir = TempDir::new().unwrap();
         let store = SignalCacheStore::new_unbounded(dir.path());
-        let mut definitions = vec![math_def("m1", MathFunction::Integration, &[operand("A")])];
-        definitions[0].unit = Some("Ah".to_string());
+        let mut definitions = vec![math_def("m1", MathFunction::integration(), &[operand("A")])];
+        definitions[0].unit = Some("Ah".into());
 
         let dbs = with_math_units(&db, &definitions, ["mA", "mA"]);
         let last = math_series(&store, "m1", &trace, &dbs)
@@ -10852,7 +10859,7 @@ mod tests {
             .expect("points");
         assert!((last - 36.0 * 0.001 / 3600.0).abs() < 1e-18, "{last}");
 
-        definitions[0].unit = Some("kWh".to_string());
+        definitions[0].unit = Some("kWh".into());
         let dbs = with_math_units(&db, &definitions, ["W", "W"]);
         store.invalidate_dbcs(&dbs);
         let last = math_series(&store, "m1", &trace, &dbs)
@@ -10873,8 +10880,8 @@ mod tests {
         let db = dbc_ab(10);
         let dir = TempDir::new().unwrap();
         let store = SignalCacheStore::new_unbounded(dir.path());
-        let mut definitions = vec![math_def("m1", MathFunction::Integration, &[operand("A")])];
-        definitions[0].unit = Some("mA".to_string());
+        let mut definitions = vec![math_def("m1", MathFunction::integration(), &[operand("A")])];
+        definitions[0].unit = Some("mA".into());
         let dbs = with_math_units(&db, &definitions, ["A", "A"]);
         let last = math_series(&store, "m1", &trace, &dbs)
             .last()
@@ -10928,7 +10935,7 @@ mod tests {
         // free too. (A *recognised* one is a conversion target and
         // does move the stamp — see
         // `a_target_unit_converts_each_member_by_its_own_factor`.)
-        definitions[0].unit = Some("widgets".to_string());
+        definitions[0].unit = Some("widgets".into());
         let dbs = with_math(&db, &definitions);
         store.invalidate_dbcs(&dbs);
         assert_eq!(store.usage().retained, 0, "nothing was parked");
@@ -10943,7 +10950,7 @@ mod tests {
         // restored.
         let trace = ab_capture(30);
         let db = dbc_ab(10);
-        let definitions = vec![math_def("m1", MathFunction::Integration, &[operand("A")])];
+        let definitions = vec![math_def("m1", MathFunction::integration(), &[operand("A")])];
         let dbs = with_math(&db, &definitions);
         let dir = TempDir::new().unwrap();
         let store = SignalCacheStore::new_unbounded(dir.path());

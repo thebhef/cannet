@@ -110,6 +110,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("float_exponential_from", Scope::UserOverridable),
     ("float_mantissa_decimals", Scope::UserOverridable),
     ("unit_customizations", Scope::Workspace),
+    ("unit_customizations_user", Scope::User),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -474,6 +475,28 @@ pub struct Settings {
     /// at the read boundary would delete the user's line on the next
     /// write, so a build that renamed a unit would eat their work.
     pub unit_customizations: crate::units::Customizations,
+    /// The same map at **user** scope: mappings the person has promoted
+    /// out of one project so they hold in every project they open.
+    ///
+    /// The two scopes are one dict to everything that reads units
+    /// ([`unit_customizations`]), and **the project wins** where both
+    /// map the same string: a project's own reading of its databases is
+    /// more specific than a habit carried between them.
+    pub unit_customizations_user: crate::units::Customizations,
+}
+
+/// The unit-string mappings in force: the user's, overlaid by this
+/// project's. **Project wins** on a conflict.
+///
+/// The one place the two scopes are joined, so nothing downstream has
+/// to know there are two.
+#[must_use]
+pub fn unit_customizations() -> crate::units::Customizations {
+    let settings = effective();
+    crate::units::merge_customizations(
+        &settings.unit_customizations_user,
+        &settings.unit_customizations,
+    )
 }
 
 /// One column of a table's default layout — the on-disk mirror of the
@@ -611,6 +634,7 @@ impl Default for Settings {
             float_exponential_from: 1e6,
             float_mantissa_decimals: 5,
             unit_customizations: crate::units::Customizations::new(),
+            unit_customizations_user: crate::units::Customizations::new(),
         }
     }
 }
@@ -1162,6 +1186,9 @@ mod tests {
             // one workspace-only key — it is exercised by
             // `unit_customizations_are_written_to_the_project_not_the_user`.
             unit_customizations: crate::units::Customizations::new(),
+            // A user-scope key, so it belongs to the personal file and
+            // is never written into a project's.
+            unit_customizations_user: crate::units::Customizations::new(),
         }
     }
 
@@ -1581,19 +1608,51 @@ mod tests {
             unit_customizations: [("counts".to_string(), "percent".to_string())]
                 .into_iter()
                 .collect(),
+            // …and the *user*-scope half of the same dict, which goes
+            // the other way.
+            unit_customizations_user: [("widgets".to_string(), "volt".to_string())]
+                .into_iter()
+                .collect(),
             ..Settings::default()
         };
         write_settings(&user, &workspace, &settings).unwrap();
 
         let project = std::fs::read_to_string(workspace.join(SETTINGS_FILE)).unwrap();
-        assert!(project.contains("unit_customizations"), "{project}");
+        assert!(project.contains("\"unit_customizations\""), "{project}");
         assert!(project.contains("counts"), "{project}");
         assert!(!project.contains("notice_dwell_ms"), "{project}");
+        assert!(!project.contains("widgets"), "{project}");
         let personal = std::fs::read_to_string(user.join(SETTINGS_FILE)).unwrap();
-        assert!(!personal.contains("unit_customizations"), "{personal}");
+        assert!(personal.contains("unit_customizations_user"), "{personal}");
+        assert!(personal.contains("widgets"), "{personal}");
+        assert!(!personal.contains("counts"), "{personal}");
 
         // And the two resolve back to what was written.
         assert_eq!(resolved(&user, &workspace), settings);
+    }
+
+    /// The two scopes are one dict downstream, and **the project wins**
+    /// where both map the same string: a project's reading of its own
+    /// databases is more specific than a habit carried between them.
+    #[test]
+    fn a_project_mapping_wins_over_a_user_one_for_the_same_string() {
+        let user: crate::units::Customizations = [
+            ("Amperes".to_string(), "ampere".to_string()),
+            ("shared".to_string(), "volt".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let project: crate::units::Customizations = [("shared".to_string(), "watt".to_string())]
+            .into_iter()
+            .collect();
+        let merged = crate::units::merge_customizations(&user, &project);
+        assert_eq!(merged.get("shared").map(String::as_str), Some("watt"));
+        // …and a mapping only the user has still holds.
+        assert_eq!(merged.get("Amperes").map(String::as_str), Some("ampere"));
+        assert_eq!(
+            crate::units::recognize("Amperes", &merged),
+            crate::units::typed("ampere")
+        );
     }
 
     #[test]

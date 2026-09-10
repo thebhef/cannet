@@ -66,6 +66,7 @@ import {
   parameterEnabled,
   setValidity,
   slotValidity,
+  unitTargetSpelling,
   withOperandScaling,
   withOutputScaling,
   withParam,
@@ -267,8 +268,9 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
       },
       ...unitOptions(units, (u) => u.spelling),
     ];
-    if (record.unit && !out.some((o) => o.value === record.unit)) {
-      out.push({ value: record.unit, label: record.unit, path: ["not in the library"] });
+    const spelled = unitTargetSpelling(record.unit, record.unitResolved);
+    if (spelled && !out.some((o) => o.value === spelled)) {
+      out.push({ value: spelled, label: spelled, path: ["not in the library"] });
     }
     return out;
   }, [units, record.unit, record.unitResolved]);
@@ -382,7 +384,7 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
         <span>Units</span>
         <Combobox
           options={targetUnitOptions}
-          value={record.unit ?? ""}
+          value={unitTargetSpelling(record.unit, record.unitResolved)}
           ariaLabel="Units"
           proseLabels
           freeText

@@ -1612,15 +1612,36 @@ export type MathFunctionKind =
   | "range"
   | "expfilter"
   | "integration"
+  | "derivative"
   | "duty"
   | "frequency"
   | "statistic"
   | "rms"
   | "hline";
 
+/// A unit's identity: a **base unit and an SI prefix**
+/// (`units::UnitId`). What the model carries and what a project file
+/// persists; a unit *string* exists only at the DBC-ingest boundary.
+export interface UnitId {
+  base: string;
+  /// Absent is no prefix — the base unit itself.
+  prefix?: string;
+}
+
+/// What the host made of one operand's unit string
+/// (`math_signals::UnitRecognition`) — the parse state shown beside the
+/// operand, before any conversion is attempted.
+export type UnitRecognition =
+  | { state: "blank" }
+  | { state: "recognized"; unit: UnitId; display: string }
+  | { state: "unrecognized"; spelling: string };
+
 export interface MathFunction {
   kind: MathFunctionKind;
-  [parameter: string]: number | string;
+  /// Integration and derivative carry a **time unit** here (`timeUnit`),
+  /// which is a typed unit rather than a number — `operand · [t]` and
+  /// `d(operand) / d[t]`.
+  [parameter: string]: number | string | UnitId | undefined;
 }
 
 /// What a math signal selects: manual picks, plus — for a set function
@@ -1638,10 +1659,15 @@ export interface MathOperands {
 export interface MathDefinition {
   id: string;
   name: string;
-  /// The display unit, and the **conversion target**: recognised, every
-  /// operand whose own unit is recognised converts to it; unset or
-  /// unrecognised, nothing converts.
-  unit: string | null;
+  /// The display unit, and the **conversion target**: where it places a
+  /// unit, every operand whose own unit is recognised converts to it;
+  /// where it does not, nothing converts.
+  ///
+  /// Two shapes, told apart by type (`math_signals::UnitTarget`): a
+  /// **spelling**, which is what a project file written before the
+  /// typed form carried and what the free-text "not in the library"
+  /// path still produces, and the typed `UnitId` a picker commits.
+  unit: string | UnitId | null;
   /// Gain applied to the series' output, after the function. Absent is
   /// 1. Distinct from the `scale` function, which mints its own series.
   outputGain?: number | null;
@@ -1684,6 +1710,16 @@ export interface MathSignalRecord extends MathDefinition {
   unconverted: number[];
   /// The unit the series carries: the user's, or the derived one.
   unitResolved: string;
+  /// The **kind** that unit belongs to — the composed dimension for an
+  /// integration or a derivative, the operands' own for a pointwise
+  /// function. What a kind-locked unit picker offers against; `null`
+  /// where nothing places it.
+  unitKind: string | null;
+  /// What the host made of each operand's unit string, index-parallel
+  /// with `resolvedOperands`. Distinct from `unconverted`: an
+  /// unplaceable string and a placeable one of the wrong kind are
+  /// different problems with different repairs.
+  recognition: UnitRecognition[];
   /// Every bus contributing input to this series, transitively and
   /// deduped — one color chip per entry, and the label a row wears
   /// (`mathBusLabel`). A math series has no bus of its own, so this is

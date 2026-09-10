@@ -38,7 +38,7 @@
 //! ## The five that are not pointwise
 //!
 //! [`MathFunction::ExpFilter`] is a sequential recurrence, and
-//! [`MathFunction::Integration`] an accumulation: both carry state from
+//! [`MathFunction::integration()`] an accumulation: both carry state from
 //! one sample to the next, which is why they must run over the raw
 //! level-0 series. Run over a decimated one, their output would depend
 //! on the zoom the caller happened to ask at.
@@ -197,6 +197,14 @@ pub fn merge_hold(
     Merged { block, consumed }
 }
 
+/// How many seconds one of `time_unit` is — what the integral divides
+/// by and the slope divides by. One for a unit nothing places, which is
+/// exactly what a definition written before the parameter existed did.
+fn seconds_per(time_unit: &crate::units::UnitId) -> f64 {
+    crate::units::convert_units(time_unit, &crate::units::UnitId::base("second"))
+        .map_or(1.0, |a| a.gain)
+}
+
 /// Apply `affine` to `values` in place — the operand scaling that runs
 /// **before** the function, and the output scaling that runs after it
 /// ([`crate::math_signals`]).
@@ -227,6 +235,9 @@ pub struct MathCarry {
     filtered: Option<f64>,
     /// The integrator's accumulator.
     integral: f64,
+    /// The derivative's last slope — held across a step of zero
+    /// elapsed time, including one that straddles a block boundary.
+    slope: f64,
     /// The previous sample's time and value — what the held-value
     /// integral and the threshold crossing are measured against.
     previous: Option<(f64, f64)>,
@@ -272,7 +283,8 @@ pub fn apply(function: &MathFunction, block: &MergedBlock, carry: &mut MathCarry
         MathFunction::HLine { .. } => true,
         MathFunction::Scale { .. }
         | MathFunction::ExpFilter { .. }
-        | MathFunction::Integration
+        | MathFunction::Integration { .. }
+        | MathFunction::Derivative { .. }
         | MathFunction::Duty { .. }
         | MathFunction::Frequency { .. }
         | MathFunction::Statistic { .. }
@@ -322,7 +334,12 @@ pub fn apply(function: &MathFunction, block: &MergedBlock, carry: &mut MathCarry
         MathFunction::ExpFilter { tau_seconds } => {
             exp_filter(&block.t, &columns[0], *tau_seconds, carry)
         }
-        MathFunction::Integration => integrate(&block.t, &columns[0], carry),
+        MathFunction::Integration { time_unit } => {
+            integrate(&block.t, &columns[0], seconds_per(time_unit), carry)
+        }
+        MathFunction::Derivative { time_unit } => {
+            differentiate(&block.t, &columns[0], seconds_per(time_unit), carry)
+        }
         MathFunction::Duty {
             threshold,
             window_seconds,
@@ -470,14 +487,47 @@ fn exp_filter(t: &[f64], x: &[f64], tau_seconds: f64, carry: &mut MathCarry) -> 
 /// of the sample-and-hold series every other view of these samples
 /// shows. A trapezoid would integrate a linear interpolation nothing
 /// else draws.
-fn integrate(t: &[f64], x: &[f64], carry: &mut MathCarry) -> Vec<f64> {
+///
+/// `seconds_per_unit` is the function's time parameter: the sample
+/// timeline is in seconds, so accumulating in hours is the same sum
+/// divided by 3600. It is the *only* thing the time unit changes here —
+/// the unit it names is the model's business, not this loop's.
+fn integrate(t: &[f64], x: &[f64], seconds_per_unit: f64, carry: &mut MathCarry) -> Vec<f64> {
     let mut out = Vec::with_capacity(t.len());
     for (t, x) in t.iter().zip(x) {
         if let Some((prev_t, prev_x)) = carry.previous {
-            carry.integral += prev_x * (t - prev_t).max(0.0);
+            carry.integral += prev_x * (t - prev_t).max(0.0) / seconds_per_unit;
         }
         carry.previous = Some((*t, *x));
         out.push(carry.integral);
+    }
+    out
+}
+
+/// Slope between consecutive samples: `(x - x_prev) / Δt`, with Δt read
+/// in the function's time unit.
+///
+/// **Plain consecutive-sample slope** (owner ruling) — no smoothing, no
+/// window. Smoothing is composed downstream, by taking an exponential
+/// filter over this; building one in would make the derivative's own
+/// answer depend on a parameter nobody chose.
+///
+/// The first sample the series ever sees has nothing to differentiate
+/// against and reads zero, so the series starts on the axis rather than
+/// on a spike. Two samples at the same instant — a burst that shares a
+/// timestamp — would divide by zero, and hold the previous slope
+/// instead.
+fn differentiate(t: &[f64], x: &[f64], seconds_per_unit: f64, carry: &mut MathCarry) -> Vec<f64> {
+    let mut out = Vec::with_capacity(t.len());
+    for (t, x) in t.iter().zip(x) {
+        if let Some((prev_t, prev_x)) = carry.previous {
+            let dt = (t - prev_t) / seconds_per_unit;
+            if dt > 0.0 {
+                carry.slope = (x - prev_x) / dt;
+            }
+        }
+        carry.previous = Some((*t, *x));
+        out.push(carry.slope);
     }
     out
 }
@@ -922,7 +972,10 @@ mod tests {
     fn integration_accumulates_the_held_value_over_elapsed_time() {
         // Held at 2 for one second, then at 4 for two.
         let block = one(&[(0.0, 2.0), (1.0, 4.0), (3.0, 0.0)]);
-        close(&run(&MathFunction::Integration, &block), &[0.0, 2.0, 10.0]);
+        close(
+            &run(&MathFunction::integration(), &block),
+            &[0.0, 2.0, 10.0],
+        );
     }
 
     #[test]
@@ -930,14 +983,94 @@ mod tests {
         let all = points(&[(0.0, 2.0), (1.0, 4.0), (3.0, 0.0)]);
         let mut carry = MathCarry::new();
         let mut split = apply(
-            &MathFunction::Integration,
+            &MathFunction::integration(),
             &merge(&[all[..2].to_vec()]),
             &mut carry,
         );
         let mut held = vec![Some(4.0)];
         let second = merge_hold(&[&all[2..]], &mut held, &[None], &[]);
-        split.extend(apply(&MathFunction::Integration, &second.block, &mut carry));
+        split.extend(apply(
+            &MathFunction::integration(),
+            &second.block,
+            &mut carry,
+        ));
         close(&split, &[0.0, 2.0, 10.0]);
+    }
+
+    /// Time is the function's parameter: the same samples accumulated
+    /// in hours are the seconds answer divided by 3600.
+    #[test]
+    fn integration_accumulates_in_the_time_unit_the_function_names() {
+        let block = one(&[(0.0, 2.0), (1.0, 4.0), (3.0, 0.0)]);
+        let hours = MathFunction::Integration {
+            time_unit: crate::units::UnitId::base("hour"),
+        };
+        close(&run(&hours, &block), &[0.0, 2.0 / 3600.0, 10.0 / 3600.0]);
+    }
+
+    /// The derivative is the plain slope between consecutive samples —
+    /// no smoothing, no window. The first sample has nothing to
+    /// differentiate against and reads zero.
+    #[test]
+    fn a_derivative_is_the_slope_between_consecutive_samples() {
+        // +2 over one second, then -4 over two.
+        let block = one(&[(0.0, 1.0), (1.0, 3.0), (3.0, -5.0)]);
+        close(&run(&MathFunction::derivative(), &block), &[0.0, 2.0, -4.0]);
+    }
+
+    /// …and in the function's time unit: the same slope per hour is
+    /// 3600 times the per-second one.
+    #[test]
+    fn a_derivative_reads_its_slope_in_the_time_unit_it_names() {
+        let block = one(&[(0.0, 1.0), (1.0, 3.0)]);
+        let per_hour = MathFunction::Derivative {
+            time_unit: crate::units::UnitId::base("hour"),
+        };
+        close(&run(&per_hour, &block), &[0.0, 2.0 * 3600.0]);
+    }
+
+    /// The slope crosses a block boundary: the sample before the split
+    /// is what the first sample after it is measured against, so a
+    /// paged serve and a whole one agree.
+    #[test]
+    fn a_derivative_carries_across_a_block_boundary() {
+        let all = points(&[(0.0, 1.0), (1.0, 3.0), (3.0, -5.0)]);
+        let mut carry = MathCarry::new();
+        let mut split = apply(
+            &MathFunction::derivative(),
+            &merge(&[all[..2].to_vec()]),
+            &mut carry,
+        );
+        let mut held = vec![Some(3.0)];
+        let second = merge_hold(&[&all[2..]], &mut held, &[None], &[]);
+        split.extend(apply(
+            &MathFunction::derivative(),
+            &second.block,
+            &mut carry,
+        ));
+        close(&split, &[0.0, 2.0, -4.0]);
+    }
+
+    /// A sample arriving at the instant the last block ended would
+    /// divide by zero. The slope holds instead of producing an infinity
+    /// the plot cannot draw.
+    #[test]
+    fn a_derivative_holds_its_slope_across_a_zero_length_step() {
+        let all = points(&[(0.0, 1.0), (1.0, 3.0), (1.0, 9.0)]);
+        let mut carry = MathCarry::new();
+        let mut split = apply(
+            &MathFunction::derivative(),
+            &merge(&[all[..2].to_vec()]),
+            &mut carry,
+        );
+        let mut held = vec![Some(3.0)];
+        let second = merge_hold(&[&all[2..]], &mut held, &[None], &[]);
+        split.extend(apply(
+            &MathFunction::derivative(),
+            &second.block,
+            &mut carry,
+        ));
+        close(&split, &[0.0, 2.0, 2.0]);
     }
 
     #[test]

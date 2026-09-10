@@ -379,6 +379,7 @@ fn build_rows<'a>(
     bus_names: &HashMap<String, String>,
     picks: &crate::signal_fingerprint::SignalDbcPicks,
     customizations: &crate::units::Customizations,
+    signal_units: &crate::signal_units::SignalUnits,
 ) -> Vec<ViewSignalRow> {
     // The one detector for "which assigned databases define this",
     // shared with the Database panel's duplicate-id warning.
@@ -387,15 +388,12 @@ fn build_rows<'a>(
     let mut aggregates: BTreeMap<String, Aggregate<'a>> = BTreeMap::new();
     for view in registry.iter() {
         for reference in &view.refs {
-            if reference.file_backed {
-                continue;
-            }
             let id = signal_identity(
                 reference.bus_id.as_deref(),
                 reference.message_id,
                 reference.extended,
                 &reference.signal_name,
-                false,
+                reference.file_backed,
             );
             let agg = aggregates.entry(id).or_insert(Aggregate {
                 reference,
@@ -448,6 +446,7 @@ fn build_rows<'a>(
     }
 
     let project = ProjectFacts {
+        signal_units,
         bus_names,
         customizations,
     };
@@ -510,15 +509,83 @@ fn describe_on_bus<'a>(
 /// What the project says, read the same way by every row: how its buses
 /// are named, and what its DBC unit strings mean.
 struct ProjectFacts<'a> {
+    /// The project's per-signal unit reinterpretations
+    /// ([`crate::signal_units`]) — what a row's unit column actually
+    /// reads, and so what its unplaceable-unit flag is judged on.
+    signal_units: &'a crate::signal_units::SignalUnits,
     bus_names: &'a HashMap<String, String>,
     customizations: &'a crate::units::Customizations,
 }
 
-/// Whether a rendered unit string is one the project cannot place —
-/// [`ViewSignalRow::unit_unrecognized`]. Blank is never flagged: a
-/// signal that declares no unit has nothing to map.
-fn unit_unrecognized(unit: &str, customizations: &crate::units::Customizations) -> bool {
-    !unit.trim().is_empty() && crate::units::recognize(unit, customizations).is_none()
+/// Where the serving database disagrees with what a view recorded.
+struct Drift {
+    diffs: Vec<ViewSignalDiff>,
+    /// A unit, factor or offset differs: the numbers the view shows are
+    /// not the numbers it asked for.
+    off_scale: bool,
+    /// The message was renamed under it.
+    renamed: bool,
+}
+
+/// Compare what `reference` recorded against what the serving database
+/// says today. A reference that recorded nothing, and one nothing
+/// serves, both drift in no field.
+fn drift(
+    reference: &ViewSignalRef,
+    serving: Option<(&MessageDescriptor, &cannet_dbc::SignalDescriptorRich)>,
+) -> Drift {
+    let mut out = Drift {
+        diffs: Vec::new(),
+        off_scale: false,
+        renamed: false,
+    };
+    let Some((message, signal)) = serving else {
+        return out;
+    };
+    if let Some(mapped) = &reference.unit {
+        if mapped != &signal.unit {
+            out.diffs.push(ViewSignalDiff {
+                field: "unit".into(),
+                mapped: mapped.clone(),
+                decoded: signal.unit.clone(),
+            });
+            out.off_scale = true;
+        }
+    }
+    // Bit-wise, like the per-signal encoding fingerprints
+    // ([`crate::signal_fingerprint`]): conservative in the safe
+    // direction, and NaN-free without a special case.
+    if let Some(mapped) = reference.factor {
+        if mapped.to_bits() != signal.factor.to_bits() {
+            out.diffs.push(ViewSignalDiff {
+                field: "factor".into(),
+                mapped: mapped.to_string(),
+                decoded: signal.factor.to_string(),
+            });
+            out.off_scale = true;
+        }
+    }
+    if let Some(mapped) = reference.offset {
+        if mapped.to_bits() != signal.offset.to_bits() {
+            out.diffs.push(ViewSignalDiff {
+                field: "offset".into(),
+                mapped: mapped.to_string(),
+                decoded: signal.offset.to_string(),
+            });
+            out.off_scale = true;
+        }
+    }
+    if let Some(mapped) = &reference.message_name {
+        if mapped != &message.name {
+            out.diffs.push(ViewSignalDiff {
+                field: "message".into(),
+                mapped: mapped.clone(),
+                decoded: message.name.clone(),
+            });
+            out.renamed = true;
+        }
+    }
+    out
 }
 
 /// Classify one signal and render its row.
@@ -557,54 +624,11 @@ fn row(
         })
     });
 
-    let mut diffs = Vec::new();
-    let mut off_scale = false;
-    let mut renamed = false;
-    if let Some((_, message, signal)) = serving {
-        if let Some(mapped) = &reference.unit {
-            if mapped != &signal.unit {
-                diffs.push(ViewSignalDiff {
-                    field: "unit".into(),
-                    mapped: mapped.clone(),
-                    decoded: signal.unit.clone(),
-                });
-                off_scale = true;
-            }
-        }
-        // Bit-wise, like the per-signal encoding fingerprints
-        // ([`crate::signal_fingerprint`]): conservative in the safe
-        // direction, and NaN-free without a special case.
-        if let Some(mapped) = reference.factor {
-            if mapped.to_bits() != signal.factor.to_bits() {
-                diffs.push(ViewSignalDiff {
-                    field: "factor".into(),
-                    mapped: mapped.to_string(),
-                    decoded: signal.factor.to_string(),
-                });
-                off_scale = true;
-            }
-        }
-        if let Some(mapped) = reference.offset {
-            if mapped.to_bits() != signal.offset.to_bits() {
-                diffs.push(ViewSignalDiff {
-                    field: "offset".into(),
-                    mapped: mapped.to_string(),
-                    decoded: signal.offset.to_string(),
-                });
-                off_scale = true;
-            }
-        }
-        if let Some(mapped) = &reference.message_name {
-            if mapped != &message.name {
-                diffs.push(ViewSignalDiff {
-                    field: "message".into(),
-                    mapped: mapped.clone(),
-                    decoded: message.name.clone(),
-                });
-                renamed = true;
-            }
-        }
-    }
+    let Drift {
+        diffs,
+        off_scale,
+        renamed,
+    } = drift(reference, serving.map(|(_, m, s)| (m, s)));
 
     // A drifted row on a contested message id is unresolved, not
     // merely mislabelled: the record names one contender while another
@@ -613,7 +637,15 @@ fn row(
     // attention view. Stale is reserved for drift with nothing else
     // contending for the id.
     let contested = own.len() > 1;
-    let status = if serving.is_none() {
+    // A file-backed series is read out of the capture, so no database
+    // bears on it and nothing about it can be Not Decoded, Stale or
+    // Ambiguous — it reads Decoded, and stays out of the attention
+    // count. It is still a **row**: its unit string needs placing and
+    // reinterpreting exactly as a DBC-backed one does
+    // (`crate::signal_units`), which is why it is no longer dropped.
+    let status = if reference.file_backed {
+        ViewSignalStatus::Decoded
+    } else if serving.is_none() {
         ViewSignalStatus::NotDecoded
     } else if off_scale {
         ViewSignalStatus::Scale
@@ -628,10 +660,24 @@ fn row(
     // The string the row will render — the serving database's, or the
     // one the view recorded when nothing decodes. Bound before the row
     // so the flag can describe exactly what the user sees.
-    let unit = serving.map_or_else(
+    let declared = serving.map_or_else(
         || reference.unit.clone().unwrap_or_default(),
         |(_, _, s)| s.unit.clone(),
     );
+    // …then what the project says it is *read* in: the unit and how it
+    // reads, in one answer. A reinterpretation replaces the label
+    // outright and scales nothing (`crate::signal_units`); the drift
+    // comparisons above deliberately stay on the declared string, since
+    // drift is a statement about the database.
+    //
+    // The unplaceable flag is that answer's, so it judges both what the
+    // row shows and where it came from: a database's wording nothing
+    // recognises is flagged, and Settings → Units is where it is
+    // repaired, while a unit the user chose is placed by construction —
+    // even one, like the coulomb's `C`, whose spelling recognition
+    // deliberately refuses.
+    let reading =
+        crate::signal_units::unit_of(project.signal_units, id, &declared, project.customizations);
 
     ViewSignalRow {
         id: id.to_owned(),
@@ -651,8 +697,8 @@ fn row(
             |(_, m, _)| m.name.clone(),
         ),
         signal_name: reference.signal_name.clone(),
-        unit_unrecognized: unit_unrecognized(&unit, project.customizations),
-        unit,
+        unit_unrecognized: reading.is_unplaceable(),
+        unit: reading.display,
         serving_dbc: serving.map(|(p, _, _)| p.to_owned()),
         picked_dbc: picked.map(ToOwned::to_owned),
         used_by: used_by.iter().map(|v| (*v).to_owned()).collect(),
@@ -963,17 +1009,20 @@ pub(crate) fn list_view_signals_inner(
     // Lock order: the DBC set before the picks, as `decode_model`
     // takes them.
     let picks = state.picks_snapshot();
-    // The project's unit dict decides which unit strings are flagged as
-    // unplaceable. Read here, once per fetch: `set_settings` refreshes
-    // this cache, so the next fetch after a customization edit already
-    // carries the new answer.
-    let settings = crate::settings::effective();
+    // The unit dict decides which unit strings are flagged as
+    // unplaceable — both scopes joined, project winning. Read here,
+    // once per fetch: `set_settings` refreshes the cache behind it, so
+    // the next fetch after a customization edit already carries the new
+    // answer.
+    let customizations = crate::settings::unit_customizations();
+    let signal_units = state.signal_units_snapshot();
     let mut rows = build_rows(
         &registry,
         &borrowed,
         &names,
         &picks,
-        &settings.unit_customizations,
+        &customizations,
+        &signal_units,
     );
     drop(dbs);
     drop(registry);
@@ -1064,6 +1113,7 @@ mod tests {
             &names(),
             &crate::signal_fingerprint::SignalDbcPicks::new(),
             &crate::units::Customizations::new(),
+            &crate::signal_units::SignalUnits::new(),
         )
     }
 
@@ -1080,6 +1130,7 @@ mod tests {
             &names(),
             &crate::signal_fingerprint::SignalDbcPicks::new(),
             customizations,
+            &crate::signal_units::SignalUnits::new(),
         )
     }
 
@@ -1101,6 +1152,7 @@ mod tests {
             &names(),
             &picks,
             &crate::units::Customizations::new(),
+            &crate::signal_units::SignalUnits::new(),
         )
     }
 
@@ -1124,6 +1176,51 @@ mod tests {
     fn a_unit_string_nothing_recognises_is_flagged() {
         let row = row_with_unit("furlongs", &crate::units::Customizations::new());
         assert!(row.unit_unrecognized);
+    }
+
+    /// **The nAh investigation.** Four shapes a signal can reach this
+    /// panel in, each with a unit string the project cannot place. The
+    /// one that produces no row is the answer.
+    #[test]
+    fn which_row_shapes_carry_the_unplaceable_unit_flag() {
+        let db = dbc("PackStatus", "PackVolts", "furlongs", "0.1");
+        let buses = power();
+        let dbs: &[(&str, &Database, &[String])] = &[("a.dbc", &db, &buses)];
+
+        let flagged = |refs: Vec<ViewSignalRef>| -> Option<bool> {
+            let mut registry = ViewSignalRegistry::default();
+            registry.set(
+                "v1".into(),
+                ViewSignalRefs {
+                    view_name: "Plot".into(),
+                    refs,
+                },
+            );
+            let rows = build(&registry, dbs);
+            rows.first().map(|r| r.unit_unrecognized)
+        };
+
+        // (a) a manual pick, which records the unit it was picked under
+        assert_eq!(
+            flagged(vec![recorded("PackVolts", "PackStatus", "furlongs", 0.1)]),
+            Some(true)
+        );
+        // (b) a pattern match, which pushes identity only — the unit
+        //     comes from the serving database instead
+        assert_eq!(flagged(vec![bare(Some("power"), "PackVolts")]), Some(true));
+        // (c) a **file-backed** series. This is the one that used to
+        //     produce no row at all — `build_rows` dropped these — so
+        //     an unplaceable unit on an imported channel was invisible
+        //     however loud the flag was. It is a row now, and flagged.
+        let mut file_backed = recorded("Imported", "Group", "furlongs", 1.0);
+        file_backed.file_backed = true;
+        assert_eq!(flagged(vec![file_backed]), Some(true));
+        // (d) a reference naming no bus: nothing decodes it, and it
+        //     falls back to what the view recorded — which a
+        //     pattern-matched row does not carry.
+        let mut busless = bare(Some("power"), "PackVolts");
+        busless.bus_id = None;
+        assert_eq!(flagged(vec![busless]), Some(false));
     }
 
     #[test]
@@ -1663,11 +1760,16 @@ mod tests {
         assert_eq!(rows[0].used_by, vec!["Plot 1", "Signals"]);
     }
 
+    /// A file-backed series is a row, and reads **Decoded**.
+    ///
+    /// It is read out of the capture file and never decoded from a
+    /// database, so there is no mapping to repair — which is why it
+    /// must not sit in the grid reading Not Decoded forever, and why it
+    /// stays out of the attention count. It is listed all the same:
+    /// its unit string needs placing and reinterpreting like any
+    /// other's, and dropping the row hid that.
     #[test]
-    fn a_file_backed_series_is_not_a_row() {
-        // Read out of the capture file, never decoded from a database:
-        // there is no mapping to repair, so it must not sit in the
-        // grid reading Not Decoded forever.
+    fn a_file_backed_series_is_a_decoded_row_with_nothing_to_repair() {
         let db = plain();
         let buses = power();
         let mut file_ref = bare(Some("power"), "Imported");
@@ -1675,7 +1777,47 @@ mod tests {
         let reg = registry(&[("v1", "Plot 1", vec![file_ref])]);
         let rows = build(&reg, &[("a.dbc", &db, &buses)]);
 
-        assert!(rows.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, ViewSignalStatus::Decoded);
+        assert!(!rows[0].status.needs_attention());
+        assert!(rows[0].candidates.is_empty());
+        assert!(rows[0].diffs.is_empty());
+    }
+
+    /// **The nAh regression.** An imported channel whose unit string the
+    /// project cannot place is flagged, where before it had no row to
+    /// carry a flag — and a reinterpretation clears it, because the
+    /// signal is then in a unit the project knows.
+    #[test]
+    fn an_imported_channels_unplaceable_unit_is_flagged_and_reinterpretable() {
+        let db = plain();
+        let buses = power();
+        let mut file_ref = recorded("Coulombs", "Group", "nano-amp-hours", 1.0);
+        file_ref.file_backed = true;
+        let reg = registry(&[("v1", "Plot 1", vec![file_ref])]);
+
+        let rows = build(&reg, &[("a.dbc", &db, &buses)]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].unit, "nano-amp-hours");
+        assert!(rows[0].unit_unrecognized);
+
+        // Reinterpreted, it reads as the unit that was chosen and the
+        // flag is gone — no scaling anywhere.
+        let mut units = crate::signal_units::SignalUnits::new();
+        units.insert(
+            rows[0].id.clone(),
+            crate::units::UnitId::new("ampere-hour", crate::units::Prefix::Nano),
+        );
+        let rows = build_rows(
+            &reg,
+            &[("a.dbc", &db, &buses)],
+            &names(),
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+            &crate::units::Customizations::new(),
+            &units,
+        );
+        assert_eq!(rows[0].unit, "nAh");
+        assert!(!rows[0].unit_unrecognized);
     }
 
     #[test]
