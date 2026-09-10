@@ -36,8 +36,9 @@ The ask, in the owner's words:
    per-operand source-unit override ("treat this operand as mA")
    local to the channel; unconvertible members pass through unscaled
    and are *reported* by resolve, never silent; a unit outside the
-   library's list means manual scalars (a define-custom-unit row is
-   deliberately out of scope until it bites).
+   library's list means manual scalars (a define-custom-unit row was
+   deliberately out of scope until it bit — **reversed 2026-09-09**,
+   see ruling 20 below).
 3. **Conversions are affine** (gain + offset) — covers °C↔K↔°F.
 4. **No mapping dialog.** The customization UI is a **section in the
    settings view**: a selectable list of units provided by the unit
@@ -94,6 +95,21 @@ The ask, in the owner's words:
 - `runtime_units` distinguishes TemperatureInterval from
   ThermodynamicTemperature; DBC temperature readings map to the
   absolute kind by default.
+
+**2026-09-09 (owner ruling — composed units, reversing the above):**
+
+20. **Composed units are supported, via a string.** "Give a simple two
+    field entry, allowing creation of a name, and then a string which
+    composes units. For example: W = V \* A." So Settings → Units gains
+    a two-field entry — a name, and a composition over units the model
+    already knows. The string is an **ingest boundary** like a DBC's
+    unit field: read once, refused with a reason where it is wrong, and
+    never seen again downstream. What it defines is a unit in every
+    respect — composed dimension, its own name as its spelling, in the
+    pickers in `units::list_order` position, converting by the factor
+    dimensional analysis implies — persisted through the same two-scope
+    project/user mechanism as the spellings, with the same per-row
+    checkbox semantics, and shown as a row of the same table.
 
 ## Phases
 
@@ -985,6 +1001,84 @@ on the branch that introduced them.
 Tests: host lib 1260 → 1262 passing (7 ignored, unchanged); frontend
 3462 → 3463 across 246 files. All four were written red first.
 
+**2026-09-10 — composed units, on `units-composition`.** The owner's
+2026-09-09 ruling (grooming note 20), on a branch of its own inserted
+under `doc-closeout` because this is new behaviour rather than a defect
+in a branch that introduced one.
+
+- **The grammar accepted** is a product of terms: `*` (or `·`) and `/`
+  separate them, whitespace around them is ignored, and a term that
+  parses as a number is a plain factor rather than a unit. So `V * A`,
+  `1000 * V * A`, `N * m`, `1 / s`. Nothing nests, because nothing needs
+  to: a product over a product is exactly what `units::Composed` is and
+  all of dimensional analysis needs. A leading factor was the ruling's
+  ask; accepting a number in any position costs no extra grammar, so
+  that is what the tokenizer does.
+- **The definitions install to a fixpoint.** A definition may name
+  another (`AVh = VA * h` beside `VA = V * A`) whatever order the dict
+  sorts in: each pass installs whatever now resolves and stops when a
+  pass adds nothing, and whatever is left over is reported with the
+  reason it did not resolve. A single pass in dict order would have
+  made the answer depend on alphabetical accident.
+- **Where the units live.** `units::CUSTOM` is a process-global
+  registry, written whole by `install_definitions` and read by
+  `family`, `definition_of`, `typed`, `display_of`, `stored_id` and the
+  three list builders. A global for the same reason the settings cache
+  is one: a unit string is recognised deep inside database loading and
+  signal serving, far from any settings handle, and threading a dict
+  through all of that would have put the user's units on a different
+  footing from the shipped ones. `settings::cache` installs, so the
+  registry follows every settings write, and `list_unit_mappings`
+  installs again on the way to answering — idempotent, and it removes
+  the one way the table and the registry could disagree.
+- **`UnitInfo`, `UnitListing`, `UnitPickerEntry` and `UnitMappingRow::id`
+  moved from `&'static str` to `String`.** A unit the user named cannot
+  be a `'static` string, and the alternative — a second parallel list
+  type for composed units — would have let a picker offer one kind and
+  not the other. `UnitMappingRow` gained `composition`,
+  `definitionScope` and `error`.
+- **A refused definition still gets a row**, carrying the reason instead
+  of a working unit. The alternative (dropping it) makes a bad entry
+  silently do nothing, which is the failure the ruling's "errors surface
+  in place" is against. A row whose name collides with a shipped unit
+  attaches its error to that unit's row, which reads correctly: "you
+  tried to define `V`, here is why it did not take."
+- **Duplicate names are judged by `recognize`, not by the id table.**
+  `W` is not a unit *id* but every database that writes it means the
+  watt, so taking that name would quietly change what the project reads.
+  This is why the ruling's own example (`W = V * A`) is refused: the
+  watt already ships. `VA` is the same unit under a name that is free.
+- **Composed units take no SI prefix.** The user named the whole thing,
+  so the picker gives the row one scale rather than a ladder; `mVA` is
+  another definition if it is wanted. The alternative would have to
+  decide whether `kVA` means the prefix on a composed name or the
+  factor in the composition, and there is no reading that is obviously
+  right.
+- **Test serialization, and a flaky test it was first scoped too
+  narrowly to prevent.** The registry is a process global, so the
+  composed-unit tests take a `REGISTRY` gate exclusively and undo their
+  install when the guard drops. The shared half was first given only to
+  the two tests asserting an exhaustive list length — a judgement call,
+  and wrong. *Observation:* `cargo test -p cannet-gui --lib units::`
+  failed roughly half of filtered runs, rotating between
+  `an_empty_name_or_an_empty_composition_is_refused` (reading
+  "already names" where it expected "empty") and
+  `every_offered_scale_is_a_unit_the_facade_places`
+  (`UnitId { base: "VA" }` placing nothing). *Hypothesis:* both read the
+  registry without the shared guard and see an installer's `VA` / `W`
+  mid-flight — the first through `check_definition`'s name-collision
+  check, which is a registry read that does not look like a list read.
+  *Experiment:* eight consecutive filtered runs after giving **every**
+  test in the module the shared guard. *Data:* 8/8 green, against 4
+  failures in 6 runs before. The rule is now blanket rather than
+  scoped, and the gate's comment says why: reads do not exclude each
+  other, so the only cost is serializing an install.
+
+Tests: host lib 1274 passing (7 ignored, unchanged), 13 new in
+`units::tests` plus the two settings scope/round-trip tests extended;
+frontend +6 in `UnitCustomizations.dom.test.tsx` (16 in the file). All
+written red first.
+
 ## Blockers / side effects
 
 - **`coulomb` and `newton-millimeter` still read `C` and `Nmm`**, and
@@ -1023,6 +1117,20 @@ Tests: host lib 1260 → 1262 passing (7 ignored, unchanged); frontend
   omitting an empty map — would break ADR 0034's "the file lists every
   knob", which two tests enforce. Flagged because it is a visible
   change to a file users hand-edit.
+- **The owner's own example, `W = V * A`, is refused.** `W` already
+  reads as the watt everywhere, and letting a definition take a name
+  recognition already answers would silently change what every database
+  in the project means by it. The example works verbatim under any free
+  name (`VA = V * A`), and the refusal says which unit holds the name.
+  Flagged because it is the first thing the owner will type.
+- **A composed unit takes no prefix**, so `kVA` is a second definition
+  (`1000 * V * A`) rather than a prefix on `VA`. Flagged because the
+  picker shows composed rows with one scale where a shipped base unit
+  shows the whole ladder.
+- **A project's `.cannet/settings.json` now also always carries
+  `unit_definitions`**, empty or not — the same consequence
+  `unit_customizations` already has, for the same `Scope::Workspace`
+  reason.
 - **`runtime_units` 0.6.3 ships no absolute-temperature quantity and
   no offsets at all**, so the °C/°F constants are ours (see the status
   log and `plans/technology-inventory.md`). A future release that
