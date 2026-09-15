@@ -784,15 +784,9 @@ fn run_export(
         run.cancel_with(Arc::clone(flag));
     }
     let outcome = match format {
-        // Snapshot the trace store. `slice(0, len)` clones each
-        // RawTraceFrame out under the trace-store lock — that's the
-        // simplest correct read; for very long captures it's a single
-        // big allocation rather than streaming chunked reads, which
-        // we'll revisit when disk-spill lands.
-        SaveFormat::Blf => {
-            let frames = state.trace_store.slice(0, state.trace_store.len());
-            write_blf_capture(path, &frames, &notes, buses, &mut run)
-        }
+        // Both writers read the store a chunk at a time (`SAVE_CHUNK`);
+        // neither snapshots it, which a week-long capture cannot afford.
+        SaveFormat::Blf => write_blf_capture(path, &*state.trace_store, &notes, buses, &mut run),
         SaveFormat::Mdf => write_mdf_capture(path, &state, &notes, buses, &mut run),
     };
     let outcome = match outcome {
@@ -1354,6 +1348,69 @@ fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut u64) -> Not
     }
 }
 
+/// How many frames one pass of a writer pulls out of its source at a
+/// time. Big enough that the per-slice lock and the spilled-segment
+/// reads amortise, small enough that a multi-million-frame capture never
+/// sits in RAM twice (`CLAUDE.md` § GUI architecture — the store is
+/// paged, and a save is one more reader of those pages).
+pub(crate) const SAVE_CHUNK: usize = 65_536;
+
+/// Where an export reads its frames: the trace store in production, a
+/// slice in the writers' tests. Chunked access only — a writer walks the
+/// source [`SAVE_CHUNK`] frames at a time and never asks for the whole
+/// of it, so a capture longer than RAM (the store is disk-backed,
+/// ADR 0002) exports in bounded memory.
+pub(crate) trait FrameSource {
+    /// Number of frames the source holds.
+    fn len(&self) -> usize;
+    /// Cloned frames in `[start, end)`, clamped to the source's bounds.
+    fn slice(&self, start: usize, end: usize) -> Vec<trace_store::RawTraceFrame>;
+}
+
+impl FrameSource for trace_store::TraceStore {
+    fn len(&self) -> usize {
+        Self::len(self)
+    }
+
+    fn slice(&self, start: usize, end: usize) -> Vec<trace_store::RawTraceFrame> {
+        Self::slice(self, start, end)
+    }
+}
+
+impl FrameSource for [trace_store::RawTraceFrame] {
+    fn len(&self) -> usize {
+        <[_]>::len(self)
+    }
+
+    fn slice(&self, start: usize, end: usize) -> Vec<trace_store::RawTraceFrame> {
+        let len = <[_]>::len(self);
+        if start >= len {
+            return Vec::new();
+        }
+        self[start..end.min(len)].to_vec()
+    }
+}
+
+impl FrameSource for Vec<trace_store::RawTraceFrame> {
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    fn slice(&self, start: usize, end: usize) -> Vec<trace_store::RawTraceFrame> {
+        FrameSource::slice(self.as_slice(), start, end)
+    }
+}
+
+impl<const N: usize> FrameSource for [trace_store::RawTraceFrame; N] {
+    fn len(&self) -> usize {
+        N
+    }
+
+    fn slice(&self, start: usize, end: usize) -> Vec<trace_store::RawTraceFrame> {
+        FrameSource::slice(self.as_slice(), start, end)
+    }
+}
+
 /// Perform the actual BLF write. Frames go in as CAN events, notes
 /// go in as `GLOBAL_MARKER` (object type 96) records — both inside
 /// the BLF file itself, no sidecar (per [ADR 0010]).
@@ -1373,11 +1430,15 @@ fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut u64) -> Not
 /// the description body.
 pub(crate) fn write_blf_capture(
     blf_path: &str,
-    frames: &[trace_store::RawTraceFrame],
+    frames: &dyn FrameSource,
     notes: &[Note],
     buses: &[String],
     run: &mut ExportRun,
 ) -> Result<ExportOutcome, String> {
+    // Two chunked passes over the source, never a whole-capture
+    // snapshot — the same shape as `write_mdf_capture`, for the same
+    // reason: the store is disk-backed and can hold far more than RAM.
+    //
     // Pass one: what the range keeps, and the capture's origin over it.
     // A BLF event's timestamp is an unsigned offset from the file's
     // start, so nothing earlier than that start is representable — and
@@ -1391,18 +1452,28 @@ pub(crate) fn write_blf_capture(
     //
     // The origin is taken over the *kept* set, not the whole capture:
     // an exported slice's file starts where the slice does.
-    let frames: Vec<&trace_store::RawTraceFrame> = frames
-        .iter()
-        .filter(|f| run.keeps(f.timestamp_ns))
-        .collect();
     let notes: Vec<&Note> = notes.iter().filter(|n| run.keeps(n.timestamp_ns)).collect();
-    run.expect_units(frames.len() as u64);
-    let start_time_ns = frames
-        .iter()
-        .map(|f| f.timestamp_ns)
-        .chain(notes.iter().map(|n| n.timestamp_ns))
-        .min()
-        .unwrap_or(0);
+    let len = frames.len();
+    let mut kept_frames = 0u64;
+    let mut start_time_ns = u64::MAX;
+    for start in (0..len).step_by(SAVE_CHUNK) {
+        for frame in frames.slice(start, start + SAVE_CHUNK) {
+            if !run.keeps(frame.timestamp_ns) {
+                continue;
+            }
+            kept_frames += 1;
+            start_time_ns = start_time_ns.min(frame.timestamp_ns);
+        }
+    }
+    run.expect_units(kept_frames);
+    for note in &notes {
+        start_time_ns = start_time_ns.min(note.timestamp_ns);
+    }
+    let start_time_ns = if start_time_ns == u64::MAX {
+        0
+    } else {
+        start_time_ns
+    };
     let mut writer = BlfCaptureWriter::create_with_start(blf_path, start_time_ns)
         .map_err(|e| format!("failed to open {blf_path} for writing: {e}"))?;
     // Pass two: interleave frames and markers in timestamp order.
@@ -1410,25 +1481,21 @@ pub(crate) fn write_blf_capture(
     // does not assume they do (`docs/blf-feature-support.md`
     // § "Object timestamps and ordering"); the merge is here because a
     // note comments on the frames around it, so it belongs next to them
-    // in the object stream.
-    let mut frame_iter = frames.iter().peekable();
-    let mut note_iter = notes.iter().peekable();
-    loop {
-        let next_frame_ts = frame_iter.peek().map(|f| f.timestamp_ns);
-        let next_note_ts = note_iter.peek().map(|n| n.timestamp_ns);
-        let take_frame = match (next_frame_ts, next_note_ts) {
-            (None, None) => break,
-            (Some(_), None) => true,
-            (None, Some(_)) => false,
-            // Tie goes to the frame so a marker placed at exactly
-            // a frame's timestamp sorts after it; matches Vector's
-            // convention where a marker comments on the frame
-            // immediately before it.
-            (Some(ft), Some(nt)) => ft <= nt,
-        };
-        if take_frame {
-            let frame = frame_iter.next().expect("peek matched");
-            let core = raw_to_core_frame(frame, buses)
+    // in the object stream. Ahead of each kept frame go the notes
+    // stamped strictly before it: a tie goes to the frame so a marker
+    // placed at exactly a frame's timestamp sorts after it, matching
+    // Vector's convention where a marker comments on the frame
+    // immediately before it.
+    let mut note_iter = notes.into_iter().peekable();
+    for start in (0..len).step_by(SAVE_CHUNK) {
+        for frame in frames.slice(start, start + SAVE_CHUNK) {
+            if !run.keeps(frame.timestamp_ns) {
+                continue;
+            }
+            while let Some(note) = note_iter.next_if(|n| n.timestamp_ns < frame.timestamp_ns) {
+                write_blf_note(&mut writer, note)?;
+            }
+            let core = raw_to_core_frame(&frame, buses)
                 .map_err(|e| format!("invalid frame in session buffer: {e}"))?;
             writer
                 .append(&core)
@@ -1439,30 +1506,10 @@ pub(crate) fn write_blf_capture(
             if !run.advance() {
                 return Ok(ExportOutcome::Cancelled);
             }
-        } else {
-            let note = note_iter.next().expect("peek matched");
-            match note.kind.blf_record() {
-                Some(notes::BlfRecord::EventComment) => writer
-                    .append_comment(
-                        note.timestamp_ns,
-                        &comment_text(note),
-                        note.commented_event_type.unwrap_or(0),
-                    )
-                    .map_err(|e| format!("failed to write comment: {e}"))?,
-                // A kind with no record of its own is not written at all;
-                // `NotesStore::exportable` has already filtered those out,
-                // so falling back to a marker here only affects a caller
-                // that assembled its own list.
-                _ => writer
-                    .append_marker(
-                        note.timestamp_ns,
-                        &note.label,
-                        &event_text::encode(&event_text::EventText::from_note(note)),
-                        color_to_rgb(note.color.as_deref()),
-                    )
-                    .map_err(|e| format!("failed to write marker: {e}"))?,
-            }
         }
+    }
+    for note in note_iter {
+        write_blf_note(&mut writer, note)?;
     }
     let outcome = writer
         .finish()
@@ -1478,12 +1525,30 @@ pub(crate) fn write_blf_capture(
     }))
 }
 
-/// How many frames one pass of [`write_mdf_capture`] pulls out of the
-/// trace store at a time. Big enough that the per-slice lock and the
-/// spilled-segment reads amortise, small enough that a multi-million-
-/// frame capture never sits in RAM twice (`CLAUDE.md` § GUI architecture
-/// — the store is paged, and a save is one more reader of those pages).
-const MDF_SAVE_CHUNK: usize = 65_536;
+/// One note into the BLF object stream, as the record its kind maps to.
+fn write_blf_note(writer: &mut BlfCaptureWriter, note: &Note) -> Result<(), String> {
+    match note.kind.blf_record() {
+        Some(notes::BlfRecord::EventComment) => writer
+            .append_comment(
+                note.timestamp_ns,
+                &comment_text(note),
+                note.commented_event_type.unwrap_or(0),
+            )
+            .map_err(|e| format!("failed to write comment: {e}")),
+        // A kind with no record of its own is not written at all;
+        // `NotesStore::exportable` has already filtered those out,
+        // so falling back to a marker here only affects a caller
+        // that assembled its own list.
+        _ => writer
+            .append_marker(
+                note.timestamp_ns,
+                &note.label,
+                &event_text::encode(&event_text::EventText::from_note(note)),
+                color_to_rgb(note.color.as_deref()),
+            )
+            .map_err(|e| format!("failed to write marker: {e}")),
+    }
+}
 
 /// The file-backed signal series and the notes an MDF export writes,
 /// with everything outside the range dropped.
@@ -1597,8 +1662,8 @@ pub(crate) fn write_mdf_capture(
     let mut start_time_ns = u64::MAX;
     let mut max_payload_len = 0usize;
     let mut kept_frames = 0u64;
-    for start in (0..len).step_by(MDF_SAVE_CHUNK) {
-        for frame in state.trace_store.slice(start, start + MDF_SAVE_CHUNK) {
+    for start in (0..len).step_by(SAVE_CHUNK) {
+        for frame in state.trace_store.slice(start, start + SAVE_CHUNK) {
             if !run.keeps(frame.timestamp_ns) {
                 continue;
             }
@@ -1639,8 +1704,8 @@ pub(crate) fn write_mdf_capture(
     .map_err(|e| format!("failed to open {path} for writing: {e}"))?;
 
     // Pass two: the records themselves.
-    for start in (0..len).step_by(MDF_SAVE_CHUNK) {
-        for frame in state.trace_store.slice(start, start + MDF_SAVE_CHUNK) {
+    for start in (0..len).step_by(SAVE_CHUNK) {
+        for frame in state.trace_store.slice(start, start + SAVE_CHUNK) {
             if !run.keeps(frame.timestamp_ns) {
                 continue;
             }

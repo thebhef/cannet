@@ -8017,6 +8017,63 @@ fn an_unbounded_export_writes_the_whole_capture() {
     assert_eq!(outcome.marker_count, 1);
 }
 
+/// A frame source that remembers the widest slice ever asked of it —
+/// the export's memory high-water mark, in frames.
+struct WidestSlice {
+    frames: Vec<trace_store::RawTraceFrame>,
+    widest: std::cell::Cell<usize>,
+}
+
+impl capture::FrameSource for WidestSlice {
+    fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    fn slice(&self, start: usize, end: usize) -> Vec<trace_store::RawTraceFrame> {
+        let got = capture::FrameSource::slice(&self.frames, start, end);
+        self.widest.set(self.widest.get().max(got.len()));
+        got
+    }
+}
+
+#[test]
+fn a_blf_export_walks_its_source_in_bounded_chunks() {
+    // A week-long capture is hundreds of millions of frames — many times
+    // what RAM holds, once the disk-backed store is counted twice. The
+    // writer reads its source a chunk at a time and never snapshots it
+    // whole: the whole-capture clone is what silently aborted a
+    // 546-million-frame export.
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("chunked.blf");
+    let n = capture::SAVE_CHUNK + 1;
+    let source = WidestSlice {
+        frames: (0..n)
+            .map(|i| export_frame(1_000_000_000 + i as u64 * 1_000, 0x100))
+            .collect(),
+        widest: std::cell::Cell::new(0),
+    };
+    let outcome = capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &source,
+        &[],
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap()
+    .written()
+    .expect("an unbounded export is not cancelled");
+    assert_eq!(
+        outcome.frame_count, n as u64,
+        "every frame still reaches the file"
+    );
+    assert!(
+        source.widest.get() <= capture::SAVE_CHUNK,
+        "the widest read was {} frames; a chunk is {}",
+        source.widest.get(),
+        capture::SAVE_CHUNK,
+    );
+}
+
 #[test]
 fn an_export_range_keeps_only_what_falls_inside_it() {
     // Both bounds inclusive, over frames *and* notes: a note comments on
