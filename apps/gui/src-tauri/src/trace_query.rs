@@ -1076,9 +1076,16 @@ fn all_ids_tested(store: &TraceStore) -> filter::CandidateSet {
 /// first retained frame at/after that ns, or `len()` if past the tail. The
 /// chronological trace view splices events into its frame stream at these
 /// indices — time→index is the model's job (ADR 0024), not the view's.
+///
+/// `async` so Tauri runs it off the main thread: the anchor fold behind
+/// it is normally a few blocks, but over a capture restored from a
+/// scratch written before the index was persisted it walks the whole
+/// capture, and the window has to keep painting meanwhile. The body
+/// holds no lock across an `.await` (it takes none).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn frame_indices_at_ns(state: State<'_, AppState>, timestamps: Vec<u64>) -> Vec<u64> {
+#[allow(clippy::unused_async)] // `async` makes Tauri run it off the main thread
+pub(crate) async fn frame_indices_at_ns(app: AppHandle, timestamps: Vec<u64>) -> Vec<u64> {
+    let state: State<'_, AppState> = app.state();
     timestamps
         .into_iter()
         .map(|ts| state.trace_store.frame_index_at_ns(ts) as u64)
