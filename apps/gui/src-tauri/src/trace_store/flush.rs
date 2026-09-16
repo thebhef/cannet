@@ -19,7 +19,7 @@ use cannet_spill::{DiskRawStore, MemRawStore, RawStore};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::anchor::TsAnchorIndex;
+use super::anchor::{self, TsAnchorIndex};
 use super::rate::RateEstimate;
 use super::scratch::dir_footprint;
 use super::{FrameKey, Inner, PerKey, RawTraceFrame, TraceStore};
@@ -170,6 +170,7 @@ impl TraceStore {
         if let Some(dir) = inner.scratch_dir.clone() {
             let _ = std::fs::remove_file(dir.join(DERIVED_FILE));
             let _ = std::fs::remove_file(dir.join(IDENTITY_FILE));
+            let _ = std::fs::remove_file(dir.join(anchor::ANCHOR_FILE));
         }
     }
 
@@ -410,6 +411,14 @@ impl TraceStore {
                 entries,
             };
             write_json(&dir.join(DERIVED_FILE), &derived)?;
+            // The anchor index folds what arrived since the last tick — a
+            // bounded slice per tick, so a scratch written before the index
+            // was persisted catches up across ticks rather than stalling
+            // ingest on one — and persists after the raw manifest, so it
+            // never describes a row the manifest does not (see `anchor`).
+            let Inner { raw, ts_anchor, .. } = &mut *inner;
+            ts_anchor.fold(raw.as_ref(), anchor::FOLD_BLOCKS_PER_HOLD);
+            ts_anchor.persist(dir)?;
         }
         Ok(true)
     }
@@ -493,9 +502,14 @@ impl TraceStore {
         inner.latest_mux = HashMap::new();
         inner.mux_rates = HashMap::new();
         inner.mux_index_from = inner.raw.len();
-        // Same for the anchor index: it was folded from the buffer this
-        // reload just replaced, so it describes no row that now exists.
-        inner.ts_anchor = TsAnchorIndex::default();
+        // The anchor index was folded from the buffer this reload just
+        // replaced; what the prior session persisted for the reopened one
+        // takes its place, current to the last flush, so the first anchor
+        // query walks only what arrived after that (see `anchor`).
+        let anchor_at = Instant::now();
+        inner.ts_anchor = TsAnchorIndex::load(&dir, inner.raw.first_index(), inner.raw.len());
+        let anchor_blocks = inner.ts_anchor.blocks();
+        let anchor_ms = ms_since(anchor_at);
         // Restore the derived state the by-id view and filter resolution
         // read. Rates are left with only their count (a reloaded trace is
         // stopped, so every rate reads zero); the newest-index and frame are
@@ -541,7 +555,8 @@ impl TraceStore {
             "reload {total:.0} ms: identity {identity_ms:.0} manifest {manifest:.0} \
              byid {byid:.0} ({byid_files} files, {byid_ids} ids) \
              meta {meta:.0} ({meta_files} files) payload {payload:.0} ({payload_files} files) \
-             ring {ring:.0} ({ring_frames} frames) derived {derived:.0} ({derived_entries} keys)",
+             ring {ring:.0} ({ring_frames} frames) derived {derived:.0} ({derived_entries} keys) \
+             anchor {anchor_ms:.0} ({anchor_blocks} blocks)",
             total = ms_since(started),
             manifest = reopen.manifest_ms,
             byid = reopen.byid_ms,
@@ -860,6 +875,47 @@ mod tests {
             .find(|r| r.frame.id == 0x7AA)
             .expect("the evicted rare id reloads with its last value");
         assert_eq!(rare.frame.payload.data(), &[0xCD]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn flush_folds_and_persists_the_anchor_index_so_a_reload_is_current() {
+        // A restored capture's time→index anchors used to be folded from
+        // row zero on the first query after launch — every row of the
+        // capture, under the store lock. The flush cadence folds the
+        // delta and persists it, so a reload comes back with the index
+        // current and the first anchor query walks nothing.
+        let dir = std::env::temp_dir().join(format!("cannet-anchor-rl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        let rows = anchor::BLOCK * 2 + 5;
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            store.write_scratch_identity(Some(pid));
+            for i in 0..rows {
+                store.append(dummy((i as u64 + 1) * 1_000, 0x100));
+            }
+            assert_eq!(store.anchor_through(), 0, "nothing folded before a flush");
+            store.flush().unwrap();
+            assert_eq!(
+                store.anchor_through(),
+                anchor::BLOCK * 2,
+                "the flush folded the delta"
+            );
+            assert!(dir.join(anchor::ANCHOR_FILE).is_file());
+        }
+        let booted = TraceStore::new_disk(&dir).unwrap();
+        assert_eq!(booted.anchor_through(), 0);
+        assert!(booted.try_reload(pid).is_some(), "matching project reloads");
+        assert_eq!(
+            booted.anchor_through(),
+            anchor::BLOCK * 2,
+            "reloaded current"
+        );
+        assert_eq!(booted.frame_index_at_ns(1_500), 1);
+        // The Clear reset drops it with the rest of the derived state.
+        booted.start_session(0);
+        assert!(!dir.join(anchor::ANCHOR_FILE).exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 

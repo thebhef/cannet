@@ -642,9 +642,31 @@ impl TraceStore {
     /// and finishes with a bounded scan; see `anchor`.
     #[must_use]
     pub fn frame_index_at_ns(&self, ts: u64) -> usize {
+        self.fold_anchor_in_chunks(anchor::FOLD_BLOCKS_PER_HOLD);
         let mut inner = self.lock_inner();
         let Inner { raw, ts_anchor, .. } = &mut *inner;
         ts_anchor.frame_index_at_ns(raw.as_ref(), ts)
+    }
+
+    /// Bring the anchor index current, `blocks_per_hold` blocks per hold
+    /// of the store lock, releasing it between holds so live ingest and
+    /// every other reader interleave with a long fold instead of queueing
+    /// behind it. The fold is normally a few blocks (the flush cadence
+    /// keeps it current — see `anchor`); it is long only over a capture
+    /// restored from a scratch written before the index was persisted.
+    fn fold_anchor_in_chunks(&self, blocks_per_hold: usize) {
+        loop {
+            let mut inner = self.lock_inner();
+            let Inner { raw, ts_anchor, .. } = &mut *inner;
+            if ts_anchor.fold(raw.as_ref(), blocks_per_hold) {
+                return;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn anchor_through(&self) -> usize {
+        self.lock_inner().ts_anchor.through()
     }
 
     /// Wall-clock span of the buffered frames, in seconds: the timestamp
@@ -1135,6 +1157,34 @@ mod tests {
             "exact hit is the lower bound"
         );
         assert_eq!(store.frame_index_at_ns(99_000), 6, "after the last → len()");
+    }
+
+    #[test]
+    fn frame_index_at_ns_folds_the_anchor_index_a_chunk_per_lock_hold() {
+        // A query over a store whose anchor index is far behind — a
+        // capture restored from a scratch written before the index was
+        // persisted — must not hold the store lock for every row. The
+        // fold runs a bounded chunk per hold and the query itself only
+        // sees the remainder; the answers are the same as one fold.
+        let store = TraceStore::new();
+        let rows = anchor::BLOCK * 3 + 11;
+        for i in 0..rows {
+            let base = (i as u64 + 1) * 1_000;
+            store.append(dummy(if i % 5 == 4 { base - 2_500 } else { base }, 1));
+        }
+        assert_eq!(store.anchor_through(), 0, "nothing folded before a query");
+        store.fold_anchor_in_chunks(1);
+        assert_eq!(
+            store.anchor_through(),
+            anchor::BLOCK * 3,
+            "current after the chunks"
+        );
+        for ts in [0, 1_000, 2_048_000, 2_048_001, 3_083_000, u64::MAX] {
+            let reference = (0..rows)
+                .find(|&i| store.frame_timestamps(i, i + 1).0.is_some_and(|t| t >= ts))
+                .unwrap_or(rows);
+            assert_eq!(store.frame_index_at_ns(ts), reference, "ts {ts}");
+        }
     }
 
     #[test]

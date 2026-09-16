@@ -103,6 +103,7 @@ frames are present from the first append:
 | `by-id` index | as frames land | append-only mmap postings, extended per frame (DS-3). |
 | Filter index | when a filter is **active** | built lazily per predicate off `by-id`, dropped when the predicate changes (DS-3). |
 | Signal-cache pyramid | first **plot sample** of a signal | *derived*, lazy: built on demand from the raw frames, mmap'd (DS-5). Since [ADR 0047](0047-persisted-signal-pyramids.md) it carries a manifest and is reused across a relaunch when its validity key still matches; a mismatch rebuilds it from the reopened frames on serve, as before. |
+| Time→index anchor index | each **flush** | *derived*: the sampled prefix maxima of the timestamp column that make a time→index lookup a binary search over an arrival-ordered store ([ADR 0024](0024-trace-like-view-timing.md)), 8 B per 1024 rows. The flush tick folds a bounded slice of the rows appended since the last tick and appends the result to `anchor.bin`; a reopen reads it back, so a restored capture's first anchor query walks only the rows since the last flush, never the capture. |
 
 What is genuinely only in **RAM** is bounded and never capture-length: the
 recent-tail mirror (the DS-2 ring), the bus-intern table, and the small
