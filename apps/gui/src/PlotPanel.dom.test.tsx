@@ -727,6 +727,43 @@ async function withSizedCanvas(body: () => Promise<void>): Promise<void> {
   }
 }
 
+/// Wait out the mount of a panel whose areas have a sized canvas — up to
+/// and including the one-shot uPlot rebuild each of them owes, so a
+/// render count taken afterwards measures the gesture and nothing else.
+///
+/// Waiting for renders to go quiet cannot do this on its own. An area
+/// arms that rebuild from its uPlot construction effect, to fire 250 ms
+/// after the *last* run of that effect — and it renders nothing in
+/// between, so a loop that stops at the first quiet window settles
+/// inside the gap whenever the mount's own work happens to finish just
+/// before it. Whether it does is decided by how the mount's work divides
+/// into the loop's windows, i.e. by machine speed and load. Settling in
+/// the gap leaves the rebuilds to land in the middle of the measurement
+/// at two renders an area (the instance is destroyed, rebuilt and
+/// re-sampled), which is what a render-count assertion sees as an
+/// inexplicable multiple of what it asked for.
+///
+/// The rebuild is capped at one per area per panel lifetime, so it is
+/// something a test can wait *for* rather than around: once every area
+/// has taken its own, no delayed one-shot is left pending and a quiet
+/// window does mean the mount is done. `rebuiltBefore` is the counter
+/// read taken before the panel mounted; `areas` is how many areas will
+/// build an instance.
+async function settleMountedAreas(rebuiltBefore: number, areas: number): Promise<void> {
+  const counter = (k: string) => diagCounts().get(k) ?? 0;
+  await waitFor(
+    () => expect(counter("uplot.resizeTick.postMount") - rebuiltBefore).toBe(areas),
+    { timeout: 5000 },
+  );
+  for (let i = 0; i < 20; i++) {
+    const settled = counter("render.PlotArea");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    if (counter("render.PlotArea") === settled) break;
+  }
+}
+
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   uplotInstances.length = 0;
@@ -5799,20 +5836,16 @@ describe("PlotPanel signal-row selection", () => {
         },
         trace: { start: 0, end: 60, isPaused: false },
       });
-      renderPanel({ params: { elementId: "el-sel-memo" }, registry });
       const counter = (k: string) => diagCounts().get(k) ?? 0;
+      const rebuiltBefore = counter("uplot.resizeTick.postMount");
+      renderPanel({ params: { elementId: "el-sel-memo" }, registry });
       // Everything the mount kicks off asynchronously — the value-table
       // fetch, the first-sample wait, the settings hydration a previous
-      // test's teardown left in flight — re-renders the stack when it
-      // lands. Flush until a flush costs nothing, so the counts below
-      // measure the click and only the click.
-      for (let i = 0; i < 20; i++) {
-        const settled = counter("render.PlotArea");
-        await act(async () => {
-          await new Promise((r) => setTimeout(r, 60));
-        });
-        if (counter("render.PlotArea") === settled) break;
-      }
+      // test's teardown left in flight, and last of all each area's
+      // post-mount uPlot rebuild — re-renders the stack when it lands,
+      // so wait all of it out: the counts below measure the click and
+      // only the click.
+      await settleMountedAreas(rebuiltBefore, document.querySelectorAll(".plot-area").length);
 
       await act(async () => {
         clickRow("EngineSpeed", { ctrlKey: true }, "Area 1");
@@ -6598,30 +6631,21 @@ describe("PlotPanel diagnostic readouts", () => {
         id: "el-memo",
         trace: { start: 0, end: 60, isPaused: false },
       });
+      const rebuiltBefore = counter("uplot.resizeTick.postMount");
       renderPanel({ params: { elementId: "el-memo" }, registry });
       addFocusedSignal("EngineSpeed");
       fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
       await act(async () => dropSignal("Area 2", "EngineSpeed", "rpm"));
       // Past every mount-time one-shot each area schedules: the
-      // first-sample gate (`useFirstSampleWait`) and the once-per-area
-      // post-mount uPlot rebuild, whose trailing `requestAnimationFrame`
-      // re-sample is the one that used to land *after* the baseline read
-      // and read as a fan-out. A fixed sleep cannot drain it — the
-      // rebuild's commit only flushes when this `act` scope closes, so
-      // the animation frame it schedules is still pending however long
-      // the sleep was. Sleep past the timers, then flush until a flush
-      // costs nothing, the way the per-area render-scoping tests below
-      // do.
+      // first-sample gate (`useFirstSampleWait`), slept out here, and
+      // the once-per-area post-mount uPlot rebuild, which no sleep can
+      // bound — it is re-armed from the construction effect, so it fires
+      // 250 ms after the *last* run of that effect, not 250 ms after the
+      // mount. Wait for the rebuild itself.
       await act(async () => {
         await new Promise((r) => setTimeout(r, FIRST_SAMPLE_INDICATOR_MS + 100));
       });
-      for (let i = 0; i < 20; i++) {
-        const settled = counter("render.PlotArea");
-        await act(async () => {
-          await new Promise((r) => setTimeout(r, 60));
-        });
-        if (counter("render.PlotArea") === settled) break;
-      }
+      await settleMountedAreas(rebuiltBefore, document.querySelectorAll(".plot-area").length);
 
       const before = counter("render.PlotArea");
       // Purely panel-local: the toolbar context menu. No `PlotArea` prop
