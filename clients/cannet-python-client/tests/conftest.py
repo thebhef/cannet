@@ -114,7 +114,7 @@ def vbus_server() -> Iterator[str]:
 def replay_server() -> Iterator[str]:
     """`cannet-server debug replay`: the demo capture on a loop, streamed
     as fast as the consumer drains (the default `--rate 0`)."""
-    if not DEMO_BLF.is_file() or DEMO_BLF.stat().st_size < 1024:
-        pytest.skip(f"{DEMO_BLF} is missing or is an unfetched Git LFS pointer")
+    if not DEMO_BLF.is_file():
+        pytest.skip(f"{DEMO_BLF} is missing")
     with spawn_server("debug", "replay", str(DEMO_BLF)) as address:
         yield address
