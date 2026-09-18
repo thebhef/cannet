@@ -2,7 +2,7 @@
 //!
 //! A trimmed, Tauri-free version of the GUI host's sidecar launcher
 //! (`apps/gui/src-tauri/src/sidecar.rs`): run `uv --directory <pkg> run
-//! cannet-python-can`, keep its stdin open (closing it is the sidecar's
+//! cannet-local-sidecar`, keep its stdin open (closing it is the sidecar's
 //! shutdown signal), and parse the `sidecar\tlistening\t<addr>` banner
 //! from stdout to learn the gRPC address. Dropping [`SidecarProcess`]
 //! closes stdin and kills the child.
@@ -31,12 +31,12 @@ impl SidecarProcess {
         let mut child = Command::new("uv")
             .arg("--directory")
             .arg(&dir)
-            .args(["run", "cannet-python-can"])
+            .args(["run", "cannet-local-sidecar"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("spawning `uv run cannet-python-can`: {e}"))?;
+            .map_err(|e| format!("spawning `uv run cannet-local-sidecar`: {e}"))?;
 
         let stdin = child.stdin.take().ok_or("sidecar stdin unavailable")?;
         let stdout = child.stdout.take().ok_or("sidecar stdout unavailable")?;
@@ -78,14 +78,14 @@ impl Drop for SidecarProcess {
     }
 }
 
-/// Locate the `cannet-python-can` package directory: `CANNET_SIDECAR_DIR`
+/// Locate the `cannet-local-sidecar` package directory: `CANNET_SIDECAR_DIR`
 /// if set, else the workspace path relative to this crate's manifest.
 fn sidecar_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("CANNET_SIDECAR_DIR") {
         return Ok(PathBuf::from(dir));
     }
     let dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../servers/cannet-python-can");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../servers/cannet-local-sidecar");
     if dir.join("pyproject.toml").is_file() {
         Ok(dir)
     } else {

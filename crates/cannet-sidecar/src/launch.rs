@@ -44,7 +44,7 @@ pub(crate) enum LaunchPath {
     BundledUv,
     /// `uv` resolved through `PATH`.
     PathUv,
-    /// `python3 -m cannet_python_can` — last-resort fallback when
+    /// `python3 -m cannet_local_sidecar` — last-resort fallback when
     /// `uv` is not available.
     SystemPython,
 }
@@ -72,11 +72,11 @@ pub struct SidecarConfig {
     /// (ADR 0036).
     pub frozen_launcher: Option<PathBuf>,
     /// Prefer the editable sidecar source tree over the frozen binary.
-    /// Dev builds set this so edits to `servers/cannet-python-can` take
+    /// Dev builds set this so edits to `servers/cannet-local-sidecar` take
     /// effect on the next sidecar restart without re-freezing; release
     /// builds leave it `false` (ADR 0036).
     pub prefer_source_tree: bool,
-    /// Where the `cannet-python-can` package directory is, when the
+    /// Where the `cannet-local-sidecar` package directory is, when the
     /// host was told; `None` lets the walk-up from the host binary
     /// find it.
     pub sidecar_dir: Option<OsString>,
@@ -95,7 +95,7 @@ pub struct SidecarConfig {
 
 /// Pick between the frozen binary and the source tree, given what's
 /// actually resolvable. Dev builds prefer the editable source tree so
-/// edits to `servers/cannet-python-can` take effect on the next
+/// edits to `servers/cannet-local-sidecar` take effect on the next
 /// sidecar restart without re-freezing — the frozen artifact is
 /// bundled as a resource even in dev, and would otherwise shadow
 /// them. Release builds prefer the frozen binary (ADR 0036). Either
@@ -132,7 +132,7 @@ pub(crate) fn resolve_launch_path() -> Option<LaunchPath> {
 
 /// Build the `Command` for a given launch path. Pure; no spawning
 /// happens here. `sidecar_dir` is the absolute path to the
-/// `cannet-python-can` package directory — see [`resolve_sidecar_dir`]
+/// `cannet-local-sidecar` package directory — see [`resolve_sidecar_dir`]
 /// for how it is obtained.
 ///
 /// No `--bind` is passed: the sidecar's own default is `127.0.0.1:0`
@@ -145,19 +145,19 @@ pub(crate) fn build_command(launcher: LaunchPath, sidecar_dir: &Path) -> Command
         LaunchPath::BundledUv => {
             let mut cmd = Command::new(bundled_uv_path().expect("local uv pre-checked"));
             cmd.arg("--directory").arg(sidecar_dir);
-            cmd.args(["run", "cannet-python-can"]);
+            cmd.args(["run", "cannet-local-sidecar"]);
             cmd
         }
         LaunchPath::PathUv => {
             let mut cmd = Command::new("uv");
             cmd.arg("--directory").arg(sidecar_dir);
-            cmd.args(["run", "cannet-python-can"]);
+            cmd.args(["run", "cannet-local-sidecar"]);
             cmd
         }
         LaunchPath::SystemPython => {
             let mut cmd = Command::new(which_python().unwrap_or_else(|| PathBuf::from("python3")));
             cmd.env("PYTHONPATH", sidecar_dir);
-            cmd.args(["-m", "cannet_python_can"]);
+            cmd.args(["-m", "cannet_local_sidecar"]);
             cmd
         }
     }
@@ -170,9 +170,9 @@ pub(crate) fn build_command(launcher: LaunchPath, sidecar_dir: &Path) -> Command
 /// finish the path.
 pub fn frozen_launcher_name() -> &'static str {
     if cfg!(windows) {
-        "cannet-python-can.exe"
+        "cannet-local-sidecar.exe"
     } else {
-        "cannet-python-can"
+        "cannet-local-sidecar"
     }
 }
 
@@ -307,7 +307,7 @@ pub fn env_over_setting(var: &str, key: &str, env: Option<OsString>, setting: &s
     }
 }
 
-/// Resolve the absolute path to the `cannet-python-can` package
+/// Resolve the absolute path to the `cannet-local-sidecar` package
 /// directory, deliberately **independent of the host's CWD**.
 ///
 /// Resolution order (first hit wins):
@@ -318,9 +318,9 @@ pub fn env_over_setting(var: &str, key: &str, env: Option<OsString>, setting: &s
 ///    surface the resulting spawn failure.
 /// 2. **Walk up from the host binary's location** looking for
 ///    `pyproject.toml` under either:
-///    - `<ancestor>/servers/cannet-python-can/` (dev / `cargo build`
+///    - `<ancestor>/servers/cannet-local-sidecar/` (dev / `cargo build`
 ///      layouts — workspace root is somewhere above `target/`), or
-///    - `<ancestor>/cannet-python-can/` (production layout — the
+///    - `<ancestor>/cannet-local-sidecar/` (production layout — the
 ///      sidecar source sits next to the host binary inside the
 ///      bundle).
 ///
@@ -337,12 +337,12 @@ pub(crate) fn resolve_sidecar_dir(override_dir: Option<OsString>) -> Option<Path
     let mut cursor = exe.parent()?.to_path_buf();
     for _ in 0..8 {
         // Dev / workspace layout.
-        let nested = cursor.join("servers").join("cannet-python-can");
+        let nested = cursor.join("servers").join("cannet-local-sidecar");
         if nested.join("pyproject.toml").is_file() {
             return Some(nested);
         }
         // Production "next to the binary" layout.
-        let sibling = cursor.join("cannet-python-can");
+        let sibling = cursor.join("cannet-local-sidecar");
         if sibling.join("pyproject.toml").is_file() {
             return Some(sibling);
         }
@@ -361,7 +361,7 @@ fn sidecar_dir_search_summary() -> String {
         |p| p.display().to_string(),
     );
     format!(
-        "{SIDECAR_DIR_ENV} and the sidecar_dir setting (both unset) → walk up from {exe} looking for `servers/cannet-python-can/pyproject.toml` or `cannet-python-can/pyproject.toml`"
+        "{SIDECAR_DIR_ENV} and the sidecar_dir setting (both unset) → walk up from {exe} looking for `servers/cannet-local-sidecar/pyproject.toml` or `cannet-local-sidecar/pyproject.toml`"
     )
 }
 
@@ -466,7 +466,7 @@ pub fn resolve_command(host: &dyn SidecarHost) -> Option<(Command, String)> {
                 }
                 LaunchPath::SystemPython => host.log(
                     LogLevel::Warn,
-                    "uv not found; falling back to python3 -m cannet_python_can. Install uv for the supported flow.".to_string(),
+                    "uv not found; falling back to python3 -m cannet_local_sidecar. Install uv for the supported flow.".to_string(),
                 ),
             }
             host.log(
@@ -489,7 +489,7 @@ pub fn resolve_command(host: &dyn SidecarHost) -> Option<(Command, String)> {
             host.log(
                 LogLevel::Error,
                 format!(
-                    "could not locate the cannet-python-can package directory. Searched: {}",
+                    "could not locate the cannet-local-sidecar package directory. Searched: {}",
                     sidecar_dir_search_summary()
                 ),
             );
@@ -506,7 +506,7 @@ mod tests {
     /// `/tmp/...` is Unix-only, and `std::env::temp_dir()` returns an
     /// absolute path on every supported OS.
     fn sample_sidecar_dir() -> PathBuf {
-        std::env::temp_dir().join("cannet-python-can")
+        std::env::temp_dir().join("cannet-local-sidecar")
     }
 
     #[test]
@@ -580,19 +580,19 @@ mod tests {
     #[test]
     fn frozen_launcher_name_matches_target_os_suffix() {
         #[cfg(windows)]
-        assert_eq!(frozen_launcher_name(), "cannet-python-can.exe");
+        assert_eq!(frozen_launcher_name(), "cannet-local-sidecar.exe");
         #[cfg(not(windows))]
-        assert_eq!(frozen_launcher_name(), "cannet-python-can");
+        assert_eq!(frozen_launcher_name(), "cannet-local-sidecar");
     }
 
     fn frozen_path() -> PathBuf {
-        PathBuf::from("/res/cannet-python-can/launcher")
+        PathBuf::from("/res/cannet-local-sidecar/launcher")
     }
 
     fn source_tree() -> (LaunchPath, PathBuf) {
         (
             LaunchPath::BundledUv,
-            PathBuf::from("/repo/servers/cannet-python-can"),
+            PathBuf::from("/repo/servers/cannet-local-sidecar"),
         )
     }
 

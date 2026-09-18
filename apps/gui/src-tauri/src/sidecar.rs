@@ -1,6 +1,6 @@
 //! Vendor-driver sidecar lifecycle, GUI-host side.
 //!
-//! At startup the host spawns the `cannet-python-can` sidecar (a
+//! At startup the host spawns the `cannet-local-sidecar` sidecar (a
 //! Python process that uses `python-can` to enumerate Vector,
 //! Kvaser, and PEAK hardware). The sidecar speaks the same `.proto`
 //! as `cannet-server`; supervising it — spawning, parsing its banner,
@@ -114,7 +114,7 @@ fn frozen_launcher_path(app: &AppHandle) -> Option<PathBuf> {
         .path()
         .resource_dir()
         .ok()?
-        .join("cannet-python-can")
+        .join("cannet-local-sidecar")
         .join(cannet_sidecar::frozen_launcher_name());
     launcher.is_file().then_some(launcher)
 }
@@ -144,7 +144,7 @@ fn sidecar_log_file(app: &AppHandle) -> Option<PathBuf> {
     Some(dir.join(SIDECAR_LOG_FILE))
 }
 
-/// Where to look for the `cannet-python-can` package: the
+/// Where to look for the `cannet-local-sidecar` package: the
 /// [`cannet_sidecar::SIDECAR_DIR_ENV`] variable, else the `sidecar_dir`
 /// setting, else nowhere (the shared crate's walk-up applies).
 fn sidecar_dir_override() -> Resolved {

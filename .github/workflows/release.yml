@@ -12,7 +12,7 @@ name: Release
 #      Each bundle *contains* `cannet-server`, staged as a resource
 #      beside the frozen sidecar it supervises, and each leg
 #      additionally packs a `cannet-server-vX.Y.Z-<target>` archive
-#      (the same server binary + the same `cannet-python-can` onedir)
+#      (the same server binary + the same `cannet-local-sidecar` onedir)
 #      beside the GUI bundle — plus a native server installer (macOS
 #      `.pkg`, Windows NSIS `.exe`), and
 #   4. builds a Linux x64 `cannet-server` archive and `.deb` on its own
@@ -218,7 +218,7 @@ jobs:
         with:
           version: "0.9.21"
           enable-cache: true
-          cache-dependency-glob: servers/cannet-python-can/uv.lock
+          cache-dependency-glob: servers/cannet-local-sidecar/uv.lock
 
       # Guard the invariant the commit-then-tag step exists for: whatever
       # a release runner ends up writing before the bundle build, the
@@ -279,10 +279,10 @@ jobs:
           args: ${{ matrix.args }}
 
       # The Tauri build above just froze this runner's
-      # `cannet-python-can` onedir as a bundle resource (ADR 0036); the
+      # `cannet-local-sidecar` onedir as a bundle resource (ADR 0036); the
       # server archive reuses that exact artifact rather than freezing
       # a second time. Archive layout: the onedir sits beside the
-      # binary as `cannet-python-can/`, which is where
+      # binary as `cannet-local-sidecar/`, which is where
       # `cannet-server`'s own discovery looks
       # (`crates/cannet-server/src/main.rs`), not `sidecar/`.
       - name: Package server archive (macOS tar.gz)
@@ -293,7 +293,7 @@ jobs:
           STAGE="$RUNNER_TEMP/$NAME"
           mkdir -p "$STAGE"
           cp "target/${{ matrix.rust-target }}/release/cannet-server" "$STAGE/"
-          cp -R apps/gui/src-tauri/sidecar-dist/cannet-python-can "$STAGE/cannet-python-can"
+          cp -R apps/gui/src-tauri/sidecar-dist/cannet-local-sidecar "$STAGE/cannet-local-sidecar"
           tar -czf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
           echo "SERVER_ARCHIVE_PATH=$RUNNER_TEMP/$NAME.tar.gz" >> "$GITHUB_ENV"
 
@@ -316,17 +316,17 @@ jobs:
         run: |
           set -euo pipefail
           BIN="target/${{ matrix.rust-target }}/release/cannet-server"
-          ONEDIR="apps/gui/src-tauri/sidecar-dist/cannet-python-can"
+          ONEDIR="apps/gui/src-tauri/sidecar-dist/cannet-local-sidecar"
           for input in "$BIN" "$ONEDIR"; do
             [ -e "$input" ] || { echo "::error::$input is missing; the pkg would ship without it"; exit 1; }
           done
           PREFIX="$RUNNER_TEMP/pkgroot/usr/local/cannet-server"
           mkdir -p "$PREFIX" "$RUNNER_TEMP/pkgroot/etc/paths.d"
           cp "$BIN" "$PREFIX/"
-          cp -R "$ONEDIR" "$PREFIX/cannet-python-can"
+          cp -R "$ONEDIR" "$PREFIX/cannet-local-sidecar"
           echo "/usr/local/cannet-server" > "$RUNNER_TEMP/pkgroot/etc/paths.d/cannet-server"
           [ -x "$PREFIX/cannet-server" ] || { echo "::error::the staged server lost its exec bit"; exit 1; }
-          [ -x "$PREFIX/cannet-python-can/cannet-python-can" ] || { echo "::error::the staged sidecar launcher lost its exec bit"; exit 1; }
+          [ -x "$PREFIX/cannet-local-sidecar/cannet-local-sidecar" ] || { echo "::error::the staged sidecar launcher lost its exec bit"; exit 1; }
           PKG="$RUNNER_TEMP/cannet-server-${{ steps.ver.outputs.tag }}-${{ matrix.rust-target }}.pkg"
           pkgbuild \
             --root "$RUNNER_TEMP/pkgroot" \
@@ -351,7 +351,7 @@ jobs:
           $Stage = Join-Path $env:RUNNER_TEMP $Name
           New-Item -ItemType Directory -Path $Stage | Out-Null
           Copy-Item "target/${{ matrix.rust-target }}/release/cannet-server.exe" -Destination $Stage
-          Copy-Item -Recurse "apps/gui/src-tauri/sidecar-dist/cannet-python-can" -Destination (Join-Path $Stage "cannet-python-can")
+          Copy-Item -Recurse "apps/gui/src-tauri/sidecar-dist/cannet-local-sidecar" -Destination (Join-Path $Stage "cannet-local-sidecar")
           $ArchivePath = Join-Path $env:RUNNER_TEMP "$Name.zip"
           Compress-Archive -Path $Stage -DestinationPath $ArchivePath
           "SERVER_ARCHIVE_PATH=$ArchivePath" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -469,14 +469,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # uv provisions the CPython pinned by
-      # servers/cannet-python-can/.python-version and the sidecar's
+      # servers/cannet-local-sidecar/.python-version and the sidecar's
       # locked deps for the freeze below (ADR 0036) — the same setup
       # the other legs use for their own freeze.
       - uses: astral-sh/setup-uv@v8.3.2
         with:
           version: "0.9.21"
           enable-cache: true
-          cache-dependency-glob: servers/cannet-python-can/uv.lock
+          cache-dependency-glob: servers/cannet-local-sidecar/uv.lock
 
       - name: Freeze the python-can sidecar
         run: uv run --no-project scripts/build-sidecar.py
@@ -495,7 +495,7 @@ jobs:
           STAGE="$RUNNER_TEMP/$NAME"
           mkdir -p "$STAGE"
           cp "target/$RUST_TARGET/release/cannet-server" "$STAGE/"
-          cp -R apps/gui/src-tauri/sidecar-dist/cannet-python-can "$STAGE/cannet-python-can"
+          cp -R apps/gui/src-tauri/sidecar-dist/cannet-local-sidecar "$STAGE/cannet-local-sidecar"
           tar -czf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
           echo "SERVER_ARCHIVE_PATH=$RUNNER_TEMP/$NAME.tar.gz" >> "$GITHUB_ENV"
 

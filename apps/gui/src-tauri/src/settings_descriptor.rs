@@ -735,7 +735,7 @@ const DESCRIPTORS: &[Spec] = &[
         surfaces: &[Surface::Connection],
         kind: Kind::Developer,
         control: Control::Text {
-            placeholder: Some("cannet_python_can.driver_python_can"),
+            placeholder: Some("cannet_local_sidecar.driver_python_can"),
         },
     },
     Spec {

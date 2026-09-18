@@ -128,7 +128,7 @@ data path.
 - Kill the process tree afterwards: a leaked host holds the dongles,
   and the next run measures an idle bus. **Kill only what you
   started** — never a `cannet-gui`, `cannet-server` or
-  `cannet-python-can` you did not launch.
+  `cannet-local-sidecar` you did not launch.
 - **The dongles are shared informally, and the owner wins.** They run
   their own cannet on this machine and will sometimes be holding the
   hardware. A capture reading `fps 0` or `rx_gap: null` is usually

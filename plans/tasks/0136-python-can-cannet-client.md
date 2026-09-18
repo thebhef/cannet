@@ -216,7 +216,7 @@ consumer. The sidecar's `driver.py` re-exports `Frame` / `FrameKind`,
 because they are still part of the driver-adapter contract an
 alternative-driver author reads.
 
-**Dependencies.** The client drops `cannet-python-can` entirely; both
+**Dependencies.** The client drops `cannet-local-sidecar` entirely; both
 consumers take a path dependency on `../../libs/cannet-python-wire`.
 Wire declares `grpcio` / `protobuf` / `python-can`; `grpcio-tools`
 moves to its dev extra with the regen script. Nothing third-party was

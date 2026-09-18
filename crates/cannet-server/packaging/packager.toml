@@ -39,11 +39,11 @@ outDir = "../../../target/packager"
 path = "cannet-server"
 main = true
 
-# Lands as `<installdir>\cannet-python-can\`, i.e. beside the installed
+# Lands as `<installdir>\cannet-local-sidecar\`, i.e. beside the installed
 # binary, which is where `cannet-server`'s own sidecar probe looks.
 [[resources]]
-src = "../../../apps/gui/src-tauri/sidecar-dist/cannet-python-can"
-target = "cannet-python-can"
+src = "../../../apps/gui/src-tauri/sidecar-dist/cannet-local-sidecar"
+target = "cannet-local-sidecar"
 
 [nsis]
 installMode = "currentUser"
@@ -125,7 +125,7 @@ SectionEnd
 ; has succeeded — an uninstall that aborts (the app is still running)
 ; must not have had the directory pulled out from under it first.
 Function un.onUninstSuccess
-  RMDir /r "$INSTDIR\cannet-python-can"
+  RMDir /r "$INSTDIR\cannet-local-sidecar"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "${MANUPRODUCTKEY}"
   DeleteRegKey /ifempty HKCU "Software\${MANUFACTURER}"

@@ -10,7 +10,7 @@ no license text lives in the repo.
 Run inside the sidecar's pinned ``uv`` environment so ``importlib.metadata``
 sees exactly the frozen dependency set::
 
-    uv run --project servers/cannet-python-can --frozen python scripts/gen-licenses.py
+    uv run --project servers/cannet-local-sidecar --frozen python scripts/gen-licenses.py
 
 All paths anchor on this file, never the cwd, so the run is reproducible
 regardless of where it is invoked from. Nothing is fetched over the

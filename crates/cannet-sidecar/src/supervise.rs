@@ -251,7 +251,7 @@ impl SidecarSupervisor {
         // the child; we never write to it. When the host process dies
         // (clean exit, panic, OS kill, …), the OS closes the pipe and
         // the sidecar's stdin-EOF watcher (see
-        // `cannet_python_can.__main__._install_stdin_eof_watcher`) reads
+        // `cannet_local_sidecar.__main__._install_stdin_eof_watcher`) reads
         // EOF and triggers its own graceful shutdown; a deliberate
         // [`SidecarSupervisor::stop`] closes the same pipe by hand.
         // Without this, a host crash would leave an orphaned sidecar

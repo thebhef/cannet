@@ -1,6 +1,6 @@
 //! Vendor-driver sidecar lifecycle, shared by every host that runs one.
 //!
-//! The `cannet-python-can` sidecar is a Python process that uses
+//! The `cannet-local-sidecar` sidecar is a Python process that uses
 //! `python-can` to enumerate Vector, Kvaser, and PEAK hardware and
 //! serves the same `.proto` as `cannet-server`. Any cannet process that
 //! wants local hardware spawns one and supervises it; this crate is
@@ -52,7 +52,7 @@
 //!   artifact embeds its own `CPython` and dependencies, so it runs
 //!   with no `uv`, no Python, and no sidecar-directory resolution.
 //! - **Dev builds prefer the sidecar source tree**, so edits to
-//!   `servers/cannet-python-can` take effect on the next sidecar
+//!   `servers/cannet-local-sidecar` take effect on the next sidecar
 //!   restart without re-running `scripts/build-sidecar.py` — the
 //!   frozen artifact is shipped in dev too and would otherwise shadow
 //!   live source.
@@ -65,7 +65,7 @@
 //!    populates this path for dev builds. The runtime contract —
 //!    "look here first" — is stable regardless of who wrote the file.
 //! 2. **`uv` on `PATH`** — the developer-machine fallback.
-//! 3. **`python3 -m cannet_python_can`** — last resort if `uv` is
+//! 3. **`python3 -m cannet_local_sidecar`** — last resort if `uv` is
 //!    not installed at all. Logs a warn-level line so the user knows
 //!    to install `uv` for full functionality.
 //!
@@ -88,7 +88,7 @@
 //! It keeps the write end open for the child's lifetime; when the host
 //! process exits (clean or not), the OS closes the pipe and the
 //! sidecar's stdin-EOF watcher
-//! (`cannet_python_can.__main__._install_stdin_eof_watcher`)
+//! (`cannet_local_sidecar.__main__._install_stdin_eof_watcher`)
 //! gracefully stops the gRPC server. That cross-platform "your parent
 //! went away" contract is why a host crash never leaves an orphaned
 //! sidecar holding hardware open — no `prctl(PR_SET_PDEATHSIG)` /
@@ -167,7 +167,7 @@ pub trait SidecarHost: Send + Sync + 'static {
 }
 
 /// The log source tag every sidecar event should be published under.
-/// Must match `cannet_python_can.server.WIRE_SOURCE` in the Python
+/// Must match `cannet_local_sidecar.server.WIRE_SOURCE` in the Python
 /// sidecar so an in-band `LogMessage` envelope from the sidecar later
 /// ends up under the same filter as the process-level lifecycle events.
 pub const SOURCE: &str = "sidecar:python-can";

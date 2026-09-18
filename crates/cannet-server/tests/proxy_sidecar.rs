@@ -1,4 +1,4 @@
-//! The production proxy against the **real** `cannet-python-can`
+//! The production proxy against the **real** `cannet-local-sidecar`
 //! sidecar (ADR 0040) — the one thing `tests/proxy.rs` cannot show,
 //! because it stands an in-process server in for the sidecar.
 //!
