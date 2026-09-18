@@ -19,10 +19,14 @@ import shutil
 import socket
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
+import grpc
 import pytest
+from cannet_python_wire import PROTOCOL_PACKAGE
+from cannet_python_wire._proto import cannet_info_pb2 as info_pb
+from cannet_python_wire._proto import cannet_info_pb2_grpc as info_grpc
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -31,6 +35,34 @@ DEMO_BLF = REPO_ROOT / "examples" / "cannet-demo.blf"
 
 #: How long a freshly spawned server gets to accept a connection.
 STARTUP_TIMEOUT_S = 30.0
+
+
+class FakeServerInfo(info_grpc.CannetInfoServicer):
+    """``ServerInfo`` answering with whatever package list it was built
+    with — the only way to stand up a server from a protocol major this
+    repository does not implement (ADR 0059)."""
+
+    def __init__(self, packages: Sequence[str] = (PROTOCOL_PACKAGE,)) -> None:
+        self._packages = list(packages)
+
+    def ServerInfo(  # noqa: N802 — the gRPC method name is the wire's
+        self, request: info_pb.ServerInfoRequest, context: grpc.ServicerContext
+    ) -> info_pb.ServerInfoResponse:
+        return info_pb.ServerInfoResponse(
+            packages=self._packages, version="v0.0.0-test", instance_name="fake"
+        )
+
+
+def add_server_info(
+    server: grpc.Server, packages: Sequence[str] = (PROTOCOL_PACKAGE,)
+) -> None:
+    """Mount ``ServerInfo`` on an in-process fake.
+
+    Every connection this client makes asks it first (ADR 0059), so a
+    fake without it is one nothing here can reach — it fails with
+    ``UNIMPLEMENTED`` before the test's own subject is exercised.
+    """
+    info_grpc.add_CannetInfoServicer_to_server(FakeServerInfo(packages), server)
 
 
 def server_binary() -> Path | None:

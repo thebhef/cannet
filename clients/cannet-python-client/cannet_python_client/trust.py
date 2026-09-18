@@ -1,10 +1,23 @@
-"""The server trust store, as a read contract.
+"""The server trust store.
 
-``servers.json`` is written by the cannet GUI and read here. It is the
-machine's record of which servers have been accepted and what to
-present to them, and this package never writes it: a first-contact
-decision needs a human to compare a fingerprint against what the
-server printed, and a library has nobody to ask.
+``servers.json`` is the machine's record of which servers have been
+accepted and what to present to them. The cannet GUI writes it and owns
+its schema; this package is its **second writer**, through the
+``cannet-client`` command line, which puts the same acceptance workflow
+in front of an operator on a machine with no GUI. Every client on the
+machine inherits whichever of the two wrote the decision.
+
+Importing this module for the library's own use writes nothing: a
+first-contact decision needs a human to compare a fingerprint against
+what the server printed, so it is the command line — which has someone
+to ask — that calls :func:`accept_fingerprint` and
+:func:`accept_insecure`.
+
+Because the GUI owns the document and may grow fields, a write here is
+additive: the entry being edited and every other entry keep whatever
+they already carried, including keys this build has never heard of, and
+the file is replaced by temp-file + rename so a crash mid-write cannot
+leave one that parses as "nothing is trusted".
 
 Location
 ========
@@ -78,7 +91,7 @@ import ipaddress
 import json
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -104,10 +117,10 @@ class TrustError(Exception):
 class ServerNotTrusted(TrustError):
     """Nothing is stored for this server, and it is not loopback.
 
-    The GUI answers first contact with a dialog that shows the
-    fingerprint the server presented. There is no library equivalent —
-    accept the server in the GUI once, and every client on the machine
-    inherits the decision.
+    First contact is answered by a person comparing the fingerprint the
+    server presented against the one it printed — the GUI's dialog, or
+    ``cannet-client connect``. There is no library equivalent, and
+    either acceptance is inherited by every client on the machine.
     """
 
 
@@ -275,8 +288,12 @@ def read_servers(path: Path | str | None = None) -> dict[str, TrustEntry]:
     return entries
 
 
-def _match_key(server: str, servers: Mapping[str, TrustEntry]) -> str | None:
-    """The stored key ``server`` names, or ``None`` for no match."""
+def match_key(server: str, servers: Mapping[str, TrustEntry]) -> str | None:
+    """The stored key ``server`` names, or ``None`` for no match.
+
+    A bare name matches the one entry stored for it; an address matches
+    only itself.
+    """
     key = server_key(server)
     if key in servers:
         return key
@@ -307,7 +324,7 @@ def resolve(
     a non-loopback address.
     """
     store = read_servers(path) if servers is None else servers
-    key = _match_key(server, store)
+    key = match_key(server, store)
     address = key if key is not None else server_key(server)
     entry = store.get(key) if key is not None else None
 
@@ -331,6 +348,130 @@ def resolve(
         return ServerTarget(address=address)
     raise ServerNotTrusted(
         f"nothing is stored for {address!r} in {servers_file()}; "
-        "accept the server in the cannet GUI once and every client on "
-        "this machine inherits the decision"
+        f"accept it once (`cannet-client connect {address}`, or the cannet "
+        "GUI's Servers panel) and every client on this machine inherits "
+        "the decision"
     )
+
+
+# --- writing ----------------------------------------------------------
+
+
+def _document(path: Path) -> dict[str, Any]:
+    """The file exactly as it is, or an empty document.
+
+    Deliberately the raw JSON rather than :func:`read_servers`' parsed
+    entries: a write has to put back what it did not touch, and what it
+    did not touch includes keys this build does not know about.
+    """
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return dict(document) if isinstance(document, Mapping) else {}
+
+
+def _write(path: Path, document: Mapping[str, Any]) -> None:
+    """Replace ``path`` with ``document``, atomically.
+
+    Temp sibling + rename, matching the GUI's own writer byte for byte
+    in layout (two-space indent), so the two writers do not reformat the
+    file back and forth under each other.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _servers_of(document: Mapping[str, Any]) -> dict[str, Any]:
+    raw = document.get("servers")
+    return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def _update(
+    address: str, edit: Callable[[dict[str, Any]], None], path: Path | str | None
+) -> str:
+    """Apply ``edit`` to ``address``'s entry and write the file back,
+    returning the key the entry is filed under.
+
+    Every other entry, every other key on this entry, and anything
+    beside ``servers`` at the top level is carried across untouched. An
+    entry the edit empties is removed, so nothing is left behind that
+    says nothing.
+    """
+    target = Path(path) if path is not None else servers_file()
+    document = _document(target)
+    servers = _servers_of(document)
+    key = server_key(address)
+    existing = servers.get(key)
+    entry: dict[str, Any] = dict(existing) if isinstance(existing, Mapping) else {}
+    edit(entry)
+    if entry:
+        servers[key] = entry
+    else:
+        servers.pop(key, None)
+    document["servers"] = servers
+    _write(target, document)
+    return key
+
+
+def accept_fingerprint(
+    address: str,
+    fingerprint: str,
+    token: str | None = None,
+    *,
+    path: Path | str | None = None,
+) -> str:
+    """Pin ``fingerprint`` for ``address``, storing ``token`` alongside.
+
+    The write behind trust-on-first-use and behind re-accepting an
+    identity that changed: in either case a person has just compared the
+    string against the one the server printed, so it replaces whatever
+    was pinned before. It also clears any earlier "connect without
+    protection" choice — the server is reachable over TLS after all.
+
+    An empty or absent ``token`` leaves whatever is stored alone; a
+    server that needs no credential simply has none.
+    """
+
+    def edit(entry: dict[str, Any]) -> None:
+        entry["fingerprint"] = fingerprint
+        entry.pop("insecure", None)
+        if token:
+            entry["token"] = token
+
+    return _update(address, edit, path)
+
+
+def accept_insecure(address: str, *, path: Path | str | None = None) -> str:
+    """Record that the operator chose to reach ``address`` unprotected.
+
+    The client-side mirror of the server's own ``--no-tls``: it exists
+    only as a stored answer to an explicit question, is scoped to one
+    server, and drops any pin and token, because a credential must never
+    ride an unencrypted channel (ADR 0041).
+    """
+
+    def edit(entry: dict[str, Any]) -> None:
+        entry["insecure"] = True
+        entry.pop("fingerprint", None)
+        entry.pop("token", None)
+
+    return _update(address, edit, path)
+
+
+def forget(address: str, *, path: Path | str | None = None) -> bool:
+    """Drop everything stored for ``address``, reporting whether there
+    was anything to drop.
+
+    The next connection to it starts over at trust on first use. A
+    server nothing is stored for is not an error and is not a write:
+    there is no file to create in order to record an absence.
+    """
+    target = Path(path) if path is not None else servers_file()
+    document = _document(target)
+    if server_key(address) not in _servers_of(document):
+        return False
+    _update(address, lambda entry: entry.clear(), target)
+    return True

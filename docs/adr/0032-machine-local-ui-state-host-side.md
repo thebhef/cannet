@@ -53,6 +53,16 @@ applies equally to all of them.
   unchanged.
 - **No migration** (per ADR 0011): old `localStorage` values are not
   read; recents and the pointer regenerate as the user works.
+- **The GUI is not the only writer of this directory** (2026-09-18).
+  Per-server trust (`servers.json`, the pin, the token and any
+  unprotected choice — [ADR 0041](0041-remote-connection-security.md))
+  is also written by the `cannet-client` command in
+  [`clients/cannet-python-client`](../../clients/cannet-python-client),
+  so a machine with no GUI on it can accept a server. That is what
+  "machine-local" was always for: the state belongs to the machine, not
+  to the application that happened to write it. A writer that is not
+  the GUI keeps what it does not understand — the GUI owns the schema
+  and may grow fields.
 
 ## Rejected alternatives
 

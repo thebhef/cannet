@@ -50,6 +50,16 @@ transport security under it via tonic's `tls` feature (rustls).
   sidecars remain loopback-plaintext — a payoff of the single-endpoint
   proxy (ADR 0040). The GUI's local fast path is untouched.
 
+*Amended 2026-09-18:* the acceptance workflow is no longer the GUI's
+alone. The `cannet-client` command in
+[`clients/cannet-python-client`](../../clients/cannet-python-client)
+runs the same four paths on a terminal — fingerprint compared against
+the startup banner, token entered, choice stored — so a machine with no
+GUI on it can accept a server. It is a second writer of the same
+per-machine store, not a second policy: the rules above are unchanged,
+and whichever surface accepted a server, every client on the machine
+inherits the decision.
+
 ## Why
 
 **TOFU over a CA requirement.** Requiring operators to provision

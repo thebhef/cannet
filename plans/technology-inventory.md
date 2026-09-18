@@ -246,6 +246,25 @@ without reshaping callers.
   direct dependents. Exercised in a two-process spike on Windows 11;
   the Task 43 status log carries the measured latencies and the
   event-shape notes the implementation has to honour.
+- **`python-zeroconf` 0.151** (Python, LGPL-2.1-or-later, imported as
+  `zeroconf`) — `adopted` (Task 144) as the **browse-only** mDNS stack
+  for the `cannet-client` command in
+  [`../clients/cannet-python-client`](../clients/cannet-python-client),
+  whose `list` and name lookup have to see the same `_cannet._tcp`
+  instances the GUI's browse sees. Not the Rust crate of the same name
+  rejected below — this is the pure-Python responder/querier, no native
+  stack and no third-party runtime install, and it is what python-can's
+  own ecosystem already uses for discovery. One transitive dependency
+  (`ifaddr`, MIT). **It is never used to register a service**: a client
+  that advertised would put instances on the subnet nothing can connect
+  to, so only `ServiceBrowser` and `get_service_info` are called, and
+  the test suite fakes both rather than binding a multicast socket.
+  LGPL is the sidecar's situation, not this one: the client package is
+  installed from source into a developer's environment, never frozen
+  into a redistributed artifact, so no Combined Work is produced.
+  **Rejected alternative:** parsing the GUI's browse results out of
+  some exported file — there is no such file, and a sidecar file to
+  carry one is exactly what ADR 0010 forbids.
 - **`libmdns` 0.10** (Rust, MIT) — `rejected` (Task 43).
   Register-only: no querier surface at all, so adopting it would
   still leave the GUI needing `mdns-sd`, and the GUI-plus-sidecar
@@ -257,7 +276,8 @@ without reshaping callers.
   `mdns-sd`'s active cadence. It also always answers with the real
   system hostname unless the `_and_hostname` constructor variant is
   used, which is one more thing to get right for no gain.
-- **`zeroconf`** (Rust, FFI) — `rejected` (Task 43). Covers register
+- **`zeroconf`** (Rust, FFI — the crate, not the Python package
+  adopted above) — `rejected` (Task 43). Covers register
   and browse, but binds native stacks: Avahi on Linux, Apple's
   Bonjour / `mDNSResponder` on Windows and macOS. Windows does not
   ship Bonjour, so adopting it would add a third-party runtime

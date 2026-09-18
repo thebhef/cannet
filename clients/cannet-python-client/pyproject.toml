@@ -11,12 +11,14 @@ license = { text = "MIT" }
 # and the `can.Message` <-> wire `Frame` mappers live, and depending on
 # it is what keeps exactly one encoding of the wire in this repository:
 # a second copy here could only drift. It drags in `grpcio`,
-# `protobuf` and `python-can`, which is the whole of what this package
-# needs at runtime, so nothing else is declared. The sidecar — the
-# *server* that exposes local hardware — is a sibling consumer of the
-# same package, and nothing here depends on it.
+# `protobuf` and `python-can`, which is everything this package needs
+# to speak the wire. The sidecar — the *server* that exposes local
+# hardware — is a sibling consumer of the same package, and nothing
+# here depends on it. `zeroconf` is the only other runtime dep: it is
+# what `cannet-client browse` looks for servers with.
 dependencies = [
     "cannet-python-wire",
+    "zeroconf>=0.151.3",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +40,11 @@ cannet-python-wire = { path = "../../libs/cannet-python-wire" }
 # `uv run` rather than off a bare `sys.path` entry.
 [project.entry-points."can.interface"]
 cannet = "cannet_python_client.bus:CannetBus"
+
+# The acceptance workflow — browse, compare a fingerprint, store the
+# decision — for a machine with no GUI on it.
+[project.scripts]
+cannet-client = "cannet_python_client.cli:run"
 
 [build-system]
 requires = ["hatchling"]

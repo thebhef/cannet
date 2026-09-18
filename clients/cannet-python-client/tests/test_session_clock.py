@@ -21,6 +21,8 @@ from cannet_python_wire._proto import cannet_pb2_grpc as pb_grpc
 from cannet_python_client import clock, trust
 from cannet_python_client.session import Session
 
+from conftest import add_server_info  # noqa: E402 - pytest rootdir
+
 FACTORY = "virtual:bus0"
 
 
@@ -85,6 +87,9 @@ def silent_clock_server() -> Iterator[tuple[str, int]]:
     pb_grpc.add_CannetServerServicer_to_server(
         _SilentClockServicer("fake:0", raw_timestamp_ns), server
     )
+    # Every connection asks `ServerInfo` first (ADR 0059); a fake
+    # without it is refused before this test's own subject is reached.
+    add_server_info(server)
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     try:
