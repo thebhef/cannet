@@ -25,12 +25,13 @@ interface id that server publishes. Everything `BusABC` promises works:
 
 ## Naming a server
 
-The library reads the cannet GUI's **server trust store** — the record
-of which servers this machine has accepted, and what to present to
-them. It never writes it: accepting a server means comparing a
-certificate fingerprint against the one the server printed, and only a
-person can do that. Accept the server once in the GUI's Servers panel
-and every client on the machine inherits the decision.
+The library reads the machine's **server trust store** — the record of
+which servers this machine has accepted, and what to present to them.
+The library itself never writes it: accepting a server means comparing
+a certificate fingerprint against the one the server printed, and only
+a person can do that. Accept a server once — in the cannet GUI's
+Servers panel, or with the `cannet-client` command below — and every
+client on the machine inherits the decision.
 
 ### Where the file is
 
@@ -76,7 +77,8 @@ an entry is optional:
 The key is the address with any `scheme://` removed and lower-cased. A
 server that moves is a different entry: a pin vouches for an identity
 *at an address*. Unknown keys are ignored — the GUI owns this document
-and may grow fields.
+and may grow fields, and a `cannet-client` write keeps every key it
+finds, on the entry it is editing and on every other.
 
 ### How a name becomes a connection
 
@@ -91,8 +93,9 @@ exactly one entry for it. The plan is the GUI's own (ADR 0041):
 - only a server with nothing pinned may use a stored `insecure`
   choice, and a plaintext target carries no token, because a
   credential never rides an unencrypted channel;
-- anything else raises `ServerNotTrusted`. The GUI answers first
-  contact with a dialog; a library has nobody to ask.
+- anything else raises `ServerNotTrusted`. First contact is answered by
+  a person — the GUI's dialog, or `cannet-client connect` below; a
+  library has nobody to ask.
 
 Pinning is by certificate: the library fetches the server's
 certificate, checks its SHA-256 against the accepted fingerprint, and
@@ -156,19 +159,76 @@ A server that is off, unreachable, or refuses the handshake — including
 one nothing is trusted for yet — contributes nothing rather than
 failing the scan; `can.Bus(**config)` opens the bus it named.
 
+## `cannet-client` — accepting a server without the GUI
+
+The package ships a console script that does what the GUI's Servers
+panel does, for a machine that has no GUI on it. It writes the same
+`servers.json`, so a server accepted here is a server every client on
+the machine can open a bus on.
+
+```sh
+cannet-client list                 # what is out there, and what is accepted
+cannet-client connect bench        # reach one, accepting it if it is new
+cannet-client forget bench:50051   # drop its pin, token and choices
+```
+
+**`list`** browses `_cannet._tcp` for a few seconds (`--timeout`) and
+lays the result over the trust store, one row per server:
+
+```text
+NAME     ADDRESS             TRUST        PRESENCE
+bench    192.168.1.10:50051  trusted      advertising
+-        old-rig:50051       unprotected  not answering
+rig-2    192.168.1.11:50051  new          advertising
+```
+
+A server that has been accepted is a row whether or not it is
+answering — forgetting one must not require waiting for it to come
+back. The browse only ever *listens*: this package never advertises a
+service of its own.
+
+**`connect`** takes a `host:port`, or a name — of a server already
+accepted, or one currently advertising. It runs the same four paths the
+GUI runs (ADR 0041):
+
+| What is stored | What happens |
+| -------------- | ------------ |
+| loopback address | plaintext, no questions |
+| a pinned fingerprint | TLS verified against it, the stored token on every RPC |
+| nothing | the observed `SHA256:…` is printed for you to compare against the server's startup banner; accepting it asks for the banner's token, and stores both |
+| an endpoint not speaking TLS | it asks, in as many words, whether to connect without protection — never a silent fallback |
+
+A certificate that is not the pinned one is refused outright: no retry,
+no fallback, and nothing stored. Whatever it stores, it then proves
+with one authenticated `ListInterfaces` and prints the `can.Bus(...)`
+call that opens a bus on what it found.
+
+**`forget`** removes the entry — pin, token and any unprotected choice
+together — so the next `connect` starts over at trust on first use.
+
+The same three things are importable, and are where the decisions
+actually live (ADR 0003): `cannet_python_client.servers` for the merge
+and for what a name means, `cannet_python_client.connect` for the
+connection flow, and `cannet_python_client.trust` for the store. The
+command line parses arguments, asks the questions and prints the
+answers; it decides nothing.
+
 ## Running it
 
 Always through `uv`, never `pip`:
 
 ```sh
 uv run --project clients/cannet-python-client python examples/rest_bus_sim.py
+uv run --project clients/cannet-python-client cannet-client list
 ```
 
 ## Tests
 
-Hardware-free throughout. The unit tests need nothing; the integration
-tests run against `cannet-server`'s debug modes on loopback and skip
-when the binary is not built.
+Hardware-free throughout, and off the network by default: the browse
+and the certificate probe are injected, so nothing in the suite sends a
+multicast query or dials a routable address. The unit tests need
+nothing else; the integration tests run against `cannet-server`'s debug
+modes on loopback and skip when the binary is not built.
 
 ```sh
 cargo build -p cannet-server           # for the integration tests

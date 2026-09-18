@@ -250,9 +250,12 @@ clients/
                  python-can's `can.interface` entry-point group, so
                  `can.Bus(interface="cannet", server=…, channel=…)`
                  opens a bus on a cannet server with no cannet-specific
-                 import. Resolves the server against the GUI's trust
+                 import. Resolves the server against the machine's trust
                  store (`servers.json`) for the pinned certificate and
-                 bearer token. See its README.
+                 bearer token. Ships the `cannet-client` command,
+                 which does the GUI's accept-a-server workflow — browse,
+                 compare the fingerprint, store the token — on a machine
+                 with no GUI on it. See its README.
 
 libs/
   cannet-python-wire/
@@ -1067,6 +1070,28 @@ who can reach the port can transmit on your hardware. No token is
 collected for such a server, because a credential must never ride an
 unencrypted channel. The choice is remembered for that one address and
 can be revoked with *Forget*.
+
+### Accepting a server without the GUI
+
+A machine with no GUI on it — a CI runner, a headless rig, someone
+scripting python-can — reaches the same workflow through the
+`cannet-client` command that
+[`clients/cannet-python-client`](clients/cannet-python-client) ships:
+
+```sh
+cd clients/cannet-python-client
+uv run cannet-client list                 # advertising, and already accepted
+uv run cannet-client connect bench        # compare the fingerprint, paste the token
+uv run cannet-client forget bench:50051   # drop the pin, the token and the choices
+```
+
+`connect` runs the same four paths the GUI runs, asks the same
+questions on the terminal, and writes the same `servers.json` — so a
+server accepted here is a server the GUI and every python-can script on
+the machine can open a bus on, and the other way round. It proves what
+it stored with one authenticated call and prints the `can.Bus(…)` line
+that opens a bus on what it found. The package's README has the
+details.
 
 ### Self-driving performance runs
 
