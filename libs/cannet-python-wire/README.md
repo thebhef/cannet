@@ -3,9 +3,8 @@
 The cannet wire encoding, in Python. It is a library, not a program:
 nothing here talks to hardware, opens a socket, or serves an RPC.
 
-Two packages in this repository speak the wire —
-[`servers/cannet-python-can`](../../servers/cannet-python-can/), the
-sidecar that exposes local CAN hardware, and
+Two packages in this repository speak the wire — the local hardware
+sidecar under [`servers/`](../../servers/), and
 [`clients/cannet-python-client`](../../clients/cannet-python-client/),
 the python-can interface plugin that opens a bus on a server. What they
 have to agree on lives here, so there is exactly one encoding of the

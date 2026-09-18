@@ -9,19 +9,19 @@ sidecar at all).
 
 ## Decision
 
-The `cannet-python-can` sidecar is distributed to end users as a
+The `cannet-local-sidecar` sidecar is distributed to end users as a
 **frozen, self-contained binary** built with PyInstaller from our
 sidecar source. The frozen artifact embeds a pinned CPython and the
 sidecar's Python dependencies (`grpcio`, `protobuf`, `python-can`,
 `uptime`). On an installed copy the sidecar needs **no Python, no `uv`,
 and no network access** to run.
 
-`uv` and a project venv (`uv run cannet-python-can`) remain the
+`uv` and a project venv (`uv run cannet-local-sidecar`) remain the
 **developer** flow and the input to the frozen build. They are not an
 end-user dependency any more.
 
 The artifact is a PyInstaller **onedir** bundle — a launcher
-`cannet-python-can[.exe]` beside an `_internal/` directory of the frozen
+`cannet-local-sidecar[.exe]` beside an `_internal/` directory of the frozen
 interpreter and libraries — not a onefile. Onedir starts without a
 per-launch self-extraction step, which is faster and avoids the
 `%TEMP%`-extraction failure modes (locked-down temp, AV re-scans) that
@@ -29,7 +29,7 @@ make onefile *less* robust on Windows — the opposite of this decision's
 goal.
 
 The onedir folder is bundled into the installer as a Tauri **resource**
-(`cannet-python-can/`), and the host resolves it through Tauri's
+(`cannet-local-sidecar/`), and the host resolves it through Tauri's
 framework-canonical resource directory — **not** by assuming it sits
 literally next to the GUI executable. That distinction matters on
 macOS, where the `.app` puts the executable in `Contents/MacOS/` and
@@ -89,7 +89,7 @@ though the artifact happens to contain an interpreter.
   need their notices retained; PyInstaller's GPL-with-exception terms
   cover the freeze tooling, not the artifact.
   See
-  [`servers/cannet-python-can/LICENSING.md`](../../servers/cannet-python-can/LICENSING.md).
+  [`servers/cannet-local-sidecar/LICENSING.md`](../../servers/cannet-local-sidecar/LICENSING.md).
 - **Per-OS build.** PyInstaller cannot cross-compile; this matches
   Tauri's own constraint (see the distribution/CI task). Each platform's
   frozen sidecar is built on its native runner alongside the Tauri
@@ -119,7 +119,7 @@ though the artifact happens to contain an interpreter.
   backends via entry points, and the sidecar loads its driver through
   `importlib.import_module`, so PyInstaller's static graph misses both.
   The build pins the collection recipe (`--collect-submodules
-  cannet_python_can`, `--collect-submodules can`, `--collect-all grpc`,
+  cannet_local_sidecar`, `--collect-submodules can`, `--collect-all grpc`,
   and the matching `--copy-metadata` flags). A **smoke-run of the frozen
   binary in CI** — assert it emits its `sidecar\tlistening\t<addr>`
   banner — catches a *core* collection failure (the binary fails to boot
@@ -131,7 +131,7 @@ though the artifact happens to contain an interpreter.
   accepted.
 - **The frozen launcher names itself in a process list.** Freezing puts
   a long-lived process on the user's machine that they did not start,
-  so it has to say what it is. The file name (`cannet-python-can`)
+  so it has to say what it is. The file name (`cannet-local-sidecar`)
   carries both `cannet` and which part of cannet it is, and is the
   process name on Linux and macOS. Windows instead reports a process's
   identity from the binary's `VERSIONINFO` resource, which PyInstaller

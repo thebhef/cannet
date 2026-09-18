@@ -5,7 +5,7 @@ Status: accepted (2026-05-24)
 ## Decision
 
 Hardware CAN drivers — Vector, Kvaser, PEAK — are reached through
-a **separate sidecar process**, `cannet-python-can`, which wraps
+a **separate sidecar process**, `cannet-local-sidecar`, which wraps
 **`python-can`** (LGPL-3.0-only) for all three vendor families. The
 GUI host auto-launches the sidecar.
 

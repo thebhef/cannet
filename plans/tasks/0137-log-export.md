@@ -252,7 +252,7 @@ gridview on top of this.
 | rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
 | mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass |
 | frontend | `pnpm --dir apps/gui test` then `pnpm --dir apps/gui build` | pass (untouched by this phase) |
-| python | `uv sync --extra dev --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest` (in `servers/cannet-python-can`) | pass (untouched) |
+| python | `uv sync --extra dev --frozen && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest` (in `servers/cannet-local-sidecar`) | pass (untouched) |
 | sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass |
 | comment-references | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
 
@@ -390,7 +390,7 @@ the failure mode is non-obvious and the trap is easy to walk back into):
 | rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
 | mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass |
 | frontend | `pnpm --dir apps/gui test` (3215) then `pnpm --dir apps/gui build` | pass |
-| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-python-can` | pass (225) |
+| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-local-sidecar` | pass (225) |
 | python (client) | `cargo build -p cannet-server`, then the same five in `clients/cannet-python-client` | pass (86, 1 skipped) |
 | proto gencode | `uv run --extra dev bash scripts/regen_proto.sh` + `git diff` | pass — the diff it leaves on Windows is CRLF-only (`git diff --ignore-cr-at-eol` is empty) |
 | sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass |
@@ -571,7 +571,7 @@ the writing, nothing that lists files.
 | rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
 | mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass |
 | frontend | `pnpm --dir apps/gui test` (3239) then `pnpm --dir apps/gui build` | pass |
-| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-python-can` | pass (225) |
+| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-local-sidecar` | pass (225) |
 | python (client) | `cargo build -p cannet-server`, then the same five in `clients/cannet-python-client` | pass (86, 1 skipped) |
 | proto gencode | `uv run --extra dev bash scripts/regen_proto.sh` + `git diff` | pass — CRLF-only on Windows (`git diff --ignore-cr-at-eol` empty) |
 | sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass |
@@ -874,7 +874,7 @@ separate status line.
 | rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
 | mdf-export-oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>/sample.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>/sample.mf4` | pass |
 | frontend | `pnpm --dir apps/gui test` (3265) then `pnpm --dir apps/gui build` | pass |
-| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-python-can` | pass (225) |
+| python (sidecar) | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` in `servers/cannet-local-sidecar` | pass (225) |
 | python (client) | `cargo build -p cannet-server`, then the same five in `clients/cannet-python-client` | pass (86, 1 skipped) |
 | proto gencode | `uv run --extra dev bash scripts/regen_proto.sh` + `git diff` | pass — CRLF-only on Windows (`git diff --ignore-cr-at-eol` empty); reverted before committing |
 | sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` | pass |

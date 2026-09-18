@@ -1,7 +1,7 @@
 //! Ending a supervised child **and everything it started**.
 //!
 //! A sidecar is not one process. The developer launch chain is
-//! `uv → uv → cannet-python-can → python → python`, so killing only the
+//! `uv → uv → cannet-local-sidecar → python → python`, so killing only the
 //! process we spawned can leave the rest of that chain alive and still
 //! holding CAN hardware open. It happens to work on that chain — `uv`
 //! forwards stdin, so its death delivers the EOF the descendants exit

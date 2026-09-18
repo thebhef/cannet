@@ -15,7 +15,7 @@ The same service definition is implemented by every driver context:
 
 - **In-process drivers** (the BLF replay source, future Rust-native
   drivers) speak it through a loopback channel.
-- **Local sidecar processes** (the `cannet-python-can` sidecar of
+- **Local sidecar processes** (the `cannet-local-sidecar` sidecar of
   [ADR 0008](0008-python-can-sidecar.md)) speak it over loopback TCP.
 - **Remote cannet servers**
   ([ADR 0040](0040-production-cannet-server.md)) speak it over the
@@ -125,7 +125,7 @@ framing is sub-percent.
   `tokio-stream` `ReceiverStream` — no hand-rolled `Stream` impls or
   manual `Pin` plumbing.
 - **Cross-language clients land for free.** ADR 0008's
-  `cannet-python-can` sidecar uses `grpcio` (Python, Apache-2.0)
+  `cannet-local-sidecar` sidecar uses `grpcio` (Python, Apache-2.0)
   to speak the same `.proto`; the wire crate exports nothing
   Python-specific.
 - **Future driver kinds add no protocol work.** A new Rust-native

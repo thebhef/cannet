@@ -59,7 +59,7 @@ workspace = true
 # from the release tag on the command line — this crate's own version
 # stays 0.0.0, so there is no placeholder in this file to patch.
 #
-# Layout (owner-agreed): binary *and* the frozen `cannet-python-can`
+# Layout (owner-agreed): binary *and* the frozen `cannet-local-sidecar`
 # onedir under one prefix, with `/usr/bin/cannet-server` a symlink into
 # it. `cannet-server` resolves its own `current_exe()` through the
 # symlink, so the onedir is still exe-adjacent, which is where its
@@ -88,8 +88,8 @@ mode = "755"
 # No `mode`: cargo-deb then takes each file's own mode, which is what
 # keeps the frozen launcher executable and the rest of the onedir not.
 [[package.metadata.deb.assets]]
-source = "../../apps/gui/src-tauri/sidecar-dist/cannet-python-can/**/*"
-dest = "/usr/lib/cannet-server/cannet-python-can/"
+source = "../../apps/gui/src-tauri/sidecar-dist/cannet-local-sidecar/**/*"
+dest = "/usr/lib/cannet-server/cannet-local-sidecar/"
 
 # `dest` is the link, `link_name` is what it points at; cargo-deb
 # rewrites it to the Debian-policy-mandated relative form.

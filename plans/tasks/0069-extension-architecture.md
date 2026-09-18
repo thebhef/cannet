@@ -31,7 +31,7 @@ non-goal wording) were applied when the ADR landed.
 4. **Packaging**: `.cannet-extension` (zip) install path — extract
    into the extensions directory.
 5. **Reference Extension**: in-repo Python extension (`uv`-managed,
-   mirroring `cannet-python-can`'s dev flow) exercising the full
+   mirroring `cannet-local-sidecar`'s dev flow) exercising the full
    surface: frame subscribe + send (transmit declared), event emit,
    signal read, contributed webview view.
 

@@ -1,7 +1,7 @@
 //! `cannet-server` CLI.
 //!
 //! Bare invocation is the production hardware proxy (ADR 0040): it
-//! supervises the `cannet-python-can` sidecar on loopback and relays
+//! supervises the `cannet-local-sidecar` sidecar on loopback and relays
 //! the sidecar's interfaces, under their real identities, to one
 //! network endpoint. It serves every interface by default, because a
 //! server only its own machine can reach serves nobody; that is a
@@ -95,7 +95,7 @@ struct ProxyArgs {
     /// Where to look for the sidecar's *source tree*, overriding the
     /// crate's walk-up search from the server binary — the
     /// developer/field-engineer escape hatch, not a way to pick a
-    /// different frozen `cannet-python-can` onedir (that stays
+    /// different frozen `cannet-local-sidecar` onedir (that stays
     /// inexpressible on both hosts, deliberately). Matches the GUI's
     /// `sidecar_dir` setting. `CANNET_SIDECAR_DIR` wins over this flag
     /// when both are set; the flag wins over nothing, which is today's
@@ -470,7 +470,7 @@ async fn run_vbus(
 /// which carries this binary at its resource root next to the onedir it
 /// already ships (ADR 0036) — keeps that adjacency, so one probe covers
 /// them all.
-const FROZEN_SIDECAR_DIR: &str = "cannet-python-can";
+const FROZEN_SIDECAR_DIR: &str = "cannet-local-sidecar";
 
 /// The frozen sidecar launcher inside `dir`, or `None` when it isn't
 /// there — the developer flow, where the shared crate falls back to

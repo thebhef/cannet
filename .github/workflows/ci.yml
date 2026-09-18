@@ -247,7 +247,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: servers/cannet-python-can
+        working-directory: servers/cannet-local-sidecar
     steps:
       - uses: actions/checkout@v7
 
@@ -258,7 +258,7 @@ jobs:
         with:
           version: "0.9.21"
           enable-cache: true
-          cache-dependency-glob: servers/cannet-python-can/uv.lock
+          cache-dependency-glob: servers/cannet-local-sidecar/uv.lock
 
       - run: uv sync --extra dev --frozen
       - run: uv run ruff check .
@@ -312,13 +312,13 @@ jobs:
       - uses: actions/checkout@v7
 
       # uv provisions the CPython pinned by
-      # servers/cannet-python-can/.python-version and the sidecar's
+      # servers/cannet-local-sidecar/.python-version and the sidecar's
       # locked deps; the build script drives PyInstaller from there.
       - uses: astral-sh/setup-uv@v8.3.2
         with:
           version: "0.9.21"
           enable-cache: true
-          cache-dependency-glob: servers/cannet-python-can/uv.lock
+          cache-dependency-glob: servers/cannet-local-sidecar/uv.lock
 
       # Freeze the onedir and smoke-run the frozen launcher (the script's
       # default). Executing the artifact is the only thing that exercises

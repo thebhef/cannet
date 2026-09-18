@@ -195,7 +195,7 @@ interface, and it may contribute UI.
   transmit-consent gate), and webview-hosting + postMessage-relay
   plumbing for contributed views.
 - A reference Python Extension and its packaging tooling
-  (`uv`-managed, mirroring `cannet-python-can`) land in the repo,
+  (`uv`-managed, mirroring `cannet-local-sidecar`) land in the repo,
   exercising the full surface end to end.
 - No registry, no auto-update, no server-side Extensions, no in-process
   WASM/scripting runtime — all explicitly out of scope for this

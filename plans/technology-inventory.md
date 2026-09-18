@@ -494,11 +494,11 @@ without reshaping callers.
 ### Hardware Drivers
 
 - **`python-can`** (LGPL-3.0-only) — `adopted` in Phase 8. Wrapped
-  by the `cannet-python-can` sidecar. Now **redistributed** — frozen
+  by the `cannet-local-sidecar` sidecar. Now **redistributed** — frozen
   into the sidecar onedir, making the installer a Combined Work under
   LGPL-3.0 §4. See [`../docs/adr/0008-python-can-sidecar.md`](../docs/adr/0008-python-can-sidecar.md),
   [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md), and
-  [`../servers/cannet-python-can/LICENSING.md`](../servers/cannet-python-can/LICENSING.md).
+  [`../servers/cannet-local-sidecar/LICENSING.md`](../servers/cannet-local-sidecar/LICENSING.md).
 - **PyInstaller** (GPL-2.0-or-later **with** the bootloader exception)
   — `adopted` in Task 31 as the freeze tool that builds the sidecar
   onedir. A build tool only: its terms do not attach to our shipped
@@ -507,7 +507,7 @@ without reshaping callers.
   [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md).
 - **`uv`** (Rust, Apache-2.0 / MIT) — `adopted` in Phase 8, now
   **developer-only**. Astral's Python package & project manager. Manages
-  the sidecar's venv for local dev (`uv run cannet-python-can`) and feeds
+  the sidecar's venv for local dev (`uv run cannet-local-sidecar`) and feeds
   the frozen sidecar build (Task 31). No longer an end-user runtime
   dependency — end users get the frozen sidecar binary. See
   [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md), which
@@ -827,7 +827,7 @@ crate retained long-term).
   `ver=` key — same pattern, no new crate.
 - **PyInstaller** (Python, GPL-2.0-with-bootloader-exception; the
   exception lets the frozen output ship under any license) — `adopted`
-  in Task 31 to freeze the `cannet-python-can` sidecar into a
+  in Task 31 to freeze the `cannet-local-sidecar` sidecar into a
   self-contained onedir binary (embedded CPython + `grpcio` / `protobuf`
   / `python-can`), so an installed cannet launches the sidecar with no
   Python, `uv`, or network. Run via `uv run --with pyinstaller`; the
@@ -1028,10 +1028,10 @@ crate retained long-term).
   window. Chromium-only by construction, so the check is Windows-only;
   see the crate README. MIT / Apache-2.0.
 
-- **ruff** + **mypy** (dev-dependencies in `servers/cannet-python-can`,
+- **ruff** + **mypy** (dev-dependencies in `servers/cannet-local-sidecar`,
   pinned via its `uv.lock`) — `adopted` for the Python sidecar. ruff
   does both linting and black-compatible formatting in one tool;
-  mypy type-checks the `cannet_python_can` package (the generated
+  mypy type-checks the `cannet_local_sidecar` package (the generated
   `_proto/` gRPC stubs are excluded — machine-emitted, not
   hand-maintained — and the dynamically-populated protobuf module is
   treated as untyped). pytest already covered the test suite. All four
