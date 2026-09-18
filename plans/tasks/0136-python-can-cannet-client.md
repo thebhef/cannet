@@ -112,8 +112,8 @@ encoding of the wire in the repo and nothing to drift.
 
 **CI wiring.** A `python-client` job in `.github/workflows/ci.yml` and
 four hooks in `.pre-commit-config.yaml`. The job builds
-`cannet-server` and checks out LFS, because a suite that silently
-skipped its integration half would be worth very little.
+`cannet-server`, because a suite that silently skipped its integration
+half would be worth very little.
 
 **Ruff alignment (2026-09-16).** Both packages now lock ruff **0.15.16**
 — this one had resolved 0.16.6 beside the sidecar's 0.15.16, so the same

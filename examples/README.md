@@ -47,23 +47,6 @@ One more fixture set sits alongside them, without a project:
   whose objects are out of timestamp order, and an MF4 whose earliest
   content is a signal rather than a frame.
 
-## Git LFS
-
-Every capture in this directory — `.blf` and `.mf4` alike, the
-unfinalized recovery fixtures among them — is stored as a **Git LFS**
-object; see
-[`.gitattributes`](../.gitattributes). A fresh clone needs
-
-```sh
-git lfs install   # once per machine
-git lfs pull
-```
-
-before those files are anything but pointer text. Several Rust tests read
-them through the real reader, so a clone without them fails the suite.
-Everything else here — the DBCs, the projects, the RBS files, the
-generators — is plain text in plain git.
-
 ## Files
 
 | File | Purpose |

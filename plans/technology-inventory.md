@@ -950,23 +950,17 @@ crate retained long-term).
 
 ### Testing / Profiling
 
-- **Git LFS** — `adopted` 2026-08-26 by owner ruling (task
-  0126), wired 2026-08-27. The example **captures** under `examples/`
-  are carried as LFS pointers, each kept small; one `.gitattributes`
-  pattern per tracked format (`*.blf`, `*.mf4`), scoped to
-  `examples/`. Requires `git lfs` in the contributor toolchain (README §
-  Prerequisites) and `lfs: true` on the CI `rust` job's checkout, which
-  is the only job that reads them. Chosen over committing binaries raw
-  (bloats every clone forever) and over generating fixtures at build
-  time (a demo file's value is that it is curated, stable, and openable
-  by hand).
-
-  **Not** in LFS, deliberately: the databases, projects and RBS files
-  beside them are text and belong in plain git, where a diff is
-  readable; `crates/cannet-mdf/tests/fixtures/*.mf4` are read by
-  `cargo test --workspace`, so behind LFS they would make the default
-  suite fail in a clone that had not fetched the objects; the Tauri
-  icons must be real bytes at build time.
+- **Git LFS** — `rejected` 2026-09-18 by owner ruling, after being
+  `adopted` 2026-08-26 and wired 2026-08-27 to carry the example
+  captures under `examples/`. The whole tracked set came to around
+  150 KB, largest file under 60 KB — too small for LFS to buy anything,
+  and it cost real failures: a `uv`/`pip` install of the Python client
+  from a git URL clones this repo and chokes when `git-lfs` is missing
+  or the LFS endpoint is unreachable, and every fresh clone needed
+  `git lfs install` plus `git lfs pull` before the Rust suite would
+  pass. The captures are plain git blobs now; if a genuinely large
+  capture ever has to be committed, LFS can return scoped to it. No
+  history rewrite — commits from that window keep their pointers.
 
 
 - **`tempfile`** crate — `adopted` in Phase 1 (dev-dependency only). Used by
