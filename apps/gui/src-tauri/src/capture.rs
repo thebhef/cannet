@@ -25,8 +25,8 @@ use cannet_mdf::MdfCanFrameSource;
 use crate::app_state::AppState;
 use crate::event_text;
 use crate::ipc::{
-    ImportMdfResult, LoadProgress, LogFinished, OpenLogResult, RebuildProgressRecord,
-    ValueTableEntryRecord,
+    ExportFinished, ExportProgress as ExportProgressRecord, ImportMdfResult, LoadProgress,
+    LogFinished, OpenLogResult, RebuildProgressRecord, ValueTableEntryRecord,
 };
 use crate::notes::{self, Note};
 use crate::sampling::off_async_workers;
@@ -411,11 +411,299 @@ impl SaveFormat {
     }
 }
 
-/// Write the entire session buffer to `path` in `format`. Every frame on
-/// every bus, no per-trace slicing — the project file's bus bindings
-/// handle re-routing on import. Both writers are atomic (temp file +
-/// rename) and put everything they carry **inside** the capture file, no
-/// sidecar (ADR 0010).
+/// Event carrying how far the export in flight has got — see
+/// [`ExportProgressRecord`].
+pub(crate) const EXPORT_PROGRESS: &str = "export-progress";
+
+/// Event announcing that the export in flight has ended, whichever way —
+/// see [`ExportFinished`].
+pub(crate) const EXPORT_FINISHED: &str = "export-finished";
+
+/// Frames an export writes between two looks at the clock. The cancel
+/// check is per frame and stays there; this is only about how often
+/// progress is worth reporting (the same split [`ImportProgress`] makes).
+const EXPORT_CHECKPOINT_FRAMES: u64 = 16_384;
+
+/// The slice of the capture an export writes, in absolute nanoseconds.
+/// `None` on a side means unbounded there — the default, and what an
+/// empty bound field in the export dialog means. Both ends are
+/// inclusive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRange {
+    pub start_ns: Option<u64>,
+    pub end_ns: Option<u64>,
+}
+
+impl ExportRange {
+    /// Whether an item stamped `ts` belongs to this slice.
+    #[must_use]
+    pub(crate) fn contains(self, ts: u64) -> bool {
+        self.start_ns.is_none_or(|start| ts >= start) && self.end_ns.is_none_or(|end| ts <= end)
+    }
+}
+
+/// The range, the progress reporting, and the cooperative cancellation
+/// one export runs under — everything about *how* a capture is written
+/// that is not the format.
+///
+/// It exists so the two writers stay one code path whether they are
+/// serving the background export command or a test: [`Self::inert`] has
+/// no range, reports nowhere and is never cancelled, so a caller that
+/// wants the whole capture written synchronously passes one and nothing
+/// else changes.
+pub(crate) struct ExportRun {
+    range: ExportRange,
+    /// Flipped by `cancel_export`; `None` for an export nothing can
+    /// cancel (a test, or a caller with no handle to offer).
+    cancel: Option<Arc<AtomicBool>>,
+    /// Where a paced progress report goes — written to frames and total,
+    /// in that order — or `None` to report nowhere.
+    ///
+    /// A sink rather than an `AppHandle` on purpose. A field of this
+    /// struct is part of its drop glue, and this struct is constructed
+    /// by the writers' tests; an `AppHandle` there would link the whole
+    /// Tauri app + window graph into the test binary, which on Windows
+    /// then fails to *load* (the dialog plugin imports `comctl32`'s
+    /// `TaskDialogIndirect`, which resolves only through the side-by-side
+    /// `ComCtl32` v6 assembly a test binary has no manifest for). Behind a
+    /// `dyn Fn` the emitting closure is reachable only from the command
+    /// that builds it.
+    report_to: Option<Box<dyn Fn(u64, u64) + Send>>,
+    total: u64,
+    written: u64,
+    pacer: ProgressPacer,
+    until_checkpoint: u64,
+    cancelled: bool,
+}
+
+impl ExportRun {
+    /// An export over the whole capture that reports nowhere and cannot
+    /// be cancelled — what a synchronous caller (the writers' own tests)
+    /// passes.
+    #[cfg(test)]
+    pub(crate) fn inert() -> Self {
+        Self::over(ExportRange::default())
+    }
+
+    /// An export over `range` that reports nowhere and cannot be
+    /// cancelled — [`Self::inert`] with a slice.
+    pub(crate) fn over(range: ExportRange) -> Self {
+        Self {
+            range,
+            cancel: None,
+            report_to: None,
+            total: 0,
+            written: 0,
+            pacer: ProgressPacer::new(),
+            until_checkpoint: EXPORT_CHECKPOINT_FRAMES,
+            cancelled: false,
+        }
+    }
+
+    /// Emit [`EXPORT_PROGRESS`] on `app` as the export goes.
+    pub(crate) fn reporting_to(mut self, app: AppHandle) -> Self {
+        self.report_to = Some(Box::new(move |written, total| {
+            let _ = app.emit(EXPORT_PROGRESS, ExportProgressRecord { written, total });
+        }));
+        self
+    }
+
+    /// Make `flag` this export's stop flag.
+    pub(crate) fn cancel_with(&mut self, flag: Arc<AtomicBool>) {
+        self.cancel = Some(flag);
+    }
+
+    /// Whether an item stamped `ts` is inside the export's range.
+    #[must_use]
+    pub(crate) fn keeps(&self, ts: u64) -> bool {
+        self.range.contains(ts)
+    }
+
+    /// How many frames this export is going to write — the denominator
+    /// the chip's percentage is against. Set by each writer once its
+    /// first pass has counted what the range keeps, so the fraction is
+    /// against the slice and not against the whole capture.
+    pub(crate) fn expect_units(&mut self, total: u64) {
+        self.total = total;
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn total(&self) -> u64 {
+        self.total
+    }
+
+    #[must_use]
+    pub(crate) fn written(&self) -> u64 {
+        self.written
+    }
+
+    /// One frame written. Returns `false` once the export has been
+    /// cancelled, which is the writer's cue to stop and the caller's to
+    /// discard what reached the file.
+    pub(crate) fn advance(&mut self) -> bool {
+        self.written += 1;
+        // The flag is read every frame — one relaxed load — so a cancel
+        // lands promptly however small the capture. Only the clock read
+        // behind the progress report is checkpointed, which is the same
+        // split the import pump makes.
+        if let Some(flag) = &self.cancel {
+            if flag.load(Ordering::Relaxed) {
+                self.cancelled = true;
+                return false;
+            }
+        }
+        self.until_checkpoint -= 1;
+        if self.until_checkpoint > 0 {
+            return true;
+        }
+        self.until_checkpoint = EXPORT_CHECKPOINT_FRAMES;
+        self.report();
+        true
+    }
+
+    /// Report if the pacer says a report is due.
+    fn report(&mut self) {
+        let Some(sink) = &self.report_to else { return };
+        if !self.pacer.due(Instant::now()) {
+            return;
+        }
+        sink(self.written, self.total);
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancelled
+    }
+}
+
+/// What one export produced.
+pub(crate) enum ExportOutcome {
+    Written(SaveCaptureResult),
+    /// The stop flag was seen mid-write. The partial capture sitting at
+    /// the destination is the caller's to remove
+    /// ([`discard_partial_export`]).
+    Cancelled,
+}
+
+impl ExportOutcome {
+    /// The capture this export wrote, or `None` if it was cancelled.
+    /// The command path matches on the variants directly; this is the
+    /// convenience the writers' tests read a result through.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn written(self) -> Option<SaveCaptureResult> {
+        match self {
+            Self::Written(result) => Some(result),
+            Self::Cancelled => None,
+        }
+    }
+}
+
+/// Remove the partial capture a cancelled export left at `path`.
+///
+/// Both writers stream straight into the destination — there is no temp
+/// sibling to throw away — so a cancelled export leaves a truncated file
+/// under the name the user chose, indistinguishable at a glance from a
+/// finished one. Cancelling an export means "never mind", so it goes.
+///
+/// (That is the opposite of a cancelled *import*, which keeps what it
+/// read: an import's product is the capture in memory, and stopping
+/// early simply finishes it there.)
+///
+/// Best-effort and silent: a write that failed before opening anything
+/// leaves nothing to remove, and a file the OS will not let go of is not
+/// worth a second error on top of the cancel.
+pub(crate) fn discard_partial_export(path: &str) {
+    let _ = std::fs::remove_file(path);
+}
+
+/// Flip whichever export's cancel flag [`AppState::export_cancel`] holds
+/// right now, if any. Factored out from [`cancel_export`] so it is
+/// testable against a plain `AppState`.
+pub(crate) fn cancel_export_now(state: &AppState) {
+    if let Some(flag) = state.export_cancel().as_ref() {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Cancel the export in flight, if there is one. Cooperative, not
+/// immediate: it flips the flag the writer checks at its checkpoint, and
+/// the export thread removes the partial file before announcing itself
+/// cancelled. A no-op when nothing is exporting — the chip's Cancel can
+/// race the export's own completion.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn cancel_export(state: State<'_, AppState>) {
+    cancel_export_now(&state);
+}
+
+/// The capture's timeline as the export dialog's range picker needs it:
+/// where the retained capture starts, where its live edge is, and the
+/// session origin both are measured against (ADR 0024).
+///
+/// The host owns the time↔index mapping and the extent; the dialog draws
+/// a timeline over what this reports and never derives it from rows it
+/// has fetched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureExtent {
+    /// Timestamp of the oldest *retained* frame, or `None` for an empty
+    /// capture. Not necessarily the session origin: a windowed store has
+    /// dropped everything before this.
+    pub first_ns: Option<u64>,
+    /// The capture's live edge — the store's running max, **not** the
+    /// last row appended (arrival order is not timestamp order, ADR
+    /// 0024).
+    pub live_edge_ns: Option<u64>,
+    /// The session origin in nanoseconds, or `None` when no session has
+    /// started. A different fact from an origin of zero, which is what a
+    /// capture replayed from a log with no start time is anchored at.
+    pub session_start_ns: Option<u64>,
+    pub frame_count: u64,
+}
+
+/// [`capture_extent`]'s body against a plain `AppState`, so the suite can
+/// exercise it without a live Tauri app.
+pub(crate) fn capture_extent_now(state: &AppState) -> CaptureExtent {
+    let snapshot = state.trace_store.status_snapshot();
+    let anchors = state.trace_store.window_anchors(snapshot.first_index);
+    CaptureExtent {
+        first_ns: snapshot.first_index_ts_ns,
+        live_edge_ns: anchors.live_edge_ns,
+        session_start_ns: snapshot
+            .session_started
+            .then_some(snapshot.session_start_ns),
+        frame_count: snapshot.len as u64,
+    }
+}
+
+/// Tauri command — the capture extent the export dialog's timeline spans.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn capture_extent(state: State<'_, AppState>) -> CaptureExtent {
+    capture_extent_now(&state)
+}
+
+/// Write the session buffer to `path` in `format`, in the background.
+/// Every frame on every bus inside `range`, no per-trace slicing — the
+/// project file's bus bindings handle re-routing on import. Both writers
+/// stream straight into `path` and put everything they carry **inside**
+/// the capture file, no sidecar (ADR 0010).
+///
+/// **Returns as soon as the export has started**, not when it finishes:
+/// a capture-scaled write must not hold the GUI still, so the work runs
+/// on its own thread and reports through events. [`EXPORT_PROGRESS`]
+/// carries frames written against frames to write; [`EXPORT_FINISHED`]
+/// says how it ended. `cancel_export` stops it, and the partial file at
+/// `path` is removed ([`discard_partial_export`]).
+///
+/// `range` bounds every content kind alike — frames, notes, and (for
+/// MDF) file-backed signal samples — so an exported slice is one
+/// consistent capture. Both bounds default to unbounded, which is the
+/// whole capture as of the moment the write reaches its end.
 ///
 /// What each format carries:
 ///
@@ -437,17 +725,58 @@ impl SaveFormat {
 /// ([`clamped_timestamp_warning`]), `error` on failure.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn save_capture(
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+pub(crate) async fn save_capture(
     app: AppHandle,
-    state: State<'_, AppState>,
     path: String,
     format: SaveFormat,
     buses: Vec<String>,
-) -> Result<SaveCaptureResult, String> {
+    range: Option<ExportRange>,
+) -> Result<(), String> {
+    let range = range.unwrap_or_default();
+    // One export at a time: `AppState::export_cancel` holds one flag, so
+    // a second export would leave the first uncancellable — and the
+    // status bar has one chip to report with.
+    {
+        let state: State<'_, AppState> = app.state();
+        let mut slot = state.export_cancel();
+        if slot.is_some() {
+            return Err("an export is already running".to_string());
+        }
+        *slot = Some(Arc::new(AtomicBool::new(false)));
+    }
+    let app_for_thread = app.clone();
+    std::thread::Builder::new()
+        .name("cannet-export".into())
+        .spawn(move || {
+            run_export(&app_for_thread, &path, format, &buses, range);
+            *app_for_thread.state::<AppState>().export_cancel() = None;
+        })
+        .map_err(|e| {
+            *app.state::<AppState>().export_cancel() = None;
+            format!("failed to spawn the export thread: {e}")
+        })?;
+    Ok(())
+}
+
+/// The export thread's body: write the capture, log what it did, and
+/// announce the ending on [`EXPORT_FINISHED`].
+fn run_export(
+    app: &AppHandle,
+    path: &str,
+    format: SaveFormat,
+    buses: &[String],
+    range: ExportRange,
+) {
+    let state: State<'_, AppState> = app.state();
     // User-authored events only: a host-derived event summarises frames the
     // file already carries, so writing it would restate them lossily
     // (ADR 0035).
     let notes = state.notes.exportable();
+    let mut run = ExportRun::over(range).reporting_to(app.clone());
+    if let Some(flag) = state.export_cancel().as_ref() {
+        run.cancel_with(Arc::clone(flag));
+    }
     let outcome = match format {
         // Snapshot the trace store. `slice(0, len)` clones each
         // RawTraceFrame out under the trace-store lock — that's the
@@ -456,18 +785,51 @@ pub(crate) fn save_capture(
         // we'll revisit when disk-spill lands.
         SaveFormat::Blf => {
             let frames = state.trace_store.slice(0, state.trace_store.len());
-            write_blf_capture(&path, &frames, &notes, &buses)
+            write_blf_capture(path, &frames, &notes, buses, &mut run)
         }
-        SaveFormat::Mdf => write_mdf_capture(&path, &state, &notes, &buses),
+        SaveFormat::Mdf => write_mdf_capture(path, &state, &notes, buses, &mut run),
     };
     let outcome = match outcome {
-        Ok(o) => o,
+        Ok(ExportOutcome::Written(o)) => o,
+        Ok(ExportOutcome::Cancelled) => {
+            discard_partial_export(path);
+            sys_info!(
+                &app,
+                "capture",
+                "export to {path} cancelled after {n} frame(s); the partial file was removed",
+                n = run.written(),
+            );
+            let _ = app.emit(EXPORT_FINISHED, ExportFinished::Cancelled);
+            return;
+        }
         Err(e) => {
             sys_error!(&app, "capture", "save to {path} failed: {e}");
-            return Err(e);
+            let _ = app.emit(EXPORT_FINISHED, ExportFinished::Error { message: e });
+            return;
         }
     };
 
+    log_export_result(app, &state, path, format, &outcome);
+
+    let _ = app.emit(
+        EXPORT_FINISHED,
+        ExportFinished::Ok {
+            path: outcome.path.clone(),
+            frame_count: outcome.frame_count,
+            byte_size: outcome.byte_size,
+        },
+    );
+}
+
+/// The `capture`-tagged System Messages one finished export leaves: what
+/// it wrote, and everything the format could not hold faithfully.
+fn log_export_result(
+    app: &AppHandle,
+    state: &AppState,
+    path: &str,
+    format: SaveFormat,
+    outcome: &SaveCaptureResult,
+) {
     sys_info!(
         &app,
         "capture",
@@ -500,8 +862,6 @@ pub(crate) fn save_capture(
             sys_warn!(&app, "capture", "{warning}");
         }
     }
-
-    Ok(outcome)
 }
 
 /// What a scan recovered from a capture whose writer never finished
@@ -982,17 +1342,27 @@ pub(crate) fn write_blf_capture(
     frames: &[trace_store::RawTraceFrame],
     notes: &[Note],
     buses: &[String],
-) -> Result<SaveCaptureResult, String> {
-    // Pass one: the capture's origin. A BLF event's timestamp is an
-    // unsigned offset from the file's start, so nothing earlier than
-    // that start is representable — and arrival order is not timestamp
-    // order (ADR 0024), so the store's first frame is routinely not its
-    // earliest. Declaring the minimum before the first append is what
-    // keeps every timestamp; it is the same pass `write_mdf_capture`
-    // makes for MDF's identically-constrained `hd_start_time_ns`, over
-    // frames and notes alike since a note clamps exactly as a frame
-    // does. An empty capture has no origin of its own: anchor it at the
-    // epoch.
+    run: &mut ExportRun,
+) -> Result<ExportOutcome, String> {
+    // Pass one: what the range keeps, and the capture's origin over it.
+    // A BLF event's timestamp is an unsigned offset from the file's
+    // start, so nothing earlier than that start is representable — and
+    // arrival order is not timestamp order (ADR 0024), so the store's
+    // first frame is routinely not its earliest. Declaring the minimum
+    // before the first append is what keeps every timestamp; it is the
+    // same pass `write_mdf_capture` makes for MDF's
+    // identically-constrained `hd_start_time_ns`, over frames and notes
+    // alike since a note clamps exactly as a frame does. An empty
+    // capture has no origin of its own: anchor it at the epoch.
+    //
+    // The origin is taken over the *kept* set, not the whole capture:
+    // an exported slice's file starts where the slice does.
+    let frames: Vec<&trace_store::RawTraceFrame> = frames
+        .iter()
+        .filter(|f| run.keeps(f.timestamp_ns))
+        .collect();
+    let notes: Vec<&Note> = notes.iter().filter(|n| run.keeps(n.timestamp_ns)).collect();
+    run.expect_units(frames.len() as u64);
     let start_time_ns = frames
         .iter()
         .map(|f| f.timestamp_ns)
@@ -1029,6 +1399,12 @@ pub(crate) fn write_blf_capture(
             writer
                 .append(&core)
                 .map_err(|e| format!("failed to write frame: {e}"))?;
+            // Cooperative cancel, checked as the write goes — the same
+            // shape the import pump uses. The partially written file is
+            // the caller's to discard.
+            if !run.advance() {
+                return Ok(ExportOutcome::Cancelled);
+            }
         } else {
             let note = note_iter.next().expect("peek matched");
             match note.kind.blf_record() {
@@ -1058,14 +1434,14 @@ pub(crate) fn write_blf_capture(
         .finish()
         .map_err(|e| format!("failed to finalise capture: {e}"))?;
 
-    Ok(SaveCaptureResult {
+    Ok(ExportOutcome::Written(SaveCaptureResult {
         path: blf_path.to_string(),
         frame_count: outcome.frame_count,
         byte_size: outcome.byte_size,
         marker_count: outcome.marker_count,
         max_timestamp_drift_ns: outcome.max_timestamp_drift_ns,
         clamped_timestamps: clamped_timestamp_warning(&outcome),
-    })
+    }))
 }
 
 /// How many frames one pass of [`write_mdf_capture`] pulls out of the
@@ -1074,6 +1450,38 @@ pub(crate) fn write_blf_capture(
 /// frame capture never sits in RAM twice (`CLAUDE.md` § GUI architecture
 /// — the store is paged, and a save is one more reader of those pages).
 const MDF_SAVE_CHUNK: usize = 65_536;
+
+/// The file-backed signal series and the notes an MDF export writes,
+/// with everything outside the range dropped.
+///
+/// The range bounds every content kind alike, so an exported slice is
+/// one consistent capture rather than a frame window carrying signals
+/// and events from outside it.
+type MdfRangedContents = (
+    Vec<(FileSignalInfo, Vec<crate::signal_sampler::SamplePoint>)>,
+    Vec<Note>,
+);
+
+fn mdf_contents_in_range(state: &AppState, notes: &[Note], run: &ExportRun) -> MdfRangedContents {
+    let signals = state
+        .signal_caches
+        .file_signal_series()
+        .into_iter()
+        .map(|(info, points)| {
+            let kept: Vec<_> = points
+                .into_iter()
+                .filter(|p| run.keeps(sample_ns(p.t_seconds)))
+                .collect();
+            (info, kept)
+        })
+        .collect();
+    let notes = notes
+        .iter()
+        .filter(|n| run.keeps(n.timestamp_ns))
+        .cloned()
+        .collect();
+    (signals, notes)
+}
 
 /// Perform the MDF write: the full-fidelity save.
 ///
@@ -1097,9 +1505,10 @@ pub(crate) fn write_mdf_capture(
     state: &AppState,
     notes: &[Note],
     buses: &[String],
-) -> Result<SaveCaptureResult, String> {
-    let signals = state.signal_caches.file_signal_series();
-    let events = events_from_notes(notes);
+    run: &mut ExportRun,
+) -> Result<ExportOutcome, String> {
+    let (signals, notes) = mdf_contents_in_range(state, notes, run);
+    let events = events_from_notes(&notes);
     let attachments = dbc_attachments(state);
 
     // Pass one: the capture's origin and its widest payload. The origin
@@ -1109,13 +1518,19 @@ pub(crate) fn write_mdf_capture(
     let len = state.trace_store.len();
     let mut start_time_ns = u64::MAX;
     let mut max_payload_len = 0usize;
+    let mut kept_frames = 0u64;
     for start in (0..len).step_by(MDF_SAVE_CHUNK) {
         for frame in state.trace_store.slice(start, start + MDF_SAVE_CHUNK) {
+            if !run.keeps(frame.timestamp_ns) {
+                continue;
+            }
+            kept_frames += 1;
             start_time_ns = start_time_ns.min(frame.timestamp_ns);
             max_payload_len = max_payload_len.max(frame.payload.data().len());
         }
     }
-    for note in notes {
+    run.expect_units(kept_frames);
+    for note in &notes {
         start_time_ns = start_time_ns.min(note.timestamp_ns);
     }
     for (_, points) in &signals {
@@ -1143,11 +1558,17 @@ pub(crate) fn write_mdf_capture(
     // Pass two: the records themselves.
     for start in (0..len).step_by(MDF_SAVE_CHUNK) {
         for frame in state.trace_store.slice(start, start + MDF_SAVE_CHUNK) {
+            if !run.keeps(frame.timestamp_ns) {
+                continue;
+            }
             let core = raw_to_core_frame(&frame, buses)
                 .map_err(|e| format!("invalid frame in session buffer: {e}"))?;
             writer
                 .append_frame(&core)
                 .map_err(|e| format!("failed to write frame: {e}"))?;
+            if !run.advance() {
+                return Ok(ExportOutcome::Cancelled);
+            }
         }
     }
     for (info, points) in &signals {
@@ -1177,7 +1598,7 @@ pub(crate) fn write_mdf_capture(
     let outcome = writer
         .finish()
         .map_err(|e| format!("failed to finalise capture: {e}"))?;
-    Ok(SaveCaptureResult {
+    Ok(ExportOutcome::Written(SaveCaptureResult {
         path: path.to_string(),
         frame_count: outcome.frame_count,
         byte_size: outcome.byte_size,
@@ -1189,7 +1610,7 @@ pub(crate) fn write_mdf_capture(
         // MDF declares its origin the same way (pass one above), so
         // nothing is ever moved to reach it.
         clamped_timestamps: None,
-    })
+    }))
 }
 
 /// A cached sample's `t_seconds` back as absolute nanoseconds. The cache
