@@ -718,6 +718,16 @@ pub struct AutomationConfig {
     /// an unattended run has to ask for it in the launch as explicitly
     /// as a person would in the panel.
     pub rbs_run_on_start: bool,
+    /// `--math-on-start`: define a standard set of **math signals**
+    /// (`docs/CONTEXT.md`) over the open project once it has loaded, so
+    /// the render tier can be measured with computed series on the bus.
+    ///
+    /// A launch flag rather than a project the harness opens: the
+    /// baseline project is the *comparand*, and growing it would break
+    /// every reading already taken against it. The set itself is the
+    /// webview's (`perfMathCase.ts`), because it is defined against
+    /// whatever signals the open project happens to have.
+    pub math_on_start: bool,
     /// `--perf-interact <script>`: drive synthetic scroll / pan / zoom
     /// gestures at the heavy views while the capture runs, so the
     /// interaction cost of the render tier is in the measurement rather
@@ -752,6 +762,10 @@ impl AutomationConfig {
                 }
                 "--rbs-run-on-start" => {
                     cfg.rbs_run_on_start = true;
+                    seen = true;
+                }
+                "--math-on-start" => {
+                    cfg.math_on_start = true;
                     seen = true;
                 }
                 "--perf-capture-secs" => {
@@ -1213,6 +1227,21 @@ mod tests {
         ]))
         .expect("flag arms autostart");
         assert!(cfg.rbs_run_on_start);
+    }
+
+    #[test]
+    fn autostart_defines_the_math_case_only_when_asked() {
+        // The math case is measured against the same baseline project
+        // as everything else, so it is armed at launch rather than
+        // baked into the project — growing the project would invalidate
+        // every reading already taken against it.
+        let cfg = AutomationConfig::from_args(args(&["cannet", "--connect-on-start"]))
+            .expect("flag arms autostart");
+        assert!(!cfg.math_on_start);
+        let cfg =
+            AutomationConfig::from_args(args(&["cannet", "--connect-on-start", "--math-on-start"]))
+                .expect("flag arms autostart");
+        assert!(cfg.math_on_start);
     }
 
     #[test]

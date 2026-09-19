@@ -39,6 +39,9 @@ export interface DecimatedSignal {
   /// Names a file-backed signal (`docs/CONTEXT.md`) — `messageId` is
   /// then a signal channel group index, not a message id.
   fileBacked?: boolean;
+  /// Names a **math** signal (`docs/CONTEXT.md`) — `signalName` is then
+  /// the definition's stable id and no other field carries anything.
+  math?: boolean;
 }
 
 /// Everything that determines a fetch. A request that cannot return
@@ -287,6 +290,7 @@ export function useDecimatedRange(): DecimatedRange {
             extended: s.extended,
             signalName: s.signalName,
             fileBacked: s.fileBacked ?? false,
+            math: s.math ?? false,
           })),
           maxPoints: req.maxPoints,
           categorical,

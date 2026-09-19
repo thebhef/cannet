@@ -203,6 +203,15 @@ fn signals() -> Vec<(Option<String>, FileSignal)> {
             Some("Electrical".to_owned()),
             series("BatteryVolts", "V", 7_000_000, 11.8, 0.05),
         ),
+        // A **computed** channel, in the acquisition group the GUI
+        // writes math signals under: same shape as any other
+        // already-decoded series, so what the oracle checks here is
+        // that the writer keeps a third group's channel verbatim
+        // alongside the two file-backed ones.
+        (
+            Some("Computed".to_owned()),
+            series("HalfSpeed", "rpm", 9_000_001, 400.0, 6.25),
+        ),
     ]
 }
 

@@ -64,6 +64,12 @@ pub(crate) struct MathSignalRecord {
     pub operand_paths: Vec<String>,
     /// The unit the series carries: the user's, or the derived one.
     pub unit_resolved: String,
+    /// Every bus contributing input to this series, transitively and
+    /// deduped — the color chips a row wears, and what makes its label
+    /// read "Math - Multiple Busses" when there is more than one. The
+    /// walk is the model's (ADR 0025): a surface cannot follow a math
+    /// operand into another definition's operands.
+    pub bus_ids: Vec<String>,
     /// `None` when the definition is usable as it stands; otherwise why
     /// it is not — an arity a live membership no longer satisfies, a
     /// pattern that stopped compiling.
@@ -114,6 +120,7 @@ pub(crate) fn list_math_signals(state: State<'_, AppState>) -> Vec<MathSignalRec
                 operand_paths: resolved.operand_paths.clone(),
                 resolved_operands: resolved.operands.clone(),
                 unit_resolved: resolved.unit.clone(),
+                bus_ids: resolved.bus_ids.clone(),
                 invalid: candidate.validate().err().map(|e| e.to_string()),
                 definition: resolved.definition.clone(),
             }
@@ -243,6 +250,7 @@ mod tests {
             resolved_operands: definition.operands.filled().cloned().collect(),
             operand_paths: vec!["CAN1/BMS/Cells/Cell01".to_string()],
             unit_resolved: "V".to_string(),
+            bus_ids: vec!["bus-a".to_string()],
             invalid: None,
             definition,
         }
@@ -272,6 +280,7 @@ mod tests {
         assert_eq!(json["kind"], "sum");
         assert_eq!(json["arity"], "set");
         assert_eq!(json["unitResolved"], "V");
+        assert_eq!(json["busIds"][0], "bus-a");
         assert_eq!(json["invalid"], serde_json::Value::Null);
     }
 
