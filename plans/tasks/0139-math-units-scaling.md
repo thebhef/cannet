@@ -120,6 +120,23 @@ Amends `task139-units` (message updated). Tests: A->Ah (/3600),
 mA->Ah, W->kWh, derived coulomb, own-family mA target, true-mismatch
 badge.
 
+**Phase 5 — composition, prefixes, recognition, derivation** (host).
+The facade converts via the library's enumerated prefixed variants plus
+`Quantity x Quantity` composition (dimensional analysis), with a
+cross-check test against every pair the crate enumerates; unit identity
+becomes typed base x prefix — the definition's target moves to the typed
+form (strings stay at the ingest boundary only); recognition parses
+`[prefix][base]` exact-case with customizations still winning;
+`derived_unit` derives for every function — products compose,
+integration/derivative compose with their time-unit field on
+`MathFunction` (default `s`, old files unchanged), like-kind sets convert
+and inherit — and the composed dims name the kind that locks the override
+picker; the Derivative function (kernel + resolve, plain
+consecutive-sample slope); the per-signal unit reinterpretation store,
+served to every consumer; the user-scope mapping store (project wins on
+conflict); resolve reports recognition state per operand; the
+View-signals nAh flag investigation and fix.
+
 ## Exit criteria
 
 - [x] A set function over a pattern whose members carry mixed units
@@ -146,6 +163,22 @@ badge.
       operand's own family (`mA` on an `A` operand) still converts the
       operand; a target in neither dimension is still badged; with no
       target, a recognised rate derives its integral's unit.
+
+- [x] Unit identity is base x SI prefix: `nAh` recognises and converts
+      to `Ah` through composition; the composed-factor cross-check test
+      passes against every pair the crate enumerates.
+- [x] Every math function derives an output unit: a product of `A` and
+      `s` ships as `A·s`; integration and derivative follow their
+      function-row time unit (`operand · h` derives `Ah`); a like-kind
+      mixed set converts and inherits; an additive set mixing dimensions
+      derives nothing and is badged.
+- [x] Derivative works end to end (host half): d/dt of an `Ah` counter
+      over `d/ds` reads `Ah/s` and converts to `A` on request.
+- [x] A signal's unit reinterpreted in View signals reads as the chosen
+      unit everywhere, with no scaling applied.
+- [x] A mapping promoted to user scope is effective in another project,
+      and project wins where both scopes map one string.
+- [x] The owner's `nAh` View-signals flag case is explained and fixed.
 
 ## Status log
 
@@ -238,6 +271,207 @@ is below because the answer was not where it looked.
   notion of "how a unit is spelled": `display_of` renders one-way,
   while the string a signal reports has to survive `recognize`. Two
   more units still fail that round trip — see Blockers.
+
+**2026-09-07 — Phase 5 (composition, prefixes, recognition,
+derivation), branch `task139-derive`.** Landed: base x prefix unit
+identity with library composition, `[prefix][base]` recognition, a
+derived output unit for every function, the time-unit parameter on
+integration and the new Derivative, per-operand recognition state, the
+per-signal unit reinterpretation store, and the user-scope mapping
+store.
+
+- **Composition is the library's, and it was there all along.** Phase
+  1 recorded a gap — "no dimensional algebra" — and that was wrong:
+  `UnitDefinition` implements `Mul` and `Div`, so base exponents add
+  and multipliers multiply. `units::Composed` is built on it, and the
+  hand-written rate/integral pairing table (`integral_of`,
+  `RATE_INTEGRALS`) is **gone**: composition subsumes it and reaches
+  further, since nothing had to name the millicoulomb for `mA · s` to
+  be one. The real gap is the way *back* — nothing maps a computed base
+  to a named unit — so `Composed::named` searches the facade's own
+  base x prefix space for the entry whose definition matches.
+  `plans/technology-inventory.md` is corrected in this commit, and a
+  second gap recorded: the crate's compound entries stop at
+  `microampere_hour`, so `nAh` is composed rather than read.
+- **Where the enumerated variant is preferred, and why the cross-check
+  exists.** `definition_of` takes the crate's own tabulated constant
+  where it has one for a `(base, prefix)` pair and composes `base x 10ⁿ`
+  otherwise — two answers for the same question, which is a second
+  source of truth unless they agree.
+  `every_prefixed_variant_the_crate_enumerates_matches_the_composed_factor`
+  asks the crate for `<prefix symbol><base abbreviation>` across every
+  base entry and every prefix and asserts the composed factor equals
+  the enumerated one; it refuses to pass on fewer than 100 pairs, so a
+  cross-check that stopped checking anything cannot go green. It
+  currently covers several hundred.
+- **A composition is *named* for conversion and *spelled* for display,
+  and they differ.** `A · s` **is** a coulomb — that is what makes
+  `A`→`Ah` reachable at ÷3600 — but it **reads** `A·s`, because a
+  contraction is used only where the named unit spells what the factors
+  spell (`A` + `h` = `Ah`, `nA` + `h` = `nAh`). This changes Phase 4's
+  visible label: an integration with no target read `coulomb` and now
+  reads `A·s`. The exit criterion asks for exactly that, and `C` is the
+  spelling this module refuses to guess at in the first place. Nothing
+  about the conversions moved; the kind is served separately, so a
+  picker still offers the charge family.
+- **Two families can share a base dimension**, so composition needs an
+  order to resolve one: torque and energy are both kg·m²·s⁻², rpm and
+  hertz both s⁻¹. `COMPOSITION_ORDER` states it — an engineer who
+  multiplies a current by an hour means a charge, and nobody composing
+  anything means revolutions.
+- **The composed-output conversion replaced the integration special
+  case**, and generalised it. Resolve tries the operands' own family
+  first (Phase 4's ruling stands: `mA` on an `A` operand still
+  integrates in milliamps), and only where *no* operand reached the
+  target does it ask whether the **function's own composition** does.
+  That one rule now serves integration, derivative and product alike.
+  Consequence worth noting: for `mA`→`Ah` the whole factor moved onto
+  the output (Phase 4 split it ÷1000 on the operand, ÷3600 on the
+  output); the product is identical and the test now asserts the
+  product rather than the split.
+- **Derivation drives conversion when nothing else does.** A set whose
+  members are like-kind now derives the first member's unit *and
+  converts the others to it* with no target set — `1 A + 500 mA` was
+  501 and is 1.5. That is the exit criterion, and it is the one change
+  in this phase that alters numbers a project already computed.
+  `signal_cache::a_target_unit_converts_each_member_before_the_function`
+  had used the unconverted mixed set as its baseline and now uses
+  units nothing can place.
+- **`scalar` split from `ratio`.** The no-unit placeholder is its own
+  kind, so a count never converts into a proportion; `count`, `counts`
+  and `cnt` recognise to it, and `HLine` derives it.
+- **The nAh investigation** — *observation*: the owner's `nAh` signal
+  carried no unplaceable-unit badge in View signals.
+  *Hypothesis*: the flag path works and something upstream of it drops
+  the row. *Experiment*:
+  `which_row_shapes_carry_the_unplaceable_unit_flag` builds the panel's
+  rows for one unplaceable unit string in four reference shapes.
+  *Data*: a manual pick flags; a pattern match (identity only, unit
+  from the serving database) flags; a reference naming no bus has no
+  unit to flag and does not; and a **file-backed** reference produces
+  **no row at all** — `build_rows` skipped these outright.
+  *Conclusion*: the suppression is the file-backed skip, and the
+  justification it carried ("no DBC ever bore on it, so there is no
+  mapping to repair") stopped being true the moment the panel grew a
+  resolved-unit chip and a per-signal reinterpretation store: an
+  imported channel's unit string needs placing exactly as much as a
+  database's. *Fix*: a file-backed reference is a row, reading
+  **Decoded** with no candidates and no diffs — so the attention count,
+  which was the original reason for the skip, is unchanged — and its
+  unit is flagged and reinterpretable like any other.
+  `an_imported_channels_unplaceable_unit_is_flagged_and_reinterpretable`
+  is the regression guard.
+- **Reinterpretation has one application point.**
+  `signal_units::unit_of` is the only place a signal's unit is decided,
+  and the four surfaces that report one read it: the picker catalog
+  (`list_signals`), the signal rows (`trace_query::snapshot_row`), the
+  View-signals chip, and the math catalog — so a reinterpreted operand
+  is what a math definition converts *from*. No scaling anywhere: the
+  label was wrong, and correcting a label does not move a number. The
+  drift comparisons deliberately stay on the database's declared
+  string, since drift is a statement about the database.
+- **The per-row cost of the store is zero when it is empty.**
+  `unit_of_signal` composes the signal identity — a `format!` — only
+  where there is something to look up, because the catalog and the
+  signal-panel snapshot call it once per row per fetch and every
+  project that has reinterpreted nothing would otherwise pay an
+  allocation per row for a map that answers nothing.
+- **Two scopes, one dict.** `unit_customizations_user` is the new
+  user-scope map; `settings::unit_customizations()` joins it with the
+  project's and is what every reader takes. Project wins on a shared
+  key. The settings renderer is key-agnostic, so the second scope needed
+  a descriptor and nothing else.
+- **The compatibility seam Phase 6 removes.** `MathDefinition::unit` is
+  now `UnitTarget` — `serde(untagged)`, so a JSON string is a spelling
+  and an object is the typed form — and the editor still commits
+  spellings, which the host recognises into the typed form at resolve.
+  `unitTargetSpelling` renders a typed target from `unitResolved` so a
+  picker that commits one cannot render `[object Object]`. Phase 6
+  replaces the combobox with the base + prefix picker and commits
+  `UnitId` directly.
+- **2026-09-07 fix — an unplaced member vetoed the whole set's
+  derivation.** *Observation* (owner, bench): "units from patterns seem
+  like they may not be getting put into the units engine", and a
+  pattern-fed `range` served no derived unit, so the editor's
+  "(from the operands)" option had nothing behind it and could not
+  clear an override. *Hypothesis*: patterns feed units fine, but
+  `MathFunction::derived_unit`'s pointwise-inherit arm was written as
+  `recognized.first()?.clone()?` plus `unit.as_ref()?` per member, so a
+  **single** blank or unrecognized member — routine in a wide pattern
+  match — returns `None` for the entire set. *Experiment*:
+  `an_unplaced_member_does_not_veto_the_unit_its_set_inherits` resolves
+  a `Range` over `Cell` with one unplaced member in each of the three
+  positions, and asserts the same pattern-fed and hand-picked.
+  *Data*: the unplaced-first case derived `""` where `"V"` was
+  expected; the pattern/pick pair was never reached, and
+  `operand_unit` proved not to be at fault — it looks a pattern match
+  up by `MathOperandRef` in the same catalog a pick uses, and the
+  pre-existing `a_uniform_set_inherits_its_operand_unit…` already
+  passes on a pattern. *Conclusion*: the veto, not pattern plumbing.
+  *Fix*: the inherit arm skips unplaced members and requires only that
+  the **placed** ones convert to the first placed unit. Silence is not
+  disagreement; a genuine dimension mix still derives nothing, which
+  `an_unplaced_member_does_not_rescue_a_set_that_mixes_dimensions`
+  guards from the other side. Badging is untouched — `effective_affines`
+  only reports `unconverted` when a target was asked for or every
+  member is placed and they disagree, so both cases read exactly as
+  before.
+- **2026-09-08 — a unit is handed on as a unit, never as the string it
+  reads as** (owner ruling: "we should not be relying on parsing the
+  unit strings anywhere in our application ... anywhere we care about
+  units in cannet, they are consumed from a lossless and unambiguous
+  representation"). This phase introduced the two typed stores — the
+  per-signal reinterpretation and the definition's `UnitTarget::Typed`
+  — and then flattened both back to a spelling on the way out:
+  `signal_units::unit_of` rendered a chosen unit with `display_of`, the
+  math catalog carried a `String`, and `derived_unit`,
+  `effective_affines` and `recognition_of` each ran `recognize` on it
+  again. The round trip is lossy exactly where it matters — `coulomb`
+  reads `C` and `newton-millimeter` reads `Nmm`, neither of which
+  recognition will place — so a signal read as a coulomb, or a
+  definition targeted at one, converted nothing and was badged
+  unplaceable while the user had picked it from a kind-locked picker.
+  *Fix*: `units::UnitReading` is the hand-off — the `UnitId` and the
+  string it shows, together — and it is built at exactly two ingest
+  points (`UnitReading::declared`, over a database's own wording and
+  the user's customization dict) or passed through typed
+  (`UnitReading::typed` / `::placed`). `MathCatalogEntry::unit` is one,
+  `derived_unit` and `effective_affines` take placed `UnitId`s, and
+  `recognition_of` reports a reading rather than parsing one. The one
+  string left in the model is `UnitTarget::Spelled` from a project file
+  written before the typed form, which `resolve` still recognises once
+  — that is ingest, and it stays.
+  *Consequence worth noting*: the customization dict is now read where
+  the **catalog** is built (`app_state::math_model`) rather than inside
+  `MathModel::resolve`, which is the same boundary a DBC string already
+  crossed there; `set_settings` drops the math-model cache, so editing
+  one still rebuilds every entry and rescales every dependent channel
+  (`a_math_stamp_moves_when_a_unit_customization_does`, rewritten to
+  rebuild the catalog under the dict, is what pins that).
+  `view_signals`' unplaceable flag is likewise the reading's, so it
+  judges a database's wording and never a unit the user chose.
+  Four acceptance tests were written first and three watched fail
+  (identity where a factor was expected): a reinterpreted-coulomb
+  operand and a reinterpreted-`Nmm` operand each converting to a
+  picked target, and a definition targeted at coulombs handing that
+  unit to the definition that reads it. Host lib 1236 → 1242 passing
+  (7 ignored, unchanged); no frontend change — the command shapes are
+  untouched.
+
+Tests: host lib 1182 → 1233 passing (7 ignored, unchanged): 12 in
+`units`, 17 in `math_signals`, 5 in `math_kernels`, 4 in
+`signal_units`, 3 in `view_signals`, 1 in `settings`, 1 in
+`math_commands`, and the rewrites below. Frontend 3388 across 243
+files, unchanged (five listing fixtures completed with the new
+`unitKind` / `recognition` fields rather than the type made optional).
+The `units` tests were written first and watched fail to compile; the
+Derivative kernel tests were written first and one of them
+(`a_derivative_holds_its_slope_across_a_zero_length_step`) failed on
+the first run, which is how the held slope reached `MathCarry` instead
+of a per-block local. Seven existing tests asserted contracts this
+phase deliberately changes (the `coulomb`/`joule` derived labels, the
+unconverted mixed set, the file-backed skip) and were rewritten to the
+new contract rather than deleted.
 
 **2026-09-07 — Phase 4 (integration units), absorbed into
 `task139-units`.** Landed: the rate↔integral pairing in the facade,
@@ -487,16 +721,15 @@ Tests: host lib 1177 → 1182 passing (7 ignored, unchanged); frontend
 
 ## Blockers / side effects
 
-- **Two units still render a string recognition cannot place**, by the
-  same mechanism the ratio defect had: `coulomb` reads `C` (left out of
-  the recognition table on purpose — it would be a guess between charge
-  and Celsius) and `newton-millimeter` reads `Nmm`. Wherever a unit is
-  *chosen* and then reported onward as a string, choosing either of
-  those two yields a unit string nothing places, so it converts nothing
-  and the mapping panel flags it as unplaceable — while the user picked
-  it from a kind-locked picker. Not fixed here: the repair changes what
-  the unit column renders for those two, which is an owner call. The
-  ratio family is clean, and a facade test pins it.
+- **`coulomb` and `newton-millimeter` still read `C` and `Nmm`**, and
+  recognition still refuses both — `C` is a guess between charge and
+  Celsius, and that rule stays. Nothing depends on it any more: a unit
+  the model holds travels as a `units::UnitReading` (the unit, and the
+  string it shows) rather than as its spelling, so choosing either
+  converts and renders exactly as any other unit does. A *database*
+  that writes `C` still places nothing and is still flagged for a
+  mapping in Settings → Units, which is the ingest question and a
+  different one.
 
 - **A project's `.cannet/settings.json` now always carries
   `unit_customizations`**, empty or not, and the settings view

@@ -97,6 +97,8 @@ function mathRecord(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     operandAffines: [],
     unconverted: [],
     unitResolved: "V",
+    unitKind: null,
+    recognition: [],
     busIds: ["bus-a"],
     invalid: null,
     ...over,

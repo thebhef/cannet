@@ -205,6 +205,18 @@ export function definitionOf(record: MathSignalRecord): MathDefinition {
   };
 }
 
+/// How a definition's unit target reads. A spelling is itself; a typed
+/// unit is spelled by the host, which is what `unitResolved` carries —
+/// the frontend does not spell units, because prefix + base is the
+/// host's table to read.
+export function unitTargetSpelling(
+  unit: MathDefinition["unit"],
+  resolved: string,
+): string {
+  if (unit == null) return "";
+  return typeof unit === "string" ? unit : resolved;
+}
+
 /// Is this parameter field live, given what the definition's governing
 /// parameter holds? A field that is not is not rendered at all.
 export function parameterEnabled(param: MathParamSpec, fn: MathFunction): boolean {

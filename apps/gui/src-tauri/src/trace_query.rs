@@ -704,11 +704,14 @@ fn collect_signal_rows(
         }
     }
 
+    // What each signal is read in, which a project may have
+    // reinterpreted (`crate::signal_units`).
+    let signal_units = state.signal_units_snapshot();
     selected
         .iter()
         .map(|&i| {
             let (bus, d) = &all[i];
-            snapshot_row(bus.as_deref(), d, cells.remove(&i).as_ref())
+            snapshot_row(bus.as_deref(), d, cells.remove(&i).as_ref(), &signal_units)
         })
         .collect()
 }
@@ -719,6 +722,7 @@ fn snapshot_row(
     bus: Option<&str>,
     d: &cannet_dbc::SignalDescriptor,
     cell: Option<&SnapshotCell>,
+    signal_units: &crate::signal_units::SignalUnits,
 ) -> SignalSnapshotRecord {
     SignalSnapshotRecord {
         bus_id: bus.map(str::to_string),
@@ -727,7 +731,17 @@ fn snapshot_row(
         extended: d.extended,
         message_name: d.message_name.clone(),
         signal_name: d.signal_name.clone(),
-        unit: d.unit.clone(),
+        // What the signal is read in, which a project may have
+        // reinterpreted (`crate::signal_units`). The raw-field test
+        // still reads the *database's* string: whether a field is raw
+        // bits is a fact about the database, not about the label a user
+        // corrected.
+        unit: crate::signal_units::label_of_signal(
+            signal_units,
+            bus,
+            (d.message_id, d.extended, &d.signal_name),
+            &d.unit,
+        ),
         is_enum: d.is_enum,
         raw_field: cannet_dbc::is_raw_field(d.value_is_raw_integer, &d.unit, d.is_enum),
         display_hex: d.display_hex,
