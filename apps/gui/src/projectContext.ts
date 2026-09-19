@@ -56,6 +56,12 @@ export interface ProjectContextValue {
 
   onNewProject: () => void;
   onOpenProject: () => void;
+  /// Open the typical import dialog (census → channel mapping → range
+  /// selection, the unsaved-capture guard included) on an absolute file
+  /// path already in hand — the logger file gridview's import affordances
+  /// call this rather than forking the flow `Toolbar`'s "Import trace…"
+  /// runs when the user picks a file interactively.
+  onImportCapture: (path: string) => void;
   /// Write to the open project's path, or prompt if there isn't one.
   onSaveProject: () => void;
   onSaveProjectAs: () => void;
