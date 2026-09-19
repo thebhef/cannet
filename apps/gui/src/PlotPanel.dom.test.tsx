@@ -9,7 +9,7 @@
 // plotCursors.test.ts and the decimation by the Rust signal_sampler
 // tests.)
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
@@ -173,6 +173,10 @@ const SIGNALS = [
   // axis (ADR 0026).
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "LimitNominal", unit: "A" },
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "LimitEffective", unit: "A" },
+  // A voltage pair whose units differ only by prefix — what the plot's
+  // display-unit chip converges onto one lane (ADR 0026).
+  { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "PackVolts", unit: "V" },
+  { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "CellVolts", unit: "mV" },
 ];
 /** The window anchors `sample_signals` reports alongside the series:
  * `from` is the window's first-frame time and `last` its last-frame time
@@ -364,9 +368,72 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "list_math_signals") return mockMathSignals;
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     if (cmd === "get_settings") return { ...mockSettings };
+    if (cmd === "list_unit_picker") return MOCK_UNIT_PICKER;
+    if (cmd === "resolve_display_units") return mockDisplayUnits(args as never);
+    if (cmd === "set_signal_unit") return undefined;
     return undefined;
   }),
 }));
+/// The base × prefix picker model, as `list_unit_picker` serves it —
+/// enough of the voltage family to convert an mV series into volts.
+const MOCK_UNIT_PICKER = [
+  {
+    id: "volt",
+    display: "V",
+    dimension: "voltage",
+    dimensionLabel: "voltage",
+    scales: [
+      { unit: { base: "volt", prefix: "milli" }, label: "m", display: "mV", exponent: -3 },
+      { unit: { base: "volt" }, label: "", display: "V", exponent: 0 },
+    ],
+  },
+  {
+    id: "ampere",
+    display: "A",
+    dimension: "current",
+    dimensionLabel: "current",
+    scales: [{ unit: { base: "ampere" }, label: "", display: "A", exponent: 0 }],
+  },
+];
+/// Stand-in for `resolve_display_units`: the same shape the host
+/// answers, over the two units these tests use. Recognition, the family
+/// and the factor are all host facts, so the panel is exercised exactly
+/// as it will run.
+const MOCK_UNIT_FACTOR: Record<string, { kind: string; unit: { base: string; prefix?: string }; si: number }> = {
+  V: { kind: "voltage", unit: { base: "volt" }, si: 1 },
+  mV: { kind: "voltage", unit: { base: "volt", prefix: "milli" }, si: 0.001 },
+  A: { kind: "current", unit: { base: "ampere" }, si: 1 },
+};
+/// Every `resolve_display_units` request, so a test can pin that the
+/// panel asks the host for the factor rather than computing one.
+const displayUnitAsks: { declared: string; chosen: unknown }[][] = [];
+function mockDisplayUnits(args: {
+  series: { declared: string; chosen: { base: string; prefix?: string } | null }[];
+}) {
+  displayUnitAsks.push(args.series);
+  return args.series.map(({ declared, chosen }) => {
+    const from = MOCK_UNIT_FACTOR[declared];
+    if (!from) {
+      return { source: null, kind: null, display: declared, affine: { gain: 1, offset: 0 } };
+    }
+    const toName = chosen
+      ? Object.keys(MOCK_UNIT_FACTOR).find(
+          (k) =>
+            MOCK_UNIT_FACTOR[k].unit.base === chosen.base &&
+            (MOCK_UNIT_FACTOR[k].unit.prefix ?? "") === (chosen.prefix ?? ""),
+        )
+      : undefined;
+    const to = toName ? MOCK_UNIT_FACTOR[toName] : undefined;
+    return to && to.kind === from.kind
+      ? {
+          source: from.unit,
+          kind: from.kind,
+          display: toName!,
+          affine: { gain: from.si / to.si, offset: 0 },
+        }
+      : { source: from.unit, kind: from.kind, display: declared, affine: { gain: 1, offset: 0 } };
+  });
+}
 // `listen` is hooked up by the filter-defined-areas / file-watcher
 // pathway for `dbc-changed`. Handlers for that event are captured so a
 // test can deliver it the way the host's watcher does; everything else
@@ -405,6 +472,7 @@ const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[]
 import { invoke } from "@tauri-apps/api/core";
 
 import { PlotPanel } from "./PlotPanel";
+import { hydrateUnits } from "./unitLibrary";
 import { PLOT_AREA_DND_MIME, type PlotAreaConfig } from "./plotPanelConfig";
 import { parsePlotAreaDragData } from "./plotAreaTransfer";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
@@ -780,6 +848,12 @@ async function settleMountedAreas(rebuiltBefore: number, areas: number): Promise
     if (counter("render.PlotArea") === settled) break;
   }
 }
+
+// The unit picker model is loaded once for the session, like the
+// settings are — the display-unit chip reads it synchronously.
+beforeAll(async () => {
+  await hydrateUnits();
+});
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
@@ -1381,6 +1455,145 @@ describe("PlotPanel", () => {
     await pickCombobox(screen.getByLabelText("y-axis mode"), "individual");
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
     expect(axisLabels()).toEqual(["EngineSpeed", "EngineTemp"]);
+  });
+
+  /// The convert affordance (ADR 0026): the unit beside a row's value
+  /// is a kind-locked picker, and converting a series merges its lane
+  /// into the target unit's. The conversion itself is the host's — this
+  /// asserts the panel asks for it, applies it, and re-lanes.
+  it("the readout chip converts a series and merges its lane into the target unit's", async () => {
+    mockSampleSeries.PackVolts = { t: [0, 1, 2], v: [396, 396, 396] };
+    mockSampleSeries.CellVolts = { t: [0, 1, 2], v: [3712, 3712, 3712] };
+    mockSignalExtents.PackVolts = { lo: 396, hi: 396 };
+    mockSignalExtents.CellVolts = { lo: 3712, hi: 3712 };
+    renderPanel();
+    addFocusedSignal("PackVolts");
+    addFocusedSignal("CellVolts");
+    await waitFor(() => expect(screen.getByText("CellVolts")).toBeInTheDocument());
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    const axisLabels = () =>
+      Array.from(document.querySelectorAll(".plot-area-axis-label")).map((e) => e.textContent);
+    // mV is a different unit than V, so the cell voltage gets a lane of
+    // its own — per-unit collection stays honest by default.
+    await waitFor(() => expect(axisLabels()).toEqual(["[V]", "[mV]"]));
+
+    const chip = await screen.findByRole("button", { name: "display unit for CellVolts" });
+    expect(chip).toHaveTextContent("mV");
+    fireEvent.click(chip);
+    // Kind-locked: a conversion, so only the voltage family is offered.
+    const bases = screen.getByRole("listbox", { name: "unit" });
+    expect(bases.querySelectorAll("[role=option]")).toHaveLength(1);
+    fireEvent.click(
+      Array.from(screen.getByRole("listbox", { name: "scale" }).querySelectorAll("[role=option]"))
+        .find((o) => o.textContent?.includes("V") && !o.textContent.includes("mV"))!,
+    );
+
+    // One lane, in volts, holding both series — and the readout reads
+    // the converted number.
+    await waitFor(() => expect(axisLabels()).toEqual(["[V]"]));
+    expect(document.querySelectorAll(".plot-area").length).toBe(1);
+    expect(
+      screen.getByRole("button", { name: "display unit for CellVolts" }),
+    ).toHaveTextContent("V");
+    // The factor is asked of the host, not computed here: the panel
+    // re-asks with the unit that was chosen, and what comes back
+    // (÷1000) is what it draws through. `source` is the unit the host
+    // already placed for the series — null here, since this catalog
+    // carries none — and never something the panel read out of the
+    // spelling.
+    expect(displayUnitAsks[displayUnitAsks.length - 1]).toContainEqual({
+      source: null,
+      declared: "mV",
+      chosen: { base: "volt" },
+    });
+  });
+
+  /// Converting is a **real** conversion, so the numbers move with the
+  /// label: the side list's readout, the values drawn and the extent the
+  /// axis scales to all go through the host's affine (ADR 0026).
+  ///
+  /// A **stopped** panel is where that has to be proved. A running one
+  /// resamples on its own cadence, so a redraw the pick forced and one
+  /// it was owed anyway are indistinguishable — and a stopped panel's
+  /// window never moves, so nothing but the pick will ever redraw it.
+  it("redraws a stopped panel through the factor the moment a unit is picked", async () => {
+    mockSampleSeries.CellVolts = { t: [0, 1, 2], v: [3700, 3712, 3724] };
+    mockSignalExtents.CellVolts = { lo: 3700, hi: 3724 };
+    await withSizedCanvas(async () => {
+      const registry = makeRegistry({
+        id: "el-units-stopped",
+        trace: { start: 0, end: 60, isPaused: false },
+      });
+      renderPanel({ params: { elementId: "el-units-stopped", showDiag: true }, registry });
+      addFocusedSignal("CellVolts");
+      const row = () => screen.getByText("CellVolts").closest(".plot-signal-row") as HTMLElement;
+      const readout = () => row().querySelector(".plot-signal-value")?.textContent;
+      /// The auto-normalisation range this series is drawn against —
+      /// the range the y axis labels, and the only place it is
+      /// observable (`showDiag`).
+      const yRange = () => row().querySelector(".plot-signal-range")?.textContent;
+      await waitFor(() => expect(readout()).toBe("3724"));
+      expect(yRange()).toContain("y[3700 … 3724]");
+      // Quiescence first: a mount owes several one-shot re-samples, and
+      // one of those landing after the pick would carry the conversion
+      // in by itself and hide whether the pick forced anything.
+      let quiet = 0;
+      for (let i = 0; i < 16 && quiet < 2; i++) {
+        const before = sampleCalls();
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 150));
+        });
+        quiet = sampleCalls() === before ? quiet + 1 : 0;
+      }
+      expect(quiet).toBe(2);
+      const quietAt = sampleCalls();
+
+      fireEvent.click(await screen.findByRole("button", { name: "display unit for CellVolts" }));
+      fireEvent.click(
+        Array.from(screen.getByRole("listbox", { name: "scale" }).querySelectorAll("[role=option]"))
+          .find((o) => o.textContent?.includes("V") && !o.textContent.includes("mV"))!,
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "display unit for CellVolts" })).toHaveTextContent(
+          "V",
+        ),
+      );
+
+      // ÷1000, in the readout and in the range the axis scales to.
+      await waitFor(() => expect(readout()).toBe("3.724"));
+      expect(yRange()).toContain("y[3.7 … 3.724]");
+      // And off the cached window: the host serves the same raw values
+      // whatever unit they are read in, so the conversion costs no
+      // round-trip.
+      expect(sampleCalls()).toBe(quietAt);
+    });
+  });
+
+  /// The follow-live branch takes its range from the host's all-time
+  /// extent rather than the visible slice (ADR 0025), and that answer
+  /// outlives the display choice in force when it arrived — so it is
+  /// cached as the host served it and carried into the drawn unit where
+  /// it is read.
+  it("carries a following panel's host extent into the unit the series is drawn in", async () => {
+    mockSampleSeries.CellVolts = { t: [0, 1, 2], v: [3700, 3712, 3724] };
+    // Wider than the visible slice, so a range taken from the slice
+    // instead of the host's extent is a visible difference.
+    mockSignalExtents.CellVolts = { lo: 3000, hi: 4000 };
+    await withSizedCanvas(async () => {
+      renderPanel({ params: { showDiag: true } });
+      addFocusedSignal("CellVolts");
+      const row = () => screen.getByText("CellVolts").closest(".plot-signal-row") as HTMLElement;
+      const yRange = () => row().querySelector(".plot-signal-range")?.textContent;
+      await waitFor(() => expect(yRange()).toContain("y[3000 … 4000]"));
+
+      fireEvent.click(await screen.findByRole("button", { name: "display unit for CellVolts" }));
+      fireEvent.click(
+        Array.from(screen.getByRole("listbox", { name: "scale" }).querySelectorAll("[role=option]"))
+          .find((o) => o.textContent?.includes("V") && !o.textContent.includes("mV"))!,
+      );
+
+      await waitFor(() => expect(yRange()).toContain("y[3 … 4]"));
+    });
   });
 
   // The guard that read "measurement strip lists each signal exactly
@@ -3077,8 +3290,11 @@ describe("PlotArea y-normalisation", () => {
       renderPanel();
       addFocusedSignal("EngineSpeed");
       await waitFor(() =>
-        expect(document.querySelector(".plot-signal-value")?.textContent).toBe("12.50 rpm"),
+        expect(document.querySelector(".plot-signal-value")?.textContent).toBe("12.50"),
       );
+      // The unit beside the value is its own control now — the
+      // display-unit chip — rather than a suffix on the number.
+      expect(document.querySelector(".plot-signal-readout")?.textContent).toContain("rpm");
     } finally {
       restore();
     }
@@ -5963,7 +6179,7 @@ describe("PlotPanel signal-row selection", () => {
     renderPanel({ params: { elementId: "el-hide-order" }, registry });
     const order = () =>
       Array.from(document.querySelectorAll(".plot-signal-name")).map((n) => n.textContent);
-    await waitFor(() => expect(order()).toHaveLength(4));
+    await waitFor(() => expect(order()).toHaveLength(SIGNALS.length));
     const before = order();
     expect(before[1]).toBe("EngineTemp");
 
