@@ -57,6 +57,9 @@ export const COLORMAP_PANEL_COMPONENT = "colormap";
 /// Signal-name generator rules editor (ADR 0026). Element-backed, like
 /// the colormap — each generator element opens into its own editor.
 export const GENERATOR_PANEL_COMPONENT = "generator";
+/// Project logger panel. Element-backed, like the colormap — each
+/// logger element opens into its own panel.
+export const LOGGER_PANEL_COMPONENT = "logger";
 /// User-settings editor over the host's `settings.json` (ADR 0034).
 /// Singleton (same pattern as the project / graph / system-messages /
 /// Database panels) — settings are app-global, so one instance suffices.
@@ -242,7 +245,8 @@ export function panelKindForFocus(
     elementKind === "transmit" ||
     elementKind === "rbs" ||
     elementKind === "colormap" ||
-    elementKind === "generator"
+    elementKind === "generator" ||
+    elementKind === "logger"
   ) {
     return elementKind;
   }
@@ -336,6 +340,8 @@ export function elementPanelComponent(kind: ProjectElementKind): string | null {
       return COLORMAP_PANEL_COMPONENT;
     case "generator":
       return GENERATOR_PANEL_COMPONENT;
+    case "logger":
+      return LOGGER_PANEL_COMPONENT;
     case "filter":
       return null;
   }

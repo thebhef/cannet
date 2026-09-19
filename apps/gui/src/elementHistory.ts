@@ -37,6 +37,9 @@ const UNDOABLE_FIELDS: Record<ProjectElementKind, readonly string[]> = {
   filter: ["sources", "predicate"],
   colormap: ["busId", "messageId", "extended", "signalName", "rules"],
   generator: ["rules"],
+  // `enabled` is deliberately absent: it starts and stops a file being
+  // written on disk, which an undo chord has no business reversing.
+  logger: ["folder", "file", "maxFileSizeMb"],
   transmit: [],
   rbs: [],
 };

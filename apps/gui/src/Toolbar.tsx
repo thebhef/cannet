@@ -97,6 +97,7 @@ const ADD_PANEL_CHIPS: readonly { command: string; icon: IconName }[] = [
   { command: "panel.add.rbs", icon: "loop" },
   { command: "panel.add.colormap", icon: "palette" },
   { command: "panel.add.generator", icon: "wave" },
+  { command: "panel.add.logger", icon: "save" },
 ];
 
 export interface ToolbarProps {

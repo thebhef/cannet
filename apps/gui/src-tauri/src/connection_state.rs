@@ -154,6 +154,12 @@ pub(crate) fn remove_and_emit(app: &AppHandle, bus_ids: impl IntoIterator<Item =
 
 fn emit(app: &AppHandle, states: &ConnectionStates) {
     let _ = app.emit(CONNECTION_STATES_CHANGED_EVENT, states.snapshot());
+    // A project logger writes exactly while it is enabled and something
+    // is connected, so this is also the moment one starts or stops. The
+    // reconcile is idempotent and does nothing when no logger's answer
+    // moved — putting it on the one write path is what keeps "the state
+    // changed" and "the loggers followed it" from drifting apart.
+    crate::logger::reconcile(app);
 }
 
 /// Initial-state read for a frontend that just mounted. The event

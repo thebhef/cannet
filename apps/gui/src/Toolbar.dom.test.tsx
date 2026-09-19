@@ -59,6 +59,7 @@ const ADD_MENU: readonly [string, string][] = [
   ["RBS Panel", "panel.add.rbs"],
   ["Color Map", "panel.add.colormap"],
   ["Generator", "panel.add.generator"],
+  ["Logger", "panel.add.logger"],
 ];
 
 const RECENTS = ["C:/captures/drive-cycle-08.blf", "C:/captures/bench.mf4"];
@@ -115,7 +116,7 @@ describe("Toolbar", () => {
     }
   });
 
-  it("collapses the seven Add commands into one menu, in order", () => {
+  it("collapses the eight Add commands into one menu, in order", () => {
     const { onRun } = renderBar();
     const add = barChips().find((c) => c.getAttribute("title") === "Add a panel")!;
     expect(add).toHaveAttribute("aria-expanded", "false");

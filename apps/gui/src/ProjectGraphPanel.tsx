@@ -378,7 +378,8 @@ function removeEdgeFromRegistry(
         el.kind === "transmit" ||
         el.kind === "rbs" ||
         el.kind === "colormap" ||
-        el.kind === "generator"
+        el.kind === "generator" ||
+        el.kind === "logger"
       ) {
         return;
       }
@@ -451,7 +452,8 @@ function addEdgeToRegistry(
       consumer.kind === "transmit" ||
       consumer.kind === "rbs" ||
       consumer.kind === "colormap" ||
-      consumer.kind === "generator"
+      consumer.kind === "generator" ||
+      consumer.kind === "logger"
     ) {
       return;
     }
