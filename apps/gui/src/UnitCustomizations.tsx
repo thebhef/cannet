@@ -22,11 +22,21 @@
 // panel's `onCommit`, so the row keeps the panel's optimistic value and
 // its reset-to-default; the user dict has no row and so is written
 // directly through `updateSettings`.
+//
+// **Composed units.** The two-field entry above the table defines a unit
+// out of ones the model already knows (`VA` = `V * A`). The composition
+// string is read by the host and nowhere else: this section asks
+// `check_unit_definition` before it persists, shows the refusal where it
+// was typed, and from then on holds only the pair it stored — the unit
+// itself arrives back as an ordinary row of the table, in the same
+// normalized order, and is picked, spelled and converted like any other.
+// The definitions live at the same two scopes as the mappings, and the
+// row's own checkboxes move them.
 
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { subscribeSettings, updateSettings, useSetting } from "./hostSettings";
+import { subscribeSettings, updateSettings, useSetting, type Settings } from "./hostSettings";
 import type { SettingDescriptor } from "./settingDescriptors";
 import type { UnitId } from "./types";
 
@@ -47,6 +57,22 @@ interface UnitMappingRow {
   display: string;
   dimensionLabel: string;
   mappings: UnitMapping[];
+  /// The string this unit was composed from, where the user defined it
+  /// rather than the app shipping it. Shown back verbatim.
+  composition: string | null;
+  /// Which scope's definition is the one in force.
+  definitionScope: "project" | "user" | null;
+  /// Why a stored definition does not hold. A row carrying one names no
+  /// working unit — it is here so a bad entry can be seen and fixed.
+  error: string | null;
+}
+
+/// What a refused definition said, as the host phrased it — the whole
+/// point of asking it, so nothing is reworded here.
+function messageOf(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  return String(e);
 }
 
 /// The dict as the host serialises it: DBC unit string → unit id.
@@ -69,8 +95,13 @@ export function UnitCustomizations({
 }) {
   const project = dictOf(value);
   const user = useSetting("unit_customizations_user");
+  const definitions = useSetting("unit_definitions");
+  const definitionsUser = useSetting("unit_definitions_user");
   const [rows, setRows] = useState<UnitMappingRow[]>([]);
   const [filter, setFilter] = useState("");
+  const [name, setName] = useState("");
+  const [composition, setComposition] = useState("");
+  const [refusal, setRefusal] = useState<string | null>(null);
 
   // The host reads both dicts from its own settings cache, so the table
   // is re-asked once a write has **landed** there — which is what the
@@ -115,6 +146,18 @@ export function UnitCustomizations({
   /// so it stays in force where it already was, and the host's join
   /// (project over user) is what settles a string both scopes hold.
   const setScope = (row: UnitMappingRow, scope: "project" | "user", on: boolean) => {
+    // A composed unit's definition moves with the same tick: the
+    // checkbox governs where this row's own content persists, and for a
+    // unit the user made, the definition is that content.
+    if (row.composition !== null) {
+      const dict = scope === "project" ? definitions : definitionsUser;
+      const next = { ...dict };
+      if (on) next[row.unit.base] = row.composition;
+      else delete next[row.unit.base];
+      void updateSettings(
+        scope === "project" ? { unit_definitions: next } : { unit_definitions_user: next },
+      );
+    }
     const spellings = customOf(row);
     if (spellings.length === 0 || row.id == null) return;
     const dict = scope === "project" ? project : user;
@@ -125,6 +168,57 @@ export function UnitCustomizations({
     }
     if (scope === "project") onCommit(next);
     else void updateSettings({ unit_customizations_user: next });
+  };
+
+  /// Which scopes hold this row's definition, if it has one. Read from
+  /// the dicts rather than from the row, because the host answers which
+  /// definition *won* and the checkboxes are about where each one is.
+  const definedIn = (row: UnitMappingRow) =>
+    row.composition === null
+      ? null
+      : {
+          project: row.unit.base in definitions,
+          user: row.unit.base in definitionsUser,
+        };
+
+  /// Remove a composed unit from wherever it is defined. Both scopes at
+  /// once: the row is one unit to the user, and leaving the other copy
+  /// behind would look like the delete did nothing.
+  const deleteDefinition = (row: UnitMappingRow) => {
+    const patch: Partial<Settings> = {};
+    if (row.unit.base in definitions) {
+      const next = { ...definitions };
+      delete next[row.unit.base];
+      patch.unit_definitions = next;
+    }
+    if (row.unit.base in definitionsUser) {
+      const next = { ...definitionsUser };
+      delete next[row.unit.base];
+      patch.unit_definitions_user = next;
+    }
+    if (Object.keys(patch).length > 0) void updateSettings(patch);
+  };
+
+  /// Define a unit from the two-field entry.
+  ///
+  /// The host is asked first and is the only thing that reads the
+  /// composition — a refusal is shown where it was typed, with the text
+  /// left alone so it can be corrected rather than retyped. It lands in
+  /// the **project** dict for the same reason a spelling does: the unit
+  /// is invented for the databases in front of the user, and the user
+  /// checkbox is how it is promoted afterwards.
+  const defineUnit = () => {
+    const trimmed = name.trim();
+    invoke("check_unit_definition", { name: trimmed, composition })
+      .then(() => {
+        setRefusal(null);
+        setName("");
+        setComposition("");
+        void updateSettings({
+          unit_definitions: { ...definitions, [trimmed]: composition.trim() },
+        });
+      })
+      .catch((e: unknown) => setRefusal(messageOf(e)));
   };
 
   /// A spelling assigned to this row, typed into it. It lands in the
@@ -159,12 +253,41 @@ export function UnitCustomizations({
           r.display.toLowerCase().includes(needle) ||
           r.unit.base.includes(needle) ||
           r.dimensionLabel.includes(needle) ||
+          (r.composition ?? "").toLowerCase().includes(needle) ||
           r.mappings.some((m) => m.spelling.toLowerCase().includes(needle)),
       )
     : rows;
 
   return (
     <div className="setting-custom unit-customizations">
+      <div className="unit-definition-entry">
+        <input
+          type="text"
+          aria-label="New unit name"
+          placeholder="new unit"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <span aria-hidden="true">=</span>
+        <input
+          type="text"
+          aria-label="Composed from"
+          placeholder="V * A"
+          value={composition}
+          onChange={(e) => setComposition(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") defineUnit();
+          }}
+        />
+        <button type="button" onClick={defineUnit}>
+          Define unit
+        </button>
+      </div>
+      {refusal !== null && (
+        <p className="unit-definition-refusal" role="alert">
+          {refusal}
+        </p>
+      )}
       <input
         type="search"
         className="unit-customizations-filter"
@@ -178,6 +301,7 @@ export function UnitCustomizations({
           <tr>
             <th scope="col">unit</th>
             <th scope="col">dimension</th>
+            <th scope="col">composed from</th>
             <th scope="col">matched strings</th>
             <th scope="col">project</th>
             <th scope="col">user</th>
@@ -189,8 +313,10 @@ export function UnitCustomizations({
               key={`${row.unit.base}/${row.unit.prefix ?? ""}`}
               row={row}
               custom={customOf(row)}
+              defined={definedIn(row)}
               onAdd={(spelling) => addSpelling(row, spelling)}
               onRemove={removeSpelling}
+              onDelete={() => deleteDefinition(row)}
               onScope={(scope, on) => setScope(row, scope, on)}
             />
           ))}
@@ -210,27 +336,51 @@ export function UnitCustomizations({
 function UnitRow({
   row,
   custom,
+  defined,
   onAdd,
   onRemove,
+  onDelete,
   onScope,
 }: {
   row: UnitMappingRow;
   /// The spellings this row persists — what a scope checkbox moves.
   custom: readonly string[];
+  /// Which scopes hold this row's definition, or `null` where the app
+  /// ships the unit and there is nothing to hold.
+  defined: { project: boolean; user: boolean } | null;
   onAdd: (spelling: string) => void;
   onRemove: (spelling: string, source: UnitMapping["source"]) => void;
+  onDelete: () => void;
   onScope: (scope: "project" | "user", on: boolean) => void;
 }) {
   const [typed, setTyped] = useState("");
   const inScope = (scope: "project" | "user") =>
-    row.mappings.some((m) => m.source === scope);
+    row.mappings.some((m) => m.source === scope) || (defined?.[scope] ?? false);
   // Nothing to promote or demote until the row persists something: a
-  // built-in match ships with the app and is stored nowhere.
-  const disabled = custom.length === 0;
+  // built-in match ships with the app and is stored nowhere, but a unit
+  // the user composed always does.
+  const disabled = custom.length === 0 && defined === null;
   return (
     <tr>
       <td className="unit-customization-unit">{row.display}</td>
       <td className="unit-customization-dimension">{row.dimensionLabel}</td>
+      <td className="unit-customization-composition">
+        {row.composition !== null && (
+          <>
+            <span>{row.composition}</span>
+            <button
+              type="button"
+              aria-label={`Delete the unit ${row.display}`}
+              onClick={onDelete}
+            >
+              ×
+            </button>
+            {row.error !== null && (
+              <span className="unit-customization-error">{row.error}</span>
+            )}
+          </>
+        )}
+      </td>
       <td>
         {row.mappings.map((m) => (
           <span
