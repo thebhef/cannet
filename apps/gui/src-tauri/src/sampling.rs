@@ -362,6 +362,7 @@ fn cache_queries(signals: &[SignalQuery]) -> Vec<CacheQuery<'_>> {
             extended: q.extended,
             signal_name: &q.signal_name,
             file_backed: q.file_backed,
+            math: q.math,
         })
         .collect()
 }

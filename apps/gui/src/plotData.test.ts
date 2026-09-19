@@ -119,6 +119,16 @@ describe("signalKey", () => {
       signalKey(null, 1, false, "EngineSpeed"),
     );
   });
+  it("keeps a math signal in its own namespace", () => {
+    // A math signal (docs/CONTEXT.md) has no bus and no message: its
+    // name slot holds the definition's stable id, and the `m` flag
+    // keeps it apart from a DBC-backed signal of the same name.
+    expect(signalKey(null, 0, false, "0f0c1f9a", false, true)).toBe("*|m:0:0f0c1f9a");
+    expect(signalKey(null, 0, false, "0f0c1f9a", false, true)).not.toBe(
+      signalKey(null, 0, false, "0f0c1f9a"),
+    );
+    expect(signalKey(null, 0, false, "0f0c1f9a", true, true)).toBe("*|m:0:0f0c1f9a");
+  });
   it("reads provenance off a record", () => {
     expect(
       recordSignalKey({

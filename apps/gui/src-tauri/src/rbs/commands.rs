@@ -154,8 +154,10 @@ pub async fn rbs_unload(
 }
 
 /// Push the project's logical-bus list (id, name pairs). RBS bus keys
-/// resolve against the *names*; the frontend (which owns the project)
-/// calls this on open and on any bus add / rename / remove.
+/// resolve against the *names*, and so do math-signal patterns
+/// (ADR 0038), so this is also where the host's standing bus-name map
+/// is refreshed. The frontend (which owns the project) calls it on open
+/// and on any bus add / rename / remove.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value, clippy::unused_async)]
 pub async fn rbs_sync_project_buses(
@@ -163,6 +165,7 @@ pub async fn rbs_sync_project_buses(
     state: State<'_, AppState>,
     buses: Vec<(String, String)>,
 ) -> Result<(), String> {
+    state.set_project_bus_names(buses.clone());
     {
         let mut rbs = state.rbs();
         rbs.project_buses = buses;
