@@ -7577,3 +7577,198 @@ button.color-chip {
 .export-chip.done {
   color: var(--text-muted);
 }
+
+/* ---- Math signals: the Computed branch and its editor ---- */
+
+/* A definition the user has not named yet — created the moment its
+   function was picked, and unusable until it is filled in. */
+.dbc-row-unnamed {
+  color: var(--text-faint);
+  font-style: italic;
+}
+/* Why the host calls a definition unusable, on the row itself. Reads
+   like the DBC branch's collision note: a fact about the row, not an
+   alarm. */
+.dbc-row-invalid {
+  color: var(--warn-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Drop a definition: the app's quiet inline icon-button, sitting
+   immediately after the name it deletes. It rides the name rather than
+   the row's far end (`margin-left: auto`) because a far-end control
+   moves as the panel is resized, so what is under the cursor changes
+   with the width. `flex: none` keeps it whole while the row's text
+   gives up space around it, and the disclosure still leads the row, so
+   expanding a definition and deleting it are not neighbouring targets. */
+.dbc-row-delete {
+  flex: none;
+  background: none;
+  border: 0;
+  padding: 0 0 0 0.15rem;
+  color: var(--text-faint);
+  cursor: pointer;
+  line-height: 1;
+}
+.dbc-row-delete:hover {
+  color: var(--danger-text);
+}
+.dbc-row-delete svg {
+  display: block;
+}
+
+/* The editor, disclosed under the row it belongs to. It is the same
+   component on every surface, so it lays out in one column at full
+   width — the narrowest place it has to fit is a plot's side list. */
+.dbc-math-editor {
+  padding-right: 0.5rem;
+  border-bottom: 1px solid var(--border-row-fade);
+}
+.math-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.35rem 0.4rem 0.5rem;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+.math-editor-title {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+/* The host's own words about what is still missing. */
+.math-editor-invalid {
+  color: var(--warn-text);
+}
+.math-editor-error {
+  color: var(--danger-text);
+}
+/* Label above control, never beside it — a label column would not
+   survive the narrow surfaces this editor also mounts on. */
+.math-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.math-editor-field > span {
+  color: var(--text-faint);
+}
+.math-editor-field input {
+  background: var(--surface-control);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font: inherit;
+  padding: 0.1rem 0.25rem;
+  min-width: 0;
+}
+
+/* One prepopulated operand section: the Signals panel's header row,
+   with its rows stacked beneath at full width. */
+.math-operand-section {
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  overflow: visible;
+}
+.math-operand-section .signals-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 20px;
+  padding: 0 0.25rem;
+}
+.math-operand-validity {
+  margin-left: auto;
+  font-weight: 400;
+}
+.math-operand-validity.warn {
+  color: var(--warn-text);
+}
+.math-operand-validity.ok {
+  color: var(--text-faint);
+}
+.math-operand-combobox {
+  max-width: 9rem;
+}
+/* The section's pattern list is viewport-fixed at the button's
+   measured position (the signal view's own approach): an
+   absolutely-anchored popover is clipped by the hosting panel's
+   scroll container, which reads as the button doing nothing. It can
+   drift from the button if the tree scrolls while open; dismissal
+   covers that. */
+.math-operand-empty {
+  color: var(--text-faint);
+  font-style: italic;
+  padding: 0.15rem 0.4rem;
+}
+.math-operand-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.25rem;
+  height: 20px;
+}
+.math-operand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.math-operand-row.missing .math-operand-name {
+  color: var(--warn-text);
+  font-style: italic;
+}
+.math-operand-unit {
+  color: var(--text-faint);
+  margin-left: auto;
+}
+/* A signal a pattern collected rather than one the user picked: it
+   cannot be removed by hand, only by changing the pattern. */
+.math-operand-row.derived .math-operand-name {
+  color: var(--text-secondary);
+}
+.math-operand-derived {
+  color: var(--text-faint);
+}
+.math-operand-row button {
+  background: none;
+  border: 0;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0;
+}
+.math-operand-row button:hover {
+  color: var(--text-primary);
+}
+.math-operand-row button svg {
+  display: block;
+}
+
+/* The creation menu — every function, on the surface that was
+   right-clicked. Same floating shell as the other context menus. */
+.math-function-menu {
+  display: flex;
+  flex-direction: column;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.math-function-menu-title {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  margin-bottom: 0.2rem;
+}
+.math-function-menu button {
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.4rem;
+  text-align: left;
+}
+.math-function-menu button:hover {
+  background: var(--surface-hover);
+}
