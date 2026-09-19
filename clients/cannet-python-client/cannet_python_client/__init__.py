@@ -14,6 +14,15 @@ speaks python-can gains a remote bus by naming one. The names below are
 for the things python-can has no vocabulary for: which servers the
 machine trusts, and what a peer said about frames it would not carry.
 
+Getting a server onto that list is the ``cannet-client`` command this
+distribution also ships (:mod:`cannet_python_client.cli`) — the GUI's
+accept-a-server workflow, on a terminal. What it decides is importable
+too, and is where the rules live rather than in the command:
+:mod:`cannet_python_client.servers` for the list of servers and what a
+name means, :mod:`cannet_python_client.connect` for the connection flow,
+:mod:`cannet_python_client.browse` for the mDNS browse, and
+:mod:`cannet_python_client.trust` for the store itself.
+
 Importing this package opens no connection and reads no file.
 """
 
