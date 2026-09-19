@@ -4497,12 +4497,14 @@ fn an_mdf_save_carries_math_signals_as_decoded_channels() {
             id: "m1".into(),
             name: "HalfSpeed".into(),
             unit: Some("rpm".into()),
+            output_gain: None,
+            output_offset: None,
             function: MathFunction::Scale {
                 gain: 0.5,
                 offset: 0.0,
             },
             operands: MathOperands {
-                picks: vec![Some(MathOperandRef::file(1, "EngineSpeed"))],
+                picks: vec![Some(MathOperandRef::file(1, "EngineSpeed").into())],
                 patterns: Vec::new(),
             },
         })
@@ -8155,6 +8157,8 @@ fn math_hline(id: &str, name: &str, value: f64) -> crate::math_signals::MathDefi
         id: id.to_string(),
         name: name.to_string(),
         unit: None,
+        output_gain: None,
+        output_offset: None,
         function: crate::math_signals::MathFunction::HLine { value },
         operands: crate::math_signals::MathOperands::default(),
     }
@@ -8213,6 +8217,8 @@ fn a_math_pattern_matches_the_canonical_path_with_the_projects_bus_name() {
             id: "m1".into(),
             name: "max".into(),
             unit: None,
+            output_gain: None,
+            output_offset: None,
             function: crate::math_signals::MathFunction::Max,
             operands: crate::math_signals::MathOperands {
                 picks: Vec::new(),
@@ -8347,6 +8353,57 @@ fn a_math_registry_write_announces_the_listing_and_the_decode_model() {
     );
 }
 
+/// **A unit customization edit is a decode-model change too.**
+///
+/// The customization dict takes part in every operand's conversion, so
+/// editing one rescales every dependent math series — and, before this,
+/// did so silently: the settings write dropped the resolved model and
+/// re-judged the pyramids but announced nothing, so the host rescaled
+/// while every plot went on drawing the old numbers. The same gap the
+/// definition CRUD had, reached from the other input.
+#[test]
+fn a_unit_customization_change_announces_the_decode_model_change() {
+    let state = test_state();
+    let before = crate::settings::unit_inputs();
+    // Synthesised rather than written through `set_settings`: the
+    // effective settings are process-global and the suite runs in
+    // parallel, so a test that mutated them could not be deterministic.
+    let mut after = before.clone();
+    after.insert("counts".to_string(), "percent".to_string());
+
+    let sink = MathChangeRecorder::default();
+    assert!(crate::settings::apply_unit_change(
+        &sink, &state, &before, &after
+    ));
+    assert_eq!(
+        sink.0.into_inner(),
+        vec!["math-signals-changed", "dbc-changed"],
+        "the listing's conversions moved, and so did the decoded model",
+    );
+}
+
+/// **…and a settings save that moves no unit stays quiet.**
+///
+/// `set_settings` runs on every preference — a theme, a poll interval,
+/// a scratch cap. Announcing a decode-model change on each of them
+/// would re-anchor every plot and every windowed view, dropping a
+/// cached window whose samples are all still valid, which is why the
+/// announcement is gated on the inputs rather than on the write.
+#[test]
+fn a_settings_write_that_moves_no_unit_announces_nothing() {
+    let state = test_state();
+    let units = crate::settings::unit_inputs();
+
+    let sink = MathChangeRecorder::default();
+    assert!(!crate::settings::apply_unit_change(
+        &sink, &state, &units, &units
+    ));
+    assert!(
+        sink.0.into_inner().is_empty(),
+        "nothing math converts through moved, so nothing is announced",
+    );
+}
+
 /// **A redefinition changes the numbers the host serves.** The model
 /// half of the bench report that a plotted math signal did not move
 /// when its definition was edited: the edit moves the definition's
@@ -8379,7 +8436,9 @@ fn a_math_redefinition_rebuilds_what_the_host_serves() {
     let definition = |gain: f64| MathDefinition {
         function: MathFunction::Scale { gain, offset: 0.0 },
         operands: MathOperands {
-            picks: vec![Some(MathOperandRef::dbc(TEST_BUS, 0x123, false, "Sig"))],
+            picks: vec![Some(
+                MathOperandRef::dbc(TEST_BUS, 0x123, false, "Sig").into(),
+            )],
             patterns: Vec::new(),
         },
         ..math_hline("m1", "Scaled", 0.0)

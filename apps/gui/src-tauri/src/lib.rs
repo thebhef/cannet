@@ -125,6 +125,7 @@ pub mod trace_store;
 mod transmit_commands;
 mod transmit_frames;
 mod transmit_scheduler;
+pub mod units;
 mod verification;
 mod view_signals;
 mod watched_file;

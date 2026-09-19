@@ -94,6 +94,8 @@ function mathRecord(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
       { busId: "bus-a", messageId: 0x120, extended: false, signalName: "Cell02" },
     ],
     operandPaths: ["CAN1/BMS/BMS_Cells/Cell01", "CAN1/BMS/BMS_Cells/Cell02"],
+    operandAffines: [],
+    unconverted: [],
     unitResolved: "V",
     busIds: ["bus-a"],
     invalid: null,

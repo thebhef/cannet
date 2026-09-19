@@ -63,6 +63,8 @@ function mathRecord(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     arity: "set",
     resolvedOperands: [],
     operandPaths: [],
+    operandAffines: [],
+    unconverted: [],
     unitResolved: "V",
     busIds: ["p"],
     invalid: null,

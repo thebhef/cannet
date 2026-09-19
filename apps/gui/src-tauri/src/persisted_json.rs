@@ -192,6 +192,11 @@ pub(crate) fn scope_of(scopes: ScopeTable, key: &str) -> Option<Scope> {
 /// doesn't change is not rewritten at all, so cannet doesn't author
 /// `.cannet/settings.json` merely because a user-scope setting changed.
 ///
+/// A [`Scope::Workspace`] key is the exception, and by design: its home
+/// *is* the project's file, so it is written there whatever its value —
+/// a project overriding nothing still carries the keys that are its own
+/// outright.
+///
 /// **A key with no declared scope is a bug**, not a case to handle: it
 /// trips a `debug_assert` (so a test catches it) and, in a release build,
 /// is written at user scope and logged rather than dropped.

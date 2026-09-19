@@ -557,6 +557,19 @@ const DESCRIPTORS: &[Spec] = &[
         control: Control::Bool,
     },
     Spec {
+        key: "unit_customizations",
+        backing: Backing::Field,
+        label: "Unit customizations",
+        help: "What this project's DBC unit strings mean. The common \
+               spellings are recognised built in; this holds only what \
+               you changed, and travels with the project.",
+        surfaces: &[Surface::Dbc],
+        kind: Kind::Behaviour,
+        control: Control::Custom {
+            renderer: "unit-customizations",
+        },
+    },
+    Spec {
         key: "notice_dwell_ms",
         backing: Backing::Field,
         label: "Status notice dwell",
