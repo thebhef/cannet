@@ -8,9 +8,9 @@ smaller; a capture mixing it with wall-clock frames breaks every
 consumer that anchors on the first frame's timestamp (the plot's
 x-axis lands off-canvas — the same bug the virtual bus had).
 
-Covers the two self-stamped paths in ``server.py``: the TX-frame
-fallback in ``_proto_to_frame`` (a transmit request arriving without a
-timestamp) and ``_log_envelope``.
+Covers the self-stamped envelopes the sidecar builds: ``_log_envelope``
+and ``_clock_reply_envelope``. The frame path is the shared wire
+package's and is covered in its suite.
 """
 
 from __future__ import annotations
@@ -29,20 +29,7 @@ _ensure_on_path()
 
 
 from cannet_python_can import server as srv  # noqa: E402
-from cannet_python_can._proto import cannet_pb2 as pb  # noqa: E402
-
-
-def test_proto_to_frame_timestamp_fallback_is_wall_clock() -> None:
-    before = time.time_ns()
-    frame = srv._proto_to_frame(
-        pb.Frame(timestamp_ns=0, can_id=0x100, kind=pb.FRAME_KIND_CLASSIC)
-    )
-    after = time.time_ns()
-    assert before <= frame.timestamp_ns <= after, (
-        f"TX-frame fallback timestamp {frame.timestamp_ns} is outside the "
-        f"wall-clock window [{before}, {after}] — likely on a different "
-        f"clock (e.g. time.monotonic_ns())."
-    )
+from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
 
 
 def test_log_envelope_timestamp_is_wall_clock() -> None:

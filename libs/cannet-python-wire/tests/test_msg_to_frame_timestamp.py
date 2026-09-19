@@ -1,4 +1,4 @@
-"""Tests for the python-can ``Message`` → driver ``Frame`` timestamp
+"""Tests for the python-can ``Message`` → wire ``Frame`` timestamp
 contract.
 
 The trace view captures the first frame's timestamp as the zero point
@@ -33,12 +33,12 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_python_can.driver_python_can import _msg_to_frame  # noqa: E402
+from cannet_python_wire import message_to_frame  # noqa: E402
 
 
 @dataclass
 class _FakeMsg:
-    """Just enough of python-can's ``Message`` shape for ``_msg_to_frame``."""
+    """Just enough of python-can's ``Message`` shape for ``message_to_frame``."""
 
     timestamp: float = 0.0
     arbitration_id: int = 0x100
@@ -66,7 +66,7 @@ def test_hardware_timestamp_passes_through_unchanged() -> None:
     # the plausibility window.
     ts = round(time.time() - 0.25, 6)
     msg = _FakeMsg(timestamp=ts, data=b"\x01\x02\x03")
-    frame = _msg_to_frame(msg)
+    frame = message_to_frame(msg)
     assert frame.timestamp_ns == int(ts * 1_000_000_000)
 
 
@@ -87,7 +87,7 @@ def test_implausible_timestamp_falls_back_to_wall_clock() -> None:
     # The exact value from the field crash: 239723374713510395904 ns.
     bogus_s = 239723374713.5103959
     before = time.time_ns()
-    frame = _msg_to_frame(_FakeMsg(timestamp=bogus_s))
+    frame = message_to_frame(_FakeMsg(timestamp=bogus_s))
     after = time.time_ns()
     assert before <= frame.timestamp_ns <= after, (
         f"implausible hardware timestamp ({bogus_s} s) was not replaced "
@@ -110,7 +110,7 @@ def test_missing_timestamp_falls_back_to_unix_epoch_ns_not_monotonic() -> None:
     would.
     """
     before = time.time_ns()
-    frame = _msg_to_frame(_FakeMsg(timestamp=0.0))
+    frame = message_to_frame(_FakeMsg(timestamp=0.0))
     after = time.time_ns()
     assert before <= frame.timestamp_ns <= after, (
         f"fallback timestamp {frame.timestamp_ns} is outside the wall-clock "

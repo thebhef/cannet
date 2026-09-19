@@ -1,4 +1,4 @@
-// The panel-edit undo stack (task 129): host-owned edits the Signal and
+// The panel-edit undo stack: host-owned edits the Signal and
 // RBS panels make — a mapping pick, an RBS enable, a value override —
 // as step/inverse pairs like the event-link stack, never snapshots.
 

@@ -14,9 +14,9 @@ import threading
 from typing import Iterator
 
 import grpc
+from cannet_python_wire._proto import cannet_pb2 as pb
 
 from .. import driver as drv
-from .._proto import cannet_pb2 as pb
 
 #: How often a parked ``WatchInterfaces`` stream wakes to re-check
 #: ``context.is_active()``. This is a liveness safety-net only — it does

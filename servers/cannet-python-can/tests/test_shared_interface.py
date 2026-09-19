@@ -42,7 +42,7 @@ _ensure_on_path()
 from cannet_python_can import driver as drv  # noqa: E402
 from cannet_python_can import server as srv  # noqa: E402
 from cannet_python_can.server import shared_interface as si  # noqa: E402
-from cannet_python_can._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
 
 
 def _frame(i: int) -> drv.Frame:

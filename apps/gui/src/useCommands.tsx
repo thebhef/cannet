@@ -116,7 +116,7 @@ export interface UseCommandsOptions {
   /// link step to take, and how to take it.
   linkHistoryRef: MutableRefObject<LinkHistory>;
   applyEventLinkHistory: (dir: "undo" | "redo") => boolean;
-  /// The Signal/RBS panel-edit stack (task 129), read the same way.
+  /// The Signal/RBS panel-edit stack, read the same way.
   panelEditHistoryRef: MutableRefObject<PanelEditHistory>;
   applyPanelEditHistory: (dir: "undo" | "redo") => boolean;
   // Reactive model reads.

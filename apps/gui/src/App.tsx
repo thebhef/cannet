@@ -3089,7 +3089,7 @@ export function App() {
     // like clicking the title-bar close button.
     "app.exit": () => void getCurrentWindow().close(),
   };
-  // Signal/RBS panel edits are the fourth undo stack (task 129) — the
+  // Signal/RBS panel edits are the fourth undo stack — the
   // event-link pattern over the panels' own commands: the panel records
   // the step with its inverse, a restore dispatches without
   // re-recording.

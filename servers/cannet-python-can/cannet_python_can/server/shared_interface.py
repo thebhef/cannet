@@ -17,11 +17,12 @@ import threading
 import time
 from typing import Optional
 
+from cannet_python_wire import frame_to_proto
+from cannet_python_wire._proto import cannet_pb2 as pb
+
 from .. import driver as drv
-from .._proto import cannet_pb2 as pb
 from .helpers import (
     _error_envelope,
-    _frame_to_proto,
     _interface_state,
     _log_envelope,
     _state_name_to_proto,
@@ -554,7 +555,7 @@ class _SharedInterface:
             # frame would otherwise flood the system log.
             nonlocal dropped
             try:
-                return _frame_to_proto(frame)
+                return frame_to_proto(frame)
             except ValueError as e:
                 dropped += 1
                 if dropped == 1:

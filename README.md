@@ -237,6 +237,33 @@ apps/
                      fan into alongside `tracing-subscriber`; the
                      System Messages panel renders it.
 
+servers/
+  cannet-python-can/
+                 The python-can sidecar: a gRPC *server* that exposes
+                 the host's Vector / Kvaser / PEAK adapters over the
+                 wire protocol. `cannet-server` supervises one; the GUI
+                 does too.
+
+clients/
+  cannet-python-client/
+                 A python-can *client*: `CannetBus`, registered under
+                 python-can's `can.interface` entry-point group, so
+                 `can.Bus(interface="cannet", server=…, channel=…)`
+                 opens a bus on a cannet server with no cannet-specific
+                 import. Resolves the server against the GUI's trust
+                 store (`servers.json`) for the pinned certificate and
+                 bearer token. See its README.
+
+libs/
+  cannet-python-wire/
+                 What the two Python packages above have to agree on,
+                 and nothing else: the checked-in `_proto` gencode, the
+                 `Frame` they pass around, and the mappers to the
+                 generated proto type and to a python-can `Message`.
+                 Both depend on it by path, so there is exactly one
+                 encoding of the wire in the repository and nothing to
+                 drift.
+
 plans/           Living planning docs (see CLAUDE.md).
 ```
 
@@ -3202,6 +3229,30 @@ uv run ruff format --check .
 uv run mypy
 uv run pytest
 ```
+
+The Python client
+([`clients/cannet-python-client`](clients/cannet-python-client)) takes
+the same four checks, from *its* directory. Its suite is hardware-free:
+the unit half (the trust-store read contract, the fingerprint form, the
+session's envelope order) needs nothing, and the integration half opens
+real buses against `cannet-server debug vbus` and `debug replay` on
+loopback. Those need the server binary and skip when it is not built,
+so build it first:
+
+```sh
+cargo build -p cannet-server
+cd clients/cannet-python-client
+uv sync --extra dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest
+```
+
+The shared wire package
+([`libs/cannet-python-wire`](libs/cannet-python-wire)) takes the same
+four checks from its own directory, and needs nothing built: it is a
+library with no hardware and no network in it.
 
 ### Regenerating the MDF fixture corpus
 
