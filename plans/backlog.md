@@ -423,6 +423,14 @@ trip over it.
   parsed reading in a dim preview beside the input — e.g. `3:10:05` →
   "3h 10m 5s" — the way macOS Spotlight previews math, so what will be
   submitted is visible before Enter. (Owner, task-19 review 2026-08-28.)
+- `[host]` **Reload the webview on WebView2 `ProcessFailed`.** The
+  precise signal for the black screen a renderer/GPU restart leaves
+  (six-day ll16 capture, 2026-09-15): hook `ICoreWebView2::
+  add_ProcessFailed` through `with_webview` and reload. Needs a direct
+  `webview2-com` dependency and `unsafe` COM calls — the same adoption
+  ruling task 82 owes — so it waits on that; task 143's heartbeat
+  watchdog covers the case meanwhile, and the user can reload by hand.
+  (Owner ruling 2026-09-15: backlog, not in scope.)
 
 ### Graph view (and bus topology)
 
@@ -1057,3 +1065,8 @@ next planning pass.
   is mostly this. A shared single scan across the batch's groups would
   cut it roughly by the group count. (Found benchmarking task 135's
   pattern-set fix, 2026-09-06.)
+- `[units]` **Complex unit definitions.** Composing new units from
+  existing ones (A × h, Wh / km) was prototyped for task 139 and
+  dropped as spec'd (owner, 2026-09-07: YAGNI). The library's
+  Quantity-multiplication machinery makes it cheap if a real need
+  appears; the prototype round recorded the shape.

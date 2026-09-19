@@ -158,9 +158,10 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
 .plot-signal-readout { display:flex; flex-direction:column; align-items:flex-end; min-width:0; }
 .plot-signal-value { color:var(--text-signal-value); font-variant-numeric:tabular-nums; }
 .plot-signal-remove { align-self:center; }
-/* prototype: math-row disclosure sits in column 4, before the remove x */
-.plot-signal-mathdisc { align-self:center; background:none; border:none; cursor:pointer;
-  color:var(--text-faint); font-size:.75rem; padding:0 .1rem; }
+/* prototype: math-row disclosure is the app's STANDARD disclosure
+   control (owner ruling — no bespoke variant), in column 4 before the
+   remove x. Expanding IS opening the editor. */
+.plot-signal-mathdisc { align-self:center; }
 .plot-signal-mathdetail { grid-column:1 / 5; font-size:.7rem; color:var(--text-muted);
   padding:.1rem 0 .1rem 1.9rem; display:flex; flex-direction:column; gap:2px; }
 .plot-signal-mathdetail code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -212,19 +213,19 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
 .ctx button { display:block; width:100%; text-align:left; border:0; background:none;
   color:var(--text-body); font:inherit; font-size:.8rem; padding:5px 12px; cursor:pointer; }
 .ctx button:hover { background:var(--surface-hover); }
-/* Non-modal so signals can be dragged in from the database tree or the
-   plot side list while the editor is open. */
-.backdrop { position:fixed; inset:0; background:transparent; pointer-events:none;
-  display:flex; align-items:flex-start; justify-content:flex-end;
-  padding:70px 26px 0 0; z-index:30; }
-.backdrop[hidden] { display:none; }
-.dlg { width:min(430px,92vw); background:var(--surface-raised); pointer-events:auto;
-  border:1px solid var(--border-subtle); border-radius:4px;
-  box-shadow:0 16px 40px var(--shadow-menu); }
-.dlg h2 { margin:0; padding:9px 14px; font-size:.85rem; font-weight:600;
+/* In-place editor — no dialog, ever (owner ruling): the edit view is an
+   expansion of the surface it was invoked from (a Database row's detail
+   block, a plot side-list row's detail). Non-modal by construction, so
+   signals drag in from the database tree or the plot side list. */
+.inline-editor { background:var(--surface-raised); border:1px solid var(--border-subtle);
+  border-left:2px solid var(--accent-marker); border-radius:3px; margin:2px 6px 6px 0;
+  cursor:default; white-space:normal;
+  font-family:"Segoe UI", system-ui, sans-serif; font-size:13px; line-height:1.45; }
+.inline-editor h2 { margin:0; padding:7px 14px; font-size:.78rem; font-weight:600;
   color:var(--text-label); border-bottom:1px solid var(--border-subtle); }
-.dlg .body, .gallery-card .body { padding:12px 14px; display:flex; flex-direction:column; gap:9px; }
+.inline-editor .body, .gallery-card .body { padding:12px 14px; display:flex; flex-direction:column; gap:9px; }
 .frow { display:flex; align-items:baseline; gap:10px; font-size:.8rem; }
+.frow[hidden] { display:none; }
 .frow > label:first-child { flex:0 0 76px; color:var(--text-muted); font-size:.75rem; }
 .frow input[type="text"], .frow input[type="number"], .frow select {
   background:var(--surface-field); color:var(--text-body);
@@ -264,6 +265,8 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
 .opsel-x { background:none; border:none; color:var(--text-faint); cursor:pointer;
   font-size:.75rem; line-height:22px; padding:0; }
 .opsel-x:hover { color:var(--cursor-pink); }
+.dbdel { margin-left:auto; }
+.dbdel.armed { color:var(--danger-text); font-weight:600; }
 .opsec { min-width:0; }
 .opsec.dragover { outline:2px dashed var(--accent-marker); outline-offset:-2px; }
 /* per-section patterns popover + editor (SignalsPanel verbatim, abridged) */
@@ -297,9 +300,9 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
   font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.78rem;
   text-transform:none; letter-spacing:normal; }
 .sigcombo-tree .dbc-row-label b { color:var(--accent-marker); font-weight:600; }
-.dlg .buttons { display:flex; justify-content:flex-end; gap:8px; padding:10px 14px;
+.inline-editor .buttons { display:flex; justify-content:flex-end; gap:8px; padding:8px 14px;
   border-top:1px solid var(--border-subtle); }
-.dlg .buttons .plain.primary { border-color:var(--accent-marker); color:var(--text-label); }
+.inline-editor .buttons .plain.primary { border-color:var(--accent-marker); color:var(--text-label); }
 .toast { font-size:.78rem; color:var(--text-muted); min-height:18px; margin-top:.5rem; }
 
 /* === edit-controls gallery === */
@@ -318,7 +321,8 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
   <code>.plot-signal-row</code> grid and tokens, the database panel the real
   <code>.dbc-row</code> tree. Math signals are <b>created from the database view</b> (right-click
   the tree) and land under <b>Computed</b>; in the app you would then drag them to a plot or
-  signals view — this mock adds them to the plot directly. The gallery at the bottom shows every
+  signals view — this mock adds them to the plot directly. <b>Expanding a math row opens its
+  editor in place</b> — one stage, no detail view, no dialog. The gallery at the bottom shows every
   function's edit controls at once.</p>
   <div class="bar">
     <button class="plain" id="themebtn">Toggle light/dark</button>
@@ -378,23 +382,12 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
   </div>
 
   <h2 class="sec">Edit controls — every function at once</h2>
-  <p class="note">The gallery renders each function type's edit dialog body with representative
+  <p class="note">The gallery renders each function type's edit view with representative
   values, so all parameter sets are reviewable without adding anything.</p>
   <div class="gallery" id="gallery"></div>
 </div>
 
 <div class="ctx" id="ctx" hidden><div class="hd">Add math signal</div><div id="ctxitems"></div></div>
-
-<div class="backdrop" id="dlgwrap" hidden>
-  <div class="dlg">
-    <h2 id="dlgtitle">Add math signal</h2>
-    <div class="body" id="dlgbody"></div>
-    <div class="buttons">
-      <button class="plain" id="dlgcancel">Cancel</button>
-      <button class="plain primary" id="dlgok">Add</button>
-    </div>
-  </div>
-</div>
 
 <script>
   const $ = id => document.getElementById(id);
@@ -465,13 +458,41 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
   let nextM = 3;
 
   const lookup = id => SRC.find(s => s.id === id) ?? maths.find(m => m.id === id);
-  const opName = id => lookup(id).nm;
+  const displayName = c => c.nm || (c.pattern ? `${c.fn}(${c.pattern})` : `(unnamed ${c.fn ?? ""})`);
+  const opName = id => displayName(lookup(id));
+  // A definition may be incomplete (creation materializes immediately;
+  // edits commit on blur) — invalid ones exist in the registry and
+  // serve nothing.
+  function isValid(def) {
+    const f = FNS[def.fn];
+    if (f.ops === "set") return opsOf(def).length >= 2;
+    if (f.ops === "pair") return !!(def.operands[0] && def.operands[1]);
+    if (f.ops === "one") return !!def.operands[0];
+    return true;
+  }
+  // Registry undo/redo (Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z) — stands in
+  // for the app's element edit history.
+  let hist = [], histIdx = -1;
+  function snap() {
+    hist.splice(histIdx + 1);
+    hist.push(JSON.stringify(maths));
+    histIdx = hist.length - 1;
+  }
+  function restoreHist() {
+    maths = JSON.parse(hist[histIdx]);
+    if (editing) {
+      const still = maths.find(x => x.id === editing.id);
+      if (still) { editing = dlgState = still; }
+      else { editorLoc = null; editing = dlgState = null; }
+    }
+    redraw();
+  }
   function reaches(fromId, targetId) {
     const m = maths.find(x => x.id === fromId);
     return m ? m.operands.some(o => o === targetId || reaches(o, targetId)) : false;
   }
   function opsOf(def) {
-    const ids = [...def.operands];
+    const ids = def.operands.filter(Boolean);
     if (def.pattern) {
       try {
         const re = new RegExp(def.pattern);
@@ -494,7 +515,9 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
   }
   function valuesOf(id) {
     const s = SRC.find(x => x.id === id);
-    return s ? s.v : compute(maths.find(m => m.id === id));
+    if (s) return s.v;
+    const m = maths.find(x => x.id === id);
+    return m && isValid(m) ? compute(m) : T.map(() => 0);
   }
   function compute(def) {
     const set = (FNS[def.fn].ops === "set" ? opsOf(def) : def.operands).map(valuesOf);
@@ -575,25 +598,9 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
     };
     svg.innerHTML = g +
       SRC.map(s => line(s.v, s.color, 1)).join("") +
-      maths.map(m => line(compute(m), m.color, 1.5)).join("");
+      maths.filter(isValid).map(m => line(compute(m), m.color, 1.5)).join("");
   }
 
-  // ---- the shared math detail block (plot side list + database)
-  const paramSummary = (f, m) => (f.params ?? [])
-    .filter(p => !p.onlyWhen || m.params[p.onlyWhen.k] === p.onlyWhen.v)
-    .map(p => `${p.label.replace(/ \(.*/, "")} = ${m.params[p.k]}`).join(" · ");
-  function mathDetailHtml(m, cls) {
-    const f = FNS[m.fn];
-    const resolved = (f.ops === "set" ? opsOf(m) : m.operands).map(opName).join(", ");
-    const ops = m.pattern ? `<code>${esc(m.pattern)}</code> → ${esc(resolved)}`
-              : resolved ? `<code>${esc(resolved)}</code>` : "";
-    const ps = paramSummary(f, m);
-    return `<div class="${cls}">` +
-      `<div>${esc(f.label)}${ops ? ` of ${ops}` : ""}${ps ? ` · ${esc(ps)}` : ""}</div>` +
-      `<div>units <code>${esc(m.unit) || "—"}</code>
-        <button class="mini" data-edit="${m.id}">Edit…</button>
-        <button class="mini" data-del="${m.id}">Remove</button></div></div>`;
-  }
   function mathBusLabel(m) {
     const buses = busesOf(m);
     const dots = buses.map(b =>
@@ -626,22 +633,24 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
       </div>`);
     }
     for (const m of maths) {
-      const v = compute(m);
-      rows.push(`<div class="plot-signal-row" draggable="true" data-sig="${m.id}">
+      const valid = isValid(m);
+      const v = valid ? compute(m) : null;
+      const hosts = editorLoc?.surface === "plot" && editorLoc.id === m.id;
+      rows.push(`<div class="plot-signal-row" draggable="${!hosts}" data-sig="${m.id}">
         <span class="color-chip color-chip-bar" style="background:${m.color}" title="hide this signal"></span>
         <div class="plot-signal-text">
-          <span class="plot-signal-name">${esc(m.nm)}</span>
+          <span class="plot-signal-name">${esc(displayName(m))}</span>
           <span class="plot-signal-message">${mathBusLabel(m)}</span>
         </div>
         <div class="plot-signal-readout">
-          <span class="plot-signal-value">${fmtVal(v[N - 1], m.unit)}</span>
+          <span class="plot-signal-value">${valid ? fmtVal(v[N - 1], resolvedUnit(m)) : "—"}</span>
         </div>
-        <span style="display:flex;align-items:center">
-          <button class="plot-signal-mathdisc" data-t="${m.id}" data-k="plotExp"
-            aria-expanded="${!!m.plotExp}">${m.plotExp ? "▾" : "▸"}</button>
+        <span style="display:flex;align-items:center;gap:.9rem">
+          <button class="disclosure-toggle disclosure-toggle-compact plot-signal-mathdisc" data-t="${m.id}" data-k="plotExp"
+            aria-expanded="${!!m.plotExp}"><span class="disclosure-toggle-glyph" style="pointer-events:none">${m.plotExp ? "▾" : "▸"}</span></button>
           <button class="plot-signal-remove" title="remove this signal">✕</button>
         </span>
-        ${m.plotExp ? mathDetailHtml(m, "plot-signal-mathdetail") : ""}
+        ${hosts ? `<div class="plot-signal-mathdetail">${editorHtml()}</div>` : ""}
       </div>`);
     }
     $("rows").innerHTML = rows.join("");
@@ -675,23 +684,17 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
     row("dbc-row-file", 0, chev(true) + `<span class="dbc-row-label">Computed</span>` +
         `<span class="dbc-row-meta">${maths.length} signal${maths.length === 1 ? "" : "s"}</span>`);
     for (const m of maths) {
+      // Two-stage delete (owner ruling): arm on first click, confirm on
+      // the second; deleting here removes it from the registry.
+      const del = armedDel === m.id
+        ? `<button class="opsel-x dbdel armed" data-arm="${m.id}">delete?</button>`
+        : `<button class="opsel-x dbdel" data-arm="${m.id}" title="remove from the registry">✕</button>`;
       row("dbc-row-signal", 1,
         `<button class="disclosure-toggle disclosure-toggle-compact dbc-row-chevron" data-t="${m.id}" data-k="dbExp" tabindex="-1">
            <span class="disclosure-toggle-glyph" style="pointer-events:none">${m.dbExp ? "▾" : "▸"}</span></button>` +
-        `<span class="dbc-row-label">${esc(m.nm)}</span><span class="dbc-row-meta">${m.unit ? `[${m.unit}]` : ""}</span>`, m.id);
-      if (m.dbExp) {
-        const f = FNS[m.fn];
-        const resolved = (f.ops === "set" ? opsOf(m) : m.operands).map(opName).join(", ");
-        const ps = paramSummary(f, m);
-        rows.push(`<div class="dbc-row-details" style="padding-left:${1 * 14 + 24}px"><dl class="dbc-details-grid">
-          <dt>function</dt><dd>${esc(f.label)}</dd>
-          ${m.pattern ? `<dt>pattern</dt><dd>${esc(m.pattern)} → ${esc(resolved)}</dd>`
-                      : `<dt>operands</dt><dd>${esc(resolved) || "—"}</dd>`}
-          ${ps ? `<dt>params</dt><dd>${esc(ps)}</dd>` : ""}
-          <dt>units</dt><dd>${esc(m.unit) || "—"}
-            <button class="mini" data-edit="${m.id}">Edit…</button>
-            <button class="mini" data-del="${m.id}">Remove</button></dd>
-        </dl></div>`);
+        `<span class="dbc-row-label">${esc(displayName(m))}</span><span class="dbc-row-meta">${resolvedUnit(m) ? `[${resolvedUnit(m)}]` : ""}</span>${del}`, m.id);
+      if (m.dbExp && editorLoc?.surface === "db" && editorLoc.id === m.id) {
+        rows.push(`<div style="padding-left:${1 * 14 + 24}px">${editorHtml()}</div>`);
       }
     }
     $("dbt").innerHTML = rows.join("");
@@ -699,16 +702,37 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
 
   function redraw() { drawPlot(); drawRows(); drawDb(); }
 
-  function mathClicks(e) {
-    const el = e.target.closest("[data-t],[data-edit],[data-del]");
+  // Expanding a math row IS opening its editor (owner ruling: no
+  // two-stage view). One editor at a time, so expanding one collapses
+  // any other.
+  function mathClicks(e, surface) {
+    if (e.target.closest("#mathed")) return;   // the editor handles its own clicks
+    const del = e.target.closest("[data-arm]");
+    if (del) {
+      const id = del.dataset.arm;
+      if (armedDel === id) {
+        armedDel = null;
+        maths = maths.filter(x => x.id !== id);
+        if (editorLoc?.id === id) { editorLoc = null; editing = dlgState = null; }
+        snap(); redraw();
+      } else { armedDel = id; redraw(); }
+      return;
+    }
+    const el = e.target.closest("[data-t]");
     if (!el) return;
     const d = el.dataset;
-    if (d.t) { const m = maths.find(x => x.id === d.t); m[d.k] = !m[d.k]; redraw(); }
-    if (d.edit) { const m = maths.find(x => x.id === d.edit); openDialog(m.fn, m); }
-    if (d.del) { maths = maths.filter(x => x.id !== d.del); redraw(); }
+    const m = maths.find(x => x.id === d.t);
+    if (m[d.k]) {
+      m[d.k] = false;
+      if (editorLoc?.id === m.id) { editorLoc = null; editing = null; }
+      redraw();
+    } else {
+      for (const x of maths) { x.plotExp = false; x.dbExp = false; }
+      openEditor(m.fn, m, d.k === "plotExp" ? "plot" : "db");
+    }
   }
-  $("rows").addEventListener("click", mathClicks);
-  $("dbt").addEventListener("click", mathClicks);
+  $("rows").addEventListener("click", e => mathClicks(e, "plot"));
+  $("dbt").addEventListener("click", e => mathClicks(e, "db"));
 
   // ---- creation: context menu on the database tree
   $("ctxitems").innerHTML = Object.entries(FNS)
@@ -723,9 +747,23 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
   document.addEventListener("click", e => {
     if (!e.target.closest || !e.target.closest(".ctx")) $("ctx").hidden = true;
   });
+  // Creation materializes the definition immediately (owner ruling) —
+  // it appears under Computed at once, invalid until its operands are
+  // filled, with the editor open on it.
   $("ctxitems").addEventListener("click", e => {
     const fn = e.target.dataset?.fn;
-    if (fn) { $("ctx").hidden = true; openDialog(fn, null); }
+    if (!fn) return;
+    $("ctx").hidden = true;
+    const f = FNS[fn];
+    const def = { id: "m" + nextM++, fn,
+      operands: f.ops === "pair" ? [null, null] : f.ops === "one" ? [null] : [],
+      pattern: "", params: Object.fromEntries((f.params ?? []).map(p => [p.k, p.def])),
+      nm: "", unit: "", color: MCOLORS[maths.length % MCOLORS.length],
+      plotExp: false, dbExp: false };
+    maths.push(def);
+    snap();
+    openEditor(fn, def, "db");
+    $("dbt").scrollTop = $("dbt").scrollHeight;
   });
 
   // ---- the edit view (also used by the gallery). Operand slots are
@@ -875,10 +913,12 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
       <div class="trace-header" style="grid-template-columns:${OP_COLS}">
         <span>signal</span><span>unit</span><span></span></div>${inner}</div>`;
   }
+  // Full width, no label column: the sections' own headers (A/B/
+  // Signal/Signals) are the headings, and the editor must fit the
+  // narrow plot signal area (owner ruling).
   function opselWrapHtml(f, st, p, interactive) {
     if (f.ops === "none") return "";
-    return `<div class="frow"><label>${f.ops === "pair" ? "A − B" : "Signals"}</label>
-      <div id="${p}opselwrap" style="flex:1;min-width:0">${opselTraceHtml(f, st, p, interactive)}</div></div>`;
+    return `<div id="${p}opselwrap" style="min-width:0">${opselTraceHtml(f, st, p, interactive)}</div>`;
   }
   function dialogBodyHtml(fn, st, p, interactive) {
     const f = FNS[fn];
@@ -890,10 +930,11 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
           <select id="${p}pp-${pr.k}">${pr.opts.map(o =>
             `<option${o === cur ? " selected" : ""}>${o}</option>`).join("")}</select></div>`;
       } else {
-        // onlyWhen: the field is disabled unless its governing select holds v.
+        // onlyWhen: the field is hidden unless its governing select
+        // holds v (owner ruling: hidden, not disabled).
         const off = pr.onlyWhen && (st.params?.[pr.onlyWhen.k] ?? f.params.find(x => x.k === pr.onlyWhen.k).def) !== pr.onlyWhen.v;
-        html += `<div class="frow"><label>${pr.label}</label>
-          <input type="number" id="${p}pp-${pr.k}" step="any" value="${cur}"${off ? " disabled" : ""}></div>`;
+        html += `<div class="frow" id="${p}row-pp-${pr.k}"${off ? " hidden" : ""}><label>${pr.label}</label>
+          <input type="number" id="${p}pp-${pr.k}" step="any" value="${cur}"></div>`;
       }
     }
     html += `<div class="frow"><label>Name</label><input type="text" id="${p}mname"
@@ -904,7 +945,7 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
     return html;
   }
 
-  let editing = null, dlgFn = null, dlgState = null;
+  let editing = null, dlgFn = null, dlgState = null, editorLoc = null, armedDel = null;
   function renderOpsel() {
     const f = FNS[dlgFn];
     if (f.ops === "set") {
@@ -924,43 +965,82 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
       $("opselwrap").innerHTML = opselTraceHtml(f, dlgState, "", true);
     }
   }
-  function openDialog(fn, existing) {
-    dlgFn = fn; editing = existing;
-    const f = FNS[fn];
-    const ex = existing?.operands ?? [];
-    dlgState = { id: existing?.id ?? "new",
-      operands: f.ops === "pair" ? [ex[0] ?? null, ex[1] ?? null]
-              : f.ops === "one" ? [ex[0] ?? null] : [...ex],
-      pattern: existing?.pattern ?? "",
-      params: { ...(existing?.params ?? {}) },
-      nm: existing?.nm ?? "", unit: existing?.unit ?? "" };
-    $("dlgtitle").textContent = (existing ? "Edit — " : "Add — ") + FNS[fn].label;
-    $("dlgok").textContent = existing ? "Save" : "Add";
-    $("dlgbody").innerHTML = dialogBodyHtml(fn, dlgState, "", true);
-    $("dlgwrap").hidden = false;
+  // The editor renders IN PLACE over the LIVE definition — editorLoc
+  // names the hosting surface ("plot" / "db" = the expanded math row's
+  // detail slot). No buttons: field edits commit on blur straight to
+  // the registry (undo/redo covers mistakes); collapsing just closes
+  // the view. One editor at a time.
+  function openEditor(fn, def, surface) {
+    dlgFn = fn; editing = def; dlgState = def;
+    editorLoc = { surface, id: def.id };
+    for (const x of maths) { x.plotExp = false; x.dbExp = false; }
+    def[surface === "plot" ? "plotExp" : "dbExp"] = true;
+    redraw();
   }
+  function editorHtml() {
+    return `<div class="inline-editor" id="mathed">
+      <h2>${esc(FNS[dlgFn].label)}</h2>
+      <div class="body" id="dlgbody">${dialogBodyHtml(dlgFn, dlgState, "", true)}</div></div>`;
+  }
+  function closeEditor() {
+    editorLoc = null; editing = dlgState = null;
+    for (const x of maths) { x.plotExp = false; x.dbExp = false; }
+    redraw();
+  }
+  // Blur commits the focused field into the definition; selects commit
+  // on change (the pp-stat listener above also re-shows Percentile).
+  function commitField(t) {
+    if (!editing) return false;
+    if (t.id === "mname") { editing.nm = t.value.trim(); return true; }
+    if (t.id === "munit") { editing.unit = t.value.trim(); return true; }
+    if (t.id === "mpattern") { editing.pattern = t.value.trim(); return true; }
+    if (/^pp-/.test(t.id)) {
+      const pr = (FNS[editing.fn].params ?? []).find(x => "pp-" + x.k === t.id);
+      if (pr) { editing.params[pr.k] = pr.opts ? t.value : +t.value; return true; }
+    }
+    return false;
+  }
+  document.addEventListener("focusout", e => {
+    if (!e.target.closest?.("#mathed")) return;
+    if (commitField(e.target)) { snap(); redraw(); }
+  });
+  document.addEventListener("change", e => {
+    if (!e.target.closest?.("#mathed") || e.target.tagName !== "SELECT") return;
+    if (commitField(e.target)) { snap(); redraw(); }
+  });
+  // Registry-level undo/redo, skipping text fields (native input undo).
+  document.addEventListener("keydown", e => {
+    if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+    const z = e.ctrlKey && e.key.toLowerCase() === "z";
+    const y = e.ctrlKey && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"));
+    if (z && !e.shiftKey && histIdx > 0) { histIdx -= 1; restoreHist(); e.preventDefault(); }
+    else if (y && histIdx < hist.length - 1) { histIdx += 1; restoreHist(); e.preventDefault(); }
+  });
   function setSlot(slot, id) {
     if (!lookup(id) || id === dlgState.id || reaches(id, dlgState.id)) return;
     if (slot === "all") {
       if (!dlgState.operands.includes(id)) dlgState.operands.push(id);
     } else dlgState.operands[+slot] = id;
-    renderOpsel();
+    snap(); redraw();
   }
-  // Pattern field + per-row remove drive the live state.
-  $("dlgbody").addEventListener("input", e => {
+  // Pattern field + per-row remove drive the live state. Delegated on
+  // document because the editor renders inside whichever surface hosts
+  // it; the unprefixed ids exist only in the live editor.
+  document.addEventListener("input", e => {
     if (e.target.id === "mpattern") { dlgState.pattern = e.target.value.trim(); renderOpsel(); }
     if (e.target.classList?.contains("sigcombo-q")) {
       const tree = e.target.closest(".sigcombo").querySelector(".sigcombo-tree");
       tree.innerHTML = comboTreeHtml(e.target.value.trim());
     }
   });
-  $("dlgbody").addEventListener("click", e => {
+  document.addEventListener("click", e => {
+    if (!e.target.closest?.("#mathed")) return;
     const rm = e.target.dataset?.oprm;
     if (rm != null) {
       const slot = e.target.dataset.slot;
       if (slot === "all") dlgState.operands = dlgState.operands.filter(x => x !== rm);
       else dlgState.operands[+slot] = null;
-      renderOpsel();
+      snap(); redraw();
       return;
     }
     const btn = e.target.closest?.(".sigcombo-btn");
@@ -997,79 +1077,50 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
       setSlot(slot, pick.dataset.pick);
     }
   });
-  // A governing select (e.g. statistic's Statistic) enables/disables its
-  // dependent field (Percentile) — in the dialog and the gallery alike.
+  // A governing select (e.g. statistic's Statistic) shows/hides its
+  // dependent field (Percentile) — in the editor and the gallery alike.
   document.addEventListener("change", e => {
     if (!/pp-stat$/.test(e.target.id ?? "")) return;
-    const pct = $(e.target.id.replace(/pp-stat$/, "pp-pct"));
-    if (pct) pct.disabled = e.target.value !== "percentile";
+    const row = $(e.target.id.replace(/pp-stat$/, "row-pp-pct"));
+    if (row) row.hidden = e.target.value !== "percentile";
   });
   document.addEventListener("click", e => {
     if (!e.target.closest?.(".sigcombo"))
       document.querySelectorAll(".sigcombo-pop").forEach(x => { x.hidden = true; });
     if (!e.target.closest?.(".signals-section-patterns") && !e.target.closest?.(".secpat"))
       document.querySelectorAll(".signals-section-patterns").forEach(x => { x.hidden = true; });
+    if (armedDel && !e.target.closest?.("[data-arm]")) { armedDel = null; redraw(); }
   });
   // Drag a signal in — from the database tree or a plot area's side list.
   document.addEventListener("dragstart", e => {
     const el = e.target.closest?.("[data-sig]");
     if (el) e.dataTransfer.setData("text/plain", el.dataset.sig);
   });
-  $("dlgbody").addEventListener("dragover", e => {
-    const z = e.target.closest?.(".opsec");
+  document.addEventListener("dragover", e => {
+    const z = e.target.closest?.("#mathed .opsec");
     if (z) { e.preventDefault(); z.classList.add("dragover"); }
   });
-  $("dlgbody").addEventListener("dragleave", e => {
-    e.target.closest?.(".opsec")?.classList.remove("dragover");
+  document.addEventListener("dragleave", e => {
+    e.target.closest?.("#mathed .opsec")?.classList.remove("dragover");
   });
-  $("dlgbody").addEventListener("drop", e => {
-    const z = e.target.closest?.(".opsec");
+  document.addEventListener("drop", e => {
+    const z = e.target.closest?.("#mathed .opsec");
     if (!z) return;
     e.preventDefault();
     z.classList.remove("dragover");
     setSlot(z.dataset.slot, e.dataTransfer.getData("text/plain"));
   });
-  $("dlgcancel").addEventListener("click", () => { $("dlgwrap").hidden = true; });
-  $("dlgok").addEventListener("click", () => {
-    const f = FNS[dlgFn];
-    let ops = dlgState.operands.filter(Boolean);
-    const pattern = f.ops === "set" ? dlgState.pattern : "";
-    const params = {};
-    for (const pr of f.params ?? [])
-      params[pr.k] = pr.opts ? $("pp-" + pr.k).value : +$("pp-" + pr.k).value;
-    const probe = { id: editing?.id ?? "probe", operands: ops, pattern };
-    const resolved = f.ops === "set" ? opsOf(probe) : ops;
-    if (f.ops === "set" && resolved.length < 2) {
-      $("toast").textContent = "The pattern and dragged-in signals resolve to fewer than two."; return;
-    }
-    if (f.ops === "pair" && !(dlgState.operands[0] && dlgState.operands[1])) {
-      $("toast").textContent = "A and B each need one signal."; return;
-    }
-    if (f.ops === "one" && !dlgState.operands[0]) {
-      $("toast").textContent = "Pick the input signal."; return;
-    }
-    // No heuristic names: a pattern-only set may default to the literal
-    // fn(pattern); anything else must be named (owner ruling 2026-09-06).
-    let nm = $("mname").value.trim();
-    if (!nm) {
-      if (f.ops === "set" && pattern && ops.length === 0) nm = `${dlgFn}(${pattern})`;
-      else if (dlgFn === "hline") nm = "hline";
-      else { $("toast").textContent = "Name it — names aren't derived from selections."; return; }
-    }
-    const unitOf = id => lookup(id).unit;
-    const units = [...new Set(resolved.map(unitOf))];
-    const baseUnit = f.unit ?? (units.length === 1 ? units[0] : "");
-    const def = editing ?? { id: "m" + nextM++, color: MCOLORS[maths.length % MCOLORS.length],
-                            plotExp: true, dbExp: true };
-    def.fn = dlgFn; def.operands = ops; def.pattern = pattern; def.params = params;
-    def.nm = nm;
-    def.unit = $("munit").value.trim() || (f.unitSuffix ? baseUnit + f.unitSuffix : baseUnit);
-    if (!editing) maths.push(def);
-    $("dlgwrap").hidden = true;
-    $("toast").textContent = `${editing ? "Updated" : "Added"} ${def.nm} — one central definition; in the app you'd drag it from Computed into views.`;
-    editing = null;
-    redraw();
-  });
+  // Units: user-specified wins; otherwise resolved from the operands
+  // (uniform set unit, plus the function's own unit / suffix).
+  function resolvedUnit(m) {
+    const f = FNS[m.fn];
+    if (m.unit) return m.unit;
+    if (f.unit) return f.unit;
+    const res = f.ops === "set" ? opsOf(m) : m.operands.filter(Boolean);
+    const units = [...new Set(res.map(id => lookup(id).unit))];
+    const base = units.length === 1 ? (units[0] ?? "") : "";
+    return f.unitSuffix ? base + f.unitSuffix : base;
+  }
 
   // ---- gallery: every function's edit controls at once
   function drawGallery() {
@@ -1096,6 +1147,7 @@ button.plain:hover { background:var(--surface-toolbar-control-hover); }
         <div class="body">${dialogBodyHtml(k, { id: "g" + i, ...sample[k] }, `g${i}-`, false)}</div></div>`).join("");
   }
 
+  snap();      // seed the undo history with the initial registry
   redraw();
   drawGallery();
 </script>

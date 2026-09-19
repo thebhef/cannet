@@ -1,0 +1,272 @@
+{
+  "mode": "frontend",
+  "label": "task137p3-run2",
+  "duration_s": 58.999299999952314,
+  "sample_count": 60,
+  "longtask_ms_per_s": {
+    "mean": 0.0,
+    "max": 0.0,
+    "p95": 0.0
+  },
+  "lag_ms": {
+    "mean": -0.018333333730697635,
+    "max": 2.700000047683716
+  },
+  "jank_seconds": 0,
+  "jank_fraction": 0.0,
+  "frames_late_per_s_mean": 0.0,
+  "rx_fps": {
+    "overall": 1607.3000000000002,
+    "first_half": 1610.2499999999995,
+    "second_half": 1604.35,
+    "retention": 0.9963359726750507
+  },
+  "tx_fps": {
+    "overall": 1612.5283333333332,
+    "first_half": 1612.9900000000005,
+    "second_half": 1612.066666666667,
+    "retention": 0.999427564130383
+  },
+  "counters_per_s": {
+    "app.setDirty.callsite": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "dockview.layoutChange": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "event.system-log-appended": {
+      "mean": 2.066666666666667,
+      "max": 4.0
+    },
+    "event.trace-grew": {
+      "mean": 10.0,
+      "max": 10.0
+    },
+    "followwin.slide": {
+      "mean": 15.033333333333333,
+      "max": 42.0
+    },
+    "invoke.fetch_by_id_page": {
+      "mean": 8.0,
+      "max": 8.0
+    },
+    "invoke.fetch_signal_page": {
+      "mean": 4.0,
+      "max": 4.0
+    },
+    "invoke.sample_signals": {
+      "mean": 35.06666666666667,
+      "max": 52.0
+    },
+    "memo.elementRegistryValue": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "memo.projectContextValue": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "memo.traceData": {
+      "mean": 10.0,
+      "max": 10.0
+    },
+    "plot.areaResampled": {
+      "mean": 60.35,
+      "max": 74.0
+    },
+    "plot.reportSeries": {
+      "mean": 35.06666666666667,
+      "max": 53.0
+    },
+    "plot.userXChange": {
+      "mean": 1.6666666666666667,
+      "max": 4.0
+    },
+    "plotarea.resample": {
+      "mean": 60.35,
+      "max": 74.0
+    },
+    "registry.update": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "render.App": {
+      "mean": 23.683333333333334,
+      "max": 26.0
+    },
+    "render.ByIdTable": {
+      "mean": 33.25,
+      "max": 34.0
+    },
+    "render.PlotArea": {
+      "mean": 110.73333333333333,
+      "max": 126.0
+    },
+    "render.PlotPanel": {
+      "mean": 24.083333333333332,
+      "max": 28.0
+    },
+    "render.SignalsPanel": {
+      "mean": 14.833333333333334,
+      "max": 15.0
+    },
+    "render.TracePanel": {
+      "mean": 45.083333333333336,
+      "max": 46.0
+    },
+    "render.TraceView": {
+      "mean": 11.833333333333334,
+      "max": 12.0
+    },
+    "userx.wheel.shiftpan": {
+      "mean": 0.8333333333333334,
+      "max": 2.0
+    },
+    "userx.wheel.zoom": {
+      "mean": 0.8333333333333334,
+      "max": 2.0
+    }
+  },
+  "gauges": {
+    "count": {
+      "mean": 118918.83333333333,
+      "max": 213979.0,
+      "last": 213979.0,
+      "slope_per_min": 193345.66344723868
+    },
+    "drop.before_session": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0,
+      "slope_per_min": 0.0
+    },
+    "ext": {
+      "mean": 37.42833333333333,
+      "max": 67.2,
+      "last": 67.2,
+      "slope_per_min": 60.059836977806974
+    },
+    "flush_ms": {
+      "mean": 3.929908333333333,
+      "max": 9.4925,
+      "last": 0.0,
+      "slope_per_min": 0.7659003195706635
+    },
+    "fps": {
+      "mean": 3249.398333333333,
+      "max": 3456.0,
+      "last": 3217.5,
+      "slope_per_min": -15.695065125357415
+    },
+    "fps.pack": {
+      "mean": 1628.4716666666673,
+      "max": 1987.4,
+      "last": 1595.0,
+      "slope_per_min": -22.65743103366271
+    },
+    "fps.rx": {
+      "mean": 1607.3000000000002,
+      "max": 1623.1,
+      "last": 1601.3,
+      "slope_per_min": -11.061719574352637
+    },
+    "fps.tx": {
+      "mean": 1612.5283333333332,
+      "max": 1620.3,
+      "last": 1608.0,
+      "slope_per_min": -2.506530232192941
+    },
+    "fps.zonal": {
+      "mean": 1609.6316666666667,
+      "max": 1976.2,
+      "last": 1604.5,
+      "slope_per_min": 45.54507395314266
+    },
+    "jsheap_mb": {
+      "mean": 57.325,
+      "max": 92.2,
+      "last": 68.6,
+      "slope_per_min": 12.461958322633908
+    },
+    "mem.host_mb": {
+      "mean": 54.91725260416667,
+      "max": 59.88671875,
+      "last": 59.765625,
+      "slope_per_min": 11.499414657807906
+    },
+    "mem.tree_mb": {
+      "mean": 688.9126953125,
+      "max": 729.34375,
+      "last": 727.61328125,
+      "slope_per_min": 77.760594234097
+    },
+    "mem.webview_mb": {
+      "mean": 574.2702473958333,
+      "max": 610.75390625,
+      "last": 608.15234375,
+      "slope_per_min": 66.26337407817742
+    },
+    "mem.webview_renderer_mb": {
+      "mean": 295.61809895833335,
+      "max": 321.99609375,
+      "last": 320.984375,
+      "slope_per_min": 46.41194116584509
+    },
+    "scroll_jank_pct": {
+      "mean": 93.80500000000004,
+      "max": 900.7,
+      "last": 56.5,
+      "slope_per_min": -154.63539555075008
+    },
+    "scroll_jank_px": {
+      "mean": 277361.5883333333,
+      "max": 978425.2,
+      "last": 419142.5,
+      "slope_per_min": -192116.4277540333
+    },
+    "scroll_step_ms": {
+      "mean": 64.82166666666669,
+      "max": 120.7,
+      "last": 102.4,
+      "slope_per_min": -3.1633987058719617
+    },
+    "tx_late_ms": {
+      "mean": 4.814440000000001,
+      "max": 9.6715,
+      "last": 3.4033,
+      "slope_per_min": -0.8855303736778843
+    },
+    "winw": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0,
+      "slope_per_min": 0.0
+    }
+  },
+  "rx_gap": {
+    "ids_measured": 174,
+    "worst_p95_ratio": 1.1694496290878529,
+    "worst_p95_ratio_id": "zonal/0x10F",
+    "worst_short_frac": 0.0011666666666666668,
+    "worst_short_frac_id": "zonal/0x100"
+  },
+  "interact": {
+    "script": "scrub",
+    "ticks": 445,
+    "performed": 266,
+    "missing": 0,
+    "idle": 179,
+    "by_gesture": {
+      "plot.follow-live": 26,
+      "plot.pan-back": 26,
+      "plot.pan-forward": 26,
+      "plot.zoom-in": 58,
+      "plot.zoom-out": 26,
+      "trace.scroll-down": 52,
+      "trace.scroll-up": 52
+    },
+    "missing_by_gesture": {}
+  }
+}

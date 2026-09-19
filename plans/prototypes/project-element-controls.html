@@ -1,0 +1,142 @@
+<title>Project Element Controls</title>
+<style>
+:root {
+  /* app theme tokens, per gui-chip-redesign.html / units.html */
+  --surface-app:#0e1116; --surface-field:#0f172a; --surface-overlay:#131923;
+  --surface-hover:#1c2530; --surface-row-selected:#1b2740;
+  --text-body:#d8dee9; --text-label:#e6ecf5; --text-muted:#94a3b8;
+  --text-faint:#64748b; --text-dim:#475569; --text-primary:#e2e8f0;
+  --border-subtle:#243040; --border-soft:#2c3444; --border-strong:#334155;
+  --accent-marker:#4ecbff; --warn-text:#fbbf24; --danger-text:#f87171;
+  --ok-text:#4ade80;
+  --select-outline:rgba(99,102,241,.9);
+  --mono:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+body { background:var(--surface-app); color:var(--text-body);
+  font-family:"Segoe UI", system-ui, sans-serif; font-size:13px; line-height:1.45; }
+.wrap { max-width:820px; margin:0 auto; padding:1.1rem 1rem 4rem; }
+h1 { font-size:1.15rem; margin:.3rem 0 .15rem; color:var(--text-label); }
+.sub { color:var(--text-muted); margin:0 0 1.3rem; max-width:64ch; }
+h2 { font-size:.9rem; margin:1.9rem 0 .15rem; color:var(--text-label); }
+h2 .tag { font-size:.66rem; color:var(--text-dim); font-weight:normal; margin-left:.5rem; letter-spacing:.05em; }
+.note { color:var(--text-muted); font-size:.8rem; margin:.15rem 0 .7rem; max-width:70ch; }
+.mono { font-family:var(--mono); }
+
+/* ---- project panel chrome (ProjectPanel.tsx / index.css idiom) ---- */
+.project-panel { background:var(--surface-overlay); border:1px solid var(--border-subtle);
+  border-radius:4px; padding:.6rem .8rem; font-size:.85rem; color:var(--text-muted);
+  max-width:340px; }
+.project-section { margin-bottom:1rem; }
+.project-section h3 { margin:0 0 .35rem; font-size:.7rem; font-weight:600;
+  text-transform:uppercase; letter-spacing:.06em; color:var(--text-faint); }
+.project-group { margin:0 0 .4rem .3rem; }
+.project-group h4 { margin:0 0 .2rem; font-size:.7rem; font-weight:600;
+  text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); }
+.project-element, .project-bus { display:flex; align-items:center; gap:.4rem; margin-bottom:.3rem; }
+.project-bus-name-input { flex:1 1 auto; min-width:0; font:inherit; font-family:var(--mono);
+  background:var(--surface-field); color:var(--text-primary);
+  border:1px solid var(--border-soft); border-radius:.2rem; padding:.15rem .35rem; }
+.project-bus-state { font-size:.7rem; text-transform:uppercase; letter-spacing:.05em;
+  color:var(--text-muted); flex:none; }
+.project-bus-state.connected { color:var(--ok-text); }
+.project-panel button.textbtn { font:inherit; font-size:.75rem; background:var(--surface-field);
+  color:var(--text-muted); border:1px solid var(--border-soft); border-radius:.2rem;
+  padding:.1rem .5rem; cursor:pointer; }
+.project-panel button.textbtn:hover { color:var(--text-primary); border-color:var(--border-strong); }
+
+/* the icon buttons: the two-stage-remove control's quiet idiom */
+.iconbtn { background:transparent; border:1px solid transparent; color:var(--text-muted);
+  cursor:pointer; font:inherit; padding:.1rem .3rem; border-radius:3px; line-height:1; flex:none; }
+.iconbtn svg { display:block; }
+.iconbtn:hover { color:var(--text-primary); border-color:var(--border-strong); }
+.iconbtn.trash:hover { color:var(--danger-text); }
+.iconbtn.runbtn.running { color:var(--ok-text); }
+.iconbtn.runbtn.armed { color:var(--warn-text); }
+
+</style>
+
+<div class="wrap">
+  <h1>Project Element Controls</h1>
+  <p class="sub">Task 140 grooming, round 2: icon controls on the Elements rows, start/stop on
+  RBS / Logger. No state labels — the toggle button carries the state. Everything is live.</p>
+
+  <h2>Elements section <span class="tag">ICONS · START/STOP</span></h2>
+  <p class="note"><b>Remove</b> is the app's trash glyph (the <span class="mono">clear</span>
+  glyph, single-click — element removal rides the registry's undo). <b>Focus/Open</b> is the <span class="mono">enter</span> glyph (arrow into a
+  doorway) — one "take me to it" affordance: focuses the open panel, opens it otherwise.
+  The <b>start/stop toggle</b> is play when idle, stop while running — <span style="color:var(--ok-text)">green</span>
+  running, <span style="color:var(--warn-text)">amber</span> when started while disconnected
+  (armed: engages on connect; the intent-latch proposal, open question 1). Hover the buttons for
+  state detail; disconnect the bus to see armed.</p>
+
+  <div class="project-panel">
+    <div class="project-section"><h3>Elements</h3>
+      <div class="project-group"><h4>Trace</h4><div id="g-trace"></div></div>
+      <div class="project-group"><h4>Plot</h4><div id="g-plot"></div></div>
+      <div class="project-group"><h4>RBS</h4><div id="g-rbs"></div></div>
+      <div class="project-group"><h4>Logger</h4><div id="g-logger"></div></div>
+    </div>
+    <div class="project-section"><h3>Logical buses</h3>
+      <div class="project-bus">
+        <span style="width:.8rem;height:.8rem;border-radius:2px;background:#4ecbff;flex:none"></span>
+        <input type="text" class="project-bus-name-input" value="Powertrain">
+        <span class="project-bus-state" id="busState">connected</span>
+        <button class="textbtn" id="busBtn">Disconnect</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const svg = body => `<svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor"
+  stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const ICON = {
+  play:  '<path d="M4 2.5l7 4.5-7 4.5z"/>',
+  stop:  '<rect x="3.5" y="3.5" width="7" height="7"/>',
+  clear: '<path d="M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.7 8h5.6l.7-8"/>',
+};
+// the ruled Focus/Open glyph: "enter" — arrow into a doorway
+ICON.enter = '<path d="M7.5 2.5H11.5v9H7.5"/><path d="M1.5 7h6M5 4.5L7.5 7 5 9.5"/>';
+
+let busConnected = true;
+const ELEMENTS = [
+  { g:"trace",  nm:"Trace 1",     runnable:false },
+  { g:"plot",   nm:"Plot 1",      runnable:false },
+  { g:"rbs",    nm:"RBS 1",       runnable:true, started:true,  verb:"transmitting" },
+  { g:"rbs",    nm:"Crash replay",runnable:true, started:false, verb:"transmitting" },
+  { g:"logger", nm:"Drive Log",   runnable:true, started:true,  verb:"logging" },
+  { g:"logger", nm:"Bench Logger",runnable:true, started:false, verb:"logging" },
+];
+
+// intent latch ∧ connection = effective state; the button alone conveys it
+function stateOf(el) {
+  if (!el.started) return { cls:"", title:"start" };
+  return busConnected
+    ? { cls:"running", title:`stop (${el.verb})` }
+    : { cls:"armed",   title:"stop (armed — starts on connect)" };
+}
+function render() {
+  for (const g of ["trace","plot","rbs","logger"]) document.getElementById("g-"+g).innerHTML="";
+  ELEMENTS.forEach((el, i) => {
+    const row = document.createElement("div");
+    row.className = "project-element";
+    const st = el.runnable ? stateOf(el) : null;
+    row.innerHTML = `
+      <input type="text" class="project-bus-name-input" value="${el.nm}" aria-label="element name">
+      ${el.runnable ? `<button class="iconbtn runbtn ${st.cls}" data-run="${i}"
+          title="${st.title}">${svg(ICON[el.started ? "stop" : "play"])}</button>` : ""}
+      <button class="iconbtn" title="go to this panel (opens it if closed)">${svg(ICON.enter)}</button>
+      <button class="iconbtn trash" title="remove ${el.nm} (undoable)">${svg(ICON.clear)}</button>`;
+    document.getElementById("g-"+el.g).appendChild(row);
+  });
+  document.querySelectorAll("[data-run]").forEach(b => b.addEventListener("click", () => {
+    const el = ELEMENTS[+b.dataset.run]; el.started = !el.started; render();
+  }));
+  document.getElementById("busState").textContent = busConnected ? "connected" : "idle";
+  document.getElementById("busState").className = "project-bus-state" + (busConnected ? " connected" : "");
+  document.getElementById("busBtn").textContent = busConnected ? "Disconnect" : "Connect";
+}
+document.getElementById("busBtn").addEventListener("click", () => { busConnected = !busConnected; render(); });
+render();
+</script>
