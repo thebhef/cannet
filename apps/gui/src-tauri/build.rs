@@ -8,7 +8,7 @@ fn main() {
     // Cargo crate version — see `build_version` in `lib.rs`.
     let _ = EmitBuilder::builder().git_describe(true, true, None).emit();
     // A dev build must compile before the sidecar has ever been frozen:
-    // `tauri.conf.json` declares `sidecar-dist/cannet-python-can` as a
+    // `tauri.conf.json` declares `sidecar-dist/cannet-local-sidecar` as a
     // resource, and tauri-build fails on a missing resource path. Create
     // the (gitignored) directory so a fresh checkout can `tauri dev` —
     // at runtime dev builds prefer the sidecar source tree anyway (see
@@ -23,7 +23,7 @@ fn main() {
     // beforeBuildCommand): a dev build has no reason to have built the
     // release server, and nothing in the app launches it anyway.
     if std::env::var("PROFILE").as_deref() == Ok("debug") {
-        let _ = std::fs::create_dir_all("sidecar-dist/cannet-python-can");
+        let _ = std::fs::create_dir_all("sidecar-dist/cannet-local-sidecar");
         let _ = std::fs::create_dir_all("server-dist");
         if !std::path::Path::new("licenses.json").exists() {
             let _ = std::fs::write("licenses.json", "{\"components\":[]}\n");

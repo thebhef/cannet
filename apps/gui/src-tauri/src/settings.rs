@@ -309,7 +309,7 @@ pub struct Settings {
     /// validates [`Settings::sidecar_dir`] — only a connection attempt
     /// can say whether an address answers, and it reports that already.
     pub default_server_address: String,
-    /// Directory holding the `cannet-python-can` package to launch,
+    /// Directory holding the `cannet-local-sidecar` package to launch,
     /// instead of the one the host finds for itself. Empty (the
     /// default) means the built-in resolution: the frozen bundled
     /// sidecar, or the source tree found by walking up from the GUI
@@ -326,7 +326,7 @@ pub struct Settings {
     pub sidecar_dir: String,
     /// Python module the sidecar loads its hardware driver from. Empty
     /// (the default) means the sidecar's own
-    /// `cannet_python_can.driver_python_can`. The host forwards a
+    /// `cannet_local_sidecar.driver_python_can`. The host forwards a
     /// non-empty value to the sidecar process as
     /// `CANNET_DRIVER_MODULE`; before this setting the host never set
     /// that variable at all, so choosing a driver meant launching the

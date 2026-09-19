@@ -4,7 +4,7 @@
 # Phase 8 bundles `uv` (Astral's Python project / package manager,
 # https://docs.astral.sh/uv/) alongside the GUI so end users do not
 # need a pre-installed Python on their machine — `uv` materialises
-# the cannet-python-can sidecar's venv on first launch and runs it.
+# the cannet-local-sidecar sidecar's venv on first launch and runs it.
 #
 # The GUI looks for `tools/uv/uv[.exe]` next to its executable
 # (see `apps/gui/src-tauri/src/sidecar.rs::bundled_uv_path`). This

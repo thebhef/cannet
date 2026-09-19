@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the frozen ``cannet-python-can`` sidecar (PyInstaller onedir).
+"""Build the frozen ``cannet-local-sidecar`` sidecar (PyInstaller onedir).
 
 Encodes the reproducible per-OS freeze recipe from ADR 0036. Runs
 PyInstaller inside the sidecar's pinned ``uv`` environment so the
@@ -20,8 +20,8 @@ Rebuilds are incremental: PyInstaller reuses the analysis cached under
 unchanged sidecar refreezes in seconds.
 
 The onedir lands at
-``apps/gui/src-tauri/sidecar-dist/cannet-python-can/`` with the launcher
-``cannet-python-can[.exe]`` beside its ``_internal/`` directory. On
+``apps/gui/src-tauri/sidecar-dist/cannet-local-sidecar/`` with the launcher
+``cannet-local-sidecar[.exe]`` beside its ``_internal/`` directory. On
 Windows the launcher is stamped with a VERSIONINFO resource
 (``--version-file``) so a task manager reports it as *cannet CAN
 hardware sidecar (python-can)* rather than as a nameless executable;
@@ -47,7 +47,7 @@ from pathlib import Path
 # reproducible regardless of where it is invoked from.
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
-SIDECAR_PROJECT = REPO_ROOT / "servers" / "cannet-python-can"
+SIDECAR_PROJECT = REPO_ROOT / "servers" / "cannet-local-sidecar"
 PYPROJECT = SIDECAR_PROJECT / "pyproject.toml"
 ENTRY = SIDECAR_PROJECT / "pyinstaller_entry.py"
 # The bundled third-party attribution manifest and its generator. Every
@@ -60,7 +60,7 @@ DIST_DIR = REPO_ROOT / "apps" / "gui" / "src-tauri" / "sidecar-dist"
 BUILD_DIR = DIST_DIR / "_build"
 # The launcher's own name is the process name a user sees in a task
 # manager, so it carries both `cannet` and which part of cannet it is.
-SIDECAR_NAME = "cannet-python-can"
+SIDECAR_NAME = "cannet-local-sidecar"
 ONEDIR = DIST_DIR / SIDECAR_NAME
 LAUNCHER_NAME = f"{SIDECAR_NAME}.exe" if sys.platform == "win32" else SIDECAR_NAME
 LAUNCHER = ONEDIR / LAUNCHER_NAME
@@ -159,7 +159,7 @@ def pyinstaller_flags(version_file: Path | None) -> list[str]:
         SIDECAR_NAME,
         # Our importlib-loaded driver — invisible to the static graph.
         "--collect-submodules",
-        "cannet_python_can",
+        "cannet_local_sidecar",
         # python-can discovers backends via entry points.
         "--collect-submodules",
         "can",

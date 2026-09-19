@@ -51,7 +51,7 @@ trip over it.
 
 - `[ci]` **Server-implementation conformance check.** Every server
   that speaks `cannet-wire` (today: `cannet-server`'s BLF replay and
-  virtual-bus modes, `cannet-python-can`; tomorrow: other vendor
+  virtual-bus modes, `cannet-local-sidecar`; tomorrow: other vendor
   sidecars) is expected to honour the same envelope semantics —
   `ConfigureBus` on the bus / interface they own, exhaustive matches
   on the full envelope set, error-frame round-trip, the response
@@ -471,7 +471,7 @@ next pass on this surface can address them as one piece.
   `apps/gui/src/index.css:1136,3992`,
   `apps/gui/src/DatabasePanel.tsx:263`,
   `apps/gui/src-tauri/src/tests.rs:1907`, and several under
-  `servers/cannet-python-can/`.
+  `servers/cannet-local-sidecar/`.
 - `[idea]` `cannet-gui` disk-spill eviction (task 0018 Step 6): **pin
   note-bearing regions against eviction.** The windowed-ring cap drops the
   oldest frames purely by age; a section the user annotated with a note is
@@ -510,7 +510,7 @@ next pass on this surface can address them as one piece.
   in `cannet.log`. When that log appears, file the repro/fix follow-up
   against the named panic site.
 
-- `[bug]` `cannet-python-can` / upstream: **PEAK macOS PCBUSB hands
+- `[bug]` `cannet-local-sidecar` / upstream: **PEAK macOS PCBUSB hands
   python-can garbage classic-CAN timestamps** — observed 2026-07-13: a
   hardware frame carried `msg.timestamp ≈ 239723374713.5 s`
   (~year 9570), deterministically on every connect (python-can 4.6.1,
@@ -523,7 +523,7 @@ next pass on this surface can address them as one piece.
   `millis`/`millis_overflow`/`micros` per frame, identify the
   mechanism, and file against python-can and/or mac-can PCBUSB.
 
-- `[ui]` `cannet-python-can` sidecar: **two sources of scary-but-benign
+- `[ui]` `cannet-local-sidecar` sidecar: **two sources of scary-but-benign
   log noise.** (1) Closing a Vector channel while `_rx_pump` is blocked
   in `ch.recv` logs a WARN `xlReceive failed (XL_ERROR)` System Message
   on every disconnect — teardown, not a fault; detect the closing state
@@ -541,7 +541,7 @@ next pass on this surface can address them as one piece.
   0002; windowed-ring eviction shipped), so saving a large spilled
   capture now defeats the spill. Stream the write in chunks off the
   store's paged read path instead. (2026-07-02 audit.)
-- `[perf]` `cannet-python-can` server: **TX hot path re-resolves the
+- `[perf]` `cannet-local-sidecar` server: **TX hot path re-resolves the
   interface through the registry per frame** (`server/service.py`'s
   per-frame `self._registry.transmit(...)` → a locked dict lookup in
   `server/shared_interface.py`, then the interface lock again inside
@@ -599,7 +599,7 @@ next pass on this surface can address them as one piece.
   run and were deferred here for an ad-hoc verify-and-bugfix pass rather
   than blocking the phase:
   - **Bridge configs end-to-end** via
-    [`servers/cannet-python-can/SMOKE.md`](../servers/cannet-python-can/SMOKE.md):
+    [`servers/cannet-local-sidecar/SMOKE.md`](../servers/cannet-local-sidecar/SMOKE.md):
     passive monitor (physical Rx on allocated participants, allocated TX
     not forwarded), full bidirectional bridge against real hardware, and
     the cross-server / CAN-over-IP gateway (Server A bridges Server B's
@@ -669,7 +669,7 @@ next pass on this surface can address them as one piece.
   the launcher binary itself is still not overridable. Add an override
   (env var and/or setting) that points cannet at a user-chosen
   sidecar executable. Reinforces the LGPL §4 replace story (see
-  [`servers/cannet-python-can/LICENSING.md`](../servers/cannet-python-can/LICENSING.md)):
+  [`servers/cannet-local-sidecar/LICENSING.md`](../servers/cannet-local-sidecar/LICENSING.md)):
   a user who swaps in a modified sidecar / `python-can` can point cannet
   straight at it instead of editing files inside the frozen onedir.
 

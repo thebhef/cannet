@@ -241,10 +241,11 @@ uv run --extra dev mypy
 
 ## Relationship to the sidecar
 
-`cannet-python-can` (under `servers/`) is a **server**: it exposes
-local CAN hardware over the wire. This package is a **client**: it
-opens a bus on a server. Nothing here depends on it. What the two do
-share is [`cannet-python-wire`](../../libs/cannet-python-wire/) — the
+The local hardware sidecar under [`servers/`](../../servers/) is a
+**server**: it exposes local CAN hardware over the wire. This package
+is a **client**: it opens a bus on a server. Nothing here depends on
+it. What the two do share is
+[`cannet-python-wire`](../../libs/cannet-python-wire/) — the
 checked-in `_proto` gencode and the `can.Message` ↔ wire `Frame`
 mappers — so there is exactly one encoding of the wire in the
 repository.

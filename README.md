@@ -103,7 +103,7 @@ crates/
                  share the semantics that must not drift without
                  sharing the policy that differs.
   cannet-server/ Bare `cannet-server` is the production hardware proxy
-                 (ADR 0040): it supervises the `cannet-python-can`
+                 (ADR 0040): it supervises the `cannet-local-sidecar`
                  sidecar on loopback and relays all three RPCs to it
                  1:1, so a remote client sees the host's real
                  interfaces under their real ids. `debug
@@ -238,7 +238,7 @@ apps/
                      System Messages panel renders it.
 
 servers/
-  cannet-python-can/
+  cannet-local-sidecar/
                  The python-can sidecar: a gRPC *server* that exposes
                  the host's Vector / Kvaser / PEAK adapters over the
                  wire protocol. `cannet-server` supervises one; the GUI
@@ -312,7 +312,7 @@ All platforms need:
 drivers (Vector / Kvaser / PEAK):**
 
 - [`uv`](https://docs.astral.sh/uv/) — manages the
-  [`cannet-python-can`](servers/cannet-python-can/) sidecar's Python
+  [`cannet-local-sidecar`](servers/cannet-local-sidecar/) sidecar's Python
   environment and installs Python on the fly. We do **not** commit
   `uv` binaries or pack them into the installer artefact; in a
   **development** build the host expects a `uv` to be available, either
@@ -373,13 +373,13 @@ From the repo root:
 
 ```sh
 pnpm --dir apps/gui install        # once, to fetch frontend deps
-uv run --project servers/cannet-python-can --frozen \
+uv run --project servers/cannet-local-sidecar --frozen \
     python scripts/gen-licenses.py # once, generate the bundled license manifest
 pnpm --dir apps/gui tauri dev      # development build with hot reload
 pnpm --dir apps/gui tauri build    # release bundle
 ```
 
-`tauri build` first freezes the `cannet-python-can` sidecar
+`tauri build` first freezes the `cannet-local-sidecar` sidecar
 ([`scripts/build-sidecar.py`](scripts/build-sidecar.py)) and builds and
 stages the release `cannet-server` the bundle ships
 ([`scripts/stage-server.py`](scripts/stage-server.py)) — both run by the
@@ -610,7 +610,7 @@ one per OS:
 | Linux x64   | `cannet-server-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
 
 Each unpacks to one directory holding the `cannet-server` binary and,
-beside it, the `cannet-python-can/` onedir it supervises — no `uv` or
+beside it, the `cannet-local-sidecar/` onedir it supervises — no `uv` or
 Python needed at runtime, same as the GUI's frozen sidecar. Like the
 GUI bundles, these binaries are unsigned: macOS Gatekeeper quarantines
 a downloaded, un-notarized binary (right-click → **Open** and confirm,
@@ -621,7 +621,7 @@ anyway**). Linux has no equivalent gate.
 #### Installers
 
 Beside the archives, one native server installer per platform. Each
-keeps the `cannet-python-can/` onedir beside the binary — the layout
+keeps the `cannet-local-sidecar/` onedir beside the binary — the layout
 the server's own sidecar discovery expects — and puts `cannet-server`
 where a terminal finds it. None of them installs a service, a
 shortcut, or anything that starts a server: running one stays an
@@ -698,7 +698,7 @@ Every line but the connect block is also written to a rolling logfile —
 see [Logs](#logs) below. The block is console-only, because it carries
 the token.
 
-It spawns and supervises one `cannet-python-can` sidecar on loopback
+It spawns and supervises one `cannet-local-sidecar` sidecar on loopback
 (the same one the GUI runs for local dongles) and relays all three
 RPCs to it 1:1. Nothing on the wire is reinterpreted: clients list
 `pcan:PCAN_USBBUS1` and friends under their real ids, and
@@ -752,7 +752,7 @@ Flags:
   tree*, overriding the walk-up search from the server binary. This is
   the developer/field-engineer escape hatch, matching the GUI's
   **Sidecar directory** setting — not a way to pick a different frozen
-  `cannet-python-can` onedir, which stays inexpressible on either host.
+  `cannet-local-sidecar` onedir, which stays inexpressible on either host.
   `CANNET_SIDECAR_DIR` still wins when both are set.
 - `--name <name>` — instance name to advertise via mDNS/DNS-SD
   (`_cannet._tcp`), default this machine's hostname. The GUI's browse
@@ -805,7 +805,7 @@ use the server's buses — that is the trust boundary
 ### Running the bundled server
 
 Every GUI install carries the same `cannet-server` binary, staged
-beside the frozen `cannet-python-can/` onedir the app already ships —
+beside the frozen `cannet-local-sidecar/` onedir the app already ships —
 so the server's own sidecar lookup finds it there with no extra
 configuration, exactly as in a distribution archive. Nothing in the app
 launches it: starting a server stays an explicit terminal act.
@@ -904,7 +904,7 @@ to accept in hand.
 
 The sidecar is found the same way the GUI finds it
 ([ADR 0036](docs/adr/0036-frozen-python-can-sidecar.md)): a release
-build prefers the frozen `cannet-python-can/` onedir unpacked beside
+build prefers the frozen `cannet-local-sidecar/` onedir unpacked beside
 the server binary and falls back to the source tree; a `cargo run`
 build prefers the source tree, so sidecar edits take effect on its next
 restart. `--sidecar-dir <path>` overrides where that source tree is;
@@ -3100,7 +3100,7 @@ the local bus; Phase 8's vendor sidecar is the first real producer.
 
 Phase 8 plugs in real hardware sources by way of a single auto-launched
 [`python-can`](https://python-can.readthedocs.io/) sidecar that lives at
-[`servers/cannet-python-can/`](servers/cannet-python-can/). The sidecar
+[`servers/cannet-local-sidecar/`](servers/cannet-local-sidecar/). The sidecar
 speaks the same `cannet-wire` gRPC protocol as `cannet-server`, so the
 host pipeline is unchanged — interfaces show up in the project graph
 view the same way the BLF replay fixture's do, just under
@@ -3130,7 +3130,7 @@ or close.
 (`crates/cannet-sidecar` does the supervising;
 `apps/gui/src-tauri/src/sidecar.rs` supplies the GUI's settings and
 log surface); the user does not run anything
-in `servers/cannet-python-can/` by hand. The sidecar binds to an
+in `servers/cannet-local-sidecar/` by hand. The sidecar binds to an
 OS-assigned ephemeral port (`127.0.0.1:0`) and reports the actual
 address back on its `sidecar\tlistening\t<addr>` banner; the host
 parses it into the supervisor's status and exposes it through the
@@ -3162,7 +3162,7 @@ their lifecycle and faults, never per-frame content. The sidecar
 reports the path back on startup, so the System Messages panel says
 `detailed log: <path>` — that plus `cannet.log` is what to attach to
 a bug report. Running the sidecar by hand (`uv run
-cannet-python-can`) writes no file unless you pass `--log-file`
+cannet-local-sidecar`) writes no file unless you pass `--log-file`
 yourself.
 
 **Lifecycle: dies with the host**. The host pipes the sidecar's
@@ -3184,7 +3184,7 @@ The host launcher resolves `uv` in this order:
    [`docs/adr/0036-frozen-python-can-sidecar.md`](docs/adr/0036-frozen-python-can-sidecar.md)).
 2. **`uv` on `PATH`** — install via
    [`https://docs.astral.sh/uv/`](https://docs.astral.sh/uv/).
-3. **`python3 -m cannet_python_can`** — last-resort fallback when
+3. **`python3 -m cannet_local_sidecar`** — last-resort fallback when
    neither is available. The host logs a warn-level System Message
    asking the user to install `uv` for the supported flow.
 
@@ -3203,16 +3203,16 @@ they are runtime, user-installed dependencies:
 
 A vendor with no SDK installed contributes zero channels and does not
 break the others. The full per-vendor smoke-test procedure lives in
-[`servers/cannet-python-can/SMOKE.md`](servers/cannet-python-can/SMOKE.md);
+[`servers/cannet-local-sidecar/SMOKE.md`](servers/cannet-local-sidecar/SMOKE.md);
 CI cannot run it.
 
 **Swapping the driver library**. The sidecar's
-[`driver.py`](servers/cannet-python-can/cannet_python_can/driver.py)
+[`driver.py`](servers/cannet-local-sidecar/cannet_local_sidecar/driver.py)
 defines a small adapter protocol (`list_channels`, `open`, `recv`,
 `send`, `close`). To replace `python-can`:
 
 1. `uv pip install <your-driver>` into the sidecar venv (or edit
-   [`servers/cannet-python-can/pyproject.toml`](servers/cannet-python-can/pyproject.toml)
+   [`servers/cannet-local-sidecar/pyproject.toml`](servers/cannet-local-sidecar/pyproject.toml)
    and re-run `uv sync`).
 2. Write a module exposing a top-level `Driver` callable returning a
    matching object.
@@ -3223,11 +3223,11 @@ defines a small adapter protocol (`list_channels`, `open`, `recv`,
 
 A patched or replaced sidecar *build* is reachable the same way:
 **Settings → Connection → Sidecar directory** points cannet at a
-`cannet-python-can` package directory of your own, and
+`cannet-local-sidecar` package directory of your own, and
 `CANNET_SIDECAR_DIR` overrides it for one run.
 
 The wire-level code does not change. See
-[`servers/cannet-python-can/LICENSING.md`](servers/cannet-python-can/LICENSING.md)
+[`servers/cannet-local-sidecar/LICENSING.md`](servers/cannet-local-sidecar/LICENSING.md)
 for the LGPL analysis that motivates this layout.
 
 ### Phase-9 Save Capture, notes & Recent captures
@@ -3528,7 +3528,7 @@ pnpm --dir apps/gui test           # frontend unit tests (vitest)
 pnpm --dir apps/gui build          # type-checks and bundles the frontend
 ```
 
-The Python sidecar ([`servers/cannet-python-can`](servers/cannet-python-can))
+The Python sidecar ([`servers/cannet-local-sidecar`](servers/cannet-local-sidecar))
 is checked with [ruff](https://docs.astral.sh/ruff/) (lint + format),
 [mypy](https://mypy-lang.org/), and pytest — run from that directory:
 

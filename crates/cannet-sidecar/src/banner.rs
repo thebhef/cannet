@@ -141,33 +141,33 @@ mod tests {
         // The Python sidecar's basicConfig format is
         // "%(asctime)s %(levelname)s %(name)s %(message)s".
         let (lvl, msg) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 INFO cannet_python_can.server ListInterfaces -> 2 channels",
+            "2026-05-25 16:05:43,487 INFO cannet_local_sidecar.server ListInterfaces -> 2 channels",
         );
         assert!(
             matches!(lvl, LogLevel::Debug),
             "the sidecar's INFO is our Debug, and must not be warned"
         );
         assert_eq!(
-            msg, "cannet_python_can.server ListInterfaces -> 2 channels",
+            msg, "cannet_local_sidecar.server ListInterfaces -> 2 channels",
             "timestamp should be stripped; name + message retained"
         );
 
         let (lvl, _) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 WARNING cannet_python_can.server rx pump for X failed",
+            "2026-05-25 16:05:43,487 WARNING cannet_local_sidecar.server rx pump for X failed",
         );
         assert!(matches!(lvl, LogLevel::Warn));
 
         let (lvl, _) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 ERROR cannet_python_can sidecar fatal error",
+            "2026-05-25 16:05:43,487 ERROR cannet_local_sidecar sidecar fatal error",
         );
         assert!(matches!(lvl, LogLevel::Error));
 
         let (lvl, _) =
-            classify_stderr_line("2026-05-25 16:05:43,487 CRITICAL cannet_python_can boom");
+            classify_stderr_line("2026-05-25 16:05:43,487 CRITICAL cannet_local_sidecar boom");
         assert!(matches!(lvl, LogLevel::Error));
 
         let (lvl, _) =
-            classify_stderr_line("2026-05-25 16:05:43,487 DEBUG cannet_python_can chatty");
+            classify_stderr_line("2026-05-25 16:05:43,487 DEBUG cannet_local_sidecar chatty");
         assert!(matches!(lvl, LogLevel::Debug));
     }
 
@@ -179,8 +179,9 @@ mod tests {
         assert_eq!(msg, "  File \"server.py\", line 42, in <module>");
 
         // Looks roughly right but the level token isn't a real level.
-        let (lvl, msg) =
-            classify_stderr_line("2026-05-25 16:05:43,487 BANANAS cannet_python_can not a level");
+        let (lvl, msg) = classify_stderr_line(
+            "2026-05-25 16:05:43,487 BANANAS cannet_local_sidecar not a level",
+        );
         assert!(matches!(lvl, LogLevel::Warn));
         assert!(msg.contains("BANANAS"));
     }

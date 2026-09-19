@@ -33,7 +33,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "sidecar-dist/cannet-python-can": "cannet-python-can",
+      "sidecar-dist/cannet-local-sidecar": "cannet-local-sidecar",
       "server-dist": "",
       "licenses.json": "licenses.json"
     }

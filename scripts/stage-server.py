@@ -3,12 +3,12 @@
 
 Every GUI install carries the server binary, so that a machine with the
 GUI on it is already a potential hardware host: the bundled server sits
-beside the frozen ``cannet-python-can`` onedir the GUI ships anyway, and
+beside the frozen ``cannet-local-sidecar`` onedir the GUI ships anyway, and
 the server's own exe-adjacent sidecar probe finds it there unchanged.
 
 The staging directory is ``apps/gui/src-tauri/server-dist/``, declared
 in ``tauri.conf.json`` as a resource whose contents land at the bundle's
-resource root — beside ``cannet-python-can/``. It is gitignored build
+resource root — beside ``cannet-local-sidecar/``. It is gitignored build
 output, exactly like ``sidecar-dist/``.
 
 Usage (run from anywhere — all paths derive from this file's location)::

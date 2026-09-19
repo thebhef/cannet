@@ -23,7 +23,7 @@ Neither has to fake the other.
 a question about driver behaviour — how cheap enumeration is on this
 backend, whether the underlying API exposes any hot-plug hint, how
 disruptive a stale snapshot is. Only the server can answer. Today
-the only hardware-owning server is the `cannet-python-can` sidecar
+the only hardware-owning server is the `cannet-local-sidecar` sidecar
 ([ADR 0008](0008-python-can-sidecar.md)); future vendor sidecars and
 remote rigs do the same on their own terms.
 

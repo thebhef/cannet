@@ -58,19 +58,19 @@ repos:
         pass_filenames: false
         entry: "bash -c 'cd libs/cannet-python-wire && uv run --frozen --extra dev pytest'"
 
-      # --- Python sidecar (servers/cannet-python-can) ---
+      # --- Python sidecar (servers/cannet-local-sidecar) ---
 
       # ruff takes file arguments, so these run on the staged files only.
       - id: ruff-check
         name: ruff check (sidecar)
         language: system
-        files: '^servers/cannet-python-can/.*\.py$'
-        entry: uv run --project servers/cannet-python-can --frozen --extra dev ruff check --force-exclude
+        files: '^servers/cannet-local-sidecar/.*\.py$'
+        entry: uv run --project servers/cannet-local-sidecar --frozen --extra dev ruff check --force-exclude
       - id: ruff-format
         name: ruff format (sidecar)
         language: system
-        files: '^servers/cannet-python-can/.*\.py$'
-        entry: uv run --project servers/cannet-python-can --frozen --extra dev ruff format --check --force-exclude
+        files: '^servers/cannet-local-sidecar/.*\.py$'
+        entry: uv run --project servers/cannet-local-sidecar --frozen --extra dev ruff format --check --force-exclude
 
       # mypy / pytest need the sidecar as their working directory (config
       # discovery), so they run the whole sidecar when any of its files change.
@@ -81,15 +81,15 @@ repos:
       - id: mypy
         name: mypy (sidecar)
         language: system
-        files: '^(servers/cannet-python-can|libs/cannet-python-wire)/.*\.py$'
+        files: '^(servers/cannet-local-sidecar|libs/cannet-python-wire)/.*\.py$'
         pass_filenames: false
-        entry: "bash -c 'cd servers/cannet-python-can && uv run --frozen --extra dev mypy'"
+        entry: "bash -c 'cd servers/cannet-local-sidecar && uv run --frozen --extra dev mypy'"
       - id: pytest
         name: pytest (sidecar)
         language: system
-        files: '^(servers/cannet-python-can|libs/cannet-python-wire)/.*\.py$'
+        files: '^(servers/cannet-local-sidecar|libs/cannet-python-wire)/.*\.py$'
         pass_filenames: false
-        entry: "bash -c 'cd servers/cannet-python-can && uv run --frozen --extra dev pytest'"
+        entry: "bash -c 'cd servers/cannet-local-sidecar && uv run --frozen --extra dev pytest'"
 
       # --- Python client (clients/cannet-python-client) ---
       #
@@ -133,7 +133,7 @@ repos:
       - id: freeze-sidecar
         name: freeze + smoke sidecar
         language: system
-        files: '^servers/cannet-python-can/(pyproject\.toml|uv\.lock|pyinstaller_entry\.py)$|^libs/cannet-python-wire/(pyproject\.toml|uv\.lock)$|^scripts/(build-sidecar|gen-licenses)\.py$'
+        files: '^servers/cannet-local-sidecar/(pyproject\.toml|uv\.lock|pyinstaller_entry\.py)$|^libs/cannet-python-wire/(pyproject\.toml|uv\.lock)$|^scripts/(build-sidecar|gen-licenses)\.py$'
         pass_filenames: false
         entry: uv run --no-project scripts/build-sidecar.py
 
