@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { ViewSignalCandidate, ViewSignalRow, ViewSignalStatus } from "./types";
 import { useAcceptSignalDrift, useRemapSignal } from "./signalRemap";
 import { useProjectContext } from "./projectContext";
+import { useSetting } from "./hostSettings";
 import { useDbcGeneration } from "./dbcChanged";
 import { basename } from "./windowTitle";
 import { formatCanIdHex } from "./format";
@@ -46,6 +47,7 @@ interface ViewSignalsPanelParams {
   sort?: unknown;
   statusFilter?: unknown;
   busFilter?: unknown;
+  unknownUnitFilter?: unknown;
 }
 
 function sortFromParams(raw: unknown): ViewSignalSortState {
@@ -126,9 +128,11 @@ const PAGE_ROWS = 20;
  * A thin view over [`list_view_signals`]: status, serving database,
  * used-by and the candidates are all host-computed (`view_signals.rs`);
  * this panel shapes them for the shared gridview (ADR 0044) and nothing
- * more. Refetches on `view-signals-changed` (a view's push changed) and
- * on the DBC-change generation (ADR 0053 — a database was
- * assigned/unassigned/edited). Not paged: the row count is bounded by
+ * more. Refetches on `view-signals-changed` (a view's push changed), on
+ * the DBC-change generation (ADR 0053 — a database was
+ * assigned/unassigned/edited), and on the project's unit-customization
+ * dict (which decides `unitUnrecognized`, and announces itself only as
+ * a settings write). Not paged: the row count is bounded by
  * how many signals the open views reference, not by capture length, so
  * one unbounded fetch is the host's own answer
  * (`ViewSignalPage`) and there is nothing here for `CLAUDE.md`'s paging
@@ -181,14 +185,18 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
   const [busFilter, setBusFilter] = useState<ReadonlySet<string>>(
     () => new Set(Array.isArray(params?.busFilter) ? params.busFilter.filter((v): v is string => typeof v === "string") : []),
   );
+  const [unknownUnitFilter, setUnknownUnitFilter] = useState(
+    () => params?.unknownUnitFilter === true,
+  );
   useEffect(() => {
     api.updateParameters({
       columns,
       sort,
       statusFilter: [...statusFilter],
       busFilter: [...busFilter],
+      unknownUnitFilter,
     });
-  }, [api, columns, sort, statusFilter, busFilter]);
+  }, [api, columns, sort, statusFilter, busFilter, unknownUnitFilter]);
 
   // --- the host model ---
   const [rows, setRows] = useState<ViewSignalRow[]>([]);
@@ -198,6 +206,13 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
     () => buses.map((b) => [b.id, b.name]),
     [buses],
   );
+  // The other input to a row's `unitUnrecognized`, which the host reads
+  // from its own settings cache on every fetch. Held here only to
+  // *re-trigger* that fetch: editing the customization dict in the
+  // settings view changes which unit strings the host can place, and
+  // nothing else announces it (the dict is a setting, not a DBC or a
+  // view push). The recognition itself stays host-side.
+  const unitCustomizations = useSetting("unit_customizations");
   const refresh = useCallback(() => {
     let cancelled = false;
     void invoke<{ rows: ViewSignalRow[]; attentionCount: number; total: number }>(
@@ -216,7 +231,7 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [sort, busNames]);
+  }, [sort, busNames, unitCustomizations]);
   // The other half of the model's inputs: a database
   // assigned/unassigned/edited (ADR 0053 §2, which also covers
   // assignment changes). One effect, not two — `refresh`
@@ -315,9 +330,10 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
     [],
   );
   const filteredRows = useMemo(
-    () => applyViewSignalFilters(rows, statusFilter, busFilter),
-    [rows, statusFilter, busFilter],
+    () => applyViewSignalFilters(rows, statusFilter, busFilter, unknownUnitFilter),
+    [rows, statusFilter, busFilter, unknownUnitFilter],
   );
+  const unknownUnitCount = useMemo(() => rows.filter((r) => r.unitUnrecognized).length, [rows]);
   const onAttention = isAttentionFilter(statusFilter);
   const toggleAttentionShortcut = useCallback(() => {
     setStatusFilter(onAttention ? new Set() : new Set(VIEW_SIGNAL_ATTENTION_STATUSES));
@@ -392,7 +408,7 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
   rowDomIdRef.current = grid.rowDomId;
 
   const countsLabel =
-    statusFilter.size === 0 && busFilter.size === 0
+    statusFilter.size === 0 && busFilter.size === 0 && !unknownUnitFilter
       ? `${attentionCount} of ${total} need attention`
       : `${filteredRows.length} of ${total} shown`;
   const busCount = new Set(rows.map((r) => r.busId ?? "")).size;
@@ -420,6 +436,28 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
               </button>
             );
           })}
+          {/* A fourth filter dimension, not a fifth status: a unit
+              string the host cannot place is orthogonal to whether the
+              signal decodes, so it toggles on its own rather than
+              joining the status selection. Same pressed-chip idiom,
+              wearing the row badge's glyph so the toolbar and the rows
+              say the same thing. */}
+          <button
+            type="button"
+            className="status-chip chip-button"
+            aria-pressed={unknownUnitFilter}
+            title={
+              unknownUnitFilter
+                ? "Stop filtering to unrecognised units"
+                : "Filter to signals whose DBC unit string cannot be placed — each needs a customization in Settings → Units"
+            }
+            onClick={() => setUnknownUnitFilter((v) => !v)}
+          >
+            <i className="view-signals-unknown-unit" aria-hidden="true">
+              ≠
+            </i>
+            <span className="status-chip-label">Unknown unit ({unknownUnitCount})</span>
+          </button>
         </span>
         <span className="chip-menu">
           <ChipButton
@@ -548,6 +586,31 @@ function optionTitle(row: ViewSignalRow, c: ViewSignalCandidate): string | undef
   return undefined;
 }
 
+/// The flag on a row whose unit string the host's unit facade cannot
+/// place — no built-in recognition and no entry in the project's
+/// customization dict.
+///
+/// Purely informational: the signal decodes fine, but nothing can
+/// convert *through* that string, so a math channel targeting a unit
+/// will pass it through unscaled. The repair is a customization row in
+/// Settings → Units, which is what the tooltip points at. A glyph with
+/// the explanation on hover, in the same register as the math editor's
+/// unconverted-operand flag, and blank units are never flagged — a
+/// signal that declares no unit has nothing to map.
+function UnknownUnitFlag({ unit, shown }: { unit: string; shown: boolean }) {
+  if (!shown) return null;
+  return (
+    <span
+      className="view-signals-unknown-unit"
+      role="img"
+      aria-label={`unit ${unit} is not recognised`}
+      title={`"${unit}" is not a unit cannet recognises — map it in Settings → Units so signals in it can convert`}
+    >
+      ≠
+    </span>
+  );
+}
+
 interface ViewSignalRowLineProps {
   row: ViewSignalRow;
   columns: readonly ViewSignalColumnState[];
@@ -603,6 +666,7 @@ function ViewSignalRowLine({
             return (
               <span className={className}>
                 <NameText name={row.signalName} />
+                <UnknownUnitFlag unit={row.unit} shown={row.unitUnrecognized} />
               </span>
             );
           case "msg":

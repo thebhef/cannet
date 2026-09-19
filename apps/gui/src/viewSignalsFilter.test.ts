@@ -21,6 +21,7 @@ function row(over: Partial<ViewSignalRow> = {}): ViewSignalRow {
     messageName: "Chassis",
     signalName: "VehicleSpeed",
     unit: "km/h",
+    unitUnrecognized: false,
     servingDbc: "powertrain.dbc",
     pickedDbc: null,
     usedBy: ["Plot 1"],
@@ -68,6 +69,36 @@ describe("applyViewSignalFilters", () => {
   it("a bus filter selects the unbound sentinel too", () => {
     const out = applyViewSignalFilters(rows, new Set(), new Set([UNBOUND_BUS_KEY]));
     expect(out.map((r) => r.id)).toEqual(["d"]);
+  });
+
+  it("the unknown-unit filter keeps only the rows the host flagged", () => {
+    const flagged = [
+      row({ id: "a" }),
+      row({ id: "b", unit: "furlongs", unitUnrecognized: true }),
+      row({ id: "c", unit: "" }),
+    ];
+    expect(applyViewSignalFilters(flagged, new Set(), new Set(), false).map((r) => r.id)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+    expect(applyViewSignalFilters(flagged, new Set(), new Set(), true).map((r) => r.id)).toEqual([
+      "b",
+    ]);
+  });
+
+  it("the unknown-unit filter ANDs with the status filter", () => {
+    const flagged = [
+      row({ id: "a", status: "decoded", unitUnrecognized: true }),
+      row({ id: "b", status: "scale", unitUnrecognized: true }),
+    ];
+    const out = applyViewSignalFilters(
+      flagged,
+      new Set<ViewSignalStatus>(["scale"]),
+      new Set(),
+      true,
+    );
+    expect(out.map((r) => r.id)).toEqual(["b"]);
   });
 });
 

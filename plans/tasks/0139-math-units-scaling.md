@@ -135,6 +135,10 @@ badge.
       new fields round-trips.
 - [x] The settings-view units section lists the library's units and
       persists only the user's customizations, with the project.
+- [x] The signal-mapping panel flags every signal whose DBC unit
+      string the project cannot place (blank never flagged), names the
+      string, points at Settings → Units, and offers a filter to those
+      rows; adding the customization clears the flag with no reopen.
 - [x] Technology inventory records the dependency decision; docs
       match shipped behaviour.
 - [x] An integration reaches a target its operand only reaches through
@@ -432,6 +436,54 @@ the library-picker + add path the grooming ruled.
 Tests: host lib 1173 → 1177 passing (7 ignored, unchanged); frontend
 3359 → 3380 across 243 files (23 added, 2 replaced — the free-text unit
 box's two tests became the picker's six).
+
+**2026-09-06 — Phase 3 (unrecognised units in the signal-mapping
+panel), branch `task139-panel`.** Owner ask: "the signal panel should
+show signals whose unit is not blank and is not recognized" — the
+**View signals** mapping panel (`ViewSignalsPanel.tsx`), so the DBC unit
+strings that need a customization are visible where the signals are.
+
+- **The fact is the host's, not the panel's.** `ViewSignalRow` grew one
+  boolean, `unit_unrecognized`, computed in `view_signals::row` from the
+  string the row will actually render (the serving database's unit, or
+  the view's own record when nothing decodes) through
+  `units::recognize`. The frontend never re-implements the recognition —
+  `CLAUDE.md`'s rule that domain computation belongs in the model — and
+  the blank case is decided once, host-side: `!unit.trim().is_empty()`
+  guards the call, because `recognize`'s *first* pass is the
+  customization map and a dict keyed on `""` would otherwise place a
+  blank unit.
+- **The refresh path, and why it needed one.** The panel's two existing
+  triggers are `view-signals-changed` and the DBC generation; a
+  customization edit is neither — it is a settings write, and settings
+  announce themselves only through `hostSettings.ts`'s own subscriber
+  list. So the panel reads `useSetting("unit_customizations")` and puts
+  it in `refresh`'s dependency list: the value is never used for the
+  recognition, only to re-ask the host, which reads the dict from
+  `settings::effective()` (a cache `set_settings` refreshes) on each
+  fetch. The DOM test drives it end to end — mounted panel, a customization
+  written from outside it, badge gone with no remount.
+- **The filter shape found: two selection sets, no free text.** The
+  toolbar carries status chips (`aria-pressed` toggles) and a bus
+  fly-out, ANDed together by `applyViewSignalFilters`; there is no
+  search box. An unplaceable unit is orthogonal to the decode taxonomy —
+  a Decoded row can have one — so it is a fourth dimension rather than a
+  sixth status: one more pressed chip, `Unknown unit (N)`, wearing the
+  row badge's own `≠` so the toolbar and the rows read as one thing.
+  `unknownUnitOnly` is a plain boolean, not a set: a unit either needs a
+  customization or does not. Persisted in the panel's params beside the
+  other two filters.
+- **The badge sits in the signal cell**, not a new column: a column
+  would change every persisted layout for a flag that is blank on almost
+  every row.
+- **One clippy shape change, forced.** `row` reached 8 arguments and then
+  101/100 lines. The two project-wide inputs every row reads identically
+  (`bus_names`, `customizations`) became a `ProjectFacts` struct built
+  once per build rather than per row, and the flag predicate moved to its
+  own `unit_unrecognized` function.
+
+Tests: host lib 1177 → 1182 passing (7 ignored, unchanged); frontend
+3380 → 3386 across 243 files.
 
 ## Blockers / side effects
 

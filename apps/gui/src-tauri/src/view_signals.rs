@@ -292,6 +292,18 @@ pub struct ViewSignalRow {
     /// The serving database's unit, or the one the view recorded when
     /// nothing decodes the signal.
     pub unit: String,
+    /// Whether [`Self::unit`] is a non-blank string the unit facade
+    /// cannot place — neither a built-in recognition nor an entry in
+    /// the project's customization dict.
+    ///
+    /// A DBC unit is free text, so this is the panel's cue that the
+    /// string needs a customization before anything can convert
+    /// through it. A blank unit is *not* flagged: a signal that
+    /// declares no unit is ordinary, and there is nothing to map.
+    /// Computed against the customizations in force at fetch time, so
+    /// it is only ever as current as the last fetch — editing the dict
+    /// re-fetches.
+    pub unit_unrecognized: bool,
     /// The database that decodes this signal today: the one the user
     /// picked for it, or — with no pick — the first assigned to the bus
     /// that defines it. `None` when nothing does.
@@ -359,12 +371,14 @@ struct Aggregate<'a> {
 /// is assigned to; `bus_names` maps bus id to the project's name for it;
 /// `picks` is the per-signal database choices the decode also resolves
 /// through, so the serving database this reports is the one that really
-/// decodes.
+/// decodes; `customizations` is the project's unit dict, which decides
+/// [`ViewSignalRow::unit_unrecognized`].
 fn build_rows<'a>(
     registry: &'a ViewSignalRegistry,
     dbs: &[(&'a str, &'a Database, &'a [String])],
     bus_names: &HashMap<String, String>,
     picks: &crate::signal_fingerprint::SignalDbcPicks,
+    customizations: &crate::units::Customizations,
 ) -> Vec<ViewSignalRow> {
     // The one detector for "which assigned databases define this",
     // shared with the Database panel's duplicate-id warning.
@@ -433,6 +447,10 @@ fn build_rows<'a>(
         }
     }
 
+    let project = ProjectFacts {
+        bus_names,
+        customizations,
+    };
     let mut rows: Vec<ViewSignalRow> = aggregates
         .iter()
         .map(|(id, agg)| {
@@ -448,7 +466,7 @@ fn build_rows<'a>(
                 index.resolved(id, picks),
                 index.picked(id, picks),
                 &described,
-                bus_names,
+                &project,
             )
         })
         .collect();
@@ -489,6 +507,20 @@ fn describe_on_bus<'a>(
         .collect()
 }
 
+/// What the project says, read the same way by every row: how its buses
+/// are named, and what its DBC unit strings mean.
+struct ProjectFacts<'a> {
+    bus_names: &'a HashMap<String, String>,
+    customizations: &'a crate::units::Customizations,
+}
+
+/// Whether a rendered unit string is one the project cannot place —
+/// [`ViewSignalRow::unit_unrecognized`]. Blank is never flagged: a
+/// signal that declares no unit has nothing to map.
+fn unit_unrecognized(unit: &str, customizations: &crate::units::Customizations) -> bool {
+    !unit.trim().is_empty() && crate::units::recognize(unit, customizations).is_none()
+}
+
 /// Classify one signal and render its row.
 fn row(
     id: &str,
@@ -497,7 +529,7 @@ fn row(
     definers: &[&str],
     picked: Option<&str>,
     described: &[(Option<&str>, &DescribedMessage<'_>)],
-    bus_names: &HashMap<String, String>,
+    project: &ProjectFacts<'_>,
 ) -> ViewSignalRow {
     // What the reference's *own* bus offers. Empty for a reference that
     // names none — nothing decodes there — which is what makes such a
@@ -593,13 +625,24 @@ fn row(
         ViewSignalStatus::Decoded
     };
 
+    // The string the row will render — the serving database's, or the
+    // one the view recorded when nothing decodes. Bound before the row
+    // so the flag can describe exactly what the user sees.
+    let unit = serving.map_or_else(
+        || reference.unit.clone().unwrap_or_default(),
+        |(_, _, s)| s.unit.clone(),
+    );
+
     ViewSignalRow {
         id: id.to_owned(),
         status,
-        bus_name: reference
-            .bus_id
-            .as_ref()
-            .map(|b| bus_names.get(b).cloned().unwrap_or_else(|| b.clone())),
+        bus_name: reference.bus_id.as_ref().map(|b| {
+            project
+                .bus_names
+                .get(b)
+                .cloned()
+                .unwrap_or_else(|| b.clone())
+        }),
         bus_id: reference.bus_id.clone(),
         message_id: reference.message_id,
         extended: reference.extended,
@@ -608,14 +651,12 @@ fn row(
             |(_, m, _)| m.name.clone(),
         ),
         signal_name: reference.signal_name.clone(),
-        unit: serving.map_or_else(
-            || reference.unit.clone().unwrap_or_default(),
-            |(_, _, s)| s.unit.clone(),
-        ),
+        unit_unrecognized: unit_unrecognized(&unit, project.customizations),
+        unit,
         serving_dbc: serving.map(|(p, _, _)| p.to_owned()),
         picked_dbc: picked.map(ToOwned::to_owned),
         used_by: used_by.iter().map(|v| (*v).to_owned()).collect(),
-        candidates: offers(status, picked, reference, described, bus_names),
+        candidates: offers(status, picked, reference, described, project.bus_names),
         diffs,
     }
 }
@@ -922,7 +963,18 @@ pub(crate) fn list_view_signals_inner(
     // Lock order: the DBC set before the picks, as `decode_model`
     // takes them.
     let picks = state.picks_snapshot();
-    let mut rows = build_rows(&registry, &borrowed, &names, &picks);
+    // The project's unit dict decides which unit strings are flagged as
+    // unplaceable. Read here, once per fetch: `set_settings` refreshes
+    // this cache, so the next fetch after a customization edit already
+    // carries the new answer.
+    let settings = crate::settings::effective();
+    let mut rows = build_rows(
+        &registry,
+        &borrowed,
+        &names,
+        &picks,
+        &settings.unit_customizations,
+    );
     drop(dbs);
     drop(registry);
     sort_rows(&mut rows, sort_key, sort_dir);
@@ -1011,6 +1063,23 @@ mod tests {
             dbs,
             &names(),
             &crate::signal_fingerprint::SignalDbcPicks::new(),
+            &crate::units::Customizations::new(),
+        )
+    }
+
+    /// [`build`] with a unit-customization dict in force — what the
+    /// unrecognised-unit flag reads.
+    fn build_with_units(
+        registry: &ViewSignalRegistry,
+        dbs: &[(&str, &Database, &[String])],
+        customizations: &crate::units::Customizations,
+    ) -> Vec<ViewSignalRow> {
+        build_rows(
+            registry,
+            dbs,
+            &names(),
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+            customizations,
         )
     }
 
@@ -1026,7 +1095,73 @@ mod tests {
             signal_identity(Some("power"), 256, false, signal, false),
             path.to_owned(),
         );
-        build_rows(registry, dbs, &names(), &picks)
+        build_rows(
+            registry,
+            dbs,
+            &names(),
+            &picks,
+            &crate::units::Customizations::new(),
+        )
+    }
+
+    /// The row for a signal whose DBC declares `unit`.
+    fn row_with_unit(unit: &str, customizations: &crate::units::Customizations) -> ViewSignalRow {
+        let db = dbc("PackStatus", "PackVolts", unit, "0.1");
+        let buses = power();
+        let reg = registry(&[("v1", "Plot 1", vec![bare(Some("power"), "PackVolts")])]);
+        let mut rows = build_with_units(&reg, &[("a.dbc", &db, &buses)], customizations);
+        rows.remove(0)
+    }
+
+    #[test]
+    fn a_recognised_unit_string_is_not_flagged() {
+        let row = row_with_unit("V", &crate::units::Customizations::new());
+        assert_eq!(row.unit, "V");
+        assert!(!row.unit_unrecognized);
+    }
+
+    #[test]
+    fn a_unit_string_nothing_recognises_is_flagged() {
+        let row = row_with_unit("furlongs", &crate::units::Customizations::new());
+        assert!(row.unit_unrecognized);
+    }
+
+    #[test]
+    fn a_blank_unit_is_not_flagged() {
+        // A DBC that declares no unit is the ordinary case, not a
+        // string in need of a customization — there is nothing to map.
+        assert!(!row_with_unit("", &crate::units::Customizations::new()).unit_unrecognized);
+        assert!(!row_with_unit("   ", &crate::units::Customizations::new()).unit_unrecognized);
+    }
+
+    #[test]
+    fn a_customization_clears_the_unrecognised_unit_flag() {
+        let customizations: crate::units::Customizations =
+            [("furlongs".to_string(), "meter".to_string())]
+                .into_iter()
+                .collect();
+        assert!(row_with_unit("furlongs", &crate::units::Customizations::new()).unit_unrecognized);
+        assert!(!row_with_unit("furlongs", &customizations).unit_unrecognized);
+    }
+
+    #[test]
+    fn an_undecoded_row_flags_the_unit_the_view_recorded() {
+        // Nothing decodes it, so `unit` is the view's own record — and
+        // that string is what a customization would have to name.
+        let db = plain();
+        let reg = registry(&[(
+            "v1",
+            "Plot 1",
+            vec![recorded("PackVolts", "PackStatus", "furlongs", 0.1)],
+        )]);
+        let rows = build_with_units(
+            &reg,
+            &[("a.dbc", &db, &[])],
+            &crate::units::Customizations::new(),
+        );
+        assert_eq!(rows[0].status, ViewSignalStatus::NotDecoded);
+        assert_eq!(rows[0].unit, "furlongs");
+        assert!(rows[0].unit_unrecognized);
     }
 
     #[test]
