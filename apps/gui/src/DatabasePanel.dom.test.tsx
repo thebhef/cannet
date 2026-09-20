@@ -341,6 +341,28 @@ describe("DatabasePanel", () => {
     expect(await screen.findByText("EngineSpeed")).toBeInTheDocument();
   });
 
+  it("a chevron collapse on a match's ancestor sticks while the filter stays active", async () => {
+    // The settle-time seed (ADR 0044) opens EngineData once because it
+    // is on the path to the EngineSpeed match; from then on the chevron
+    // writes the same expansion set it always does. Under the old
+    // read-merge, collapsing an ancestor of a match while filtering was
+    // either a no-op or silently reverted on the next render.
+    renderPanel();
+    await screen.findByText("EngineData");
+    const search = screen.getByLabelText("search database content");
+    fireEvent.change(search, { target: { value: "EngineSpeed" } });
+    expect(await screen.findByText("EngineSpeed")).toBeInTheDocument();
+    const chevron = screen
+      .getByText("EngineData")
+      .closest(".dbc-row")
+      ?.querySelector(".dbc-row-chevron") as HTMLElement;
+    fireEvent.click(chevron);
+    expect(screen.queryByText("EngineSpeed")).not.toBeInTheDocument();
+    // EngineData itself stays — it's still on the path to the match —
+    // just collapsed, exactly as an unfiltered collapse would leave it.
+    expect(screen.getByText("EngineData")).toBeInTheDocument();
+  });
+
   it("hides rows outside the match set when the search is active", async () => {
     renderPanel();
     await screen.findByText("EngineData");

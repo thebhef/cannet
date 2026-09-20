@@ -664,9 +664,10 @@ export function groupByBus(
   return groups;
 }
 
-/// Walk the bus-grouped content tree, applying `effectiveExpanded`
-/// (= user's expand state ∪ ancestors-of-matches when filtering),
-/// and produce a flat row list ready to render.
+/// Walk the bus-grouped content tree, applying `effectiveExpanded` — the
+/// panel's own expand state, which by the time this runs already has any
+/// settled query's match ancestors folded in (ADR 0044's one-shot seed)
+/// — and produce a flat row list ready to render.
 ///
 /// While a filter is active the walk *removes* everything outside the
 /// match structure instead of rendering it dimmed: a container (bus /
@@ -1387,8 +1388,23 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   // --- the filter slot (ADR 0044) ---
   // The tree holds its whole row space client-side, so it opts into the
   // layer's fzf: query → matching messages / signals plus the path to
-  // each, with those ancestors treated as expanded so a deep match is
-  // visible without the user unfolding to it.
+  // each. Once the query settles, the slot folds those ancestors into
+  // this panel's own expansion set below (a one-shot seed, not a
+  // standing override), so a deep match is visible without unfolding to
+  // it and the chevron / arrow keys keep working on those rows exactly
+  // as they do unfiltered.
+  const expandFilterAncestors = useCallback((ids: ReadonlySet<string>) => {
+    setExpanded((prev) => {
+      let next: Set<string> | null = null;
+      for (const id of ids) {
+        if (!prev.has(id)) {
+          if (next === null) next = new Set(prev);
+          next.add(id);
+        }
+      }
+      return next ?? prev;
+    });
+  }, []);
   const buildFilterEntries = useCallback(
     () => [
       ...buildSearchIndex(busGroups),
@@ -1397,7 +1413,11 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     ],
     [busGroups, fileContent, mathSignals],
   );
-  const filter = useGridviewFilter(buildFilterEntries, filterFromParams(params?.filter));
+  const filter = useGridviewFilter(
+    buildFilterEntries,
+    filterFromParams(params?.filter),
+    expandFilterAncestors,
+  );
   /// The search box, so `panel.find` (Mod+F, ADR 0018) can focus and
   /// select it. Registered under the panel's fixed dockview id — the
   /// Database panel is a singleton with no element id of its own
@@ -1409,11 +1429,6 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       searchInputRef.current?.select();
     },
   });
-  const mergeExpanded = filter.effectiveExpanded;
-  const effectiveExpanded = useMemo(
-    () => mergeExpanded(expanded),
-    [mergeExpanded, expanded],
-  );
 
   /// Whether the expand state is the *user's* — restored from a saved
   /// layout, or their own clicks. Until it is, each format's content
@@ -1546,7 +1561,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
         busGroups,
         fileContent,
         mathSignals,
-        effectiveExpanded,
+        expanded,
         filter.matchSet,
         filter.ancestorsOfMatches,
         filter.active,
@@ -1556,7 +1571,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       busGroups,
       fileContent,
       mathSignals,
-      effectiveExpanded,
+      expanded,
       filter.matchSet,
       filter.ancestorsOfMatches,
       filter.active,
@@ -1760,14 +1775,14 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     });
   }, []);
   const adapter = useMemo<GridviewAdapter>(() => {
-    const space = arrayRowSpace(gridRows, (id) => effectiveExpanded.has(id));
+    const space = arrayRowSpace(gridRows, (id) => expanded.has(id));
     return {
       ...space,
       scrollToRow,
       setExpanded: setRowExpanded,
       isSelectable: (row) => selectableIds.has(row.id),
     };
-  }, [gridRows, selectableIds, effectiveExpanded, scrollToRow, setRowExpanded]);
+  }, [gridRows, selectableIds, expanded, scrollToRow, setRowExpanded]);
   const grid = useGridview({
     adapter,
     pageRows: Math.max(1, Math.floor(windowHeight / ROW_HEIGHT)),

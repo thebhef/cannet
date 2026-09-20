@@ -1,8 +1,11 @@
 /// The gridview's opt-in filter slot (ADR 0044): a shared search-box
 /// affordance plus one fzf-over-client-rows implementation — query →
-/// matching rows and their ancestors, with the ancestors treated as
-/// expanded so a match is visible without the user unfolding the path to
-/// it.
+/// matching rows and their ancestors. Once per settled query the
+/// ancestors are written into the panel's own expansion set (a
+/// one-shot seed, not a standing override), so a match is visible
+/// without the user unfolding the path to it and the ordinary chevron /
+/// ArrowLeft / ArrowRight still collapse and expand normally while the
+/// filter stays active.
 ///
 /// **Only for views that hold their whole row space client-side** (the
 /// DBC tree, the RBS tree, the transmit list). A host-paged view holds
@@ -10,7 +13,7 @@
 /// whole dataset in frontend state, which the paged-model rule forbids —
 /// those views keep their host-side narrowing.
 
-import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Fzf } from "fzf";
 
 import { diagCount } from "./diag";
@@ -80,6 +83,13 @@ const NO_MATCHES: GridviewFilterMatches = {
   ancestorsOfMatches: new Set(),
 };
 
+/// Same members, regardless of object identity or insertion order.
+function sameMembers(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
+
 /// Run `query` through `matcher`. An empty query short-circuits to empty
 /// sets without ever forcing the matcher, so a panel that is never
 /// searched never builds an index.
@@ -112,18 +122,31 @@ export interface GridviewFilter extends GridviewFilterMatches {
   /// hiding on this rather than on `matchSet.size`, so a query that
   /// matches nothing hides everything instead of showing everything.
   active: boolean;
-  /// The panel's own expansion set with every ancestor of a match folded
-  /// in, so a match is visible without the user unfolding the path.
-  /// Returns the argument unchanged while the filter is inactive.
-  effectiveExpanded: (expanded: ReadonlySet<string>) => ReadonlySet<string>;
 }
 
 /// Wire a panel's rows to the filter slot. `buildEntries` must be
 /// memoised by the caller — it identifies the row set, so a fresh
 /// closure per render would rebuild the index on every render.
+///
+/// `onMatchesSettled`, when given, fires once per settled query that
+/// has matches, with the ancestors of those matches — the panel's hook
+/// into the one-shot seed described above. It compares the ancestor
+/// set's *contents* against the last set it fired for, not its object
+/// identity: `ancestorsOfMatches` is recomputed — a fresh `Set`, same
+/// members — whenever `buildEntries` changes identity even though the
+/// settled query didn't, which happens on every render of a panel whose
+/// entries depend on host state with its own refresh timer (RBS's
+/// `view`, rebuilt by its 500 ms value poll). Firing on identity alone
+/// re-seeded on every such rebuild and silently reopened a row the user
+/// had just collapsed. So it fires on first settle, on any query edit
+/// that changes the matched ancestors, and never again for a settle
+/// whose ancestors are the same ids as last time. The panel folds the
+/// ids into its own expansion state the same way a chevron click would;
+/// the slot holds no expansion state of its own.
 export function useGridviewFilter(
   buildEntries: () => GridviewFilterEntry[],
   initialQuery = "",
+  onMatchesSettled?: (ancestorsOfMatches: ReadonlySet<string>) => void,
 ): GridviewFilter {
   const [input, setInput] = useState(initialQuery);
   // The query the rows are filtered by, trailing the box by
@@ -143,17 +166,31 @@ export function useGridviewFilter(
   );
   const active = query.trim() !== "";
 
-  const effectiveExpanded = useCallback(
-    (expanded: ReadonlySet<string>): ReadonlySet<string> => {
-      if (!active) return expanded;
-      const merged = new Set(expanded);
-      for (const a of ancestorsOfMatches) merged.add(a);
-      return merged;
-    },
-    [active, ancestorsOfMatches],
-  );
+  // The one-shot seed (ADR 0044): fold the settled query's ancestors
+  // into the panel's own expansion set once, rather than merging them
+  // on every read. `ancestorsOfMatches` gets a fresh identity whenever
+  // `buildEntries` does — which for a panel like RBS can happen on a
+  // timer unrelated to the settled query — so identity alone is not
+  // "the query resettled"; contents are compared against the last set
+  // this fired for, and an unchanged set is a no-op. Never fires while
+  // the query is empty (`gridviewMatches` short-circuits to the shared
+  // empty set then); clearing the query resets the comparison, so
+  // retyping the same query later seeds again rather than staying
+  // silent against a set fired for a previous, since-cleared session.
+  const lastFiredRef = useRef<ReadonlySet<string> | null>(null);
+  useEffect(() => {
+    if (ancestorsOfMatches.size === 0) {
+      lastFiredRef.current = null;
+      return;
+    }
+    if (lastFiredRef.current !== null && sameMembers(lastFiredRef.current, ancestorsOfMatches)) {
+      return;
+    }
+    lastFiredRef.current = ancestorsOfMatches;
+    onMatchesSettled?.(ancestorsOfMatches);
+  }, [ancestorsOfMatches, onMatchesSettled]);
 
-  return { input, setInput, query, active, matchSet, ancestorsOfMatches, effectiveExpanded };
+  return { input, setInput, query, active, matchSet, ancestorsOfMatches };
 }
 
 interface GridviewFilterBoxProps {
