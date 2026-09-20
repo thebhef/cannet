@@ -173,7 +173,37 @@ reversal:
 
 ## Blockers / side effects
 
-(none yet)
+- **The fzf port does not implement the package's `normalize: true`
+  diacritic folding** (phase 1). fzf-for-js normalises the haystack to
+  NFC and folds ~700 precomposed Latin code points to their base
+  letter; reproducing that in Rust means either a new crate (the ruling
+  forbids one) or ~700 lines of generated table in a 500-line module.
+  The port instead ranks such text as `normalize: false` would. The
+  reachable haystack is DBC identifiers (ASCII by the DBC grammar),
+  arbitration-id spellings and ECU names, plus the project's bus names
+  — a diacritic in a bus name is the only case, and there the host
+  ranks it slightly differently from the frontend's event matcher.
+  Case folding, which is what the app depends on, *is* ported in full
+  and the golden vectors pin it. **Needs an owner yes/no** before
+  close-out: accept the boundary, or reopen the no-new-crate ruling.
+- **A bus rename now drops the active filter index**
+  (`AppState::set_project_bus_names`). A bus *name* is part of a fuzzy
+  leaf's haystack, so an index resolved against the old name would keep
+  narrowing by it. The cost is a full filter-index rebuild on rename,
+  which is rare; the alternative (a bus-name generation counter in the
+  resolution memo) was not worth the machinery. Regression test:
+  `renaming_a_bus_drops_a_filter_index_built_on_its_old_name`.
+- **`FilterPredicate::matches` / `matches_fields` changed shape**: both
+  now take a `&MatchContext` first and `matches_fields` takes
+  `extended` (the id spelling in the haystack differs between an 11-bit
+  and a 29-bit id of the same number). `cannet-perf-measurement`'s three
+  call sites pass `EMPTY_MATCH_CONTEXT`; a fuzzy leaf evaluated against
+  that matches nothing, the same rule an unparseable predicate follows.
+- Phase 2 must export `MIN_RELATIVE_SCORE` from `gridviewFilter.tsx` as
+  the app's one floor (the Rust side already names it in `fuzzy.rs` and
+  the golden-vector generator asserts the two agree), and make
+  `settingDescriptors.ts`'s duplicate read the shared one.
+
 
 ## Status log
 
@@ -182,3 +212,61 @@ reversal:
   values; event text in JS), scorer ruled (in-repo port, TS fzf as
   oracle); two phases cut; exit criteria confirmed. Added to this
   session's scope by owner instruction.
+- 2026-09-20 — **phase 1 (Host) landed** on `task142-host-fuzzy`.
+  - `apps/gui/src-tauri/src/fuzzy.rs`: fzf v2 scoring transcribed from
+    the npm package's `algo.ts`, including its v1 fallback for a match
+    matrix wider than the package's 100 KiB slab, its
+    `casing: "case-insensitive"` path, and the score-descending /
+    input-order tie rule its score-bucket concatenation produces.
+    `MIN_RELATIVE_SCORE` + `above_floor` state the floor once.
+  - Golden vectors: `apps/gui/scripts/fzf-golden.mjs` runs the TS
+    package with exactly the options `gridviewFilter.tsx` passes over
+    1585 real ev-zonal names (ECUs, messages, transmitters, signals,
+    `VAL_` labels), 5 joined host-shaped haystacks, 3 bus names and one
+    10 257-char synthetic that crosses the slab threshold; 21 queries.
+    `apps/gui/src-tauri/fixtures/fzf-golden.json` is the checked-in
+    result and the Rust test asserts **identical order and identical
+    scores**, not just the cut. No JS-number quirk needed excusing.
+    Falsification check: changing `BONUS_CAMEL_123` by one fails it.
+  - `filter.rs`: the `{"fuzzy": "<query>"}` leaf, `FuzzyCandidate` /
+    `FuzzyLabel` / `FuzzyResolution` / `MatchContext`, `fuzzy_queries`,
+    and `CandidateInputs.fuzzy`. The leaf narrows through
+    `resolve_candidates` like any other and is `membership: false`,
+    because the same id can occur on two buses and the bus name is in
+    the haystack.
+  - `trace_query.rs`: `resolve_match_context{,_with,_against}` builds
+    one `FuzzyCandidate` per `(bus, id, extended)` the capture has seen
+    and one `FuzzyLabel` per `VAL_` row a *bus-assigned* database
+    defines; both lists are ranked in **one** list under **one** floor.
+    Wired into `fetch_trace_range`, `fetch_by_id_page` (which already
+    receives the bus-name map) and `ensure_active_filter_index`, which
+    caches the resolution beside `candidates` / `decode_ids` on the same
+    key-generation memo.
+  - `cannet-dbc` gained one borrowing accessor,
+    `Database::message_transmitters()`, so building the haystack does
+    not clone a rich descriptor per message.
+  - **Why the resolution exists at all** (the design question the
+    grooming did not settle): the floor is a *prefix cut on a ranked
+    list*, so "does this frame match" is not answerable from one frame.
+    Ranking therefore happens once per settled query and the per-frame
+    test is a map lookup — which is also what makes the ruling's "no
+    per-frame work" true. The enum-label half is the only part that
+    reads a decode, and only for the ids defining a matching label:
+    `only_the_enum_label_half_of_a_fuzzy_leaf_asks_for_a_decode` and
+    `a_settled_fuzzy_query_resolves_once_however_often_its_pages_are_fetched`
+    pin both halves.
+  - Debugging note (scientific method). **Observation**: `cargo test`
+    hung with no output, two `cargo` processes alive, no test result
+    line. **Hypothesis**: `ensure_active_filter_index` holds
+    `state.databases()` for its build and the new context resolver took
+    the same `std::sync::Mutex` again — a re-entrant lock, which
+    deadlocks rather than failing. **Experiment**: read the two lock
+    acquisitions on the one call path; the hang is in the only test
+    that reaches both (`a_settled_fuzzy_query_...`), and the earlier
+    runs that did not reach it passed. **Data**: confirmed by
+    inspection of the call path, and by the suite going green once
+    `resolve_match_context_against` was split out to take the
+    already-held `&[LoadedDbc]`. Not a port bug.
+  - Rust only, as the phase says; the golden-vector script and fixture
+    sit outside the app's tsconfig `include` and the vite entry graph,
+    so the bundle is untouched (`scripts/frontend-gate.sh` green).

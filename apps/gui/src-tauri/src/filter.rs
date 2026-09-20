@@ -26,6 +26,10 @@
 //! - `{ "signal_equals": { "name": "<sig>", "value": <number> } }` —
 //!   the decoded signal `<sig>` exists and its physical value equals
 //!   `<number>` within `1e-9` tolerance.
+//! - `{ "fuzzy": "<query>" }` — the frame's *searchable text* matches
+//!   `<query>` under the app's one fzf dialect ([`crate::fuzzy`]). See
+//!   [`TaggedPredicate::Fuzzy`] for what that text is and why the leaf
+//!   needs a [`MatchContext`].
 //! - `{ "error_frame": <bool> }` — the frame is (`true`) or is not
 //!   (`false`) a bus error frame. Unlike every other leaf this one reads
 //!   nothing that narrows by arbitration id — an error frame carries no
@@ -44,10 +48,11 @@
 //! on the filter node in the project graph view.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::fuzzy;
 use crate::ipc::DecodedRecord;
 use crate::trace_store::RawTraceFrame;
 
@@ -82,6 +87,33 @@ pub enum TaggedPredicate {
     /// coalesced summary instead of its hundred thousand rows, while
     /// the capture goes on holding every one of them.
     ErrorFrame(bool),
+    /// `{ "fuzzy": "<query>" }` — the frame's searchable text matches
+    /// `<query>` under the app's one fzf dialect ([`crate::fuzzy`]):
+    /// case-insensitive, with the relative floor
+    /// ([`fuzzy::MIN_RELATIVE_SCORE`]) cutting the score-descending
+    /// list. The frontend's filter slot (ADR 0044) ranks client-held
+    /// rows the same way, so one query narrows a host-paged view and a
+    /// client-held one alike.
+    ///
+    /// **The searchable text** is the bus name, the arbitration id in
+    /// both spellings the trace renders (`s:1C0` / `s:448`), the
+    /// decoded message name, its transmitting ECU, and its signal
+    /// names — all a pure function of `(id, extended, bus)` plus the
+    /// loaded databases — together with the value-table label of a
+    /// decoded signal's *current* value, which is not. Payload bytes,
+    /// numeric values and timestamps are deliberately out: a filter
+    /// over those is what the other leaves are for.
+    ///
+    /// **Why it needs a [`MatchContext`].** The floor is a cut on a
+    /// *ranked list*, so "does this frame match" is not a question one
+    /// frame can answer alone. The query is therefore resolved once
+    /// against the databases and the bus names — into the
+    /// `(id, extended, bus)` triples and the `(signal, label)` pairs it
+    /// admits ([`FuzzyResolution`]) — and the per-frame test is a
+    /// lookup in that. A leaf evaluated without its resolution in the
+    /// context matches nothing, the same rule an unparseable predicate
+    /// follows.
+    Fuzzy(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -96,9 +128,16 @@ impl FilterPredicate {
     /// fetch path already decodes for the consumer, so reusing it here
     /// is free.
     #[must_use]
-    pub fn matches(&self, frame: &RawTraceFrame, decoded: Option<&DecodedRecord>) -> bool {
+    pub fn matches(
+        &self,
+        ctx: &MatchContext,
+        frame: &RawTraceFrame,
+        decoded: Option<&DecodedRecord>,
+    ) -> bool {
         self.matches_fields(
+            ctx,
             frame.id,
+            frame.extended,
             frame.bus_id.as_deref(),
             matches!(frame.payload, cannet_core::CanFramePayload::Error),
             decoded,
@@ -110,17 +149,51 @@ impl FilterPredicate {
     /// materializing a [`RawTraceFrame`]. The fetch path already holds a
     /// decoded record for each row, so it evaluates directly off that
     /// rather than fabricating a dummy frame to satisfy [`Self::matches`].
+    /// `ctx` carries the standing facts a leaf cannot read off one
+    /// frame — today only the resolution of each `fuzzy` query (see
+    /// [`TaggedPredicate::Fuzzy`]). Every other leaf ignores it, so a
+    /// caller with no fuzzy leaf in its predicate passes
+    /// [`EMPTY_MATCH_CONTEXT`].
     #[must_use]
     pub fn matches_fields(
         &self,
+        ctx: &MatchContext,
         id: u32,
+        extended: bool,
         bus_id: Option<&str>,
         is_error_frame: bool,
         decoded: Option<&DecodedRecord>,
     ) -> bool {
         match self {
             FilterPredicate::Invalid(_) => false,
-            FilterPredicate::Tagged(p) => p.matches_fields(id, bus_id, is_error_frame, decoded),
+            FilterPredicate::Tagged(p) => {
+                p.matches_fields(ctx, id, extended, bus_id, is_error_frame, decoded)
+            }
+        }
+    }
+
+    /// Every `fuzzy` leaf's query anywhere in the tree, in tree order —
+    /// what a caller resolves into a [`MatchContext`] before it
+    /// evaluates the predicate.
+    #[must_use]
+    pub fn fuzzy_queries(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        self.collect_fuzzy_queries(&mut out);
+        out
+    }
+
+    fn collect_fuzzy_queries<'a>(&'a self, out: &mut Vec<&'a str>) {
+        let FilterPredicate::Tagged(p) = self else {
+            return;
+        };
+        match p {
+            TaggedPredicate::All(children) | TaggedPredicate::Any(children) => {
+                for c in children {
+                    c.collect_fuzzy_queries(out);
+                }
+            }
+            TaggedPredicate::Fuzzy(q) => out.push(q.as_str()),
+            _ => {}
         }
     }
 
@@ -154,11 +227,188 @@ impl FilterPredicate {
             TaggedPredicate::SignalEquals(m) => {
                 out.push(DecodeDependentLeaf::SignalName(&m.name));
             }
-            TaggedPredicate::Bus(_)
+            // A `fuzzy` leaf's id-keyed half is answered by a lookup in
+            // its resolution, with no decode at all; only its
+            // enum-label half needs one, and which ids those are is a
+            // property of the resolution rather than of the pattern.
+            // See [`MatchContext::decode_ids`].
+            TaggedPredicate::Fuzzy(_)
+            | TaggedPredicate::Bus(_)
             | TaggedPredicate::IdRange(_)
             | TaggedPredicate::IdList(_)
             | TaggedPredicate::ErrorFrame(_) => {}
         }
+    }
+}
+
+/// One `(bus, id, extended)` triple's searchable text, as the caller
+/// spells it. Built from the capture's seen keys, the project's bus
+/// names and the loaded databases — never from a frame's payload — so
+/// the whole list is a pure function of facts that move far more
+/// slowly than the capture does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzyCandidate {
+    pub bus_id: String,
+    pub id: u32,
+    pub extended: bool,
+    /// Bus name, both id spellings, message name, transmitting ECU and
+    /// signal names, joined with spaces — the filter slot's haystack
+    /// convention (ADR 0044), one string per searchable thing.
+    pub haystack: String,
+}
+
+/// One value-table label a database defines, with the signal and
+/// message it belongs to. Separate from [`FuzzyCandidate`] because a
+/// label is only true of a frame whose decoded value *is* that label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzyLabel {
+    pub id: u32,
+    pub extended: bool,
+    pub signal: String,
+    pub label: String,
+}
+
+/// What one `fuzzy` query resolves to — the frames it admits, settled
+/// once so the per-frame test is a lookup.
+///
+/// Both halves come out of **one** ranked list: the candidates'
+/// haystacks and the labels are scored together and cut at the single
+/// relative floor, so a query that lands squarely on a message name
+/// does not also drag in every loosely-matching enum label, and vice
+/// versa. One query, one ranking, one floor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FuzzyResolution {
+    /// Per `(id, extended)`, the buses whose triple survived the cut.
+    /// Answering from this needs no decode at all.
+    keys: HashMap<(u32, bool), Vec<String>>,
+    /// Per signal name, the surviving labels. A frame matches when one
+    /// of its decoded signals carries one of them.
+    labels: HashMap<String, HashSet<String>>,
+    /// The messages defining a signal in `labels` — the only ids this
+    /// leaf makes worth decoding.
+    label_ids: Vec<(u32, bool)>,
+}
+
+impl FuzzyResolution {
+    /// Rank `candidates` and `labels` against `query` and keep what
+    /// clears the floor.
+    #[must_use]
+    pub fn resolve(query: &str, candidates: &[FuzzyCandidate], labels: &[FuzzyLabel]) -> Self {
+        let haystacks = candidates
+            .iter()
+            .map(|c| c.haystack.as_str())
+            .chain(labels.iter().map(|l| l.label.as_str()));
+        let ranked = fuzzy::rank(query, haystacks);
+        let mut out = Self::default();
+        for m in fuzzy::above_floor(&ranked) {
+            if let Some(c) = candidates.get(m.index) {
+                out.keys
+                    .entry((c.id, c.extended))
+                    .or_default()
+                    .push(c.bus_id.clone());
+            } else {
+                let l = &labels[m.index - candidates.len()];
+                out.labels
+                    .entry(l.signal.clone())
+                    .or_default()
+                    .insert(l.label.clone());
+                out.label_ids.push((l.id, l.extended));
+            }
+        }
+        out.label_ids.sort_unstable();
+        out.label_ids.dedup();
+        out
+    }
+
+    /// Does this frame's searchable text match? The id-keyed half is a
+    /// map lookup; the enum-label half reads the decode the way
+    /// `signal_equals` does.
+    fn admits(
+        &self,
+        id: u32,
+        extended: bool,
+        bus_id: Option<&str>,
+        decoded: Option<&DecodedRecord>,
+    ) -> bool {
+        let by_key = match (self.keys.get(&(id, extended)), bus_id) {
+            (Some(buses), Some(bus)) => buses.iter().any(|b| b == bus),
+            _ => false,
+        };
+        by_key
+            || decoded.is_some_and(|d| {
+                d.signals.iter().any(|s| {
+                    s.label.as_deref().is_some_and(|label| {
+                        self.labels
+                            .get(s.name.as_str())
+                            .is_some_and(|set| set.contains(label))
+                    })
+                })
+            })
+    }
+
+    /// The `(id, extended)` keys this query can admit — its id-keyed
+    /// matches plus the messages carrying a matching label.
+    fn candidate_keys(&self) -> Vec<(u32, bool)> {
+        let mut keys: Vec<(u32, bool)> = self.keys.keys().copied().collect();
+        keys.extend(self.label_ids.iter().copied());
+        keys
+    }
+}
+
+/// The standing facts predicate evaluation reads that are not on the
+/// frame: today, each `fuzzy` leaf's [`FuzzyResolution`].
+///
+/// It is keyed by the query text because that is the leaf's whole
+/// identity — two `fuzzy` leaves spelling the same query resolve to the
+/// same thing, and a predicate carries at most a handful, so a linear
+/// scan beats a hash.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MatchContext {
+    fuzzy: Vec<(String, FuzzyResolution)>,
+}
+
+/// A context that resolves nothing — for the callers whose predicates
+/// carry no `fuzzy` leaf. A fuzzy leaf evaluated against it matches
+/// nothing, as an unresolvable predicate should. A `static` rather than
+/// a `const` so call sites can hand out a `&'static` one.
+pub static EMPTY_MATCH_CONTEXT: MatchContext = MatchContext { fuzzy: Vec::new() };
+
+impl MatchContext {
+    /// Record a query's resolution. A repeated query is kept once.
+    pub fn insert(&mut self, query: &str, resolution: FuzzyResolution) {
+        if self.resolution(query).is_none() {
+            self.fuzzy.push((query.to_string(), resolution));
+        }
+    }
+
+    fn resolution(&self, query: &str) -> Option<&FuzzyResolution> {
+        self.fuzzy.iter().find(|(q, _)| q == query).map(|(_, r)| r)
+    }
+
+    /// The `(id, extended)` keys `query` can admit; empty when the
+    /// query was never resolved into this context.
+    #[must_use]
+    pub fn candidate_keys(&self, query: &str) -> Vec<(u32, bool)> {
+        self.resolution(query)
+            .map(FuzzyResolution::candidate_keys)
+            .unwrap_or_default()
+    }
+
+    /// Every id whose decode a `fuzzy` leaf in this context could read
+    /// — the messages defining a matching enum label, and nothing else.
+    /// Unioned into the filter index's decode gate, because
+    /// [`FilterPredicate::decode_dependent_leaves`] works off the
+    /// predicate alone and cannot know which ids those are.
+    #[must_use]
+    pub fn decode_ids(&self) -> Vec<(u32, bool)> {
+        let mut out: Vec<(u32, bool)> = self
+            .fuzzy
+            .iter()
+            .flat_map(|(_, r)| r.label_ids.iter().copied())
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 }
 
@@ -193,6 +443,11 @@ pub struct CandidateInputs<'a> {
     pub regex_ids: &'a dyn Fn(&str) -> Vec<(u32, bool)>,
     /// The ids whose DBC message carries a named signal.
     pub signal_ids: &'a dyn Fn(&str) -> Vec<(u32, bool)>,
+    /// The resolved `fuzzy` queries. Unlike the closures above this is
+    /// already-computed data: a fuzzy query's match set is a cut on a
+    /// ranked list, so it is resolved once for the whole predicate and
+    /// read here and by [`FilterPredicate::matches_fields`] alike.
+    pub fuzzy: &'a MatchContext,
 }
 
 /// Resolve a predicate to its by-id candidate set, or `None` when it is
@@ -247,6 +502,14 @@ pub fn resolve_candidates(
         }),
         TaggedPredicate::SignalEquals(m) => Some(CandidateSet {
             keys: normalize((inputs.signal_ids)(&m.name)),
+            membership: false,
+        }),
+        // The same id can occur on more than one bus and the bus name
+        // is part of the haystack, so membership in the key set is not
+        // the match — the per-frame test still confirms the bus (and,
+        // for the enum-label half, the decoded value).
+        TaggedPredicate::Fuzzy(q) => Some(CandidateSet {
+            keys: normalize(inputs.fuzzy.candidate_keys(q)),
             membership: false,
         }),
         // Not narrowable by arbitration id: an error frame's id says
@@ -354,7 +617,9 @@ pub(crate) fn dbc_applies(buses: &[String], bus_id: Option<&str>) -> bool {
 impl TaggedPredicate {
     fn matches_fields(
         &self,
+        ctx: &MatchContext,
         id: u32,
+        extended: bool,
         bus_id: Option<&str>,
         is_error_frame: bool,
         decoded: Option<&DecodedRecord>,
@@ -362,10 +627,10 @@ impl TaggedPredicate {
         match self {
             Self::All(children) => children
                 .iter()
-                .all(|c| c.matches_fields(id, bus_id, is_error_frame, decoded)),
+                .all(|c| c.matches_fields(ctx, id, extended, bus_id, is_error_frame, decoded)),
             Self::Any(children) => children
                 .iter()
-                .any(|c| c.matches_fields(id, bus_id, is_error_frame, decoded)),
+                .any(|c| c.matches_fields(ctx, id, extended, bus_id, is_error_frame, decoded)),
             Self::Bus(b) => bus_id == Some(b.as_str()),
             Self::IdRange([lo, hi]) => id >= *lo && id <= *hi,
             Self::IdList(ids) => ids.contains(&id),
@@ -381,6 +646,9 @@ impl TaggedPredicate {
                 None => false,
             },
             Self::ErrorFrame(want) => is_error_frame == *want,
+            Self::Fuzzy(q) => ctx
+                .resolution(q)
+                .is_some_and(|r| r.admits(id, extended, bus_id, decoded)),
         }
     }
 }
@@ -453,8 +721,8 @@ mod tests {
         // untouched — this is a predicate over a view, and the store
         // never sees it.
         let p: FilterPredicate = serde_json::from_str(r#"{"error_frame": false}"#).unwrap();
-        assert!(!p.matches(&error_frame_on(Some("b1")), None));
-        assert!(p.matches(&frame_with(0x123, Some("b1")), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &error_frame_on(Some("b1")), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(0x123, Some("b1")), None));
     }
 
     #[test]
@@ -462,8 +730,8 @@ mod tests {
         // The control: `true` keeps only the error frames. If `false`
         // passed everything the test above would still pass.
         let p: FilterPredicate = serde_json::from_str(r#"{"error_frame": true}"#).unwrap();
-        assert!(p.matches(&error_frame_on(Some("b1")), None));
-        assert!(!p.matches(&frame_with(0x123, Some("b1")), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &error_frame_on(Some("b1")), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(0x123, Some("b1")), None));
     }
 
     #[test]
@@ -478,6 +746,7 @@ mod tests {
             seen_on_bus: &|_| vec![(1, false)],
             regex_ids: &|_| Vec::new(),
             signal_ids: &|_| Vec::new(),
+            fuzzy: &EMPTY_MATCH_CONTEXT,
         };
         let lone: FilterPredicate = serde_json::from_str(r#"{"error_frame": false}"#).unwrap();
         assert_eq!(resolve_candidates(&lone, &inputs), None);
@@ -495,9 +764,9 @@ mod tests {
         // and the exclusion ANDed onto it.
         let p: FilterPredicate =
             serde_json::from_str(r#"{"all": [{"bus": "b1"}, {"error_frame": false}]}"#).unwrap();
-        assert!(p.matches(&frame_with(0x123, Some("b1")), None));
-        assert!(!p.matches(&error_frame_on(Some("b1")), None));
-        assert!(!p.matches(&frame_with(0x123, Some("b2")), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(0x123, Some("b1")), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &error_frame_on(Some("b1")), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(0x123, Some("b2")), None));
     }
 
     fn decoded(name: &str, signals: &[(&str, f64)]) -> DecodedRecord {
@@ -525,61 +794,65 @@ mod tests {
     #[test]
     fn empty_all_passes_everything() {
         let p = parse(r#"{"all": []}"#);
-        assert!(p.matches(&frame_with(1, None), None));
-        assert!(p.matches(&frame_with(0x7FF, Some("a")), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(0x7FF, Some("a")), None));
     }
 
     #[test]
     fn empty_any_rejects_everything() {
         let p = parse(r#"{"any": []}"#);
-        assert!(!p.matches(&frame_with(1, None), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), None));
     }
 
     #[test]
     fn bus_predicate_matches_bus_id() {
         let p = parse(r#"{"bus": "powertrain"}"#);
-        assert!(p.matches(&frame_with(1, Some("powertrain")), None));
-        assert!(!p.matches(&frame_with(1, Some("chassis")), None));
-        assert!(!p.matches(&frame_with(1, None), None));
+        assert!(p.matches(
+            &EMPTY_MATCH_CONTEXT,
+            &frame_with(1, Some("powertrain")),
+            None
+        ));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, Some("chassis")), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), None));
     }
 
     #[test]
     fn id_range_is_inclusive() {
         let p = parse(r#"{"id_range": [100, 200]}"#);
-        assert!(p.matches(&frame_with(100, None), None));
-        assert!(p.matches(&frame_with(150, None), None));
-        assert!(p.matches(&frame_with(200, None), None));
-        assert!(!p.matches(&frame_with(99, None), None));
-        assert!(!p.matches(&frame_with(201, None), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(100, None), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(150, None), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(200, None), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(99, None), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(201, None), None));
     }
 
     #[test]
     fn id_list_membership() {
         let p = parse(r#"{"id_list": [1, 3, 5]}"#);
-        assert!(p.matches(&frame_with(3, None), None));
-        assert!(!p.matches(&frame_with(2, None), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(3, None), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(2, None), None));
     }
 
     #[test]
     fn name_regex_matches_decoded_message_name() {
         let p = parse(r#"{"name_regex": "^EngineStatus"}"#);
         let d = decoded("EngineStatus_HS", &[]);
-        assert!(p.matches(&frame_with(1, None), Some(&d)));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), Some(&d)));
         let d2 = decoded("BrakeStatus", &[]);
-        assert!(!p.matches(&frame_with(1, None), Some(&d2)));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), Some(&d2)));
         // No decode -> doesn't match.
-        assert!(!p.matches(&frame_with(1, None), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), None));
     }
 
     #[test]
     fn signal_equals_matches_signal_value_with_epsilon() {
         let p = parse(r#"{"signal_equals": {"name": "Rpm", "value": 800}}"#);
         let d = decoded("Eng", &[("Rpm", 800.0), ("Tq", 12.0)]);
-        assert!(p.matches(&frame_with(1, None), Some(&d)));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), Some(&d)));
         let d2 = decoded("Eng", &[("Rpm", 800.000_000_000_1)]);
-        assert!(p.matches(&frame_with(1, None), Some(&d2)));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), Some(&d2)));
         let d3 = decoded("Eng", &[("Rpm", 801.0)]);
-        assert!(!p.matches(&frame_with(1, None), Some(&d3)));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), Some(&d3)));
     }
 
     #[test]
@@ -587,17 +860,18 @@ mod tests {
         let p = parse(
             r#"{"all": [{"bus": "p"}, {"any": [{"id_range": [1, 10]}, {"id_list": [99]}]}]}"#,
         );
-        assert!(p.matches(&frame_with(5, Some("p")), None));
-        assert!(p.matches(&frame_with(99, Some("p")), None));
-        assert!(!p.matches(&frame_with(5, Some("c")), None)); // bus mismatch
-        assert!(!p.matches(&frame_with(50, Some("p")), None)); // id mismatch
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(5, Some("p")), None));
+        assert!(p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(99, Some("p")), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(5, Some("c")), None)); // bus mismatch
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(50, Some("p")), None));
+        // id mismatch
     }
 
     #[test]
     fn invalid_predicate_matches_nothing() {
         let p = parse(r#"{"unknown_kind": 42}"#);
         assert!(matches!(p, FilterPredicate::Invalid(_)));
-        assert!(!p.matches(&frame_with(1, Some("p")), None));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, Some("p")), None));
     }
 
     #[test]
@@ -605,9 +879,9 @@ mod tests {
         // Unclosed group.
         let p = parse(r#"{"name_regex": "("}"#);
         let d = decoded("anything", &[]);
-        assert!(!p.matches(&frame_with(1, None), Some(&d)));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), Some(&d)));
         // Still a non-match on the (cached) second evaluation.
-        assert!(!p.matches(&frame_with(1, None), Some(&d)));
+        assert!(!p.matches(&EMPTY_MATCH_CONTEXT, &frame_with(1, None), Some(&d)));
     }
 
     #[test]
@@ -631,6 +905,7 @@ mod tests {
             seen_on_bus: on_bus,
             regex_ids: regex,
             signal_ids: signal,
+            fuzzy: &EMPTY_MATCH_CONTEXT,
         }
     }
 
@@ -810,11 +1085,217 @@ mod tests {
             let p = parse(pred);
             let frame = frame_with(id, bus);
             assert_eq!(
-                p.matches_fields(id, bus, false, dec),
-                p.matches(&frame, dec),
+                p.matches_fields(&EMPTY_MATCH_CONTEXT, id, false, bus, false, dec),
+                p.matches(&EMPTY_MATCH_CONTEXT, &frame, dec),
                 "field-view disagreed for {pred} id={id} bus={bus:?}",
             );
         }
+    }
+
+    // ---- the `fuzzy` leaf --------------------------------------
+
+    /// Three messages on two buses, as the host spells their
+    /// searchable text: bus name, both id spellings, message name,
+    /// transmitting ECU, signal names.
+    fn fuzzy_fixture() -> (Vec<FuzzyCandidate>, Vec<FuzzyLabel>) {
+        let candidates = vec![
+            FuzzyCandidate {
+                bus_id: "b1".into(),
+                id: 0x400,
+                extended: false,
+                haystack: "Zonal CAN s:400 s:1024 DoorLockStatus BodyGateway LockState".into(),
+            },
+            FuzzyCandidate {
+                bus_id: "b2".into(),
+                id: 0x400,
+                extended: false,
+                haystack: "Pack CAN s:400 s:1024 PackStatus BMS PackVoltage".into(),
+            },
+            FuzzyCandidate {
+                bus_id: "b1".into(),
+                id: 0x401,
+                extended: true,
+                haystack: "Zonal CAN x:00000401 x:1025 WheelSpeed ZoneFrontLeft Speed".into(),
+            },
+        ];
+        let labels = vec![
+            FuzzyLabel {
+                id: 0x400,
+                extended: false,
+                signal: "LockState".into(),
+                label: "DoubleLocked".into(),
+            },
+            FuzzyLabel {
+                id: 0x400,
+                extended: false,
+                signal: "LockState".into(),
+                label: "Unlocked".into(),
+            },
+        ];
+        (candidates, labels)
+    }
+
+    fn fuzzy_ctx(query: &str) -> MatchContext {
+        let (candidates, labels) = fuzzy_fixture();
+        let mut ctx = MatchContext::default();
+        ctx.insert(query, FuzzyResolution::resolve(query, &candidates, &labels));
+        ctx
+    }
+
+    #[test]
+    fn a_fuzzy_leaf_round_trips_as_a_plain_query_string() {
+        let p = parse(r#"{"fuzzy": "doorlock"}"#);
+        assert_eq!(
+            p,
+            FilterPredicate::Tagged(TaggedPredicate::Fuzzy("doorlock".into())),
+        );
+        assert_eq!(
+            serde_json::to_string(&p).unwrap(),
+            r#"{"fuzzy":"doorlock"}"#
+        );
+    }
+
+    #[test]
+    fn a_fuzzy_query_finds_a_frame_by_message_name_and_leaves_its_neighbour() {
+        let p = parse(r#"{"fuzzy": "doorlock"}"#);
+        let ctx = fuzzy_ctx("doorlock");
+        assert!(p.matches_fields(&ctx, 0x400, false, Some("b1"), false, None));
+        // Same id, other bus, other message — not this query's frame.
+        assert!(!p.matches_fields(&ctx, 0x400, false, Some("b2"), false, None));
+        assert!(!p.matches_fields(&ctx, 0x401, true, Some("b1"), false, None));
+    }
+
+    #[test]
+    fn a_fuzzy_query_finds_a_frame_by_bus_name_id_spelling_ecu_and_signal() {
+        // Every id-keyed part of the haystack the ruling names, one
+        // query each, on the frame it should reach.
+        for (query, id, extended, bus) in [
+            ("pack can", 0x400u32, false, "b2"),
+            ("x:00000401", 0x401, true, "b1"),
+            ("s:1024", 0x400, false, "b1"),
+            ("bodygateway", 0x400, false, "b1"),
+            ("packvoltage", 0x400, false, "b2"),
+        ] {
+            let p = parse(&format!(r#"{{"fuzzy": "{query}"}}"#));
+            let ctx = fuzzy_ctx(query);
+            assert!(
+                p.matches_fields(&ctx, id, extended, Some(bus), false, None),
+                "query {query:?} missed the frame it names",
+            );
+        }
+    }
+
+    #[test]
+    fn an_enum_label_query_needs_the_decoded_value_to_be_that_label() {
+        // The decode-dependent half: the label resolves to a
+        // (signal, label) pair and the frame is tested the way
+        // `signal_equals` tests a value.
+        let p = parse(r#"{"fuzzy": "doublelocked"}"#);
+        let ctx = fuzzy_ctx("doublelocked");
+        let mut hit = decoded("DoorLockStatus", &[("LockState", 2.0)]);
+        hit.signals[0].label = Some("DoubleLocked".into());
+        let mut miss = decoded("DoorLockStatus", &[("LockState", 0.0)]);
+        miss.signals[0].label = Some("Unlocked".into());
+
+        assert!(p.matches_fields(&ctx, 0x400, false, Some("b1"), false, Some(&hit)));
+        assert!(!p.matches_fields(&ctx, 0x400, false, Some("b1"), false, Some(&miss)));
+        // No decode at all: the label cannot be the frame's value.
+        assert!(!p.matches_fields(&ctx, 0x400, false, Some("b1"), false, None));
+    }
+
+    #[test]
+    fn a_fuzzy_leaf_with_no_resolution_in_the_context_matches_nothing() {
+        // Same rule an unparseable predicate follows — a filter that
+        // cannot be resolved narrows to nothing rather than silently
+        // widening the view.
+        let p = parse(r#"{"fuzzy": "doorlock"}"#);
+        assert!(!p.matches_fields(&EMPTY_MATCH_CONTEXT, 0x400, false, Some("b1"), false, None));
+        // A context resolved for a *different* query is no better.
+        let ctx = fuzzy_ctx("packvoltage");
+        assert!(!p.matches_fields(&ctx, 0x400, false, Some("b1"), false, None));
+    }
+
+    #[test]
+    fn one_ranking_and_one_floor_cover_both_halves_of_the_haystack() {
+        // The candidates and the enum labels are ranked together, so a
+        // query that lands squarely on a message name does not also
+        // drag in a loosely-matching label.
+        let (candidates, labels) = fuzzy_fixture();
+        let r = FuzzyResolution::resolve("doorlockstatus", &candidates, &labels);
+        assert_eq!(r.candidate_keys(), vec![(0x400, false)]);
+        assert!(r.labels.is_empty(), "no label clears the floor here");
+        // And the other way: a label query brings its message in as a
+        // decode candidate without admitting every frame of it.
+        let r = FuzzyResolution::resolve("doublelocked", &candidates, &labels);
+        assert_eq!(r.label_ids, vec![(0x400, false)]);
+        assert!(r.keys.is_empty());
+    }
+
+    #[test]
+    fn a_fuzzy_leaf_narrows_to_its_keys_but_still_needs_the_per_frame_test() {
+        // The same id occurs on two buses and the bus name is part of
+        // the haystack, so membership in the key set is not the match.
+        let none = |_: &str| Vec::new();
+        let ctx = fuzzy_ctx("doorlock");
+        let inp = CandidateInputs {
+            seen_ids: &[],
+            seen_on_bus: &none,
+            regex_ids: &none,
+            signal_ids: &none,
+            fuzzy: &ctx,
+        };
+        let set = resolve_candidates(&parse(r#"{"fuzzy": "doorlock"}"#), &inp).unwrap();
+        assert_eq!(set.keys, vec![(0x400, false)]);
+        assert!(!set.membership, "the bus still has to be confirmed");
+        // A query the context never resolved narrows to the empty set
+        // rather than to everything.
+        let set = resolve_candidates(&parse(r#"{"fuzzy": "other"}"#), &inp).unwrap();
+        assert!(set.keys.is_empty());
+    }
+
+    #[test]
+    fn only_the_enum_label_half_of_a_fuzzy_leaf_asks_for_a_decode() {
+        // The id-keyed half is answered by a lookup, so naming a
+        // message must not drag its frames through the decoder; naming
+        // one of its labels must.
+        let (candidates, labels) = fuzzy_fixture();
+        let mut ctx = MatchContext::default();
+        ctx.insert(
+            "doorlockstatus",
+            FuzzyResolution::resolve("doorlockstatus", &candidates, &labels),
+        );
+        assert!(ctx.decode_ids().is_empty());
+
+        let mut ctx = MatchContext::default();
+        ctx.insert(
+            "doublelocked",
+            FuzzyResolution::resolve("doublelocked", &candidates, &labels),
+        );
+        assert_eq!(ctx.decode_ids(), vec![(0x400, false)]);
+    }
+
+    #[test]
+    fn fuzzy_queries_are_collected_from_anywhere_in_the_tree() {
+        let p = parse(
+            r#"{"all": [
+                {"bus": "b1"},
+                {"fuzzy": "doorlock"},
+                {"any": [{"id_list": [1]}, {"fuzzy": "packvoltage"}]}
+            ]}"#,
+        );
+        assert_eq!(p.fuzzy_queries(), vec!["doorlock", "packvoltage"]);
+        assert!(parse(r#"{"bus": "b1"}"#).fuzzy_queries().is_empty());
+    }
+
+    #[test]
+    fn a_fuzzy_leaf_ands_into_the_panels_existing_narrowing() {
+        // The shape the trace panel builds: its sources filter, the
+        // error-frame exclusion, and the query.
+        let p = parse(r#"{"all": [{"bus": "b1"}, {"error_frame": false}, {"fuzzy": "doorlock"}]}"#);
+        let ctx = fuzzy_ctx("doorlock");
+        assert!(p.matches_fields(&ctx, 0x400, false, Some("b1"), false, None));
+        assert!(!p.matches_fields(&ctx, 0x400, false, Some("b1"), true, None));
+        assert!(!p.matches_fields(&ctx, 0x401, true, Some("b1"), false, None));
     }
 
     #[test]

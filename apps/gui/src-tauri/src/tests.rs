@@ -6,6 +6,7 @@
 //! resolving crate-internal items through `use super::*` at the crate root.
 
 use super::*;
+use crate::filter::{MatchContext, EMPTY_MATCH_CONTEXT};
 use cannet_core::{CanFramePayload, Direction};
 
 /// The bus test frames arrive on unless a test says otherwise: the
@@ -834,6 +835,7 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
             membership: false,
         },
         decode_ids: HashSet::new(),
+        match_context: MatchContext::default(),
         resolved_key_generation: None,
         resolve_count: 0,
     });
@@ -1134,12 +1136,12 @@ fn filtered_scan_with_candidate_gating_matches_unconditional_decode() {
             } else {
                 None
             };
-            filter.matches(f, decoded.as_ref())
+            filter.matches(&EMPTY_MATCH_CONTEXT, f, decoded.as_ref())
         })
         .collect();
     let unconditional: Vec<bool> = frames
         .iter()
-        .map(|f| filter.matches(f, decode_against(&model, f).as_ref()))
+        .map(|f| filter.matches(&EMPTY_MATCH_CONTEXT, f, decode_against(&model, f).as_ref()))
         .collect();
     assert_eq!(gated, unconditional);
     assert_eq!(gated, vec![true, false, false, true]);
@@ -1154,7 +1156,8 @@ fn apply_filter_drops_records_that_dont_pass() {
     let mut r2 = TraceFrameRecord::from_raw(1, &frame_with_data(256), None);
     r2.bus_id = "c".into();
     let predicate: FilterPredicate = serde_json::from_str(r#"{"bus": "p"}"#).unwrap();
-    let filtered = apply_filter_records(vec![r1.clone(), r2], Some(&predicate));
+    let filtered =
+        apply_filter_records(vec![r1.clone(), r2], Some(&predicate), &EMPTY_MATCH_CONTEXT);
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].bus_id, "p");
 }
@@ -1163,7 +1166,7 @@ fn apply_filter_drops_records_that_dont_pass() {
 fn apply_filter_none_returns_input_unchanged() {
     let r1 = TraceFrameRecord::from_raw(0, &frame_with_data(1), None);
     let r2 = TraceFrameRecord::from_raw(1, &frame_with_data(2), None);
-    let v = apply_filter_records(vec![r1, r2], None);
+    let v = apply_filter_records(vec![r1, r2], None, &EMPTY_MATCH_CONTEXT);
     assert_eq!(v.len(), 2);
 }
 
@@ -1208,6 +1211,164 @@ fn trace_grew_skips_only_when_nothing_moved() {
     // re-import of the same small file; see
     // `a_second_import_of_the_same_file_still_emits`).
     assert!(trace_grew_changed(Some((10, 0.0, 7, 1)), (10, 0.0, 7, 2)));
+}
+
+/// A one-message DBC with an enum signal, for the fuzzy leaf's
+/// value-table half.
+fn enum_dbc(id: u32, name: &str, sig: &str) -> String {
+    format!(
+        "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: BodyGateway\n\n\
+         BO_ {id} {name}: 8 BodyGateway\n SG_ {sig} : 0|8@1+ (1,0) [0|0] \"\" Vector__XXX\n\n\
+         VAL_ {id} {sig} 0 \"Unlocked\" 1 \"Locked\" 2 \"DoubleLocked\" ;\n"
+    )
+}
+
+/// The state a fuzzy-leaf test runs against: one enum DBC on the test
+/// bus, that bus named, and frames of a described id and an
+/// undescribed one.
+fn fuzzy_state() -> AppState {
+    let state = test_state();
+    *state.databases.lock().unwrap() = vec![loaded_scoped(
+        "doors.dbc",
+        &enum_dbc(0x400, "DoorLockStatus", "LockState"),
+        &[TEST_BUS],
+    )];
+    state.set_project_bus_names(vec![(TEST_BUS.to_string(), "Zonal CAN".to_string())]);
+    state.trace_store.append(frame_with_data(0x400));
+    state.trace_store.append(frame_with_data(0x123));
+    state
+}
+
+/// The rows a predicate leaves, by arbitration id, through the same
+/// resolve-then-filter path the fetch commands use.
+fn fuzzy_rows(state: &AppState, predicate_json: &str) -> Vec<u32> {
+    let predicate: FilterPredicate = serde_json::from_str(predicate_json).unwrap();
+    let ctx = crate::trace_query::resolve_match_context(state, &predicate);
+    let records = collect_trace_records(state, 0, 10);
+    apply_filter_records(records, Some(&predicate), &ctx)
+        .into_iter()
+        .map(|r| r.id)
+        .collect()
+}
+
+#[test]
+fn a_fuzzy_query_reaches_every_part_of_the_haystack_the_ruling_names() {
+    // Bus name, message name, transmitting ECU, signal name, and the
+    // arbitration id in both spellings — one query each, against the
+    // real store, databases and project bus names.
+    let state = fuzzy_state();
+    for query in [
+        "zonal",
+        "doorlockstatus",
+        "bodygateway",
+        "lockstate",
+        "s:400",
+        "s:1024",
+    ] {
+        let rows = fuzzy_rows(&state, &format!(r#"{{"fuzzy": "{query}"}}"#));
+        assert!(
+            rows.contains(&0x400),
+            "query {query:?} did not reach the message it names (got {rows:?})",
+        );
+    }
+    // "zonal" is the bus both frames are on, so it keeps the
+    // undescribed id too — everything else names one message.
+    assert_eq!(
+        fuzzy_rows(&state, r#"{"fuzzy": "zonal"}"#),
+        vec![0x400, 0x123]
+    );
+    assert_eq!(
+        fuzzy_rows(&state, r#"{"fuzzy": "doorlockstatus"}"#),
+        vec![0x400],
+    );
+    // And a query that names nothing narrows to nothing rather than to
+    // everything.
+    assert!(fuzzy_rows(&state, r#"{"fuzzy": "qqqzzz"}"#).is_empty());
+}
+
+#[test]
+fn a_fuzzy_query_over_an_enum_label_reads_the_decoded_value() {
+    // The frame's `LockState` byte is 0, which the DBC labels
+    // "Unlocked" — so the label the frame *is* matches and a sibling
+    // label of the same signal does not.
+    let state = fuzzy_state();
+    assert_eq!(fuzzy_rows(&state, r#"{"fuzzy": "unlocked"}"#), vec![0x400]);
+    assert!(fuzzy_rows(&state, r#"{"fuzzy": "doublelocked"}"#).is_empty());
+}
+
+#[test]
+fn an_undescribed_id_is_still_reachable_by_its_spelling() {
+    // No DBC decodes 0x123, but it is still a row with a bus and an
+    // arbitration id, and both are in its haystack.
+    let state = fuzzy_state();
+    assert_eq!(fuzzy_rows(&state, r#"{"fuzzy": "s:123"}"#), vec![0x123]);
+}
+
+#[test]
+fn a_fuzzy_query_composes_with_the_panels_other_narrowing() {
+    // The shape the trace panel builds — sources, error-frame
+    // exclusion, query — narrows further rather than replacing.
+    let state = fuzzy_state();
+    assert_eq!(
+        fuzzy_rows(
+            &state,
+            r#"{"all": [{"bus": "bus0"}, {"error_frame": false}, {"fuzzy": "doorlock"}]}"#,
+        ),
+        vec![0x400],
+    );
+    assert!(fuzzy_rows(
+        &state,
+        r#"{"all": [{"bus": "other"}, {"fuzzy": "doorlock"}]}"#,
+    )
+    .is_empty());
+}
+
+#[test]
+fn a_settled_fuzzy_query_resolves_once_however_often_its_pages_are_fetched() {
+    // The index key is the serialised predicate, so a settled query
+    // rebuilds the index once and every page after that is served from
+    // it — the frontend's debounce is what makes that true, and this is
+    // the host half of the bargain.
+    let state = fuzzy_state();
+    *state.filter_index_dir() =
+        std::env::temp_dir().join(format!("cannet-test-fi-fuzzy-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&*state.filter_index_dir()).unwrap();
+    let filter: FilterPredicate = serde_json::from_str(r#"{"fuzzy": "doorlock"}"#).unwrap();
+
+    for _ in 0..3 {
+        drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+    }
+    let guard = state.filter_index();
+    let active = guard.as_ref().unwrap();
+    assert_eq!(active.resolve_count, 1);
+    // And it narrowed: the described id only, still needing the
+    // per-frame test because a bus name is part of the haystack.
+    assert_eq!(active.candidates.keys, vec![(0x400, false)]);
+    assert!(!active.candidates.membership);
+    // The id-keyed half asks for no decode at all.
+    assert!(active.decode_ids.is_empty());
+}
+
+#[test]
+fn renaming_a_bus_drops_a_filter_index_built_on_its_old_name() {
+    // A bus *name* is part of a fuzzy leaf's haystack, so an index
+    // resolved against the old name would keep narrowing by it.
+    let state = fuzzy_state();
+    *state.filter_index_dir() =
+        std::env::temp_dir().join(format!("cannet-test-fi-rename-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&*state.filter_index_dir()).unwrap();
+    let filter: FilterPredicate = serde_json::from_str(r#"{"fuzzy": "zonal"}"#).unwrap();
+    drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+    assert!(state.filter_index().is_some());
+
+    state.set_project_bus_names(vec![(TEST_BUS.to_string(), "Pack CAN".to_string())]);
+    assert!(state.filter_index().is_none());
+    // Re-resolved against the new name, the query no longer matches.
+    assert!(fuzzy_rows(&state, r#"{"fuzzy": "zonal"}"#).is_empty());
+    assert_eq!(
+        fuzzy_rows(&state, r#"{"fuzzy": "pack"}"#),
+        vec![0x400, 0x123]
+    );
 }
 
 #[test]
@@ -1610,7 +1771,10 @@ fn the_capture_keeps_every_error_frame_the_view_collapses() {
     let collapse: crate::filter::FilterPredicate =
         serde_json::from_str(r#"{"error_frame": false}"#).unwrap();
     let rows = state.trace_store.slice(0, appended);
-    let shown = rows.iter().filter(|f| collapse.matches(f, None)).count();
+    let shown = rows
+        .iter()
+        .filter(|f| collapse.matches(&EMPTY_MATCH_CONTEXT, f, None))
+        .count();
     assert_eq!(shown, 5_000, "only the error frames are held back");
     assert_eq!(
         rows.iter()
