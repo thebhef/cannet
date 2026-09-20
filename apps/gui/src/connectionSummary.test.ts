@@ -121,4 +121,23 @@ describe("summarizeConnection", () => {
     expect(detail).toContain("Body: no such interface");
     expect(detail).toContain("Chassis: not connected");
   });
+
+  it("excludes a no-interface bus from the count but names it in the tooltip", () => {
+    const states: BusConnStates = { b1: { kind: "connected", applied: null } };
+    const s = summarizeConnection(
+      [{ id: "b1", name: "Powertrain" }],
+      states,
+      false,
+      [{ id: "b2", name: "Body" }],
+    );
+    expect(s).toMatchObject({ state: "connected", count: "1 / 1", action: "disconnect" });
+    expect(s.detail).toContain("Body: unbound");
+    expect(s.detail).not.toContain("Powertrain: unbound");
+  });
+
+  it("has nothing to offer when every bus is set to no interface", () => {
+    const s = summarizeConnection([], {}, false, [{ id: "b1", name: "Powertrain" }]);
+    expect(s).toMatchObject({ state: "idle", label: "Not connected", count: null, action: null });
+    expect(s.detail).toBe("every bus is set to no interface");
+  });
 });
