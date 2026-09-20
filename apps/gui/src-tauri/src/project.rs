@@ -93,6 +93,8 @@ pub(crate) fn bus_name_pairs(buses: &[Bus]) -> Vec<(String, String)> {
 /// - **`local-vbus://<vbus_id>`** — an in-process virtual bus owned
 ///   by the project ([`Project::local_virtual_buses`]). `interface`
 ///   is the canonical `"bus"`.
+/// - **empty, `kind: NoInterface`** — the bus is explicitly connected
+///   to nothing (ADR 0023); there is no address to resolve.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterfaceBinding {
     #[serde(default)]
@@ -114,7 +116,7 @@ pub const LOCAL_VBUS_URL_SCHEME: &str = "local-vbus://";
 /// (ADR 0022 §"shared interface").
 pub const LOCAL_VBUS_INTERFACE: &str = "bus";
 
-/// Discriminator for the three binding kinds (v6 schema).
+/// Discriminator for the four binding kinds.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BindingKind {
@@ -128,6 +130,14 @@ pub enum BindingKind {
     /// A binding to an entry in [`Project::local_virtual_buses`]
     /// (ADR 0021).
     LocalVirtualBus,
+    /// The bus is explicitly connected to nothing (ADR 0023). Distinct
+    /// from carrying no binding row at all — that absence still
+    /// refuses a connect attempt — a `NoInterface` row is a recorded
+    /// choice: the host connects the rest of the project and treats
+    /// this bus as one with no wire (transmit and RBS frames aimed at
+    /// it are marked undelivered). `server` and `interface` are both
+    /// empty; there is nothing to resolve.
+    NoInterface,
 }
 
 /// A virtual bus owned by the project (ADR 0021). The host
@@ -1146,11 +1156,108 @@ mod tests {
         assert_eq!(parsed.interface_bindings[0].server, "local");
     }
 
+    /// A `NoInterface` binding is a persisted fact, not the absence of
+    /// one: it round-trips through serialize + parse like every other
+    /// kind, keyed by `bus_id` the same way (owner ruling — picking
+    /// "— no interface —" writes a row rather than deleting one).
+    #[test]
+    fn no_interface_binding_round_trips_through_serialize_and_parse() {
+        let p = Project {
+            schema_version: PROJECT_SCHEMA_VERSION,
+            project_id: generate_project_id(),
+            layout: serde_json::json!({"grid": {}, "panels": {}}),
+            elements: vec![],
+            buses: vec![
+                Bus {
+                    id: "p".into(),
+                    name: "Powertrain".into(),
+                    speed_bps: None,
+                    fd: None,
+                    fd_data_speed_bps: None,
+                    color: None,
+                },
+                Bus {
+                    id: "b".into(),
+                    name: "Body".into(),
+                    speed_bps: None,
+                    fd: None,
+                    fd_data_speed_bps: None,
+                    color: None,
+                },
+            ],
+            interface_bindings: vec![
+                InterfaceBinding {
+                    kind: BindingKind::Remote,
+                    server: "local".into(),
+                    interface: "pcan:PCAN_USBBUS1(h:0x51, ch:0)".into(),
+                    bus_id: "p".into(),
+                },
+                InterfaceBinding {
+                    kind: BindingKind::NoInterface,
+                    server: String::new(),
+                    interface: String::new(),
+                    bus_id: "b".into(),
+                },
+            ],
+            dbcs: vec![],
+            remote_address: None,
+            local_virtual_buses: Vec::new(),
+            transmit_frames: Vec::new(),
+            signal_colors: std::collections::HashMap::new(),
+            signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
+            signal_units: crate::signal_units::SignalUnits::new(),
+            math_signals: Vec::new(),
+        };
+        let text = serde_json::to_string_pretty(&p).unwrap();
+        assert!(
+            text.contains("\"no-interface\""),
+            "the kind must be spelled out on disk, not just implied: {text}"
+        );
+        let parsed = parse_project(&text).unwrap();
+        assert_eq!(parsed, p);
+        assert_eq!(
+            parsed
+                .interface_bindings
+                .iter()
+                .find(|b| b.bus_id == "b")
+                .unwrap()
+                .kind,
+            BindingKind::NoInterface,
+        );
+    }
+
+    /// `NoInterface` is additive (ADR 0011): a v7 file that predates
+    /// it never contains a `no-interface` row, so today's build —
+    /// `PROJECT_SCHEMA_VERSION` unchanged at 7 — still opens it, three
+    /// original binding kinds intact.
+    #[test]
+    fn a_v7_file_with_only_the_original_three_binding_kinds_still_parses() {
+        let text = r#"{
+            "schema_version": 7,
+            "layout": {"grid": {}, "panels": {}},
+            "buses": [
+                {"id": "a", "name": "A"},
+                {"id": "b", "name": "B"},
+                {"id": "c", "name": "C"}
+            ],
+            "interface_bindings": [
+                {"kind": "remote", "server": "local", "interface": "if0", "bus_id": "a"},
+                {"kind": "remote-virtual-bus", "server": "local", "interface": "vif", "bus_id": "b"},
+                {"kind": "local-virtual-bus", "server": "local-vbus://v1", "interface": "bus", "bus_id": "c"}
+            ]
+        }"#;
+        let p = parse_project(text).expect("a pre-NoInterface v7 file must still parse");
+        assert_eq!(p.interface_bindings.len(), 3);
+        assert_eq!(p.interface_bindings[0].kind, BindingKind::Remote);
+        assert_eq!(p.interface_bindings[1].kind, BindingKind::RemoteVirtualBus);
+        assert_eq!(p.interface_bindings[2].kind, BindingKind::LocalVirtualBus);
+    }
+
     #[test]
     fn parse_rejects_an_unsupported_schema_version() {
-        // A future version, the long-since-superseded v1, and the
-        // pre-current versions that used to migrate (v2–v6) — all are
-        // rejected now that the migrators are gone (ADR 0011).
+        // A future version, the long-since-superseded v1, and every
+        // pre-current version (v2–v6, none of which ever migrated,
+        // ADR 0011) — all are rejected.
         assert!(parse_project(r#"{"schema_version": 999, "layout": {}}"#).is_err());
         assert!(parse_project(r#"{"schema_version": 1, "layout": {}}"#).is_err());
         for v in 2..=6 {

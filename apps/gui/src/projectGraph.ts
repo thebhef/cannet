@@ -93,7 +93,14 @@ export function deriveGraph(
     // A `local-virtual-bus` binding IS the bus (no remote endpoint
     // it gateways to), so we skip the gateway node entirely — the
     // bus node carries the local-virtual-bus identity. ADR 0021.
-    if (bindingKind(b) === "local-virtual-bus") {
+    //
+    // A `no-interface` binding has nothing to gateway to either
+    // (ADR 0023: empty `server`/`interface`, a deliberate "connected
+    // to nothing"). Without this, every such binding's empty fields
+    // collapsed onto the same `gatewayNodeId` — every unbound-by-
+    // choice bus in a project drew an edge to one shared, near-blank
+    // node.
+    if (bindingKind(b) === "local-virtual-bus" || bindingKind(b) === "no-interface") {
       continue;
     }
     nodes.push({

@@ -408,10 +408,8 @@ trip over it.
 
 - `[ux]` **Disable Connect, with a tooltip, while any bus lacks an
   interface binding** — instead of (or ahead of) the loud refusal the
-  button currently gives on press. Needs the companion affordance the
-  ruling implies: a way to *disable* a bus, so a deliberately unbound
-  bus stops blocking Connect rather than forcing a binding it doesn't
-  want. (Owner, task-117 review 2026-08-28.)
+  button currently gives on press. (Owner, task-117 review
+  2026-08-28.)
 - `[cleanup]` **`App.tsx`'s `handleSaveProjectRef` is written but never
   read** — the close-on-quit handler it was mirrored for reads
   `handleSaveAllRef` now, and the comment beside `dirtyRef` (~line 598)
