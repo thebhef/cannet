@@ -4,6 +4,7 @@ import {
   addressShapeError,
   browseNotice,
   formatClockOffset,
+  incompatibleProtocolNote,
   matchServerRows,
   nothingStoredNote,
   serverLabel,
@@ -18,6 +19,7 @@ const row = (over: Partial<ServerRow>): ServerRow => ({
   name: "bench-rig",
   host: "bench-rig.local",
   version: "v0.8.1",
+  protocols: ["cannet.v1"],
   online: true,
   trust: "new",
   fingerprint: null,
@@ -259,5 +261,31 @@ describe("what a Forget that dropped nothing has to say", () => {
     expect(note).toContain("127.0.0.1:65476");
     expect(note).toContain("session is connected to it");
     expect(note).toContain("leaves the list when that session ends");
+  });
+});
+
+describe("what the advertised protocol packages say about a row", () => {
+  it("names both sides when this build's package is not served", () => {
+    expect(incompatibleProtocolNote(row({ protocols: ["cannet.v2"] }))).toBe(
+      "serves cannet.v2; this client speaks cannet.v1",
+    );
+    expect(
+      incompatibleProtocolNote(row({ protocols: ["cannet.v2", "cannet.v3"] })),
+    ).toBe("serves cannet.v2, cannet.v3; this client speaks cannet.v1");
+  });
+
+  it("stays quiet when this build's package is among the ones served", () => {
+    expect(incompatibleProtocolNote(row({ protocols: ["cannet.v1"] }))).toBeNull();
+    expect(
+      incompatibleProtocolNote(row({ protocols: ["cannet.v1", "cannet.v2"] })),
+    ).toBeNull();
+  });
+
+  it("stays quiet when the server advertised nothing", () => {
+    // Absent is "did not say", not "serves nothing": an older build, a
+    // server started --no-mdns, an address added by hand. The host's
+    // ServerInfo call on the connection is the gate, not this.
+    expect(incompatibleProtocolNote(row({ protocols: null }))).toBeNull();
+    expect(incompatibleProtocolNote(row({ protocols: [] }))).toBeNull();
   });
 });

@@ -42,6 +42,7 @@ const row = (over: Partial<ServerRow>): ServerRow => ({
   name: "bench-rig",
   host: "bench-rig.local",
   version: "v0.8.1",
+  protocols: ["cannet.v1"],
   online: true,
   trust: "new",
   fingerprint: null,
@@ -162,6 +163,48 @@ describe("the merged server list", () => {
     );
     expect(screen.getByText("192.168.1.44:50051")).toBeInTheDocument();
     expect(calls.filter((c) => c.cmd === "get_server_list")).toHaveLength(1);
+  });
+
+  it("greys out a server advertising a protocol this build does not speak", async () => {
+    // ADR 0059's advisory half: the `proto=` key says what the server
+    // serves, so a row nothing here can use looks unusable before
+    // anything dials it — and says why, naming both sides.
+    const future = row({
+      address: "future:50051",
+      name: "future-rig",
+      protocols: ["cannet.v2"],
+    });
+    snapshot = list([BENCH, future]);
+    renderPanel();
+    await screen.findByText("future:50051");
+    const node = rowFor("future:50051");
+    expect(node).toHaveClass("incompatible");
+    expect(node).toHaveTextContent("serves cannet.v2; this client speaks cannet.v1");
+    expect(rowFor("192.168.1.10:50051")).not.toHaveClass("incompatible");
+  });
+
+  it("leaves a server that serves this build's package among others alone", async () => {
+    // The deprecation window: a server carrying both majors is still
+    // this build's server.
+    snapshot = list([
+      row({
+        address: "future:50051",
+        name: "future-rig",
+        protocols: ["cannet.v1", "cannet.v2"],
+      }),
+    ]);
+    renderPanel();
+    await screen.findByText("future:50051");
+    expect(rowFor("future:50051")).not.toHaveClass("incompatible");
+  });
+
+  it("says nothing about a server that advertised no protocol at all", async () => {
+    // "Did not say" is not "serves nothing" — an older build, a
+    // hand-added address. The host's ServerInfo call is the gate.
+    snapshot = list([row({ address: "quiet:50051", name: null, protocols: null })]);
+    renderPanel();
+    await screen.findByText("quiet:50051");
+    expect(rowFor("quiet:50051")).not.toHaveClass("incompatible");
   });
 
   it("greys a trusted server that is not advertising instead of hiding it", async () => {
@@ -807,6 +850,31 @@ describe("live interfaces on stored rows", () => {
         .sort();
       expect(watched).toEqual(["rippy:50051", "spare:50051"]);
     });
+  });
+
+  it("does not watch a row whose advertised protocol this build cannot speak", async () => {
+    // Every dial would be refused at ServerInfo, and the row already
+    // explains itself; watching it would only log the same refusal on
+    // a backoff forever.
+    snapshot = list([
+      PINNED,
+      row({
+        address: "future:50051",
+        name: "future-rig",
+        trust: "trusted",
+        fingerprint: "SHA256:fff",
+        protocols: ["cannet.v2"],
+      }),
+    ]);
+    renderPanel();
+    await screen.findByText("future:50051");
+    await waitFor(() =>
+      expect(calls.some((c) => c.cmd === "watch_interfaces")).toBe(true),
+    );
+    const watched = calls
+      .filter((c) => c.cmd === "watch_interfaces")
+      .map((c) => c.args.address);
+    expect(watched).toEqual(["rippy:50051"]);
   });
 
   it("shows a stored row's interfaces as the host pushes them", async () => {

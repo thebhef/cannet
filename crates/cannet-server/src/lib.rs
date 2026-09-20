@@ -31,6 +31,9 @@
 //! - [`replay`] — pure-data: load a BLF file into memory, partition it by
 //!   channel, expose interfaces and frame slices.
 //! - [`server`] — BLF replay tonic service.
+//! - [`server_info`] — the unversioned `ServerInfo` RPC every mode
+//!   answers, unauthenticated, stating which protocol packages this
+//!   server serves (ADR 0059).
 //! - [`virtual_bus`] — virtual-bus tonic service.
 //! - [`bridge_client`] — server-internal gRPC client the virtual-bus
 //!   server uses to install a bridge that fronts a remote interface.
@@ -45,6 +48,7 @@ pub mod identity;
 pub mod proxy;
 pub mod replay;
 pub mod server;
+pub mod server_info;
 pub mod virtual_bus;
 
 pub use auth::{AccessToken, TokenError};
@@ -53,7 +57,26 @@ pub use identity::{install_crypto_provider, CertFingerprint, IdentityError, Serv
 pub use proxy::ProxyServerImpl;
 pub use replay::{LoopingBlfReplay, ReplayError};
 pub use server::CannetServerImpl;
+pub use server_info::ServerInfoImpl;
 pub use virtual_bus::{VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID};
+
+/// The build's version string: `git describe --tags` as captured by
+/// `build.rs` (vergen), e.g. `v0.1.0` on a release tag or
+/// `v0.1.0-3-gabc1234` for a build a few commits past one. Falls back
+/// to the Cargo crate version when the binary was built outside a git
+/// checkout (no `VERGEN_GIT_DESCRIBE` set) — the same fallback
+/// `apps/gui/src-tauri` uses.
+///
+/// Three surfaces read it and must not disagree: `--version`, the mDNS
+/// TXT record's `ver` key, and [`server_info::ServerInfoImpl`]'s
+/// `version` field.
+#[must_use]
+pub fn build_version() -> &'static str {
+    match option_env!("VERGEN_GIT_DESCRIBE") {
+        Some(v) if !v.is_empty() && v != "VERGEN_IDEMPOTENT_OUTPUT" => v,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
 
 use cannet_wire::proto::{envelope::Body, error::Code, ClockReply, Envelope, Error as ErrorMsg};
 
@@ -118,6 +141,10 @@ pub async fn serve_virtual_bus_ephemeral(
     let stream = tokio_stream::wrappers::TcpListenerStream::new(listener);
     tonic::transport::Server::builder()
         .add_service(VirtualBusServerImpl::new(config).into_service())
+        // Every client asks `ServerInfo` before its first real call, so
+        // a server that does not answer it is one nothing can connect
+        // to — including this in-process convenience (ADR 0059).
+        .add_service(ServerInfoImpl::new(build_version(), String::new()).into_service())
         .serve_with_incoming(stream)
         .await?;
     Ok(())

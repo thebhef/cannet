@@ -132,6 +132,13 @@ pub struct ServerRow {
     /// The server's release, from its `ver` TXT key. Discovered rows
     /// only.
     pub version: Option<String>,
+    /// The protocol packages this server advertises serving, from its
+    /// `proto` TXT key (ADR 0059). Discovered rows only, and advisory:
+    /// `None` means the server did not say, which is not the same as
+    /// "serves nothing". It is what lets the panel grey out a row this
+    /// build cannot speak to *before* dialling it; `ServerInfo` on the
+    /// connection itself is the gate.
+    pub protocols: Option<Vec<String>>,
     /// Whether the server is reachable right now: advertising on the
     /// subnet, or holding a live interface stream with this host —
     /// the only evidence available for a server on another subnet.
@@ -219,6 +226,7 @@ pub fn merge(
         row.name = Some(server.name.clone());
         row.host.clone_from(&server.host);
         row.version.clone_from(&server.version);
+        row.protocols.clone_from(&server.protocols);
         row.online = true;
     }
 
@@ -276,6 +284,7 @@ fn offline_row(address: &str, entry: &TrustEntry) -> ServerRow {
         name: None,
         host: None,
         version: None,
+        protocols: None,
         online: false,
         trust: trust_state(address, entry),
         fingerprint: entry.fingerprint.clone(),
@@ -472,6 +481,7 @@ mod tests {
             host: Some(format!("{name}.local")),
             address: address.to_string(),
             version: Some("v0.8.1".into()),
+            protocols: Some(vec!["cannet.v1".into()]),
         }
     }
 

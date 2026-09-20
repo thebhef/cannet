@@ -14,7 +14,7 @@ use cannet_client::{
     FrameReceiver, RemoteCanFrameSource, SessionHandle, Subscription,
 };
 use cannet_core::CanFrameSource;
-use cannet_server::{CannetServerImpl, LoopingBlfReplay};
+use cannet_server::{CannetServerImpl, LoopingBlfReplay, ServerInfoImpl};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -26,6 +26,14 @@ const TS_BASE: f64 = 1_700_000_000.0;
 /// loopback bind is (ADR 0041).
 fn plaintext(address: &str) -> ConnectConfig {
     ConnectConfig::plaintext(address)
+}
+
+/// Every server in this file mounts this. The client asks `ServerInfo`
+/// before it does anything else (ADR 0059), so a test server without it
+/// is one no client in this crate can reach — including the hand-rolled
+/// clock-probe stubs below, which are otherwise only a `CannetServer`.
+fn info_service() -> cannet_wire::info::cannet_info_server::CannetInfoServer<ServerInfoImpl> {
+    ServerInfoImpl::new("v0.0.0-test", String::new()).into_service()
 }
 
 fn classic_msg(timestamp: f64, channel: u16, id: u32, data: Vec<u8>) -> Message {
@@ -75,6 +83,7 @@ async fn spawn_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(svc)
+            .add_service(info_service())
             .serve_with_incoming(stream)
             .await
             .unwrap();
@@ -260,6 +269,7 @@ async fn spawn_virtual_bus_server() -> (std::net::SocketAddr, tokio::task::JoinH
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(svc)
+            .add_service(info_service())
             .serve_with_incoming(stream)
             .await
             .unwrap();
@@ -710,6 +720,7 @@ async fn spawn_skewed_server(skew_ns: i64) -> (std::net::SocketAddr, tokio::task
                     skew_ns,
                 }),
             )
+            .add_service(info_service())
             .serve_with_incoming(stream)
             .await;
     });
@@ -856,6 +867,7 @@ async fn a_peer_that_never_answers_is_reported_unsupported_rather_than_waited_on
             .add_service(
                 cannet_wire::proto::cannet_server_server::CannetServerServer::new(SilentServer),
             )
+            .add_service(info_service())
             .serve_with_incoming(stream)
             .await;
     });

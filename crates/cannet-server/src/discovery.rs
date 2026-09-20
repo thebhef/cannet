@@ -28,8 +28,16 @@ pub struct Advertisement {
 }
 
 impl Advertisement {
-    /// Register `name` on `bind`'s port, advertising `version` as the
-    /// sole TXT key (`ver=<version>`).
+    /// Register `name` on `bind`'s port, advertising the build string
+    /// as `ver=<version>` and the protocol packages this server serves
+    /// as `proto=<comma-separated>`.
+    ///
+    /// `proto=` is **advisory** (ADR 0059): it lets a browsing client
+    /// grey out a server it cannot speak to before dialling it, but it
+    /// is absent for a hand-added server and for one started
+    /// `--no-mdns`, so `ServerInfo` — which every client calls before
+    /// anything else — is the gate. The two are published from the same
+    /// list so they cannot disagree.
     ///
     /// The advertised addresses are the ones `bind` actually serves:
     /// exactly the bound address when it names one interface, and —
@@ -39,8 +47,13 @@ impl Advertisement {
     /// address nothing is listening on: a client that browses is told
     /// where to dial, and an address the server does not answer on is
     /// a connection failure with no explanation.
-    pub fn register(name: &str, bind: SocketAddr, version: &str) -> mdns_sd::Result<Self> {
-        let info = service_info(name, bind, version)?;
+    pub fn register(
+        name: &str,
+        bind: SocketAddr,
+        version: &str,
+        packages: &[String],
+    ) -> mdns_sd::Result<Self> {
+        let info = service_info(name, bind, version, packages)?;
         let daemon = ServiceDaemon::new()?;
         daemon.register(info)?;
         Ok(Self { daemon })
@@ -65,23 +78,32 @@ impl Advertisement {
 
 /// Build the `ServiceInfo` bare `cannet-server` registers: `name` as
 /// the DNS-SD instance, `bind`'s port as the port, `bind`'s addresses
-/// as the addresses, and a single `ver` TXT key. Pulled out of
-/// [`Advertisement::register`] so the assembly — instance naming, TXT
-/// shape, port, address set — is unit-testable without a live daemon
-/// (registering binds real sockets).
-fn service_info(name: &str, bind: SocketAddr, version: &str) -> mdns_sd::Result<ServiceInfo> {
+/// as the addresses, and two TXT keys — `ver` and `proto`. Pulled out
+/// of [`Advertisement::register`] so the assembly — instance naming,
+/// TXT shape, port, address set — is unit-testable without a live
+/// daemon (registering binds real sockets).
+fn service_info(
+    name: &str,
+    bind: SocketAddr,
+    version: &str,
+    packages: &[String],
+) -> mdns_sd::Result<ServiceInfo> {
     let host = format!("{name}.local.");
     let addresses: Box<dyn AsIpAddrs> = match served_address(bind) {
         Some(ip) => Box::new(ip),
         None => Box::new(()),
     };
+    // Comma-separated, because a TXT value is one string and DNS-SD's
+    // own convention for a list is to put it in one key rather than to
+    // invent `proto1=`/`proto2=`.
+    let protocols = packages.join(",");
     let info = ServiceInfo::new(
         SERVICE_TYPE,
         name,
         &host,
         addresses,
         bind.port(),
-        &[("ver", version)][..],
+        &[("ver", version), ("proto", protocols.as_str())][..],
     )?;
     // Auto-detection is the truthful answer for a wildcard bind and
     // only for a wildcard bind: it publishes every address this host
@@ -140,8 +162,12 @@ mod tests {
     /// Every address the advertisement built for `bind` will publish,
     /// or `None` when it delegates the set to the daemon's
     /// every-interface auto-detection.
+    fn packages() -> Vec<String> {
+        crate::ServerInfoImpl::packages()
+    }
+
     fn advertised(bind: &str) -> Option<BTreeSet<IpAddr>> {
-        let info = service_info("my-host", addr(bind), "v0.1.0").unwrap();
+        let info = service_info("my-host", addr(bind), "v0.1.0", &packages()).unwrap();
         if info.is_addr_auto() {
             assert!(
                 info.get_addresses().is_empty(),
@@ -158,21 +184,48 @@ mod tests {
 
     #[test]
     fn the_fullname_is_the_instance_under_the_cannet_service_type() {
-        let info = service_info("my-host", addr("0.0.0.0:50051"), "v0.1.0").unwrap();
+        let info = service_info("my-host", addr("0.0.0.0:50051"), "v0.1.0", &packages()).unwrap();
         assert_eq!(info.get_fullname(), "my-host._cannet._tcp.local.");
     }
 
     #[test]
     fn the_port_is_the_bound_port() {
-        let info = service_info("my-host", addr("0.0.0.0:50051"), "v0.1.0").unwrap();
+        let info = service_info("my-host", addr("0.0.0.0:50051"), "v0.1.0", &packages()).unwrap();
         assert_eq!(info.get_port(), 50051);
     }
 
     #[test]
-    fn the_txt_record_carries_exactly_one_ver_key() {
-        let info = service_info("my-host", addr("0.0.0.0:50051"), "v0.1.0-3-gabc1234").unwrap();
-        assert_eq!(info.get_properties().len(), 1, "no labels (ADR 0040)");
+    fn the_txt_record_carries_the_build_string_and_the_packages_and_nothing_else() {
+        let info = service_info(
+            "my-host",
+            addr("0.0.0.0:50051"),
+            "v0.1.0-3-gabc1234",
+            &packages(),
+        )
+        .unwrap();
+        assert_eq!(info.get_properties().len(), 2, "no labels (ADR 0040)");
+        // `ver` stays the build string. It was never a protocol
+        // version and reading it as one is the mistake `proto` exists
+        // to remove (ADR 0059).
         assert_eq!(info.get_property_val_str("ver"), Some("v0.1.0-3-gabc1234"));
+        assert_eq!(info.get_property_val_str("proto"), Some("cannet.v1"));
+    }
+
+    #[test]
+    fn several_served_packages_ride_one_comma_separated_proto_key() {
+        // The day a `cannet.v2` server serves both majors, a browsing
+        // client has to read both out of one TXT value.
+        let info = service_info(
+            "my-host",
+            addr("0.0.0.0:50051"),
+            "v0.1.0",
+            &["cannet.v1".to_string(), "cannet.v2".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            info.get_property_val_str("proto"),
+            Some("cannet.v1,cannet.v2")
+        );
     }
 
     #[test]

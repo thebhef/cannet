@@ -819,6 +819,17 @@ crate retained long-term).
   a Windows OV/EV cert or Azure Trusted Signing) and is wired through
   `tauri-action`'s signing env vars once those exist.
 
+- **`buf`** (`buf breaking`, Buf CLI) — `adopted` 2026-09-20 (task
+  145, owner ruling) as a CI check only: `buf breaking` diffs
+  `crates/cannet-wire/proto/cannet.proto` against the last release
+  tag and fails on any non-additive change inside a package. This is
+  the mechanical half of the wire compatibility rule (package-major,
+  additive only within a major); the written half lives in the proto
+  header and its ADR. A single static binary, pinned by version in
+  `ci.yml`; not used for codegen (tonic-build and grpcio-tools keep
+  that), so no build dependency changes. Paired with a check that every
+  checked-in python gencode tree still matches the proto. Apache-2.0.
+
 ### Testing / Profiling
 
 - **Git LFS** — `adopted` 2026-08-26 by owner ruling (task

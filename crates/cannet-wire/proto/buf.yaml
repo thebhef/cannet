@@ -1,0 +1,24 @@
+# Buf module for the cannet wire protocol.
+#
+# `buf` is a CI check only: codegen stays with tonic-build and
+# grpcio-tools, so nothing in the build depends on it. The one job that
+# reads this file runs `buf breaking` against the last release tag —
+# the mechanical half of the compatibility rule in `cannet.proto`'s
+# header and in ADR 0059: the package name is the major version, and
+# only additive changes land inside one.
+#
+# `PACKAGE` rather than the stricter `FILE` default: what a peer
+# depends on is the package, so moving a message between files inside
+# one package is not a break — splitting `ServerInfo` out into
+# `cannet_info.proto` under its own package would have been flagged by
+# `FILE` for no reason a client could observe.
+#
+# Lint is deliberately not configured: this module is checked for
+# compatibility, not style, and a second opinion on comment placement
+# is not something a CI gate should have.
+version: v2
+modules:
+  - path: .
+breaking:
+  use:
+    - PACKAGE

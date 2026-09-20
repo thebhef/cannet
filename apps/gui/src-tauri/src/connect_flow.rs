@@ -236,9 +236,20 @@ pub fn classify(attempt: &Attempt, error: &ConnectionError) -> Outcome {
                 detail: detail.clone(),
             })
         }
-        ConnectionError::InsecureScheme { .. } | ConnectionError::InvalidToken => {
-            Outcome::Fatal(error.to_string())
-        }
+        // Terminal, with nothing to ask.
+        //
+        // `InsecureScheme` and `InvalidToken` are configuration the
+        // user has to go and fix. `IncompatibleProtocol` and
+        // `Unimplemented` are a protocol major this server does not
+        // serve, or an RPC it does not implement at all (ADR 0059):
+        // a running server does not grow a package because a client
+        // kept dialling, and retrying one made an incompatible server
+        // look exactly like a server that keeps flapping. Each error's
+        // own sentence names both sides.
+        ConnectionError::InsecureScheme { .. }
+        | ConnectionError::InvalidToken
+        | ConnectionError::IncompatibleProtocol { .. }
+        | ConnectionError::Unimplemented(_) => Outcome::Fatal(error.to_string()),
         other => Outcome::Retry(other.to_string()),
     }
 }
@@ -617,6 +628,42 @@ mod tests {
             &ConnectionError::Connect("connection refused".into()),
         );
         assert!(matches!(outcome, Outcome::Retry(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn an_incompatible_protocol_is_terminal_and_says_what_each_side_speaks() {
+        // The defect this closes: an incompatible server fell through
+        // to `Retry` and was dialled forever, so it presented as a
+        // server that keeps flapping rather than one this build cannot
+        // talk to.
+        let outcome = classify(
+            &Attempt::Plaintext,
+            &ConnectionError::IncompatibleProtocol {
+                served: vec!["cannet.v2".into()],
+            },
+        );
+        assert_eq!(
+            outcome,
+            Outcome::Fatal("serves cannet.v2; this client speaks cannet.v1".into()),
+        );
+    }
+
+    #[test]
+    fn an_unimplemented_rpc_is_terminal_on_every_attempt_kind() {
+        // Any RPC, not just `ServerInfo`: a peer that does not have a
+        // call this client makes is not one it can talk to, whatever
+        // else is configured for it.
+        for attempt in [
+            Attempt::Plaintext,
+            Attempt::Probe,
+            Attempt::Pinned {
+                fingerprint: "SHA256:aaa".into(),
+                token: Some("tok".into()),
+            },
+        ] {
+            let outcome = classify(&attempt, &ConnectionError::Unimplemented(String::new()));
+            assert!(matches!(outcome, Outcome::Fatal(_)), "{outcome:?}");
+        }
     }
 
     #[test]

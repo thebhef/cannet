@@ -75,6 +75,16 @@ interface, and it may contribute UI.
    capability handshake (LSP-style), no silent reliance on protobuf's
    raw forward/backward compatibility to paper over semantic breaks.
 
+   **Amended 2026-09-20 ([ADR 0059](0059-wire-protocol-package-major.md)):
+   that version is the proto's *package major*** — `cannet.v1`, the
+   name already on every gRPC method path. A manifest declares the
+   package it targets and the host refuses one naming a package it
+   does not serve; additive changes never invalidate a manifest, and a
+   breaking change is a new package served beside the old one for a
+   deprecation window. There is no separate number to keep in step,
+   and the paragraph's assumption that GUI↔server compatibility
+   "already is" this predictable is what ADR 0059 made true.
+
 7. **Transmit requires manifest-declared, install-time consent.** An
    Extension's manifest states whether it transmits. The host enforces
    this at the RPC layer — a `SendFrame` from an Extension whose

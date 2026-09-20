@@ -69,6 +69,7 @@ function serverRow(patch: Partial<ServerRow> & { address: string }): ServerRow {
     name: null,
     host: null,
     version: null,
+    protocols: ["cannet.v1"],
     online: true,
     trust: "trusted",
     fingerprint: null,

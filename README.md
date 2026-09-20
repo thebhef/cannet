@@ -89,10 +89,13 @@ crates/
                  Hand-rolled bit extraction (LE / Motorola sequential
                  BE), sign extension, multiplexed-signal filtering.
   cannet-wire/   Phase-2 wire protocol: tonic / gRPC service definition
-                 (`proto/cannet.proto`), generated client + server
-                 stubs, conversion helpers between `cannet_core`
-                 frames and the wire types, and a batching adapter
-                 layer so application code stays in `Stream<CanFrame>`.
+                 (`proto/cannet.proto`, package `cannet.v1` — the
+                 protocol's major version; plus `proto/cannet_info.proto`,
+                 the unversioned `ServerInfo` every server answers),
+                 generated client + server stubs, conversion helpers
+                 between `cannet_core` frames and the wire types, and a
+                 batching adapter layer so application code stays in
+                 `Stream<CanFrame>`.
   cannet-log/    The rolling log file both hosts write — the GUI's
                  `cannet.log` and `cannet-server`'s
                  `cannet-server.log`. Append + size-rotate to a single
@@ -731,6 +734,14 @@ Flags:
   drops out of the GUI's browse list but stays reachable at a typed
   `host:port`. `debug replay` and `debug vbus` never advertise, with
   or without this flag.
+
+The advertisement's TXT record carries two keys: `ver=` — the build
+string, the same one `--version` prints — and `proto=` — the protocol
+packages this server serves, comma-separated (`cannet.v1`). `proto=`
+lets the Servers panel grey out a server this build cannot speak to
+before anything dials it; it is advisory, and the `ServerInfo` call
+every client makes on the connection is the gate
+([ADR 0059](docs/adr/0059-wire-protocol-package-major.md)).
 
 The advertisement carries only addresses the bind actually serves. A
 wildcard bind serves every interface, so it advertises every address
@@ -2195,6 +2206,14 @@ shut down can linger in the discovered list until its DNS-SD record
 expires (up to two minutes); an orderly shutdown drops out of it
 within about a second.
 
+A row whose advertised `proto=` packages do not include the one this
+build speaks is greyed out and says so — "serves cannet.v2; this
+client speaks cannet.v1" — before anything dials it
+([ADR 0059](docs/adr/0059-wire-protocol-package-major.md)). That is
+advisory: a server that advertises no packages at all is dialled
+normally and refused, with the same sentence, by the `ServerInfo` call
+every connection makes first.
+
 ### Rest-of-bus simulation + calculated fields
 
 **Add ▸ RBS Panel** opens a rest-of-bus simulation (ADR 0028): cannet
@@ -3201,6 +3220,37 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy
 uv run pytest
+```
+
+### The wire protocol's two gates
+
+The `.proto` in [`crates/cannet-wire/proto`](crates/cannet-wire/proto)
+is the contract every speaker of the protocol shares, and its
+compatibility rule is the **protobuf package major**: `cannet.v1` is
+in every gRPC method path, only additive changes may land inside one
+major, and a breaking change is a new package served beside the old
+one for a deprecation window. The rule is stated at the top of
+`cannet.proto` and recorded in
+[ADR 0059](docs/adr/0059-wire-protocol-package-major.md); two CI jobs
+enforce what can be enforced mechanically.
+
+**`buf breaking`** diffs the protos against the last release tag. It
+needs the [Buf CLI](https://buf.build/docs/installation) — a single
+static binary, CI-only, not part of any build:
+
+```sh
+tag=$(git describe --tags --abbrev=0 --match 'v*')
+GIT_LFS_SKIP_SMUDGE=1 buf breaking crates/cannet-wire/proto \
+    --against ".git#tag=$tag,subdir=crates/cannet-wire/proto"
+```
+
+**Gencode drift.** The Python packages keep their protobuf/grpc stubs
+in the tree so an end user needs no `protoc`; after editing a `.proto`,
+regenerate them and commit the result. CI re-runs the same script and
+fails on any difference:
+
+```sh
+bash scripts/regen-proto-gencode.sh
 ```
 
 ### Regenerating the MDF fixture corpus

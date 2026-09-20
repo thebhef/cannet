@@ -1,3 +1,47 @@
+// ---------------------------------------------------------------------
+// Compatibility rule: the package name is the major version.
+//
+// (Deliberately above `syntax`, and not attached to the service below:
+// protoc folds a declaration's leading comments into every language's
+// generated docstrings, and this is a file-level rule, not a note about
+// one RPC.)
+//
+// `cannet.v1` is this protocol's major version, and it is baked into
+// every gRPC method path a client calls
+// (`/cannet.v1.CannetServer/Session`), so both peers state the major
+// they speak on every single request. There is no version field on the
+// wire and nothing is negotiated.
+//
+// Inside a major, only **additive** changes are allowed:
+//
+//   - new messages, new fields, new RPCs, new `oneof` variants, new
+//     enum values;
+//   - a tag number is immutable, and a tag that is retired becomes
+//     `reserved` so nothing can ever reuse it;
+//   - a field's type and its *meaning* never change. Re-purposing an
+//     existing field is a breaking change even when the bytes still
+//     parse — that is the case protobuf's own rules do not catch.
+//
+// A change that is not additive is a **new package** — `cannet.v2`,
+// with its own service — served beside `cannet.v1` for a deprecation
+// window, so a client that has not migrated keeps working instead of
+// being cut off on the day the server upgrades.
+//
+// A server states which packages it serves through `ServerInfo`
+// (`cannet_info.proto`). That service lives in its own unversioned
+// package precisely so that a server which has dropped `cannet.v1` can
+// still answer the question, and a client refused by it can say why.
+//
+// A peer inside a major can still be older than an additive change and
+// simply not know it. That is detected by feature probe, never by a
+// version: `ClockProbe` below is the pattern — send it, and read no
+// answer within the probe window as "this peer does not have it".
+//
+// `buf breaking` enforces the additive half of this rule in CI. The
+// decision, and what it means for a third-party client, are recorded in
+// ADR 0059.
+// ---------------------------------------------------------------------
+
 syntax = "proto3";
 
 package cannet.v1;
@@ -82,6 +126,12 @@ message Interface {
 // (see ADR 0021 § Wire-protocol additions for the virtual-bus
 // envelopes).
 message Envelope {
+  // Never assigned. Tag 9 was skipped when the virtual-bus variants
+  // were numbered; reserving it keeps the hole a hole, so a later
+  // addition cannot pick it up and collide with anything an old peer
+  // might once have sent there.
+  reserved 9;
+
   oneof body {
     Subscribe subscribe = 1;
     Unsubscribe unsubscribe = 2;

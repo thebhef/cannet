@@ -43,6 +43,14 @@ and bus-state surface lives inside `Envelope` variants and
 or state fields is an additive schema change rather than a new
 endpoint.
 
+**What "additive" is allowed to mean, and what a peer does when it
+isn't, are [ADR 0059](0059-wire-protocol-package-major.md)'s**: the
+package name (`cannet.v1`) is the major version, only additive
+changes land inside one, a breaking change is a new package served
+beside the old, and a separate unversioned `ServerInfo` RPC —
+`cannet_info.proto`, `package cannet` — states which packages a
+server serves so a client refuses a mismatch instead of guessing.
+
 ### Envelope variants
 
 The `Session` stream carries a tagged-union `Envelope`:

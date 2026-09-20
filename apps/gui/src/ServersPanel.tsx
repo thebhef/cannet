@@ -48,6 +48,7 @@ import { useInterfaceDiscovery, type DiscoveryState } from "./ConnectionManageme
 import {
   addressShapeError,
   browseNotice,
+  incompatibleProtocolNote,
   matchServerRows,
   nothingStoredNote,
   serverKey,
@@ -92,13 +93,16 @@ export function ServersPanel(_props: IDockviewPanelProps) {
   // its connection is exercised (with backoff) while the panel is
   // open, instead of failing silently until a bus needs it. Untrusted
   // rows are left alone: a watch would dial them and raise a
-  // first-contact question nobody asked for. The host refcounts the
-  // watch tasks, so sharing an address with Connection Management is
-  // safe in both directions.
+  // first-contact question nobody asked for. So is a server that has
+  // advertised a protocol major this build does not speak (ADR 0059):
+  // the watch would be refused every time, and the row already says
+  // why. The host refcounts the watch tasks, so sharing an address
+  // with Connection Management is safe in both directions.
   const watchable = useMemo(
     () =>
       servers
         .filter((r) => r.fingerprint !== null || r.insecure)
+        .filter((r) => incompatibleProtocolNote(r) === null)
         .map((r) => r.address),
     [servers],
   );
@@ -383,9 +387,16 @@ function ServerRowView({
   // action.
   const credentials = row.fingerprint !== null || row.hasToken || row.insecure;
   const stored = credentials || row.manual;
+  // Greyed before anything dials it: the server advertised a protocol
+  // major this build does not speak (ADR 0059). Advisory — the host
+  // refuses the connection itself — but a row nothing here can use
+  // should look that way rather than fail on click.
+  const incompatible = incompatibleProtocolNote(row);
   return (
     <div
-      className={`server-row${row.online ? "" : " offline"}${highlighted ? " highlight" : ""}`}
+      className={`server-row${row.online ? "" : " offline"}${highlighted ? " highlight" : ""}${
+        incompatible === null ? "" : " incompatible"
+      }`}
     >
       <span className={`server-badge ${row.trust}`}>{trustLabel(row)}</span>
       <span className="server-name">{row.name ?? "not advertising"}</span>
@@ -444,6 +455,9 @@ function ServerRowView({
           Forget
         </button>
       </span>
+      {incompatible !== null && (
+        <span className="server-protocol">{incompatible}</span>
+      )}
       {row.fingerprint !== null && (
         <code className="server-fingerprint">{row.fingerprint}</code>
       )}

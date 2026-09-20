@@ -55,6 +55,11 @@ export interface ServerRow {
   host: string | null;
   /// The server's release, from its `ver` TXT key.
   version: string | null;
+  /// The protocol packages the server advertises serving, from its
+  /// `proto` TXT key. `null` for a server that advertises none, which
+  /// is "did not say" and not "serves nothing" — the host's
+  /// `ServerInfo` call on the connection is what actually gates it.
+  protocols: string[] | null;
   /// Whether the server is reachable right now: advertising on the
   /// subnet, or holding a live interface stream with this host — the
   /// only evidence available for a server on another subnet.
@@ -312,6 +317,27 @@ export function matchServerRows(
     casing: "case-insensitive",
   });
   return fzf.find(trimmed).map((r) => r.item);
+}
+
+/// The protocol package this build speaks — the wire's major version,
+/// and the same string the host's `cannet_wire::PROTOCOL_PACKAGE`
+/// carries. Only ever compared against what a server advertises; the
+/// connection's own refusal is the host's.
+export const CLIENT_PROTOCOL_PACKAGE = "cannet.v1";
+
+/// Why this row cannot be connected to, or `null` when nothing the
+/// server advertised says it cannot.
+///
+/// Read off the `proto=` packages the host resolved from the
+/// advertisement, which are **advisory**: a server that advertises none
+/// (an older build, a hand-added address, one started `--no-mdns`) says
+/// nothing here and is dialled normally. The host asks `ServerInfo` on
+/// every connection and refuses there; this only spares the user a dial
+/// that was never going to work, and the sentence is the same one.
+export function incompatibleProtocolNote(row: ServerRow): string | null {
+  if (row.protocols === null || row.protocols.length === 0) return null;
+  if (row.protocols.includes(CLIENT_PROTOCOL_PACKAGE)) return null;
+  return `serves ${row.protocols.join(", ")}; this client speaks ${CLIENT_PROTOCOL_PACKAGE}`;
 }
 
 /// The badge one row wears. The host decides the state; this is only

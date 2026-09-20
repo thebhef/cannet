@@ -91,6 +91,71 @@ jobs:
       - run: setsid --wait cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  wire-breaking:
+    name: Wire protocol (buf breaking)
+    runs-on: ubuntu-latest
+    steps:
+      # The whole history, and its tags: the comparison point is the
+      # last release tag, and a shallow checkout has neither.
+      # `GIT_LFS_SKIP_SMUDGE` is for buf's own clone of this
+      # repository — it has no LFS endpoint configured and would fail
+      # fetching the example captures it does not need.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # A single static binary, pinned here. Not used for codegen —
+      # tonic-build and grpcio-tools keep that — so nothing else in the
+      # build depends on this version.
+      - name: Install buf
+        run: npm install -g @bufbuild/buf@1.47.2
+
+      # The mechanical half of the wire compatibility rule (ADR 0059):
+      # the package name is the major version, and only additive
+      # changes may land inside one. A renumbered tag, a changed field
+      # type, a removed field — anything a released client could
+      # already be depending on — fails here rather than in the field.
+      - name: buf breaking, against the last release
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          if [ -z "$tag" ]; then
+            echo "No release tag reachable; nothing to be compatible with yet."
+            exit 0
+          fi
+          echo "Comparing against $tag"
+          buf breaking crates/cannet-wire/proto \
+            --against ".git#tag=$tag,subdir=crates/cannet-wire/proto"
+
+  wire-gencode:
+    name: Wire protocol (python gencode drift)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          version: "0.9.21"
+          enable-cache: true
+          cache-dependency-glob: servers/cannet-python-can/uv.lock
+
+      # The python packages carry their protobuf/grpc stubs in the tree
+      # so an end user needs no protoc. That only holds if the stubs and
+      # the `.proto` cannot drift apart, and nothing else checks it:
+      # before this job, a proto edit that skipped the regeneration
+      # shipped a sidecar speaking the previous schema.
+      - name: Regenerate every checked-in gencode tree
+        run: bash scripts/regen-proto-gencode.sh
+
+      - name: Fail on any difference
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::The committed python gencode does not match crates/cannet-wire/proto."
+            echo "Run 'bash scripts/regen-proto-gencode.sh' and commit the result."
+            exit 1
+          fi
+
   mdf-export-oracle:
     name: MDF export (asammdf oracle)
     runs-on: ubuntu-latest

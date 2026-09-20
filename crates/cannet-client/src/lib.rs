@@ -55,6 +55,15 @@
 //!   the allocated id onto the subscription's `channel`, and surfaces
 //!   the resolved id through [`ResolvedSubscription::allocated_id`]
 //!   so the caller can transmit against it.
+//! - **`ServerInfo` is asked first, on every connection.** The wire's
+//!   compatibility rule is the protobuf package major (ADR 0059), so
+//!   before any real RPC this crate asks the server which packages it
+//!   serves and refuses — terminally — when
+//!   [`cannet_wire::PROTOCOL_PACKAGE`] is not among them. It is one
+//!   unary call on the channel that was going to be dialled anyway, it
+//!   carries no credential, and it is what turns "an incompatible
+//!   server looks like a flapping one" into a sentence naming both
+//!   sides. An `UNIMPLEMENTED` on any call is read the same way.
 //! - **The clock probe never gates anything.** It runs alongside the
 //!   frame stream on the same session, so readiness is signalled at the
 //!   speed of the subscribes and a peer that does not answer costs a
@@ -73,11 +82,13 @@ use std::thread;
 use std::time::Duration;
 
 use cannet_core::{CanFrame, CanFrameSource};
+use cannet_wire::info::cannet_info_client::CannetInfoClient;
+use cannet_wire::info::ServerInfoRequest;
 use cannet_wire::proto::{
     cannet_server_client::CannetServerClient, envelope::Body, ClockProbe, ConfigureBus, Envelope,
     FrameBatch, ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
 };
-use cannet_wire::{frame_to_proto, proto_to_frame, ProtoConversionError};
+use cannet_wire::{frame_to_proto, proto_to_frame, ProtoConversionError, PROTOCOL_PACKAGE};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::ReceiverStream;
@@ -341,7 +352,13 @@ impl ConnectConfig {
     }
 
     /// A gRPC client over a freshly dialled channel, with this
-    /// connection's credential attached to every request it makes.
+    /// connection's credential attached to every request it makes —
+    /// and not before the server has said it speaks this client's
+    /// protocol major.
+    ///
+    /// Every entry point in this crate goes through here, which is what
+    /// makes "ask `ServerInfo` first" true of the crate rather than of
+    /// three call sites that each have to remember.
     async fn client(
         &self,
     ) -> Result<
@@ -351,11 +368,33 @@ impl ConnectConfig {
         ConnectionError,
     > {
         let channel = self.connect().await?;
+        check_protocol(&channel).await?;
         Ok(CannetServerClient::with_interceptor(
             channel,
             BearerCredential::new(self.token())?,
         ))
     }
+}
+
+/// Refuse `channel` unless the server serves [`PROTOCOL_PACKAGE`]
+/// (ADR 0059).
+///
+/// `ServerInfo` is unauthenticated and lives in its own unversioned
+/// package, so this answers before a credential is presented and keeps
+/// answering on a server that has moved on to a later major. The
+/// refusal is terminal: a running server does not grow a package
+/// because a client asked twice.
+async fn check_protocol(channel: &Channel) -> Result<(), ConnectionError> {
+    let served = CannetInfoClient::new(channel.clone())
+        .server_info(ServerInfoRequest {})
+        .await
+        .map_err(ConnectionError::from)?
+        .into_inner()
+        .packages;
+    if served.iter().any(|package| package == PROTOCOL_PACKAGE) {
+        return Ok(());
+    }
+    Err(ConnectionError::IncompatibleProtocol { served })
 }
 
 /// Attaches the connection's bearer token to every outgoing request.
@@ -1463,6 +1502,23 @@ pub enum ConnectionError {
     /// Terminal for the same reason: the token will not become correct
     /// by asking again.
     Unauthenticated,
+    /// The server does not serve the protocol package this client
+    /// speaks. `served` is what it answered `ServerInfo` with — empty
+    /// only from a server that claims to serve nothing.
+    ///
+    /// Terminal (ADR 0059): a breaking protocol change is a new
+    /// package, and no amount of retrying adds one to a running server.
+    /// The client migrates, or the server serves the old major beside
+    /// the new one for its deprecation window.
+    IncompatibleProtocol { served: Vec<String> },
+    /// The server does not implement an RPC this client called — an
+    /// `UNIMPLEMENTED` status.
+    ///
+    /// Terminal for the same reason, and it covers the pre-`ServerInfo`
+    /// case: a peer that cannot even be asked which packages it serves
+    /// is not one this client can talk to, and retrying it forever
+    /// makes an incompatible server look like a flapping one.
+    Unimplemented(String),
     /// The address names a scheme that contradicts how the connection
     /// is protected — a pinned server dialled over `http://`. Raised
     /// before any packet is sent.
@@ -1505,6 +1561,23 @@ impl std::fmt::Display for ConnectionError {
                 "the server's certificate {observed} has not been accepted yet"
             ),
             Self::Unauthenticated => write!(f, "the server rejected the access token"),
+            Self::IncompatibleProtocol { served } if served.is_empty() => write!(
+                f,
+                "serves no protocol packages; this client speaks {PROTOCOL_PACKAGE}"
+            ),
+            Self::IncompatibleProtocol { served } => write!(
+                f,
+                "serves {}; this client speaks {PROTOCOL_PACKAGE}",
+                served.join(", ")
+            ),
+            Self::Unimplemented(detail) if detail.is_empty() => write!(
+                f,
+                "the server does not implement an RPC this client calls;                  this client speaks {PROTOCOL_PACKAGE}"
+            ),
+            Self::Unimplemented(detail) => write!(
+                f,
+                "the server does not implement an RPC this client calls ({detail});                  this client speaks {PROTOCOL_PACKAGE}"
+            ),
             Self::InsecureScheme { address } => write!(
                 f,
                 "{address} names an unencrypted scheme, but this server is reached over TLS"
@@ -1537,15 +1610,19 @@ impl std::error::Error for ConnectionError {
 }
 
 impl From<tonic::Status> for ConnectionError {
-    /// `unauthenticated` gets its own variant because it is the one
-    /// status a caller must not retry: the server's gate refused the
-    /// credential (ADR 0041), and asking again with the same one is
-    /// hammering, not recovery. Everything else stays an opaque status.
+    /// Two statuses get their own variant because they are the ones a
+    /// caller must not retry. `unauthenticated`: the server's gate
+    /// refused the credential (ADR 0041), and asking again with the
+    /// same one is hammering, not recovery. `unimplemented`: the server
+    /// does not have the RPC at all (ADR 0059), which is what an
+    /// incompatible protocol looks like on any call — retrying made one
+    /// indistinguishable from a server that keeps flapping. Everything
+    /// else stays an opaque status.
     fn from(status: tonic::Status) -> Self {
-        if status.code() == tonic::Code::Unauthenticated {
-            Self::Unauthenticated
-        } else {
-            Self::Status(status.message().into())
+        match status.code() {
+            tonic::Code::Unauthenticated => Self::Unauthenticated,
+            tonic::Code::Unimplemented => Self::Unimplemented(status.message().into()),
+            _ => Self::Status(status.message().into()),
         }
     }
 }

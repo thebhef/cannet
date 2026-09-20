@@ -194,18 +194,39 @@ impl AccessToken {
 /// The metadata entry a client presents its token in (RFC 6750).
 const AUTHORIZATION: &str = "authorization";
 
-/// A tonic interceptor that gates every RPC on `token`.
+/// Wrap `service` in this endpoint's token gate — the one way a
+/// service is mounted on a protected endpoint.
 ///
-/// Mount it as a **server-wide layer** rather than per service, so that
-/// adding a service cannot accidentally add an ungated one:
+/// The gate used to be a server-wide `Server::layer`, so that adding a
+/// service could not accidentally add an ungated one. Exactly one
+/// service now has to answer *without* a token — `ServerInfo`, so that
+/// a client speaking a protocol major this server does not serve is
+/// told so before it is asked for a credential (ADR 0059) — and a tonic
+/// interceptor cannot express that exemption: it is handed a
+/// `Request<()>` that has already dropped the URI, so it cannot tell
+/// which service the call is for. The gate therefore moved onto the
+/// services, and `tests/auth.rs` is what holds the line: it asserts
+/// every gated RPC refuses an absent or wrong token, and that
+/// `ServerInfo` answers without one.
 ///
 /// ```
-/// # use cannet_server::auth::token_gate;
-/// let gate = tonic::service::interceptor(token_gate(None));
-/// let _server = tonic::transport::Server::builder().layer(gate);
+/// # use cannet_server::auth::gated;
+/// # let service = cannet_server::VirtualBusServerImpl::new(
+/// #     cannet_core::BusConfig::classic_500k()).into_service();
+/// let _server = tonic::transport::Server::builder()
+///     .add_service(gated(service, None));
 /// ```
+pub fn gated<S>(
+    service: S,
+    token: Option<AccessToken>,
+) -> tonic::service::interceptor::InterceptedService<S, impl tonic::service::Interceptor + Clone> {
+    tonic::service::interceptor::InterceptedService::new(service, token_gate(token))
+}
+
+/// A tonic interceptor that gates one service's RPCs on `token`.
+/// Mounted through [`gated`], which is the call site that matters.
 ///
-/// `None` leaves the endpoint ungated. That is not a convenience: the
+/// `None` leaves the service ungated. That is not a convenience: the
 /// token is bound to TLS (ADR 0041), because presenting a bearer token
 /// over a plaintext channel hands it to anyone on the path. A server
 /// that terminates no TLS therefore enforces no token, and its bind is

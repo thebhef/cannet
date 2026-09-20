@@ -62,6 +62,9 @@ pub struct Resolved {
     pub addresses: BTreeSet<IpAddr>,
     /// The `ver` TXT key, absent if the server didn't publish one.
     pub version: Option<String>,
+    /// The protocol packages the `proto` TXT key named, absent if the
+    /// server didn't publish one.
+    pub protocols: Option<Vec<String>>,
 }
 
 /// One discovered server, as the connect surface receives it.
@@ -81,6 +84,13 @@ pub struct DiscoveredServer {
     pub address: String,
     /// The server's release version, from the `ver` TXT key.
     pub version: Option<String>,
+    /// The protocol packages the server serves, from the `proto` TXT
+    /// key (ADR 0059). `None` for a server that advertises none — an
+    /// older build, or one whose responder dropped the key — which is
+    /// "not known", never "serves nothing": `ServerInfo` is the gate,
+    /// and this is only what lets a row be greyed out before it is
+    /// dialled.
+    pub protocols: Option<Vec<String>>,
 }
 
 /// What the browse knows about one instance, across every resolve for
@@ -95,6 +105,7 @@ struct Instance {
     /// not a replacement.
     addresses: BTreeSet<IpAddr>,
     version: Option<String>,
+    protocols: Option<Vec<String>>,
 }
 
 /// The browse-list state machine: fullname → what is known about that
@@ -119,6 +130,9 @@ impl BrowseList {
             entry.addresses.extend(resolved.addresses.iter().copied());
             if resolved.version.is_some() {
                 entry.version.clone_from(&resolved.version);
+            }
+            if resolved.protocols.is_some() {
+                entry.protocols.clone_from(&resolved.protocols);
             }
         })
     }
@@ -154,6 +168,7 @@ impl BrowseList {
                     host: host_name(&entry.host),
                     address: dial_address(&entry.addresses, entry.port)?,
                     version: entry.version.clone(),
+                    protocols: entry.protocols.clone(),
                 })
             })
             .collect();
@@ -444,7 +459,25 @@ fn from_resolved_service(service: &ResolvedService) -> Resolved {
             .map(mdns_sd::ScopedIp::to_ip_addr)
             .collect(),
         version: service.get_property_val_str("ver").map(ToString::to_string),
+        protocols: service
+            .get_property_val_str("proto")
+            .and_then(parse_protocols),
     }
+}
+
+/// The `proto` TXT value, as the list of packages it names.
+///
+/// `None` for a value that names nothing — an absent key and an empty
+/// one are the same answer, "this server did not say", and a row must
+/// not be greyed out for a responder that published a blank string.
+fn parse_protocols(value: &str) -> Option<Vec<String>> {
+    let packages: Vec<String> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(ToString::to_string)
+        .collect();
+    (!packages.is_empty()).then_some(packages)
 }
 
 /// Initial-state read for a frontend that just mounted; the event
@@ -472,6 +505,7 @@ mod tests {
             port,
             addresses: addresses.iter().map(|a| ip(a)).collect(),
             version: version.map(ToString::to_string),
+            protocols: Some(vec!["cannet.v1".to_string()]),
         }
     }
 
@@ -519,7 +553,62 @@ mod tests {
                 host: Some("bench.local".into()),
                 address: "192.168.1.10:50051".into(),
                 version: Some("v0.8.1".into()),
+                protocols: Some(vec!["cannet.v1".into()]),
             }],
+        );
+    }
+
+    #[test]
+    fn the_proto_key_is_read_as_the_packages_the_server_serves() {
+        // The advisory half of ADR 0059: it is what lets the Servers
+        // panel grey out a row before anything dials it.
+        assert_eq!(
+            parse_protocols("cannet.v1"),
+            Some(vec!["cannet.v1".to_string()])
+        );
+        assert_eq!(
+            parse_protocols("cannet.v1,cannet.v2"),
+            Some(vec!["cannet.v1".to_string(), "cannet.v2".to_string()]),
+        );
+        // Whitespace around a value is the kind of thing a third-party
+        // responder does; it must not turn into a package nobody serves.
+        assert_eq!(
+            parse_protocols(" cannet.v2 , "),
+            Some(vec!["cannet.v2".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_proto_key_that_names_nothing_is_the_same_as_no_key_at_all() {
+        // "Did not say" and "serves nothing" are different answers, and
+        // only the second should grey a row out. A blank value is the
+        // first.
+        assert_eq!(parse_protocols(""), None);
+        assert_eq!(parse_protocols(" , "), None);
+    }
+
+    #[test]
+    fn a_server_advertising_no_proto_key_is_listed_with_none() {
+        let mut list = BrowseList::default();
+        let mut r = resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1"));
+        r.protocols = None;
+        list.resolved(&r);
+        assert_eq!(list.snapshot()[0].protocols, None);
+    }
+
+    #[test]
+    fn a_server_that_moves_to_another_major_reports_the_new_packages() {
+        let mut list = BrowseList::default();
+        list.resolved(&resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1")));
+        let mut upgraded = resolve("bench", 50051, &["192.168.1.10"], Some("v1.0.0"));
+        upgraded.protocols = Some(vec!["cannet.v2".to_string()]);
+        assert!(
+            list.resolved(&upgraded),
+            "the package list is on screen, so a change to it moves the list",
+        );
+        assert_eq!(
+            list.snapshot()[0].protocols,
+            Some(vec!["cannet.v2".to_string()])
         );
     }
 
@@ -802,6 +891,7 @@ mod tests {
             host: Some("bench.local".into()),
             address: "192.168.1.10:50051".into(),
             version: Some("v0.8.1".into()),
+            protocols: Some(vec!["cannet.v1".into()]),
         })
         .unwrap();
         assert_eq!(json["fullname"], "bench._cannet._tcp.local.");

@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package cannet;
+
+// What a cannet server is, asked before anything else is asked of it.
+//
+// This package is deliberately **unversioned and frozen**. It is the one
+// thing every cannet server answers whatever protocol majors it serves,
+// so a client whose major the server no longer serves still gets a
+// sentence it can show a user instead of an opaque `UNIMPLEMENTED` on
+// the first real call. Nothing here may ever change incompatibly —
+// additions only. The rule the answer is read against is in
+// `cannet.proto`'s header; the decision is ADR 0059.
+//
+// Unauthenticated by design. ADR 0041's bearer token gates every other
+// RPC, and a protocol mismatch has to be reportable before a credential
+// is asked for — a client that cannot speak to this server at all
+// should not first be told its token is wrong. Nothing here is a
+// disclosure: the mDNS advertisement (ADR 0040) already puts the
+// instance name, the build version, and now the package list on the
+// local network.
+service CannetInfo {
+  // Unary. Answers without a token, on every server mode.
+  rpc ServerInfo(ServerInfoRequest) returns (ServerInfoResponse);
+}
+
+message ServerInfoRequest {}
+
+message ServerInfoResponse {
+  // Every protocol package this server serves, e.g. `["cannet.v1"]`.
+  // A client whose own package is absent refuses the connection rather
+  // than retrying: no amount of asking again adds a package to a
+  // running server.
+  repeated string packages = 1;
+  // The server's build version — the same string as `--version` and as
+  // the mDNS `ver=` TXT key. Informational only: compatibility is
+  // decided by `packages` and never by this.
+  string version = 2;
+  // The server's instance name — `--name`, or the machine's hostname,
+  // the same one it advertises. Empty when the server has none (the
+  // debug modes, which do not advertise).
+  string instance_name = 3;
+}

@@ -28,6 +28,7 @@ from typing import Iterator, Optional
 import grpc
 
 from .. import driver as drv
+from .._proto import cannet_info_pb2_grpc as info_pb_grpc
 from .._proto import cannet_pb2 as pb
 from .._proto import cannet_pb2_grpc as pb_grpc
 from .enumeration import (
@@ -35,6 +36,7 @@ from .enumeration import (
     enumerate_interfaces,
     watch_interfaces,
 )
+from .info import ServerInfoService
 from .helpers import (
     _clock_reply_envelope,
     _configure_to_open_config,
@@ -343,6 +345,10 @@ def serve(
     pb_grpc.add_CannetServerServicer_to_server(
         CannetServerService(driver or load_driver()), server
     )
+    # Every cannet client asks ServerInfo before its first real call
+    # (ADR 0059), so a sidecar that did not answer it would be one
+    # nothing could connect to.
+    info_pb_grpc.add_CannetInfoServicer_to_server(ServerInfoService(), server)
     bound = bind_with_retry(server, address, fallback_attempts=fallback_attempts)
     server.start()
     return server, bound

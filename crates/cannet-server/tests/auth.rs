@@ -1,10 +1,14 @@
 //! Bearer-token authentication on a TLS endpoint (ADR 0041).
 //!
-//! The gate is mounted the way production mounts it — as a server-wide
-//! layer, not per service — so these tests exercise what that buys:
-//! every RPC the server answers is behind it. Each of the three
+//! The gate is mounted the way production mounts it — `auth::gated`
+//! around the protocol service, and `ServerInfo` beside it, ungated.
+//! These tests are what hold that line, because it can no longer be
+//! held by construction: each of the three gated RPCs
 //! (`ListInterfaces`, `WatchInterfaces`, `Session`) is asked for
-//! without a credential, with the wrong one, and with the right one.
+//! without a credential, with the wrong one, and with the right one,
+//! and `ServerInfo` is asked for with none and with a wrong one and
+//! has to answer both (ADR 0059 — a client that speaks the wrong
+//! protocol major must learn that, not that its token is bad).
 //!
 //! The channel is real TLS, because that is the only configuration in
 //! which a token is enforced: it may not ride an unencrypted channel.
@@ -14,9 +18,11 @@ use std::time::Duration;
 
 use cannet_core::BusConfig;
 use cannet_server::{
-    auth::token_gate, install_crypto_provider, AccessToken, ServerIdentity, VirtualBusServerImpl,
-    VIRTUAL_BUS_FACTORY_ID,
+    auth::gated, install_crypto_provider, AccessToken, ServerIdentity, ServerInfoImpl,
+    VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
 };
+use cannet_wire::info::cannet_info_client::CannetInfoClient;
+use cannet_wire::info::ServerInfoRequest;
 use cannet_wire::proto::{
     cannet_server_client::CannetServerClient, envelope::Body, Envelope, ListInterfacesRequest,
     Subscribe, WatchInterfacesRequest,
@@ -46,7 +52,6 @@ async fn spawn_protected_server() -> (
     let identity = ServerIdentity::load_or_generate(dir.path()).unwrap();
     let token = AccessToken::load_or_generate(dir.path()).unwrap();
     let tls = identity.tls_config();
-    let gate = tonic::service::interceptor(token_gate(Some(token.clone())));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -57,12 +62,14 @@ async fn spawn_protected_server() -> (
         fd_enabled: false,
     })
     .into_service();
+    let info = ServerInfoImpl::new("v0.0.0-test", "test-instance").into_service();
+    let gated_service = gated(service, Some(token.clone()));
     let handle = tokio::spawn(async move {
         let _ = Server::builder()
             .tls_config(tls)
             .unwrap()
-            .layer(gate)
-            .add_service(service)
+            .add_service(gated_service)
+            .add_service(info)
             .serve_with_incoming(stream)
             .await;
     });
@@ -227,6 +234,36 @@ async fn session_is_gated() {
         matches!(envelope.body, Some(Body::InterfaceAllocated(_))),
         "an authenticated session behaves exactly as an ungated one: {envelope:?}"
     );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn server_info_answers_without_a_credential() {
+    let (addr, identity, _token, _dir, handle) = spawn_protected_server().await;
+    let channel = connect(addr, &identity).await;
+
+    // The one ungated RPC (ADR 0059). A client whose protocol major
+    // this server does not serve has to be able to find that out; being
+    // told "your token is wrong" instead sends whoever is debugging it
+    // after a credential that was never the problem.
+    let answer = CannetInfoClient::with_interceptor(channel.clone(), credential(None))
+        .server_info(ServerInfoRequest {})
+        .await
+        .expect("ServerInfo answers an anonymous caller")
+        .into_inner();
+    assert_eq!(answer.packages, vec!["cannet.v1".to_string()]);
+    assert_eq!(answer.version, "v0.0.0-test");
+    assert_eq!(answer.instance_name, "test-instance");
+
+    // A stale token is the same case: the answer is about the protocol,
+    // not about the caller, so a wrong credential must not hide it.
+    let answer = CannetInfoClient::with_interceptor(channel, credential(Some(WRONG_TOKEN)))
+        .server_info(ServerInfoRequest {})
+        .await
+        .expect("ServerInfo ignores the credential entirely")
+        .into_inner();
+    assert_eq!(answer.packages, vec!["cannet.v1".to_string()]);
 
     handle.abort();
 }

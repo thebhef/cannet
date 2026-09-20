@@ -1513,6 +1513,13 @@ ul.status-bar-menu .status-chip {
   opacity: 0.55;
 }
 
+/* The server advertises a protocol major this build does not speak
+   (ADR 0059). Greyed like an offline row, because it is just as
+   unusable — and the reason is spelled out on `.server-protocol`. */
+.server-row.incompatible {
+  opacity: 0.55;
+}
+
 /* The row the last add pointed at — just added, or already here. */
 .server-row.highlight {
   outline: 1px solid var(--border-default);
@@ -1576,6 +1583,12 @@ ul.status-bar-menu .status-chip {
   flex-basis: 100%;
   font-size: 0.85em;
   color: var(--text-secondary);
+}
+
+.server-protocol {
+  flex-basis: 100%;
+  font-size: 0.85em;
+  color: var(--danger-text);
 }
 
 .server-token-entry {

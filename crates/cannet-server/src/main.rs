@@ -40,13 +40,14 @@ use std::time::Duration;
 
 use cannet_core::BusConfig;
 use cannet_server::{
-    auth, discovery, identity, install_crypto_provider, AccessToken, CannetServerImpl,
-    IdentityError, LoopingBlfReplay, ProxyServerImpl, ServerIdentity, VirtualBusServerImpl,
-    VIRTUAL_BUS_FACTORY_ID,
+    auth, build_version, discovery, identity, install_crypto_provider, AccessToken,
+    CannetServerImpl, IdentityError, LoopingBlfReplay, ProxyServerImpl, ServerIdentity,
+    ServerInfoImpl, VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
 };
 use cannet_sidecar::{
     LogLevel, SidecarConfig, SidecarHost, SidecarPhase, SidecarStatus, SidecarSupervisor, SOURCE,
 };
+use cannet_wire::info::cannet_info_server::CannetInfoServer;
 use clap::{Args, Parser, Subcommand};
 use tonic::transport::Server;
 
@@ -182,18 +183,12 @@ impl ProxyArgs {
 /// would rather keep it out of the process list.
 const TOKEN_ENV: &str = "CANNET_TOKEN";
 
-/// The build's version string: `git describe --tags` as captured by
-/// `build.rs` (vergen), e.g. `v0.1.0` on a release tag or
-/// `v0.1.0-3-gabc1234` for a build a few commits past one. Falls back
-/// to the Cargo crate version when the binary was built outside a git
-/// checkout (no `VERGEN_GIT_DESCRIBE` set) — the same fallback
-/// `apps/gui/src-tauri` uses. This is the value advertised as the
-/// mDNS TXT record's `ver` key and printed by `--version`.
-fn build_version() -> &'static str {
-    match option_env!("VERGEN_GIT_DESCRIBE") {
-        Some(v) if !v.is_empty() && v != "VERGEN_IDEMPOTENT_OUTPUT" => v,
-        _ => env!("CARGO_PKG_VERSION"),
-    }
+/// The `ServerInfo` service for a `debug` mode: the build version, and
+/// no instance name — these servers do not advertise, so there is no
+/// name to report. The proxy builds its own, with the name it is known
+/// by.
+fn info_service() -> CannetInfoServer<ServerInfoImpl> {
+    ServerInfoImpl::new(build_version(), String::new()).into_service()
 }
 
 /// What protects a bound endpoint, one field per requirement.
@@ -423,7 +418,11 @@ async fn run_replay(
     );
 
     let service = CannetServerImpl::new(replay, rate).into_service();
-    Server::builder().add_service(service).serve(bind).await?;
+    Server::builder()
+        .add_service(service)
+        .add_service(info_service())
+        .serve(bind)
+        .await?;
     Ok(())
 }
 
@@ -457,7 +456,11 @@ async fn run_vbus(
     );
     logging::info(VBUS, format!("listening on {bind}"));
     let service = VirtualBusServerImpl::new(config).into_service();
-    Server::builder().add_service(service).serve(bind).await?;
+    Server::builder()
+        .add_service(service)
+        .add_service(info_service())
+        .serve(bind)
+        .await?;
     Ok(())
 }
 
@@ -610,6 +613,49 @@ impl SidecarHost for CliSidecarHost {
     }
 }
 
+/// Register the proxy's mDNS advertisement, or `None` when `--no-mdns`
+/// was given or the registration failed.
+///
+/// Convenience only (ADR 0040): a failed advertisement is a warning,
+/// not a startup refusal — the manual `host:port` field still reaches
+/// this server either way. The one hard error is a system hostname that
+/// is not valid UTF-8, which would otherwise register a mangled name.
+///
+/// The TXT record carries the build string as `ver=` and the protocol
+/// packages this server serves as `proto=` — both read from the same
+/// places `ServerInfo` reads them, so the advertisement and the RPC
+/// cannot disagree (ADR 0059).
+fn advertise(
+    args: &ProxyArgs,
+) -> Result<Option<discovery::Advertisement>, Box<dyn std::error::Error>> {
+    if args.no_mdns {
+        return Ok(None);
+    }
+    let name = discovery::advertised_name(args.name.as_deref())?;
+    let version = build_version();
+    let packages = ServerInfoImpl::packages();
+    Ok(
+        match discovery::Advertisement::register(&name, args.bind, version, &packages) {
+            Ok(advertisement) => {
+                logging::info(
+                    PROXY,
+                    format!("advertising \"{name}\" ({version}) via mDNS (_cannet._tcp)"),
+                );
+                Some(advertisement)
+            }
+            Err(e) => {
+                logging::warn(
+                    PROXY,
+                    format!(
+                        "mDNS advertisement failed: {e}; continuing without it \n                         (--no-mdns silences this warning)"
+                    ),
+                );
+                None
+            }
+        },
+    )
+}
+
 /// The production role (ADR 0040): supervise one sidecar on loopback
 /// and proxy it at `bind`. The sidecar picks an ephemeral port and
 /// reports it on its banner, so the proxy asks the supervisor for the
@@ -633,34 +679,13 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     let token_was_supplied = args.token_was_supplied(from_env.as_deref());
 
-    // Convenience only (ADR 0040): a failed advertisement is a
-    // warning, not a startup refusal — the manual `host:port` field
-    // still reaches this server either way.
-    let mdns = if args.no_mdns {
-        None
-    } else {
-        let name = discovery::advertised_name(args.name.as_deref())?;
-        let version = build_version();
-        match discovery::Advertisement::register(&name, args.bind, version) {
-            Ok(advertisement) => {
-                logging::info(
-                    PROXY,
-                    format!("advertising \"{name}\" ({version}) via mDNS (_cannet._tcp)"),
-                );
-                Some(advertisement)
-            }
-            Err(e) => {
-                logging::warn(
-                    PROXY,
-                    format!(
-                        "mDNS advertisement failed: {e}; continuing without it \
-                         (--no-mdns silences this warning)"
-                    ),
-                );
-                None
-            }
-        }
-    };
+    // What this server answers to, whether or not it advertises: it is
+    // also what `ServerInfo` reports. Lenient here and strict inside
+    // `advertise` — a hostname that is not valid UTF-8 refuses the
+    // advertisement, but must not stop a `--no-mdns` server that never
+    // publishes one.
+    let instance_name = discovery::advertised_name(args.name.as_deref()).unwrap_or_default();
+    let mdns = advertise(&args)?;
 
     let supervisor = Arc::new(SidecarSupervisor::default());
     let host: Arc<dyn SidecarHost> = Arc::new(CliSidecarHost {
@@ -723,12 +748,14 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let upstream = Arc::clone(&supervisor);
     let service = ProxyServerImpl::new(move || upstream.status().address).into_service();
-    // A server-wide layer rather than a per-service interceptor: every
-    // RPC this endpoint answers is gated by construction, including any
-    // service added later.
+    // `auth::gated` is how a service reaches a protected endpoint, and
+    // `ServerInfo` is the one deliberate exception: a client speaking a
+    // protocol major this server does not serve has to be told that
+    // before it is asked for a credential (ADR 0059). `tests/auth.rs`
+    // pins both halves.
     let serve = builder
-        .layer(tonic::service::interceptor(auth::token_gate(token)))
-        .add_service(service)
+        .add_service(auth::gated(service, token))
+        .add_service(ServerInfoImpl::new(build_version(), instance_name).into_service())
         .serve(args.bind);
 
     // Ctrl-C is the graceful path: it races the server future so a

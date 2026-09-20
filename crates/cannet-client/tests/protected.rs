@@ -2,10 +2,10 @@
 //! against a server that terminates TLS and gates every RPC.
 //!
 //! The server side is the production configuration — `ServerTlsConfig`
-//! from a generated identity, the token gate mounted as a server-wide
-//! layer — so what these tests exercise is exactly what a routable
-//! proxy presents by default (a loopback bind, and `--no-tls`, opt
-//! out of both).
+//! from a generated identity, the protocol service behind
+//! `auth::gated`, and `ServerInfo` beside it ungated (ADR 0059) — so
+//! what these tests exercise is exactly what a routable proxy presents
+//! by default (a loopback bind, and `--no-tls`, opt out of both).
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -17,8 +17,8 @@ use cannet_client::{
 };
 use cannet_core::{BusConfig, CanFrameSource};
 use cannet_server::{
-    auth::token_gate, install_crypto_provider, AccessToken, ServerIdentity, VirtualBusServerImpl,
-    VIRTUAL_BUS_FACTORY_ID,
+    auth::gated, install_crypto_provider, AccessToken, ServerIdentity, ServerInfoImpl,
+    VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -49,18 +49,21 @@ async fn spawn_protected_server() -> Protected {
     // operator copies it off the server's startup banner.
     let pin = CertPin::parse(&identity.fingerprint().to_string()).unwrap();
     let tls = identity.tls_config();
-    let gate = tonic::service::interceptor(token_gate(Some(token.clone())));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let stream = TcpListenerStream::new(listener);
-    let service = VirtualBusServerImpl::new(BusConfig::classic_500k()).into_service();
+    let service = gated(
+        VirtualBusServerImpl::new(BusConfig::classic_500k()).into_service(),
+        Some(token.clone()),
+    );
+    let info = ServerInfoImpl::new("v0.0.0-test", "protected").into_service();
     let handle = tokio::spawn(async move {
         let _ = Server::builder()
             .tls_config(tls)
             .unwrap()
-            .layer(gate)
             .add_service(service)
+            .add_service(info)
             .serve_with_incoming(stream)
             .await;
     });

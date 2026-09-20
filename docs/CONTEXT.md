@@ -42,6 +42,19 @@ interfaces, unchanged, at a single endpoint the GUI connects to.
 _Avoid_: "rig" / "rig mode" — the machine is a server host, the
 process is the cannet server.
 
+**Protocol package**:
+What a cannet client and server have to agree on to talk at all:
+`cannet.v1`, the protobuf package name, which is the wire's major
+version (ADR 0059). A server states the packages it serves through
+the unversioned **`ServerInfo`** RPC — which every client calls before
+anything else, and which answers without a token — and advertises them
+over mDNS as the `proto=` TXT key. A client whose package is not
+served refuses terminally, with a sentence naming both sides: "serves
+cannet.v2; this client speaks cannet.v1".
+_Avoid_: "protocol version number" — there is no number, only the
+package name. _Avoid_: reading the mDNS `ver=` key as one; that is the
+build string.
+
 **Sidecar**:
 A vendor-hardware driver process, reachable only from the machine it
 runs on, supervised by whoever needs it — the GUI for local hardware,
@@ -432,11 +445,13 @@ before launch to gate transmit and to refuse an incompatible Extension
 API version with a clear error rather than a crash.
 
 **Extension API version**:
-A single monotonic integer carried by `cannet.proto`. Additive changes
-to the wire schema (new optional fields/RPCs) never bump it; breaking
-changes do. An Extension's manifest declares the version it targets;
-the host refuses to launch an Extension declaring a version it no
-longer (or doesn't yet) support.
+The **protocol package major** — `cannet.v1`, the package name
+`cannet.proto` declares and every gRPC method path carries. Additive
+changes to the wire schema (new fields, RPCs, oneof variants) never
+change it; a breaking change is a new package, served beside the old
+one for a deprecation window. An Extension's manifest declares the
+package it targets; the host refuses to launch an Extension naming a
+package it does not serve (ADR 0059 — there is no separate integer).
 
 **Contributed view**:
 A dockview panel an Extension supplies: a sandboxed webview loading

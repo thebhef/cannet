@@ -42,7 +42,12 @@
 //!
 //! ## Schema evolution
 //!
-//! The `.proto` is the contract. Protobuf-3 evolution rules apply:
+//! The `.proto` is the contract, and **the package name is the major
+//! version** ([ADR 0059]). `cannet.v1` appears in every gRPC method
+//! path, so both peers state the major they speak on every request;
+//! inside a major only additive changes are allowed, and a breaking
+//! change is a new package served beside the old one. Protobuf-3
+//! evolution rules are the mechanical half of that:
 //!
 //! - Field tags are immutable. Never reuse a tag number for a different
 //!   meaning; mark retired tags as `reserved`.
@@ -51,6 +56,16 @@
 //! - Adding a new variant to an enum or `oneof` is backward-compatible
 //!   for receivers (they see `Unspecified` / `None` for variants they
 //!   don't know).
+//! - Changing what an existing field *means* is breaking even though
+//!   the bytes still parse, and is the one case the rules above cannot
+//!   catch. It needs a new package.
+//!
+//! [`info`] holds the other half: `ServerInfo`, in its own unversioned
+//! package, is how a server states which majors it serves. Every client
+//! asks before it asks anything else, so a mismatch is a sentence
+//! rather than an `UNIMPLEMENTED` on the first real call.
+//!
+//! [ADR 0059]: ../../../docs/adr/0059-wire-protocol-package-major.md
 //!
 //! Cyclic / scheduled emission is intentionally **not** part of the wire
 //! protocol. Sending on a cadence is a feature of the client transmit UI.
@@ -65,6 +80,31 @@
 pub mod proto {
     tonic::include_proto!("cannet.v1");
 }
+
+/// The unversioned `cannet` package: `ServerInfo` and its two messages.
+///
+/// Deliberately separate from [`proto`], because it is deliberately
+/// separate on the wire. A server that has moved on to `cannet.v2`
+/// still serves this package, so a `cannet.v1` client can be told what
+/// the server speaks instead of guessing from a failed call (ADR 0059).
+#[allow(
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::all,
+    missing_docs,
+    unreachable_pub
+)]
+pub mod info {
+    tonic::include_proto!("cannet");
+}
+
+/// The protocol package this build of the workspace speaks — the major
+/// version, as it appears in every gRPC method path.
+///
+/// A client compares it against [`info::ServerInfoResponse::packages`];
+/// a server reports it as the package it serves. Both read the same
+/// constant, so the two can never drift (ADR 0059).
+pub const PROTOCOL_PACKAGE: &str = "cannet.v1";
 
 pub mod convert;
 
