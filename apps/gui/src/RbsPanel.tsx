@@ -210,28 +210,6 @@ export function RbsPanel(props: IDockviewPanelProps) {
     [elementId],
   );
 
-  // ---- the filter slot (ADR 0044) ----
-  // The whole tree is client-held, so the panel opts into the layer's
-  // fzf instead of carrying its own: a query keeps the matching messages
-  // and the bus / ECU path to each, and treats that path as expanded.
-  // Row identity is interned for the life of the panel: the 500 ms
-  // value poll below rebuilds `view`, but not the shape the ids name.
-  const rowIds = useMemo(() => makeRbsRowIds(), []);
-  const buildFilterEntries = useCallback(
-    () => buildRbsFilterEntries(view, rowIds),
-    [view, rowIds],
-  );
-  const filter = useGridviewFilter(buildFilterEntries);
-  /// The filter box, so `panel.find` (Mod+F, ADR 0018) can focus and
-  /// select it.
-  const filterInputRef = useRef<HTMLInputElement | null>(null);
-  usePanelCommands(elementId, {
-    "panel.find": () => {
-      filterInputRef.current?.focus();
-      filterInputRef.current?.select();
-    },
-  });
-
   // ---- expansion state ----
   // Buses and ECUs default to open, so the set holds what the user has
   // *closed*; a message's signal table defaults to closed, so that set
@@ -242,6 +220,48 @@ export function RbsPanel(props: IDockviewPanelProps) {
     () => new Set(),
   );
 
+  // ---- the filter slot (ADR 0044) ----
+  // The whole tree is client-held, so the panel opts into the layer's
+  // fzf instead of carrying its own: a query keeps the matching messages
+  // and the bus / ECU path to each. Row identity is interned for the
+  // life of the panel: the 500 ms value poll below rebuilds `view`, but
+  // not the shape the ids name.
+  const rowIds = useMemo(() => makeRbsRowIds(), []);
+  const buildFilterEntries = useCallback(
+    () => buildRbsFilterEntries(view, rowIds),
+    [view, rowIds],
+  );
+  /// The slot's one-shot seed (ADR 0044): once a query settles, open
+  /// every bus / ECU on the path to a match — a plain write into
+  /// `collapsed`, the same set the chevron writes, so a hit deep in a
+  /// closed bus is on screen without the user unfolding the path to it
+  /// and a later collapse of that same row works normally. Filter
+  /// entries are messages with `[bus, ecu]` as ancestors, so a settled
+  /// ancestor set never names a message id — nothing here touches
+  /// `expandedMessages`.
+  const expandFilterAncestors = useCallback((ids: ReadonlySet<string>) => {
+    setCollapsed((prev) => {
+      let next: Set<string> | null = null;
+      for (const id of ids) {
+        if (prev.has(id)) {
+          if (next === null) next = new Set(prev);
+          next.delete(id);
+        }
+      }
+      return next ?? prev;
+    });
+  }, []);
+  const filter = useGridviewFilter(buildFilterEntries, "", expandFilterAncestors);
+  /// The filter box, so `panel.find` (Mod+F, ADR 0018) can focus and
+  /// select it.
+  const filterInputRef = useRef<HTMLInputElement | null>(null);
+  usePanelCommands(elementId, {
+    "panel.find": () => {
+      filterInputRef.current?.focus();
+      filterInputRef.current?.select();
+    },
+  });
+
   // ---- the gridview (ADR 0044) ----
   const isRowExpanded = useCallback(
     (id: string) =>
@@ -251,12 +271,6 @@ export function RbsPanel(props: IDockviewPanelProps) {
   const filterActive = filter.active;
   const matchSet = filter.matchSet;
   const ancestorsOfMatches = filter.ancestorsOfMatches;
-  /// A match's ancestors read as expanded, so a hit deep in a closed bus
-  /// is on screen without the user unfolding the path to it.
-  const effectiveExpanded = useCallback(
-    (id: string) => ancestorsOfMatches.has(id) || isRowExpanded(id),
-    [ancestorsOfMatches, isRowExpanded],
-  );
   /// `null` while nothing is narrowing — then the walk keeps everything
   /// without asking, and each ECU keeps its own message array.
   const keepRow = useMemo(
@@ -267,11 +281,11 @@ export function RbsPanel(props: IDockviewPanelProps) {
     [filterActive, matchSet, ancestorsOfMatches],
   );
   const tree = useMemo(
-    () => buildVisibleTree(view, rowIds, effectiveExpanded, keepRow),
-    [view, rowIds, effectiveExpanded, keepRow],
+    () => buildVisibleTree(view, rowIds, isRowExpanded, keepRow),
+    [view, rowIds, isRowExpanded, keepRow],
   );
   const rowSpace = useMemo(() => makeRbsRowSpace(), []);
-  const gridRows = rowSpace(tree, rowIds, effectiveExpanded);
+  const gridRows = rowSpace(tree, rowIds, isRowExpanded);
   const treeRef = useRef<HTMLDivElement | null>(null);
   const setRowExpanded = useCallback((id: string, want: boolean) => {
     if (id.startsWith("m:")) {
@@ -282,7 +296,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
     setCollapsed((prev) => (prev.has(id) !== want ? prev : toggleInSet(prev, id)));
   }, []);
   const adapter = useMemo<GridviewAdapter>(() => {
-    const space = arrayRowSpace(gridRows, effectiveExpanded);
+    const space = arrayRowSpace(gridRows, isRowExpanded);
     return {
       ...space,
       // The panel isn't virtualized, so the row is in the document and
@@ -305,7 +319,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
       // reader picks.
       isSelectable: (row) => row.kind === "leaf",
     };
-  }, [gridRows, effectiveExpanded, setRowExpanded]);
+  }, [gridRows, isRowExpanded, setRowExpanded]);
   /// Space and Enter are the layer's primary action on the cursor's
   /// row (ADR 0044). On a bus / ECU / message the action is the row's
   /// own enable — the checkbox the mouse presses; on a signal row it is
@@ -471,7 +485,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
             grid={grid}
             rowProps={rowProps}
             rowIds={rowIds}
-            isExpanded={effectiveExpanded}
+            isExpanded={isRowExpanded}
             onSetExpanded={setRowExpanded}
             onConfigure={(target, message, preset) =>
               setEditor({ target, message, preset })

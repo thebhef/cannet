@@ -256,6 +256,23 @@ they keep host-side narrowing — fuzzy-filtering them in JS would
 require the whole dataset in frontend state, which the paged-model
 rule forbids.
 
+*(Amended 2026-09-20. "Ancestors auto-expanded" is a **one-shot write
+into the panel's own expansion set when a query settles**, not a
+`expanded ∪ ancestorsOfMatches` union recomputed on every read. The
+read-merge made a collapse on an ancestor of a match either a no-op —
+the id was never in the panel's own set, so toggling it there changed
+nothing the union didn't immediately re-add — or invisible until the
+filter cleared, which meant the chevron and `ArrowLeft`/`ArrowRight`
+stopped working on any row a filter had reason to touch. The slot now
+exposes the settled query's `ancestorsOfMatches` and, once per settle,
+hands them to a panel-supplied callback that folds them into the same
+expansion set the chevron writes — a plain write, gone the moment the
+user collapses that row, with no override set and no separate
+hidden-match affordance. A deep match is still revealed without
+unfolding the path to it on first settle or on each query edit that
+adds new matches; after that the tree is the tree, and clearing the
+filter leaves expansion exactly where the user left it.)*
+
 **Migrations change the base, not the layout.** Landing a panel on
 the gridview preserves its columns, styling, and information layout;
 what changes is the interaction (cursor, selection, keys, drag) and
