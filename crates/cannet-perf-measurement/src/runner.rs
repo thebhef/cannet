@@ -14,7 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use cannet_gui_lib::filter::{FilterPredicate, TaggedPredicate};
+use cannet_gui_lib::filter::{FilterPredicate, TaggedPredicate, EMPTY_MATCH_CONTEXT};
 use cannet_gui_lib::trace_store::TraceStore;
 use serde::Serialize;
 
@@ -188,7 +188,9 @@ pub fn scan_loop(
             let end = (pos + SCAN_CHUNK).min(len);
             // `None` decoded — an id/bus predicate needs no decode, so
             // this is pure scan + lock cost.
-            let _ = store.scan_chunk(pos, end, |f| predicate.matches(f, None));
+            let _ = store.scan_chunk(pos, end, |f| {
+                predicate.matches(&EMPTY_MATCH_CONTEXT, f, None)
+            });
             pos = end;
         }
         counted_to = len;

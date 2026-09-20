@@ -17,7 +17,10 @@ use cannet_dbc::Database;
 
 use crate::app_state::{AppState, LoadedDbc};
 use crate::dbc_commands::{decode_against, decode_resolved};
-use crate::filter::{self, DecodeDependentLeaf, FilterPredicate};
+use crate::filter::{
+    self, DecodeDependentLeaf, FilterPredicate, FuzzyCandidate, FuzzyLabel, FuzzyResolution,
+    MatchContext,
+};
 use crate::ipc::{
     self, ByIdSnapshot, FilteredTracePage, RowPage, SignalPageRow, SignalSections, SignalSelection,
     SignalSnapshotRecord, TraceFrameRecord,
@@ -111,6 +114,156 @@ pub(crate) fn decode_candidate_ids(dbs: &[LoadedDbc], filter: &FilterPredicate) 
     out
 }
 
+/// Resolve every `fuzzy` leaf in `filter` against the current capture,
+/// databases and project bus names — the standing facts a fuzzy leaf
+/// cannot read off one frame (see [`filter::TaggedPredicate::Fuzzy`]).
+///
+/// A predicate with no fuzzy leaf resolves to the empty context without
+/// touching a database, so the existing leaves pay nothing for this.
+pub(crate) fn resolve_match_context(state: &AppState, filter: &FilterPredicate) -> MatchContext {
+    if filter.fuzzy_queries().is_empty() {
+        return MatchContext::default();
+    }
+    let names: HashMap<String, String> = state.project_bus_names().iter().cloned().collect();
+    let dbs = state.databases();
+    resolve_match_context_against(filter, &state.trace_store, &dbs, &names)
+}
+
+/// [`resolve_match_context`] against a bus-name map and databases the
+/// caller already holds — `fetch_by_id_page` is handed the map, and
+/// `ensure_active_filter_index` holds the `databases` lock for its own
+/// build and would deadlock re-taking it.
+pub(crate) fn resolve_match_context_against(
+    filter: &FilterPredicate,
+    store: &TraceStore,
+    dbs: &[LoadedDbc],
+    names: &HashMap<String, String>,
+) -> MatchContext {
+    let queries = filter.fuzzy_queries();
+    if queries.is_empty() {
+        return MatchContext::default();
+    }
+    let (candidates, labels) = fuzzy_haystacks(store, dbs, names);
+    let mut ctx = MatchContext::default();
+    for q in queries {
+        ctx.insert(q, FuzzyResolution::resolve(q, &candidates, &labels));
+    }
+    ctx
+}
+
+/// The arbitration id as the trace renders it, in both spellings —
+/// `s:1C0` / `x:00001C0A` and `s:448`. The prefix stays in both: the
+/// two id widths overlap numerically, so it is part of the id's name,
+/// not a formatting choice. Mirrors the frontend's
+/// `formatArbitrationId`.
+fn id_spellings(id: u32, extended: bool) -> (String, String) {
+    let prefix = if extended { 'x' } else { 's' };
+    let width = if extended { 8 } else { 3 };
+    (format!("{prefix}:{id:0width$X}"), format!("{prefix}:{id}"))
+}
+
+/// Build the two lists a `fuzzy` query is ranked against: one
+/// [`FuzzyCandidate`] per `(bus, id, extended)` the capture has seen,
+/// and one [`FuzzyLabel`] per value-table entry a decoding database
+/// defines.
+///
+/// Candidates come from the capture's seen keys rather than from the
+/// databases, because an id no frame carried cannot be a row — and an
+/// id no database describes is still searchable by its bus and its
+/// spelling. Databases are consulted in load order and the first one
+/// assigned to the frame's bus that defines the message wins, which is
+/// the same rule the decode path follows
+/// ([`filter::dbc_applies`]).
+fn fuzzy_haystacks(
+    store: &TraceStore,
+    dbs: &[LoadedDbc],
+    names: &HashMap<String, String>,
+) -> (Vec<FuzzyCandidate>, Vec<FuzzyLabel>) {
+    // Borrowing sweeps of each database, so the per-key lookup below is
+    // a map hit rather than a rescan.
+    struct DbText<'a> {
+        buses: &'a [String],
+        messages: HashMap<(u32, bool), (&'a str, Option<&'a str>)>,
+        signals: HashMap<(u32, bool), Vec<&'a str>>,
+    }
+    let texts: Vec<DbText<'_>> = dbs
+        .iter()
+        .map(|d| {
+            let transmitters: HashMap<(u32, bool), Option<&str>> =
+                d.db.message_transmitters()
+                    .map(|(id, ext, tx)| ((id, ext), tx))
+                    .collect();
+            let mut signals: HashMap<(u32, bool), Vec<&str>> = HashMap::new();
+            for (id, ext, sig) in d.db.signal_names() {
+                signals.entry((id, ext)).or_default().push(sig);
+            }
+            DbText {
+                buses: &d.buses,
+                messages: d
+                    .db
+                    .message_names()
+                    .map(|(id, ext, name)| {
+                        let tx = transmitters.get(&(id, ext)).copied().flatten();
+                        ((id, ext), (name, tx))
+                    })
+                    .collect(),
+                signals,
+            }
+        })
+        .collect();
+
+    let mut candidates = Vec::new();
+    for (bus_id, id, extended) in store.seen_bus_ids() {
+        let (hex, dec) = id_spellings(id, extended);
+        let bus_name = names.get(&bus_id).map_or(bus_id.as_str(), String::as_str);
+        let mut haystack = format!("{bus_name} {hex} {dec}");
+        if let Some(t) = texts.iter().find(|t| {
+            filter::dbc_applies(t.buses, Some(&bus_id)) && t.messages.contains_key(&(id, extended))
+        }) {
+            let (name, transmitter) = t.messages[&(id, extended)];
+            haystack.push(' ');
+            haystack.push_str(name);
+            if let Some(tx) = transmitter {
+                haystack.push(' ');
+                haystack.push_str(tx);
+            }
+            for sig in t.signals.get(&(id, extended)).into_iter().flatten() {
+                haystack.push(' ');
+                haystack.push_str(sig);
+            }
+        }
+        candidates.push(FuzzyCandidate {
+            bus_id,
+            id,
+            extended,
+            haystack,
+        });
+    }
+
+    let mut labels = Vec::new();
+    for d in dbs {
+        // A database assigned to no bus decodes nothing, so none of its
+        // labels can ever be a frame's current value.
+        if d.buses.is_empty() {
+            continue;
+        }
+        for (id, extended, signal) in d.db.signal_names() {
+            for entry in
+                d.db.value_table_for_signal(id, extended, signal)
+                    .unwrap_or(&[])
+            {
+                labels.push(FuzzyLabel {
+                    id,
+                    extended,
+                    signal: signal.to_string(),
+                    label: entry.label.clone(),
+                });
+            }
+        }
+    }
+    (candidates, labels)
+}
+
 /// Pull a `[start, end)` slice out of the trace store and decode each
 /// frame against the currently-attached DBC. The caller is expected to
 /// be the trace view, sizing `end - start` to the visible window plus a
@@ -137,14 +290,22 @@ pub(crate) async fn fetch_trace_range(
 ) -> Vec<TraceFrameRecord> {
     let state: State<'_, AppState> = app.state();
     let records = collect_trace_records(state.inner(), start, end);
-    apply_filter_records(records, filter.as_ref())
+    let ctx = filter
+        .as_ref()
+        .map(|p| resolve_match_context(state.inner(), p))
+        .unwrap_or_default();
+    apply_filter_records(records, filter.as_ref(), &ctx)
 }
 
 /// Drop the records that don't pass `predicate`. The `Option` shape is
 /// the "no filter wired" path; this just returns the vec unchanged.
+/// `ctx` is the predicate's resolved standing facts
+/// ([`resolve_match_context`]); a predicate with no `fuzzy` leaf reads
+/// nothing from it.
 pub(crate) fn apply_filter_records(
     records: Vec<TraceFrameRecord>,
     predicate: Option<&FilterPredicate>,
+    ctx: &MatchContext,
 ) -> Vec<TraceFrameRecord> {
     let Some(p) = predicate else { return records };
     // The fetch-path's decoded `TraceFrameRecord` doesn't carry a raw
@@ -152,7 +313,7 @@ pub(crate) fn apply_filter_records(
     // can read the fields it needs (id / bus_id / decoded).
     records
         .into_iter()
-        .filter(|r| record_matches(p, r))
+        .filter(|r| record_matches(p, r, ctx))
         .collect()
 }
 
@@ -160,9 +321,15 @@ pub(crate) fn apply_filter_records(
 /// path holds a `TraceFrameRecord`, so it reads the `(id, bus, decoded)`
 /// view the predicate needs directly instead of fabricating a
 /// `RawTraceFrame`.
-fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> bool {
+fn record_matches(
+    predicate: &FilterPredicate,
+    record: &TraceFrameRecord,
+    ctx: &MatchContext,
+) -> bool {
     predicate.matches_fields(
+        ctx,
         record.id,
+        record.extended,
         Some(&record.bus_id),
         matches!(record.kind, crate::ipc::CanFrameKind::Error),
         record.decoded.as_ref(),
@@ -293,6 +460,13 @@ pub(crate) async fn fetch_by_id_page(
     let start = usize::try_from(scan_start).unwrap_or(usize::MAX);
     let end = usize::try_from(scan_end).unwrap_or(usize::MAX);
     let rows = state.trace_store.latest_in_window(start, end);
+    let names: HashMap<String, String> = bus_names.into_iter().collect();
+    // The bus *name* is part of a fuzzy leaf's haystack, and this
+    // command is handed the project's id→name map already.
+    let ctx = filter.as_ref().map_or_else(MatchContext::default, |p| {
+        let dbs = state.databases();
+        resolve_match_context_against(p, &state.trace_store, &dbs, &names)
+    });
     let mut snaps: Vec<ByIdSnapshot> = {
         let dbs = state.databases();
         let model = state.decode_model(&dbs);
@@ -306,7 +480,7 @@ pub(crate) async fn fetch_by_id_page(
                 );
                 record.tx_delivery = tx_delivery(&state, &record);
                 if let Some(p) = filter.as_ref() {
-                    if !record_matches(p, &record) {
+                    if !record_matches(p, &record, &ctx) {
                         return None;
                     }
                 }
@@ -318,7 +492,6 @@ pub(crate) async fn fetch_by_id_page(
             })
             .collect()
     };
-    let names: HashMap<String, String> = bus_names.into_iter().collect();
     sort_by_id(&mut snaps, sort_key.as_deref(), sort_dir.as_deref(), &names);
 
     let count = u64::try_from(snaps.len()).unwrap_or(u64::MAX);
@@ -784,6 +957,12 @@ pub(crate) struct ActiveFilterIndex {
     /// left to watch is the store's key generation.
     pub(crate) candidates: filter::CandidateSet,
     pub(crate) decode_ids: HashSet<u32>,
+    /// The predicate's resolved `fuzzy` leaves — settled here for the
+    /// same reason and on the same schedule as `candidates`: a fuzzy
+    /// query's match set is a cut on a ranked list over the databases,
+    /// the bus names and the ids seen so far, and re-ranking that per
+    /// page fetch would be the whole cost of the feature.
+    pub(crate) match_context: MatchContext,
     pub(crate) resolved_key_generation: Option<u64>,
     /// How many times the resolution above was actually computed. Carried
     /// only so the memo is testable — nothing reads it in production.
@@ -887,6 +1066,7 @@ pub(crate) fn ensure_active_filter_index<'a>(
                 membership: false,
             },
             decode_ids: HashSet::new(),
+            match_context: MatchContext::default(),
             resolved_key_generation: None,
             resolve_count: 0,
         });
@@ -900,13 +1080,26 @@ pub(crate) fn ensure_active_filter_index<'a>(
         // dropping or rebuilding the index.
         let generation = state.trace_store.key_generation();
         if active.resolved_key_generation != Some(generation) {
-            active.candidates = resolve_candidates_for(filter, &state.trace_store, &dbs)
-                .unwrap_or_else(|| all_ids_tested(&state.trace_store));
+            let names: HashMap<String, String> =
+                state.project_bus_names().iter().cloned().collect();
+            active.match_context =
+                resolve_match_context_against(filter, &state.trace_store, &dbs, &names);
+            active.candidates =
+                resolve_candidates_for(filter, &state.trace_store, &dbs, &active.match_context)
+                    .unwrap_or_else(|| all_ids_tested(&state.trace_store));
             active.decode_ids = decode_candidate_ids(&dbs, filter);
+            // `decode_dependent_leaves` reads the predicate alone, so it
+            // cannot know which ids a `fuzzy` leaf's enum-label half
+            // needs decoded — only its resolution does. Its id-keyed
+            // half needs none at all.
+            active
+                .decode_ids
+                .extend(active.match_context.decode_ids().iter().map(|(id, _)| *id));
             active.resolved_key_generation = Some(generation);
             active.resolve_count = active.resolve_count.wrapping_add(1);
         }
         let decode_ids = &active.decode_ids;
+        let ctx = &active.match_context;
         let model = state.decode_model(&dbs);
         let keep = |f: &RawTraceFrame| {
             let decoded = if decode_ids.contains(&f.id) {
@@ -914,7 +1107,7 @@ pub(crate) fn ensure_active_filter_index<'a>(
             } else {
                 None
             };
-            filter.matches(f, decoded.as_ref())
+            filter.matches(ctx, f, decoded.as_ref())
         };
         let candidates = active.candidates.clone();
         state
@@ -1014,6 +1207,7 @@ fn resolve_candidates_for(
     filter: &FilterPredicate,
     store: &TraceStore,
     dbs: &[LoadedDbc],
+    ctx: &MatchContext,
 ) -> Option<filter::CandidateSet> {
     let seen = store.seen_bus_ids();
     let mut seen_ids: Vec<(u32, bool)> = seen.iter().map(|(_, id, ext)| (*id, *ext)).collect();
@@ -1052,6 +1246,7 @@ fn resolve_candidates_for(
         seen_on_bus: &seen_on_bus,
         regex_ids: &regex_ids,
         signal_ids: &signal_ids,
+        fuzzy: ctx,
     };
     filter::resolve_candidates(filter, &inputs)
 }

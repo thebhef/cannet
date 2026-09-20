@@ -55,6 +55,20 @@ impl Database {
         })
     }
 
+    /// Every message as `(message_id, extended, transmitter)` — the
+    /// `BO_` line's sending node, `None` for the `Vector__XXX` "no
+    /// sender" placeholder. The borrowing counterpart of
+    /// [`Database::describe_message`]'s `transmitter` field, for
+    /// callers sweeping the whole database (e.g. building the text a
+    /// message is searchable by) that must not pay for a rich
+    /// descriptor per message.
+    pub fn message_transmitters(&self) -> impl Iterator<Item = (u32, bool, Option<&str>)> + '_ {
+        self.messages.iter().map(|(id, entry)| {
+            let (message_id, extended) = message_id_parts(*id);
+            (message_id, extended, entry.transmitter.as_deref())
+        })
+    }
+
     /// Every signal as `(message_id, extended, signal_name)`. The
     /// borrowing, unsorted counterpart of [`Database::signals`] for
     /// callers that only need the signal→message-id relation (e.g.
