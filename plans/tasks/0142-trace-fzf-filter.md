@@ -270,3 +270,41 @@ reversal:
   - Rust only, as the phase says; the golden-vector script and fixture
     sit outside the app's tsconfig `include` and the vite entry graph,
     so the bundle is untouched (`scripts/frontend-gate.sh` green).
+- 2026-09-20 — **phase 2 (Panel) landed** on `task142-trace-filter-panel`.
+  - `TracePanel.tsx`: the shared `GridviewFilterBox` in the toolbar,
+    beside the mode toggle (both modes narrow, so it isn't gated on
+    `mode`). It borrows `useGridviewFilter` for the 150 ms debounce and
+    the settled `query` only — the trace has no client-side row space,
+    so `buildNoTraceFilterEntries` is always empty and `matchSet` /
+    `ancestorsOfMatches` go unread.
+  - `sinkPredicate.ts` gained `withFuzzyQuery` (same flatten-not-nest
+    shape as `withoutErrorFrames`), ANDing the settled query onto
+    `fetchFilter`; a blank/whitespace query leaves the predicate
+    untouched (never sends `{fuzzy: ""}`). Reaches both
+    `fetch_filtered_trace` and `fetch_by_id_page`, and — being non-null
+    whenever a query is active — is what switches chronological mode
+    onto the filtered-trace path even with no other predicate.
+  - Events: `gridviewMatches` (the JS fzf, same floor and
+    case-insensitive casing as the host leaf) runs over the bounded,
+    kind-filtered event list before `buildEventMerge`; haystack is
+    label + disclosed body.
+  - Persistence: the live box text rides `useElementPanel`'s
+    `extraParams` into dockview params only (`DatabasePanel`'s
+    precedent) — never the element `config`, so it can't dirty the
+    project. `panel.find` (Mod+F) focuses and selects it, the
+    RBS/Database panels' three lines.
+  - Closed phase 1's Blockers obligation: `settingDescriptors.ts`'s
+    `MIN_RELATIVE_SCORE` duplicate now imports the constant
+    `gridviewFilter.tsx` already exported, rather than restating it.
+  - Added the `fuzzy` leaf to the frontend `FilterPredicate` union
+    (`types.ts`) — phase 1 was Rust-only and didn't touch it.
+  - `README.md`'s trace section names the filter; no new term coined,
+    so `CONTEXT.md` is untouched.
+  - Red-first DOM tests (`TracePanel.dom.test.tsx`): settled-value-only
+    wiring in both modes, the empty/whitespace box omitting the leaf,
+    composition with an existing filter, the chronological switch,
+    event narrowing (label and body), params persistence across a
+    remount without touching element config, and Mod+F.
+  - The diacritic-folding boundary (phase 1's Blockers, still open in
+    `plans/owner-review-queue.md`) is unaffected by this phase — no new
+    owner decision raised here.

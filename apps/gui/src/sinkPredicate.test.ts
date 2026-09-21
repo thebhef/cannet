@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSinkPredicate, withoutErrorFrames } from "./sinkPredicate";
+import { buildSinkPredicate, withFuzzyQuery, withoutErrorFrames } from "./sinkPredicate";
 import type { ProjectElement } from "./types";
 
 function lookup(elements: ProjectElement[]) {
@@ -143,5 +143,42 @@ describe("withoutErrorFrames", () => {
     expect(withoutErrorFrames({ any: [{ bus: "b1" }, { bus: "b2" }] })).toEqual({
       all: [{ any: [{ bus: "b1" }, { bus: "b2" }] }, { error_frame: false }],
     });
+  });
+});
+
+describe("withFuzzyQuery", () => {
+  it("leaves the predicate untouched for an empty query", () => {
+    expect(withFuzzyQuery(null, "")).toBeNull();
+    expect(withFuzzyQuery({ bus: "b1" }, "")).toEqual({ bus: "b1" });
+  });
+
+  it("leaves the predicate untouched for a whitespace-only query", () => {
+    // Never send `{ fuzzy: "" }` — it matches nothing host-side.
+    expect(withFuzzyQuery({ bus: "b1" }, "   ")).toEqual({ bus: "b1" });
+  });
+
+  it("is the whole predicate when the panel had none", () => {
+    expect(withFuzzyQuery(null, "lockstate")).toEqual({ fuzzy: "lockstate" });
+  });
+
+  it("ANDs onto a panel predicate without nesting it", () => {
+    expect(withFuzzyQuery({ bus: "b1" }, "lockstate")).toEqual({
+      all: [{ bus: "b1" }, { fuzzy: "lockstate" }],
+    });
+    expect(
+      withFuzzyQuery({ all: [{ bus: "b1" }, { error_frame: false }] }, "lockstate"),
+    ).toEqual({
+      all: [{ bus: "b1" }, { error_frame: false }, { fuzzy: "lockstate" }],
+    });
+  });
+
+  it("does not disturb an any-predicate's meaning", () => {
+    expect(withFuzzyQuery({ any: [{ bus: "b1" }, { bus: "b2" }] }, "lockstate")).toEqual({
+      all: [{ any: [{ bus: "b1" }, { bus: "b2" }] }, { fuzzy: "lockstate" }],
+    });
+  });
+
+  it("trims the query before it enters the predicate", () => {
+    expect(withFuzzyQuery(null, "  lockstate  ")).toEqual({ fuzzy: "lockstate" });
   });
 });
