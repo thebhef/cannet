@@ -40,6 +40,25 @@ keeps the queue's copy). This file shrinks every time it is walked.
   a coarser one. Accept the 1.5-column boundary, or reopen? Detail:
   0146 § Status log, 2026-09-20 phase 1.
 
+- **An enum lane's tiles now draw *under* the line and its markers**,
+  with only the labels held back to draw over. The ruling said "the
+  lane is an overlay; the enum value is plotted under it", and the
+  exit criterion said a lane's markers are uPlot's *and* legible over
+  the tile — which cannot both hold, because a marker under a
+  0.65–0.75 alpha tile measures 1.8:1 against it on a light theme
+  against the project's own 3:1 bar. Legibility won. Confirm, or say
+  the tiles must stay in front and the markers go back to a pass of
+  their own? Detail: 0146 § Status log, 2026-09-20 phase 2.
+
+- **A lane under `Points: auto` loses its exemption from uPlot's
+  density rule.** With the private marker pass gone, a slow lane on a
+  shared enum-lanes axis is governed by the axis's merged density and
+  the minimum-sample-count floor, exactly as a slow line on a shared
+  axis is — where before a lane was always marked. That is what
+  "marked exactly like a numeric stepped series" means, and it is a
+  visible change to `auto`. Detail: 0146 § Status log, 2026-09-20
+  phase 2.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the

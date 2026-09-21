@@ -80,7 +80,6 @@ import {
   applyAutoPointFloor,
   applySampleMarkerFilter,
   hoverMarkerColumn,
-  sampleMarkerColumns,
   showPointsToUplot,
   type ShowPointsMode,
 } from "./plotPoints";
@@ -1093,8 +1092,21 @@ export function drawHoverMarkers(
  * the signal (ADR 0029) tints the box by the held value. Shared by the
  * single-enum axis (one full-height centered band) and each lane of
  * the combined enum-lanes axis (one call per signal, its lane band).
- * The stepped line still draws behind the ~0.65-alpha fill, so the
- * waveform reads through. */
+ *
+ * The segments are runs of equal consecutive **served** values
+ * (`enumSegments`), which is shaping already-paged data for the
+ * renderer rather than re-deriving a model fact: the serve keeps each
+ * bucket's first and last sample beside its extremes, so a held run
+ * arrives whole (ADR 0026).
+ *
+ * **Draws under the series layer, and returns its labels rather than
+ * drawing them.** The tiles are ~65-85 % opaque, so anything under them
+ * is swallowed — which is why the lane used to mark its own samples on
+ * top of them, a second marker mechanism beside uPlot's. Painting the
+ * tiles before the line and the point layer instead lets uPlot's
+ * markers land *on* the tile, where they are legible, and leaves the
+ * labels the one thing that still has to sit above the line: the caller
+ * replays them with {@link drawEnumTileLabels} from the `draw` hook. */
 export function drawEnumTiles(
   ctx: CanvasRenderingContext2D,
   u: uPlot,
@@ -1122,30 +1134,13 @@ export function drawEnumTiles(
      * the signal is still arriving — with background-color hatching
      * over the stale part of it. */
     extrapolated?: readonly ExtrapolatedSpan[];
-    /** Draw a marker at each served sample, over the tiles. A lane
-     * cannot use uPlot's own point layer for this: that layer's `auto`
-     * rule reads the density of the **axis**, and a shared enum-lanes
-     * axis carries every enum's samples in its merged columns, so one
-     * fast lane suppresses the markers of every slow one — and whatever
-     * survived that would be painted over by the 65–75 %-opaque tiles
-     * anyway. `false` is the panel's `off` show-points mode, which means
-     * off here too. */
-    sampleMarkers?: boolean;
-    /** The merged columns this signal has a sample at (`sampleColumns`).
-     * A lane needs its markers *more* than a line does — its tiles show
-     * only transitions, so with no markers nothing distinguishes a state
-     * held through a thousand readings from one held through none — and
-     * for the same reason a marker on a column the lane was merely *held*
-     * across is the worst kind of noise: it is densest exactly where the
-     * lane has stopped arriving. With no columns given, nothing is
-     * marked; there is no honest fallback. */
-    sampleColumns?: readonly number[];
   },
-): void {
+): TileLabel[] {
   const seriesOpt = u.series[o.seriesIdx];
   const ts = u.data[0] as number[] | undefined;
   const vs = o.rawValues ?? (u.data[o.seriesIdx] as (number | null)[] | undefined);
-  if (!ts || !vs || seriesOpt?.show === false) return;
+  if (!ts || !vs || seriesOpt?.show === false) return [];
+  const labels: TileLabel[] = [];
   const labelFor = laneLabels(o.table);
   const bandH = o.bandBot - o.bandTop;
   const padX = 4 * o.ratio;
@@ -1216,69 +1211,90 @@ export function drawEnumTiles(
     ctx.strokeStyle = accent;
     ctx.strokeRect(visStart + 0.5, o.bandTop + 0.5, segW - 1, bandH - 1);
     if (labelX != null) {
-      const ly = Math.round((o.bandTop + o.bandBot) / 2);
-      // A plate behind the label, in the chip fill and with the chip
-      // geometry the cursor and Δ labels already use (ADR 0026). How
-      // solid it is is a per-theme number: a light theme's tinted tiles
-      // collapse into their own accent and its labels are read off the
-      // plate; a dark theme's don't and it takes 0, which paints
-      // nothing — so this is one draw path on every theme rather than a
-      // branch, and the theme that reads well is left pixel-identical.
-      // Never taller than the band, so a plate on a thin lane cannot
-      // erase its neighbours.
-      const boxH = Math.min(13 * o.ratio, bandH);
-      ctx.save();
-      ctx.globalAlpha = theme().laneLabelBoxOpacity;
-      ctx.fillStyle = theme().canvasChipFill;
-      ctx.fillRect(labelX - padX, ly - boxH / 2, tw + padX * 2, boxH);
-      ctx.restore();
-      ctx.fillStyle = ink;
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      // Stripes cut straight through the glyphs, so a label over them
-      // gets a halo first — the background color, which is what the
-      // stripes are painted in, except where the ink itself landed on
-      // that side of the luminance axis and the halo has to oppose it.
-      // Canvas shadow alpha tops out at one pass, so the strength is
-      // stacked passes; how many is a per-theme number (`theme.ts`),
-      // because a light theme's stripes carry far more contrast and
-      // swallow a single one. A solid box has already put an opaque
-      // plate between the glyphs and the stripes, so there the passes
-      // would paint background over background and fringe past the
-      // box's edge — the box *is* the halo on such a theme.
-      if (striped && theme().laneLabelBoxOpacity < 1) {
-        ctx.save();
-        ctx.shadowColor = halo;
-        ctx.shadowBlur = 3 * o.ratio;
-        for (let i = 0; i < theme().laneLabelShadowPasses; i++) {
-          ctx.fillText(lbl, labelX, ly);
-        }
-        ctx.restore();
-      }
-      ctx.fillText(lbl, labelX, ly);
+      labels.push({
+        text: lbl,
+        width: tw,
+        x: labelX,
+        y: Math.round((o.bandTop + o.bandBot) / 2),
+        // Never taller than the band, so a plate on a thin lane cannot
+        // erase its neighbours.
+        boxH: Math.min(13 * o.ratio, bandH),
+        padX,
+        ink,
+        halo,
+        striped,
+      });
     }
   }
-  // Sample markers last, so they land *over* the tiles rather than
-  // under them — the tiles are 65-75 % opaque and were swallowing
-  // whatever markers uPlot's own layer managed to draw. Drawn on the
-  // plotted row (the lane position), so a marker sits on the waveform
-  // where a reader expects it — but only at the columns this lane has a
-  // sample at, never at one it is merely held across.
-  if (o.sampleMarkers && o.sampleColumns) {
-    const plotted = u.data[o.seriesIdx] as (number | null)[] | undefined;
-    if (plotted) {
-      const from = u.scales.x?.min ?? -Infinity;
-      const to = u.scales.x?.max ?? Infinity;
-      const half = 1.5 * o.ratio;
-      ctx.fillStyle = o.accent;
-      for (const i of sampleMarkerColumns(o.sampleColumns, ts, from, to)) {
-        const y = plotted[i];
-        if (y == null) continue;
-        const x = u.valToPos(ts[i], "x", true);
-        if (x < o.left || x > o.left + o.width) continue;
-        ctx.fillRect(x - half, u.valToPos(y, "y", true) - half, half * 2, half * 2);
+  return labels;
+}
+
+/** One tile label, held back by {@link drawEnumTiles} so the caller can
+ * draw it after the series layer. */
+export interface TileLabel {
+  text: string;
+  /** Measured width of `text` in the font the tiles were drawn with. */
+  width: number;
+  x: number;
+  y: number;
+  boxH: number;
+  padX: number;
+  ink: string;
+  halo: string;
+  /** The tile under it carries extrapolation hatching, so the glyphs
+   * need the halo that keeps the stripes out of them. */
+  striped: boolean;
+}
+
+/** Draw the labels {@link drawEnumTiles} held back, after the stepped
+ * line and uPlot's point layer have gone down over the tiles.
+ *
+ * They are the one part of a lane that must stay on top: a tile's label
+ * is the only place the held value's *name* appears, and a line crossing
+ * its glyphs is exactly what the measured ink and the plate exist to
+ * prevent. `ctx` must carry the same font the tiles were measured in. */
+export function drawEnumTileLabels(
+  ctx: CanvasRenderingContext2D,
+  labels: readonly TileLabel[],
+  ratio: number,
+): void {
+  for (const l of labels) {
+    // A plate behind the label, in the chip fill and with the chip
+    // geometry the cursor and Δ labels already use (ADR 0026). How
+    // solid it is is a per-theme number: a light theme's tinted tiles
+    // collapse into their own accent and its labels are read off the
+    // plate; a dark theme's don't and it takes 0, which paints
+    // nothing — so this is one draw path on every theme rather than a
+    // branch, and the theme that reads well is left pixel-identical.
+    ctx.save();
+    ctx.globalAlpha = theme().laneLabelBoxOpacity;
+    ctx.fillStyle = theme().canvasChipFill;
+    ctx.fillRect(l.x - l.padX, l.y - l.boxH / 2, l.width + l.padX * 2, l.boxH);
+    ctx.restore();
+    ctx.fillStyle = l.ink;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    // Stripes cut straight through the glyphs, so a label over them
+    // gets a halo first — the background color, which is what the
+    // stripes are painted in, except where the ink itself landed on
+    // that side of the luminance axis and the halo has to oppose it.
+    // Canvas shadow alpha tops out at one pass, so the strength is
+    // stacked passes; how many is a per-theme number (`theme.ts`),
+    // because a light theme's stripes carry far more contrast and
+    // swallow a single one. A solid box has already put an opaque
+    // plate between the glyphs and the stripes, so there the passes
+    // would paint background over background and fringe past the
+    // box's edge — the box *is* the halo on such a theme.
+    if (l.striped && theme().laneLabelBoxOpacity < 1) {
+      ctx.save();
+      ctx.shadowColor = l.halo;
+      ctx.shadowBlur = 3 * ratio;
+      for (let i = 0; i < theme().laneLabelShadowPasses; i++) {
+        ctx.fillText(l.text, l.x, l.y);
       }
+      ctx.restore();
     }
+    ctx.fillText(l.text, l.x, l.y);
   }
 }
 
@@ -1734,12 +1750,16 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // form rather than derived in the draw hook: both are regenerated by
   // the resample that produced the data they describe.
   const extrapolatedSpansRef = useRef<readonly (readonly ExtrapolatedSpan[])[]>([]);
-  // Per signal, the merged columns it actually has a sample at. Both
-  // marker renderers — uPlot's point layer for a line, the lane draw
-  // hook for a tile axis — select from this and from nothing else, so a
-  // marker can only ever sit on a reading (ADR 0026). Regenerated by the
-  // resample that produced the columns it indexes into.
+  // Per signal, the merged columns it actually has a sample at. uPlot's
+  // point layer selects from this and from nothing else — on a lane
+  // exactly as on a line — so a marker can only ever sit on a reading
+  // (ADR 0026). Regenerated by the resample that produced the columns it
+  // indexes into.
   const sampleColumnsRef = useRef<number[][]>([]);
+  // The tile labels the `drawAxes` pass held back for the `draw` hook to
+  // paint over the series layer (ADR 0026). Written once per draw by the
+  // pass that measured them.
+  const tileLabelsRef = useRef<TileLabel[]>([]);
   // The lane draw hook reads tables live from `valueTablesRef`, so it
   // needs no uPlot rebuild when they resolve — but a stopped trace
   // won't redraw on its own. Nudge one so lane labels appear once the
@@ -2000,13 +2020,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               xMax: fetchMax,
               origin: lr.originSeconds,
               maxPoints: maxPts,
-              // This axis draws held states (lanes, or the single-enum
-              // ribbon), so the host must reduce an over-budget window
-              // by its transitions. A min/max envelope over enum codes
-              // keeps each bucket's lowest and highest code and drops
-              // every state held in between — at a window wider than the
-              // point budget the lane stops showing what was held.
-              categorical: laneModeRef.current || enumActivePre,
             },
             sidecar,
           );
@@ -2285,11 +2298,21 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // share the whole axis height (ADR 0026).
             const bands = laneBandsForVisible(signals.map((s) => !!s.hidden));
             return rawRows.map((row, i) => {
-              const band = bands[i];
+              const laneBand = bands[i];
               // No lane: the series isn't drawn (`show: false`), so
               // leave its raw codes rather than invent a position.
-              if (band == null) return row;
+              if (laneBand == null) return row;
               if (seriesRel[i].v.length === 0) return row; // all null anyway
+              // Into the **tile** band, not the whole lane band. The
+              // tile is the centred 60 % of the lane, so a code at
+              // either end of its table used to plot in the gap between
+              // lanes — for a two-code enum, code 0 sat below the tile
+              // entirely — and a marker on the plotted value landed off
+              // the tile it belongs to (ADR 0026). Asked for the
+              // nominal band (no pixel floor), which is the smallest
+              // tile that can be drawn, so the plotted value is inside
+              // the tile at every lane height.
+              const band = laneTileBand(laneBand, 0);
               const table = valueTablesRef.current.get(signalRefKey(signals[i]));
               if (table && table.length > 0) {
                 const range = laneValueRange(table);
@@ -2513,6 +2536,25 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           busId: s.busId ?? null,
         }))
       : [];
+    /** The ink one lane's sample markers are drawn in, read per draw so
+     * a theme or series-color change needs no rebuild.
+     *
+     * The ground is the tile the marker lands on, represented by the
+     * fill this lane's own accent makes — the colormap tint where a
+     * colormap targets the lane, the theme's default lane fill
+     * otherwise. It is one ink for the whole lane because uPlot styles a
+     * series' point layer once, and that is enough: whether the accent
+     * survives on a tinted tile is a property of the theme (a dark
+     * theme's tints leave it 3.23-5.89:1, a light theme's collapse to
+     * 1.03-1.80:1), not of which value the tile holds. */
+    const laneMarkerInk = (i: number) => (): string => {
+      const signal = signalsRef.current[i] ?? signals[i];
+      const accent = seriesColorRef.current(signal);
+      const fill = laneTargetsAtConstruct[i]
+        ? colorMapLaneFill(accent)
+        : theme().laneFillDefault;
+      return laneLabelInk(fill, accent, theme()).ink;
+    };
     // The enum-mode area holds exactly one signal; capture its identity
     // so the draw hook can resolve a colormap tint for the held value
     // (ADR 0029). Stable for this instance — the effect rebuilds when the
@@ -2712,18 +2754,28 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               ? UNLIT_ALPHA
               : 1,
           // `auto` defers to uPlot's density default; `off` never draws
-          // markers; `on` always draws them but capped at a flat max across
-          // the visible range so a zoomed-out window doesn't render a
-          // marker per decimated sample. See `plotPoints.ts`.
-          // A tile axis draws its own sample markers over the tiles
-          // (`drawEnumTiles`), because uPlot's layer is both gated on
-          // the *axis's* merged density — which a shared lanes axis has
-          // in abundance — and painted over by the tiles themselves. One
-          // mechanism, not two competing ones.
-          points:
-            enumActiveAtConstruct || laneModeAtConstruct
-              ? { show: false }
-              : showPointsToUplot(showPoints),
+          // markers; `on` draws one at every served sample. See
+          // `plotPoints.ts`. A tile axis goes through the same layer as
+          // a line — it used to turn it off and mark its own samples
+          // over the tiles, which was a second marker mechanism beside
+          // this one; the tiles now draw *under* the series layer
+          // instead, so uPlot's markers land on them.
+          points: {
+            ...showPointsToUplot(showPoints),
+            // A lane's marker sits on a tile, which is a 65-85 % opaque
+            // tint of the accent — so the accent it would otherwise be
+            // drawn in all but disappears on it. Same answer as the tile
+            // *label*'s (ADR 0026): keep the accent wherever it clears
+            // 3:1 against the tile, and otherwise take the extreme
+            // opposite the theme's background. One ink per lane rather
+            // than one per tile, measured against the fill this lane's
+            // own accent makes, because uPlot styles a series' point
+            // layer once. The single-enum ribbon is excluded: its line
+            // plots the real code against a real y scale, so its markers
+            // are as often off the ribbon as on it, and there the accent
+            // is read against the plot background like any line's.
+            ...(laneModeAtConstruct ? { stroke: laneMarkerInk(i), fill: laneMarkerInk(i) } : {}),
+          },
           show: !s.hidden,
           ...((enumActiveAtConstruct || laneModeAtConstruct) && uPlot.paths.stepped
             ? { paths: uPlot.paths.stepped({ align: 1 }) }
@@ -2731,6 +2783,101 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         })),
       ],
       hooks: {
+        drawAxes: [
+          (u: uPlot) => {
+            if (!enumActiveAtConstruct && !laneModeAtConstruct) return;
+            const ctx = u.ctx;
+            const ratio = u.ctx.canvas.width / u.width || 1;
+            const { left, top, width, height } = u.bbox;
+            let labels: TileLabel[] = [];
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(left, top, width, height);
+            ctx.clip();
+            // The same font the `draw` hook uses, because the labels are
+            // measured here and painted there.
+            ctx.font = `600 ${9.5 * ratio}px ui-monospace, monospace`;
+            ctx.lineWidth = 1 * ratio;
+            // Logic-analyzer lane (ADR 0026): on an enum-only axis,
+            // draw a tinted box over each constant-value segment of the
+            // (stepped) line, carrying that value's label. The line and
+            // its y-axis ticks are still there; the boxes are what make
+            // a glance read "Idle ── Running ──" rather than a step
+            // pattern, and they are the only place the value's *name*
+            // appears, the axis carrying the raw code alone. Only runs
+            // on a tile-axis uPlot (the construction effect rebuilds the
+            // instance when the value table resolves), so the cost on
+            // numeric axes is zero.
+            if (enumActiveAtConstruct && valueTableRef.current) {
+              // Single-enum axis: one signal (series index 1), tiles in
+              // a centered horizontal ribbon. Decoupling the ribbon from
+              // the held value (vs. a per-value lane) keeps labels legible
+              // even for a tall table on a short canvas; the stepped line
+              // still draws at the real value. Band = max(~22 CSS px, 55%
+              // of the plot height), centered.
+              const bandH = Math.max(22 * ratio, height * 0.55);
+              const bandTop = top + (height - bandH) / 2;
+              labels = drawEnumTiles(ctx, u, {
+                seriesIdx: 1,
+                table: valueTableRef.current,
+                target: enumTarget,
+                resolveColor: colorResolverRef.current,
+                bandTop,
+                bandBot: bandTop + bandH,
+                accent: primaryColorRef.current ?? theme().axisText,
+                left,
+                width,
+                ratio,
+                extrapolated: extrapolatedSpansRef.current[0],
+              });
+            } else if (laneModeAtConstruct) {
+              // Combined enum-lanes axis: one tile row per *visible*
+              // signal, in its lane band (ADR 0026). Lane geometry is
+              // normalized [0, 1] (top-first); convert to canvas pixels
+              // via `valToPos`.
+              //
+              // Read the signals through the ref, not this hook's
+              // closure: hiding a signal deliberately doesn't rebuild
+              // the uPlot instance (`signalSetKey` ignores `hidden`), so
+              // a captured list would keep drawing the lanes as they
+              // were laid out at construction while the data underneath
+              // has already re-flowed.
+              const laneSignals = signalsRef.current;
+              const bands = laneBandsForVisible(laneSignals.map((s) => !!s.hidden));
+              laneSignals.forEach((s, i) => {
+                const laneNorm = bands[i];
+                if (laneNorm == null) return;
+                const laneTopPx = u.valToPos(laneNorm.hi, "y", true);
+                const laneBotPx = u.valToPos(laneNorm.lo, "y", true);
+                const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
+                // A shared empty table, not a fresh `[]`: the label
+                // lookup is cached against the table's identity, and a
+                // new array every draw would miss it every draw.
+                const table = valueTablesRef.current.get(signalRefKey(s)) ?? NO_VALUE_TABLE;
+                labels.push(...drawEnumTiles(ctx, u, {
+                  seriesIdx: i + 1,
+                  table,
+                  target: laneTargetsAtConstruct[i] ?? null,
+                  resolveColor: colorResolverRef.current,
+                  bandTop: u.valToPos(tileNorm.hi, "y", true),
+                  bandBot: u.valToPos(tileNorm.lo, "y", true),
+                  accent: seriesColorRef.current(signalsRef.current[i] ?? s),
+                  left,
+                  width,
+                  ratio,
+                  // Raw codes: the plotted series holds lane positions.
+                  // Without a table the lookup is meaningless either
+                  // way, so keep the plotted values there — that's what
+                  // draws today (one flat tile at the lane midline).
+                  rawValues: table.length > 0 ? (laneRawRef.current?.[i] ?? undefined) : undefined,
+                  extrapolated: extrapolatedSpansRef.current[i],
+                }));
+              });
+            }
+            ctx.restore();
+            tileLabelsRef.current = labels;
+          },
+        ],
         setScale: [
           (u: uPlot, key: string) => {
             if (key !== "x") return;
@@ -2818,91 +2965,17 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               color: (i) => seriesColorRef.current(signalsRef.current[i] ?? signals[i]),
               ratio,
             });
-            // Logic-analyzer lane (ADR 0026): on an enum-only axis,
-            // overlay an opaque label box on each constant-value
-            // segment of the (stepped) line. The line and its y-axis
-            // ticks are still there; the boxes sit *in front*
-            // of the line so a glance reads "Idle ── Running ──"
-            // rather than just a step pattern — and they are the only
-            // place the value's *name* appears, the axis carrying the
-            // raw code alone. Only runs on the
-            // enum-mode uPlot (the construction effect rebuilds the
-            // instance when the value table resolves), so the cost
-            // on numeric axes is zero.
+            // The tile labels the `drawAxes` pass held back (ADR
+            // 0026): the tiles themselves went down before the series
+            // layer so uPlot's markers land on them, and the labels come
+            // back here, over the line — a tile's label is the only
+            // place the held value's *name* appears, and it is the one
+            // part of a lane that may not be crossed by the waveform.
             //
             // Drawn before the cursor / event overlays below: tiles are
             // content, those are annotation, so the readouts you are
             // actively pointing at have to stay legible over them.
-            if (enumActiveAtConstruct && valueTableRef.current) {
-              // Single-enum axis: one signal (series index 1), tiles in
-              // a centered horizontal ribbon. Decoupling the ribbon from
-              // the held value (vs. a per-value lane) keeps labels legible
-              // even for a tall table on a short canvas; the stepped line
-              // still draws at the real value. Band = max(~22 CSS px, 55%
-              // of the plot height), centered.
-              const bandH = Math.max(22 * ratio, height * 0.55);
-              const bandTop = top + (height - bandH) / 2;
-              drawEnumTiles(ctx, u, {
-                seriesIdx: 1,
-                table: valueTableRef.current,
-                target: enumTarget,
-                resolveColor: colorResolverRef.current,
-                bandTop,
-                bandBot: bandTop + bandH,
-                accent: primaryColorRef.current ?? theme().axisText,
-                left,
-                width,
-                ratio,
-                extrapolated: extrapolatedSpansRef.current[0],
-                sampleMarkers: showPoints !== "off",
-                sampleColumns: sampleColumnsRef.current[0],
-              });
-            } else if (laneModeAtConstruct) {
-              // Combined enum-lanes axis: one tile row per *visible*
-              // signal, in its lane band (ADR 0026). Lane geometry is
-              // normalized [0, 1] (top-first); convert to canvas pixels
-              // via `valToPos`.
-              //
-              // Read the signals through the ref, not this hook's
-              // closure: hiding a signal deliberately doesn't rebuild
-              // the uPlot instance (`signalSetKey` ignores `hidden`), so
-              // a captured list would keep drawing the lanes as they
-              // were laid out at construction while the data underneath
-              // has already re-flowed.
-              const laneSignals = signalsRef.current;
-              const bands = laneBandsForVisible(laneSignals.map((s) => !!s.hidden));
-              laneSignals.forEach((s, i) => {
-                const laneNorm = bands[i];
-                if (laneNorm == null) return;
-                const laneTopPx = u.valToPos(laneNorm.hi, "y", true);
-                const laneBotPx = u.valToPos(laneNorm.lo, "y", true);
-                const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
-                // A shared empty table, not a fresh `[]`: the label
-                // lookup is cached against the table's identity, and a
-                // new array every draw would miss it every draw.
-                const table = valueTablesRef.current.get(signalRefKey(s)) ?? NO_VALUE_TABLE;
-                drawEnumTiles(ctx, u, {
-                  seriesIdx: i + 1,
-                  table,
-                  target: laneTargetsAtConstruct[i] ?? null,
-                  resolveColor: colorResolverRef.current,
-                  bandTop: u.valToPos(tileNorm.hi, "y", true),
-                  bandBot: u.valToPos(tileNorm.lo, "y", true),
-                  accent: seriesColorRef.current(signalsRef.current[i] ?? s),
-                  left,
-                  width,
-                  ratio,
-                  // Raw codes: the plotted series holds lane positions.
-                  // Without a table the lookup is meaningless either
-                  // way, so keep the plotted values there — that's what
-                  // draws today (one flat tile at the lane midline).
-                  rawValues: table.length > 0 ? (laneRawRef.current?.[i] ?? undefined) : undefined,
-                  extrapolated: extrapolatedSpansRef.current[i],
-                  sampleMarkers: showPoints !== "off",
-                  sampleColumns: sampleColumnsRef.current[i],
-                });
-              });
-            }
+            drawEnumTileLabels(ctx, tileLabelsRef.current, ratio);
             const vline = (xVal: number, color: string, dash: number[], lbl: string | null, atTop: boolean) => {
               const xp = u.valToPos(xVal, "x", true);
               if (xp < left - 4 || xp > left + width + 4) return;

@@ -241,18 +241,51 @@ side, since a near-white halo around a white glyph is no halo at all.
 It is only *spent* on a theme with no solid box; the box supersedes it
 where there is one.
 
-**An enum lane draws its own sample markers.** uPlot's point layer
-cannot serve a lane: its `auto` rule reads the density of the *axis*,
-and a shared enum-lanes axis carries every enum's samples at once, so
-one fast lane suppresses the markers of every slow one — and whatever
-survives that is painted over by the tiles, which are 65–75 % opaque
-and sit in front of the line by design. A lane needs its markers more
-than a line does, not less: a line's shape shows where it was measured,
-while a lane's tiles show only its transitions, so without markers
-nothing on screen separates a state held through a thousand samples
-from one held through none. So a tile axis turns the point layer off
-and marks its own served samples, over the tiles, capped at the same
-flat marker budget.
+**An enum lane is an ordinary series with an overlay on top.** It is
+served, plotted and marked exactly as a numeric stepped series is; the
+tiles are an overlay the frontend computes from runs of equal
+consecutive **served** values. Nothing about a lane reaches back into
+the model: the serve keeps each bucket's first and last sample beside
+its extremes, so a held run arrives whole, and building tiles from it
+is shaping already-paged data for the renderer rather than re-deriving a
+model fact.
+
+A lane drew its own sample markers before this, because uPlot's point
+layer could not serve one: its `auto` rule reads the density of the
+*axis*, and a shared enum-lanes axis carries every enum's samples at
+once, so one fast lane suppressed the markers of every slow one — and
+whatever survived was painted over by the tiles, which are 65–85 %
+opaque. That made two mechanisms deciding where a marker goes, which is
+how a held column came to be marked as if it were a reading. Three
+things replace it:
+
+- **The tiles draw under the series layer** (uPlot's `drawAxes` hook,
+  before the line and the point layer) instead of over it, so uPlot's
+  markers land *on* the tile rather than beneath 65–85 % of opacity.
+  The labels are the exception and are held back for the `draw` hook: a
+  tile's label is the only place the held value's *name* appears, and it
+  is the one part of a lane the waveform may not cross.
+- **A code is normalised into the tile band, not the whole lane band.**
+  The tile is the centred 60 % of the lane, so against the full band a
+  table's extreme codes plotted into the gap between lanes — for a
+  two-code enum, code 0 sat below its own tile entirely — and a marker
+  on the plotted value landed off the tile it belongs to.
+- **A lane's marker ink is measured, exactly as its label's is.** The
+  ground is the tile, so the accent survives wherever it clears 3:1
+  against it and otherwise gives way to the extreme opposite the theme's
+  background. One ink per lane rather than one per tile: whether the
+  accent survives on a tinted tile is a property of the theme, not of
+  which value the tile holds. The single-enum ribbon is excluded — its
+  line plots the real code against a real y scale, so its markers are as
+  often off the ribbon as on it, and there the accent is read against the
+  plot background like any line's.
+
+What a lane loses with the private pass is the exemption from uPlot's
+density rule: under `auto`, a slow lane on a shared axis now falls under
+the same rule a slow *line* on a shared axis does, with the same
+minimum-sample-count floor rescuing it. That is the point of unifying
+them — a lane that behaves differently from the line beside it is a
+second renderer to reason about.
 
 **A marker sits only on a sample.** The merged x grid is the union of
 every series on the axis and the sample-and-hold gives every series a
@@ -260,14 +293,16 @@ value at every column of it, so a marker selected from the grid marks a
 series wherever its *neighbours* were read — most densely exactly where
 it has least data: across a stopped series' held tail, across the
 interior of a stall, and along the whole window a one-sample hline is
-drawn over. Both marker renderers — uPlot's point layer for a line, the
-lane's own pass for a tile axis — therefore select from the columns
-whose x is one of that series' own raw timestamps, and from nothing
-else. Neither consults the extrapolated spans, and neither needs to: a
-stretch has no sample in it by construction, while the readings that
-bound one (a stall's two ends, the last frame before a series stopped)
-keep their markers, which is what makes the dashed stretch beside them
-legible.
+drawn over. uPlot's point layer — the one marker renderer, on a lane as
+on a line — therefore selects from the columns whose x is one of that
+series' own raw timestamps, and from nothing else. It does not consult
+the extrapolated spans, and does not need to: a stretch has no sample
+in it by construction, while the readings that bound one (a stall's two
+ends, the last frame before a series stopped) keep their markers, which
+is what makes the dashed stretch beside them legible. It follows that
+the blanking a *line's* extrapolated stretch gets can never take a
+marker with it, since it runs strictly between the columns that bound
+the stretch.
 
 **A hover reveals markers on every area of the panel, lanes included.**
 The pointer rests in one plot area, but what it is pointing at is a
@@ -291,10 +326,9 @@ else. `off` is off, hover or not. `auto` and `on` both reveal, because
 what a hover adds is one marker per series, and neither uPlot's density
 rule nor the minimum-sample-count floor has an opinion about a single
 column under the pointer — those two govern the *static* markers, which
-is where the modes differ. A lane's static markers are drawn under both
-modes already (it has no density rule of its own, per the paragraph
-above), so what the hover adds to a lane is what it adds to a line: the
-pointer's own sample, told apart from the rest.
+is where the modes differ. A lane's static markers go through both of
+those like any line's, so what the hover adds to a lane is what it adds
+to a line: the pointer's own sample, told apart from the rest.
 
 **Vertical space is fit-to-panel, with draggable splitters.** The
 derived axes of a panel always fit its height — no stack-scrolling
@@ -481,13 +515,20 @@ below:
 
 - **Show-points control** (`auto` / `off` / `on`) is on the plot
   toolbar and applies to every series in every axis of the panel.
-  `on` is capped at a flat maximum of drawn markers across the visible
-  range, and `auto` carries a **minimum-sample-count floor**: uPlot's
+  `on` marks **every served sample**, uncapped. It used to thin to a
+  flat 500 markers on an even stride, which is what made it read as
+  extrapolation: an even stride over a min/max envelope aliases onto one
+  leg of it, so a run of dots hugged one side of a line that was
+  oscillating through both and most extrema carried no dot at all. The
+  markers were on the line; the wrong ones were being chosen, and a cap
+  is not needed to bound them — the serve already is, to a few points
+  per canvas pixel column. `auto` carries a **minimum-sample-count
+  floor**: uPlot's
   automatic rule reads the density of the *axis* — the merged x columns
   every series on it shares — so a series holding a handful of samples
   of its own loses its markers as soon as it is plotted beside a fast
   one. Below the floor the samples are the information, so they stay
-  marked; above it uPlot's own answer stands. Both constants live in
+  marked; above it uPlot's own answer stands. That constant lives in
   `plotPoints.ts`.
 - **A one-sample series draws as a horizontal line** through its value,
   held across the window rather than starting at its own timestamp.

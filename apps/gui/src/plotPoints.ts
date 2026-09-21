@@ -1,29 +1,21 @@
 // Show-points tri-state and its mapping to uPlot's per-series `points`
-// spec. Extracted from PlotPanel so the density-thinning filter — the
-// part with real logic — is unit-testable without a canvas. The cursor
-// maths live in `plotCursors.ts` under the same convention.
+// spec. Extracted from PlotPanel so the marker-column filter — the part
+// with real logic — is unit-testable without a canvas. The cursor maths
+// live in `plotCursors.ts` under the same convention.
 
 import type uPlot from "uplot";
 
 /** Show-points tri-state — applies to every series on every axis of
  * every plot area in the panel. `auto` defers to uPlot's density-aware
  * default, which only draws points when there's room between samples;
- * `off` forces no points; `on` forces points always (thinned — see
- * [`showPointsToUplot`]). See ADR 0026. */
+ * `off` forces no points; `on` forces points at every served sample,
+ * uncapped. See ADR 0026. */
 export type ShowPointsMode = "auto" | "off" | "on";
 
 /** Parse a persisted value back to the tri-state, defaulting to `auto`. */
 export function showPointsFromRaw(v: unknown): ShowPointsMode {
   return v === "off" || v === "on" ? v : "auto";
 }
-
-/** Hard cap on the number of point-markers `on` mode draws across the
- * visible range — a flat maximum, independent of canvas width. Markers
- * denser than this just cost draw time (a min/max envelope already carries
- * the shape), so a zoomed-out window is bounded to this many overlapping
- * dots per series instead of one per decimated sample. The single tuning
- * knob for point-marker cost. */
-export const MAX_POINT_MARKERS = 500;
 
 /** Map the panel's tri-state to a uPlot `Series.points` spec.
  *
@@ -34,9 +26,9 @@ export const MAX_POINT_MARKERS = 500;
  *
  * *Which* columns get a marker is not decided here: every mode goes
  * through the one filter [`applySampleMarkerFilter`] installs on the
- * constructed instance, which marks the series' own samples and thins
- * them to [`MAX_POINT_MARKERS`]. Two mechanisms deciding that is how a
- * held column came to be marked as if it were a reading. */
+ * constructed instance, which marks the series' own samples and nothing
+ * else. Two mechanisms deciding that is how a held column came to be
+ * marked as if it were a reading. */
 export function showPointsToUplot(mode: ShowPointsMode): uPlot.Series.Points {
   if (mode === "off") return { show: false };
   if (mode === "on") return { show: true };
@@ -56,8 +48,7 @@ export function showPointsToUplot(mode: ShowPointsMode): uPlot.Series.Points {
  *
  * Deliberately small: at this count a series' markers are still
  * countable at a glance, and above it the line already carries the
- * shape. It is also a rounding error against [`MAX_POINT_MARKERS`], so
- * the floor can never be the reason a redraw is expensive. */
+ * shape. */
 export const AUTO_POINT_MARKER_FLOOR = 32;
 
 /** A uPlot series as far as the floor and the marker filter are
@@ -113,29 +104,32 @@ export function applyAutoPointFloor(
  * frame before a series stopped is a reading — and those keep their
  * markers, which is what makes the dashed stretch beside them legible.
  *
- * `columns` is ascending and indexes `xs`; the result is a subset of it,
- * limited to the visible `[from, to]` and strided down to `max` because a
- * marker per sample costs the same in a zoomed-out window as it ever did.
- * The last in-view sample is always kept, so a series' newest reading is
- * always marked.
+ * `columns` is ascending and indexes `xs`; the result is every one of
+ * them inside the visible `[from, to]`, with nothing thinned away.
+ *
+ * **Every served sample is marked, and there is no cap.** There used to
+ * be one — a flat 500 markers across the visible range, strided
+ * uniformly — and it was the reason `Points: On` looked like
+ * extrapolation: an even stride over a min/max envelope aliases onto one
+ * leg of it, so a run of dots hugged one side of a line that was
+ * oscillating through both, and most extrema carried no dot at all. The
+ * markers were on the line; the wrong ones were being chosen. The serve
+ * is already bounded to a few points per canvas pixel column, so what
+ * the cap bounded is bounded anyway.
  */
 export function sampleMarkerColumns(
   columns: readonly number[],
   xs: readonly number[],
   from: number,
   to: number,
-  max = MAX_POINT_MARKERS,
 ): number[] {
   let i0 = 0;
   while (i0 < columns.length && xs[columns[i0]] < from) i0++;
   let i1 = columns.length - 1;
   while (i1 >= 0 && xs[columns[i1]] > to) i1--;
   if (i1 < i0) return [];
-  const count = i1 - i0 + 1;
-  const stride = Math.max(1, Math.ceil(count / Math.max(1, max)));
   const out: number[] = [];
-  for (let i = i0; i <= i1; i += stride) out.push(columns[i]);
-  if (out[out.length - 1] !== columns[i1]) out.push(columns[i1]);
+  for (let i = i0; i <= i1; i++) out.push(columns[i]);
   return out;
 }
 
@@ -192,10 +186,6 @@ export function hoverMarkerColumn(
  * returned while `show` is false would resurrect the markers the panel's
  * `off` mode — or the density rule under `auto` — just turned down.
  * Hence the early `null`: narrowing, never enabling.
- *
- * It also carries the [`MAX_POINT_MARKERS`] cap that the `on` mode used
- * to install for itself, so a zoomed-out window still pays for a bounded
- * number of overlapping markers per series.
  */
 export function applySampleMarkerFilter(
   series: readonly PointsHost[],
