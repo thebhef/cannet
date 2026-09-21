@@ -7,29 +7,12 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-- **The ruff locks aligned DOWN to 0.15.16**, not up to 0.16.x: ruff
-  0.16 *changed* its default rule set, and the uplift is ~200
-  mechanical fixes plus two judgment calls (50 deliberate `noqa`s it
-  would delete; 5 silent teardown paths it wants logging). Divergence
-  is gone either way. Want the 0.16 uplift — plus a `[tool.ruff.lint]
-  select` stanza pinning the rule set so defaults can't drift again —
-  as its own task? Detail: 0136 § Status log, 2026-09-16.
-
-- **`cannet-client connect` refuses a pinned server that is down**
-  rather than offering it in the clear — the task text read
-  "endpoint not speaking TLS → ask", but the GUI only asks on first
-  contact, and asking here would make "server down" a route to
-  dropping a server's protection. Mirrored the GUI; confirm or
-  reverse. Detail: 0144 § Status log, 2026-09-18.
-
-- **The Rust fzf port skips the package's diacritic folding**
-  (`normalize: true`). Reproducing it needs either a new crate — which
-  the no-new-crate ruling forbids — or ~700 lines of generated table.
-  The reachable haystack (DBC identifiers, id spellings, ECU names) is
-  ASCII; only a bus name with a diacritic would rank differently
-  between the host matcher and the frontend's event matcher. Accept
-  the boundary, or reopen the ruling? Detail: 0142 § Blockers,
-  2026-09-20.
+- **The ruff locks aligned DOWN to 0.15.16** — *not accepted* (owner,
+  2026-09-21). The 0.16 uplift lands as its own branch absorbing the
+  ~200 mechanical fixes, with a `[tool.ruff.lint] select` stanza so
+  the rule set can't drift again; the two judgment calls (the 50
+  deliberate `noqa`s, the 5 silent teardown paths) are decided there.
+  Noted for now, not scheduled. Detail: 0136 § Status log, 2026-09-16.
 
 - **The unified enum-lane serve will still lose a held code under
   ~1.5 pixel columns**, where the categorical reducer lost none. The
@@ -103,10 +86,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **145: CI runs no `cargo fmt --check`**; only the pre-commit hook
   does, which `--no-verify` skips. `interfaces.rs` had drifted once
   (fixed on `task145-server-info`). A one-line CI job would close it.
-- **148: `examples/ev-zonal/ev-zonal.cannet_prj` `schema_version`
-  bumped 7 → 8 by the overseer** (one token, version-only blob) so the
-  harness project opens at the new schema. Your uncommitted layout
-  autosave in that file is parked as a patch (see § 5).
 
 ## 4. Finished tasks awaiting acceptance
 
@@ -137,7 +116,7 @@ keeps the queue's copy). This file shrinks every time it is walked.
   (the `clients/` move absorbed into `task136-core-bus`;
   `task144-client-cli` inserted above `task136-clock-detect`); all 5
   exit criteria met (verdicts in the task file). 138/1 client tests,
-  python-only diff, §1 pinned-but-down item is the one open ruling.
+  python-only diff. Pinned-but-down refusal confirmed 2026-09-21.
 - **Task 140 — Project State Items** (2026-09-08): single phase landed
   (`task140-controls`); all 5 exit criteria met (verdicts in the task
   file). Frontend-only diff; scoped lanes green (3447 frontend).
@@ -159,8 +138,8 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **Task 142 — Fzf Filter in the Trace Panel** (2026-09-20): both
   phases landed (`task142-host-fuzzy` → `task142-trace-filter-panel`);
   all 7 exit criteria met (verdicts in the task file). Golden vectors
-  pin identical order and scores against the TS `fzf`. § 1 carries the
-  diacritic-folding boundary.
+  pin identical order and scores against the TS `fzf`. Diacritic
+  boundary accepted 2026-09-21.
 - **Task 146 — A Round of Plot Fixes** (2026-09-20): four phases
   landed as five branches (`task146-lane-investigation` →
   `task146-markers-host` → `task146-markers` → `task146-gutters` →
