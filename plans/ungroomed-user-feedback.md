@@ -47,3 +47,10 @@ day).
 ## Extensions
 
 10. Extension — include signals: allow extensions to read/write signals, messages, events.
+
+## Palette and dialogs
+
+11. No mouse cursor when opening a project from the palette (Windows,
+    2026-09-21): the pointer is hidden while the palette has the
+    keyboard, and it stays hidden through the native Open dialog the
+    command raises.
