@@ -90,6 +90,24 @@ keeps the queue's copy). This file shrinks every time it is walked.
   bites the day the store grows a field an older GUI build rewrites
   away. GUI-side fix, some later task. (0144 § Status log)
 
+- **145: the server token gate is per-service now**, not a server-wide
+  `Server::layer` — `ServerInfo` must answer without a credential and
+  a tonic interceptor cannot see which service a call is for.
+  `crates/cannet-server/tests/auth.rs` holds the line (every gated RPC
+  refuses an absent or wrong token; `ServerInfo` answers with
+  neither). Detail: 0145 § Blockers / side effects.
+- **145: `grpcio-tools` dev pin `>=1.80,<1.81`** on `task136-core-bus`:
+  the wire package's lock had resolved 1.84 while the committed gencode
+  came from 1.80; the new drift check exposed it. Inventory entry
+  records the rule. FYI only.
+- **145: CI runs no `cargo fmt --check`**; only the pre-commit hook
+  does, which `--no-verify` skips. `interfaces.rs` had drifted once
+  (fixed on `task145-server-info`). A one-line CI job would close it.
+- **148: `examples/ev-zonal/ev-zonal.cannet_prj` `schema_version`
+  bumped 7 → 8 by the overseer** (one token, version-only blob) so the
+  harness project opens at the new schema. Your uncommitted layout
+  autosave in that file is parked as a patch (see § 5).
+
 ## 4. Finished tasks awaiting acceptance
 
 - **Task 136 — python-can Cannet Client** (2026-09-06): both phases
@@ -123,6 +141,35 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **Task 140 — Project State Items** (2026-09-08): single phase landed
   (`task140-controls`); all 5 exit criteria met (verdicts in the task
   file). Frontend-only diff; scoped lanes green (3447 frontend).
+- **Task 147 — Collapse Database Items Under a Filter** (2026-09-20):
+  single phase landed (`task147-collapse-under-filter`); all 6 exit
+  criteria met (verdicts in the task file). Frontend-only diff; scoped
+  lanes green. Review fix folded in: the auto-expand seed no longer
+  refires on the RBS value poll.
+- **Task 148 — Connect With a Bus Set to No Interface** (2026-09-20):
+  single phase landed (`task148-no-interface-binding`); all 6 exit
+  criteria met. Schema v8. Review fixes folded in: project-graph
+  phantom node, bus-health wording, ev-zonal bump.
+- **Task 145 — An Explicit Wire Protocol Version** (2026-09-20): both
+  phases landed (`task145-server-info` below `task136-core-bus`;
+  amendments to `task136-core-bus` and `task144-client-cli`); all 5
+  exit criteria met. Full CI matrix green at the tip after the
+  restack, `buf breaking` and gencode-drift jobs proven to bite.
+  § 3 carries the per-service token gate and the `grpcio-tools` pin.
+- **Task 142 — Fzf Filter in the Trace Panel** (2026-09-20): both
+  phases landed (`task142-host-fuzzy` → `task142-trace-filter-panel`);
+  all 7 exit criteria met (verdicts in the task file). Golden vectors
+  pin identical order and scores against the TS `fzf`. § 1 carries the
+  diacritic-folding boundary.
+- **Task 146 — A Round of Plot Fixes** (2026-09-20): four phases
+  landed as five branches (`task146-lane-investigation` →
+  `task146-markers-host` → `task146-markers` → `task146-gutters` →
+  `task146-panel-plumbing`); all 8 exit criteria met, the perf number
+  from the single tip reading (31/31 gated metrics passed; task file
+  § Status log). § 1 carries the tile layering, the `Points: auto`
+  lane exemption, the ~1.5-column held-code boundary and the wide ΔH
+  clip.
+
 
 ## 5. Housekeeping owed at close-out
 
@@ -136,3 +183,21 @@ keeps the queue's copy). This file shrinks every time it is walked.
   matrix once per task — gets reviewed at this campaign's close-out:
   did anything slip through a scoped phase to the task-final run, and
   is the tier split right?
+- **Re-apply the parked ev-zonal layout autosave** on the stack tip:
+  `git apply <scratchpad>/ev-zonal-autosave.patch` (a full copy of the
+  file is beside it). Overseer holds the path; it is the owner's
+  undispositioned edit, not part of any branch.
+- **Re-lock the sidecar and client lockfiles** after the `grpcio-tools`
+  pin (0145): `servers/cannet-local-sidecar/uv.lock` and
+  `clients/cannet-python-client/uv.lock` still carry the wire package's
+  old `>=1.80` `requires-dist`; a plain `uv run` re-locks the sidecar
+  one (one line). Belongs on `task136-core-bus` as an amend + restack;
+  CI's `uv sync --frozen` does not catch it. Patch parked in the
+  overseer's scratchpad.
+- **Retire tasks 142, 145, 146, 147, 148 from the roadmap** once
+  accepted (§ 4), and dispose of the tip perf report
+  `docs/performance-measurements/frontend/2026-09-20-25ffdf9e-feedback-tip-run1.json`
+  (fold into the series review above or delete).
+- **0146's phase-4 status log** carries the tip perf reading
+  (uncommitted edit on the tip, for the close-out planning commit).
+
