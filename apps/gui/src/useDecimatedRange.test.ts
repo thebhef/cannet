@@ -195,24 +195,17 @@ describe("useDecimatedRange", () => {
     expect(mockInvoke).toHaveBeenCalledTimes(1); // no second fetch
   });
 
-  it("sends the render mode with the request and refetches when it changes", async () => {
-    // The host reduces an over-budget window by extremes or by runs, and
-    // only the view knows which it is drawing — so the mode travels with
-    // the request, and a mode change cannot be memoised away (the same
-    // window is different bytes under the other reducer).
+  it("carries no render mode: one serve answers a line and an enum lane alike", async () => {
+    // The host used to take a `categorical` flag picking a run
+    // reduction for a view drawing held states. It is gone (ADR 0026) —
+    // the one serve keeps each bucket's first and last sample beside its
+    // extremes, so a held run survives it — and with it goes a view fact
+    // that was travelling into the model.
     mockInvoke.mockResolvedValue(encode(100, 105, [{ t: [100, 101], v: [1, 2] }]));
     const { result } = renderHook(() => useDecimatedRange());
 
     await run(() => result.current, req());
-    expect(mockInvoke.mock.calls[0][1]).toMatchObject({ categorical: false });
-
-    await run(() => result.current, req({ categorical: true }));
-    expect(mockInvoke).toHaveBeenCalledTimes(2);
-    expect(mockInvoke.mock.calls[1][1]).toMatchObject({ categorical: true });
-
-    // …and the mode, unchanged, still memoises.
-    await run(() => result.current, req({ categorical: true }));
-    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(mockInvoke.mock.calls[0][1]).not.toHaveProperty("categorical");
   });
 
   it("refetches an identical request while the host says the series is partial", async () => {
