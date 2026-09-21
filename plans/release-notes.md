@@ -324,6 +324,13 @@ repaired something broken.
   panel.
 - **Fixed:** the Database panel's search box takes a click anywhere in the
   box it draws, not only over the first few characters.
+- **Fixed:** on Windows, the mouse pointer no longer vanishes after typing
+  in the command palette — most visibly when Enter raised the Open
+  dialog and the pointer stayed hidden over the whole window. WebView2
+  runtime 152 began honouring the Windows "Hide pointer while typing"
+  setting and keeps the pointer hidden until the webview itself sees a
+  mouse move; cannet never wanted the pointer hidden, so the window now
+  turns that feature off.
 - **Fixed:** the Database and RBS trees collapse and expand normally
   while a filter string is present. Typing a query still opens the
   path to every match; from then on the chevron and the arrow keys

@@ -50,16 +50,9 @@ day).
 
 ## Units
 
-12. No volume units in the unit list (owner, 2026-09-21): a project
+11. No volume units in the unit list (owner, 2026-09-21): a project
     carries an `LPM` unit string and there is nothing to map it to —
     the library has no volume and no volume-flow dimension, so litres
     are not offered and `L / min` cannot be composed either. The
     underlying crate has both quantities; the app's dimension list
     does not name them.
-
-## Palette and dialogs
-
-11. No mouse cursor when opening a project from the palette (Windows,
-    2026-09-21): the pointer is hidden while the palette has the
-    keyboard, and it stays hidden through the native Open dialog the
-    command raises.
