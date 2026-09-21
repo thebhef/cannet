@@ -244,6 +244,69 @@ repaired something broken.
 - **Changed:** the two Discover buttons in connection management are now
   icon buttons.
 
+## Plot
+
+- **Changed:** `Points: On` marks every sample the plot is served, with
+  no cap. There used to be a flat 500-marker limit spread evenly along
+  the visible range, and an even stride over a min/max envelope lands
+  on one leg of it — a run of dots hugging one side of a line that
+  swings through both, which read as the plot extrapolating. The dots
+  now sit on every extreme the line passes through.
+- **Changed:** an enum lane is an ordinary series with tiles drawn over
+  it. Its markers are the same markers every other series gets, on the
+  plotted value, in an ink that reads over the tile, and they no
+  longer appear and vanish with zoom. A state held across a wide
+  window is one tile, as before.
+- **Changed:** cursor and event readouts leave the data area. Event
+  labels sit in a band above the top plot; the A and B time readouts
+  and Δt sit between the bottom plot and its time axis; the H1 and H2
+  value readouts and ΔH sit in the value gutter beside their axis. The
+  cursor lines themselves stay where they were. A panel with events
+  gives up 34 pixels of plot height for the two bands, 47 when a label
+  wraps to two lines.
+- **Changed:** an empty plot area still draws the shared time grid and
+  ticks, and takes the A and B cursors by click. A panel with no
+  signals anywhere shows the capture's span and follows live, so a
+  fresh panel is a timeline rather than a blank.
+- **Changed:** the plot toolbar carries an **Events** chip that reveals
+  the event-kind checklist — which kinds show as markers, bus errors
+  included. The copy that lived only in the toolbar's right-click menu
+  is gone, so there is one control. Each plot keeps its own choice.
+- **Fixed:** an empty area beside a populated one no longer blanks
+  every event marker on the panel.
+
+## Trace panel
+
+- **New:** a filter box in the toolbar narrows the rows in both modes
+  as you type. It searches the bus name, the message name, its
+  transmitting ECU, its id in hex and decimal, the signal names, and
+  the label of a decoded signal's current enum value; event rows are
+  matched on their text. Fuzzy, the way the Database panel's search
+  is, and ranked the same way, so `pkstat` finds `PackStatus`.
+  Clearing the box restores the full view.
+- The filter composes with the panel's sources, show-events and
+  collapse-error-frames — it narrows further, never replaces. The
+  chronological trace stays paged end to end while a query is active:
+  the host does the matching over the whole capture, and the panel
+  still shows one page plus the live tail. Ctrl/Cmd+F focuses the
+  box. The text is remembered with the layout and never dirties the
+  project.
+
+## Connecting
+
+- **New:** a bus can be set to **no interface** on purpose. Picking
+  "— no interface —" in the project panel now records that choice
+  with the project instead of deleting the binding, and a project with
+  such a bus connects: the bound buses go live, the unbound one reads
+  "unbound" in the connection chip's tooltip, the project graph and
+  the bus-health panel, and anything transmitted at it is marked
+  undelivered. A bus that simply has no binding is still refused, as
+  before — that is a bus nobody has wired up, not one set aside.
+- **New:** the Servers panel greys out a server that does not speak
+  this build's protocol, with the reason, before you can connect to
+  it; and a connection to one is refused with the same sentence
+  instead of retrying forever. See *For application developers*.
+
 ## Small fixes
 
 - **Fixed:** which cursor mode a plot toolbar is in is readable again. A
@@ -261,6 +324,11 @@ repaired something broken.
   panel.
 - **Fixed:** the Database panel's search box takes a click anywhere in the
   box it draws, not only over the first few characters.
+- **Fixed:** the Database and RBS trees collapse and expand normally
+  while a filter string is present. Typing a query still opens the
+  path to every match; from then on the chevron and the arrow keys
+  work on any row, so a bus, database or ECU you are not interested in
+  folds away and stays folded until you open it or clear the filter.
 
 ## For application developers
 
@@ -277,3 +345,30 @@ repaired something broken.
 - Delivered frame timestamps are corrected for the peer's clock, and
   `can.detect_available_configs()` lists the interfaces every trusted
   server currently offers.
+- **New:** the wire protocol states its version, and every client
+  checks it. The protobuf package name — `cannet.v1`, already in every
+  gRPC method path — is the protocol major. Inside a major only
+  additive changes land; a breaking change is a new package served
+  beside the old one for a deprecation window, so an existing client
+  keeps working until it migrates. The rule is written in the header
+  of `cannet.proto`.
+- **New:** every server answers `ServerInfo` — the packages it serves,
+  its build version and its instance name — in a small unversioned
+  package of its own, without a token, so a client whose major the
+  server does not serve is told "serves cannet.v2; this client speaks
+  cannet.v1" rather than an opaque `UNIMPLEMENTED`, and before it is
+  asked for a credential. Servers also advertise the packages they
+  serve over mDNS as `proto=`.
+- **New:** a console script, **`cannet-client`**, does the trust
+  workflow without the GUI. `list` browses the network and merges it
+  with the trust store — one row per server with its trust state,
+  whether it is answering, and the protocol it serves; `connect`
+  walks the same paths the GUI's Servers panel does (loopback in the
+  clear, a pinned server verified against its stored fingerprint, a
+  first contact shown for you to compare and confirm, an explicit
+  question before connecting unprotected) and ends by printing the
+  working `can.Bus(...)` line; `forget` removes a server's entry. It
+  writes the same `servers.json` the GUI owns, so accepting once
+  serves every client on the machine.
+- CI now refuses a non-additive change inside `cannet.v1` and a
+  checked-in Python stub that no longer matches the `.proto`.
