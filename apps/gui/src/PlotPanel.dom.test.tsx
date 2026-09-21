@@ -77,8 +77,12 @@ vi.mock("uplot", () => {
     data: unknown = [[]];
     width = 600;
     cursor = { left: -10 };
-    /** The plot box the draw hook paints inside. */
-    bbox = { left: 0, top: 0, width: 600, height: 400 };
+    /** The plot box the draw hook paints inside. `top` is uPlot's own
+     * top padding — never zero, because that padding carries both the
+     * y tick easement (17 px) and the gutter the event label chips
+     * hang in above it (ADR 0026). 34 is what a one-line label
+     * reserves, which is what these fixtures draw. */
+    bbox = { left: 0, top: 34, width: 600, height: 400 };
     /** Every ink call the draw hook made on this instance, in order.
      * jsdom has no canvas, so a recorder stands in — without one, the
      * overlay (the shared crosshair, the hover markers) is unreachable
@@ -437,8 +441,18 @@ type FakeUPlotInst = {
   xCalls: { min: number; max: number }[];
   redraws: number;
   drawOps: { op: string; args: number[] }[];
+  /** The plot box, as the draw hook reads it — `top` is the gutter the
+   * event label chips hang in (ADR 0026). */
+  bbox: { left: number; top: number; width: number; height: number };
+  /** The options the instance was built with, which is where the space
+   * an axis or a gutter *reserves* is readable at all. */
+  opts: Record<string, unknown>;
   fire: (hook: string, ...args: unknown[]) => void;
 };
+/** One string a draw hook painted, and where it landed — the whole of
+ * what a claim about a *gutter* is: which side of the plot box the
+ * readout is on (ADR 0026). */
+type DrawnText = { text: string; x: number; y: number };
 const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[] }).__instances;
 
 import { invoke } from "@tauri-apps/api/core";
@@ -4149,9 +4163,9 @@ describe("PlotPanel area collapse", () => {
   /// does), and a collapsed area keeps its last instance's root in the
   /// document while drawing nothing — which is the very state under
   /// test, so it must not be counted.
-  function liveXAxes(): { label?: unknown }[] {
+  function liveXAxes(): { label?: unknown; gap?: number; size?: number }[] {
     const all = uplotInstances as unknown as (FakeUPlotInst & {
-      opts: { axes?: { scale?: string; label?: unknown }[] };
+      opts: { axes?: { scale?: string; label?: unknown; gap?: number; size?: number }[] };
     })[];
     const live: typeof all = [];
     for (let i = all.length - 1; i >= 0; i--) {
@@ -4259,6 +4273,42 @@ describe("PlotPanel area collapse", () => {
       const live = liveXAxes();
       expect(live).toHaveLength(1);
       expect(live[0].label).toBeDefined();
+    });
+  });
+
+  it("moves the time-cursor gutter with the bottom drawing axis", async () => {
+    // The A/B chips draw in a strip between the plot box and the x tick
+    // values (ADR 0026), and that strip is space the *axis* reserves —
+    // an upper axis draws no tick values and reserves none. So the
+    // reservation has to follow the chips onto whichever axis is at the
+    // foot of the column, exactly as the time label does.
+    const registry = makeRegistry({
+      id: "el-collapse-xgutter",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+          { id: "a2", signals: [sig("EngineTemp", "degC")] },
+        ],
+      },
+    });
+    await withSizedCanvas(async () => {
+      renderPanel({ params: { elementId: "el-collapse-xgutter" }, registry });
+      const settle = async () => {
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 60));
+        });
+      };
+      await settle();
+      // 5 px of uPlot's own value gap plus a 17 px gutter; the axis
+      // reserves the same 17 on top of the 34 it took before.
+      expect(liveXAxes().map((a) => [a.gap, a.size])).toEqual([
+        [undefined, 18],
+        [22, 51],
+      ]);
+
+      fireEvent.click(screen.getAllByRole("button", { name: "collapse plot area" })[1]);
+      await settle();
+      expect(liveXAxes().map((a) => [a.gap, a.size])).toEqual([[22, 51]]);
     });
   });
 
@@ -8388,7 +8438,7 @@ describe("where the A/B cursors put their timestamps", () => {
 
   /// Every string each stacked area's draw hook painted, top to bottom,
   /// with a pair of x cursors already placed.
-  async function textsPerArea(areas: unknown[]): Promise<string[][]> {
+  async function opsPerArea(areas: unknown[]): Promise<DrawnText[][]> {
     const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
     try {
@@ -8413,13 +8463,30 @@ describe("where the A/B cursors put their timestamps", () => {
       await act(async () => {
         for (const u of live) u.fire("draw");
       });
+      lastLive = live;
       return live.map((u) =>
-        u.drawOps.filter((o) => o.op === "fillText").map((o) => String((o.args as unknown[])[0])),
+        u.drawOps
+          .filter((o) => o.op === "fillText")
+          .map((o) => ({
+            text: String((o.args as unknown[])[0]),
+            x: Number((o.args as unknown[])[1]),
+            y: Number((o.args as unknown[])[2]),
+          })),
       );
     } finally {
       cw.mockRestore();
       ch.mockRestore();
     }
+  }
+
+  /// The drawing instances the last `opsPerArea` call left behind — how
+  /// a case reads the plot box the chips were placed against.
+  let lastLive: FakeUPlotInst[] = [];
+
+  /// The same, as bare strings — what every case that cares only about
+  /// *which* area said something reads.
+  async function textsPerArea(areas: unknown[]): Promise<string[][]> {
+    return (await opsPerArea(areas)).map((a) => a.map((o) => o.text));
   }
 
   const abLabels = (texts: string[]) => texts.filter((t) => /^[AB] /.test(t));
@@ -8453,6 +8520,31 @@ describe("where the A/B cursors put their timestamps", () => {
     expect(perArea).toHaveLength(1);
     expect(abLabels(perArea[0])).toHaveLength(2);
   });
+
+  it("draws them under the plot box, between it and the x tick labels", async () => {
+    // The readouts left the data area (ADR 0026): A, B and the Δt chip
+    // live in the strip the bottom axis opened for them above its tick
+    // values, so none of them can sit on the trace they are read from.
+    const perArea = await opsPerArea([
+      { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+      { id: "a2", signals: [sig("EngineTemp", "degC")] },
+    ]);
+    const chips = perArea[1].filter((o) => /^([AB] |Δt)/.test(o.text));
+    expect(chips.map((o) => o.text.slice(0, 2)).sort()).toEqual(["A ", "B ", "Δt"]);
+    const bb = lastLive[1].bbox;
+    for (const c of chips) expect(c.y).toBeGreaterThan(bb.top + bb.height);
+  });
+
+  it("keeps the readouts below the box on the axis that inherits them", async () => {
+    const perArea = await opsPerArea([
+      { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+      { id: "a2", collapsed: true, signals: [sig("EngineTemp", "degC")] },
+    ]);
+    const chips = perArea[0].filter((o) => /^([AB] |Δt)/.test(o.text));
+    expect(chips).toHaveLength(3);
+    const bb = lastLive[0].bbox;
+    for (const c of chips) expect(c.y).toBeGreaterThan(bb.top + bb.height);
+  });
 });
 
 describe("where the event marker labels sit", () => {
@@ -8466,9 +8558,14 @@ describe("where the event marker labels sit", () => {
     color: "#4ecbff",
   });
 
+  /// The drawing instances the last `opsPerArea` call left behind, top
+  /// to bottom — how a case reads the *space* an axis reserved rather
+  /// than the ink it put in it.
+  let lastLive: FakeUPlotInst[] = [];
+
   /// Every string each drawing area painted, top to bottom, with one
   /// note on the timeline.
-  async function textsPerArea(areas: unknown[]): Promise<string[][]> {
+  async function opsPerArea(areas: unknown[], label = "brake on"): Promise<DrawnText[][]> {
     const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
     try {
@@ -8476,7 +8573,7 @@ describe("where the event marker labels sit", () => {
         params: { elementId: "el-marker-top" },
         registry: makeRegistry({ id: "el-marker-top", config: { areas } }),
         notes: {
-          notes: [{ id: "n1", timestampNs: 1_000_000_000, label: "brake on" }],
+          notes: [{ id: "n1", timestampNs: 1_000_000_000, label }],
           addNote: () => {},
           renameNote: () => {},
           recolorNote: () => {},
@@ -8502,14 +8599,34 @@ describe("where the event marker labels sit", () => {
       await act(async () => {
         for (const u of live) u.fire("draw");
       });
+      lastLive = live;
       return live.map((u) =>
-        u.drawOps.filter((o) => o.op === "fillText").map((o) => String((o.args as unknown[])[0])),
+        u.drawOps
+          .filter((o) => o.op === "fillText")
+          .map((o) => ({
+            text: String((o.args as unknown[])[0]),
+            x: Number((o.args as unknown[])[1]),
+            y: Number((o.args as unknown[])[2]),
+          })),
       );
     } finally {
       cw.mockRestore();
       ch.mockRestore();
     }
   }
+
+  /// The same, as bare strings — what every case that cares only about
+  /// *which* area said something reads.
+  async function textsPerArea(areas: unknown[]): Promise<string[][]> {
+    return (await opsPerArea(areas)).map((a) => a.map((o) => o.text));
+  }
+
+  /// The top gutter (uPlot `padding[0]`) each drawing area reserves.
+  const gutters = () =>
+    lastLive.map((u) => {
+      const pad = (u.opts as unknown as { padding: ((u: unknown) => number)[] }).padding;
+      return pad[0](u);
+    });
 
   it("labels the markers once, on the top area", async () => {
     const perArea = await textsPerArea([
@@ -8607,6 +8724,64 @@ describe("where the event marker labels sit", () => {
     ]);
     expect(perArea).toHaveLength(1);
     expect(perArea[0]).toContain("brake on");
+  });
+
+  it("draws them in the gutter above the plot box, never over the series", async () => {
+    // The whole of the fix (ADR 0026): a chip that sits on the trace it
+    // annotates hides the reading it was pointing at. The marker *line*
+    // still crosses the data area; the chip hangs above it.
+    const perArea = await opsPerArea([
+      { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+      { id: "a2", signals: [sig("EngineTemp", "degC")] },
+    ]);
+    const chip = perArea[0].find((o) => o.text === "brake on");
+    expect(chip).toBeDefined();
+    // Clear of the plot box *and* of the 17 px tick easement at the
+    // foot of the gutter, which the chip may not cover.
+    expect(chip!.y).toBeLessThanOrEqual(lastLive[0].bbox.top - 17);
+  });
+
+  /// A label that wraps to two lines at the plot width these cases
+  /// render at — past the 50-character chip budget.
+  const LONG = "the brake pedal was pressed hard while the pack was still charging at full current";
+
+  it("reserves one chip line on top of the tick easement", async () => {
+    // 17 px of easement uPlot already took, plus 17 px of chip band —
+    // the band is added above the easement, never taken out of it.
+    await opsPerArea([{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }]);
+    expect(gutters()).toEqual([34]);
+  });
+
+  it("buys a second chip line for a label that needs one", async () => {
+    await opsPerArea([{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }], LONG);
+    expect(gutters()).toEqual([47]);
+  });
+
+  it("reserves the gutter on the top area alone", async () => {
+    await opsPerArea(
+      [
+        { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+        { id: "a2", signals: [sig("EngineTemp", "degC")] },
+      ],
+      LONG,
+    );
+    // Only the top area holds chips; the other reserves the easement
+    // alone, exactly as it did before there were gutters.
+    expect(gutters()).toEqual([47, 17]);
+  });
+
+  it("moves the reservation to the axis that inherits the labels", async () => {
+    // The space follows the chips. Anchored positionally, a collapse
+    // would leave the reservation on an axis with nothing to put in it
+    // and the chips on one with no room for them.
+    await opsPerArea(
+      [
+        { id: "a1", collapsed: true, signals: [sig("EngineSpeed", "rpm")] },
+        { id: "a2", signals: [sig("EngineTemp", "degC")] },
+      ],
+      LONG,
+    );
+    expect(gutters()).toEqual([47]);
   });
 });
 

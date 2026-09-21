@@ -681,6 +681,33 @@ below:
   lowest axis that still has a plot (`bottomDrawingAxis`). Tick spacing
   is label-width-aware so zoomed-in elapsed-time labels (more
   fractional digits) don't overlap.
+- **Cursor and event readouts live in gutters, never in the data
+  area.** A chip painted over the trace hides the reading it was
+  pointing at, which is the one thing the reader put the cursor there
+  to see. The *lines* stay on the canvas — a line is what ties a
+  readout to a place in the data — and every chip moves out:
+  - the **event label chips** into a gutter above the top drawing
+    axis's plot box (uPlot's `padding[0]`), which takes only what its
+    current labels need — a 17 px band for one chip line, 30 px where a
+    label wraps to two, and nothing at all with no labels to hold. The
+    band is reserved **above** uPlot's own 17 px tick easement and
+    never inside it: the chips are opaque, and the easement is what
+    keeps the topmost y tick label readable. So the padding is
+    `17 + band`, and the plot height a panel gives up is the band;
+  - the **A and B time chips and Δt** into a gutter between the bottom
+    drawing axis's plot box and its x tick values (the axis's `gap`
+    and `size` grow by it, so the tick marks keep their length and the
+    values move down);
+  - **H1 / H2 and ΔH** into the y gutter at each cursor's own height.
+    Per axis rather than once per panel, because a y cursor is a value
+    on *that* axis's scale and has nowhere else to be said.
+
+  The two new gutters are once per panel and anchored to the *drawing*
+  axes (`topDrawingAxis` / `bottomDrawingAxis`), like the chrome they
+  hold: collapsing the anchoring axis moves the gutter to the one that
+  inherits the chips rather than leaving the reservation behind. There
+  is no drag interaction on a cursor — they are placed by click, as
+  they always were — so the gutters are readouts, not handles.
 - **A marker's label wraps and then truncates**, to two lines inside a
   third of the plot width (`wrapMarkerLabel`). An event label is free
   text, and one drawn as a single chip runs across the area and over
@@ -734,7 +761,11 @@ below:
   narrow axes pay for it in blank gutter; a collinear cursor is worth
   more than the pixels. A width change nudges the other axes to
   re-lay-out, since a report reaches them from inside one axis's own
-  layout pass and a stopped trace may not redraw again on its own.
+  layout pass and a stopped trace may not redraw again on its own. The
+  H1 / H2 / ΔH chips draw *in* that gutter but never ask it for width:
+  a gutter that grew with a transient reading would slide every plot
+  box in the stack sideways as the cursor was placed. A chip wider than
+  the gutter is clipped at the plot box's edge instead.
 - **Fit-to-panel vertical layout + splitters.** Derived axes always
   fit the panel (`.plot-panel-areas` is `overflow: hidden`, not a
   scroll list). Each axis's flex-grow is a persisted weight

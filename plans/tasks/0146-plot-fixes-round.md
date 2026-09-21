@@ -202,7 +202,133 @@ without a canvas so it can pin data, not ink.
 - ADR 0026 records the lane unification and the gutters; ADR 0035
   unchanged.
 
+## Blockers / side effects
+
+- **A wide ΔH chip is clipped by the y gutter.** The H chips draw in
+  the negotiated y gutter (~52 px) and deliberately do not ask it for
+  width — a gutter that grew with a transient reading would slide every
+  plot box in the stack sideways as the cursor was placed. So `ΔH` plus
+  a long value (an exponential, say) loses its right-hand characters at
+  the plot box's edge. The full value is in the side panel and in the
+  measurement strip, both unchanged. Filed for a ruling.
+
 ## Status log
+
+### 2026-09-20 — phase 3: gutters
+
+Branch `task146-gutters` off `task146-markers`, one squashed commit.
+Frontend only — `PlotArea.tsx`, its two test files, ADR 0026. No host
+code, no CSS: every readout that moved was already canvas ink.
+
+#### Mechanism: uPlot's own layout, not a DOM overlay
+
+Three candidates for reserving the space (`padding`, axis `size`/`gap`,
+a positioned DOM overlay). Taken in that order, and the reason is the
+ruling's own word *anchored*:
+
+| gutter | mechanism | why |
+| --- | --- | --- |
+| top, event labels | `padding[0]`, a **function** | uPlot re-evaluates a padding function every layout cycle, so the gutter follows the labels it holds *and* follows `isFirst` — a collapse hands both the chips and their space to the next axis down, with no state to keep in sync. `u.bbox.top` is then the gutter, exactly. |
+| bottom, A/B/Δt | the bottom x axis's `gap` + `size` | The strip belongs *between* the plot box and the tick values, which is what `gap` is. `isLast` already rebuilds the instance, so the reservation moves on collapse for free. Tick marks keep their length: the strip starts below them. |
+| y, H1/H2/ΔH | the existing negotiated y gutter | Already reserved, already panel-wide, already latched against churn. |
+
+A DOM overlay was rejected: it would need the plot box's pixels in React
+state (a second layout truth to keep in sync with uPlot's), and it
+reserves nothing — the chips would float over a plot box that is still
+full height, which is the defect. The chrome is drawn, not interactive
+(no drag, per the ruling), so there is nothing a DOM node buys.
+
+#### What the gutters cost, in pixels
+
+| gutter | `padding[0]` / axis size | net cost |
+| --- | --- | --- |
+| top, no labels | 17 px (uPlot's easement, unchanged) | **0** |
+| top, labels on one line | 17 + **17** px | +17 px |
+| top, a label wrapping to two lines | 17 + **30** px | +30 px |
+| time cursors (bottom drawing axis only) | 34 → 51 px, `gap` 5 → 22 | +17 px |
+| y (H1/H2/ΔH) | nothing new | 0 |
+
+The chip band is reserved **above** uPlot's 17 px tick easement, not
+inside it (overseer review of the first cut, which did take it out of
+the easement). One 13 px chip line plus 2 px clearance either side is
+17 px, which is the easement's size exactly — so sharing looked free
+and was not: the chips are opaque, and an event landing near the top of
+a panel covered the topmost y tick label.
+
+**So a panel with event labels pays 17 px of plot height for the top
+gutter and 17 px for the time-cursor gutter — 34 px once, for the
+whole panel.** A panel whose labels wrap pays 47; a panel with no
+events pays 17.
+
+#### What moved, and what deliberately did not
+
+- `vline` and `hline` in the draw hook draw the **line only** now. The
+  clip on the data area is released before any chip is drawn, and each
+  of the three new functions clips to its own gutter — so "nothing
+  draws inside a plot box" is enforced by the clip and pinned by the
+  coordinates the tests read back, not by convention.
+- **The cursor lines stay on the canvas**, crossing every stacked area
+  (the ruling), and the marker lines with them. Only the chips left.
+- `PlotMeasurements.tsx`, the side panel and `index.css` are untouched.
+- The `Δt` chip used to sit 18 px above the plot's bottom edge, on its
+  own row, so it could not collide with A and B. In one gutter row it
+  can. It is drawn **first**, so the two readings paint over it: a span
+  narrow enough to collide is one where the two times are what you are
+  reading.
+- **The chip band does not touch uPlot's easement for the topmost y
+  tick label.** The first cut of this phase reserved the one-line band
+  *inside* that easement, which made a one-line gutter free but let an
+  opaque chip cover the tick label. Corrected in review: `padding[0]`
+  is easement + band, `drawEventLabelChips` clips to the band alone, and
+  a draw-level case (*leaves the tick easement clear…*) plus a
+  panel-level one pin that no chip pixel enters it.
+
+#### Where the sizing measurement happens
+
+`eventChipGutterPx` is pure and takes its `measure` — the gutter must be
+sized in the same font the chips are painted in, or it is the wrong
+height, and the sizing pass runs outside any canvas the draw hook has.
+Production passes a module-level scratch 2d context (`measureMarkerLabel`,
+the same shape `measureAxisSize` already uses for the y axis), which
+falls back to a fixed monospace advance where there is no 2d context —
+jsdom, i.e. `PlotPanel.dom.test.tsx`, where it makes the panel-level
+gutter assertions mean something instead of always reading "two lines".
+
+A label change is the one redraw that asks uPlot to re-run layout
+(`redraw(false, true)`); the crosshair's redraw stays `redraw(false,
+false)`, because re-converging axes and padding on every mouse move is
+three layout cycles per frame for a number that has not changed.
+
+#### Tests
+
+`PlotArea.draw.test.ts` +27 cases over the recording context (73 in the
+file): the gutter arithmetic (`eventChipGutterPx` — one line is free,
+two lines cost 13, never three, the widest label wins, a narrow plot
+wraps earlier), and each of the three draw functions' *place* — the clip
+rect it takes, that every inked op is outside the plot box on the right
+side of it, chip-per-cursor positions, the skip rules, and the
+highlight's dim/lit ordering.
+
+`PlotPanel.dom.test.tsx` +6 cases (282 in the file), which is where the
+collapse claim lives: the chips land above / below the plot box on the
+*drawing* axis; the top gutter reserves 17 for a short label, 30 for a
+wrapped one, on the top area alone; and both reservations move to the
+axis that inherits the chrome when the anchoring area is collapsed
+(`padding[0]`, and the x axis's `gap`/`size`).
+
+One fixture change: the uPlot mock's `bbox.top` was `0`, which is a plot
+box flush against the canvas edge — a shape uPlot never produces here
+(the top padding is also the y tick easement) and one in which "above
+the plot box" is unrepresentable. It is now 34: uPlot's 17 px easement
+plus the 17 px band a one-line label reserves, which is what these
+fixtures draw. No existing assertion moved.
+
+#### Perf and the release build: deferred
+
+Per the owner's economy rule, no ADR 0031 reading and no release build
+this phase. The diff adds no per-frame work: the same chips are drawn,
+in different places, and the one new computation (the gutter's line
+count) runs on a layout cycle rather than a frame.
 
 ### 2026-09-20 — phase 2: markers
 
