@@ -308,3 +308,6 @@ reversal:
   - The diacritic-folding boundary (phase 1's Blockers, still open in
     `plans/owner-review-queue.md`) is unaffected by this phase — no new
     owner decision raised here.
+- 2026-09-21 — owner accepted the diacritic-folding boundary: the
+  Rust port ranks as `normalize: false`; a diacritic in a bus name is
+  the one case, and it stands. Queue item dropped.

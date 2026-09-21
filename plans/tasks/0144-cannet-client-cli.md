@@ -128,3 +128,6 @@ panel and nothing more:
   ADR 0032/0041 second-writer notes, both READMEs — met. Side
   finding: the GUI's own store writer *drops* unknown JSON keys
   where the CLI preserves them — asymmetry queued.
+- 2026-09-21 — owner confirmed the deviation: `connect` refuses a
+  pinned server that is down rather than offering it in the clear;
+  mirrors the GUI. Queue item dropped.
