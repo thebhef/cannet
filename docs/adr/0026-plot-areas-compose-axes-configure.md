@@ -708,6 +708,17 @@ below:
   inherits the chips rather than leaving the reservation behind. There
   is no drag interaction on a cursor — they are placed by click, as
   they always were — so the gutters are readouts, not handles.
+- **An empty area still draws the shared x window.** An area with no
+  signals draws the shared x grid, the time ticks, and the A/B cursors
+  — placeable by click, exactly as on a populated area — over the
+  panel's shared x window; the y gutter is blank, as on the enum-lanes
+  axis above, since there is no scale to show. When no area in the
+  panel has an extent (every area is empty), the panel seeds that
+  window from the session's own span — a host-side model fact, read
+  through the same `sample_signals`-with-no-signals round trip "Fit
+  Data" uses (`fetchWindowExtent`), never derived from frames in JS —
+  and follows it live until a populated area anchors the window
+  instead.
 - **A marker's label wraps and then truncates**, to two lines inside a
   third of the plot width (`wrapMarkerLabel`). An event label is free
   text, and one drawn as a single chip runs across the area and over

@@ -214,6 +214,137 @@ without a canvas so it can pin data, not ink.
 
 ## Status log
 
+### 2026-09-20 — phase 4: panel plumbing (task close-out)
+
+Branch `task146-panel-plumbing` off `task146-gutters`, one squashed
+commit. Frontend only — `PlotPanel.tsx`, `PlotArea.tsx`,
+`PlotToolbar.tsx`, two test files, ADR 0026, README. No host code.
+
+#### Empty areas: seeded from the session's own span, not derived in JS
+
+Finding 3's three causes are all still true at the top of this phase:
+the resample early-returns without a `setScale` for an empty area,
+both scales are `auto: false`, and `applyXAll` only ran when some area
+had an extent. The ruling's y-axis half needed no new plumbing — an
+empty area now takes the *same* blank-gutter axis config the
+enum-lanes axis already had (`PlotArea.tsx`: `laneModeAtConstruct ||
+emptyAtConstruct`), so it reserves alignment width and draws no grid,
+no ticks, no splits, exactly like a lane axis with nothing served.
+
+The x-window half is the new mechanism, in `PlotPanel.tsx`:
+`slideXWindow` (already ticking at the resample cadence — even an
+empty area's early-return path calls `onAreaResampled` every tick)
+falls back to `seedEmptyExtent()` when `sharedExtent()` is null. That
+reads the session's span the same way "Fit Data" does — a
+`sample_signals` round trip with no signals (`fetchWindowExtent`),
+never frames read in JS — and applies it through the same `applyXAll`
+every other x-window change uses, so it reaches every uPlot instance
+in the panel including the empty one's. It is self-throttled to one
+request in flight rather than timer-gated, and a response that lands
+after a real area has anchored the window is dropped
+(`sharedExtent() != null` re-check before applying). Once *any* area
+in the panel resamples a real extent, `sharedExtent()` stops
+returning null and the fallback is never called again — pinned by
+`PlotPanel.dom.test.tsx :: "stops asking the host for the session
+span once the area has its own extent"`.
+
+Click-placeable A/B on an empty area needed no code change: the
+click handler (`ready` hook) already worked off `u.posToVal`
+unconditional on `signals.length`; the only reason it drew nothing
+was the same unset x-scale the grid/ticks needed. The DOM-tier mock's
+`posToVal`/`valToPos` are scale-independent (linear stand-ins,
+`PlotPanel.dom.test.tsx`'s own doc comment), so the click test there
+cannot distinguish the pre-fix from the post-fix behaviour the way
+the seeding tests can — it pins that the gesture reaches
+`onPlaceCursorX`/persists `cursorX` for an empty area at all, which
+is the mechanism-level claim available at that tier; the pixel-level
+"the line is actually visible" claim is out of every automated
+tier's reach here, same as every other cursor line this file already
+declines to pin (see the file's own header comment).
+
+#### `reportBase` keyed by area
+
+`PlotPanel.tsx`'s `reportBase` now keeps a `Map<areaId, secs |
+null>` and derives the panel's base from the first populated area's
+report, falling back to `null` only when every area's own report is
+`null`. An empty area's tick no longer overwrites a populated
+sibling's. `forgetAreaState` (on area removal) prunes the map the
+same way it already pruned `cursorYByArea` / `seriesByArea`, so a
+removed area's stale (possibly non-null) vote does not linger.
+Regression: `PlotPanel.dom.test.tsx :: "no longer blanks the panel's
+event markers when it sits beside a populated area"` — an empty
+area (`a1`, first / topmost) beside a populated one (`a2`) still
+shows the note's marker label, checked on `a1` (the label chip draws
+on the topmost *drawing* axis) so the test also pins that an empty
+area draws event markers at all, not only that its sibling survives.
+
+#### Events chip
+
+`PlotToolbar.tsx` gets the trace panel's own chip-reveals-checklist
+pattern: an "Events" chip (`icon="flag"`, same as `TracePanel.tsx`)
+toggles a new `showEvents` bar item that places the panel-built
+`EventKindFilter` as its own item (so a narrow bar can overflow the
+checklist without taking the chip with it). `PlotPanel.tsx` owns the
+disclosure state (`showEventsChip`, unpersisted — the trace panel's
+own `showEvents` persists because it *also* gates whether events
+interleave at all; here the only real content is `eventKinds`, which
+was already unpersisted, so the disclosure follows `showPerf`'s
+precedent instead) and passes the checklist through as a
+pre-rendered node, keeping `PlotToolbar` stateless per its own header
+comment. The copy that lived in the toolbar's right-click menu is
+gone — one control. `busError` is untouched, still grouped under
+Diagnostics (`EVENT_KIND_GROUPS`, `notes.ts`) — nothing here changes
+the grouping, only where the control that flips it lives.
+
+#### Deviation: test placement
+
+The phase brief named `PlotArea.draw.test.ts` for the "empty area
+draws x grid and ticks, no y grid" case. That file only exercises
+the handful of exported *pure* overlay-draw functions
+(`drawEnumTiles`, `drawEventLabelChips`, …); x/y grid and tick
+rendering is uPlot's own axis renderer from the `axes` option object
+built inside the (non-exported) construction effect — not something
+this file's harness touches, and not something this phase changed
+the shape of. The faithful equivalent — pinning the *axis config* an
+empty area constructs uPlot with — already has a precedent one test
+above in `PlotPanel.dom.test.tsx`'s DOM tier (`"a lanes axis
+constructs uPlot with stepped series and a blank y axis"`, reading
+`inst.opts.axes[…]` off the mocked uPlot instance); the new case
+(`"constructs uPlot with a blank y axis, and the ordinary x axis
+grid and ticks"`) follows that exact precedent instead. Recorded
+here rather than forced into a file whose testing model cannot
+express the claim.
+
+#### Exit criteria, walked in full (task close-out)
+
+| # | Criterion | Verdict |
+| --- | --- | --- |
+| 1 | Phase 1's verdict recorded with fixture + numbers | **Done** — phase 1 entry above: a resolvable held code (≥ 2.09 columns) is lost by the plain serve; phase 2 folds first/last into `decimate_min_max`. |
+| 2 | `Points: On` marks every served sample; `PlotArea.draw.test.ts` case; harness reading recorded | **Marker behaviour done** (phase 2: cap and stride removed, uncapped). **Perf reading deferred** to the overseer's single ADR 0031 tip run per the owner's economy rule, as phase 2 and 3 also deferred theirs — not run this phase either. |
+| 3 | Enum lane served like a numeric series; `reduce_transitions` / `categorical` gone; markers legible over the tile; held state at width is one tile | **Done** (phase 2) — `signal_cache.rs` / `signal_sampler.rs` no longer define either; `PlotArea.tsx` tiles from served runs. |
+| 4 | Event label chips in a top gutter (1–2 lines); A/B/Δt between the plot box and x ticks; nothing draws inside a plot box; a collapse moves the chrome | **Done** (phase 3) — `eventChipGutterPx`, the bottom axis's `gap`/`size`; `PlotArea.draw.test.ts` +27, `PlotPanel.dom.test.tsx` +6. |
+| 5 | Empty area shows x grid, ticks, placeable A/B; a panel of only an empty area shows the session's span and follows live | **Done** (this phase) — see "Empty areas" above; `PlotPanel.dom.test.tsx :: "empty plot areas"`. |
+| 6 | Empty area beside a populated one no longer blanks event markers (`reportBase` regression) | **Done** (this phase) — see "`reportBase` keyed by area" above. |
+| 7 | Plot toolbar shows an Events chip; checklist hides bus markers; right-click menu no longer carries it | **Done** (this phase) — see "Events chip" above; `PlotToolbar.dom.test.tsx :: "the Events chip"`, `PlotPanel.dom.test.tsx :: "the plot toolbar's Events chip"`. |
+| 8 | ADR 0026 records the lane unification and the gutters; ADR 0035 unchanged | **Done** — lane unification (phase 2) and gutters (phase 3) already recorded; this phase adds the empty-area paragraph. ADR 0035 not touched by any phase. |
+
+#### CI (scoped per-phase set — frontend only, per the owner's economy rule)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| frontend tests (targeted) | `pnpm --dir apps/gui test -- PlotPanel.dom.test.tsx PlotToolbar.dom.test.tsx PlotArea.draw.test.ts` | 391 passed |
+| frontend tests (full) | `pnpm --dir apps/gui test` | 247 files / 3576 tests passed |
+| frontend build | `pnpm --dir apps/gui build` | passed (`tsc -b && vite build`) |
+| comment-references grep | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
+| `check-local-paths` | `python scripts/check_local_paths.py <changed files>` | clean |
+| `cargo fmt --all -- --check` | — | clean (no Rust touched) |
+| `cargo test -p cannet-gui`, clippy | — | **unreachable — no host/Rust code touched this phase** |
+| python / MDF / sidecar / wire lanes | — | **unreachable — this phase's diff is frontend-only** |
+| ADR 0031 perf reading, release build | — | **deferred to the overseer's single stack-tip run**, per the owner's economy rule for this phase |
+
+No new items filed to `plans/owner-review-queue.md` this phase — the
+one open item (the ΔH gutter clip) is phase 3's, unchanged.
+
 ### 2026-09-20 — phase 3: gutters
 
 Branch `task146-gutters` off `task146-markers`, one squashed commit.
@@ -582,3 +713,36 @@ marker work rides with it; if it sprawls, the natural split is host
   gutter above the x axis for A/B/Δt, no drag. Lanes ruled: unify
   onto the ordinary series machinery, investigation first. Phases
   cut, exit criteria drafted. Grooming complete.
+
+### 2026-09-20 — tip perf reading (overseer, after phase 4)
+
+One ADR 0031 capture on the stack tip (`task146-panel-plumbing`,
+`25ffdf9e`, release build, ev-zonal, 60 s, `scrub` interaction,
+`--rbs-run-on-start`), report
+`docs/performance-measurements/frontend/2026-09-20-25ffdf9e-feedback-tip-run1.json`;
+`cannet-perf-measurement check` passed all 31 gated metrics against
+`baseline.json`. The numbers the all-points and lane rulings asked for:
+
+| metric | baseline | this run | limit |
+|---|---|---|---|
+| `longtask_ms_per_s` mean / p95 | 0 / 0 | 0 / 0 | 10 / 17 |
+| `lag_ms_max` | 10.4 | 22.4 | 40.8 |
+| `jank_fraction` | 0 | 0 | 0.05 |
+| `jsheap_mb_peak` | 83.6 | 95.4 | 231.2 |
+| `renderer_mb_peak` | 316.5 | 329.7 | 697.0 |
+| `tree_mb_peak` | 741.7 | 746.2 | 1547.4 |
+| `flush_ms_mean` / `tx_late_ms_mean` | 25.0 / 18.0 | 3.0 / 3.1 | 25 / 18 |
+| `rx_fps` / `tx_fps` overall | — | 1604.6 / 1612.3 | ±15 % of 1608 |
+| `rx_gap` ids measured | — | 174 | — |
+
+Verdict: no marker-cost regression at this load; the pair-preserving
+fallback is **not** needed. `lag_ms_max` doubled on a single run, which
+is within the band an unchanged build spans (ADR 0031 § single runs);
+worth a second look only if the next reading repeats it. The report
+stays as a working artifact until close-out folds or deletes it.
+
+Harness note: the first attempt on this build timed out at
+"sidecar=not ready" 30 s after a cold 216k-frame restore
+(`ui_last_ms` 336, one health tick in 17 s) and the second connected
+but captured 0 frames because `--rbs-run-on-start` was omitted; the
+third, with the flag, is the reading above.
