@@ -29,6 +29,7 @@ function spies() {
     onShowPoints: vi.fn(),
     onCursorMode: vi.fn(),
     onClearCursors: vi.fn(),
+    onShowEvents: vi.fn(),
     onOpenMenu: vi.fn(),
     onPattern: vi.fn(),
     onStep: vi.fn(),
@@ -78,6 +79,9 @@ function props(s: Spies, over: Partial<PlotToolbarProps> = {}): PlotToolbarProps
     cursorMode: "off",
     onCursorMode: s.onCursorMode,
     onClearCursors: s.onClearCursors,
+    showEvents: false,
+    onShowEvents: s.onShowEvents,
+    eventsChecklist: <div data-testid="events-checklist" />,
     perfText: null,
     onOpenMenu: s.onOpenMenu,
     ...over,
@@ -109,6 +113,7 @@ const BAR: readonly [string, string][] = [
   ["Y Cursors", "y cursors — horizontal H1 / H2 lines placed on click"],
   ["Notes", "notes — click places a timeline note"],
   ["Clear Cursors", "clear measurement cursors"],
+  ["Events", "which kinds of timeline events draw as markers here"],
 ];
 
 /// Every chip on the bar, in DOM order — including the run controls
@@ -300,6 +305,40 @@ describe("PlotToolbar", () => {
     expect(s.onOpenMenu).toHaveBeenCalledWith({ x: 40, y: 12 });
   });
 
+  describe("the Events chip", () => {
+    // The trace panel's own chip-reveals-checklist pattern (ADR 0035):
+    // the chip only opens/closes the control, the panel's checklist
+    // decides what actually shows.
+    it("reflects whether the checklist is open, and asks to flip it", () => {
+      const s = renderBar({ showEvents: false });
+      const chip = screen.getByRole("button", { name: "Events" });
+      expect(chip).toHaveAttribute("aria-pressed", "false");
+      fireEvent.click(chip);
+      expect(s.onShowEvents).toHaveBeenCalledWith(true);
+
+      const on = renderBar({ showEvents: true });
+      expect(screen.getByRole("button", { name: "Events" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Events" }));
+      expect(on.onShowEvents).toHaveBeenCalledWith(false);
+    });
+
+    it("shows the panel's checklist only while open", () => {
+      renderBar({ showEvents: false });
+      expect(screen.queryByTestId("events-checklist")).toBeNull();
+      renderBar({ showEvents: true });
+      expect(screen.getByTestId("events-checklist")).toBeInTheDocument();
+    });
+
+    it("carries the checklist as its own bar item, after the chip", () => {
+      const { onOpenMenu: _drop, ...rest } = props(spies(), { showEvents: true });
+      const keys = plotToolbarItems(rest).map((i) => i.key);
+      expect(keys.indexOf("events")).toBeLessThan(keys.indexOf("events-checklist"));
+    });
+  });
+
   it("keeps the performance read-out off until it is asked for", () => {
     // Hidden by default: it is a diagnostic, and its numbers change
     // width every tick beside controls that must not move.
@@ -352,6 +391,7 @@ describe("PlotToolbar", () => {
         "points",
         "cursor-mode",
         "clear-cursors",
+        "events",
       ]);
     });
 

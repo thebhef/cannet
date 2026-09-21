@@ -2862,7 +2862,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           }
         : null;
     const enumRaws = enumActiveAtConstruct ? valueTable.map((r) => r.raw) : [];
-    const yAxis: uPlot.Axis = laneModeAtConstruct
+    // An area with nothing plotted has no y scale to show — the same
+    // "nothing to draw here" the enum-lanes axis is already in, so it
+    // shares that axis's blank gutter rather than a distinct one
+    // (owner ruling, ADR 0026: an empty area still shows the shared x
+    // grid, ticks and A/B cursors, but no y gridlines or y scale).
+    const emptyAtConstruct = signals.length === 0;
+    const yAxis: uPlot.Axis = laneModeAtConstruct || emptyAtConstruct
       ? {
           // Blank gutter: no splits / values / grid. The lane tiles
           // carry the value labels and the side panel carries identity,
