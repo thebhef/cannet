@@ -151,6 +151,27 @@ export function withoutErrorFrames(predicate: SinkFilter): FilterPredicate {
   return { all: [predicate, exclusion] };
 }
 
+/// AND `{ fuzzy: query }` onto a sink's predicate, so the view it feeds
+/// narrows further to the frames the query's searchable text matches
+/// (bus, message, signal, enum value — the host's candidate resolution;
+/// event text is narrowed separately, in JS, since no host predicate
+/// can see it).
+///
+/// `query` is the *settled* box text — the caller debounces. A blank
+/// query (empty or whitespace) leaves the predicate untouched: never
+/// send `{ fuzzy: "" }`, which matches nothing host-side.
+export function withFuzzyQuery(predicate: SinkFilter, query: string): FilterPredicate | null {
+  const trimmed = query.trim();
+  if (trimmed === "") return predicate;
+  const fuzzy: FilterPredicate = { fuzzy: trimmed };
+  if (predicate === null) return fuzzy;
+  // Flatten rather than nest, as `withoutErrorFrames` does — the host
+  // resolves candidates over the tree it is handed, and a flat `all`
+  // keeps the narrowable leaves at the top level.
+  if ("all" in predicate) return { all: [...predicate.all, fuzzy] };
+  return { all: [predicate, fuzzy] };
+}
+
 /// Collapse a list of predicates into their AND: `[]` → `null` (no
 /// constraint), a single predicate unwrapped, otherwise `{ all }`.
 /// The shared composition step both the sink and filter walks end on.
