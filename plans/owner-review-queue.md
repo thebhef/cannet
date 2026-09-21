@@ -31,6 +31,15 @@ keeps the queue's copy). This file shrinks every time it is walked.
   the boundary, or reopen the ruling? Detail: 0142 § Blockers,
   2026-09-20.
 
+- **The unified enum-lane serve will still lose a held code under
+  ~1.5 pixel columns**, where the categorical reducer lost none. The
+  ruled fix (first and last beside min and max) takes the worst-case
+  loss from 3.21 columns to 1.49; the residual is the *pyramid fold's*
+  min/max, and closing it measures **worse**, not better (4.78 columns
+  lost, 2.3x the pyramid), because a fatter level makes the serve read
+  a coarser one. Accept the 1.5-column boundary, or reopen? Detail:
+  0146 § Status log, 2026-09-20 phase 1.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the

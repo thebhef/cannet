@@ -5418,6 +5418,117 @@ mod tests {
         assert_eq!(served.last().unwrap().0, last_sample);
     }
 
+    /// How narrow a **held** code has to be before the plain min/max
+    /// serve drops it entirely — the measurement a lane's reduction
+    /// choice rests on (ADR 0026: an enum lane draws held states).
+    ///
+    /// The scenario is the one the categorical serve was introduced
+    /// against: a 100 Hz code series cycling `0..=5` on every sample
+    /// over a 301.3 s window at a budget of 2248 points, with one held
+    /// run of code 3 in the middle. Code 3 is the adversarial value —
+    /// strictly between the codes its bucket neighbours carry, so
+    /// neither the bucket's argmin nor its argmax, which is exactly
+    /// what a min/max envelope discards.
+    ///
+    /// `max_points` is one point per canvas pixel column, and the fetch
+    /// window is padded by the same fraction the budget is, so
+    /// `window / max_points` is one pixel column: here 134 ms. The two
+    /// cases below bracket the loss at the worst run alignment — a run
+    /// of 3.21 pixel columns is served with no sample carrying its
+    /// code at all, one of 3.28 columns always is. The loss is not the
+    /// reduction being coarse; the code is *absent*, so nothing a
+    /// renderer does downstream can put it back.
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn plain_min_max_serve_drops_a_held_code_narrower_than_three_pixel_columns() {
+        const HZ: f64 = 100.0;
+        const SPAN_SECONDS: f64 = 301.3;
+        const MAX_POINTS: usize = 2248;
+        const HELD_CODE: f64 = 3.0;
+        let n = (SPAN_SECONDS * HZ) as usize;
+        let column_seconds = SPAN_SECONDS / MAX_POINTS as f64;
+        let dir = TempDir::new().unwrap();
+
+        // `hold` samples of `HELD_CODE` starting `offset` samples into
+        // the second half of the capture; everything else cycles.
+        let serve = |base: &str, hold: usize, offset: usize| -> (Vec<SamplePoint>, f64, f64) {
+            let start = n / 2 + offset;
+            let mut cache = SignalCache::new(dir.path(), base, None);
+            for i in 0..n {
+                let value = if i >= start && i < start + hold {
+                    HELD_CODE
+                } else {
+                    (i % 6) as f64
+                };
+                cache.push_sample(i as f64 / HZ, value);
+                cache.fold();
+            }
+            let tip = cache.latest().expect("series has samples").t_seconds;
+            let served = cache.window(0.0, tip + 1.0, MAX_POINTS);
+            (served, start as f64 / HZ, (start + hold) as f64 / HZ)
+        };
+        let carries_the_code = |served: &[SamplePoint], from: f64, to: f64| -> usize {
+            served
+                .iter()
+                .filter(|p| p.value == HELD_CODE && p.t_seconds >= from && p.t_seconds < to)
+                .count()
+        };
+
+        // Control: no hold at all. The window holds 30 130 samples
+        // against a 2248-point budget, so the serve is the envelope's
+        // `2 · buckets` shape and carries three of the six codes.
+        let (control, _, _) = serve("control", 0, 0);
+        assert!(control.len() > MAX_POINTS, "{} points", control.len());
+        let control_codes: std::collections::BTreeSet<u64> =
+            control.iter().map(|p| p.value as u64).collect();
+        assert_eq!(
+            control_codes,
+            [0, 3, 5].into_iter().collect(),
+            "the envelope keeps each bucket's extreme codes, not the ones held between",
+        );
+        // Two of the six codes are the envelope's; the third is the
+        // forced final input sample, which happens to carry a 3 and is
+        // the only one in the whole serve.
+        assert_eq!(
+            control
+                .iter()
+                .filter(|p| p.value == HELD_CODE)
+                .map(|p| p.t_seconds)
+                .collect::<Vec<_>>(),
+            vec![control.last().expect("non-empty").t_seconds],
+        );
+
+        // 43 samples = 430 ms = 3.21 pixel columns, at the alignment
+        // that loses it: no served sample carries the code.
+        let (lost, from, to) = serve("lost", 43, 41);
+        assert!(
+            (to - from) / column_seconds > 3.2,
+            "{:.2} columns",
+            (to - from) / column_seconds,
+        );
+        assert_eq!(
+            carries_the_code(&lost, from, to),
+            0,
+            "a 3.21-column hold survived; the measured loss boundary has moved",
+        );
+
+        // 44 samples = 440 ms = 3.28 pixel columns: served at every
+        // alignment, so a runs-of-equal-served-values overlay has a
+        // tile to draw.
+        for offset in [0usize, 11, 26, 41] {
+            let (kept, from, to) = serve(&format!("kept{offset}"), 44, offset);
+            assert!(
+                carries_the_code(&kept, from, to) > 0,
+                "a 3.28-column hold was dropped at offset {offset}",
+            );
+        }
+    }
+
     /// **Both** reductions answer to the series' newest sample, at any
     /// point budget and at the length a long live session reaches.
     ///
