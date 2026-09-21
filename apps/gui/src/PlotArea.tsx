@@ -1298,6 +1298,299 @@ export function drawEnumTileLabels(
   }
 }
 
+/** Height (CSS px) of one line of chip text on the canvas — the chip
+ * geometry every cursor and event readout already used inside the plot
+ * box, now that they are drawn outside it. */
+const CANVAS_CHIP_LINE_PX = 13;
+/** Clearance (CSS px) between a gutter's chips and the plot-box edge
+ * they hang off, on both sides of the chip. */
+const GUTTER_CHIP_GAP_PX = 2;
+/** uPlot's own top padding for a plot that has a y axis and no top axis
+ * (`round(xAxisOpts.size / 3)`) — the easement that keeps the topmost y
+ * tick label from being chopped. The event-label gutter is reserved
+ * *above* it and never inside it: an opaque chip sharing those pixels
+ * would cover the tick label the easement exists for (ADR 0026). */
+const Y_TICK_EASEMENT_PX = 17;
+/** Vertical strip (CSS px) the bottom drawing axis reserves between its
+ * plot box and its x tick labels for the A/B time chips and Δt (ADR
+ * 0026): one chip line plus clearance either side. */
+const TIME_CURSOR_GUTTER_PX = CANVAS_CHIP_LINE_PX + GUTTER_CHIP_GAP_PX * 2;
+/** uPlot's default x-axis tick length, and the gap between the ticks
+ * and the tick values, both CSS px. The time-cursor gutter is added to
+ * that gap, so the tick marks keep their length and the values move
+ * down by exactly the gutter. */
+const X_TICK_SIZE_PX = 10;
+const X_AXIS_VALUE_GAP_PX = 5;
+
+/** Draw one chip — a filled, outlined box of `lines` lines of text,
+ * centred vertically on `cy` and hung off `x` by its centre or its left
+ * edge. The shape the cursor readouts, the Δ chips and the event labels
+ * all share. */
+function drawChip(
+  ctx: CanvasRenderingContext2D,
+  lines: readonly string[],
+  o: { x: number; anchor: "center" | "left"; cy: number; color: string; ratio: number },
+): void {
+  const padX = 4 * o.ratio;
+  const h = CANVAS_CHIP_LINE_PX * o.ratio;
+  const tw = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  const boxH = h * lines.length;
+  const bx = o.anchor === "center" ? o.x - tw / 2 - padX : o.x;
+  const by = o.cy - boxH / 2;
+  ctx.fillStyle = theme().canvasChipFill;
+  ctx.fillRect(bx, by, tw + padX * 2, boxH);
+  ctx.strokeStyle = o.color;
+  ctx.strokeRect(bx, by, tw + padX * 2, boxH);
+  ctx.fillStyle = o.color;
+  ctx.textAlign = o.anchor === "center" ? "center" : "left";
+  ctx.textBaseline = "middle";
+  const tx = o.anchor === "center" ? o.x : bx + padX;
+  lines.forEach((l, i) => ctx.fillText(l, tx, by + h * i + h / 2));
+}
+
+/** The wrap width an event label chip is measured against, in whatever
+ * unit `measure` reports. A character budget, so a chip is the same
+ * size on a wide monitor as on a narrow one — but never wider than the
+ * plot it labels. Shared by the gutter's sizing pass and its draw pass,
+ * which have to agree or the gutter is the wrong height. */
+function markerLabelWrapWidth(
+  measure: (text: string) => number,
+  plotWidth: number,
+  padX: number,
+): number {
+  const charW = measure(MARKER_LABEL_WIDTH_SAMPLE) / MARKER_LABEL_WIDTH_SAMPLE.length;
+  return Math.max(1, Math.min(plotWidth - padX * 2, MARKER_LABEL_MAX_CHARS * charW));
+}
+
+/** Must match the font the chips are painted in, in the draw hook
+ * below — a gutter sized against a different font is the wrong height. */
+const MARKER_LABEL_FONT = "600 9.5px ui-monospace, monospace";
+/** `undefined` until the first measurement, then the scratch context or
+ * `null` where the platform has no 2d canvas. */
+let markerMeasureCtx: CanvasRenderingContext2D | null | undefined;
+/** Width (CSS px) of `text` in the marker-label font. Where there is no
+ * 2d context to measure with, falls back to a fixed advance — the font
+ * is monospace, so that is the shape of the answer anyway, and a gutter
+ * sized from an estimate beats one sized from nothing. */
+function measureMarkerLabel(text: string): number {
+  if (markerMeasureCtx === undefined) {
+    markerMeasureCtx = document.createElement("canvas").getContext("2d");
+    if (markerMeasureCtx) markerMeasureCtx.font = MARKER_LABEL_FONT;
+  }
+  return markerMeasureCtx ? markerMeasureCtx.measureText(text).width : text.length * 5.7;
+}
+
+/** The labels a set of plot events puts in the top gutter. What the
+ * gutter is sized against, and the key a change to it has to re-run
+ * that sizing under. */
+export function eventChipLabels(events: readonly NoteEvent[]): string[] {
+  return events.map((e) => e.label);
+}
+
+/**
+ * Height (CSS px) of the top gutter the event label chips draw in (ADR
+ * 0026) — uPlot's `padding[0]` on the top drawing axis.
+ *
+ * The chips left the data area so they stop covering the series they
+ * annotate, and the band takes **only what the labels it is holding
+ * need**: `wrapMarkerLabel` caps a chip at two lines, so the band is
+ * one chip line (17 px) or two (30 px), and nothing at all with no
+ * labels to hold.
+ *
+ * The band sits **on top of** uPlot's tick easement rather than inside
+ * it, so the padding is `17 + band`: the chips are opaque, and the
+ * easement is there to keep the topmost y tick label readable.
+ */
+export function eventChipGutterPx(
+  labels: readonly string[],
+  plotWidthCss: number,
+  measure: (text: string) => number,
+): number {
+  let lines = 0;
+  if (labels.length > 0) {
+    const width = markerLabelWrapWidth(measure, plotWidthCss, 4);
+    for (const l of labels) {
+      lines = Math.max(lines, wrapMarkerLabel(l, measure, width, MARKER_LABEL_MAX_LINES).length);
+      if (lines >= MARKER_LABEL_MAX_LINES) break;
+    }
+  }
+  if (lines === 0) return Y_TICK_EASEMENT_PX;
+  return Y_TICK_EASEMENT_PX + lines * CANVAS_CHIP_LINE_PX + GUTTER_CHIP_GAP_PX * 2;
+}
+
+/**
+ * The event marker labels, in the top gutter (ADR 0026).
+ *
+ * The marker *lines* still cross the data area — that is what ties a
+ * label to the instant it names — but the chip hangs above the plot
+ * box, in the space {@link eventChipGutterPx} reserved for it, so a
+ * label can no longer sit on top of the series it annotates. Once per
+ * panel, on the top drawing axis: collapsing that axis moves the chips
+ * to the next one down rather than taking them away.
+ *
+ * `ctx` must carry the marker-label font, because the wrap the gutter
+ * was sized against was measured in it.
+ */
+export function drawEventLabelChips(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    events: readonly NoteEvent[];
+    litEventIds: ReadonlySet<string>;
+    /** The plot box, device px. */
+    left: number;
+    width: number;
+    top: number;
+    /** The whole gutter above it, device px — the chip band plus the
+     * tick easement at its foot, which the chips stay out of. */
+    gutter: number;
+    ratio: number;
+  },
+): void {
+  // The chip band is the gutter less the tick easement at its foot.
+  // Clipping to the band and not to the whole gutter is what stops a
+  // chip reaching the topmost y tick label (ADR 0026).
+  const band = o.gutter - Y_TICK_EASEMENT_PX * o.ratio;
+  if (o.events.length === 0 || band <= 0) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(o.left, o.top - o.gutter, o.width, band);
+  ctx.clip();
+  const wrapWidth = markerLabelWrapWidth((t) => ctx.measureText(t).width, o.width, 4 * o.ratio);
+  // While an event is being acted on, the ones it says nothing about go
+  // quiet; `litEventIds` is empty at rest, so then every chip draws
+  // exactly as it always has. Lit ones draw last, so nothing paints
+  // over the one the reader is pointing at.
+  const dim = o.litEventIds.size > 0;
+  for (const ev of litLast(o.events, o.litEventIds)) {
+    const xp = u.valToPos(ev.t, "x", true);
+    if (xp < o.left - 4 || xp > o.left + o.width + 4) continue;
+    const lines = wrapMarkerLabel(
+      ev.label,
+      (t) => ctx.measureText(t).width,
+      wrapWidth,
+      MARKER_LABEL_MAX_LINES,
+    );
+    if (lines.length === 0) continue;
+    const boxH = CANVAS_CHIP_LINE_PX * o.ratio * lines.length;
+    ctx.globalAlpha = dim && !o.litEventIds.has(ev.id) ? UNLIT_ALPHA : 1;
+    // Bottom-aligned to the top of the easement, so a two-line chip
+    // grows upward into the gutter the extra line was reserved in and
+    // every chip still sits as close as it can to the line it names.
+    drawChip(ctx, lines, {
+      x: xp,
+      anchor: "center",
+      cy: o.top - (Y_TICK_EASEMENT_PX + GUTTER_CHIP_GAP_PX) * o.ratio - boxH / 2,
+      color: ev.color ?? theme().eventMarker,
+      ratio: o.ratio,
+    });
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/**
+ * The A and B time chips and Δt, in the gutter between the bottom
+ * drawing axis's plot box and its x tick labels (ADR 0026).
+ *
+ * The cursor lines stay on the canvas; only the readouts move out, so
+ * they can no longer cover the series they are read against. Once per
+ * panel, beside the x-axis time label they now sit with: one x is one
+ * time however many areas it crosses.
+ */
+export function drawTimeCursorChips(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    cursorXa: number | null;
+    cursorXb: number | null;
+    /** The plot box's horizontal extent, device px. */
+    left: number;
+    width: number;
+    /** The gutter below it, device px. */
+    gutterTop: number;
+    gutter: number;
+    /** Fractional digits the x-axis ticks are showing, so a chip reads
+     * at the precision of the tick under it (ADR 0024). */
+    xDigits: number;
+    ratio: number;
+  },
+): void {
+  const a = o.cursorXa;
+  const b = o.cursorXb;
+  if (a == null && b == null) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(o.left, o.gutterTop, o.width, o.gutter);
+  ctx.clip();
+  const cy = o.gutterTop + o.gutter / 2;
+  const chip = (t: number, text: string, color: string) => {
+    const xp = u.valToPos(t, "x", true);
+    if (xp < o.left - 4 || xp > o.left + o.width + 4) return;
+    drawChip(ctx, [text], { x: xp, anchor: "center", cy, color, ratio: o.ratio });
+  };
+  // Δt first: the two cursor times are the readings and the span
+  // between them is derived from them, so when a narrow span puts all
+  // three chips on the same pixels, the readings are what survives.
+  if (a != null && b != null) {
+    chip((a + b) / 2, `Δt ${formatDurationSeconds(Math.abs(b - a))}`, theme().axisText);
+  }
+  // "<letter> <time>", so a chip says both which cursor and where — the
+  // trace's elapsed-time format, at the ticks' adaptive precision.
+  if (a != null) chip(a, `A ${formatElapsed(a, o.xDigits)}`, theme().cursorA);
+  if (b != null) chip(b, `B ${formatElapsed(b, o.xDigits)}`, theme().cursorB);
+  ctx.restore();
+}
+
+/**
+ * The H1 / H2 value cursor chips and ΔH, in the y gutter at each
+ * cursor's own height (ADR 0026).
+ *
+ * Per axis rather than once per panel: a y cursor is a value on *this*
+ * axis's scale, so unlike the time chips it has nowhere else to be
+ * said. The horizontal cursor lines stay on the canvas; the chips move
+ * into the strip the y ticks live in, where they cover an axis label
+ * rather than a reading.
+ */
+export function drawValueCursorChips(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    cursorYh1: number | null;
+    cursorYh2: number | null;
+    /** The plot box's left edge, device px — the y gutter is `[0,
+     * left]` — and its vertical extent, which bounds the gutter. */
+    left: number;
+    top: number;
+    height: number;
+    ratio: number;
+  },
+): void {
+  const h1 = o.cursorYh1;
+  const h2 = o.cursorYh2;
+  if (h1 == null && h2 == null) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, o.top, o.left, o.height);
+  ctx.clip();
+  // Left-aligned at a fixed x, so the three chips read as one column.
+  // The gutter is sized by the tick labels and never by a cursor: a
+  // width that moved with a transient reading would slide every plot
+  // box in the stack sideways as that cursor was placed.
+  const x = GUTTER_CHIP_GAP_PX * o.ratio;
+  const chip = (v: number, text: string, color: string) => {
+    const yp = u.valToPos(v, "y", true);
+    if (yp < o.top - 4 || yp > o.top + o.height + 4) return;
+    drawChip(ctx, [text], { x, anchor: "left", cy: yp, color, ratio: o.ratio });
+  };
+  if (h1 != null && h2 != null) {
+    chip((h1 + h2) / 2, `ΔH ${fmtVal(Math.abs(h2 - h1))}`, theme().axisText);
+  }
+  if (h1 != null) chip(h1, "H1", theme().cursorA);
+  if (h2 != null) chip(h2, "H2", theme().cursorB);
+  ctx.restore();
+}
+
 /** Memoised: a plot panel re-renders for its own reasons (toolbar
  * menus, the ~2 Hz perf badge, cursor placement) far more often than
  * any area's inputs change, and an area render walks its whole signal
@@ -2682,7 +2975,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             ),
           labelFont: X_AXIS_LABEL_FONT,
           labelSize: 16,
-          size: 34,
+          // The time-cursor gutter (ADR 0026): A, B and Δt read out in
+          // the strip between this axis's plot box and its tick values,
+          // so the gap that separates the two grows by the gutter and
+          // the axis reserves the same. The tick *marks* keep their
+          // length — the strip starts below them.
+          gap: X_AXIS_VALUE_GAP_PX + TIME_CURSOR_GUTTER_PX,
+          size: 34 + TIME_CURSOR_GUTTER_PX,
           space: xTickSpace,
           // Ticks share the trace's elapsed-time format (ADR 0024) so
           // the same timeline position reads identically in both views;
@@ -2724,6 +3023,30 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // series'. `drawHoverMarkers` draws it in the overlay instead,
       // from the panel's shared hover x and on the series' own samples.
       cursor: { x: false, points: { show: false }, drag: { x: false, y: false } },
+      // The event label chips draw in a gutter *above* the plot box
+      // rather than inside it (ADR 0026). uPlot re-evaluates a padding
+      // function on every layout cycle, so the gutter follows the labels
+      // it is holding — and follows `isFirst`, so collapsing the top
+      // area hands the gutter to the axis that inherits the chips. The
+      // other three sides keep uPlot's own easements (`null`).
+      //
+      // The plot width is `u.width` less the y gutter, since the x axis
+      // takes no horizontal space and uPlot's left easement is zero
+      // whenever there is a y axis — which there always is here.
+      padding: [
+        (u: uPlot) =>
+          eventChipGutterPx(
+            liveRef.current.isFirst ? eventChipLabels(liveRef.current.events) : [],
+            // `|| 0` because uPlot evaluates padding once before it has
+            // sized itself; the convergence loop calls again with a real
+            // width, and a NaN here would reach `bbox`.
+            Math.max(1, (u.width || 0) - gutterPxRef.current),
+            measureMarkerLabel,
+          ),
+        null,
+        null,
+        null,
+      ],
       axes: [xAxis, yAxis],
       series: [
         {},
@@ -2976,7 +3299,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // content, those are annotation, so the readouts you are
             // actively pointing at have to stay legible over them.
             drawEnumTileLabels(ctx, tileLabelsRef.current, ratio);
-            const vline = (xVal: number, color: string, dash: number[], lbl: string | null, atTop: boolean) => {
+            // The *line* only. Every readout that used to ride one — an
+            // event's label chip, a cursor's time — now draws in a
+            // gutter outside the plot box (ADR 0026), after this clip is
+            // released.
+            const vline = (xVal: number, color: string, dash: number[]) => {
               const xp = u.valToPos(xVal, "x", true);
               if (xp < left - 4 || xp > left + width + 4) return;
               ctx.strokeStyle = color;
@@ -2986,38 +3313,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               ctx.lineTo(xp, top + height);
               ctx.stroke();
               ctx.setLineDash([]);
-              if (lbl != null) {
-                const padX = 4 * ratio;
-                const h = 13 * ratio;
-                const charW =
-                  ctx.measureText(MARKER_LABEL_WIDTH_SAMPLE).width /
-                  MARKER_LABEL_WIDTH_SAMPLE.length;
-                const lines = wrapMarkerLabel(
-                  lbl,
-                  (t) => ctx.measureText(t).width,
-                  // The character budget, but never wider than the plot
-                  // it sits in — a narrow area still has to hold it.
-                  Math.max(1, Math.min(width - padX * 2, MARKER_LABEL_MAX_CHARS * charW)),
-                  MARKER_LABEL_MAX_LINES,
-                );
-                if (lines.length === 0) return;
-                const tw = Math.max(...lines.map((l) => ctx.measureText(l).width));
-                const boxH = h * lines.length;
-                // A wrapped label grows downward from the top edge and
-                // upward from the bottom one, so it stays inside the
-                // plot however many lines it took.
-                const ty = atTop ? top + 2 * ratio : top + height - boxH - 2 * ratio;
-                ctx.fillStyle = theme().canvasChipFill;
-                ctx.fillRect(xp - tw / 2 - padX, ty, tw + padX * 2, boxH);
-                ctx.strokeStyle = color;
-                ctx.strokeRect(xp - tw / 2 - padX, ty, tw + padX * 2, boxH);
-                ctx.fillStyle = color;
-                ctx.textAlign = "center";
-                ctx.textBaseline = "middle";
-                lines.forEach((l, i) => {
-                  ctx.fillText(l, xp, ty + h * i + h / 2);
-                });
-              }
             };
             // A linked pair's extent, as an event-colored wash at low
             // opacity (owner ruling) — behind the marker lines, because
@@ -3045,12 +3340,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // opposite things at once.
             for (const ev of litLast(lr.events, lr.litEventIds)) {
               ctx.globalAlpha = dimLines && !lr.litEventIds.has(ev.id) ? UNLIT_ALPHA : 1;
-              // `lr.isFirst`, not the prop: the draw hook is registered
-              // once per uPlot instance and keeps the closure it was
-              // built with, so a plain read goes stale the moment the
-              // area above this one collapses — which is exactly when
-              // this axis is supposed to start drawing the labels.
-              vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3], lr.isFirst ? ev.label : null, true);
+              vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3]);
             }
             ctx.globalAlpha = 1;
             // The A/B cursors are panel-level, so their *lines* cross
@@ -3058,19 +3348,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // area line up with a reading in another. Their timestamps
             // are not: one x is one time however many areas it crosses,
             // and repeating it down the stack is the same number said N
-            // times over the data. It rides the bottom drawing axis with
-            // the x-axis time label and the Δt chip, so everything the
-            // panel says about *when* is in one place (ADR 0026).
-            //
-            // Format as "<letter> <time>" so the chip says both which
-            // cursor and where — the trace's elapsed-time format, at the
-            // axis ticks' adaptive precision.
-            const xDigits = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
+            // times over the data. They ride the bottom drawing axis, in
+            // the gutter above its tick labels, with the x-axis time
+            // label and the Δt chip — so everything the panel says about
+            // *when* is in one place (ADR 0026).
             if (lr.cursorXa != null) {
-              vline(lr.cursorXa, theme().cursorA, [4, 3], isLast ? `A ${formatElapsed(lr.cursorXa, xDigits)}` : null, false);
+              vline(lr.cursorXa, theme().cursorA, [4, 3]);
             }
             if (lr.cursorXb != null) {
-              vline(lr.cursorXb, theme().cursorB, [4, 3], isLast ? `B ${formatElapsed(lr.cursorXb, xDigits)}` : null, false);
+              vline(lr.cursorXb, theme().cursorB, [4, 3]);
             }
             // The shared mouse crosshair (panel-level, like A/B): drawn
             // in *every* stacked area at the same x, so the hover in
@@ -3078,7 +3364,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // — it tracks the pointer; `vline` clips it when the x
             // falls outside this area's window, same as A/B.
             if (lr.hoverX != null) {
-              vline(lr.hoverX, theme().crosshair, [4, 3], null, false);
+              vline(lr.hoverX, theme().crosshair, [4, 3]);
             }
             // ...and the markers that go with it (ADR 0026). Same shared
             // x, so a pointer resting in *any* area of the panel reveals
@@ -3106,7 +3392,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 width,
               });
             }
-            const hline = (yVal: number, color: string, lbl: string) => {
+            // The *line* only, like `vline`: H1/H2 and ΔH read out in the
+            // y gutter now (ADR 0026).
+            const hline = (yVal: number, color: string) => {
               const yp = u.valToPos(yVal, "y", true);
               if (yp < top - 4 || yp > top + height + 4) return;
               ctx.strokeStyle = color;
@@ -3116,49 +3404,60 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               ctx.lineTo(left + width, yp);
               ctx.stroke();
               ctx.setLineDash([]);
-              const tw = ctx.measureText(lbl).width;
-              const padX = 4 * ratio;
-              const h = 13 * ratio;
-              const lx = left + 3 * ratio;
-              ctx.fillStyle = theme().canvasChipFill;
-              ctx.fillRect(lx, yp - h / 2, tw + padX * 2, h);
-              ctx.strokeStyle = color;
-              ctx.strokeRect(lx, yp - h / 2, tw + padX * 2, h);
-              ctx.fillStyle = color;
-              ctx.textAlign = "left";
-              ctx.textBaseline = "middle";
-              ctx.fillText(lbl, lx + padX, yp);
             };
-            if (lr.cursorYh1 != null) hline(lr.cursorYh1, theme().cursorA, "H1");
-            if (lr.cursorYh2 != null) hline(lr.cursorYh2, theme().cursorB, "H2");
-            // A small Δ chip so the cursor delta is visible without
-            // turning on the measurement strip.
-            const chip = (cx: number, cy: number, text: string, color: string) => {
-              const tw = ctx.measureText(text).width;
-              const padX = 4 * ratio;
-              const h = 13 * ratio;
-              ctx.fillStyle = theme().canvasChipFill;
-              ctx.fillRect(cx - tw / 2 - padX, cy - h / 2, tw + padX * 2, h);
-              ctx.strokeStyle = color;
-              ctx.strokeRect(cx - tw / 2 - padX, cy - h / 2, tw + padX * 2, h);
-              ctx.fillStyle = color;
-              ctx.textAlign = "center";
-              ctx.textBaseline = "middle";
-              ctx.fillText(text, cx, cy);
-            };
-            if (lr.cursorXa != null && lr.cursorXb != null && isLast) {
-              const xp = u.valToPos((lr.cursorXa + lr.cursorXb) / 2, "x", true);
-              if (xp > left && xp < left + width) {
-                chip(xp, top + height - 18 * ratio, `Δt ${formatDurationSeconds(Math.abs(lr.cursorXb - lr.cursorXa))}`, theme().axisText);
-              }
-            }
-            if (lr.cursorYh1 != null && lr.cursorYh2 != null) {
-              const yp = u.valToPos((lr.cursorYh1 + lr.cursorYh2) / 2, "y", true);
-              if (yp > top && yp < top + height) {
-                chip(left + 40 * ratio, yp, `ΔH ${fmtVal(Math.abs(lr.cursorYh2 - lr.cursorYh1))}`, theme().axisText);
-              }
-            }
+            if (lr.cursorYh1 != null) hline(lr.cursorYh1, theme().cursorA);
+            if (lr.cursorYh2 != null) hline(lr.cursorYh2, theme().cursorB);
             ctx.restore();
+            // Out of the data area and into the gutters (ADR 0026).
+            // Everything above this line is content or a line that ties
+            // a readout to a place in the data; everything below is a
+            // readout, and a readout drawn over the series it is read
+            // from is the defect these gutters answer. Each function
+            // clips to its own gutter, so none of them can paint inside
+            // the plot box.
+            ctx.font = `600 ${9.5 * ratio}px ui-monospace, monospace`;
+            ctx.lineWidth = 1 * ratio;
+            if (lr.isFirst) {
+              // `lr.isFirst`, not the prop: the draw hook is registered
+              // once per uPlot instance and keeps the closure it was
+              // built with, so a plain read goes stale the moment the
+              // area above this one collapses — which is exactly when
+              // this axis is supposed to start drawing the labels. The
+              // gutter it draws into is `u.bbox.top`, which is the top
+              // padding the same `isFirst` sized.
+              drawEventLabelChips(ctx, u, {
+                events: lr.events,
+                litEventIds: lr.litEventIds,
+                left,
+                width,
+                top,
+                gutter: top,
+                ratio,
+              });
+            }
+            if (isLast) {
+              drawTimeCursorChips(ctx, u, {
+                cursorXa: lr.cursorXa,
+                cursorXb: lr.cursorXb,
+                left,
+                width,
+                // Below the tick marks, which keep their length: the
+                // gutter was inserted into the gap between them and the
+                // tick values.
+                gutterTop: top + height + X_TICK_SIZE_PX * ratio,
+                gutter: TIME_CURSOR_GUTTER_PX * ratio,
+                xDigits: fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)),
+                ratio,
+              });
+            }
+            drawValueCursorChips(ctx, u, {
+              cursorYh1: lr.cursorYh1,
+              cursorYh2: lr.cursorYh2,
+              left,
+              top,
+              height,
+              ratio,
+            });
           },
         ],
         ready: [
@@ -3699,6 +3998,20 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   useEffect(() => {
     uplotRef.current?.redraw(false, false);
   }, [cursorXa, cursorXb, cursorYh1, cursorYh2, hoverX, events, isFirst, isLast]);
+
+  // The top gutter is sized from the event labels it holds, and uPlot
+  // only re-evaluates a padding function during a layout convergence —
+  // which a plain redraw skips. So a *label* change asks for one
+  // (`recalcAxes`), and every other redraw above stays cheap: the
+  // crosshair moves on every mouse move, and re-running axis and
+  // padding convergence there would be three layout cycles per frame.
+  const eventChipKey = isFirst ? eventChipLabels(events).join(" ") : "";
+  const eventChipKeyPrevRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (eventChipKeyPrevRef.current === eventChipKey) return;
+    eventChipKeyPrevRef.current = eventChipKey;
+    uplotRef.current?.redraw(false, true);
+  }, [eventChipKey]);
 
   const dh = cursorYh1 != null && cursorYh2 != null ? cursorYh2 - cursorYh1 : null;
 

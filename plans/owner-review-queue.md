@@ -59,6 +59,14 @@ keeps the queue's copy). This file shrinks every time it is walked.
   visible change to `auto`. Detail: 0146 § Status log, 2026-09-20
   phase 2.
 
+- **A wide `ΔH` chip is clipped at the plot box's edge.** The H1/H2/ΔH
+  readouts moved into the y gutter (~52 px) per the cursor-chrome
+  ruling, and deliberately do not widen it — a gutter that grew with a
+  transient reading would slide every plot box in the stack sideways as
+  the cursor was placed. So `ΔH` plus a long value loses its tail. The
+  full value is in the side panel and the measurement strip. Accept, or
+  want it elsewhere? Detail: 0146 § Blockers / side effects.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the
