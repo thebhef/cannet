@@ -195,6 +195,14 @@ follow from that table as they do today.
 - **`mph` now displays `mi/h`** (the crate's symbol); `mph` still
   recognises. Keeping `mph` would be a hand-typed display override.
   Queued for the owner.
+- **The picker renders all 920 base rows at once.** No virtualiser
+  (adding one would be a technology-inventory decision). Numbers in
+  the 2026-09-22 phase 2 status log; typing narrows it in ~50 ms,
+  clearing the filter costs ~215 ms in jsdom.
+- **`litre` finds nothing; `liter` and `L` do.** The library spells the
+  unit American, so the picker filter (display and id) and recognition
+  have no British spelling to match. Alternates would mean the host
+  carrying extra searchable spellings on the picker row.
 
 ## Status log
 
@@ -256,3 +264,54 @@ follow from that table as they do today.
   `cubic-meter-per-second`). Overseer's review: the module doc's
   "Recognising a DBC unit string" paragraph omits the new crate-spelling
   pass that `recognize`'s own doc lists — phase 2 fixes the wording.
+- 2026-09-22 — **phase 2 (surfaces at scale) landed** on
+  `task149-units-surfaces` (`f3e7ecf1`, one commit, no squash). Task-final.
+  **The picker gained a filter** — it had none, which the grooming
+  assumed it did. `filterRows` (`unitSelection.ts`) is a substring over
+  the row's display, id and dimension label, keeping the host's order
+  and always keeping the row that commits nothing (the composition /
+  derivation, the only way back to the derived unit). Emptied groups
+  lose their headings; nothing matching says "no unit matches"; the box
+  autofocuses. **The lock widened to a class.** `ResolvedMath` gains
+  `kinds` — the ISQ-equivalence class in composition order, what the
+  series is read in at its head, a target outside the class inserted
+  ahead so the picker always shows the current selection. Travels as
+  `unitKinds: string[]` on `MathSignalRecord` (`unitKind` unchanged);
+  `UnitPicker`/`UnitButton` take `UnitPickerKind = string | readonly
+  string[] | null`; `pickerEntries` emits the lock's order, one pass per
+  locked dimension so each keeps the host's row order. `N · m` opens on
+  energy with torque beneath; the newton-metre converts ×1.
+  **`LPM = L / min` needed no code**: `parse_composition` already
+  divides and volume rate is a dimension since phase 1; a host test
+  (accepted → volume rate → `recognize("LPM")` → ×1/60 to `L/s`,
+  ×1/60000 to `m³/s`) and a settings dom test pin it. **Settings table**
+  needed no change (already filtered and dimension-contiguous); a dom
+  test pins both at scale; the ratio family's 11-scale column is pinned
+  host-side. **Render cost, reported not gated** (throwaway jsdom probe,
+  920 bases / 109 groups, 4 runs): 945 options on open, mount
+  314–329 ms, first narrowing keystroke 49–58 ms, later 5.7–16.7 ms,
+  clearing back to all rows 210–221 ms; the picker renders every base
+  row at once, no virtualiser (queued). **Docs**: inventory
+  `runtime_units` entry rewritten (`All`, no-curation numbers and cost,
+  the 0.6.3 defects and enumeration gaps); `units.rs` recognition
+  paragraph now lists the crate-spelling pass; `UnitPickerEntry::scales`
+  doc corrected; README picker paragraph gains the filter and the
+  widened lock; `docs/CONTEXT.md` unchanged (its dimension/scale entries
+  are plot-axis terms). One bug caught by the full suite and fixed: a
+  test mock built a `MathSignalRecord` without `unitKind`/`unitKinds`.
+  Tests: 78 in `units`, 2127 workspace, 3622 frontend. Full CI matrix
+  green; python, proto, MDF-oracle and sidecar-freeze lanes unreachable.
+
+## Exit criteria verdicts (2026-09-22)
+
+| # | Verdict |
+|---|---|
+| 1 | met — crate-enumerating test, floor 2000 (phase 1); 3 `CubeRootScaledLength` units unreachable through the crate's API (§ Blockers) |
+| 2 | met — no hand-typed rows; offsets, ratio policy, scalar placeholder documented (phase 1) |
+| 3 | met — 15 serde names pinned; `kind: voltage` reads back (phase 1) |
+| 4 | met — `LPM = L / min` accepted, volume-rate, ×1/60 and ×1/60000 (phase 2) |
+| 5 | met — 78 `units` tests over the full table incl. the family and prefix cross-check (phase 1, re-confirmed) |
+| 6 | met — picker filter added and tested (`liter`, `L`, `psi`, `charge`); `litre` does not match (§ Blockers) |
+| 7 | met — +39 s compile, +1.06 MiB binary (phase 1) |
+| 8 | met — `N · m` opens on energy with torque beneath, newton-metre ×1; first resolutions pinned (both phases); torque-first is a queued owner question |
+| 9 | met — inventory entry, module docs, README (phase 2) |

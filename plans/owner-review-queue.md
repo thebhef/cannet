@@ -108,6 +108,14 @@ keeps the queue's copy). This file shrinks every time it is walked.
   does, which `--no-verify` skips. `interfaces.rs` had drifted once
   (fixed on `task145-server-info`). A one-line CI job would close it.
 
+- **149: the unit picker renders all ~920 base rows on open**; clearing
+  the filter back to the full list costs ~215 ms in jsdom, typing
+  narrows in ~50 ms. A virtualiser would be a new dependency decision,
+  not taken. Detail: 0149 § Status log, 2026-09-22 phase 2.
+- **149: `litre` reaches no unit; `liter` and `L` do.** The library
+  spells it American, and neither the picker's filter nor recognition
+  carries a British alternate. Detail: 0149 § Blockers / side effects.
+
 ## 4. Finished tasks awaiting acceptance
 
 - **Task 136 — python-can Cannet Client** (2026-09-06): both phases
@@ -179,6 +187,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
   file). Task-final full CI green (3608 frontend, workspace host). § 1
   carries the badge-tooltip scope question; the owner's hands-on check
   of scroll, re-measure and Save As is still owed.
+
+- **Task 149 — Every Unit the Library Has** (2026-09-22): both phases
+  landed (`task149-units-table` → `task149-units-surfaces`); all 9
+  exit criteria met (verdicts in the task file). Task-final full CI
+  green (2127 workspace, 3622 frontend). § 1 carries the `N · m` order
+  and `mi/h` questions; § 3 the picker render cost and `litre`. Crate
+  cost: +39 s compile, +1.06 MiB binary.
 
 ## 5. Housekeeping owed at close-out
 
