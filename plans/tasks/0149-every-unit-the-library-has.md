@@ -110,10 +110,33 @@ follow from that table as they do today.
   wanted dimension.
 - **Temperature interval is its own dimension** beside absolute
   temperature (overseer recommendation, owner deferred 2026-09-21).
+- **Owner review, 2026-09-22.** `LPM` composed and was picked up
+  automatically; the units are comprehensive but overwhelming (that is
+  task 151's gridview). Ruled: (a) **energy-first for `N · m` stands**,
+  "as long as the user can easily override it in the signal mapping
+  panel" — the override must be easy wherever a math signal's unit is
+  chosen (which panel the owner means is open question 1); the owner
+  was surprised torque and energy resolve as one class — they share
+  ISQ exponents (kg·m²·s⁻²) and are separate dimensions here, never
+  converted between; only a *composed* product has to be given a
+  name, and that is the first-match the override corrects. (b) **The
+  user must be able to alias `mi/h` as `mph`** through the settings
+  entry (`mph = mile / hour`, a composition of one unit, displaying as
+  `mph` and converting 1:1) — the phase verifies the entry accepts a
+  single-unit alias and documents it. (c) `absement` (the time
+  integral of displacement, m·s) is a real library quantity; the
+  no-curation ruling keeps it, collapsed under its own branch once
+  task 151 lands.
 
 ## Open questions
 
-(none)
+1. **Which "signal mapping panel"?** The composed-kind override lives
+   in the math signal editor's Units button (phase 2). The View
+   signals panel's Units button passes no kind (offers everything,
+   which is reinterpretation, not conversion), and the settings
+   view's Units section maps database strings to units. *Recommend*
+   the math signal editor is the place and the View signals panel
+   gains the same class-locked picker for a math signal's row.
 
 ## Phases
 
@@ -137,6 +160,10 @@ follow from that table as they do today.
    database's `LPM` reads as it. Technology inventory
    entry, `units.rs` module docs and `docs/CONTEXT.md` updated where
    the wording changed.
+3. **Owner review follow-ups (2026-09-22).** A single-unit alias
+   (`mph = mile / hour`) through the settings entry, displayed and
+   converting as such; the composed-kind override reachable from the
+   panel open question 1 names; README documents the alias.
 
 ## Exit criteria
 
@@ -168,6 +195,11 @@ follow from that table as they do today.
    resolution of every composition today's tests name.
 9. `plans/technology-inventory.md`'s `runtime_units` entry and the
    `units.rs` module docs describe the no-curation table.
+10. `mph = mile / hour` defined in the settings entry is accepted,
+    displays `mph`, converts 1:1 with `mi/h`, and a database `mph`
+    reads as it; README says an alias is a composition of one unit.
+11. A math signal's composed-kind override is reachable from the panel
+    open question 1 names, tested.
 
 ## Blockers / side effects
 
@@ -305,7 +337,7 @@ follow from that table as they do today.
 ## Exit criteria verdicts (2026-09-22)
 
 | # | Verdict |
-|---|---|
+| --- | --- |
 | 1 | met — crate-enumerating test, floor 2000 (phase 1); 3 `CubeRootScaledLength` units unreachable through the crate's API (§ Blockers) |
 | 2 | met — no hand-typed rows; offsets, ratio policy, scalar placeholder documented (phase 1) |
 | 3 | met — 15 serde names pinned; `kind: voltage` reads back (phase 1) |
@@ -315,3 +347,4 @@ follow from that table as they do today.
 | 7 | met — +39 s compile, +1.06 MiB binary (phase 1) |
 | 8 | met — `N · m` opens on energy with torque beneath, newton-metre ×1; first resolutions pinned (both phases); torque-first is a queued owner question |
 | 9 | met — inventory entry, module docs, README (phase 2) |
+- 2026-09-22 — owner review: accepted with follow-ups (rulings above); phase 3 opened; picker render cost folded into task 151.
