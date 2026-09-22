@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 // A stand-in host. `rows` is what `list_project_caches` serves; `calls`
 // records what the list asked it to do, so a test can assert that Clear
@@ -20,9 +20,27 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 
+// `listen` is how the list hears the host re-root the session
+// (`project-dir-changed`, ADR 0042 §1). The mock keeps the handlers so a
+// test can announce one.
+const mockListeners = new Map<string, Set<(e: { payload: unknown }) => void>>();
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (event: string, handler: (e: { payload: unknown }) => void) => {
+    const set = mockListeners.get(event) ?? new Set();
+    set.add(handler);
+    mockListeners.set(event, set);
+    return () => set.delete(handler);
+  }),
+}));
+/// Deliver a host event to whatever the list subscribed.
+function emitHostEvent(event: string, payload: unknown = null) {
+  for (const h of mockListeners.get(event) ?? []) h({ payload });
+}
+
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ProjectCachesList } from "./ProjectCachesList";
 import type { ProjectCacheRow } from "./projectCaches";
+import { SettingsShownContext } from "./settingsShown";
 
 function row(patch: Partial<ProjectCacheRow>): ProjectCacheRow {
   return {
@@ -41,6 +59,7 @@ beforeEach(() => {
   rows = [];
   calls.length = 0;
   failWith = null;
+  mockListeners.clear();
 });
 afterEach(cleanup);
 
@@ -180,5 +199,77 @@ describe("the project cache list", () => {
     await waitFor(() =>
       expect(screen.getByText("No project caches recorded.")).toBeInTheDocument(),
     );
+  });
+});
+
+// Observation 4 of the owner's 2026-09-21 report: a Save As over the
+// folder the project was opened from produced no change in the settings
+// view. The list reloaded on the open project's *file* path, and that
+// Save As leaves the path string exactly as it was — while the session
+// moves out of its auto-located directory (ADR 0042 §2) and into the
+// user's folder. The host announces the move; this is the list following
+// it.
+describe("the project cache list following the session's root", () => {
+  it("reloads on a re-root that leaves the project file path unchanged", async () => {
+    rows = [
+      row({
+        root: "/cache/projects/aaa",
+        project_file: "/work/rig/rig.cannet_prj",
+        state: "active",
+        auto_located: true,
+        bytes: 2 * 1024 * 1024 * 1024,
+      }),
+    ];
+    await renderList();
+    expect(screen.getByText("/cache/projects/aaa")).toBeInTheDocument();
+
+    // Save As onto that same `.cannet_prj`: the folder now holds a
+    // `.cannet/`, so it is a project directory of its own, and the
+    // directory left behind keeps its reclaimable bytes.
+    rows = [
+      row({
+        root: "/work/rig",
+        project_file: "/work/rig/rig.cannet_prj",
+        state: "active",
+        bytes: 2 * 1024 * 1024 * 1024,
+      }),
+      row({
+        root: "/cache/projects/aaa",
+        state: "auto-located",
+        auto_located: true,
+        bytes: 700 * 1024 * 1024,
+      }),
+    ];
+    act(() => emitHostEvent("project-dir-changed", { root: "/work/rig", auto_located: false }));
+
+    expect(await screen.findByText("/work/rig")).toBeInTheDocument();
+    expect(screen.getByText("/cache/projects/aaa")).toBeInTheDocument();
+    expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByText("auto-located")).toBeInTheDocument();
+    expect(screen.getByText("700 MB")).toBeInTheDocument();
+  });
+
+  // Sizes are asked for, never polled (ADR 0002 DS-8), so returning to
+  // the settings view is one of the moments they are asked for. The view
+  // publishes how many times it has been shown; this list is reached only
+  // through the custom-renderer table, so that count is how it hears.
+  it("re-measures when the settings view comes back into view", async () => {
+    rows = [row({ root: "/work/rig", bytes: 1024 * 1024 })];
+    const { rerender } = render(
+      <SettingsShownContext.Provider value={1}>
+        <ProjectCachesList />
+      </SettingsShownContext.Provider>,
+    );
+    expect(await screen.findByText("1.0 MB")).toBeInTheDocument();
+
+    // A rebuild while another panel was on screen grew the cache.
+    rows = [row({ root: "/work/rig", bytes: 64 * 1024 * 1024 })];
+    rerender(
+      <SettingsShownContext.Provider value={2}>
+        <ProjectCachesList />
+      </SettingsShownContext.Provider>,
+    );
+
+    expect(await screen.findByText("64.0 MB")).toBeInTheDocument();
   });
 });

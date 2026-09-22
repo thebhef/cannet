@@ -320,6 +320,45 @@ fn log_project_dir(dir: &project_dir::ProjectDir, what: &'static str) {
     );
 }
 
+/// Tauri event announcing that the session has re-rooted onto a
+/// different project directory (ADR 0042 §1). Payload is
+/// [`ProjectDirChangedPayload`]; every view over the set of project
+/// directories listens to it.
+///
+/// The frontend cannot infer this from the open project's *file* path.
+/// A Save As onto the same `.cannet_prj` promotes the project out of its
+/// auto-located directory and into the user's folder — the session
+/// moves, the path string does not.
+pub(crate) const PROJECT_DIR_CHANGED_EVENT: &str = "project-dir-changed";
+
+/// Wire shape of [`PROJECT_DIR_CHANGED_EVENT`]: the project directory
+/// the session is now rooted in, and whether cannet chose that location
+/// (ADR 0042 §2) rather than the user naming it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ProjectDirChangedPayload {
+    pub root: String,
+    pub auto_located: bool,
+}
+
+impl ProjectDirChangedPayload {
+    fn of(dir: &project_dir::ProjectDir) -> Self {
+        Self {
+            root: dir.root().display().to_string(),
+            auto_located: dir.is_auto_located(),
+        }
+    }
+}
+
+/// Whether moving the session from `active` onto `dest` is a re-root —
+/// and so whether [`reroot_session`] does anything and announces it.
+///
+/// The session is rooted in a *directory*, so the comparison is between
+/// roots and nothing else: the same directory reached by a different
+/// route is where the session already is.
+fn is_reroot(active: &project_dir::ProjectDir, dest: &project_dir::ProjectDir) -> bool {
+    active.root() != dest.root()
+}
+
 /// Move the session onto `dest` — everything rooted in a project
 /// directory's cache follows the project directory (ADR 0042 §1).
 ///
@@ -341,7 +380,7 @@ pub(crate) fn reroot_session(
     carry: trace_store::Carry,
 ) {
     let active = app.state::<project_dir::ActiveProjectDir>();
-    if active.get().root() == dest.root() {
+    if !is_reroot(&active.get(), dest) {
         return;
     }
     let state = app.state::<AppState>();
@@ -366,6 +405,13 @@ pub(crate) fn reroot_session(
     // Settings resolve through the new project's `.cannet/`, which may
     // override the scratch cap.
     apply_cache_caps(app);
+    // Announced last, so a listener that re-reads host state on the
+    // event — the settings view's project caches list does — finds the
+    // session already rooted where the payload says it is.
+    let _ = app.emit(
+        PROJECT_DIR_CHANGED_EVENT,
+        ProjectDirChangedPayload::of(dest),
+    );
 }
 
 /// The open project's workspace-scoped data directory — `.cannet/`
