@@ -25,6 +25,8 @@ import { listen } from "@tauri-apps/api/event";
 import { ProjectContext } from "./projectContext";
 import { SettingsShownContext } from "./settingsShown";
 import { formatBytes } from "./statusLine";
+import { TwoStageRemoveButton } from "./TwoStageRemoveButton";
+import { projectName } from "./windowTitle";
 import {
   badgeLabel,
   canClear,
@@ -118,11 +120,19 @@ export function ProjectCachesList() {
           key={row.root}
           className={`project-cache-row${row.state === "missing" ? " gone" : ""}`}
         >
-          <span className={`project-cache-badge ${row.state}`}>
+          <span
+            className={`project-cache-badge ${row.state}`}
+            title={
+              row.state === "auto-located"
+                ? "The project file has no .cannet/ beside it, so cannet located its cache here. Save as… moves the project out of cache space."
+                : undefined
+            }
+          >
             {badgeLabel(row.state)}
           </span>
-          <span className="project-cache-path" title={row.root}>
-            {row.root}
+          <span className="project-cache-info" title={row.root}>
+            <span className="project-cache-name">{projectName(row.project_file) ?? "unsaved"}</span>
+            <span className="project-cache-path">{row.root}</span>
           </span>
           <span className="project-cache-size">{formatBytes(row.bytes)}</span>
           {offersSaveAs(row) && (
@@ -151,19 +161,16 @@ export function ProjectCachesList() {
           >
             Clear data cache
           </button>
-          <button
-            type="button"
-            className="danger"
-            disabled={busy || !canDelete(row)}
+          <TwoStageRemoveButton
+            label="Delete"
             title={
               canDelete(row)
                 ? "Removes this project's cache directory and forgets it. The project directory itself is not touched."
                 : "Can't remove the cache directory of the project that's open. Clear it instead."
             }
-            onClick={() => void run(() => deleteProjectCache(row.root))}
-          >
-            Delete
-          </button>
+            disabled={busy || !canDelete(row)}
+            onRemove={() => void run(() => deleteProjectCache(row.root))}
+          />
         </div>
       ))}
     </div>
