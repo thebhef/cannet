@@ -16,6 +16,9 @@ From the owner, 2026-09-21:
    styled the same.
 3. A project opened from its own folder showed the `active` badge on
    a row whose path looked auto-located.
+4. A Save As over that same folder (which wrote the `.cannet/` there)
+   produced no change in the settings view, giving no clear feedback
+   about the state of the project.
 
 ## Findings (2026-09-21 survey)
 
@@ -51,6 +54,20 @@ From the owner, 2026-09-21:
   with `icon-btn-trash` (single click, for registry-undoable
   removes). Deleting a cache directory is not undoable, so the
   two-stage control is the matching one.
+- **Observation 4: the host re-rooted, the list did not reload.** After
+  the Save As the folder holds a `.cannet/` (gitignore, settings and
+  state files, the cache link) and the registry carries a new entry
+  for it, `auto_located: false`, beside the old auto-located entry
+  that Save As deliberately leaves behind (its derived caches may
+  still be mapped; the list is how those bytes are reclaimed). The
+  list reloads only when `projectPath` changes
+  (`ProjectCachesList.tsx`, the effect on `[refresh, projectPath]`),
+  and a Save As onto the same file path leaves that string unchanged,
+  so nothing refreshed: the row still read `active` on the hash
+  directory while the host was already rooted in the user's folder.
+  The row's own `Save as…` button does not await the save either. The
+  host's `reroot_session` emits `notes-changed` and nothing about the
+  root itself.
 - **Delete is refused for the active row** (`canDelete`), with the
   refusal in the tooltip; the two-stage control takes `disabled` the
   same way any button does.
@@ -67,24 +84,29 @@ From the owner, 2026-09-21:
 - **Delete becomes the trash icon** (owner, 2026-09-21): the shared
   `TwoStageRemoveButton`, since the removal is not undoable.
 
+- **Just the project name** (owner, 2026-09-21): no further affordance
+  on an auto-located row. The badge tooltip states the reason and
+  `Save as…` stays the promotion path.
+- **The list follows the session's root** (overseer, from observation
+  4): the host announces a re-root (a `project-dir-changed` event
+  from `reroot_session`, beside the `notes-changed` it already emits)
+  and the list reloads on it, so a Save As, an open, or a Save As onto
+  the same path all show the new row, the new `active` badge, and the
+  left-behind auto-located row with its reclaimable bytes.
+
 ## Open questions
 
-1. **Does the row need more than the name?** The behaviour behind
-   observation 3 is the ADR's; the row could also state the reason
-   in the badge tooltip and leave the existing `Save as…` as the
-   promotion path (*recommend*), or grow an "adopt this folder"
-   action that writes a `.cannet/` beside the project file — which
-   ADR 0042 §2 forbids as a side effect and §6 already provides as
-   Save As into that folder.
-2. **`Clear all data caches`** also wears `danger`. It is a clear,
+1. **`Clear all data caches`** also wears `danger`. It is a clear,
    not a removal, so *recommend* it keeps its text and loses nothing;
    only `Delete` changes.
 
 ## Phases
 
-One phase, one branch, frontend-only: the row layout (name, secondary
-path line, badge tooltip), `Delete` as `TwoStageRemoveButton`, the
-list's dom test extended, ADR 0042 §5 amended if the row's contents
+One phase, one branch: the row layout (name, secondary path line,
+badge tooltip), `Delete` as `TwoStageRemoveButton`, the host's
+re-root event and the list reloading on it (a failing dom test first:
+Save As onto the same path, list unchanged), the list's dom test
+extended, ADR 0042 §5 amended if the row's contents
 are described there, `docs/CONTEXT.md` if a term is added.
 
 ## Exit criteria
@@ -98,7 +120,11 @@ are described there, `docs/CONTEXT.md` if a term is added.
 4. `Delete` is the shared two-stage trash control: armed on first
    click, acts on second, disabled on the active row with the
    existing refusal text.
-5. Dom tests cover 1–4; the existing list tests pass.
+5. After a Save As — including onto the same file path — the list
+   shows the new project directory as `active` and the left-behind
+   auto-located row as reclaimable, without reopening the settings
+   view. A host test covers the event; a dom test covers the reload.
+6. Dom tests cover 1–5; the existing list tests pass.
 
 ## Blockers / side effects
 
