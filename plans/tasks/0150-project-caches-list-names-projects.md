@@ -172,3 +172,34 @@ are described there, `docs/CONTEXT.md` if a term is added.
 ## Status log
 
 - 2026-09-21 — opened; survey and rulings above.
+- 2026-09-21 — **phase 1 (the settings view's staleness) landed** on
+  `task150-settings-refresh` (`603a29df`, one commit, no squash). The
+  host announces every re-root (`project-dir-changed` from
+  `reroot_session`, payload = the new project directory +
+  `auto_located`); the guard is now `is_reroot`, which is what the host
+  tests exercise — this host has no Tauri mock-app pattern, and
+  `interfaces.rs` likewise tests the emit *decision* rather than the
+  `app.emit` line. The project caches list follows that event and
+  re-measures when the view is shown again; the settings view
+  re-hydrates the settings file and the overrides on
+  `onDidVisibilityChange` (chosen over `onDidActiveChange`: `isVisible`
+  is exactly "on screen", and a panel can be visible in another group
+  without being active). Scroll: **verified in dockview-core 6.0.7's
+  source** that `ContentContainer.renderPanel`'s `onlyWhenVisible`
+  branch removes the hidden panel's element from the document, and that
+  `renderer: "always"` merely swaps that for `display: none` in the
+  overlay container — also no layout box, so not a guaranteed fix, and
+  it would keep the hidden view rendering. **Chose save/restore of
+  `scrollTop`**, which holds under either mechanism; `doSetActivePanel`
+  re-attaches before it fires the change, so a layout effect on the
+  visibility bump is early enough. The count of times the view has been
+  shown is published through the new `SettingsShownContext`, because the
+  caches list is reached only through the custom-setting renderer table.
+  Six tests, each red first. ADR 0042 §5 amended. Scoped per-phase
+  checks green (1328 host, 3604 frontend); release host built, no perf
+  capture (no render or data path touched). Exit criteria 5, 6, 7 met;
+  8's test half met. Side effect: `ProjectCachesList.tsx`, its dom test
+  and ADR 0042 sat in the worktree with CRLF endings against an LF
+  index; normalised back to LF in the commit. Hands-on check owed to the
+  owner: scroll holds and a grown cache re-measures on return; a Save As
+  onto a loose project's file flips `active` without reopening the view.
