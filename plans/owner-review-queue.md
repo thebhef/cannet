@@ -58,6 +58,19 @@ keeps the queue's copy). This file shrinks every time it is walked.
   every `auto_located` row (one condition in `ProjectCachesList.tsx`),
   or accept? Detail: 0150 § Status log, 2026-09-21 phase 2.
 
+- **Task 149 — `N · m` composes to energy, not torque.** The order has
+  always put Energy ahead of Torque (the task file's survey said the
+  reverse and has been corrected), so a `N · m` product first-resolves
+  to energy with torque offered beneath. Moving Torque ahead flips
+  `W · s` and `V · A · s` to torque instead. Keep energy first (today's
+  behaviour, the user overrides), or move torque ahead? One line either
+  way. Detail: 0149 § Status log, 2026-09-22.
+
+- **Task 149 — `mph` now displays `mi/h`**, the crate's own symbol;
+  `mph` still recognises from a database. Keeping `mph` means one
+  hand-typed display override, which the no-curation ruling forbids.
+  Accept? Detail: 0149 § Blockers / side effects.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the

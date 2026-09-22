@@ -69,8 +69,10 @@ follow from that table as they do today.
   for the phase to check (the facade's offsets stay if it does not).
 - **Composition order matters more at 110 quantities.**
   `Composed::dimension()` resolves a product to the first dimension
-  in `COMPOSITION_ORDER` whose base is ISQ-convertible with it (so
-  `N · m` reads as torque before energy). Many of the 110 share ISQ
+  in `COMPOSITION_ORDER` whose base is ISQ-convertible with it (the
+  order has always put energy ahead of torque, so `N · m` reads as
+  energy; an earlier draft of this note had it backwards). Many of
+  the 110 share ISQ
   dimensions (frequency / radioactivity / angular velocity; energy /
   torque; heat capacity / entropy; and more); the order decides what
   a math product is called.
@@ -100,7 +102,8 @@ follow from that table as they do today.
   math signal's output unit) the lock widens to every dimension
   ISQ-equivalent to the composition, grouped under their own headings
   with the first resolution's group first and its unit preselected.
-  So a `N · m` product opens on torque and offers energy under it. A
+  So a `N · m` product opens on energy (the order's first) and offers
+  torque under it, unless the owner moves torque ahead (queued). A
   settings-view composition (`X = N * m`) is placed by the same first
   resolution; overriding it there is naming the target explicitly,
   which the entry already allows by composing from a unit of the
@@ -157,17 +160,99 @@ follow from that table as they do today.
 7. Compile-time and release binary-size deltas from enabling all 110
    features are recorded in the status log.
 8. A math signal whose composed unit is `N · m` opens its output unit
-   picker on torque with energy offered beneath; picking a joule
-   converts by the right factor. A test pins the first resolution of
-   every composition today's tests name.
+   picker on the composition order's first resolution — energy, as
+   the order has always read it — with torque offered beneath; picking
+   a newton-metre converts by the right factor. (Whether torque should
+   move ahead of energy is a queued owner question; either answer is
+   one line in the `dimensions!` list.) A test pins the first
+   resolution of every composition today's tests name.
 9. `plans/technology-inventory.md`'s `runtime_units` entry and the
    `units.rs` module docs describe the no-curation table.
 
 ## Blockers / side effects
 
-(none yet)
+- **`runtime_units` 0.6.3, `DoseEquivalent`**: every sievert above the
+  sievert carries a stray `prefix!(centi)` factor, so `decasievert` is
+  0.1 Sv and collides with `decisievert`. The classification rule
+  refuses it (name says deca, number does not), so it is offered as a
+  base of its own and the deca rung is composed from the sievert.
+  Guarded by
+  `a_library_unit_whose_number_contradicts_its_name_is_a_base_of_its_own`.
+- **`runtime_units` 0.6.3, `PressureImpulse`**:
+  `pound_force_per_square_inch_sec` carries the pressure's symbol
+  `lbf/in²`, so that symbol is ambiguous and recognises to nothing.
+  `psi` is unaffected.
+- **Three crate units are unreachable through the crate's own
+  enumeration API** (`CubeRootScaledLength` gives two units each of the
+  singulars `scaled_kilometer`, `scaled_foot` and
+  `meter_per_cube_root_kiloton_tnt`; `units()` lists singulars and
+  `try_from` resolves the first), so the three
+  `scaled_*_per_kiloton_tnt` units are not in the table. 3 of 2285;
+  naming variants by hand would be the curation this task removes.
+- **`°R` is offered but no spelling reaches it**: the crate gives the
+  absolute and the interval Rankine the same `°R`. Its id
+  `degree-rankine` still names it.
+- **`mph` now displays `mi/h`** (the crate's symbol); `mph` still
+  recognises. Keeping `mph` would be a hand-typed display override.
+  Queued for the owner.
 
 ## Status log
 
 - 2026-09-21 — opened from ungroomed item 11; survey and rulings
   above.
+- 2026-09-22 — **phase 1 (the table from the crate) landed** on
+  `task149-units-table` (`1befcfd4`, one commit, no squash).
+  `Cargo.toml` takes the crate's `All` feature; `units.rs` derives
+  `Dimension` and `UNITS` from it. The only hand-written part left is
+  the `dimensions!` list — one row per library quantity naming what
+  this facade calls it — and `Dimension::rows()` reads each quantity's
+  units back out of the crate (`units()` → `try_from` → variant name,
+  symbol, singular, plural, multiplier). Shape: a macro over the
+  quantity list building a `LazyLock<Table>` — a generated table would
+  need a build script and a second copy of the crate's data, a purely
+  runtime table cannot produce a `Dimension` enum with serde names;
+  `serde(rename_all = "kebab-case")` + `stringify!` derive the
+  serialized name, the picker label and the id qualifier from one
+  spelling. **Table: 2289 rows over 109 dimensions** (930 bases, 1359
+  prefixed rungs, 115 bases with an SI ladder). 108 crate quantities
+  build, not 110: `ThermodynamicTemperature` is commented out of the
+  crate's own `system!` and `scaled_length` is unlisted, so the crate
+  still has **no absolute-temperature quantity and the facade's offsets
+  stay** (§ Findings check answered); absolute temperature is a facade
+  dimension of four scales (K, °C, °F, °R) and `temperature-interval`
+  its own beside it. **Classification**: a rung where the variant name
+  splices the prefix at a word boundary *and* the multiplier ratio is
+  that prefix's power of ten (`ampere per micrometer` is a million
+  `ampere per meter`; `psi` and `pound_force_per_square_inch` share a
+  multiplier); rungs of rungs walked to their base, dropped to a base
+  of their own where the exponents are no SI prefix. All 49 old ids,
+  displays and `(base, prefix)` identities survive, except `mph` →
+  `mi/h` and the symbol-less bare ratio reading as its id. Displays
+  close up the crate's ` · ` (`Ah`, `Nmm`). **Recognition** gains a
+  unique-or-nothing pass over every crate spelling (symbol, singular,
+  plural) after the ids and before prefix composition: 6544 spellings,
+  123 ambiguous and refused; `prefixed_spelling` unique-or-nothing too
+  (21 `?g/m³` collisions). `C` kept unrecognised via a one-entry
+  `REFUSED` list (owner ruling predates this task). Automotive spellings
+  (`V`, `A`, `rpm`, `km/h`, `bar`, `°C`, `%`, `psi`, `Ah`, `Nm`, `mph`,
+  `h`, `K`, `°F`) all still place, asserted by
+  `the_spellings_an_automotive_database_writes_still_place_their_units`.
+  **Composition** resolves against `Dimension::all()` (composition
+  order); new `Composed::dimensions()` returns the ISQ-equivalence class
+  in that order, first element = `dimension()`; `N · m` → energy, as it
+  always did (criterion 8 corrected, order question queued). **Deltas**
+  (`cargo clean -p cannet-gui -p runtime_units --release` then `cargo
+  build -p cannet-gui --release`, one machine, same day): compile
+  **137 s → 176 s (+39 s, +28 %)**; `target/release/cannet-gui.exe`
+  **24,467,968 → 25,579,520 bytes (+1.06 MiB, +4.5 %)**. Tests: 77 in
+  `units` (8 new), 1336 host, 3608 frontend, workspace clippy and
+  rustdoc clean; release host built. README's ratio-scale and
+  unplaceable-unit sentences corrected in the commit. Exit criteria 1,
+  2, 3, 5, 7 and 8's host half met. For phase 2: `list_units()` 2289
+  rows, `list_unit_picker()` 930 bases over 109 groups; `RATIO_SCALES`
+  → `ratio_scales()` (11 scales, descending); `UnitScale::label` is now
+  `String` (JSON-identical); the crate has no litre-per-minute, so
+  `LPM` is composed (`liter` over `minute` → volume-rate, 1/60000 to
+  `cubic-meter-per-second`). Overseer's review: the module doc's
+  "Recognising a DBC unit string" paragraph omits the new crate-spelling
+  pass that `recognize`'s own doc lists — phase 2 fixes the wording.
