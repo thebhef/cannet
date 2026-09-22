@@ -50,6 +50,14 @@ keeps the queue's copy). This file shrinks every time it is walked.
   full value is in the side panel and the measurement strip. Accept, or
   want it elsewhere? Detail: 0146 § Blockers / side effects.
 
+- **Project caches row: the auto-located explanation sits only on the
+  `auto-located` badge.** An open project that is itself auto-located
+  wears the `active` badge and gets no tooltip saying its directory is
+  in cache space — which was the row behind observation 3. The phase
+  judged the row's `Save as…` tooltip enough. Extend the tooltip to
+  every `auto_located` row (one condition in `ProjectCachesList.tsx`),
+  or accept? Detail: 0150 § Status log, 2026-09-21 phase 2.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the
@@ -151,6 +159,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
   and `fix-plot-square-markers`, after the owner reported `Points: On`
   unusable on a long trace; owner verified the pair on that project the
   same day (detail: 0146 § Status log, 2026-09-21).
+
+- **Task 150 — The Project Caches List Names Its Projects**
+  (2026-09-21): both phases landed (`task150-settings-refresh` →
+  `task150-cache-rows`); all 8 exit criteria met (verdicts in the task
+  file). Task-final full CI green (3608 frontend, workspace host). § 1
+  carries the badge-tooltip scope question; the owner's hands-on check
+  of scroll, re-measure and Save As is still owed.
 
 ## 5. Housekeeping owed at close-out
 

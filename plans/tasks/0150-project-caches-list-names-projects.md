@@ -203,3 +203,41 @@ are described there, `docs/CONTEXT.md` if a term is added.
   index; normalised back to LF in the commit. Hands-on check owed to the
   owner: scroll holds and a grown cache re-measures on return; a Save As
   onto a loose project's file flips `active` without reopening the view.
+- 2026-09-21 — **phase 2 (the rows) landed** on `task150-cache-rows`
+  (`b81141d5`, one commit, no squash). A row whose entry has a project
+  file leads with the project name (`projectName` from
+  `windowTitle.ts` — no second stem function); the directory path moved
+  to a secondary line and stays in the row's tooltip. The unsaved
+  session's row reads "unsaved". The `auto-located` badge's tooltip says
+  the project file has no `.cannet/` beside it and that Save as… moves
+  the project; the phase scoped it to the row whose badge reads
+  `auto-located`, not to an active row that is itself auto-located
+  (that row's Save as… tooltip was judged enough) — queued for the
+  owner as a yes/no, since observation 3 was exactly an active,
+  auto-located row. Delete is the shared `TwoStageRemoveButton`, which
+  gained a `disabled` prop matching `IconButton`'s shape. `Clear all
+  data caches` keeps its `danger` styling and text (ruled), so the CSS
+  rule stays. ADR 0042 §5 not amended (it describes actions and
+  re-rooting, not the row's contents). Four new dom tests, red first;
+  two Delete tests updated for arm-then-act. Task-final full local CI:
+  frontend test + build (3608), `cargo test --workspace`, workspace
+  clippy, `cargo fmt --check`, comment-references grep — green; other
+  lanes unreachable by a frontend-only diff. Release host built, no
+  perf capture.
+
+## Exit criteria verdicts (2026-09-21)
+
+| # | Verdict |
+|---|---|
+| 1 | met — name leads, path secondary and in the tooltip (phase 2) |
+| 2 | met — on the `auto-located` badge; the active-and-auto-located row's scope is a queued yes/no |
+| 3 | met — "unsaved" (phase 2) |
+| 4 | met — `TwoStageRemoveButton`, disabled on the active row with the existing refusal (phase 2) |
+| 5 | met — `project-dir-changed` from `reroot_session`; host + dom tests (phase 1) |
+| 6 | met — re-hydrates on `onDidVisibilityChange`; a grown cache re-measures (phase 1) |
+| 7 | met — `scrollTop` saved and restored on the visibility bump (phase 1) |
+| 8 | met — six + four dom/host tests; existing settings and list tests pass |
+
+Owner hands-on check still owed (no UI automation from agents): scroll
+holds and a grown cache re-measures on return; a Save As onto a loose
+project's file flips `active` without reopening the view.
