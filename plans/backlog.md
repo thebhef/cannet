@@ -185,6 +185,17 @@ trip over it.
   (Owner test drive 2026-08-07; the collapsible plot areas that have
   since shipped may mitigate.)
 
+- `[feat]` **Marker shapes, blitted from a sprite.** Sample markers
+  are squares (ADR 0026, 2026-09-21). Circle, triangle, diamond,
+  cross and plus would each be a path per marker if drawn as one, and
+  the path is rebuilt on every repaint; the cheap shape is a
+  pre-rendered sprite blitted per marker, cached per shape / colour /
+  size / device pixel ratio. Wants a per-panel default marker beside
+  the `Points:` chip, and optionally a `marker` on a colormap rule
+  (ADR 0029) drawn in that rule's colour — which needs the host to
+  serve a point's raw value beside its physical one, since rules key
+  on raw. Owner chose squares only for now (2026-09-21).
+
 ### DBC view
 
 - `[ui]` **DBC panel table-tree rework.** The current per-signal detail
