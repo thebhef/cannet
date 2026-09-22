@@ -461,6 +461,19 @@ what is drawn. Persisted per area (the area flag) and per axis id
 _Avoid_: "hide" for a collapse, and "collapse" for a hidden signal's
 row treatment.
 
+**Overlay canvas** (plot):
+A second canvas stacked over an **axis**'s plotting canvas, covering
+the whole plot including its gutters. It carries everything the
+pointer and the cursors drive — the crosshair, the A/B and H1/H2
+cursor lines, the hover markers, the event lines and their label
+chips, and the cursor readouts in the gutters. The data is drawn on
+the canvas underneath: the lines, the **logic-analyzer lane** tiles,
+the dashed extrapolated stretches. That is the whole of the split, and
+it is what keeps pointing at a long capture cheap — moving the pointer
+repaints the overlay canvas alone and never the series (ADR 0026).
+_Avoid_: "overlay" for a lane tile or anything else that is part of
+the drawn data.
+
 ### Extensions
 
 **Extension**:

@@ -735,6 +735,17 @@ pub struct AutomationConfig {
     /// (`perfInteract.ts`); an unrecognised one falls back to the
     /// scrubbing script there. `None` leaves the run gestureless.
     pub interact: Option<String>,
+    /// `--show-points <auto|off|on>`: force every plot panel's
+    /// show-points mode for this run.
+    ///
+    /// A launch flag and not a project edit, for the reason
+    /// `--rbs-run-on-start` is one: the mode is a persisted *panel*
+    /// setting, so measuring a mode by saving it into the baseline
+    /// project would change the comparand every later reading is taken
+    /// against. The webview owns the vocabulary (`plotPoints.ts`);
+    /// anything it does not recognise reads as `auto`, and `None`
+    /// leaves each panel's own mode alone.
+    pub show_points: Option<String>,
 }
 
 impl AutomationConfig {
@@ -784,6 +795,10 @@ impl AutomationConfig {
                     cfg.interact = it.next();
                     seen = true;
                 }
+                "--show-points" => {
+                    cfg.show_points = it.next();
+                    seen = true;
+                }
                 _ => {}
             }
         }
@@ -817,7 +832,7 @@ pub fn diag_enabled_from_args(args: impl IntoIterator<Item = String>) -> bool {
             }
             // Value-taking flags that don't arm anything: skip their value
             // so a project path of `--diag` stays a path.
-            "--project" | "--app-data-dir" => {
+            "--project" | "--app-data-dir" | "--show-points" => {
                 it.next();
             }
             _ => {}
@@ -1209,6 +1224,45 @@ mod tests {
         assert_eq!(cfg.out.as_deref(), Some("out/report.json"));
         assert_eq!(cfg.label.as_deref(), Some("2 plots + 2 traces"));
         assert_eq!(cfg.interact.as_deref(), Some("scrub"));
+    }
+
+    #[test]
+    fn autostart_forces_show_points_only_when_asked() {
+        // The mode is a persisted panel setting, so a measurement run
+        // pins it from the launch rather than by saving it into the
+        // project it measures. Silence means "leave each panel alone",
+        // which is what every non-measuring launch must get.
+        let cfg = AutomationConfig::from_args(args(&["cannet", "--connect-on-start"]))
+            .expect("flag arms autostart");
+        assert_eq!(cfg.show_points, None);
+        let cfg = AutomationConfig::from_args(args(&[
+            "cannet",
+            "--connect-on-start",
+            "--show-points",
+            "on",
+        ]))
+        .expect("flag arms autostart");
+        assert_eq!(cfg.show_points.as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn show_points_arms_autostart_but_not_diag() {
+        // It shapes what is drawn, not what is recorded — the same side
+        // of the line `--project` is on. Its value is skipped for the
+        // same reason a project path is: a mode of `--diag` is data.
+        let cfg = AutomationConfig::from_args(args(&["cannet", "--show-points", "off"]))
+            .expect("flag arms autostart");
+        assert_eq!(cfg.show_points.as_deref(), Some("off"));
+        assert!(!diag_enabled_from_args(args(&[
+            "cannet",
+            "--show-points",
+            "on"
+        ])));
+        assert!(!diag_enabled_from_args(args(&[
+            "cannet",
+            "--show-points",
+            "--diag"
+        ])));
     }
 
     #[test]
