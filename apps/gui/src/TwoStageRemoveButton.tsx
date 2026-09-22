@@ -19,9 +19,13 @@ export interface TwoStageRemoveButtonProps {
   title?: string;
   onRemove: () => void;
   className?: string;
+  /// Refuses the removal outright — a row whose control has no way to
+  /// act, same as any other disabled button. Never reaches the armed
+  /// state.
+  disabled?: boolean;
 }
 
-export function TwoStageRemoveButton({ label, title, onRemove, className }: TwoStageRemoveButtonProps) {
+export function TwoStageRemoveButton({ label, title, onRemove, className, disabled }: TwoStageRemoveButtonProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (!armed) return;
@@ -34,6 +38,7 @@ export function TwoStageRemoveButton({ label, title, onRemove, className }: TwoS
       className={`two-stage-remove${armed ? " two-stage-remove-armed" : ""}${className ? ` ${className}` : ""}`}
       aria-label={armed ? "click again to confirm" : label}
       title={armed ? "click again to confirm" : (title ?? label)}
+      disabled={disabled}
       onClick={(e) => {
         e.stopPropagation();
         if (armed) {
