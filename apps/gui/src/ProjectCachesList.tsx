@@ -20,8 +20,10 @@
 //   this list is the one place a user sees that their project does.
 
 import { useCallback, useContext, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import { ProjectContext } from "./projectContext";
+import { SettingsShownContext } from "./settingsShown";
 import { formatBytes } from "./statusLine";
 import {
   badgeLabel,
@@ -46,17 +48,32 @@ export function ProjectCachesList() {
   // Save As is the only thing it wants from the project.
   const project = useContext(ProjectContext);
   const projectPath = project?.projectPath ?? null;
+  const shown = useContext(SettingsShownContext);
 
   const refresh = useCallback(async () => {
     setRows(await loadProjectCaches());
   }, []);
 
-  // Sizes are asked for, never polled: on open, and whenever the open
-  // project changes — which is also what a Save As from a row below
-  // produces.
+  // Sizes are asked for, never polled (ADR 0002 DS-8): on open, whenever
+  // the open project changes, and every time the settings view comes
+  // back on screen — a cache that grew while the user was on another
+  // panel shows its new size on return.
   useEffect(() => {
     void refresh();
-  }, [refresh, projectPath]);
+  }, [refresh, projectPath, shown]);
+
+  // The open project's *file* path is not enough to follow. A Save As
+  // onto that same `.cannet_prj` promotes the project out of its
+  // auto-located directory and into the user's folder (ADR 0042 §2):
+  // the session moves, the path string does not, and the row that was
+  // `active` is now the one whose bytes can be reclaimed. The host
+  // announces every re-root, and that is what this follows.
+  useEffect(() => {
+    const unlisten = listen("project-dir-changed", () => void refresh());
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [refresh]);
 
   const run = useCallback(
     async (action: () => Promise<void>) => {

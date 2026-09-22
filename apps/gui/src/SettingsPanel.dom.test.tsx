@@ -15,6 +15,9 @@ const minCap = 64 * 1024 * 1024;
 let stored: Record<string, unknown> = {};
 let overrides: string[] = [];
 let writes: Record<string, unknown>[] = [];
+/// What `list_project_caches` serves — the settings view's one custom
+/// renderer that reads the host directly rather than a settings key.
+let caches: unknown[] = [];
 
 const schema = {
   surfaces: [
@@ -82,6 +85,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         return schema;
       case "get_settings_overrides":
         return [...overrides];
+      case "list_project_caches":
+        return caches;
       case "set_settings": {
         const next = { ...(args?.settings as Record<string, unknown>) };
         writes.push({ ...next });
@@ -96,12 +101,20 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 
+// The project caches list listens for the host's re-root announcement;
+// nothing in this file fires one, so the subscription just has to exist.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
+
 import type { IDockviewPanelProps } from "dockview";
 
 import { SETTINGS_PANEL_ID } from "./dockLayout";
 import { hydrateSettings } from "./hostSettings";
 import { createPanelCommandRegistry, PanelCommandsContext } from "./panelCommands";
 import { CUSTOM_SETTING_RENDERERS } from "./settingControls";
+import { ProjectCachesList } from "./ProjectCachesList";
+import type { ProjectCacheRow } from "./projectCaches";
 import { SettingsPanel } from "./SettingsPanel";
 
 beforeEach(async () => {
@@ -115,6 +128,7 @@ beforeEach(async () => {
   };
   overrides = [];
   writes = [];
+  caches = [];
   // The panel is a view over the shared cache, which the app hydrates
   // before first render.
   await hydrateSettings();
@@ -124,11 +138,50 @@ afterEach(() => {
   cleanup();
 });
 
+/// The slice of dockview's panel API the settings view touches: the
+/// visibility signal it re-reads and restores its scroll position on.
+/// `setVisible` drives the registered listener so a test can switch away
+/// from the panel and back.
+/// One row of `list_project_caches`, as the host serves it.
+function cacheRow(bytes: number): ProjectCacheRow {
+  return {
+    root: "/work/rig",
+    cache: "/cache/abc",
+    project_file: "/work/rig/rig.cannet_prj",
+    bytes,
+    state: "active",
+    auto_located: false,
+    last_used_seconds: 1_700,
+  };
+}
+
+function fakePanelApi() {
+  const listeners = new Set<(e: { isVisible: boolean }) => void>();
+  return {
+    isVisible: true,
+    onDidVisibilityChange(fn: (e: { isVisible: boolean }) => void) {
+      listeners.add(fn);
+      return { dispose: () => listeners.delete(fn) };
+    },
+    setVisible(isVisible: boolean) {
+      act(() => {
+        for (const fn of listeners) fn({ isVisible });
+      });
+    },
+  };
+}
+
+function panelProps(api: ReturnType<typeof fakePanelApi>) {
+  return { api } as unknown as IDockviewPanelProps;
+}
+
 /// Render the panel and wait for its asynchronous mount work (the
 /// descriptor fetch, the re-hydrate) to land.
 async function renderLoaded() {
-  render(<SettingsPanel {...({} as IDockviewPanelProps)} />);
+  const api = fakePanelApi();
+  const { container } = render(<SettingsPanel {...panelProps(api)} />);
   await screen.findByText("Cache size cap");
+  return { api, container };
 }
 
 /// Type into the search box and wait past the debounce.
@@ -324,7 +377,7 @@ describe("SettingsPanel command registration (panel.find)", () => {
     const commands = createPanelCommandRegistry();
     render(
       <PanelCommandsContext.Provider value={commands}>
-        <SettingsPanel {...({} as IDockviewPanelProps)} />
+        <SettingsPanel {...panelProps(fakePanelApi())} />
       </PanelCommandsContext.Provider>,
     );
     await screen.findByText("Cache size cap");
@@ -340,5 +393,73 @@ describe("SettingsPanel command registration (panel.find)", () => {
     expect(document.activeElement).toBe(box);
     expect(box.selectionStart).toBe(0);
     expect(box.selectionEnd).toBe(box.value.length);
+  });
+});
+
+// The owner, 2026-09-21: "reopening the settings view refreshed it once;
+// after switching to other plots and rebuilding some caches it was stale
+// again", and "it does not retain its scroll position". The view owns no
+// data — everything on it is a read of the host — and nothing polls
+// (ADR 0002 DS-8), so coming back on screen is when it re-reads.
+describe("the settings view on return", () => {
+  it("re-reads the settings file and the project's overrides", async () => {
+    const { api } = await renderLoaded();
+    expect(screen.queryByText("Plot fetch cadence")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Set by this project/)).not.toBeInTheDocument();
+
+    // Away: another writer edits `settings.json`, and the project that
+    // was opened in the meantime overrides a key.
+    api.setVisible(false);
+    stored = { ...stored, show_developer_settings: true };
+    overrides = ["scratch_cap_bytes"];
+
+    api.setVisible(true);
+
+    expect(await screen.findByText("Plot fetch cadence")).toBeInTheDocument();
+    expect(screen.getByText(/Set by this project/)).toBeInTheDocument();
+  });
+
+  // The project caches list is reached only through the custom-renderer
+  // table, so it hears about the return through the count the view
+  // publishes. A cache that grew while another panel was on screen shows
+  // its new size, measured on return rather than on a timer.
+  it("re-measures the project caches it lists", async () => {
+    CUSTOM_SETTING_RENDERERS["test-view"] = () => <ProjectCachesList />;
+    caches = [cacheRow(512 * 1024 * 1024)];
+    const { api } = await renderLoaded();
+    expect(await screen.findByText("512 MB")).toBeInTheDocument();
+
+    api.setVisible(false);
+    caches = [cacheRow(3 * 1024 * 1024 * 1024)];
+    api.setVisible(true);
+
+    expect(await screen.findByText("3.0 GB")).toBeInTheDocument();
+    expect(screen.queryByText("512 MB")).not.toBeInTheDocument();
+  });
+
+  it("keeps its scroll position", async () => {
+    const { api, container } = await renderLoaded();
+    const list = container.querySelector(".settings-list") as HTMLElement;
+    // jsdom does no layout, so the list has no scroll range of its own.
+    Object.defineProperty(list, "scrollTop", { value: 0, writable: true });
+
+    list.scrollTop = 240;
+    fireEvent.scroll(list);
+
+    // Hidden: dockview's default renderer removes the panel's element
+    // from the document (dockview-core 6.0.7,
+    // `ContentContainer.renderPanel`, the `onlyWhenVisible` branch), and
+    // a box with no layout keeps no scroll offset — it comes back at the
+    // top. That reset is what jsdom cannot produce, so it is spelled out.
+    api.setVisible(false);
+    container.remove();
+    list.scrollTop = 0;
+
+    // Shown again: dockview re-attaches the element before it announces
+    // the panel visible, so the offset can be put back straight away.
+    document.body.appendChild(container);
+    api.setVisible(true);
+
+    expect(list.scrollTop).toBe(240);
   });
 });
