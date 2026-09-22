@@ -1768,6 +1768,12 @@ export interface MathSignalRecord extends MathDefinition {
   /// function. What a kind-locked unit picker offers against; `null`
   /// where nothing places it.
   unitKind: string | null;
+  /// **Every dimension that picker may offer**, in composition order,
+  /// with `unitKind` at its head — the ISQ-equivalence class of the
+  /// composition, since a newton-metre is an energy and a torque alike
+  /// and only the user knows which was meant. Empty exactly where
+  /// `unitKind` is `null`.
+  unitKinds: string[];
   /// What the host made of each operand's unit string, index-parallel
   /// with `resolvedOperands`. Distinct from `unconverted`: an
   /// unplaceable string and a placeable one of the wrong kind are

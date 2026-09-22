@@ -46,6 +46,37 @@ const PICKER = [
       scale("ampere-hour", undefined, "", "Ah", 0),
     ],
   },
+  // The two halves of an ISQ-equivalence class, and a volume unit
+  // whose spelling is not its name — the library writes `L` for the
+  // `liter`, so a filter has two different words to find it by.
+  {
+    id: "joule",
+    display: "J",
+    dimension: "energy",
+    dimensionLabel: "energy",
+    scales: [scale("joule", undefined, "", "J", 0)],
+  },
+  {
+    id: "newton-meter",
+    display: "Nm",
+    dimension: "torque",
+    dimensionLabel: "torque",
+    scales: [scale("newton-meter", undefined, "", "Nm", 0)],
+  },
+  {
+    id: "liter",
+    display: "L",
+    dimension: "volume",
+    dimensionLabel: "volume",
+    scales: [scale("liter", "milli", "m", "mL", -3), scale("liter", undefined, "", "L", 0)],
+  },
+  {
+    id: "psi",
+    display: "psi",
+    dimension: "pressure",
+    dimensionLabel: "pressure",
+    scales: [scale("psi", undefined, "", "psi", 0)],
+  },
 ];
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -81,6 +112,18 @@ function open(props: Partial<React.ComponentProps<typeof UnitPicker>> = {}) {
 
 const bases = () => screen.getByRole("listbox", { name: "unit" });
 const scales = () => screen.getByRole("listbox", { name: "scale" });
+const groups = () =>
+  [...bases().querySelectorAll(".unit-picker-group")].map((g) => g.textContent);
+const rowNames = () =>
+  within(bases())
+    .queryAllByRole("option")
+    .map((o) => o.querySelector(".unit-picker-name")?.textContent);
+
+function typeFilter(text: string) {
+  fireEvent.change(screen.getByRole("searchbox", { name: "Filter units" }), {
+    target: { value: text },
+  });
+}
 
 describe("UnitPicker", () => {
   it("offers every unit when no kind is named — reinterpretation crosses kinds", () => {
@@ -90,12 +133,78 @@ describe("UnitPicker", () => {
       "Vvolt",
       "Aampere",
       "Ahampere-hour",
+      "Jjoule",
+      "Nmnewton-meter",
+      "Lliter",
+      "psipsi",
     ]);
   });
 
   it("offers only the locked kind where a unit is applied", () => {
     open({ kind: "current", value: { base: "ampere" } });
     expect(within(bases()).getAllByRole("option")).toHaveLength(1);
+  });
+
+  /// A composed kind is a *class*: `N · m` is an energy and a torque,
+  /// and composition order says which the series reads as. Both are
+  /// offered, under their own headings, the first resolution first —
+  /// so naming the other is a click rather than impossible.
+  it("offers a composed class under its dimensions' headings, first resolution first", () => {
+    open({ kind: ["energy", "torque"], value: { base: "joule" } });
+    expect(within(bases()).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Jjoule",
+      "Nmnewton-meter",
+    ]);
+    expect(groups()).toEqual(["energy", "torque"]);
+    // The head names no single dimension: the headings do that now.
+    expect(screen.getAllByText("unit", { selector: ".unit-picker-head" })).toHaveLength(1);
+  });
+
+  it("picks a unit from the second dimension of the class", () => {
+    const onPick = open({ kind: ["energy", "torque"], value: { base: "joule" } });
+    fireEvent.click(within(bases()).getByText("newton-meter"));
+    expect(onPick).toHaveBeenCalledWith({ base: "newton-meter" });
+  });
+
+  /// 920 base rows over 109 dimensions is not a list anyone scrolls, so
+  /// the first column takes a substring filter. It matches what the row
+  /// shows — its spelling, its name and its heading — and the rows
+  /// themselves stay the host's.
+  it("filters the base column by substring over spelling, name and heading", () => {
+    open({ value: { base: "volt" } });
+    // The library spells the litre `L` and names it `liter`; both find
+    // the row, which is what a person types.
+    typeFilter("liter");
+    expect(rowNames()).toEqual(["liter"]);
+    typeFilter("L");
+    expect(rowNames()).toContain("liter");
+    typeFilter("psi");
+    expect(rowNames()).toEqual(["psi"]);
+    // The heading is a needle too: a whole dimension by name.
+    typeFilter("charge");
+    expect(rowNames()).toEqual(["ampere-hour"]);
+  });
+
+  it("drops the headings of the groups a filter empties", () => {
+    open({ value: { base: "volt" } });
+    expect(groups()).toEqual([
+      "voltage",
+      "current",
+      "charge",
+      "energy",
+      "torque",
+      "volume",
+      "pressure",
+    ]);
+    typeFilter("psi");
+    expect(groups()).toEqual(["pressure"]);
+  });
+
+  it("says so when a filter matches nothing, rather than showing an empty column", () => {
+    open({ value: { base: "volt" } });
+    typeFilter("furlong");
+    expect(within(bases()).queryAllByRole("option")).toHaveLength(0);
+    expect(screen.getByText("no unit matches")).toBeInTheDocument();
   });
 
   it("carries the exponent-ordered ladder with each rung's factor and spelling", () => {

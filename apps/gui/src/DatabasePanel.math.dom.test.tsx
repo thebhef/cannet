@@ -98,6 +98,7 @@ function mathRecord(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     unconverted: [],
     unitResolved: "V",
     unitKind: null,
+    unitKinds: [],
     recognition: [],
     busIds: ["bus-a"],
     invalid: null,
@@ -165,6 +166,10 @@ vi.mock("@tauri-apps/api/core", () => ({
           operandAffines: [],
           unconverted: [],
           unitResolved: "",
+          // A definition with no operands places no unit, which the
+          // host reports as no kind and an empty class.
+          unitKind: null,
+          unitKinds: [],
           busIds: [],
           invalid: "name it — names aren't derived from selections",
         },

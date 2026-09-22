@@ -82,6 +82,20 @@ const PICKER = [
     scales: [rung("ampere-hour", undefined, "", "Ah")],
   },
   {
+    id: "joule",
+    display: "J",
+    dimension: "energy",
+    dimensionLabel: "energy",
+    scales: [rung("joule", undefined, "", "J")],
+  },
+  {
+    id: "newton-meter",
+    display: "Nm",
+    dimension: "torque",
+    dimensionLabel: "torque",
+    scales: [rung("newton-meter", undefined, "", "Nm")],
+  },
+  {
     id: "second",
     display: "s",
     dimension: "time",
@@ -168,6 +182,10 @@ function mathRecord(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     busIds: ["bus-a"],
     invalid: null,
     ...over,
+    // The host always sends the class with the resolved kind at its
+    // head, so a test that names one kind gets the class of one — and a
+    // test about a class names it outright.
+    unitKinds: over.unitKinds ?? (over.unitKind == null ? [] : [over.unitKind]),
   };
 }
 
@@ -575,6 +593,43 @@ describe("naming and units", () => {
       "Ccoulomb",
       "Ahampere-hour",
     ]);
+  });
+
+  /// A composed kind is an ISQ-equivalence *class*: `N · m` is an
+  /// energy and a torque alike, composition order resolves it to energy
+  /// and the user may say it was a torque all along (owner ruling). So
+  /// the picker opens on energy, with torque under its own heading
+  /// beneath it — and picking the newton-metre commits that unit, which
+  /// the host converts to by a factor of one.
+  it("opens a newton-metre composition on energy with torque beneath it", async () => {
+    renderEditor(
+      mathRecord({
+        kind: "product",
+        function: { kind: "product" },
+        unitKind: "energy",
+        unitKinds: ["energy", "torque"],
+        unitResolved: "J",
+        unitDerived: "N·m",
+        unitComposed: { base: "joule" },
+      }),
+    );
+    openUnits();
+    expect(within(bases()).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Jjoule",
+      "Nmnewton-meter",
+    ]);
+    expect(
+      [...bases().querySelectorAll(".unit-picker-group")].map((g) => g.textContent),
+    ).toEqual(["energy", "torque"]);
+    // The first resolution is what the series is read in, so that row
+    // is the selected one.
+    expect(within(bases()).getAllByRole("option")[0]).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    fireEvent.click(within(bases()).getByText("newton-meter"));
+    await waitFor(() => expect(lastWrite()).toBeDefined());
+    expect(writtenDefinition().unit).toEqual({ base: "newton-meter" });
   });
 
   /// There is no reset affordance (design ruling): picking the

@@ -16,16 +16,17 @@
 import { useState } from "react";
 
 import { UnitPicker } from "./UnitPicker";
-import type { UnitPickerComposition } from "./unitSelection";
+import type { UnitPickerComposition, UnitPickerKind } from "./unitSelection";
 import type { UnitId } from "./types";
 
 export interface UnitButtonProps {
   /// The unit in force, or `null` — which selects the composition row
   /// where the caller offers one.
   value: UnitId | null;
-  /// The dimension to lock the picker to; `null` offers everything,
-  /// which is reinterpretation rather than conversion.
-  kind: string | null;
+  /// The dimension to lock the picker to, or the class of dimensions a
+  /// composed kind resolves over; `null` offers everything, which is
+  /// reinterpretation rather than conversion.
+  kind: UnitPickerKind;
   composition?: UnitPickerComposition;
   /// An override is in force, so the picker carries a row back to the
   /// derivation even where no composition names one.

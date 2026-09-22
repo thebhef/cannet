@@ -2493,11 +2493,17 @@ exponent-ordered prefix ladder on the right (each rung carrying its
 `×10ⁿ` and how the pair reads — `mV`, `nAh`). The ratio family takes a
 scale choice instead of prefixes, and the choice is every proportion
 scale the library carries — the bare 0–1 reading, `%`, `‰`, `ppm` and
-on down. The picker is
+on down. The base column takes a **filter**: the library offers every
+base unit of every quantity it has, so typing narrows it by spelling,
+name or dimension, and the groups it empties disappear. The picker is
 **kind-locked**: choosing here is a real conversion, so it offers the
-dimension the series is in and nothing else — for an integration or a
-derivative that is the *composed* dimension (a current integrated over
-time is a charge). Picking the derived unit again clears the override;
+dimension the series is in — for an integration or a derivative that is
+the *composed* dimension (a current integrated over time is a charge).
+Where several dimensions share the composition's exponents the picker
+offers them all, under their own headings, the one the composition
+resolved to first: a product of a newton and a metre opens on **energy**
+with **torque** beneath it, because only you know which was meant.
+Picking the derived unit again clears the override;
 there is no reset button because there is nothing else it would do, and
 where the operands compose nothing to pick — a set whose members are of
 mixed dimensions — the picker carries a **from the operands** row that
