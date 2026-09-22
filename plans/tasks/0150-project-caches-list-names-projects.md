@@ -19,6 +19,12 @@ From the owner, 2026-09-21:
 4. A Save As over that same folder (which wrote the `.cannet/` there)
    produced no change in the settings view, giving no clear feedback
    about the state of the project.
+5. Reopening the settings view refreshed it once; after switching to
+   other plots and rebuilding some caches it was stale again. The
+   settings view is not updating when its source data changes or when
+   it is refocused.
+6. The settings view does not retain its scroll position when the
+   user switches away and back.
 
 ## Findings (2026-09-21 survey)
 
@@ -68,6 +74,23 @@ From the owner, 2026-09-21:
   The row's own `Save as…` button does not await the save either. The
   host's `reroot_session` emits `notes-changed` and nothing about the
   root itself.
+- **Observations 5 and 6: the panel neither re-reads nor keeps its
+  place across a switch.** `SettingsPanel.tsx` loads the schema, the
+  overrides and the settings file once on mount and subscribes to
+  settings changes only; `ProjectCachesList` reloads only on
+  `projectPath`. Neither listens to the dockview panel api
+  (`onDidVisibilityChange` / `onDidActiveChange`, which the database
+  and system-messages panels already use), so a return to the tab
+  finds whatever was there. Cache sizes are asked for, never polled
+  (ADR 0002 DS-8: the directory walk is expensive), so "when the
+  source data changes" has to mean a trigger: the panel becoming
+  visible again, and the host announcing a re-root. Scroll: the panel
+  is a singleton opened through `showSingletonPanel` with dockview's
+  default renderer, which (per dockview's documentation) detaches a
+  hidden panel's element from the DOM; the `.settings-list` container
+  (`overflow-y: auto`) comes back at the top. The phase verifies that
+  reading before choosing between `renderer: "always"` for the
+  singleton and restoring the container's `scrollTop` on visibility.
 - **Delete is refused for the active row** (`canDelete`), with the
   refusal in the tooltip; the two-stage control takes `disabled` the
   same way any button does.
@@ -93,6 +116,13 @@ From the owner, 2026-09-21:
   and the list reloads on it, so a Save As, an open, or a Save As onto
   the same path all show the new row, the new `active` badge, and the
   left-behind auto-located row with its reclaimable bytes.
+- **The settings view re-reads on return** (owner, 2026-09-21: "the
+  settings view is not updating when its source data changes/when
+  it's refocused"). Overseer's reading: on the panel becoming visible
+  the settings view re-hydrates the settings file, the overrides and
+  the project caches list (sizes re-measured then, not on a timer).
+- **The settings view keeps its scroll position** across a switch
+  away and back (owner, 2026-09-21).
 
 ## Open questions
 
@@ -102,11 +132,14 @@ From the owner, 2026-09-21:
 
 ## Phases
 
-One phase, one branch: the row layout (name, secondary path line,
-badge tooltip), `Delete` as `TwoStageRemoveButton`, the host's
-re-root event and the list reloading on it (a failing dom test first:
-Save As onto the same path, list unchanged), the list's dom test
-extended, ADR 0042 §5 amended if the row's contents
+Two phases, two branches. **Phase 1, the settings view's staleness:**
+the host's re-root event; the settings view re-reading on visibility
+(settings file, overrides, cache list); scroll position kept across a
+switch — each with a failing test first (Save As onto the same path,
+list unchanged; panel hidden and shown, list not re-asked; scroll
+lost). **Phase 2, the rows:** the row layout (name, secondary path
+line, badge tooltip), `Delete` as `TwoStageRemoveButton`, the list's
+dom test extended, ADR 0042 §5 amended if the row's contents
 are described there, `docs/CONTEXT.md` if a term is added.
 
 ## Exit criteria
@@ -124,7 +157,13 @@ are described there, `docs/CONTEXT.md` if a term is added.
    shows the new project directory as `active` and the left-behind
    auto-located row as reclaimable, without reopening the settings
    view. A host test covers the event; a dom test covers the reload.
-6. Dom tests cover 1–5; the existing list tests pass.
+6. The settings view, hidden and shown again, re-reads the settings
+   file, the overrides and the project caches list (a cache that grew
+   while another panel was active shows its new size on return).
+7. The settings view's scroll position survives switching to another
+   panel and back.
+8. Tests cover 1–7 (dom for the view, host for the event); the
+   existing settings and list tests pass.
 
 ## Blockers / side effects
 

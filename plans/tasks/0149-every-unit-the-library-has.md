@@ -88,23 +88,21 @@ follow from that table as they do today.
   #2", confirmed "let's do that"). Choosing quantities would be the
   same omission one level up; the picker's grouping and filter are
   what keep 918 bases usable.
+- **The ratio family's scale column lists every ratio unit the crate
+  carries** (owner, 2026-09-21), not the three of the earlier design
+  ruling; a scale choice is that family's prefix.
 
 ## Open questions
 
 Each with the overseer's recommendation; ruled answers move to
 § Rulings.
 
-1. **The ratio family's scale column.** Today the `ratio` row offers
-   three scales (0–1, %, ppm) by design ruling; the crate's `Ratio`
-   quantity has eleven (parts per hundred/thousand/ten thousand, ‰,
-   bp, ppm, ppb, ppt, ppq…). *Recommend:* the scale column lists all
-   of them, since a scale choice is that family's "prefix".
-2. **Composition order across 110 quantities.** *Recommend:* today's
+1. **Composition order across 110 quantities.** *Recommend:* today's
    15 in today's order first (the automotive readings a product is
    most likely meant as), the remaining quantities alphabetically
    after; the phase records the ISQ collisions it finds in its status
    log so the order can be corrected on evidence.
-3. **Temperature interval vs absolute.** *Recommend:* two dimensions,
+2. **Temperature interval vs absolute.** *Recommend:* two dimensions,
    `temperature` (absolute, offsets) and `temperature interval`
    (ΔK, Δ°C, Δ°F, Δ°R), since a temperature difference is a common
    bus signal and converts without the offset.
