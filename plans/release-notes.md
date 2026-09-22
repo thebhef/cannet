@@ -252,6 +252,16 @@ repaired something broken.
   on one leg of it — a run of dots hugging one side of a line that
   swings through both, which read as the plot extrapolating. The dots
   now sit on every extreme the line passes through.
+- **Fixed:** pointing at a long capture with `Points: On` no longer
+  stalls. Moving the pointer or placing a cursor used to repaint every
+  plot's series layer, and uPlot rebuilds every series' markers on every
+  repaint, so a saturated window re-rasterized thousands of markers per
+  series per pointer move. The crosshair, the cursor lines, the hover
+  markers, the event chrome and every readout now draw on an overlay
+  canvas of their own, and only a data change repaints the series.
+  Sample markers are also drawn as solid discs in the series colour
+  rather than rings with a white core, the same size as before, which
+  halves what each marker costs.
 - **Changed:** an enum lane is an ordinary series with tiles drawn over
   it. Its markers are the same markers every other series gets, on the
   plotted value, in an ink that reads over the tile, and they no
@@ -339,6 +349,10 @@ repaired something broken.
 
 ## For application developers
 
+- **New:** `cannet-gui --show-points <auto|off|on>` forces every plot
+  panel's show-points mode for one run without writing it back to the
+  project, so a performance reading of `Points: On` can be taken against
+  the unchanged baseline project.
 - **New:** a Python client, `clients/cannet-python-client`, registers
   cannet as a python-can interface. An application opens a remote bus with
   `can.Bus(interface="cannet", server=..., channel=...)` — no
