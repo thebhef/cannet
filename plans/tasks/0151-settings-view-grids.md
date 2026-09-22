@@ -63,27 +63,33 @@ From the owner, 2026-09-22:
   settings view, the same rows and actions, the singleton panel
   retired; the command palette's Servers entry opens the settings
   view at that section; ADR 0041 and `docs/CONTEXT.md` amended.
+- **Grouping and the filter** (owner, 2026-09-22): the units table
+  has no groups today; the owner does not want the rows flattened,
+  and the filter is required. Overseer's reading: dimension branches
+  as ruled above, the task-149 filter kept; default disclosure is the
+  overseer's call — every branch collapsed on open except one holding
+  a unit the project maps or customizes, the filter expanding what it
+  matches. One line to flip if it reads wrong.
+- **The Servers command palette entry stays** (owner, 2026-09-22),
+  opening the settings view scrolled to the Servers section.
+
+Settled by the overseer, open to reversal:
+
+- **The unit picker** (the math signal editor's Units button, and
+  after task 149 phase 3 the View signals panel's) has the same
+  920-row shape. It stays the two-column picker with its filter and
+  is out of scope here; a gridview inside a popover is a different
+  control.
 
 ## Open questions
 
-1. **Units groups collapsed by default?** With 109 dimensions,
-   *recommend* every dimension branch collapsed on open except the
-   ones holding a unit the project maps or customizes, and the
-   filter expanding whatever it matches. That is what answers
-   "overwhelming".
-2. **The unit picker** (the math signal editor's Units button) has
-   the same 920-row shape. *Recommend* it stays the two-column
-   picker with its filter (task 149) and is out of scope here; a
-   gridview inside a popover is a different control.
-3. **The Servers command palette entry**: *recommend* it stays,
-   opening the settings view scrolled to the Servers section, so
-   nothing a user knows how to reach disappears.
+(none — ruled 2026-09-22.)
 
 ## Phases
 
 1. **The units table as a gridview.** Dimension branches, unit
    leaves, own bounded row space, filter kept, default disclosure per
-   open question 1; the existing units dom tests move over; a
+   § Rulings; the existing units dom tests move over; a
    gridview dom test at scale (2289 rows) pins scroll containment.
 2. **The project caches list as a gridview.** One leaf per project
    directory, the task-150 row content and controls kept, own row
