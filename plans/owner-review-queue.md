@@ -147,8 +147,10 @@ keeps the queue's copy). This file shrinks every time it is walked.
   from the single tip reading (31/31 gated metrics passed; task file
   § Status log). § 1 carries the tile layering, the `Points: auto`
   lane exemption, the ~1.5-column held-code boundary and the wide ΔH
-  clip.
-
+  clip. Two fix branches followed (2026-09-21): `fix-plot-hover-overlay`
+  and `fix-plot-square-markers`, after the owner reported `Points: On`
+  unusable on a long trace; owner verified the pair on that project the
+  same day (detail: 0146 § Status log, 2026-09-21).
 
 ## 5. Housekeeping owed at close-out
 
