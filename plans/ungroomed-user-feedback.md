@@ -56,3 +56,9 @@ day).
     are not offered and `L / min` cannot be composed either. The
     underlying crate has both quantities; the app's dimension list
     does not name them.
+
+    Ruling (owner, 2026-09-21): the app's unit table is not to
+    curate. The only shaping is rigour about presenting every unit as
+    **prefix + base unit**; no base unit the library provides is
+    omitted. Open when groomed: which of the crate's 110 quantities are
+    built (the enabled set is 15 today).
