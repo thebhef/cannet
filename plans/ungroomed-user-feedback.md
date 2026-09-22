@@ -47,18 +47,3 @@ day).
 ## Extensions
 
 10. Extension — include signals: allow extensions to read/write signals, messages, events.
-
-## Units
-
-11. No volume units in the unit list (owner, 2026-09-21): a project
-    carries an `LPM` unit string and there is nothing to map it to —
-    the library has no volume and no volume-flow dimension, so litres
-    are not offered and `L / min` cannot be composed either. The
-    underlying crate has both quantities; the app's dimension list
-    does not name them.
-
-    Ruling (owner, 2026-09-21): the app's unit table is not to
-    curate. The only shaping is rigour about presenting every unit as
-    **prefix + base unit**; no base unit the library provides is
-    omitted. Open when groomed: which of the crate's 110 quantities are
-    built (the enabled set is 15 today).
