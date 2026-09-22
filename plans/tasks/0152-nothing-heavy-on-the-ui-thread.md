@@ -47,14 +47,14 @@ the UI thread or waiting for work on the UI thread."
   `async` and runs its work off the IPC thread (`spawn_blocking` or
   the host's existing worker pattern); the frontend shows the busy
   state it already has for those rows.
+- **A guard against regression** (owner, 2026-09-22): a host test
+  lists every synchronous command and asserts it is on an allow-list
+  of pure state reads, so a new filesystem command cannot land
+  synchronous unnoticed. The audit's table becomes the check.
 
 ## Open questions
 
-1. **A guard against regression.** *Recommend* a host test that lists
-   every synchronous command and asserts it is on an allow-list of
-   pure state reads, so a new filesystem command cannot land
-   synchronous unnoticed. Cheap, and it turns the audit's table into
-   a check.
+(none — ruled 2026-09-22.)
 
 ## Phases
 
@@ -64,7 +64,7 @@ the UI thread or waiting for work on the UI thread."
    task file, with the freeze reproduced by a test that times the
    heartbeat across a cache delete of a generated multi-GB directory.
 2. **Fix.** The listed commands moved off the IPC thread, the busy
-   states confirmed, the regression guard (open question 1) in place,
+   states confirmed, the regression guard (§ Rulings) in place,
    ADR 0002 amended if DS-8's wording changes.
 
 ## Exit criteria
@@ -77,7 +77,8 @@ the UI thread or waiting for work on the UI thread."
    the task file records every command's classification.
 3. The `ui_last_ms` creep is explained, and fixed if it is the
    frontend's or the host's doing.
-4. The regression guard is in place (or waived by the owner).
+4. The regression guard is in place: the sync-command allow-list test
+   fails on a synchronous command it does not name.
 5. Tests cover 1, 2 and 4; ADR 0002 and README match the behaviour.
 
 ## Blockers / side effects

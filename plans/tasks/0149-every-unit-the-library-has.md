@@ -130,13 +130,12 @@ follow from that table as they do today.
 
 ## Open questions
 
-1. **Which "signal mapping panel"?** The composed-kind override lives
-   in the math signal editor's Units button (phase 2). The View
-   signals panel's Units button passes no kind (offers everything,
-   which is reinterpretation, not conversion), and the settings
-   view's Units section maps database strings to units. *Recommend*
-   the math signal editor is the place and the View signals panel
-   gains the same class-locked picker for a math signal's row.
+(none — the "signal mapping panel" is the **View signals panel**,
+answered from the code 2026-09-22: the status bar's `Signal mapping`
+chip opens it, and the command palette's `View signals` entry carries
+the keyword `signal mapping`. Its Units button passes no kind today —
+offers everything, which is reinterpretation, not conversion — so
+phase 3 gives a math signal's row the editor's class-locked picker.)
 
 ## Phases
 
@@ -163,7 +162,9 @@ follow from that table as they do today.
 3. **Owner review follow-ups (2026-09-22).** A single-unit alias
    (`mph = mile / hour`) through the settings entry, displayed and
    converting as such; the composed-kind override reachable from the
-   panel open question 1 names; README documents the alias.
+   View signals panel — a math signal row's Units button opens the
+   class-locked picker the editor has (the ISQ-equivalent dimensions
+   first, the current kind preselected); README documents the alias.
 
 ## Exit criteria
 
@@ -189,17 +190,18 @@ follow from that table as they do today.
 8. A math signal whose composed unit is `N · m` opens its output unit
    picker on the composition order's first resolution — energy, as
    the order has always read it — with torque offered beneath; picking
-   a newton-metre converts by the right factor. (Whether torque should
-   move ahead of energy is a queued owner question; either answer is
-   one line in the `dimensions!` list.) A test pins the first
+   a newton-metre converts by the right factor. (Energy-first stands
+   — owner, 2026-09-22; the override is what makes it torque.) A test
+   pins the first
    resolution of every composition today's tests name.
 9. `plans/technology-inventory.md`'s `runtime_units` entry and the
    `units.rs` module docs describe the no-curation table.
 10. `mph = mile / hour` defined in the settings entry is accepted,
     displays `mph`, converts 1:1 with `mi/h`, and a database `mph`
     reads as it; README says an alias is a composition of one unit.
-11. A math signal's composed-kind override is reachable from the panel
-    open question 1 names, tested.
+11. A math signal's composed-kind override is reachable from the View
+    signals panel: its row's Units button offers the ISQ-equivalent
+    dimensions first with the current kind preselected, tested.
 
 ## Blockers / side effects
 
@@ -345,6 +347,7 @@ follow from that table as they do today.
 | 5 | met — 78 `units` tests over the full table incl. the family and prefix cross-check (phase 1, re-confirmed) |
 | 6 | met — picker filter added and tested (`liter`, `L`, `psi`, `charge`); `litre` does not match (§ Blockers) |
 | 7 | met — +39 s compile, +1.06 MiB binary (phase 1) |
-| 8 | met — `N · m` opens on energy with torque beneath, newton-metre ×1; first resolutions pinned (both phases); torque-first is a queued owner question |
+| 8 | met — `N · m` opens on energy with torque beneath, newton-metre ×1; first resolutions pinned (both phases); energy-first stands (owner, 2026-09-22) |
 | 9 | met — inventory entry, module docs, README (phase 2) |
+
 - 2026-09-22 — owner review: accepted with follow-ups (rulings above); phase 3 opened; picker render cost folded into task 151.
