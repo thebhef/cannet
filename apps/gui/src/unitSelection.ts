@@ -60,13 +60,29 @@ export function sameUnit(a: UnitId | null, b: UnitId | null): boolean {
   return a.base === b.base && (a.prefix ?? "none") === (b.prefix ?? "none");
 }
 
+/// The kinds a picker is locked to: one dimension, a class of them, or
+/// `null` for everything.
+///
+/// A class because dimensions share ISQ exponents — a newton-metre is
+/// an energy and a torque alike — so a composed kind resolves to the
+/// first and the user may override it with any other of the same
+/// exponents (owner ruling). The host decides the class and its order;
+/// this is only how it arrives.
+export type UnitPickerKind = string | readonly string[] | null;
+
 /// The rows to offer.
 ///
 /// `kind` locks the picker to one dimension — every context that
 /// *applies* a unit passes one, because choosing there is a real
-/// conversion. `null` offers everything, which is reinterpretation: the
+/// conversion — or to a class of them, which is what a composed kind
+/// is. `null` offers everything, which is reinterpretation: the
 /// database's label was wrong about what the signal measures, so a
 /// like-kind picker could not express the repair.
+///
+/// **A locked list comes out in the lock's order**, not the host's: the
+/// host lists units alphabetically by dimension, and what a composed
+/// class needs is its first resolution first. Within a dimension the
+/// host's order stands, here as everywhere.
 ///
 /// A `composition` earns a row only where its dimension lists no unit
 /// for it (`Ah/s` is dimensionally a current and is no named unit). A
@@ -81,18 +97,25 @@ export function sameUnit(a: UnitId | null, b: UnitId | null): boolean {
 /// commits nothing, exactly as a composition's does.
 export function pickerEntries(
   model: readonly UnitPickerEntry[],
-  kind: string | null,
+  kind: UnitPickerKind,
   composition?: UnitPickerComposition,
   clearable?: boolean,
 ): PickerRow[] {
-  const rows: PickerRow[] = model
-    .filter((e) => kind === null || e.dimension === kind)
-    .map((e) => ({
-      id: e.id,
-      display: e.display,
-      dimensionLabel: e.dimensionLabel,
-      scales: e.scales,
-    }));
+  const toRow = (e: UnitPickerEntry): PickerRow => ({
+    id: e.id,
+    display: e.display,
+    dimensionLabel: e.dimensionLabel,
+    scales: e.scales,
+  });
+  // One pass per locked dimension, in the lock's order — so the class
+  // comes out first-resolution-first while each dimension's own rows
+  // keep the host's order.
+  const rows: PickerRow[] =
+    kind === null
+      ? model.map(toRow)
+      : (typeof kind === "string" ? [kind] : kind).flatMap((dimension) =>
+          model.filter((e) => e.dimension === dimension).map(toRow),
+        );
   if (composition && !rows.some((r) => sameUnit({ base: r.id }, composition.unit))) {
     rows.unshift({
       id: COMPOSED_ENTRY_ID,
@@ -109,6 +132,29 @@ export function pickerEntries(
     });
   }
   return rows;
+}
+
+/// The rows a substring filter keeps, in the order they came.
+///
+/// Substring over what the row *shows* — its spelling, its name and its
+/// group heading — because that is what the person is reading when they
+/// start typing. The rows themselves are the host's (which units exist,
+/// how they are spelled, what order they come in); a filter only
+/// chooses among what it was handed.
+///
+/// A row that commits nothing — the composition, the derivation — is
+/// always kept: it is the caller's own row and the only way back to the
+/// derived unit, so filtering it away would strand an override.
+export function filterRows(rows: readonly PickerRow[], filter: string): PickerRow[] {
+  const needle = filter.trim().toLowerCase();
+  if (needle === "") return rows as PickerRow[];
+  return rows.filter(
+    (row) =>
+      row.scales.some((s) => s.unit == null) ||
+      row.display.toLowerCase().includes(needle) ||
+      row.id.toLowerCase().includes(needle) ||
+      row.dimensionLabel.toLowerCase().includes(needle),
+  );
 }
 
 /// Which row `unit` sits on, or `null` where nothing offered holds it.

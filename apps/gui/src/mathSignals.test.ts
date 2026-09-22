@@ -42,6 +42,7 @@ function record(over: Partial<MathSignalRecord> = {}): MathSignalRecord {
     unconverted: [],
     unitResolved: "V",
     unitKind: null,
+    unitKinds: [],
     recognition: [],
     busIds: ["bus-a"],
     invalid: null,

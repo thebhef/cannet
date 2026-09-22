@@ -1074,6 +1074,18 @@ pub struct ResolvedMath {
     /// else. Derived here rather than in the picker, because the
     /// composition that names it is the model's (`CLAUDE.md`).
     pub kind: Option<crate::units::Dimension>,
+    /// **Every dimension that picker may offer**, in composition order
+    /// — the ISQ-equivalence class of the composition, with
+    /// [`Self::kind`] at its head.
+    ///
+    /// A newton times a metre is both an energy and a torque, and the
+    /// analysis cannot tell which was meant; composition order makes
+    /// the first resolution and the user overrides it with any
+    /// dimension of the same exponents (owner ruling). So the lock is a
+    /// class rather than one dimension, and the picker groups it under
+    /// its dimensions' own headings. Empty where nothing places the
+    /// unit, which is [`Self::kind`] being `None`.
+    pub kinds: Vec<crate::units::Dimension>,
     /// **What the host made of each operand's unit string**,
     /// index-parallel with [`Self::operands`].
     ///
@@ -1197,7 +1209,12 @@ impl MathModel {
             let placed: Vec<Option<crate::units::UnitId>> =
                 units.iter().map(|u| u.unit.clone()).collect();
             let derived = definition.function.derived_unit(&placed);
-            let (target, unit, kind) = labelling(definition, derived.as_ref(), customizations);
+            let Labelling {
+                target,
+                unit,
+                kind,
+                kinds,
+            } = labelling(definition, derived.as_ref(), customizations);
             let recognition = units.iter().map(recognition_of).collect();
             let Scaling {
                 operands: operand_affines,
@@ -1228,6 +1245,7 @@ impl MathModel {
                         .and_then(|t| derived.as_ref()?.convert_to(t)),
                     target,
                     kind,
+                    kinds,
                     recognition,
                     // Filled below: a definition may read one listed
                     // after it, so attribution needs the whole model.
@@ -1348,6 +1366,14 @@ impl MathModel {
     }
 }
 
+/// What [`labelling`] settles about a definition's unit.
+struct Labelling {
+    target: Option<crate::units::UnitId>,
+    unit: String,
+    kind: Option<crate::units::Dimension>,
+    kinds: Vec<crate::units::Dimension>,
+}
+
 /// What a definition's unit **reads as**, what it converts **to**, and
 /// what **kind** that is.
 ///
@@ -1356,15 +1382,17 @@ impl MathModel {
 /// typed, because that path has always been a label — and the
 /// derivation where they made none. The kind is the target's family, or
 /// the composition's, and is what locks a picker.
+///
+/// The lock is a **class**, not one dimension: dimensions share ISQ
+/// exponents (a newton-metre is an energy and a torque), so the
+/// composition resolves to the first of them and the user may name any
+/// other (owner ruling). `kinds` is that class in composition order,
+/// with what the series is currently read in at its head.
 fn labelling(
     definition: &MathDefinition,
     derived: Option<&crate::units::Composed>,
     customizations: &crate::units::Customizations,
-) -> (
-    Option<crate::units::UnitId>,
-    String,
-    Option<crate::units::Dimension>,
-) {
+) -> Labelling {
     let named = definition
         .unit
         .as_ref()
@@ -1381,7 +1409,28 @@ fn labelling(
         .as_ref()
         .and_then(crate::units::dimension_of)
         .or_else(|| derived.and_then(crate::units::Composed::dimension));
-    (target, unit, kind)
+    let mut kinds = derived
+        .map(crate::units::Composed::dimensions)
+        .unwrap_or_default();
+    // A target of another dimension entirely is still what the series
+    // is read in, so it heads the list — otherwise the picker could not
+    // show the current selection at all.
+    if let Some(kind) = kind {
+        if let Some(at) = kinds.iter().position(|d| *d == kind) {
+            if at != 0 {
+                kinds.remove(at);
+                kinds.insert(0, kind);
+            }
+        } else {
+            kinds.insert(0, kind);
+        }
+    }
+    Labelling {
+        target,
+        unit,
+        kind,
+        kinds,
+    }
 }
 
 /// What the host makes of one operand's unit — the state an editor
@@ -2253,6 +2302,81 @@ mod tests {
         let r = model.get("m1").expect("m1");
         assert_eq!(r.unit, "V·A");
         assert_eq!(r.kind, Some(crate::units::Dimension::Power));
+    }
+
+    /// **The picker's lock is the whole ISQ-equivalence class**, not
+    /// the one dimension composition resolved to (owner ruling: the
+    /// first resolution stands and the user may override it with any
+    /// dimension of the same exponents).
+    ///
+    /// A newton times a metre is dimensionally both an energy and a
+    /// torque. Composition order puts energy first, so that is what the
+    /// series reads as — and torque has to be offered beneath it, or
+    /// there is no way to say which was meant.
+    #[test]
+    fn a_composed_kind_offers_every_dimension_of_the_same_exponents() {
+        let product = vec![def(
+            "m1",
+            MathFunction::Product,
+            picks(&[sig("Force"), sig("Arm")]),
+        )];
+        let model = resolve(&product, &[entry("Force", "N"), entry("Arm", "m")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.kind, Some(crate::units::Dimension::Energy));
+        assert_eq!(
+            r.kinds,
+            vec![
+                crate::units::Dimension::Energy,
+                crate::units::Dimension::Torque
+            ],
+            "the first resolution first, the overrides behind it"
+        );
+
+        // And naming the other one is a real conversion: a newton-metre
+        // is a joule, so it costs nothing and nothing goes unconverted.
+        let mut targeted = def(
+            "m1",
+            MathFunction::Product,
+            picks(&[sig("Force"), sig("Arm")]),
+        );
+        targeted.unit = Some(UnitTarget::Typed(UnitId::base("newton-meter")));
+        let model = resolve(&[targeted], &[entry("Force", "N"), entry("Arm", "m")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.kind, Some(crate::units::Dimension::Torque));
+        assert_eq!(r.target_conversion, Some(Affine::new(1.0, 0.0)));
+        assert!(r.unconverted.is_empty());
+
+        // A composition only one dimension holds offers only it.
+        let sum = vec![def("m1", MathFunction::Sum, picks(&[sig("PackVolts")]))];
+        let model = resolve(&sum, &[entry("PackVolts", "V")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.kinds, vec![crate::units::Dimension::Voltage]);
+
+        // Nothing placed is nothing to lock to.
+        let model = resolve(&sum, &[entry("PackVolts", "")]);
+        assert!(model.get("m1").expect("m1").kinds.is_empty());
+    }
+
+    /// An override the composition does not place still has to be
+    /// offered, or the picker could not show what the series is
+    /// currently read in.
+    #[test]
+    fn a_target_outside_the_composed_class_is_offered_ahead_of_it() {
+        let mut definition = def(
+            "m1",
+            MathFunction::Product,
+            picks(&[sig("Force"), sig("Arm")]),
+        );
+        definition.unit = Some(UnitTarget::Typed(crate::units::UnitId::base("volt")));
+        let model = resolve(&[definition], &[entry("Force", "N"), entry("Arm", "m")]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.kind, Some(crate::units::Dimension::Voltage));
+        assert_eq!(
+            r.kinds.first(),
+            Some(&crate::units::Dimension::Voltage),
+            "what it is read in opens the picker"
+        );
+        assert!(r.kinds.contains(&crate::units::Dimension::Torque));
     }
 
     /// The buses a math signal's row wears as color chips. A math

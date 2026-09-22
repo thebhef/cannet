@@ -9288,6 +9288,7 @@ describe("PlotPanel math signals", () => {
     unconverted: [],
     unitResolved: "V",
     unitKind: null,
+    unitKinds: [],
     recognition: [],
     busIds: ["bus-a"],
     invalid: null,

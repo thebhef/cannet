@@ -24,17 +24,38 @@ let DEFS_USER: Record<string, string> = {};
 /// A stand-in for `units::mappings`: every base unit of this abridged
 /// table, carrying the strings that reach it — the built-ins, then each
 /// scope, with the **project winning** where both map one string.
+/// Rows come in the host's own order — dimension label, then the base
+/// unit's display — so the table is dimension-contiguous wherever it is
+/// filtered.
 const BASES = [
-  { unit: { base: "volt" }, id: "volt", display: "V", dimensionLabel: "voltage" },
+  { unit: { base: "ampere" }, id: "ampere", display: "A", dimensionLabel: "current" },
   {
     unit: { base: "degree-celsius" },
     id: "degree-celsius",
     display: "°C",
     dimensionLabel: "temperature",
   },
-  { unit: { base: "ampere" }, id: "ampere", display: "A", dimensionLabel: "current" },
+  { unit: { base: "minute" }, id: "minute", display: "min", dimensionLabel: "time" },
+  { unit: { base: "second" }, id: "second", display: "s", dimensionLabel: "time" },
+  { unit: { base: "volt" }, id: "volt", display: "V", dimensionLabel: "voltage" },
+  { unit: { base: "liter" }, id: "liter", display: "L", dimensionLabel: "volume" },
 ];
-const BUILT_IN: Record<string, string> = { V: "volt", degC: "degree-celsius", A: "ampere" };
+const BUILT_IN: Record<string, string> = {
+  V: "volt",
+  degC: "degree-celsius",
+  A: "ampere",
+  L: "liter",
+  min: "minute",
+  s: "second",
+};
+
+/// What dimension a composition lands on. **The host's answer** — the
+/// section never derives one — so this is the stand-in for it, and the
+/// two compositions these tests compose are the two it knows.
+const COMPOSED_DIMENSION: Record<string, string> = {
+  "V * A": "power",
+  "L / min": "volume rate",
+};
 
 /// User scope overlaid by project — the host's join, the project winning.
 const merged = () => ({ ...DEFS_USER, ...DEFS });
@@ -97,7 +118,8 @@ function mappings() {
           unit: { base: name },
           id: error === null ? name : null,
           display: name,
-          dimensionLabel: error === null ? "power" : "",
+          dimensionLabel:
+            error === null ? (COMPOSED_DIMENSION[composition.trim()] ?? "power") : "",
         },
         composition,
         name in DEFS ? "project" : "user",
@@ -297,14 +319,44 @@ describe("the per-row scope checkboxes", () => {
 });
 
 describe("filtering", () => {
+  const filter = (text: string) =>
+    fireEvent.change(screen.getByLabelText("Filter units"), { target: { value: text } });
+  const units = () =>
+    [...document.querySelectorAll(".unit-customization-unit")].map((td) => td.textContent);
+  const dimensions = () =>
+    [...document.querySelectorAll(".unit-customization-dimension")].map(
+      (td) => td.textContent,
+    );
+
   it("narrows the table by unit, dimension or matched string", async () => {
     show();
     await waitFor(() => expect(rowFor("V")).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText("Filter units"), {
-      target: { value: "temperature" },
-    });
+    filter("temperature");
     expect(rowFor("°C")).toBeInTheDocument();
     expect(screen.queryByText("V", { selector: ".unit-customization-unit" })).toBeNull();
+  });
+
+  /// The library carries every unit of every quantity it has, so the
+  /// table is thousands of rows and the filter is how anyone reaches
+  /// one. It keeps the host's order, which groups the rows by dimension
+  /// — a filter that empties a dimension simply leaves none of its rows
+  /// behind, and one that matches nothing says so.
+  it("keeps the host's dimension-grouped order, filtered or not", async () => {
+    show();
+    await waitFor(() => expect(rowFor("V")).toBeInTheDocument());
+    expect(dimensions()).toEqual([
+      "current",
+      "temperature",
+      "time",
+      "time",
+      "voltage",
+      "volume",
+    ]);
+    filter("time");
+    expect(units()).toEqual(["min", "s"]);
+    filter("furlong");
+    expect(units()).toEqual([]);
+    expect(screen.getByText("No unit matches that filter.")).toBeInTheDocument();
   });
 });
 
@@ -333,6 +385,28 @@ describe("composing a unit", () => {
     expect(row.getByLabelText("Map a unit string to VA")).toBeEnabled();
     // The entry is emptied, ready for the next one.
     expect(screen.getByLabelText("New unit name")).toHaveValue("");
+  });
+
+  /// The unit this whole change came from. The library carries no
+  /// litre-per-minute, so a project that writes `LPM` composes one out
+  /// of a litre over a minute — and from then on it is an ordinary row
+  /// that takes the database's own spelling.
+  it("defines a litre per minute and takes the database's spelling for it", async () => {
+    const onCommit = show();
+    await waitFor(() => expect(rowFor("L")).toBeInTheDocument());
+    compose("LPM", "L / min");
+    await waitFor(() => expect(DEFS).toEqual({ LPM: "L / min" }));
+    await waitFor(() => expect(rowFor("LPM")).toBeInTheDocument());
+    const row = within(rowFor("LPM"));
+    expect(row.getByText("L / min")).toBeInTheDocument();
+    // The dimension is the host's answer, shown back rather than
+    // derived here.
+    expect(row.getByText("volume rate")).toBeInTheDocument();
+    fireEvent.change(row.getByLabelText("Map a unit string to LPM"), {
+      target: { value: "l/min" },
+    });
+    fireEvent.blur(row.getByLabelText("Map a unit string to LPM"));
+    expect(onCommit).toHaveBeenCalledWith({ "l/min": "LPM" });
   });
 
   it("says what is wrong with a composition where it was typed, and persists nothing", async () => {
