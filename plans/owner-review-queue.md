@@ -50,27 +50,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
   full value is in the side panel and the measurement strip. Accept, or
   want it elsewhere? Detail: 0146 § Blockers / side effects.
 
-- **Project caches row: the auto-located explanation sits only on the
-  `auto-located` badge.** An open project that is itself auto-located
-  wears the `active` badge and gets no tooltip saying its directory is
-  in cache space — which was the row behind observation 3. The phase
-  judged the row's `Save as…` tooltip enough. Extend the tooltip to
-  every `auto_located` row (one condition in `ProjectCachesList.tsx`),
-  or accept? Detail: 0150 § Status log, 2026-09-21 phase 2.
-
-- **Task 149 — `N · m` composes to energy, not torque.** The order has
-  always put Energy ahead of Torque (the task file's survey said the
-  reverse and has been corrected), so a `N · m` product first-resolves
-  to energy with torque offered beneath. Moving Torque ahead flips
-  `W · s` and `V · A · s` to torque instead. Keep energy first (today's
-  behaviour, the user overrides), or move torque ahead? One line either
-  way. Detail: 0149 § Status log, 2026-09-22.
-
-- **Task 149 — `mph` now displays `mi/h`**, the crate's own symbol;
-  `mph` still recognises from a database. Keeping `mph` means one
-  hand-typed display override, which the no-curation ruling forbids.
-  Accept? Detail: 0149 § Blockers / side effects.
-
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the
@@ -108,10 +87,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
   does, which `--no-verify` skips. `interfaces.rs` had drifted once
   (fixed on `task145-server-info`). A one-line CI job would close it.
 
-- **149: the unit picker renders all ~920 base rows on open**; clearing
-  the filter back to the full list costs ~215 ms in jsdom, typing
-  narrows in ~50 ms. A virtualiser would be a new dependency decision,
-  not taken. Detail: 0149 § Status log, 2026-09-22 phase 2.
 - **149: `litre` reaches no unit; `liter` and `L` do.** The library
   spells it American, and neither the picker's filter nor recognition
   carries a British alternate. Detail: 0149 § Blockers / side effects.
@@ -181,19 +156,7 @@ keeps the queue's copy). This file shrinks every time it is walked.
   unusable on a long trace; owner verified the pair on that project the
   same day (detail: 0146 § Status log, 2026-09-21).
 
-- **Task 150 — The Project Caches List Names Its Projects**
-  (2026-09-21): both phases landed (`task150-settings-refresh` →
-  `task150-cache-rows`); all 8 exit criteria met (verdicts in the task
-  file). Task-final full CI green (3608 frontend, workspace host). § 1
-  carries the badge-tooltip scope question; the owner's hands-on check
-  of scroll, re-measure and Save As is still owed.
 
-- **Task 149 — Every Unit the Library Has** (2026-09-22): both phases
-  landed (`task149-units-table` → `task149-units-surfaces`); all 9
-  exit criteria met (verdicts in the task file). Task-final full CI
-  green (2127 workspace, 3622 frontend). § 1 carries the `N · m` order
-  and `mi/h` questions; § 3 the picker render cost and `litre`. Crate
-  cost: +39 s compile, +1.06 MiB binary.
 
 ## 5. Housekeeping owed at close-out
 

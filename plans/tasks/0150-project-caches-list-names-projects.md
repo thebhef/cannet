@@ -123,12 +123,21 @@ From the owner, 2026-09-21:
   the project caches list (sizes re-measured then, not on a timer).
 - **The settings view keeps its scroll position** across a switch
   away and back (owner, 2026-09-21).
+- **Owner review, 2026-09-22.** The name and button changes are good.
+  Follow-ups ruled: (a) the auto-located tooltip goes on **every**
+  auto-located row, the active one included ("fine"); (b) the row
+  also wears a chip for the project directory, "to give more positive
+  feedback that it's picked it up" — overseer's reading: a location
+  chip beside the state badge, `project dir` for a user-made
+  directory and `auto-located` for cache space, so after a Save As the
+  active row reads `active · project dir`; (c) `Clear all data caches`
+  still has the red-on-gray `danger` styling the owner dislikes — it
+  loses that class and reads as a normal button, text kept.
 
 ## Open questions
 
-1. **`Clear all data caches`** also wears `danger`. It is a clear,
-   not a removal, so *recommend* it keeps its text and loses nothing;
-   only `Delete` changes.
+(none — the `Clear all data caches` question is ruled above,
+2026-09-22: text kept, `danger` dropped)
 
 ## Phases
 
@@ -141,6 +150,9 @@ lost). **Phase 2, the rows:** the row layout (name, secondary path
 line, badge tooltip), `Delete` as `TwoStageRemoveButton`, the list's
 dom test extended, ADR 0042 §5 amended if the row's contents
 are described there, `docs/CONTEXT.md` if a term is added.
+**Phase 3, owner review follow-ups (2026-09-22):** the tooltip on
+every auto-located row, the location chip, `Clear all data caches`
+without `danger`; dom tests first.
 
 ## Exit criteria
 
@@ -164,6 +176,11 @@ are described there, `docs/CONTEXT.md` if a term is added.
    panel and back.
 8. Tests cover 1–7 (dom for the view, host for the event); the
    existing settings and list tests pass.
+9. Every auto-located row, the active one included, carries the
+   auto-located tooltip; every row carries a location chip
+   (`project dir` / `auto-located`) beside its state badge.
+10. `Clear all data caches` no longer wears `danger`; dom tests cover
+    9 and 10.
 
 ## Blockers / side effects
 
@@ -228,7 +245,7 @@ are described there, `docs/CONTEXT.md` if a term is added.
 ## Exit criteria verdicts (2026-09-21)
 
 | # | Verdict |
-|---|---|
+| --- | --- |
 | 1 | met — name leads, path secondary and in the tooltip (phase 2) |
 | 2 | met — on the `auto-located` badge; the active-and-auto-located row's scope is a queued yes/no |
 | 3 | met — "unsaved" (phase 2) |
@@ -241,3 +258,4 @@ are described there, `docs/CONTEXT.md` if a term is added.
 Owner hands-on check still owed (no UI automation from agents): scroll
 holds and a grown cache re-measures on return; a Save As onto a loose
 project's file flips `active` without reopening the view.
+- 2026-09-22 — owner review: accepted with follow-ups (rulings above); phase 3 opened.
