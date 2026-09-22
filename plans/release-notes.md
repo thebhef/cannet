@@ -259,9 +259,11 @@ repaired something broken.
   series per pointer move. The crosshair, the cursor lines, the hover
   markers, the event chrome and every readout now draw on an overlay
   canvas of their own, and only a data change repaints the series.
-  Sample markers are also drawn as solid discs in the series colour
-  rather than rings with a white core, the same size as before, which
-  halves what each marker costs.
+  Sample markers are now solid squares in the series colour, the same
+  size as the old ring, drawn as one batched path, and markers that
+  would land on the same pixels in a column draw once. A held signal
+  gets one marker per pixel column, a noisy one its min and its max,
+  and no extreme is ever left bare.
 - **Changed:** an enum lane is an ordinary series with tiles drawn over
   it. Its markers are the same markers every other series gets, on the
   plotted value, in an ink that reads over the tile, and they no
