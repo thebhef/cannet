@@ -91,21 +91,26 @@ follow from that table as they do today.
 - **The ratio family's scale column lists every ratio unit the crate
   carries** (owner, 2026-09-21), not the three of the earlier design
   ruling; a scale choice is that family's prefix.
+- **Composition resolves to the first match, and the user can override
+  it with any dimension of the same ISQ exponents** (owner,
+  2026-09-21: "make the first resolution and let the user override
+  it"). Overseer's reading into mechanism: `COMPOSITION_ORDER` keeps
+  today's 15 at its head in today's order, the other quantities
+  alphabetically behind; wherever a composed kind locks a picker (a
+  math signal's output unit) the lock widens to every dimension
+  ISQ-equivalent to the composition, grouped under their own headings
+  with the first resolution's group first and its unit preselected.
+  So a `N · m` product opens on torque and offers energy under it. A
+  settings-view composition (`X = N * m`) is placed by the same first
+  resolution; overriding it there is naming the target explicitly,
+  which the entry already allows by composing from a unit of the
+  wanted dimension.
+- **Temperature interval is its own dimension** beside absolute
+  temperature (overseer recommendation, owner deferred 2026-09-21).
 
 ## Open questions
 
-Each with the overseer's recommendation; ruled answers move to
-§ Rulings.
-
-1. **Composition order across 110 quantities.** *Recommend:* today's
-   15 in today's order first (the automotive readings a product is
-   most likely meant as), the remaining quantities alphabetically
-   after; the phase records the ISQ collisions it finds in its status
-   log so the order can be corrected on evidence.
-2. **Temperature interval vs absolute.** *Recommend:* two dimensions,
-   `temperature` (absolute, offsets) and `temperature interval`
-   (ΔK, Δ°C, Δ°F, Δ°R), since a temperature difference is a common
-   bus signal and converts without the offset.
+(none)
 
 ## Phases
 
@@ -123,8 +128,10 @@ Each with the overseer's recommendation; ruled answers move to
    recorded, not gated.
 2. **Surfaces at scale.** The picker and the settings view's units
    table over ~900 bases in 110 groups: grouping, filter and order
-   confirmed in tests; `LPM = L / min` defined through the settings
-   entry and a database's `LPM` reads as it. Technology inventory
+   confirmed in tests; the math output picker's widened lock (every
+   ISQ-equivalent dimension, first resolution preselected);
+   `LPM = L / min` defined through the settings entry and a
+   database's `LPM` reads as it. Technology inventory
    entry, `units.rs` module docs and `docs/CONTEXT.md` updated where
    the wording changed.
 
@@ -149,7 +156,11 @@ Each with the overseer's recommendation; ruled answers move to
    groups; a dom test finds `litre` and `psi` by typing.
 7. Compile-time and release binary-size deltas from enabling all 110
    features are recorded in the status log.
-8. `plans/technology-inventory.md`'s `runtime_units` entry and the
+8. A math signal whose composed unit is `N · m` opens its output unit
+   picker on torque with energy offered beneath; picking a joule
+   converts by the right factor. A test pins the first resolution of
+   every composition today's tests name.
+9. `plans/technology-inventory.md`'s `runtime_units` entry and the
    `units.rs` module docs describe the no-curation table.
 
 ## Blockers / side effects
