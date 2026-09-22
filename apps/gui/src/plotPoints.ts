@@ -30,19 +30,28 @@ export function showPointsFromRaw(v: unknown): ShowPointsMode {
  * else. Two mechanisms deciding that is how a held column came to be
  * marked as if it were a reading.
  *
- * **`width: 0` in every mode — a marker is a filled disc, not a ring.**
- * uPlot builds one `Path2D` of arcs per repaint and then fills *and*
- * strokes it; at `width: 0` the path builder hands back no stroke path
- * at all, so the second pass over every marker is skipped. The drawn
- * size is unchanged: the radius is `(size - width) / 2`, so dropping a
- * 1 px stroke that was centred on the arc grows the disc by exactly the
- * half-width that stroke used to cover. What changes is the middle —
- * uPlot's stroked marker defaults to a white fill, and an unstroked one
- * takes the series' own colour throughout. */
+ * **A marker is a filled square, in every mode.** Two decisions, both
+ * about the one cost uPlot never caches — `drawSeries` rebuilds the
+ * marker path, and fills *and* strokes it, on every repaint of the
+ * series layer:
+ *
+ * - `width: 0`, so the path builder hands back no stroke path at all and
+ *   the second pass over every marker is skipped. The fill is then the
+ *   series' own colour throughout, where uPlot's stroked marker defaults
+ *   to a white middle.
+ * - {@link squareMarkerPaths} in place of uPlot's arc builder, so a
+ *   marker is one pixel-snapped `rect` rather than four anti-aliased
+ *   Béziers, and the markers that would paint the same pixels twice are
+ *   collapsed first. Same side as the disc's diameter — the disc's
+ *   radius was `(size - width) / 2` and `width` is 0 here.
+ *
+ * The hover marker is untouched by both: it is one per series, drawn on
+ * the overlay canvas, and stays a disc (ADR 0026). */
 export function showPointsToUplot(mode: ShowPointsMode): uPlot.Series.Points {
-  if (mode === "off") return { show: false, width: 0 };
-  if (mode === "on") return { show: true, width: 0 };
-  return { width: 0 };
+  const shape = { width: 0, paths: squareMarkerPaths } as const;
+  if (mode === "off") return { show: false, ...shape };
+  if (mode === "on") return { show: true, ...shape };
+  return { ...shape };
 }
 
 /** The show-points mode forced on every plot panel for this run, or
@@ -246,4 +255,123 @@ export function applySampleMarkerFilter(
       );
     };
   }
+}
+
+/**
+ * Collapse a series' visible marker centres to the squares actually
+ * worth painting, one device-pixel column at a time.
+ *
+ * `centres` is flat — `[x0, y0, x1, y1, …]` in device pixels, ascending
+ * in x — and so is the result, which carries the **top-left corner** of
+ * each square; the side is common to the series and is the caller's.
+ * Flat both ways on purpose: a repaint of a wide canvas runs this over
+ * thousands of markers per series, and a pair-per-marker shape would
+ * allocate that many short-lived arrays every time.
+ *
+ * The serve hands a pixel column its first, last, min and max sample
+ * (ADR 0026), so `Points: On` asks for up to four markers per column per
+ * series. A held signal's four are the same pixel; a noisy one's first
+ * and last usually land inside the marker its nearer extreme already
+ * covers. So a marker whose square would overlap one already kept **in
+ * the same column** is dropped: identical ink, one rect instead of four.
+ *
+ * Two things this is deliberately not:
+ *
+ * - **Not a stride and not a cap.** Both were tried (a flat 500 markers
+ *   on an even index stride) and both leave a column's extreme bare,
+ *   which is what made `Points: On` read as extrapolation. Every marker
+ *   kept here still sits on a served sample, and a column's extremes are
+ *   dropped only where another marker already paints the same pixels.
+ * - **Not a collapse across columns.** Neighbouring columns whose
+ *   extremes are a pixel apart do overlap as squares, and both draw. The
+ *   column is the unit because it is the unit the serve decimates to;
+ *   merging across columns would start deciding which readings survive.
+ */
+export function collapseMarkerSquares(centres: readonly number[], side: number): number[] {
+  const out: number[] = [];
+  const half = side / 2;
+  // Tops kept for the column being collapsed. Reused across columns —
+  // `kept` is the live length, so a new column costs no allocation.
+  const keptTops: number[] = [];
+  let kept = 0;
+  let columnLeft = Number.NaN;
+  for (let i = 0; i + 1 < centres.length; i += 2) {
+    const left = Math.round(centres[i] - half);
+    const top = Math.round(centres[i + 1] - half);
+    if (left !== columnLeft) {
+      columnLeft = left;
+      kept = 0;
+    }
+    let covered = false;
+    for (let k = 0; k < kept; k++) {
+      if (Math.abs(top - keptTops[k]) < side) {
+        covered = true;
+        break;
+      }
+    }
+    if (covered) continue;
+    keptTops[kept++] = top;
+    out.push(left, top);
+  }
+  return out;
+}
+
+/**
+ * The `points.paths` every series draws its markers with: one `Path2D`
+ * of axis-aligned squares, pixel-snapped, filled and never stroked.
+ *
+ * uPlot's own builder puts a `moveTo` plus an `arc` per marker into a
+ * `Path2D` — four cubic Béziers each, flattened and anti-aliased when
+ * the path is rasterized — and it does so on **every** repaint, because
+ * `drawSeries` caches a series' line path and nothing else. On a wide
+ * canvas with several plot areas that is six figures of arcs per data
+ * repaint. A square is one `rect`, its four edges land on whole device
+ * pixels, and {@link collapseMarkerSquares} first drops the markers that
+ * would paint the same pixels twice.
+ *
+ * The shape is otherwise uPlot's: the same disc diameter (`points.size`
+ * at the canvas pixel ratio — the disc's radius was `(size - width) / 2`
+ * and `width` is 0 in every mode), the same clip inflated by one marker
+ * so a marker on the plot box's edge is not clipped in half, a null
+ * stroke path so `drawPath` skips the stroke pass, and the fill left to
+ * the series (`points.fill`, which an enum lane sets to its own marker
+ * ink). See ADR 0026.
+ */
+export function squareMarkerPaths(
+  u: uPlot,
+  seriesIdx: number,
+  idx0: number,
+  idx1: number,
+  filtIdxs?: number[] | null,
+): uPlot.Series.Points.Paths | null {
+  const xs = u.data[0] as number[] | undefined;
+  const ys = u.data[seriesIdx] as (number | null)[] | undefined;
+  if (!xs || !ys) return null;
+  const series = u.series[seriesIdx];
+  const ratio = u.ctx.canvas.width / u.width || 1;
+  const side = Math.max(1, Math.round((series.points?.size ?? 0) * ratio));
+  const xKey = u.series[0].scale ?? "x";
+  const yKey = series.scale ?? "y";
+  const centres: number[] = [];
+  const place = (i: number): void => {
+    const v = ys[i];
+    if (v == null) return;
+    centres.push(u.valToPos(xs[i], xKey, true), u.valToPos(v, yKey, true));
+  };
+  if (filtIdxs) for (const i of filtIdxs) place(i);
+  else for (let i = idx0; i <= idx1; i++) place(i);
+
+  const fill = new Path2D();
+  const squares = collapseMarkerSquares(centres, side);
+  for (let i = 0; i + 1 < squares.length; i += 2) fill.rect(squares[i], squares[i + 1], side, side);
+
+  const { left, top, width, height } = u.bbox;
+  const clip = new Path2D();
+  clip.rect(left - side, top - side, width + side * 2, height + side * 2);
+
+  // uPlot's own points builder returns these two band-clip flags. They
+  // are inert for a point layer — `drawPath` hands a points path
+  // straight to `strokeFill` with no band clip — but carrying the same
+  // value keeps this a drop-in for it.
+  return { stroke: null, fill, clip, flags: 0b11 };
 }

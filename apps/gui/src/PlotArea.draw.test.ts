@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+//
 // The canvas half of the extrapolation rendering (ADR 0026), driven
 // against a recording 2D context.
 //
@@ -30,9 +32,21 @@ import {
 } from "./PlotArea";
 import { enumSegments, mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
-import { applySampleMarkerFilter } from "./plotPoints";
+import { applySampleMarkerFilter, showPointsToUplot } from "./plotPoints";
 import { wrapMarkerLabel } from "./plotEvents";
 import { THEMES, setActiveTheme, theme, type ThemeName } from "./theme";
+
+// uPlot reads the device pixel ratio through a bare `matchMedia` when
+// its module initialises, and vitest's jsdom environment does not put
+// jsdom's own on `globalThis`. Hoisted above the imports because the
+// call happens as `./PlotArea` pulls uPlot in.
+vi.hoisted(() => {
+  (globalThis as unknown as { matchMedia?: unknown }).matchMedia ??= () => ({
+    addEventListener() {},
+    removeEventListener() {},
+    matches: false,
+  });
+});
 
 /** The tile draw as a plot area performs it, in two passes: the tiles
  * go down in the `drawAxes` hook, before the series layer, and the
@@ -1506,5 +1520,132 @@ describe("drawXAxisTimeLabel", () => {
     const text = ops.find((o) => o.op === "fillText");
     expect(text?.args[1]).toBe(340);
     expect(text?.args[2]).toBe(330 + 34 + 17);
+  });
+});
+
+describe("the marker path uPlot actually builds", () => {
+  // Every other assertion in this file drives one of our own draw
+  // functions. This one drives **uPlot's** `drawSeries` — the pass that
+  // builds a series' point path, uncached, on every repaint — because
+  // the thing under test is what that pass is made of. A recording
+  // `Path2D` is the instrument: rects or arcs, and how many.
+
+  type PathOp = { op: string; args: number[] };
+
+  /** Build a real uPlot over `data` with the panel's own `points` spec
+   * and marker filter, repaint it once, and return every path
+   * operation the repaint recorded. */
+  async function pathOpsOfOneRepaint(
+    data: [number[], number[]],
+    points: uPlot.Series.Points,
+  ): Promise<PathOp[]> {
+    const ops: PathOp[] = [];
+    class RecordingPath2D {
+      rect(...args: number[]) {
+        ops.push({ op: "rect", args });
+      }
+      arc(...args: number[]) {
+        ops.push({ op: "arc", args });
+      }
+      moveTo(...args: number[]) {
+        ops.push({ op: "moveTo", args });
+      }
+      lineTo(...args: number[]) {
+        ops.push({ op: "lineTo", args });
+      }
+      bezierCurveTo(...args: number[]) {
+        ops.push({ op: "bezierCurveTo", args });
+      }
+      closePath() {}
+    }
+    (globalThis as unknown as { Path2D: unknown }).Path2D = RecordingPath2D;
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
+      // Everything the draw does is ink we do not read here; the path
+      // builder is what we are recording. `canvas` is the real element
+      // so the canvas-to-CSS pixel ratio is uPlot's own.
+      const self = this;
+      return new Proxy({} as Record<string, unknown>, {
+        get(t, k) {
+          if (k === "canvas") return self;
+          if (k === "measureText") return () => ({ width: 10 });
+          if (k in t) return t[k as string];
+          return () => {};
+        },
+        set(t, k, v) {
+          t[k as string] = v;
+          return true;
+        },
+      });
+    } as unknown as HTMLCanvasElement["getContext"];
+
+    const uPlotCtor = (await import("uplot")).default;
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const u = new uPlotCtor({ width: 600, height: 300, series: [{}, { points }] }, data, root);
+    // Every column of this one series is one of its own samples, so the
+    // panel's filter narrows nothing — which is the case `Points: On`
+    // is expensive in.
+    applySampleMarkerFilter(u.series as unknown as { points?: object }[], () =>
+      data[0].map((_, i) => i),
+    );
+    ops.length = 0;
+    u.redraw(false, false);
+    // uPlot coalesces synchronous redraws into one microtask, so an
+    // unflushed loop measures a single repaint — or, here, none at all.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    u.destroy();
+    root.remove();
+    return ops;
+  }
+
+  /** A sawtooth dense enough that many samples share a pixel column —
+   * the shape a min/max serve produces and the one the collapse is for. */
+  const sawtooth = (): [number[], number[]] => {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i < 2000; i++) {
+      xs.push(i);
+      ys.push(i % 2 === 0 ? 0 : 100);
+    }
+    return [xs, ys];
+  };
+
+  it("puts down rects and not one arc", async () => {
+    const ops = await pathOpsOfOneRepaint(sawtooth(), showPointsToUplot("on"));
+    expect(ops.filter((o) => o.op === "arc")).toEqual([]);
+    // One rect per marker plus the clip uPlot's `drawPath` makes for the
+    // line and the one the point path carries; the markers are the
+    // square ones, and there is at least one per pixel column the data
+    // swings across.
+    const squares = ops.filter((o) => o.op === "rect" && o.args[2] === o.args[3]);
+    expect(squares.length).toBeGreaterThan(100);
+    for (const s of squares) {
+      expect(Number.isInteger(s.args[0])).toBe(true);
+      expect(Number.isInteger(s.args[1])).toBe(true);
+    }
+  });
+
+  it("CONTROL: uPlot's own builder draws the same series as arcs", async () => {
+    // The falsifiable half. Without our `paths` the same repaint over
+    // the same data builds a `moveTo` + `arc` per marker — four cubic
+    // Béziers each, flattened and anti-aliased at raster, rebuilt every
+    // repaint of every series of every plot area. That is the cost.
+    const ops = await pathOpsOfOneRepaint(sawtooth(), { show: true, width: 0 });
+    expect(ops.filter((o) => o.op === "arc").length).toBeGreaterThan(100);
+  });
+
+  it("collapses a column the signal is held across to a single rect", async () => {
+    // The same 2000 samples at one value: every marker lands on the
+    // same device pixel of its column, so a column that used to cost up
+    // to four arcs costs one rect — and no column is left bare.
+    const xs = Array.from({ length: 2000 }, (_, i) => i);
+    const held: [number[], number[]] = [xs, xs.map(() => 42)];
+    const ops = await pathOpsOfOneRepaint(held, showPointsToUplot("on"));
+    const squares = ops.filter((o) => o.op === "rect" && o.args[2] === o.args[3]);
+    const tops = new Set(squares.map((s) => s.args[1]));
+    expect(tops.size).toBe(1);
+    // One per pixel column of the plot box, not one per sample.
+    expect(squares.length).toBeLessThan(700);
+    expect(squares.length).toBeGreaterThan(100);
   });
 });
