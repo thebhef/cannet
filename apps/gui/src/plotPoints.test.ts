@@ -7,7 +7,9 @@ import {
   AUTO_POINT_MARKER_FLOOR,
   hoverMarkerColumn,
   sampleMarkerColumns,
+  setShowPointsOverride,
   showPointsFromRaw,
+  showPointsOverride,
   showPointsToUplot,
 } from "./plotPoints";
 
@@ -29,13 +31,37 @@ describe("showPointsFromRaw", () => {
 
 describe("showPointsToUplot", () => {
   it("maps the tri-state to a uPlot points spec", () => {
-    expect(showPointsToUplot("off")).toEqual({ show: false });
-    expect(showPointsToUplot("auto")).toEqual({});
+    expect(showPointsToUplot("off")).toEqual({ show: false, width: 0 });
+    expect(showPointsToUplot("auto")).toEqual({ width: 0 });
     const on = showPointsToUplot("on");
     expect(on.show).toBe(true);
     // *Which* columns are marked is not this function's call — one
     // filter, installed on the instance, answers that for every mode.
     expect(on.filter).toBeUndefined();
+  });
+
+  it("asks for a fill-only marker in every mode", () => {
+    // uPlot builds the marker path fresh on every repaint and then
+    // fills *and* strokes it; at width 0 its path builder hands back no
+    // stroke path, so the second pass over every marker of every series
+    // is skipped. The drawn size is unchanged — the radius is
+    // `(size - width) / 2` — so this is ink saved, not size.
+    for (const mode of ["auto", "off", "on"] as const) {
+      expect(showPointsToUplot(mode).width).toBe(0);
+    }
+  });
+});
+
+describe("showPointsOverride", () => {
+  it("is unset until a launch arms it, and clears back to unset", () => {
+    // The ordinary launch reads `null` and every panel keeps its own
+    // mode; a measurement run pins one for the process without the
+    // project ever learning about it.
+    expect(showPointsOverride()).toBeNull();
+    setShowPointsOverride("on");
+    expect(showPointsOverride()).toBe("on");
+    setShowPointsOverride(null);
+    expect(showPointsOverride()).toBeNull();
   });
 });
 

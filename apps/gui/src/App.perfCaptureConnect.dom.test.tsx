@@ -39,6 +39,8 @@ const knobs = {
   // inside the capture window's try block *after* a successful connect,
   // where the retry/failed logic above has already finished running.
   throwOnDiagCaptureStart: false,
+  // `--show-points <auto|off|on>`, as the host serves it.
+  showPoints: null as string | null,
 };
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -53,6 +55,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           out: null,
           label: null,
           interact: null,
+          showPoints: knobs.showPoints,
         };
       case "open_project":
         return {
@@ -176,6 +179,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { App } from "./App";
 import { hydrateState } from "./hostState";
+import { setShowPointsOverride, showPointsOverride } from "./plotPoints";
 
 class FakeResizeObserver {
   observe() {}
@@ -197,6 +201,8 @@ beforeEach(async () => {
   knobs.bindings = [];
   knobs.connectAlwaysFails = false;
   knobs.throwOnDiagCaptureStart = false;
+  knobs.showPoints = null;
+  setShowPointsOverride(null);
   await hydrateState();
 });
 
@@ -310,6 +316,25 @@ describe("perf-harness connect robustness", () => {
     expect(connectRemoteServerCalls).toBe(0);
     expect(exitCalls).toEqual([]);
     expect(windowDestroy).not.toHaveBeenCalled();
+  });
+
+  it("arms the show-points override from the launch config, and leaves it unset without one", async () => {
+    // The last hop of `--show-points` (ADR 0031): the host parses it,
+    // this is where the webview picks it up — before the project opens,
+    // so every panel the project brings up is already drawing in the
+    // mode the run asked for.
+    useAutomationFakeTimers();
+    knobs.showPoints = "on";
+    render(<App />);
+    await runAutomationTimers(1000);
+    expect(showPointsOverride()).toBe("on");
+
+    cleanup();
+    setShowPointsOverride(null);
+    knobs.showPoints = null;
+    render(<App />);
+    await runAutomationTimers(1000);
+    expect(showPointsOverride()).toBeNull();
   });
 
   it("an exception during the capture window (connected, but beginDiagCapture throws) fails the run: no report, exit non-zero, no destroy", async () => {

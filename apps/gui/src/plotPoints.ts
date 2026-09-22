@@ -28,11 +28,45 @@ export function showPointsFromRaw(v: unknown): ShowPointsMode {
  * through the one filter [`applySampleMarkerFilter`] installs on the
  * constructed instance, which marks the series' own samples and nothing
  * else. Two mechanisms deciding that is how a held column came to be
- * marked as if it were a reading. */
+ * marked as if it were a reading.
+ *
+ * **`width: 0` in every mode — a marker is a filled disc, not a ring.**
+ * uPlot builds one `Path2D` of arcs per repaint and then fills *and*
+ * strokes it; at `width: 0` the path builder hands back no stroke path
+ * at all, so the second pass over every marker is skipped. The drawn
+ * size is unchanged: the radius is `(size - width) / 2`, so dropping a
+ * 1 px stroke that was centred on the arc grows the disc by exactly the
+ * half-width that stroke used to cover. What changes is the middle —
+ * uPlot's stroked marker defaults to a white fill, and an unstroked one
+ * takes the series' own colour throughout. */
 export function showPointsToUplot(mode: ShowPointsMode): uPlot.Series.Points {
-  if (mode === "off") return { show: false };
-  if (mode === "on") return { show: true };
-  return {};
+  if (mode === "off") return { show: false, width: 0 };
+  if (mode === "on") return { show: true, width: 0 };
+  return { width: 0 };
+}
+
+/** The show-points mode forced on every plot panel for this run, or
+ * `null` when the launch asked for nothing (the ordinary case).
+ *
+ * Set once at boot from the `--show-points` launch flag (ADR 0031), so
+ * a measurement run can pin the mode it is measuring without editing —
+ * and so re-saving — the project it measures. Deliberately a module
+ * flag rather than a panel prop or a persisted field: it is a property
+ * of the *process*, it must reach every panel including ones restored
+ * later, and it must never be written back. Same shape as `diag.ts`'s
+ * own launch-time arming. */
+let forcedShowPoints: ShowPointsMode | null = null;
+
+/** Arm {@link showPointsOverride} from the launch flags. */
+export function setShowPointsOverride(mode: ShowPointsMode | null): void {
+  forcedShowPoints = mode;
+}
+
+/** The forced show-points mode for this run, or `null`. A panel reads
+ * this at render and draws `override ?? its own state`, leaving the
+ * state (and so what is persisted) untouched. */
+export function showPointsOverride(): ShowPointsMode | null {
+  return forcedShowPoints;
 }
 
 /** How few samples a series may hold and still keep its point markers
@@ -113,9 +147,15 @@ export function applyAutoPointFloor(
  * extrapolation: an even stride over a min/max envelope aliases onto one
  * leg of it, so a run of dots hugged one side of a line that was
  * oscillating through both, and most extrema carried no dot at all. The
- * markers were on the line; the wrong ones were being chosen. The serve
- * is already bounded to a few points per canvas pixel column, so what
- * the cap bounded is bounded anyway.
+ * markers were on the line; the wrong ones were being chosen.
+ *
+ * The serve bounds this to a few points per canvas pixel column — but
+ * it bounds the *count*, not the cost. uPlot caches a series' line path
+ * and nothing else, so this function and the arc path built from its
+ * answer are re-run on **every repaint** of the series layer. That is
+ * why the panel's hover chrome draws on its own overlay canvas instead
+ * of asking uPlot to redraw (ADR 0026), and why a marker is filled and
+ * not stroked.
  */
 export function sampleMarkerColumns(
   columns: readonly number[],

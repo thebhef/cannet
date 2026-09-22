@@ -39,7 +39,7 @@ function drawRecorder(ops: { op: string; args: number[] }[]) {
       ops.push({ op, args: args as number[] });
     };
   return {
-    canvas: { width: 600 },
+    canvas: { width: 600, height: 400 },
     font: "",
     lineWidth: 1,
     strokeStyle: "",
@@ -52,6 +52,9 @@ function drawRecorder(ops: { op: string; args: number[] }[]) {
     restore: () => {},
     setLineDash: () => {},
     beginPath: rec("beginPath"),
+    // The hover overlay clears its own canvas before every repaint, so
+    // this is what "the overlay repainted" looks like from here.
+    clearRect: rec("clearRect"),
     arc: rec("arc"),
     fill: rec("fill"),
     stroke: rec("stroke"),
@@ -142,6 +145,12 @@ vi.mock("uplot", () => {
     redraws = 0;
     redraw() {
       this.redraws++;
+      // Real uPlot caches a series' *line* path and nothing else: every
+      // repaint re-runs `points.filter`, rebuilds the marker path and
+      // fires `drawSeries` per series. So a `drawSeries` count is what
+      // "the series layer was re-rasterized" means, and the reason the
+      // hover chrome may not ride a redraw (ADR 0026).
+      for (let i = 1; i < this.series.length; i++) this.fire("drawSeries", i);
     }
     destroy() {}
     /** px → x value; linear so tests can pick a deterministic x. */
@@ -440,7 +449,14 @@ type FakeUPlotInst = {
   scales: Record<string, { min?: number; max?: number }>;
   xCalls: { min: number; max: number }[];
   redraws: number;
+  /** Ask for a repaint, as the component does — it fires `drawSeries`
+   * per series, the way real uPlot does. */
+  redraw: () => void;
   drawOps: { op: string; args: number[] }[];
+  /** The recorder standing in for this instance's 2D context — the
+   * overlay canvas is handed the same one (see the `getContext` routing
+   * below), so `drawOps` holds both layers' ink. */
+  ctx: CanvasRenderingContext2D;
   /** The plot box, as the draw hook reads it — `top` is the gutter the
    * event label chips hang in (ADR 0026). */
   bbox: { left: number; top: number; width: number; height: number };
@@ -468,6 +484,7 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import { resetEventHighlight, selectEvents } from "./eventHighlight";
+import { setShowPointsOverride } from "./plotPoints";
 import type { Note } from "./notes";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { MathSignalsProvider } from "./mathSignalsContext";
@@ -841,13 +858,33 @@ beforeAll(async () => {
   await hydrateUnits();
 });
 
+/** jsdom hands back no 2D context, so the plot area's overlay canvas
+ * would silently draw nothing. Route the one it stacks inside an
+ * instance's `over` to that instance's own recorder: the overlay's ink
+ * then lands in `drawOps` beside the ink the `draw` hook put there,
+ * in the order it was painted, which is what every assertion about the
+ * crosshair, the hover markers and the gutter chips reads. Canvases
+ * that belong to nobody (the axis label measurers) keep jsdom's answer. */
+const realGetContext = HTMLCanvasElement.prototype.getContext;
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   uplotInstances.length = 0;
   dbcChangedHandlers = [];
+  HTMLCanvasElement.prototype.getContext = function (
+    this: HTMLCanvasElement,
+    kind: string,
+    ...rest: unknown[]
+  ) {
+    if (kind === "2d") {
+      const owner = uplotInstances.find((i) => i.over === this.parentElement);
+      if (owner) return owner.ctx;
+    }
+    return (realGetContext as (...a: unknown[]) => unknown).call(this, kind, ...rest);
+  } as typeof HTMLCanvasElement.prototype.getContext;
 });
 afterEach(async () => {
   cleanup();
+  HTMLCanvasElement.prototype.getContext = realGetContext;
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   for (const k of Object.keys(mockValueTables)) delete mockValueTables[k];
@@ -1977,14 +2014,25 @@ describe("PlotPanel", () => {
       await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
       await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
       const inst = uplotInstances[uplotInstances.length - 1];
-      // uPlot calls the label at draw time with the live instance; the
-      // window it reports drives both the precision and the reserved
-      // width.
+      // The window the instance reports drives both the precision and
+      // the reserved width.
       inst.scales.x = { min: 0, max: 10 };
+      // The label is painted on the overlay canvas, not handed to uPlot
+      // (ADR 0026): its text changes on every pointer move, and an axis
+      // can only be repainted by a redraw that takes the series layer
+      // with it. uPlot still reserves the band — the axis carries a
+      // blank label so its layout is unchanged.
+      const xAxis = (inst as unknown as { opts: { axes: { label: unknown }[] } }).opts.axes[0];
+      expect(xAxis.label).toBe(" ");
       const label = () => {
-        const xAxis = (inst as unknown as { opts: { axes: { label: unknown }[] } }).opts.axes[0];
-        expect(typeof xAxis.label).toBe("function");
-        return (xAxis.label as (u: unknown) => string)(inst);
+        inst.drawOps.length = 0;
+        inst.fire("draw");
+        const drawn = inst.drawOps
+          .filter((o) => o.op === "fillText")
+          .map((o) => String(o.args[0]))
+          .filter((t) => t.startsWith("time (s)"));
+        expect(drawn).toHaveLength(1);
+        return drawn[0];
       };
       expect(label()).toBe("time (s)");
       // Hover at x = 1.5 (the fake's posToVal is px / 100).
@@ -7942,7 +7990,14 @@ describe("single-enum y axis", () => {
    * width the axis *asks for* is observable. */
   function stubMeasure() {
     const orig = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function (kind: string) {
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, kind: string) {
+      // Not the overlay's canvas, which belongs to an instance and is
+      // routed to its recorder by the suite-wide stub this one wraps —
+      // a measure-only context there would make the overlay's first
+      // paint throw.
+      if (this.parentElement != null) {
+        return (orig as (...a: unknown[]) => unknown).call(this, kind) as CanvasRenderingContext2D;
+      }
       return kind === "2d"
         ? ({
             font: "",
@@ -9062,11 +9117,15 @@ describe("a highlight repaints the plot", () => {
     resetEventHighlight();
   });
 
-  it("redraws when an event is selected, and again when it is dropped", async () => {
-    // The highlight reaches the draw hook through a ref, so nothing
-    // repaints unless the overlay effect depends on it. A live trace
-    // hides that behind its ticks; a stopped one keeps the stale frame,
-    // and the marker the reader just selected never comes forward.
+  it("repaints the overlay when an event is selected, and again when it is dropped", async () => {
+    // The highlight reaches the draw through a ref, so nothing repaints
+    // unless the overlay effect depends on it. A live trace hides that
+    // behind its ticks; a stopped one keeps the stale frame, and the
+    // marker the reader just selected never comes forward.
+    //
+    // The repaint is the *overlay's*, and the series layer must not move
+    // for it (ADR 0026): a highlight lands while the pointer is moving
+    // over an event, which is exactly when a redraw is least affordable.
     const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
     try {
@@ -9082,18 +9141,21 @@ describe("a highlight repaints the plot", () => {
         await new Promise((r) => setTimeout(r, 60));
       });
       const inst = uplotInstances[uplotInstances.length - 1] as FakeUPlotInst;
-      const before = inst.redraws;
+      const clears = () => inst.drawOps.filter((o) => o.op === "clearRect").length;
+      const redrawsBefore = inst.redraws;
+      inst.drawOps.length = 0;
 
       await act(async () => {
         selectEvents(["n1"]);
       });
-      expect(inst.redraws).toBeGreaterThan(before);
+      expect(clears()).toBeGreaterThan(0);
 
-      const lit = inst.redraws;
+      inst.drawOps.length = 0;
       await act(async () => {
         selectEvents([]);
       });
-      expect(inst.redraws).toBeGreaterThan(lit);
+      expect(clears()).toBeGreaterThan(0);
+      expect(inst.redraws).toBe(redrawsBefore);
     } finally {
       cw.mockRestore();
       ch.mockRestore();
@@ -9369,6 +9431,152 @@ describe("PlotPanel math signals", () => {
       );
       const row = document.querySelector(".plot-signal-row") as HTMLElement;
       expect(row.querySelector(".disclosure-toggle")).toBeNull();
+    });
+  });
+});
+
+// The reason the hover chrome has a canvas of its own (ADR 0026). uPlot
+// caches a series' line path and nothing else: every repaint re-runs
+// `points.filter`, rebuilds a `Path2D` with one arc per marker and
+// fills it. With `Points: On` marking every served sample — a few per
+// canvas pixel column — a redraw per pointer move re-rasterized every
+// marker of every series of every stacked area, and a long trace became
+// unusable to point at.
+describe("hover and cursor chrome stay off the series layer", () => {
+  const SIG = {
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName: "EngineSpeed",
+    messageName: "EngineData",
+    unit: "rpm",
+    color: "#4ecbff",
+  };
+
+  /** Count `drawSeries` the way real uPlot fires it: once per series per
+   * repaint of the series layer. Installed on the live instance, since
+   * the panel registers no such hook of its own. */
+  function countSeriesDraws(inst: FakeUPlotInst): () => number {
+    let n = 0;
+    const hooks = (inst.opts as { hooks?: Record<string, ((...a: unknown[]) => void)[]> }).hooks!;
+    (hooks.drawSeries ??= []).push(() => {
+      n++;
+    });
+    return () => n;
+  }
+
+  it("moves the crosshair and places a cursor without one series repaint", async () => {
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      queueMicrotask(() => cb(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    await withSizedCanvas(async () => {
+      renderPanel({
+        params: { elementId: "el-hover-overlay" },
+        registry: makeRegistry({
+          id: "el-hover-overlay",
+          config: { areas: [{ id: "a1", signals: [SIG] }], cursorMode: "x", showPoints: "on" },
+        }),
+      });
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = liveInstanceIn("Area 1");
+      await act(async () => inst.fire("ready"));
+      const seriesDraws = countSeriesDraws(inst);
+      // The counter is wired to the thing being claimed about: a real
+      // repaint does move it, so "unchanged" below means something.
+      const armed = seriesDraws();
+      await act(async () => inst.redraw());
+      expect(seriesDraws()).toBeGreaterThan(armed);
+
+      const clears = () => inst.drawOps.filter((o) => o.op === "clearRect").length;
+      // Hover: the pointer moves across the panel.
+      let before = seriesDraws();
+      let redrawsBefore = inst.redraws;
+      inst.drawOps.length = 0;
+      await act(async () => {
+        inst.cursor.left = 150;
+        inst.fire("setCursor");
+      });
+      expect(clears()).toBeGreaterThan(0);
+      expect(seriesDraws()).toBe(before);
+      expect(inst.redraws).toBe(redrawsBefore);
+      // …and again, to a different x — the repeated case, which is what
+      // a pointer actually does.
+      inst.drawOps.length = 0;
+      await act(async () => {
+        inst.cursor.left = 260;
+        inst.fire("setCursor");
+      });
+      expect(clears()).toBeGreaterThan(0);
+      expect(seriesDraws()).toBe(before);
+
+      // Placing the A cursor: a click, not a pointer move, and the same
+      // rule.
+      before = seriesDraws();
+      redrawsBefore = inst.redraws;
+      inst.drawOps.length = 0;
+      fireEvent.mouseDown(inst.over, { button: 0, clientX: 250, clientY: 100 });
+      fireEvent.mouseUp(window, { button: 0, clientX: 250, clientY: 100 });
+      await waitFor(() => expect(clears()).toBeGreaterThan(0));
+      expect(seriesDraws()).toBe(before);
+      expect(inst.redraws).toBe(redrawsBefore);
+    });
+  });
+
+  it("draws the launch flag's show-points mode without persisting it", async () => {
+    // `--show-points` (ADR 0031): a measurement run pins the mode it is
+    // measuring. The panel keeps its own — what it persists is what the
+    // user chose — and draws the override, so the project the run
+    // measures is not the thing the run changed.
+    setShowPointsOverride("on");
+    try {
+      await withSizedCanvas(async () => {
+        const { api } = renderPanel({
+          params: { elementId: "el-show-points-flag" },
+          registry: makeRegistry({
+            id: "el-show-points-flag",
+            config: { areas: [{ id: "a1", signals: [SIG] }], showPoints: "off" },
+          }),
+        });
+        await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+        const inst = liveInstanceIn("Area 1");
+        const series = (inst.opts as { series: { points?: { show?: unknown } }[] }).series;
+        expect(series[1].points?.show).toBe(true);
+        // …and nothing wrote the forced mode back.
+        const persisted = api.updateParameters.mock.calls
+          .map((c) => (c[0] as { showPoints?: unknown }).showPoints)
+          .filter((v) => v !== undefined);
+        for (const v of persisted) expect(v).toBe("off");
+      });
+    } finally {
+      setShowPointsOverride(null);
+    }
+  });
+
+  it("stacks the overlay canvas over uPlot's, sized to the whole plot", async () => {
+    // The readouts live in the gutters, so the overlay cannot be the
+    // plot box: it covers the canvas, positioned back out of `u.over`,
+    // and takes no pointer events off the surface uPlot listens on.
+    await withSizedCanvas(async () => {
+      renderPanel({
+        params: { elementId: "el-hover-overlay-box" },
+        registry: makeRegistry({
+          id: "el-hover-overlay-box",
+          config: { areas: [{ id: "a1", signals: [SIG] }] },
+        }),
+      });
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = liveInstanceIn("Area 1");
+      const overlay = inst.over.querySelector("canvas") as HTMLCanvasElement;
+      expect(overlay).toBeTruthy();
+      expect(overlay.style.position).toBe("absolute");
+      expect(overlay.style.pointerEvents).toBe("none");
+      // `u.over` starts at the plot box's origin (0, 34 here), so the
+      // overlay is offset back by exactly that much.
+      expect(overlay.style.left).toBe("0px");
+      expect(overlay.style.top).toBe("-34px");
+      expect(overlay.style.width).toBe("600px");
     });
   });
 });

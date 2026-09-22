@@ -21,8 +21,10 @@ import {
   drawExtrapolatedSegments,
   drawEventLabelChips,
   drawHoverMarkers,
+  drawHoverOverlay,
   drawTimeCursorChips,
   drawValueCursorChips,
+  drawXAxisTimeLabel,
   eventChipGutterPx,
   type TileLabel,
 } from "./PlotArea";
@@ -1350,5 +1352,159 @@ describe("drawValueCursorChips", () => {
     const r = recorder();
     drawValueCursorChips(r.ctx, u(), { ...box, cursorYh1: -50, cursorYh2: null });
     expect(r.ops.filter((o) => o.op === "fillText")).toEqual([]);
+  });
+});
+
+// The hover overlay: the one pass that paints everything the pointer and
+// the cursors drive, on its own canvas (ADR 0026). The claims here are
+// about *composition* — that one call puts the whole set down, in the
+// gutters the gutter phase put them in — since each individual chip
+// function is pinned above.
+describe("drawHoverOverlay", () => {
+  /** A uPlot stand-in with a real plot box: 40 px of y gutter, a 30 px
+   * top gutter, a 600×300 box, and the same linear `valToPos` the rest
+   * of this file reads pixel assertions through. */
+  function overlayU(data: (number | (number | null)[])[]): uPlot {
+    return {
+      data,
+      series: [{}, { show: true }],
+      width: 700,
+      height: 400,
+      bbox: { left: 40, top: 30, width: 600, height: 300 },
+      ctx: { canvas: { width: 700, height: 400 } },
+      scales: { x: { min: 0, max: 10 } },
+      valToPos: (v: number, axis: string) => (axis === "x" ? 40 + v * 10 : 330 - v),
+    } as unknown as uPlot;
+  }
+
+  const OPTS = {
+    events: [],
+    litEventIds: new Set<string>(),
+    eventExtents: [],
+    cursorXa: null,
+    cursorXb: null,
+    cursorYh1: null,
+    cursorYh2: null,
+    hoverX: null,
+    signals: [{}],
+    sampleColumns: [[0, 1, 2]],
+    color: () => "#abcdef",
+    showPoints: "auto" as const,
+    isFirst: true,
+    isLast: true,
+  };
+
+  it("draws the shared crosshair and the pointer's nearest sample in one pass", () => {
+    const { ctx, ops } = recorder();
+    const u = overlayU([[0, 1, 2], [5, 6, 7]]);
+    drawHoverOverlay(ctx, u, { ...OPTS, hoverX: 1.1 });
+    // The crosshair: a dashed vertical at the hovered x, top to bottom
+    // of the plot box.
+    const moves = ops.filter((o) => o.op === "moveTo");
+    const crosshair = moves.find((o) => o.args[0] === 51);
+    expect(crosshair?.args).toEqual([51, 30]);
+    expect(ops.find((o) => o.op === "stroke")?.dash).toEqual([4, 3]);
+    // The hover marker, on the series' own sample nearest the pointer
+    // (x = 1 → 50 px), not on the pointer.
+    const arcs = ops.filter((o) => o.op === "arc");
+    expect(arcs).toHaveLength(1);
+    expect(arcs[0].args[0]).toBe(50);
+  });
+
+  it("draws no hover marker with points off, and keeps the crosshair", () => {
+    // `off` means off for the static markers and for this one alike;
+    // the crosshair is not a marker and stays either way.
+    const { ctx, ops } = recorder();
+    const u = overlayU([[0, 1, 2], [5, 6, 7]]);
+    drawHoverOverlay(ctx, u, { ...OPTS, hoverX: 1.1, showPoints: "off" });
+    expect(ops.filter((o) => o.op === "arc")).toHaveLength(0);
+    expect(ops.filter((o) => o.op === "moveTo").map((o) => o.args[0])).toContain(51);
+  });
+
+  it("keeps every cursor readout out of the plot box", () => {
+    // The gutter rule (ADR 0026), asserted over the whole pass rather
+    // than one chip at a time: A/B and Δt below the box, H1/H2 and ΔH
+    // left of it. A readout inside the box is the defect the gutters
+    // answer.
+    const { ctx, ops } = recorder();
+    const u = overlayU([[0, 1, 2], [5, 6, 7]]);
+    drawHoverOverlay(ctx, u, {
+      ...OPTS,
+      cursorXa: 2,
+      cursorXb: 6,
+      cursorYh1: 40,
+      cursorYh2: 80,
+    });
+    const texts = ops.filter((o) => o.op === "fillText");
+    expect(texts.length).toBeGreaterThan(0);
+    for (const t of texts) {
+      const x = t.args[1] as number;
+      const y = t.args[2] as number;
+      const insideBox = x > 40 && x < 640 && y > 30 && y < 330;
+      expect({ text: t.args[0], insideBox }).toEqual({ text: t.args[0], insideBox: false });
+    }
+  });
+
+  it("carries the panel's once-per-panel gutters only on the axes that anchor them", () => {
+    // `isFirst` / `isLast` are the anchors the gutters already used, so
+    // a collapse moves the chrome rather than losing it.
+    const { ctx, ops } = recorder();
+    const u = overlayU([[0, 1, 2], [5, 6, 7]]);
+    drawHoverOverlay(ctx, u, {
+      ...OPTS,
+      isFirst: false,
+      isLast: false,
+      cursorXa: 2,
+      cursorYh1: 40,
+    });
+    const texts = ops.filter((o) => o.op === "fillText").map((o) => o.args[0] as string);
+    // No A chip and no axis label — both belong to the bottom drawing
+    // axis — but the H chip is per-axis and stays.
+    expect(texts.some((t) => t.startsWith("A "))).toBe(false);
+    expect(texts.some((t) => t.includes("time (s)"))).toBe(false);
+    expect(texts).toContain("H1");
+  });
+});
+
+describe("drawXAxisTimeLabel", () => {
+  function labelU(): uPlot {
+    return {
+      data: [[0, 1]],
+      series: [{}, {}],
+      width: 700,
+      height: 400,
+      bbox: { left: 40, top: 30, width: 600, height: 300 },
+      ctx: { canvas: { width: 700, height: 400 } },
+      scales: { x: { min: 0, max: 10 } },
+      valToPos: (v: number, axis: string) => (axis === "x" ? 40 + v * 10 : 330 - v),
+    } as unknown as uPlot;
+  }
+
+  const BOX = { left: 40, top: 30, width: 600, height: 300, ratio: 1 };
+
+  it("reads out the free cursor's own time beside the axis label", () => {
+    const { ctx, ops } = recorder();
+    drawXAxisTimeLabel(ctx, labelU(), { ...BOX, hoverX: 1.5 });
+    const text = ops.find((o) => o.op === "fillText");
+    expect(text?.args[0] as string).toContain("time (s)");
+    expect(text?.args[0] as string).toContain("·");
+  });
+
+  it("is the plain label with no cursor over the panel", () => {
+    const { ctx, ops } = recorder();
+    drawXAxisTimeLabel(ctx, labelU(), { ...BOX, hoverX: null });
+    expect(ops.find((o) => o.op === "fillText")?.args[0]).toBe("time (s)");
+  });
+
+  it("hangs under the axis, centred on the plot box, where uPlot drew it", () => {
+    // uPlot still reserves the band (the axis carries a blank label);
+    // this is the same position its own renderer would have used —
+    // centred on the plot box, the foot of the box plus the axis's
+    // reserved size.
+    const { ctx, ops } = recorder();
+    drawXAxisTimeLabel(ctx, labelU(), { ...BOX, hoverX: null });
+    const text = ops.find((o) => o.op === "fillText");
+    expect(text?.args[1]).toBe(340);
+    expect(text?.args[2]).toBe(330 + 34 + 17);
   });
 });
