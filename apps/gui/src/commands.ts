@@ -35,7 +35,6 @@ export const FOCUSED_PANEL_KINDS = [
   "events",
   "bus-health",
   "shortcuts",
-  "servers",
 ] as const;
 
 /// What kind of panel currently has dockview focus; `null` means no
@@ -278,7 +277,6 @@ export const COMMANDS: readonly CommandSpec[] = [
     keywords: "bus load error frames controller state",
   },
   { id: "panel.show.shortcuts", label: "Show keyboard shortcuts", category: "Panels" },
-  { id: "panel.show.servers", label: "Show servers", category: "Panels" },
   {
     id: "panel.rename",
     label: "Rename panel…",
