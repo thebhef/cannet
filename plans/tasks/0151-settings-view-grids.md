@@ -141,8 +141,10 @@ Settled by the overseer, open to reversal:
   agent's full-suite run and passed on every rerun: 2 agent reruns, 5
   isolated runs (~560 ms each) and one full suite by the overseer, all
   green. Not reproduced; recorded so a second sighting is not a first.
-- **`plans/` still says "Servers panel" in nine places** — listed below.
-  They are the overseer's to update; the branch touches nothing under
+- **`plans/` still said "Servers panel" in nine places** — updated by
+  the overseer in the closeout commit that recorded this phase (the
+  chip-redesign prototype's mock chrome left as is). They were the
+  overseer's to update; the branch touches nothing under
   `plans/`. `plans/tasks/0145-wire-protocol-version.md:245` also names
   `ServersPanel.dom.test.tsx`, which is now
   `ServersSection.dom.test.tsx`.
