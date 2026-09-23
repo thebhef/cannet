@@ -5392,7 +5392,18 @@ button.color-chip {
   border-bottom: 1px solid var(--border-soft);
   background: var(--surface-pop);
 }
+/* The search chip takes the toolbar's slack, so it is the widest of the
+   app's chip-fields — and the only one where the difference between the
+   chip and the input inside it is visible. `.chip-field input` is
+   intrinsically sized (the browser's ~20-character default), so without
+   the grow below the chip draws a box the input covers only the head of,
+   and a click past the placeholder lands on the chip and focuses
+   nothing. The input takes the whole chip instead: the drawn box and the
+   click target are the same rectangle. */
 .dbc-panel-search {
+  flex: 1 1 0;
+}
+.dbc-panel-search-input {
   flex: 1 1 0;
 }
 .dbc-panel-match-count {
