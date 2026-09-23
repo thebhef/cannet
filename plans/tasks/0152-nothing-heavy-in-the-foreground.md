@@ -96,12 +96,13 @@ cache; the proposal below generalises it.
   of pure state reads, so a new filesystem command cannot land
   synchronous unnoticed. The audit's table becomes the check.
 
-## Open questions (2026-09-22, overseer, awaiting owner)
+- **The rule lives in ADR 0049** (owner, 2026-09-22): amended with the
+  general statement (any command, any derivation — not the signal cache
+  alone) and the shape-A guard; no new ADR.
 
-1. **Where the rule lives.** Recommended: amend ADR 0049 with the
-   general statement (any command, any derivation — not the signal cache
-   alone) and the shape-A guard, rather than a new ADR; 0049's title is
-   already the rule.
+## Open questions
+
+(none — ruled 2026-09-22.)
 
 ## Phases (groomed 2026-09-22)
 
@@ -159,4 +160,6 @@ cache; the proposal below generalises it.
 - 2026-09-22 — the logger listing (0137) diagnosed as a second freeze
   the sync/async test would pass; shapes B and C, phases 2–3 and exit
   criteria 3, 4, 7 proposed; owner accepted all three shapes the same
-  day and the task was renamed. One open question left (ADR placement).
+  day and the task was renamed.
+- 2026-09-22 — owner ruled the rule lives in ADR 0049, amended; no
+  open questions.
