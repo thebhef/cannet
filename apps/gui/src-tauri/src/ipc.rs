@@ -43,6 +43,15 @@ pub struct TraceFrameRecord {
     /// acknowledged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_delivery: Option<&'static str>,
+    /// The signal names this row matched by, when the filter's fuzzy
+    /// query was best answered by a signal or by one of a signal's
+    /// value-table labels (see [`crate::filter::FuzzyWinner`]). The
+    /// trace panel opens the row's signal disclosure to exactly these.
+    /// Empty under a message-level winner, under no filter at all, and
+    /// on the unfiltered chronological accessor — a row the host never
+    /// tested against a query has nothing to say about it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matching_signals: Vec<String>,
 }
 
 /// A page of a filtered chronological trace view: the total match
@@ -67,6 +76,15 @@ pub struct RowPage<T> {
     pub start: u64,
     /// The page itself — `rows[count..]` is never materialised.
     pub rows: Vec<T>,
+    /// What kind of thing the filter's fuzzy query matched best over
+    /// the *whole* row space — a message, a signal, or one of a
+    /// signal's value-table labels. A property of the query rather than
+    /// of the page, so it rides on the envelope: the panel reads it to
+    /// decide whether to open the admitted rows to their
+    /// `matching_signals`. `None` when the request carried no fuzzy
+    /// query, or when nothing cleared the match floor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fuzzy_winner: Option<crate::filter::FuzzyWinner>,
 }
 
 /// The filtered chronological trace's page — the first instantiation of
@@ -163,6 +181,7 @@ impl TraceFrameRecord {
             bus_id: frame.bus_id.clone().unwrap_or_default(),
             violation: None,
             tx_delivery: None,
+            matching_signals: Vec::new(),
         }
     }
 }
