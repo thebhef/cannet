@@ -608,6 +608,10 @@ impl Inner {
         self.rx_rate = HashMap::new();
         self.tx_rate = HashMap::new();
         self.dropped_before_session = 0;
+        // Ends any open drop episode without a phantom closing line: the
+        // emitter sees the counter and the generation reset together and
+        // reads that as a session change, not a quiet tick.
+        self.first_dropped = None;
     }
 }
 
