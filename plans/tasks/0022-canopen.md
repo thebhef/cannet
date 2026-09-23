@@ -4,6 +4,10 @@ EDS ingestion (CANopen Electronic Data Sheet — library TBD when this
 task becomes current) and SDO / PDO decoding on top of the Task 5
 value-table machinery.
 
+**Shared protocol concept:** task 132 (J1939) carries the open
+question of one protocol-decoder abstraction serving both protocols —
+whichever of the two grooms first designs it.
+
 **ADR cleanup:** scrub task-number references out of
 [ADR 0021](../../docs/adr/0021-virtual-bus-server.md) (its CANopen
 "participant vs. node" note) and the CANopen mention in
