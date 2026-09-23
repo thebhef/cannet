@@ -32,7 +32,7 @@ To groom. Candidate shape:
   package name `cannet.v1` (`crates/cannet-wire/proto/cannet.proto`)
   is baked into gRPC method paths but never read as a version. The
   mDNS TXT `ver=` key carries the *build* string (vergen `git
-  describe`), is displayed in the Servers panel and the CLI, never
+  describe`), is displayed in the Servers section and the CLI, never
   compared, and is absent for hand-added or `--no-mdns` servers.
   gRPC metadata carries only `authorization`.
 - **Mismatch today**: an unknown RPC → `UNIMPLEMENTED`; the GUI's
@@ -93,12 +93,12 @@ owner reversal:
   every method path it calls; a server answers an unserved package
   with `UNIMPLEMENTED`. Bridges, being clients, need nothing more.
 - **A mismatch is terminal.** `connect_flow` gains an outcome that
-  does not retry; the Servers panel row and the python `Refused`
+  does not retry; the Servers section row and the python `Refused`
   message both read "serves cannet.v2; this client speaks cannet.v1".
   An `UNIMPLEMENTED` on any RPC is classified the same way instead of
   falling into `Outcome::Retry`.
 - **mDNS gains `proto=`** (comma-separated packages served) so the
-  Servers panel can grey out an incompatible server before
+  Servers section can grey out an incompatible server before
   connecting; `ver=` stays the build string. Advisory only: absent
   for hand-added and `--no-mdns` servers, so `ServerInfo` is the
   gate.
@@ -137,7 +137,7 @@ One phase, one agent, in stack order:
    package, the Rust server and the local sidecar answering it, the
    mDNS `proto=` key, the Rust client calling it first with an
    incompatible-server error, the GUI turning that and any
-   `UNIMPLEMENTED` into a terminal outcome with the Servers panel
+   `UNIMPLEMENTED` into a terminal outcome with the Servers section
    wording and `proto=` grey-out, the ADR, and CI: a `buf breaking`
    job against the last release tag and a check that the committed
    python gencode matches `cannet.proto`. The sidecar's stubs
@@ -163,7 +163,7 @@ One phase, one agent, in stack order:
   <pkgs>; this client speaks cannet.v1", and the GUI no longer
   retries an `UNIMPLEMENTED`; tested with a fake server that serves
   only `cannet.v2`.
-- The Servers panel greys out a row whose `proto=` excludes
+- The Servers section greys out a row whose `proto=` excludes
   `cannet.v1` before any connect; `cannet-client list` shows the
   protocol column.
 - CI fails on a non-additive change inside `cannet.v1` (`buf
@@ -242,7 +242,7 @@ One phase, one agent, in stack order:
   `crates/cannet-server/tests/auth.rs`; two in `server_info.rs`; four in
   `discovery.rs`; two in `connect_flow.rs`; four in `server_browse.rs`;
   three in `tests/test_server_info.py`; six across `serverList.test.ts`
-  and `ServersPanel.dom.test.tsx`.
+  and `ServersSection.dom.test.tsx`.
 
   Two things worth knowing for the next phase:
 

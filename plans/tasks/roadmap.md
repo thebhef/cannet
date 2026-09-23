@@ -140,7 +140,7 @@ section with implementation underway.
     an A operand (139 phase 4, `task139-units`). **Executes now.**
 19. [Task 144 — cannet-client CLI](0144-cannet-client-cli.md)
     — a `cannet-client` console script giving the python client the
-    GUI Servers panel's affordances without the GUI: `list` (mDNS
+    GUI Servers section's affordances without the GUI: `list` (mDNS
     browse ∪ trust store, known servers shown even when absent),
     `connect` (the four ADR-0041 paths, TOFU accept, token entry,
     writing the shared `servers.json`), `forget`. The package moves

@@ -141,6 +141,20 @@ Settled by the overseer, open to reversal:
   agent's full-suite run and passed on every rerun: 2 agent reruns, 5
   isolated runs (~560 ms each) and one full suite by the overseer, all
   green. Not reproduced; recorded so a second sighting is not a first.
+- **`plans/` still says "Servers panel" in nine places** — listed below.
+  They are the overseer's to update; the branch touches nothing under
+  `plans/`. `plans/tasks/0145-wire-protocol-version.md:245` also names
+  `ServersPanel.dom.test.tsx`, which is now
+  `ServersSection.dom.test.tsx`.
+- **`panel.show.servers` is gone as a command**, so a user keybinding
+  bound to it becomes an unknown id. `reviewBindings` already handles
+  that (it has a test for an unknown command id), so the shortcuts view
+  reports it rather than crashing — but a user who had bound a chord to
+  *Show servers* loses it silently, and the replacement is not a
+  command but the go-to-view entry. Owner call if that matters; queued.
+- The dockview "failed to deserialize layout. Reverting changes" line in
+  `dockLayout.dom.test.ts`'s output is the deliberately-throwing test,
+  not a failure.
 
 ## Status log
 
@@ -288,14 +302,128 @@ Settled by the overseer, open to reversal:
   raw `grep -c $'\r'` gave on this shell — confirmed with a byte-level
   check (`\r` immediately before `\n`) that every touched file,
   including README.md, kept its original line ending.
+- 2026-09-23 — **phase 3 (Servers into the settings view) landed** on
+  `task151-servers-section`, from `task151-caches-gridview`
+  (`e3b655c3`, one commit, no squash needed — the branch never had a
+  second one). **The singleton Servers panel is retired**;
+  `ServersPanel.tsx` is now `ServersSection.tsx`, the settings view's
+  **Connection › Servers** section, dispatched through
+  `CUSTOM_SETTING_RENDERERS` beside `project-caches` and
+  `unit-customizations`.
+  **Where it sits and why**: `Surface::Connection`, and *first* in that
+  group. Connection is where a server belongs — the group's other rows
+  (`sidecar_restart_budget`, `default_server_address`, `sidecar_dir`,
+  `driver_module`, `reconnect_backoff_ms`) every one presume a server
+  already reachable, so the list that makes one reachable reads first.
+  Storage was the alternative (it is where `project-caches` lives) and
+  is wrong: nothing here is about disk.
+  **The gridview** (ADR 0044): one leaf row per `host:port`, no
+  branches — nothing groups servers — in `.servers-grid`
+  (`max-height: 24rem; overflow-y: auto`), `PAGE_ROWS = 6`. Modelled on
+  `ProjectCachesList.tsx` exactly: rows as plain elements over
+  `arrayRowSpace`, a `rowDomIdRef` forward reference, the "scroll it
+  just into view" `scrollToRow`, `useScrollRestore` on the container,
+  and no `gridviewColumns` (the settings renderer has no params blob to
+  persist a resizable/reorderable layout in). The row click hands the
+  container focus unless the click was aimed at a button **or an
+  input** — the token entry lives inside a row, which the caches list
+  had no equivalent of.
+  **Every ADR 0041 affordance is the same code**: trust/review (which
+  dials only when the host is waiting on nothing), the token field and
+  its `token refused` indicator, Forget with its three tooltips, the
+  toolbar search, `Add server…` with its shape check and
+  already-in-the-list note, the ADR 0059 protocol greying, the
+  live-interfaces line, the browse-health notices. The panel chrome
+  (`<h2>Servers</h2>` and the hint paragraph) is gone: the descriptor's
+  label and help carry both, and the settings view already renders a
+  header per row.
+  **The host gained one descriptor** — `servers`, `Backing::View`,
+  `Control::Custom { renderer: "servers" }` — with a test mirroring
+  `the_project_cache_list_is_a_view_row_naming_its_renderer`.
+  **Reaching it.** `panel.show.servers` (the command, `commands.ts`),
+  `showServersPanel` (`dockLayout.ts`, `useCommands.tsx`),
+  `SERVERS_PANEL_ID`, `SERVERS_PANEL_COMPONENT`, the singleton title
+  entry and the `"servers"` `FocusedPanelKind` are all gone. In their
+  place `showSettingsPanelAt(api, SERVERS_SETTING_KEY)` — one helper for
+  every way in, as `showServersPanel` was — shows-or-focuses the
+  settings view carrying a `reveal` parameter. **The command palette's
+  Servers entry stays** (the go-to-view list), re-pointed there, with
+  `keywords: "trust token forget"` added so the old habit still finds
+  it. The project panel's three launchers (`Manage servers…` in the
+  Connection section, in a bus row's interface combo, and on a bus
+  trust notice) go the same way.
+  **Reveal is consumed, in two steps.** Accepting a request clears the
+  view's query and group selection (either would hide the very row
+  asked for) and calls `api.updateParameters({ reveal: undefined })`;
+  acting on it waits for a render in which
+  `#setting-row-<key>` is actually in the document — the clear is a
+  state update and the descriptor table arrives from the host
+  asynchronously — then `scrollIntoView`. Consuming it is what stops a
+  layout persisted while it was set from re-scrolling on every later
+  open, and what lets a second press of the same launcher scroll again
+  instead of doing nothing.
+  **Stale layouts — the one place this could have gone badly.**
+  Observation: dockview's React adapter builds a panel as
+  `new ReactPanelContentPart(id, props.components[name], …)`, so an
+  unregistered component reaches `createElement(undefined)`. Hypothesis:
+  that throws from a *later* React render, not from `fromJSON`, so
+  neither restore path's `try` catches it and the whole tree comes down.
+  Experiment: a dockview whose `createComponent` refuses the name, fed a
+  saved layout naming `servers` — `fromJSON` threw
+  (`dockLayout.dom.test.ts`, "restores into a dock that has no such
+  component"); fed the same layout through `dropRetiredPanels`, it
+  restored with the surviving panel alone. Conclusion: prune before
+  applying. `dropRetiredPanels` removes a retired id from `panels`, from
+  the leaf that held it (falling back to a view the group still has if
+  the retired one was active), and from `activeGroup` when that leaf
+  went with it; a layout naming nothing retired is returned by identity.
+  Both restore paths in `App.tsx` go through one `restorableLayout`
+  helper with `normalizeSingletonTitles`.
+  **Tests (red then green at each step).** The 36 affordance tests moved
+  to `ServersSection.dom.test.tsx` with **no assertion changed** — only
+  the render call, since the section takes no dockview props — plus 2
+  new: a row-cursor walk over `aria-activedescendant`, and a check that
+  every row is inside `.servers-grid` and that the rule carries
+  `max-height` and `overflow-y: auto` (against `index.css?raw`; jsdom
+  does no layout). 3 new in `SettingsPanel.dom.test.tsx` for reveal
+  (scrolls the named row and clears the parameter; clears a search that
+  would have hidden it; scrolls nowhere without one). 4 new in
+  `dockLayout.dom.test.ts` for the stale layout. The manage-servers test
+  now asserts `addPanel` carries
+  `{ id: "settings", params: { reveal: "servers" } }` and that an
+  already-open settings view gets `updateParameters` as well as
+  `setActive`. `App.gotoPalette.dom.test.tsx` gained an end-to-end walk
+  against the real App: Mod+P, "Servers", Enter, and
+  `.settings-view .servers-section .servers-grid .server-row` is on
+  screen. Discovery stays mocked everywhere — no test advertises
+  `_cannet._tcp`. **3658 frontend tests over 248 files, all green**
+  (3648 before).
+  **Docs, same commit.** ADR 0041 gained a dated amendment naming the
+  Servers section as the GUI surface for its decisions (the ADR named no
+  surface before, so this is an addition rather than a rewrite); ADR
+  0059's three "Servers panel" mentions follow. `docs/CONTEXT.md`'s
+  **Servers panel** term is now **Servers section**, with an _Avoid_ on
+  the retired name and — this is worth keeping — an _Avoid_ each way
+  against confusing it with **server section**, singular, which is the
+  project panel's per-server collapsible element and was already in the
+  glossary. README: the six Servers passages say the settings view, the
+  bus-row notices read "Settings → Servers", the *Show servers* command
+  is no longer named, and a **Connection › Servers** bullet joins the
+  settings list beside **Storage › Project caches**.
+  **Not touched**: `serverList.ts`/`serverTrust.ts` (the model),
+  `ServerTrustDialog.tsx` (the app-wide dialog), and every host command
+  behind them. The only host change is the one descriptor and four
+  comment rewordings.
 
-## Exit criteria verdicts (2026-09-23, after phase 2)
+## Exit criteria verdicts (2026-09-23, final)
 
 | # | Verdict |
 | --- | --- |
-| 1 | met — dimensions are branch nodes and units leaves in one `arrayRowSpace` row space; `.unit-customizations-grid` carries the bound and the scrollbar, and a scale dom test pins that every row is inside it and inside `.settings-list` |
-| 2 | met — the filter, the composition entry (`LPM = L / min`), the mapping rows and the two-scope checkboxes are the same code and their dom tests pass over the gridview; the ratio scale column is host-side and unreached by this diff |
-| 3 | met — `ProjectCachesList` is a gridview (ADR 0044) with one leaf row per project directory, its own bounded row space (`.project-caches-grid`), and every task-150 row content/control intact; its dom tests pass over the gridview with no assertion changes |
-| 4 | n/a this phase (Servers section — phase 3) |
-| 5 | partly, further toward done — README's caches passage now says the list scrolls in its own space; "no view in the settings view renders rows outside the gridview" is still not fully true — the Servers section is phase 3 |
-| 6 | met for 1–3 — 20 dom tests over the caches gridview (18 moved unchanged + 1 keyboard-cursor test + 1 scroll-restore test), plus 1 new scroll-restore test in `UnitCustomizations.dom.test.tsx` closing phase 1's blocker for that row space too |
+| 1 | **met** — `UnitCustomizations.tsx` is a gridview with dimension branches over unit leaves in one `arrayRowSpace`; `.unit-customizations-grid` carries the bound and the scrollbar, and a scale dom test at 2289 rows pins that every row is inside it and inside `.settings-list` |
+| 2 | **met** — the filter, the composition entry, the mapping rows and the two-scope checkboxes are the same code and their dom tests pass over the gridview; the ratio scale column is host-side (task 149 phase 2) and unreached by any of the three phases' diffs |
+| 3 | **met** — `ProjectCachesList` is a gridview with one leaf row per project directory, its own bounded row space (`.project-caches-grid`), and every task-150 row content and control intact; its dom tests passed over the gridview with no assertion changes |
+| 4 | **met** — the Servers rows are a gridview section of the settings view (`.servers-grid` over `arrayRowSpace`, one leaf per `host:port`); the command palette's *Servers* entry reaches it, asserted end to end against the real App; trust/review, token, forget and add-by-hand all work there, covered by the 36 moved affordance tests plus 2 gridview tests |
+| 5 | **met** — `docs/CONTEXT.md` defines **Servers section**, ADR 0041 carries a dated amendment naming it, ADR 0059 follows, and README's Servers passages and its settings list say the settings view. On "no view in the settings view renders rows outside the gridview": `settingControls.tsx` now holds four custom renderers, and every one the task's § Findings calls a grid — `unit-customizations`, `project-caches`, and now `servers` — is a gridview over `arrayRowSpace`. The fourth, `column-defaults`, does map a list to `ColumnRow` elements, and is deliberately not converted: § Findings surveyed it and ruled "nothing else in the settings view is tabular" — it is a fixed ~10-entry ordering editor with move-up/move-down buttons over one column set, not a view onto data, and a row cursor would have nothing to navigate. Flagging it so the exception is on the record rather than implied |
+| 6 | **met** — 3658 frontend tests over 248 files, green. Phase 3 alone added 2 gridview tests, 3 reveal tests, 4 stale-layout tests and an end-to-end palette walk, and moved 36 affordance tests with no assertion changed |
+
+Task complete 2026-09-23: 6/6 met. Awaiting owner acceptance (review queue § 4).
