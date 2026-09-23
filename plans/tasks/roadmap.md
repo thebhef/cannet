@@ -192,10 +192,10 @@ section with implementation underway.
     for work on the UI thread, move it off, guard against regression.
     Opened 2026-09-22 from an owner observation; **executes now.**
 28. [Task 153 — Enum Values in the Trace Filter](0153-enum-values-in-the-trace-filter.md)
-    — the owner wants a fault enum value findable from the trace
-    filter box in a view narrowed to fault messages; task 142 says
-    value-table labels already match, so reproduce first, then close
-    the gap and document the haystack. Opened 2026-09-22 from owner
+    — a label query admits every frame of a message whose own
+    haystack also clears the floor (reproduced 2026-09-22); rule
+    which reading wins, fix it in `FuzzyResolution`, document the
+    haystack. Opened 2026-09-22 from owner
     feedback; **executes now.**
 29. [Task 138 — Events in Logged BLFs](0138-logged-events.md)
     — the project logger appends user-authored timeline events to the
