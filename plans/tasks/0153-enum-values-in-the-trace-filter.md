@@ -161,3 +161,120 @@ term."
 - 2026-09-22 — owner clarified: the disclosure shows only matching
   signals (parents kept); chronological mode searches the history;
   by-id mode matches a value against the signal's whole `VAL_` table.
+- 2026-09-23 — **phase 1 (Host: signals ranked, the gate) landed** on
+  `task153-host-gate`.
+  - **Red first.** The § Findings experiment is now
+    `an_enum_value_query_admits_only_the_frames_carrying_that_value`
+    (`tests.rs`), asserting the admitted-frame table through
+    **both** chronological paths — `apply_filter_records` and the
+    filter index's `keep` + decode gate — over a real `AppState`,
+    DBC and capture. Its fixture is the survey's: one message
+    `FaultStatus` on `Pack CAN` (id `s:300`), signals `FaultID`
+    (`VAL_` 0 `NO_FAULT`, 1 `OVERVOLTAGE`, 2 `THERMAL_RUNAWAY`, 3
+    `XQZ`) and `String_Overvoltage_Fault`, four frames — one per
+    label. It failed to compile against the old API and, once the
+    API existed, failed on the numbers.
+  - **Three ranked lists, one floor.** `fuzzy_haystacks` now emits a
+    `FuzzyCandidate` (message), a `FuzzySignal` per signal name and a
+    `FuzzyLabel` per `VAL_` row, all built from the capture's *seen*
+    keys through the same "first database assigned to the frame's bus
+    wins" rule the decode path uses — so signals and labels are
+    bus-scoped exactly as messages already were. **Signal names left
+    the message's haystack**: that is what "ranked in their own right"
+    has to mean, because a signal name inside the message's haystack
+    makes the message *tie* the signal on every query the signal wins
+    (measured: 272 = 272 for `overvoltage`), and a tie is not an
+    outscore.
+  - **The winner.** `FuzzyResolution` records a `FuzzyWinner`
+    (`message` / `signal` / `value`) — the kind of the top-scoring
+    entry that cleared the floor. Ties: a **message** wins any tie
+    (the ruling drops a message only when a more specific match
+    *outscores* it, and this is what keeps `fault` a message-name
+    match); between a signal and one of that signal's values the
+    **value** wins (the narrower reading of the same text, and it
+    still names its signal).
+  - **Admission is a specificity ladder plus one gate.** message → signal
+    → value. An entry admits when it is at least as specific as the
+    winner; a **message** below the winner admits only if it scores at
+    least `fuzzy::MESSAGE_GATE` of the winner's score; anything else
+    less specific is dropped. Under a message winner every kind admits,
+    which is task 142's behaviour unchanged (its tests all still pass).
+  - **The gate constant** (exit criterion 3) is
+    `fuzzy::MESSAGE_GATE = 1.0`, one named value beside
+    `MIN_RELATIVE_SCORE`. Fixture scores that set it — the port's own
+    scores, `rank` over the fixture's haystacks:
+
+    | Query | Entry | Score | ÷ winner |
+    | --- | --- | ---: | ---: |
+    | `no_fault` | `NO_FAULT` (value, winner) | 200 | 1.000 |
+    | `no_fault` | `Pack CAN s:301 s:769 Node_Fault ECU` (message) | 196 | **0.980** |
+    | `no_fault` | `String_Overvoltage_Fault` (signal) | 168 | 0.840 |
+    | `overvoltage` | `OVERVOLTAGE` (value, winner) | 272 | 1.000 |
+    | `overvoltage` | `String_Overvoltage_Fault` (signal) | 272 | **1.000** |
+    | `fault` | message haystack (winner, by the tie rule) | 128 | 1.000 |
+    | `fault` | `FaultID`, `String_Overvoltage_Fault`, `NO_FAULT` | 128 | 1.000 |
+
+    A message's own haystack reaches **0.980** of a value winner while
+    being the wrong answer, so every gate below ~0.99 readmits it, and
+    with it all four of that message's frames. Falsification run:
+    `MESSAGE_GATE = 0.97` fails
+    `a_message_matched_only_by_its_own_haystack_loses_to_a_value_winner`
+    with `[(768,0), (769,0), (769,0), (769,0), (769,0)]` against the
+    expected `[(768,0)]`. At `1.0` a message survives a more specific
+    winner only by tying it — and a message that ties *is* the winner —
+    so the constant states the ruling exactly: dropped when outscored.
+    It is the tuning surface if that proves too sharp.
+  - **The signal/value tie needs no gate**, and could not use one: the
+    fixture's `String_Overvoltage_Fault` scores *identically* to its
+    `OVERVOLTAGE` label (272 = 272), so no score threshold separates
+    them. The specificity ladder does — a signal is less specific than
+    the value winner and only *messages* get a second chance at the
+    gate.
+  - **By-id is definitional.** `MatchContext` carries a
+    `FuzzyMatchMode`; `fetch_by_id_page` resolves in
+    `Definitional`, where a label matches when the message *defines* a
+    signal whose value table holds it, with no decode — the row is a
+    message, not a frame. The chronological paths stay
+    `Chronological` (the per-frame decoded test over the whole
+    history). `fetch_by_id_page` was split into a thin command over
+    `fetch_by_id_page_inner(&AppState, …)`, the split
+    `fetch_signal_page` already uses, so the by-id page is testable:
+    `the_by_id_page_matches_a_value_against_the_whole_value_table`
+    asserts `no_fault` finds the row although the latest frame reads
+    `XQZ`.
+  - **Returned with the page.** `RowPage<T>` gained
+    `fuzzy_winner: Option<FuzzyWinner>` (a property of the query, so it
+    rides the envelope, `None` when there is no fuzzy leaf);
+    `TraceFrameRecord` gained `matching_signals: Vec<String>`, filled
+    on admitted rows of the filtered chronological page, the by-id page
+    and `apply_filter_records`, and empty under a message winner. Both
+    are host-computed model facts, not things the panel re-derives
+    (CLAUDE.md § GUI architecture). Mirrored in `types.ts`
+    (`FuzzyWinner`, `matching_signals?`) and on the two hooks' page
+    interfaces. No panel behaviour — that is phase 2.
+  - **Decode gate.** The label half is still the only part that reads a
+    decode, and only in chronological mode; a *signal* winner needs
+    none at all, because the database that names the signal is the one
+    that decodes the bus. `only_the_enum_label_half_of_a_fuzzy_leaf_asks_for_a_decode`
+    now pins the signal half too.
+  - The filtered chronological page reads the winner and the matching
+    signals off the *index's* cached resolution rather than
+    re-resolving per page fetch; `a_signal_name_query_…` asserts that
+    path too, since `fetch_filtered_trace` itself needs an `AppHandle`
+    and is not directly reachable from the suite.
+  - Docs in the same commit: `filter.rs` module docs, the
+    `TaggedPredicate::Fuzzy` rustdoc (the three lists, the winner, the
+    gate, the two modes), `FuzzyCandidate`'s haystack doc, rustdoc on
+    `MESSAGE_GATE`, `FuzzyWinner`, `FuzzyMatchMode` and the two new
+    page fields. README is phase 2's.
+
+## Exit criteria verdicts (2026-09-23, after phase 1)
+
+| # | Criterion | Verdict |
+| --- | --- | --- |
+| 1 | Label query shows exactly the frames carrying it, chronologically, through `apply_filter_records` *and* the filter index; by-id finds the message whatever the latest frame reads | **Met** — `an_enum_value_query_admits_only_the_frames_carrying_that_value` (both paths, six queries), `the_by_id_page_matches_a_value_against_the_whole_value_table` |
+| 2 | A signal winner shows the carrying messages' frames and hides messages below the gate; a message winner keeps task 142's behaviour and tests | **Met** — `a_signal_name_query_admits_the_frames_of_the_messages_carrying_it`, `a_message_matched_only_by_its_own_haystack_loses_to_a_value_winner`, `fault` row of the table; all five task-142 fuzzy tests pass unchanged in intent |
+| 3 | The gate is one named value and the status log records the fixture scores | **Met** — `fuzzy::MESSAGE_GATE = 1.0`; scores table above, with the falsification run |
+| 4 | Disclosure opens on a signal/value winner — DOM tests | **Phase 2** (host half only here: `fuzzy_winner` + `matching_signals` are returned and tested) |
+| 5 | README / CONTEXT.md | **Phase 2** |
+| 6 | Tests cover 1–4 | **Host half met** — five new Rust tests plus two extended; the DOM half is phase 2's |

@@ -7,6 +7,14 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **153: a signal name is no longer part of its message's searchable
+  text.** Ranking signals in their own right required moving them out
+  of the message's haystack — a message that ties a signal cannot be
+  outscored by it (fixture: 272 = 272). Consequence: a query spanning a
+  message name and a signal name as one fuzzy string (`packstatus
+  voltage`) no longer matches, since no single haystack holds both.
+  Detail and scores: 0153 § Status log, 2026-09-23.
+
 - **152: the logger file list and the project-cache list show a dimmed
   `…` while the host reads.** Trace start / end / duration / count for
   a file whose header is unread, and a cache's size before its walk
