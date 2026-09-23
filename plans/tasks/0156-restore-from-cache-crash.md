@@ -50,6 +50,22 @@ contract.
   the hardening (a segment I/O failure surfaced as an error rather
   than a panic) would touch before ruling on it.
 
+- **Held cache directory: refuse immediately** (owner, 2026-09-23,
+  on the phase-1 verdict). A second instance opening a project whose
+  cache another cannet holds does not wait and does not fall back to
+  the in-RAM store: it refuses the project open and says who holds it.
+  Rejected: a bounded wait (hides the real state), the RAM fallback
+  (opens without history and lets two instances edit one project).
+- **The terminating instance leaves a visual cue that it is still
+  working** (owner, same ruling). Today the window closes first and
+  the host then disconnects, stops loggers, flushes the scratch and
+  persists the pyramids in `RunEvent::ExitRequested` (`lib.rs`) —
+  ~23 s for a 57 M-frame capture, invisible, which is exactly how the
+  field relaunch overlapped it. Phase 3.
+- **Hardening is its own task**: task 157 (`0157-scratch-growth-
+  failures-are-errors.md`), needs grilling; 156 lands the lock and
+  un-ignores the two reproducing tests.
+
 ## Hardening survey (overseer, 2026-09-23)
 
 - Panic sites on the growth path: **2** — `seg_chain.rs:76`
@@ -72,25 +88,48 @@ contract.
 
 ## Phases
 
-1. **`task156-restore-crash-investigation`** (base: task 155's last
-   branch; may run in a worktree while 155 is in flight and rebase
-   after) — a failing test that reproduces OS error 1224 (Windows) or
-   its equivalent double-mapping on Linux, the named culprit mapping,
-   and the fix proposal with the hardening cost re-checked against
-   the survey. Opus.
-2. **`task156-restore-crash-fix`** (base phase 1) — the fix the
-   verdict names, under the reproducing test; scope of any hardening
-   per the owner's ruling on the verdict.
+1. **`task156-restore-crash-investigation`** — landed 2026-09-23
+   (`a76bbcbe`, worktree `cannet-156`, base `task149-units-surfaces`
+   pending restack behind task 155): two `#[ignore]`d tests reproduce
+   the 1224 panic on both geometric callers; verdict: a second cannet
+   process held the mappings.
+2. **`task156-cache-lock`** (base phase 1) — an exclusive lock on the
+   project cache directory, taken where the scratch is opened
+   (`open_trace_store`; a no-sharing open on Windows, `flock(LOCK_EX |
+   LOCK_NB)` on POSIX), held for the session and covering the raw
+   store, by-id, pyramids and filter index under the same directory;
+   a held directory **refuses the project open** with a message naming
+   the holder (pid, and the project path); the two reproducing tests
+   lose their `#[ignore]` by asserting the refusal instead of the
+   truncate; a host test covers refuse-then-release-then-open. ADR
+   0002 DS-7 gains the lock as part of the reopen contract; ADR 0042
+   (cache keyed on the project) cites it. Opus.
+3. **`task156-closing-cue`** (base phase 2) — the window stays up
+   while the host finishes: the close request is intercepted
+   (`WindowEvent::CloseRequested`, `prevent_close`), the frontend
+   shows a closing state ("Closing — writing the capture cache…", with
+   what is being done), the shutdown work in `ExitRequested` runs off
+   the event loop and the app exits when it is done; a second close
+   click during it does nothing. The same cue for the disconnect and
+   logger-stop steps, which are bounded already. No new frontend
+   state beyond the closing flag (CLAUDE.md § GUI architecture). Opus.
 
 ## Exit criteria
 
 - A test reproduces the post-restore growth failure and names the
-  mapping that held the segment (phase 1 status log).
-- With the fix, reopening a project whose cache holds a large
-  restored capture, then appending until a by-id and a sample chain
-  grow, does not panic; the reproducing test passes.
-- The owner has ruled on hardening with the verdict in hand, and the
-  ruling is recorded here.
+  mapping that held the segment (phase 1 status log). **Met
+  2026-09-23.**
+- With the lock, a second `TraceStore` (or process) opening a held
+  project cache is refused, and the two phase-1 tests pass un-ignored
+  by asserting the refusal.
+- Opening a project whose cache another cannet instance holds refuses
+  with a message naming the holder; releasing it lets the next open
+  succeed (host test).
+- Closing the window during a long shutdown flush keeps a visible
+  closing state until the host exits; a relaunch during that window
+  hits the lock's refusal, not a panic.
+- The owner has ruled on hardening with the verdict in hand
+  (**ruled 2026-09-23: task 157**), and the ruling is recorded here.
 
 ## Status log
 
@@ -273,3 +312,8 @@ contract.
   `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`. Nothing
   outside the phase worktree was deleted. Any phase needing a release
   host build will hit this first.
+- 2026-09-23 — **phase 1 reviewed and accepted** (overseer): one
+  commit, two `#[ignore]`d reproducing tests, comment-references grep
+  clean; verdict is the previous process's mappings. Owner rulings on
+  the verdict recorded above (refuse immediately; a closing cue; the
+  hardening becomes task 157). Phases 2 and 3 cut; phase 2 launched.
