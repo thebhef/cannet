@@ -133,6 +133,14 @@ Settled by the overseer, open to reversal:
   above) — unchanged from the flat table, because the rows are not
   virtualised. Only reachable by typing a needle that matches
   everything; the ordinary filter narrows and is ~30 ms.
+- (Blocker closed) The units and caches row spaces now both restore
+  their scroll offset across a settings-panel hide/show, via the shared
+  `useScrollRestore` hook. No new side effects observed.
+- 2026-09-23 (phase 2, overseer) — the 2289-row disclosure test in
+  `UnitCustomizations.scale.dom.test.tsx` failed once under the phase-2
+  agent's full-suite run and passed on every rerun: 2 agent reruns, 5
+  isolated runs (~560 ms each) and one full suite by the overseer, all
+  green. Not reproduced; recorded so a second sighting is not a first.
 
 ## Status log
 
@@ -199,14 +207,95 @@ Settled by the overseer, open to reversal:
   the same shape (plain rows in a bounded `arrayRowSpace` gridview, no
   column framework) — a flat leaf-only space, so no `expanded` set is
   needed.
+- 2026-09-23 — **phase 2 (the project caches list as a gridview)
+  landed** on `task151-caches-gridview`, from `task151-units-gridview`
+  (`49c23573`, one commit, no squash needed — the branch never had a
+  second commit). `ProjectCachesList.tsx` is a gridview (ADR 0044)
+  instead of a flex column: **one leaf row per project directory, no
+  branches** — there is nothing to group cache directories under — in
+  its own bounded row space (`.project-caches-grid`, `max-height: 24rem;
+  overflow-y: auto`) inside `.project-caches`, so the settings view's
+  own scroll no longer walks through it. **Modelled on
+  `UnitCustomizations.tsx`**, itself modelled on `LoggerFileGrid`: rows
+  as plain elements over `arrayRowSpace`, not through the column
+  framework (the settings renderer has no params blob to persist a
+  resizable/reorderable layout in). Simpler than the units section's
+  tree markup, though — no branches at all, so the row markup follows
+  `BlfChannelMapModal`'s flat markers list instead: plain divs carrying
+  `grid.rowDomId`, a `cursor`/`selected` class and `onClick ->
+  grid.onRowClick`, no `role="tree"`/`aria-level` tree semantics that
+  would have nothing to describe. **Every row from task 150 is
+  unchanged**: name leading with the directory path as a secondary line
+  and in the tooltip, state badge, location chip (`project dir` /
+  `auto-located`) with its tooltip, the pending-size ellipsis and the
+  `N projects · measuring…` header, `Save as…`, `Clear data cache`, and
+  the two-stage trash `Delete` disabled on the active row. `Clear all
+  data caches` stays a plain header button outside the row space, as
+  ruled. Reloading on `project-dir-changed` and on the settings view
+  being shown is unchanged (`shown` from `SettingsShownContext`, read
+  once and reused for both the reload effect and the new scroll-restore
+  hook).
+  **Tests**: every existing assertion in `ProjectCachesList.dom.test.tsx`
+  held with **no selector adaptation** — the row and control class names
+  didn't move, only the wrapper's interaction model did, so
+  `screen.getByText` / `getByRole` queries were already selector-stable.
+  Two new tests: a `"the gridview"` describe block walks the row cursor
+  with ArrowDown/ArrowUp and checks `aria-activedescendant` against each
+  row's dom id (exit criterion 2 — keyboard); and a scroll-restore test
+  under the re-root describe block (below).
+  **Blocker fixed (§ Blockers item 3, both row spaces).** Pulled the
+  save/restore-`scrollTop` mechanism `SettingsPanel.tsx` already used for
+  `.settings-list` into a shared hook, `useScrollRestore.ts`: it takes
+  the container ref (the row spaces already need one for their own
+  scroll-a-row-into-view arithmetic) and a shown count, and returns the
+  `onScroll` handler to wire up. `shownCount` is a parameter rather than
+  read from context *inside* the hook, because `SettingsPanel` is
+  `SettingsShownContext`'s own producer and so is not inside its own
+  subtree — it passes its local counter directly; `UnitCustomizations`
+  and `ProjectCachesList` are reached through the custom-setting
+  renderer table, so each reads the count via
+  `useContext(SettingsShownContext)` and passes it through. Three call
+  sites, one mechanism, no second copy. `SettingsPanel.tsx` was
+  refactored onto it (behaviourally identical — same ref, same
+  layout-effect timing) so all three inner/outer scrollers share one
+  implementation rather than the outer one setting a precedent nothing
+  followed. Dom test first, red then green, at both call sites that
+  needed the fix: scroll the row space, reset `scrollTop` to simulate
+  what a real dockview detach/reattach does (jsdom performs no such
+  detach on a plain rerender, so the reset stands in for it), bump
+  `SettingsShownContext`'s value the way a hide/show does, assert the
+  offset is back. One test added to `UnitCustomizations.dom.test.tsx`
+  ("scroll restore across a settings-panel hide and show") and one to
+  `ProjectCachesList.dom.test.tsx`.
+  **Docs**: README's Project caches passage gained one sentence — "The
+  list scrolls in a bounded space of its own rather than in the
+  settings view's list" — matching the units passage's existing wording
+  for the same fact. `docs/CONTEXT.md`'s gridview entry and ADR 0044
+  enumerate no instantiations (confirmed, as phase 1 found), so neither
+  needed a line; ADR 0042 §5 describes actions and re-rooting, not row
+  markup, so it is unreached by this diff (phase 1/2/3 of task 150 made
+  the same call).
+  **Checks**: `pnpm --dir apps/gui test` — full suite, 248 files / 3648
+  tests green on two consecutive runs (one run of the full suite showed
+  a single unrelated failure in `UnitCustomizations.scale.dom.test.tsx`
+  — the 2289-row disclosure test from phase 1, which this diff does not
+  touch the logic of — not reproduced on two immediate reruns; treated
+  as a pre-existing timing flake in a heavy jsdom test under this
+  session's full-suite load, not a regression from this phase).
+  `pnpm --dir apps/gui build` clean (tsc -b + vite). Comment-references
+  grep clean (two draft comments that named "Task 150 phase 1" were
+  reworded before committing). No CRLF flips despite the false alarm a
+  raw `grep -c $'\r'` gave on this shell — confirmed with a byte-level
+  check (`\r` immediately before `\n`) that every touched file,
+  including README.md, kept its original line ending.
 
-## Exit criteria verdicts (2026-09-23, after phase 1)
+## Exit criteria verdicts (2026-09-23, after phase 2)
 
 | # | Verdict |
 | --- | --- |
 | 1 | met — dimensions are branch nodes and units leaves in one `arrayRowSpace` row space; `.unit-customizations-grid` carries the bound and the scrollbar, and a scale dom test pins that every row is inside it and inside `.settings-list` |
 | 2 | met — the filter, the composition entry (`LPM = L / min`), the mapping rows and the two-scope checkboxes are the same code and their dom tests pass over the gridview; the ratio scale column is host-side and unreached by this diff |
-| 3 | n/a this phase (project caches list — phase 2) |
+| 3 | met — `ProjectCachesList` is a gridview (ADR 0044) with one leaf row per project directory, its own bounded row space (`.project-caches-grid`), and every task-150 row content/control intact; its dom tests pass over the gridview with no assertion changes |
 | 4 | n/a this phase (Servers section — phase 3) |
-| 5 | partly — `docs/CONTEXT.md`'s gridview entry and ADR 0044 enumerate no instantiations, so neither needed a line; README's units passage now says the rows are grouped under their dimension, scroll in a space of their own and open collapsed. "No view in the settings view renders rows outside the gridview" is not yet true — the project caches list is phase 2 |
-| 6 | met for 1–2 — 19 dom tests over the gridview (18 moved, 1 new keyboard walk) plus 3 new tests at 2289 rows |
+| 5 | partly, further toward done — README's caches passage now says the list scrolls in its own space; "no view in the settings view renders rows outside the gridview" is still not fully true — the Servers section is phase 3 |
+| 6 | met for 1–3 — 20 dom tests over the caches gridview (18 moved unchanged + 1 keyboard-cursor test + 1 scroll-restore test), plus 1 new scroll-restore test in `UnitCustomizations.dom.test.tsx` closing phase 1's blocker for that row space too |
