@@ -1,8 +1,8 @@
 # Task 153 — Enum Values in the Trace Filter
 
 Opened by owner feedback 2026-09-22 on task 142's trace filter.
-**Executes now, on the current stack.** Reproduced; one design
-question open.
+**Executes now, on the current stack.** Reproduced and ruled; two
+phases.
 
 ## Why
 
@@ -62,47 +62,68 @@ term."
 
 ## Rulings
 
-(none yet.)
+- **The score decides** (owner, 2026-09-22, option c): a message's
+  haystack admission is dropped when a more specific match outscores
+  it. The gate is a score threshold, expected to need tuning: one
+  named constant beside the floor, tuned in phase 1 against the
+  fixture and recorded with the scores that set it.
+- **Signals are matches in their own right** (owner, 2026-09-22; a
+  scope expansion the owner named as such): "hide messages when we
+  match signals better", and "expand messages when the search winner
+  (or winners) is a signal or a signal value". Overseer's reading:
+  - a signal *name* is ranked as its own entry, like a label, instead
+    of only as words in its message's haystack — so the winner of a
+    query is identifiable as a message, a signal or a signal value;
+  - the gate applies whenever the winner is a signal or a value:
+    messages admitted only by their own haystack below the gate are
+    hidden; a message-level winner (bus, id, name, transmitter)
+    keeps task 142's behaviour;
+  - when the winner is a signal or a value, the admitted trace rows
+    open their signal disclosure so the matching signal is on screen,
+    in both modes; the disclosure closes again when the query changes
+    to a message-level winner or clears.
 
 ## Open questions
 
-1. **Which reading wins when a query matches both a message and a
-   label?** Options: (a) *label precedence per message* — a message
-   that defines a surviving label is admitted only by the label
-   test, other messages keep the haystack rule (local to
-   `FuzzyResolution`; `fault` keeps meaning "messages named fault",
-   but a sibling fault message whose haystack scatters a match still
-   shows whole); (b) *value query* — when any label survives the
-   cut, the id-keyed half is dropped and only frames carrying a
-   surviving label show (`no_fault` shows exactly the `NO_FAULT`
-   frames across every message, but `fault` stops meaning message
-   names wherever a `FAULT` label exists); (c) (a) plus a score
-   test — a message's haystack admission is dropped when a label of
-   its own outscores it. *Recommend* (b): the box is a search, a
-   label hit is the most specific thing it can find, and the user
-   who wanted the message can type its name; phase 1 measures (c)
-   against the fixture before settling if (b) reads too blunt.
+(none — ruled 2026-09-22.)
 
 ## Phases
 
-1. **Fix.** The experiment above as the red host test (both the
-   `apply_filter_records` path and the filter index path), the ruled
-   precedence in `FuzzyResolution`, `filter.rs` module docs and the
-   `TaggedPredicate::Fuzzy` rustdoc updated; README's trace section
-   names the filter box and what it matches — bus, message, id,
-   transmitter, signal, enum label — and which wins.
+1. **Host: signals ranked, the gate.** The experiment above as the
+   red host test, through `apply_filter_records` and the filter index
+   path; signal names as their own ranked entries; the gate constant
+   and the "winner kind" (message / signal / value) settled per query
+   in `FuzzyResolution` and returned to the frontend with the page;
+   the constant tuned against the fixture and the scores recorded in
+   the status log; `filter.rs` module docs and the
+   `TaggedPredicate::Fuzzy` rustdoc updated.
+2. **Panel: expand on a signal winner; README.** The trace panel
+   opens the admitted rows' signal disclosure when the winner kind is
+   a signal or a value, in both modes, and closes it when the winner
+   kind changes or the query clears; DOM tests; README's trace section
+   names the filter box, what it matches — bus, message, id,
+   transmitter, signal, enum label — and that a signal or value match
+   hides weaker message matches and opens the row.
 
 ## Exit criteria
 
 1. Typing a fault enum's label into a trace panel narrowed to fault
    messages shows exactly the frames whose decoded signal carries
-   that label, in both modes, under the ruled precedence — asserted
-   through `apply_filter_records` and the filter index.
-2. A query over a message or signal name with no label hit behaves as
-   task 142 left it (its tests still pass).
-3. README names the filter box and its haystack; `docs/CONTEXT.md`
-   if a term is coined.
-4. Tests cover 1–2.
+   that label, in both modes — asserted through
+   `apply_filter_records` and the filter index.
+2. A query whose best match is a signal name shows the frames of the
+   messages carrying that signal and hides messages matched only by
+   their own haystack below the gate; a query whose best match is a
+   message keeps task 142's behaviour (its tests still pass).
+3. The gate constant is one named value, and the status log records
+   the fixture scores that set it.
+4. When the winner is a signal or a value, the admitted rows show
+   their signal disclosure open in both modes; a message winner or a
+   cleared query leaves the disclosure as the user had it — DOM
+   tests.
+5. README names the filter box, its haystack and the signal-winner
+   behaviour; `docs/CONTEXT.md` if a term is coined.
+6. Tests cover 1–4.
 
 ## Blockers / side effects
 
@@ -112,3 +133,7 @@ term."
 
 - 2026-09-22 — opened; reproduced by experiment (table above); the
   precedence question to the owner.
+- 2026-09-22 — owner ruled option c with a tunable gate, and expanded
+  scope: signals ranked in their own right, weaker message matches
+  hidden behind a signal or value winner, rows expanded to the
+  matching signal. Two phases.

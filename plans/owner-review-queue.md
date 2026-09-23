@@ -87,6 +87,12 @@ keeps the queue's copy). This file shrinks every time it is walked.
   does, which `--no-verify` skips. `interfaces.rs` had drifted once
   (fixed on `task145-server-info`). A one-line CI job would close it.
 
+- **137: the logger's file listing scans whole BLFs on the 250 ms poll
+  path** (owner report 2026-09-22: SharePoint folder, moved-in BLFs,
+  20 M-frame buffer → sluggish system, list never updates, reopened
+  panel empty). Diagnosed; the listing fix is task 152 phase 3 (owner
+  ruling 2026-09-22). The idle listing's missing filesystem watch stays
+  a 137 fix branch after it. Detail: 0137 § Status log, 2026-09-22.
 - **149: `litre` reaches no unit; `liter` and `L` do.** The library
   spells it American, and neither the picker's filter nor recognition
   carries a British alternate. Detail: 0149 § Blockers / side effects.
@@ -100,8 +106,9 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **Task 137 — Log Export** (2026-09-06): all four phases landed
   (`task137-templates` → `task137-export-dialog` → `task137-loggers`
   → `task137-file-grid`); all 6 exit criteria met (verdicts in the
-  task file). Caveats: live 500 MB split unit-tested only; open §2
-  items above.
+  task file). Caveats: live 500 MB split unit-tested only. Owner
+  2026-09-22: manual BLF export works; the logger's listing defect
+  (§ 3) is open against this task.
 - **Task 135 — Plot Math Functions** (2026-09-06): all three phases
   landed (`task135-engine` → `task135-editor` → `task135-surfaces`);
   exit-criteria verdicts in the task file — 7 of 8 met clean,

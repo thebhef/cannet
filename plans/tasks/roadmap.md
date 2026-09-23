@@ -186,16 +186,21 @@ section with implementation underway.
     become gridviews with their own bounded row space; the Servers
     panel moves into the settings view. Opened 2026-09-22 from owner
     feedback on tasks 149 and 150; **executes now.**
-27. [Task 152 — Nothing Heavy on the UI Thread](0152-nothing-heavy-on-the-ui-thread.md)
-    — a cache delete stalled the UI heartbeat for 6.3 s because the
-    command is synchronous; audit every command and frontend wait
-    for work on the UI thread, move it off, guard against regression.
-    Opened 2026-09-22 from an owner observation; **executes now.**
+27. [Task 152 — Nothing Heavy in the Foreground](0152-nothing-heavy-in-the-foreground.md)
+    — a cache delete stalled the UI heartbeat for 6.3 s (a synchronous
+    command), and the same day the logger's file listing saturated the
+    machine from an *async* one (whole-file scans re-issued by a 250 ms
+    poll). Audit every command and frontend poll against three shapes
+    of foreground work — on the IPC thread, foreground-driven
+    derivation, on the renderer thread — move it off, guard against
+    regression, generalise ADR 0049. Opened 2026-09-22 from owner
+    observations; **executes now.**
 28. [Task 153 — Enum Values in the Trace Filter](0153-enum-values-in-the-trace-filter.md)
     — a label query admits every frame of a message whose own
-    haystack also clears the floor (reproduced 2026-09-22); rule
-    which reading wins, fix it in `FuzzyResolution`, document the
-    haystack. Opened 2026-09-22 from owner
+    haystack also clears the floor (reproduced 2026-09-22); a
+    score gate hides message matches behind a better signal or value
+    match, signals rank in their own right, rows open on a signal or
+    value winner (owner ruling 2026-09-22). Opened 2026-09-22 from owner
     feedback; **executes now.**
 29. [Task 138 — Events in Logged BLFs](0138-logged-events.md)
     — the project logger appends user-authored timeline events to the
