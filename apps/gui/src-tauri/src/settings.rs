@@ -1155,26 +1155,35 @@ pub fn get_settings_overrides(app: tauri::AppHandle) -> Vec<String> {
 /// records a value the app would not honor and the caller can show what it
 /// got. Errors (with a user-facing message) only if the config dir can't be
 /// resolved or the write fails; on failure it also lands on the system log.
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// the write is followed by `apply_cache_caps`, which re-reads the
+/// settings files and lowers the pyramid retention bound — giving up
+/// parked pyramids unlinks their level files — and by the unit change,
+/// which re-judges every decoded pyramid (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Settings, String> {
-    let dir = crate::persisted_json::config_dir(&app)?;
+pub async fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Settings, String> {
+    crate::sampling::off_async_workers(move || set_settings_blocking(&app, settings)).await
+}
+
+fn set_settings_blocking(app: &tauri::AppHandle, settings: Settings) -> Result<Settings, String> {
+    let dir = crate::persisted_json::config_dir(app)?;
     // Read before the write installs the new values: the comparison
     // below is what keeps a save that touches no unit quiet.
     let units_before = unit_inputs();
     let (settings, complaints) = validate(settings);
     cache(&settings);
-    warn_refused(&app, &complaints);
-    write_settings(&dir, &crate::workspace_dir(&app), &settings).map_err(|e| {
+    warn_refused(app, &complaints);
+    write_settings(&dir, &crate::workspace_dir(app), &settings).map_err(|e| {
         let msg = format!("failed to write settings: {e}");
-        crate::sys_warn!(&app, "settings", "{msg}");
+        crate::sys_warn!(app, "settings", "{msg}");
         msg
     })?;
     // Apply the windowed-ring scratch cap (ADR 0002 DS-8) to the live store
     // so a changed cap takes effect on the next flush, not just next launch.
-    crate::apply_cache_caps(&app);
+    crate::apply_cache_caps(app);
     apply_unit_change(
-        &app,
+        app,
         &app.state::<crate::app_state::AppState>(),
         &units_before,
         &unit_inputs(),

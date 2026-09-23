@@ -640,6 +640,12 @@ pub(crate) fn invalidate_derived_caches(state: &AppState) {
         .signal_caches
         .invalidate_dbcs(&state.decode_model(&dbcs));
     drop(dbcs);
+    // The judgement above is in memory and has already happened; what is
+    // left is unlinking the level files it orphaned, which is a directory
+    // walk and an unlink apiece. Every caller here is a gesture answered
+    // by a synchronous command, so the unlinking goes to a background
+    // sweep rather than onto the IPC thread (ADR 0048).
+    state.signal_caches.sweep_unreferenced_in_background();
     *state.filter_index() = None;
     // The descriptor universe is derived from the DBC set the same way,
     // and has the same staleness failure: a removed DBC's signals would

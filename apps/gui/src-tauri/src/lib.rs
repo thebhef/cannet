@@ -41,6 +41,7 @@ mod app_state;
 mod bus_health;
 mod capture;
 mod clock_status;
+mod command_surface;
 mod connect_flow;
 mod connection_state;
 mod crash;
@@ -166,9 +167,9 @@ use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
 use capture::{
-    cancel_export, cancel_import, capture_extent, clear_trace_store, import_mdf, open_log,
-    restore_scratch_capture, save_capture, scan_blf_channels, scan_mdf_channels,
-    signal_pyramids_rebuilding,
+    cancel_export, cancel_import, capture_extent, clear_trace_store, clear_trace_store_now,
+    import_mdf, open_log, restore_scratch_capture, save_capture, scan_blf_channels,
+    scan_mdf_channels, signal_pyramids_rebuilding,
 };
 #[cfg(test)]
 use capture::{
@@ -878,7 +879,7 @@ pub fn run() -> ! {
             // queues async writeback (ADR 0002 DS-2) and a power loss
             // right after quit could lose the trailing window.
             if settings::get_settings(app_handle.clone()).clear_scratch_on_exit {
-                clear_trace_store(app_handle.clone(), app_handle.state());
+                clear_trace_store_now(app_handle, &app_handle.state());
             } else {
                 let state = app_handle.state::<AppState>();
                 if let Err(e) = state.trace_store.flush() {
