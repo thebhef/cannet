@@ -123,6 +123,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 3. Fix later
 
+- **`--app-data-dir` leaves the project cache shared with the
+  operator's unsaved session** (`resolve_project_dir` roots under
+  `app_cache_dir`, which the flag does not move), so a harness run can
+  write it — against ADR 0031. Task 79 already owns making the flag
+  isolate the scratch; this is a second observation of the same gap.
+  Detail: 0156 § Blockers / side effects, 2026-09-23 phase 3.
+
 - TLS end-to-end coverage — a TLS-terminating debug identity in
   `cannet-server`; goes to a new or existing task targeting that
   area. (136-1)
@@ -171,6 +178,16 @@ keeps the queue's copy). This file shrinks every time it is walked.
   rediscovering it. Detail: 0155 § Status log, 2026-09-23 (phase 2).
 
 ## 4. Finished tasks awaiting acceptance
+
+- **156 — Restore From Cache Does Not Crash on a Mapped Segment.**
+  Three phases on `task156-restore-crash-investigation` →
+  `task156-cache-lock` → `task156-closing-cue` (`3c39d590`), full CI
+  matrix green (`wire-breaking` skipped as for 155). Owed at
+  acceptance: your runtime check of the close path with a large
+  capture (close → overlay walks the steps → process exits → relaunch
+  opens the project), which no phase could exercise without touching
+  your unsaved cache. Two behaviour changes from phase 2 are in § 1.
+  Verdicts: 0156 § Exit criteria.
 
 - **155 — The Kvaser Timer Wraps Without Losing Frames, and Drops Are
   Loud.** Three phases on `task155-kvaser-unwrap` → `task155-drops-loud`
