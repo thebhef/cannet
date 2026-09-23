@@ -18,8 +18,8 @@ use cannet_dbc::Database;
 use crate::app_state::{AppState, LoadedDbc};
 use crate::dbc_commands::{decode_against, decode_resolved};
 use crate::filter::{
-    self, DecodeDependentLeaf, FilterPredicate, FuzzyCandidate, FuzzyLabel, FuzzyResolution,
-    MatchContext,
+    self, DecodeDependentLeaf, FilterPredicate, FuzzyCandidate, FuzzyLabel, FuzzyMatchMode,
+    FuzzyResolution, FuzzySignal, MatchContext,
 };
 use crate::ipc::{
     self, ByIdSnapshot, FilteredTracePage, RowPage, SignalPageRow, SignalSections, SignalSelection,
@@ -126,7 +126,13 @@ pub(crate) fn resolve_match_context(state: &AppState, filter: &FilterPredicate) 
     }
     let names: HashMap<String, String> = state.project_bus_names().iter().cloned().collect();
     let dbs = state.databases();
-    resolve_match_context_against(filter, &state.trace_store, &dbs, &names)
+    resolve_match_context_against(
+        filter,
+        &state.trace_store,
+        &dbs,
+        &names,
+        FuzzyMatchMode::Chronological,
+    )
 }
 
 /// [`resolve_match_context`] against a bus-name map and databases the
@@ -138,15 +144,19 @@ pub(crate) fn resolve_match_context_against(
     store: &TraceStore,
     dbs: &[LoadedDbc],
     names: &HashMap<String, String>,
+    mode: FuzzyMatchMode,
 ) -> MatchContext {
     let queries = filter.fuzzy_queries();
     if queries.is_empty() {
-        return MatchContext::default();
+        return MatchContext::with_mode(mode);
     }
-    let (candidates, labels) = fuzzy_haystacks(store, dbs, names);
-    let mut ctx = MatchContext::default();
+    let (candidates, signals, labels) = fuzzy_haystacks(store, dbs, names);
+    let mut ctx = MatchContext::with_mode(mode);
     for q in queries {
-        ctx.insert(q, FuzzyResolution::resolve(q, &candidates, &labels));
+        ctx.insert(
+            q,
+            FuzzyResolution::resolve(q, &candidates, &signals, &labels),
+        );
     }
     ctx
 }
@@ -162,26 +172,28 @@ fn id_spellings(id: u32, extended: bool) -> (String, String) {
     (format!("{prefix}:{id:0width$X}"), format!("{prefix}:{id}"))
 }
 
-/// Build the two lists a `fuzzy` query is ranked against: one
+/// Build the three lists a `fuzzy` query is ranked against: one
 /// [`FuzzyCandidate`] per `(bus, id, extended)` the capture has seen,
-/// and one [`FuzzyLabel`] per value-table entry a decoding database
-/// defines.
+/// one [`FuzzySignal`] per signal that message carries, and one
+/// [`FuzzyLabel`] per value-table entry those signals define.
 ///
-/// Candidates come from the capture's seen keys rather than from the
+/// All three come from the capture's seen keys rather than from the
 /// databases, because an id no frame carried cannot be a row — and an
 /// id no database describes is still searchable by its bus and its
 /// spelling. Databases are consulted in load order and the first one
 /// assigned to the frame's bus that defines the message wins, which is
-/// the same rule the decode path follows
-/// ([`filter::dbc_applies`]).
+/// the same rule the decode path follows ([`filter::dbc_applies`]) —
+/// so a signal or a label in these lists is one the frame's own
+/// database names, and the bus it is scoped to is the frame's.
 fn fuzzy_haystacks(
     store: &TraceStore,
     dbs: &[LoadedDbc],
     names: &HashMap<String, String>,
-) -> (Vec<FuzzyCandidate>, Vec<FuzzyLabel>) {
+) -> (Vec<FuzzyCandidate>, Vec<FuzzySignal>, Vec<FuzzyLabel>) {
     // Borrowing sweeps of each database, so the per-key lookup below is
     // a map hit rather than a rescan.
     struct DbText<'a> {
+        db: &'a Database,
         buses: &'a [String],
         messages: HashMap<(u32, bool), (&'a str, Option<&'a str>)>,
         signals: HashMap<(u32, bool), Vec<&'a str>>,
@@ -198,6 +210,7 @@ fn fuzzy_haystacks(
                 signals.entry((id, ext)).or_default().push(sig);
             }
             DbText {
+                db: &d.db,
                 buses: &d.buses,
                 messages: d
                     .db
@@ -213,6 +226,8 @@ fn fuzzy_haystacks(
         .collect();
 
     let mut candidates = Vec::new();
+    let mut signals = Vec::new();
+    let mut labels = Vec::new();
     for (bus_id, id, extended) in store.seen_bus_ids() {
         let (hex, dec) = id_spellings(id, extended);
         let bus_name = names.get(&bus_id).map_or(bus_id.as_str(), String::as_str);
@@ -227,9 +242,29 @@ fn fuzzy_haystacks(
                 haystack.push(' ');
                 haystack.push_str(tx);
             }
+            // Signal names are *not* appended to the message's
+            // haystack: they are ranked in their own right, so a query
+            // aimed at a signal — or at one of its values — is not also
+            // answered by the message carrying it.
             for sig in t.signals.get(&(id, extended)).into_iter().flatten() {
-                haystack.push(' ');
-                haystack.push_str(sig);
+                signals.push(FuzzySignal {
+                    bus_id: bus_id.clone(),
+                    id,
+                    extended,
+                    signal: (*sig).to_string(),
+                });
+                for entry in
+                    t.db.value_table_for_signal(id, extended, sig)
+                        .unwrap_or(&[])
+                {
+                    labels.push(FuzzyLabel {
+                        bus_id: bus_id.clone(),
+                        id,
+                        extended,
+                        signal: (*sig).to_string(),
+                        label: entry.label.clone(),
+                    });
+                }
             }
         }
         candidates.push(FuzzyCandidate {
@@ -239,29 +274,7 @@ fn fuzzy_haystacks(
             haystack,
         });
     }
-
-    let mut labels = Vec::new();
-    for d in dbs {
-        // A database assigned to no bus decodes nothing, so none of its
-        // labels can ever be a frame's current value.
-        if d.buses.is_empty() {
-            continue;
-        }
-        for (id, extended, signal) in d.db.signal_names() {
-            for entry in
-                d.db.value_table_for_signal(id, extended, signal)
-                    .unwrap_or(&[])
-            {
-                labels.push(FuzzyLabel {
-                    id,
-                    extended,
-                    signal: signal.to_string(),
-                    label: entry.label.clone(),
-                });
-            }
-        }
-    }
-    (candidates, labels)
+    (candidates, signals, labels)
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
@@ -314,7 +327,24 @@ pub(crate) fn apply_filter_records(
     records
         .into_iter()
         .filter(|r| record_matches(p, r, ctx))
+        .map(|mut r| {
+            note_matching_signals(&mut r, ctx);
+            r
+        })
         .collect()
+}
+
+/// Record on an admitted row which of its signals the query matched —
+/// a model fact the panel opens the row's disclosure to, rather than
+/// one it re-derives from the query in JS (CLAUDE.md § GUI
+/// architecture). Empty under a message-level winner.
+pub(crate) fn note_matching_signals(record: &mut TraceFrameRecord, ctx: &MatchContext) {
+    record.matching_signals = ctx.matching_signals(
+        record.id,
+        record.extended,
+        Some(&record.bus_id),
+        record.decoded.as_ref(),
+    );
 }
 
 /// Evaluate a predicate against an already-decoded record — the fetch
@@ -457,16 +487,56 @@ pub(crate) async fn fetch_by_id_page(
     limit: u64,
 ) -> RowPage<ByIdSnapshot> {
     let state: State<'_, AppState> = app.state();
+    let names: HashMap<String, String> = bus_names.into_iter().collect();
+    fetch_by_id_page_inner(
+        state.inner(),
+        filter.as_ref(),
+        scan_start,
+        scan_end,
+        sort_key.as_deref(),
+        sort_dir.as_deref(),
+        &names,
+        offset,
+        limit,
+    )
+}
+
+/// [`fetch_by_id_page`] against the state and the bus-name map the
+/// caller already holds — the command is the IPC shell around it, the
+/// same split [`fetch_signal_page`] uses.
+#[allow(clippy::too_many_arguments)] // the IPC payload's fields
+pub(crate) fn fetch_by_id_page_inner(
+    state: &AppState,
+    filter: Option<&FilterPredicate>,
+    scan_start: u64,
+    scan_end: u64,
+    sort_key: Option<&str>,
+    sort_dir: Option<&str>,
+    names: &HashMap<String, String>,
+    offset: u64,
+    limit: u64,
+) -> RowPage<ByIdSnapshot> {
     let start = usize::try_from(scan_start).unwrap_or(usize::MAX);
     let end = usize::try_from(scan_end).unwrap_or(usize::MAX);
     let rows = state.trace_store.latest_in_window(start, end);
-    let names: HashMap<String, String> = bus_names.into_iter().collect();
     // The bus *name* is part of a fuzzy leaf's haystack, and this
-    // command is handed the project's id→name map already.
-    let ctx = filter.as_ref().map_or_else(MatchContext::default, |p| {
-        let dbs = state.databases();
-        resolve_match_context_against(p, &state.trace_store, &dbs, &names)
-    });
+    // command is handed the project's id→name map already. A by-id row
+    // is a *message*, not a frame, so its value matches are
+    // definitional: the row shows when the message defines a signal
+    // that can carry the value, whatever the latest frame reads.
+    let ctx = filter.map_or_else(
+        || MatchContext::with_mode(FuzzyMatchMode::Definitional),
+        |p| {
+            let dbs = state.databases();
+            resolve_match_context_against(
+                p,
+                &state.trace_store,
+                &dbs,
+                names,
+                FuzzyMatchMode::Definitional,
+            )
+        },
+    );
     let mut snaps: Vec<ByIdSnapshot> = {
         let dbs = state.databases();
         let model = state.decode_model(&dbs);
@@ -478,11 +548,12 @@ pub(crate) async fn fetch_by_id_page(
                     &row.frame,
                     decoded,
                 );
-                record.tx_delivery = tx_delivery(&state, &record);
-                if let Some(p) = filter.as_ref() {
+                record.tx_delivery = tx_delivery(state, &record);
+                if let Some(p) = filter {
                     if !record_matches(p, &record, &ctx) {
                         return None;
                     }
+                    note_matching_signals(&mut record, &ctx);
                 }
                 Some(ByIdSnapshot {
                     frame: record,
@@ -492,7 +563,7 @@ pub(crate) async fn fetch_by_id_page(
             })
             .collect()
     };
-    sort_by_id(&mut snaps, sort_key.as_deref(), sort_dir.as_deref(), &names);
+    sort_by_id(&mut snaps, sort_key, sort_dir, names);
 
     let count = u64::try_from(snaps.len()).unwrap_or(u64::MAX);
     let off = usize::try_from(offset)
@@ -504,6 +575,7 @@ pub(crate) async fn fetch_by_id_page(
         count,
         start: u64::try_from(off).unwrap_or(0),
         rows: page,
+        fuzzy_winner: ctx.winner(),
     }
 }
 
@@ -651,6 +723,7 @@ pub(crate) fn fetch_signal_page_inner(
         count,
         start: u64::try_from(off).unwrap_or(0),
         rows: page,
+        fuzzy_winner: None,
     })
 }
 
@@ -1138,8 +1211,13 @@ fn extend_active_index(state: &AppState, filter: &FilterPredicate, active: &mut 
         if active.resolved_key_generation != Some(generation) {
             let names: HashMap<String, String> =
                 state.project_bus_names().iter().cloned().collect();
-            active.match_context =
-                resolve_match_context_against(filter, &state.trace_store, &dbs, &names);
+            active.match_context = resolve_match_context_against(
+                filter,
+                &state.trace_store,
+                &dbs,
+                &names,
+                FuzzyMatchMode::Chronological,
+            );
             active.candidates =
                 resolve_candidates_for(filter, &state.trace_store, &dbs, &active.match_context)
                     .unwrap_or_else(|| all_ids_tested(&state.trace_store));
@@ -1258,6 +1336,7 @@ fn fetch_filtered_trace_blocking(
             count: 0,
             start: 0,
             rows: Vec::new(),
+            fuzzy_winner: None,
         };
     };
     let active = guard.as_mut().expect("active filter index ensured");
@@ -1273,13 +1352,27 @@ fn fetch_filtered_trace_blocking(
     let (count, page_pos, page_len, start_match) =
         windowed_filter_page(p_start, p_end, offset, limit, from_end);
     let page_idxs = active.index.page(page_pos, page_len);
+    // The winner and the page's matching signals are model facts the
+    // panel is handed rather than re-deriving (CLAUDE.md § GUI
+    // architecture). The resolution is cloned out of the index because
+    // the rows are materialized off the lock; it is sized by the match
+    // set that cleared the floor, not by the capture.
+    let fuzzy_winner = active.match_context.winner();
+    let ctx = (fuzzy_winner.is_some_and(|w| w != filter::FuzzyWinner::Message))
+        .then(|| active.match_context.clone());
     drop(guard);
 
-    let rows = materialize_filtered_rows(state.inner(), &page_idxs);
+    let mut rows = materialize_filtered_rows(state.inner(), &page_idxs);
+    if let Some(ctx) = ctx {
+        for r in &mut rows {
+            note_matching_signals(r, &ctx);
+        }
+    }
     FilteredTracePage {
         count,
         start: start_match,
         rows,
+        fuzzy_winner,
     }
 }
 
