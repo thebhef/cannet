@@ -141,12 +141,20 @@ const projectCtx = {
   onUpdateVirtualBus: () => {},
   signalColors: {},
   onSetSignalColor: () => {},
+  onSetSignalColors: () => {},
 } as unknown as ProjectContextValue;
 
-function Providers({ children }: { children: React.ReactNode }) {
+function Providers({
+  children,
+  projectCtxOverride,
+}: {
+  children: React.ReactNode;
+  projectCtxOverride?: Partial<ProjectContextValue>;
+}) {
+  const ctx = projectCtxOverride ? { ...projectCtx, ...projectCtxOverride } : projectCtx;
   return (
     <TraceDataProvider value={traceData}>
-      <ProjectContext.Provider value={projectCtx}>
+      <ProjectContext.Provider value={ctx}>
         <SignalCatalogProvider>
           <ElementRegistryContext.Provider value={makeRegistry()}>
             {children}
@@ -157,11 +165,14 @@ function Providers({ children }: { children: React.ReactNode }) {
   );
 }
 
-function renderPanel(opts?: { params?: Record<string, unknown> }) {
+function renderPanel(opts?: {
+  params?: Record<string, unknown>;
+  projectCtxOverride?: Partial<ProjectContextValue>;
+}) {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof SignalsPanel>[0];
   return render(
-    <Providers>
+    <Providers projectCtxOverride={opts?.projectCtxOverride}>
       <SignalsPanel {...props} />
     </Providers>,
   );
@@ -318,6 +329,96 @@ describe("signal view selection", () => {
     await screen.findByText(/EngineSpeed/);
     fireEvent.keyDown(grid(), { key: "a", ctrlKey: true });
     expect(selectedText()).toHaveLength(4);
+  });
+});
+
+/// The name's own color-picker input (`ColorChip` with `hideBox`),
+/// reached through the row's `.signals-name` span — right-clicking
+/// that span opens it (`SignalsPanel.tsx`).
+function nameSpan(signal: string): HTMLElement {
+  const el = screen.getByText(new RegExp(signal)).closest(".signals-name");
+  if (!el) throw new Error(`no .signals-name for ${signal}`);
+  return el as HTMLElement;
+}
+function colorInputFor(signal: string): HTMLInputElement {
+  const input = nameSpan(signal).querySelector('input[type="color"]');
+  if (!input) throw new Error(`no color input for ${signal}`);
+  return input as HTMLInputElement;
+}
+
+describe("signal view color pick over a selection", () => {
+  it("colours every selected row from one pick, in one project change", async () => {
+    ROWS = [signalRow("Coolant", 257), signalRow("EngineSpeed", 256), signalRow("OilTemp", 258)];
+    const onSetSignalColors = vi.fn();
+    renderPanel({ projectCtxOverride: { onSetSignalColors } });
+    await screen.findByText(/OilTemp/);
+    fireEvent.click(screen.getByText(/Coolant/));
+    fireEvent.click(screen.getByText(/EngineSpeed/), { ctrlKey: true });
+    fireEvent.click(screen.getByText(/OilTemp/), { ctrlKey: true });
+    expect(selectedText()).toHaveLength(3);
+
+    // Right-click a name already in the selection, then pick.
+    fireEvent.contextMenu(nameSpan("Coolant"));
+    fireEvent.change(colorInputFor("Coolant"), { target: { value: "#123456" } });
+
+    expect(onSetSignalColors).toHaveBeenCalledTimes(1);
+    const entries = onSetSignalColors.mock.calls[0][0] as { key: string; color: string }[];
+    expect(entries).toHaveLength(3);
+    expect(entries.every((e) => e.color === "#123456")).toBe(true);
+    // The right-clicked row was already selected, so the selection
+    // itself is untouched.
+    expect(selectedText()).toHaveLength(3);
+  });
+
+  it("an unselected row's pick recolours it alone and makes it the selection", async () => {
+    ROWS = [signalRow("Coolant", 257), signalRow("EngineSpeed", 256), signalRow("OilTemp", 258)];
+    const onSetSignalColors = vi.fn();
+    renderPanel({ projectCtxOverride: { onSetSignalColors } });
+    await screen.findByText(/OilTemp/);
+    fireEvent.click(screen.getByText(/Coolant/));
+    fireEvent.click(screen.getByText(/EngineSpeed/), { ctrlKey: true });
+    expect(selectedText()).toHaveLength(2);
+
+    // OilTemp is outside the selection — the right-click replaces it.
+    fireEvent.contextMenu(nameSpan("OilTemp"));
+    expect(selectedText()).toHaveLength(1);
+    expect(selectedText()[0]).toContain("OilTemp");
+    fireEvent.change(colorInputFor("OilTemp"), { target: { value: "#abcdef" } });
+
+    expect(onSetSignalColors).toHaveBeenCalledTimes(1);
+    const entries = onSetSignalColors.mock.calls[0][0] as { key: string; color: string }[];
+    expect(entries).toHaveLength(1);
+    expect(entries[0].color).toBe("#abcdef");
+  });
+
+  it("skips a pattern chip carried along in the selection", async () => {
+    // Default ROWS (from beforeEach): an unsectioned Coolant and a
+    // "Pack" section holding EngineSpeed. Give Pack a live pattern so
+    // it has a chip to select.
+    const onSetSignalColors = vi.fn();
+    renderPanel({
+      params: {
+        sections: { names: ["Pack"], assignments: {}, patterns: { Pack: ["^Powertrain/"] } },
+      },
+      projectCtxOverride: { onSetSignalColors },
+    });
+    await screen.findByRole("button", { name: "patterns for section Pack" });
+    fireEvent.click(screen.getByRole("button", { name: "patterns for section Pack" }));
+    const grip = document.querySelector(".pattern-editor-grip") as HTMLElement;
+    expect(grip).not.toBeNull();
+
+    fireEvent.click(screen.getByText(/Coolant/));
+    fireEvent.click(grip, { ctrlKey: true });
+
+    fireEvent.contextMenu(nameSpan("Coolant"));
+    fireEvent.change(colorInputFor("Coolant"), { target: { value: "#112233" } });
+
+    expect(onSetSignalColors).toHaveBeenCalledTimes(1);
+    const entries = onSetSignalColors.mock.calls[0][0] as { key: string; color: string }[];
+    // Only Coolant — the pattern chip in the same selection carries no
+    // signal key, so it drops out silently (ADR 0045).
+    expect(entries).toHaveLength(1);
+    expect(entries[0].color).toBe("#112233");
   });
 });
 
