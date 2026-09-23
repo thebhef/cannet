@@ -287,6 +287,39 @@ the next reader does not open a task on it.
   uses `try_transmit` and the scheduler uses `transmit_batch`. Left in
   place — it is a library crate's public API and the python/GUI
   consumers of `cannet-client` are not all in this repo's tree.
+- 2026-09-23 (phase 3) — **the perf reading for this branch measured an
+  idle bus.** The ADR-0031 run
+  (`docs/performance-measurements/frontend/2026-09-23-b4de94de-task152p3-run1.json`,
+  parked in the overseer's scratchpad, not committed) came back `fps.rx = fps.tx = 0`,
+  `rx_gap: null`, with `cannet.log` reporting `frame source ended
+  cleanly (0 frames)` — the sidecar started, the GUI connected to
+  `127.0.0.1:56872` and subscribed to both interfaces, and no frames
+  arrived. No other `cannet-gui` or `cannet-server` process was running
+  when the run started. Per the ADR-0031 rule a number measured off an
+  idle bus is worse than no number, so this one is **not** a data point
+  in the series and was not promoted or checked against the baseline. Not
+  retried and nothing killed. The render-tier numbers it does carry are
+  in the report for whatever they are worth (longtask 0 ms/s, `lag_ms`
+  max 1.2 ms, `jank_fraction` 0, `jsheap_mb` peak 31.9,
+  `mem.tree_mb` peak 575.3, `mem.host_mb` peak 47.2, `interact` 240
+  gestures performed / 0 missing) — but they describe an app with no
+  data flowing.
+- 2026-09-23 (phase 3) — **a filtered fetch can now be answered `None`
+  where it previously blocked.** If a Clear lands while a filter-index
+  rebuild is running, the fresh index is discarded rather than installed
+  and that one call serves an empty page; the next call rebuilds against
+  the new session. Before, the rebuild held the lock, so the Clear's own
+  `*state.filter_index() = None` waited for it. This is the intended
+  trade (the lock is what phase 3 gives up) and the empty page is one
+  fetch cadence long, but it is a new observable: a filtered view can
+  blink empty for one tick immediately after a Clear.
+- 2026-09-23 (phase 3) — **the logger file grid now refetches per
+  announced scan.** A folder of many small unscanned files emits one
+  `logger-files-scanned` per file, each one nudging the grid. The
+  mirror's new single-flight guard is what bounds that to one refetch
+  per round trip; the two landed together on purpose, and a future
+  consumer of that event without a coalescing mirror would reintroduce
+  the storm.
 
 ## Status log
 
@@ -430,15 +463,141 @@ the next reader does not open a task on it.
   walks a directory per registered cache, on the IPC thread) and every
   shape-B/C item. Exit criterion 2 is therefore **not yet met** — see
   the verdicts below.
+- 2026-09-23 — **phase 3 (shapes B and C) landed** on
+  `task152-listing-and-mirror` (1 squashed commit, `b4de94de`;
+  pre-squash HEAD is the same commit — the phase was committed once).
+  § Audit's fix-list item 2, in full.
 
-## Exit criteria verdicts (2026-09-23, after phase 2)
+  **B0 — `list_logger_files`, the reference case.** The listing now
+  answers with the directory walk's own cost and nothing else. A file
+  whose `(size, modified)` pair is not in `LogFileCache` lists with
+  `scan_pending: true` and empty trace columns; the header scan is a
+  background job. `LogFileCache` gained the scheduler: a `pending:
+  HashSet<PathBuf>` (the single-flight set) and a `queued:
+  VecDeque<ScanJob>` drained by **one** worker thread. A path enters
+  `pending` once and leaves it only *after* its result is readable in
+  `entries`, so a listing that races the hand-off either reads the meta
+  or finds the scan still in flight — it can never miss both and queue a
+  second one. One worker rather than one thread per file is deliberate:
+  N concurrent multi-hundred-MB reads was half of what saturated the
+  machine (0137's diagnosis). Each finished scan emits
+  `LOG_FILES_SCANNED_EVENT` (`logger-files-scanned`) carrying the path.
+  The file a logger is writing is still never queued — asserted.
+
+  Frontend: `LogFileEntry.scanPending`; `LoggerFileGrid` renders start /
+  end / duration / messages as `…` (`PENDING_CELL`, `.pending` at 0.55
+  opacity, titled "Reading this file's header…") for a pending row, and
+  listens for `logger-files-scanned` to refetch. `…` rather than blank
+  or `0` because a file with no frames and a file nobody has read are
+  different answers.
+
+  **Shape C — `useHostMirror`.** One request in flight, newest answer
+  wins, modelled on `useWindowedQuery`'s `fetching` + `pending`
+  coalescing. A tick that finds a fetch out sets `stale` and returns;
+  exactly one refetch runs from the in-flight fetch's `finally`. A
+  `generation` counter decides "newest": it is bumped when a
+  `fromPayload` event applies the whole state, and when the listener
+  effect re-runs because the consumer re-aimed `fetch` — so a late
+  answer for a superseded request or a previous target is dropped
+  instead of overwriting fresher state. `refresh` is now stable (it
+  reads `fetch` through a ref), so the listener effect keys on `fetch`
+  explicitly. `LoggerFileGrid`, `RbsPanel` and `TransmitPanel` all get
+  it for free.
+
+  **B1 — the filter-index rebuild.** `ensure_active_filter_index` is now
+  three phases: check under the index lock (and release it); if a
+  rebuild is needed, take a new `AppState::filter_index_build` gate,
+  re-check, build a fresh `ActiveFilterIndex` **into a local**, then take
+  the index lock only for the swap; finally take the index lock and run
+  the `O(delta)` incremental extend. The shared body is now
+  `extend_active_index`. The build gate is what keeps two views asking
+  for the same new predicate to one walk — the index mutex used to do
+  that incidentally. The swap re-reads `session_start_ns()` under the
+  lock and **discards** the fresh index if a Clear moved the capture
+  mid-build (ADR 0048's "the plan is a hint"); the next call rebuilds. If
+  what is installed is not current for the asked-for predicate, the
+  function returns `None` and the caller serves an empty page, rather
+  than serving from the wrong index.
+
+  `fetch_filtered_trace`, `filtered_positions_at_ns` and
+  `restore_scratch_capture` now run their bodies through
+  `off_async_workers` instead of on the async-runtime worker polling
+  them; all three lost their `#[allow(clippy::unused_async)]`.
+
+  **B2 / A4 — `list_project_caches`.** New managed state
+  `ProjectCacheSizes`: a `HashMap<PathBuf, u64>` of the last measured
+  size plus a running/pending gate, the same shape as
+  `SignalCacheStore`'s sweep. `ProjectCacheRow.bytes` is now
+  `Option<u64>`; the command returns rows immediately with whatever is
+  measured (`None` otherwise) and asks for one background walk of every
+  registered cache, announced by `PROJECT_CACHES_MEASURED_EVENT`
+  (`project-caches-measured`). Clear / Delete / Clear-all `forget()`
+  the figures they invalidate, so a row reads pending rather than
+  quoting a stale measurement. The command is `async` +
+  `off_async_workers`, so **it is gone from
+  `command_surface::SYNCHRONOUS_COMMANDS`** — the last entry that list
+  carried with a debt written beside it. 98 names remain and
+  `every_synchronous_command_is_one_the_allow_list_names` passes without
+  it. Exit criterion 2 is now met in full.
+
+  Frontend: `ProjectCacheRow.bytes: number | null`; the size cell shows
+  `…` (dimmed, titled "Measuring this cache…"); `cacheSummary` reads
+  `"N projects · measuring…"` while any row is pending rather than
+  quoting a partial total; `canClear` keeps the offer while pending
+  (Clear on an empty cache is a no-op, and a button that appears a
+  second later is worse than one that does nothing);
+  `ProjectCachesList` refetches on the event.
+
+  **`DatabasePanel`'s value column.** A `fetching` flag in the poll
+  effect; a tick that finds a request out returns *without* clearing the
+  dirty flag, so the next tick after it lands asks once.
+
+  **Tests (red first, then green).**
+
+  | test | red evidence |
+  | --- | --- |
+  | `log_files::a_listing_returns_before_any_scan_finishes` | with `file_node` scanning inline (the pre-fix shape) the test **does not return at all** — killed at 90 s. Every scan is held on a condvar for the whole listing, so "waited for a scan" is a hang, not a slow pass. |
+  | `log_files::n_unscanned_files_cost_n_scans_under_overlapping_listings` | dropping the `pending.insert` dedup: **6 scans of 5 files** by the time the assert ran (it would have reached 40 — 8 listings × 5 files). Green: exactly 5, and the next listing serves the headers. |
+  | `log_files::a_finished_scan_announces_the_file_it_read`, `…a_scan_is_reused_when_size_and_modified_time_are_unchanged`, `…a_moved_size_or_modified_time_reads_as_uncached`, `…the_currently_writing_file_reports_its_live_status_instead_of_a_header_scan` (now also asserts 0 scans queued for the writing file) | — |
+  | `useHostMirror` "keeps one request in flight when a fetch is slower than the poll interval" | **11 fetches** over ten 100 ms ticks before; 1 after, then exactly one coalesced refetch when it lands. |
+  | `useHostMirror` "drops a response that lands after a newer snapshot" / "drops the answer to a fetch the consumer has since re-aimed" | both timed out at 5 s against the old hook. |
+  | `tests::a_filter_index_rebuild_does_not_hold_the_index_lock_for_its_duration` | with the index lock taken before the build, a second caller **waited 21 459 µs of a 21 486 µs rebuild** (99.9 %). Green: worst wait < ¼ of the rebuild. Fixture 600 k frames, 2.2 s. |
+  | `tests::two_views_asking_for_the_same_new_predicate_cost_one_rebuild` | four threads on one new predicate ⇒ `resolve_count == 1`. |
+  | `project_registry::rows_list_with_their_sizes_pending_before_any_walk_has_run`, `…overlapping_listings_cost_one_walk_at_a_time` (8 requests ⇒ ≤ 2 measurements), `…clearing_a_cache_drops_its_measured_size_so_the_row_reads_pending` | — |
+  | `LoggerFileGrid.dom` "shows the trace columns as pending…" and "re-asks for the listing when the host announces a finished scan" | — |
+
+  The experiment that **refuted** its first hypothesis is worth
+  recording: the first cut of the B1 test spun on `try_lock` and asserted
+  it succeeded once during the rebuild. It passed against the
+  *falsified* build too — the probe won the lock before the builder
+  thread had taken it, so the test never observed the rebuild at all.
+  The observable was changed to the *wait*: a blocking acquire in a
+  loop, worst wait recorded, compared against the rebuild's own
+  duration. That falsifies cleanly (21 459 / 21 486 µs).
+
+  **One adjacent test was changed by the mirror's new behaviour.**
+  `LoggerFileGrid.dom` "polls the listing only while writing" captured
+  its idle baseline one render after mount; the post-listener refetch is
+  now coalesced behind the mount fetch and lands a round trip later, so
+  the baseline is taken after the snapshot pair settles. Same assertion,
+  same intent.
+
+  **Docs.** ADR 0049 amended (see below). README: the logger file list's
+  pending columns and why they exist; the caches list's pending sizes.
+  `docs/CONTEXT.md` unchanged — no new term; "pending" is used in its
+  ordinary sense and the two events are named in the modules that emit
+  them.
+
+## Exit criteria verdicts (2026-09-23)
 
 | # | criterion | verdict |
 | --- | --- | --- |
 | 1 | a multi-GB cache delete/clear never stops the heartbeat, asserted by test | **met** — `deleting_a_large_project_cache_never_stops_the_ui_heartbeat`; red at 0 beats / 785 ms before the fix. Fixture is 4,000 tiny files rather than multi-GB bytes, because the unlink count is the cost (reasoned above, stated in the test's own doc comment). |
-| 2 | no synchronous command walks or removes a directory, reads an unbounded file, or waits on a long-held lock; the audit table records every classification | **partly met — phase 3 owes A4.** Every other row is done: nothing synchronous now removes a directory, joins a thread, spawns a process, parses a DBC or waits on a handshake. `list_project_caches` (A4) still walks one directory per registered cache; § Audit ruled that a shape-B fix (rows now, sizes pending) and put it in phase 3's fix list. The allow-list names it with that reason, so the guard records the debt rather than hiding it. |
-| 3 | `list_logger_files` returns before any scan; N unscanned files cost N scans | not this phase (phase 3). |
-| 4 | `useHostMirror` single-flight + newest-wins | not this phase (phase 3). |
+| 2 | no synchronous command walks or removes a directory, reads an unbounded file, or waits on a long-held lock; the audit table records every classification | **met.** A4 was the last row outstanding. `list_project_caches` is `async` + `off_async_workers` and no longer appears in `SYNCHRONOUS_COMMANDS`; the guard passes over the remaining 98 names with no entry carrying a debt. |
+| 3 | `list_logger_files` returns before any scan; N unscanned files cost N scans | **met** — `a_listing_returns_before_any_scan_finishes` (the pre-fix shape hangs rather than failing) and `n_unscanned_files_cost_n_scans_under_overlapping_listings` (8 overlapping listings of 5 files ⇒ 5 scans; without the dedup it was already at 6 when the assert ran). |
+| 4 | `useHostMirror` single-flight + newest-wins | **met** — "keeps one request in flight when a fetch is slower than the poll interval" (11 → 1 fetches over ten ticks) and two newest-wins tests (a payload superseding an in-flight answer; a re-aimed `fetch` superseding the previous target's). |
 | 5 | the `ui_last_ms` creep explained, and fixed if ours | **met** — § Audit's explanation (sampler/heartbeat aliasing, ending in a wrap) is now a doc paragraph on `crash.rs`'s `ui_heartbeat_age_ms`. Nothing to fix: neither side got slower. |
 | 6 | the sync-command allow-list test fails on a command it does not name | **met** — `every_synchronous_command_is_one_the_allow_list_names`, falsified by reverting one command to `pub fn`. Two companion guards keep the list from rotting and the scan from silently finding nothing. |
-| 7 | ADR 0049 carries the general rule and the shape-A guard; ADR 0002 and README match the behaviour | **ADR 0002 part met** (DS-8 paragraph on the deferred sweep). **README part met** (nothing in it to change — reasoned above). **ADR 0049 part is phase 3's**, per § Audit's fix list; this phase cites ADR 0048 and 0049 from the code and amends neither. |
+| 7 | ADR 0049 carries the general rule and the shape-A guard; ADR 0002 and README match the behaviour | **met.** ADR 0049 gains a "same shape, three more times" context section and six general rules under § Decision (a command answers with what exists; a background job is single-flight per key and announces itself; a foreground poll never drives unbounded derivation; one request in flight per poller, newest wins; pending is neither empty nor zero; the guard is a test — `command_surface`'s allow-list, and why it must read the source). Status line amended. ADR 0002 DS-8 needed no further change: "sizes asked for, never polled" still holds — the walk is triggered by the listing, not a timer. README updated for both pending states. |
+
+Task complete 2026-09-23: 7/7 met. Awaiting owner acceptance (review queue § 4).

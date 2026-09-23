@@ -7,6 +7,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **152: the logger file list and the project-cache list show a dimmed
+  `…` while the host reads.** Trace start / end / duration / count for
+  a file whose header is unread, and a cache's size before its walk
+  lands, instead of blanks or zeros; the caches header reads
+  `N projects · measuring…` until every size is in. Detail: 0152
+  § Status log, 2026-09-23 (phase 3).
+
 - **152: a manual TX onto a full outbound queue is now refused, not
   waited on.** `transmit_frame_once` reports `Failed { … outgoing queue
   is full … }` instead of parking the IPC thread until the server
@@ -118,6 +125,11 @@ keeps the queue's copy). This file shrinks every time it is walked.
   carries a British alternate. Detail: 0149 § Blockers / side effects.
 
 ## 4. Finished tasks awaiting acceptance
+
+- **152 — nothing heavy in the foreground** (3 phases, `task152-shape-a`
+  → `task152-listing-and-mirror`): 7/7 exit criteria met. Perf reading
+  on the tip measured an idle bus (fps 0) — see 0152 § Blockers; one
+  usable reading still owed at the stack tip.
 
 - **Task 136 — python-can Cannet Client** (2026-09-06): both phases
   landed (`task136-core-bus` → `task136-clock-detect`); all 7 exit
