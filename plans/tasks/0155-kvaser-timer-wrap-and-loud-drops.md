@@ -55,9 +55,12 @@ with stamps 11.93 h stale, overlapping the capture's first hours.
   running wrap count applied to every later stamp. Hardware stamps
   keep their precision; other backends are untouched; the fix is
   unit-testable with synthetic `can.Message`s. One WARN log
-  envelope per wrap (`pb.LOG_LEVEL_WARN`; the proto has no `WARNING`), so the system log records that it happened. An
-  upstream python-can issue is filed alongside (link in the status
-  log). Rejected: restamping RX with the host clock (throws away
+  envelope per wrap (`pb.LOG_LEVEL_WARN`; the proto has no `WARNING`), so the system log records that it happened. **No
+  upstream issue or PR** (owner, 2026-09-23): cannet does not modify or
+  petition its python-can dependency; the issue draft phase 1 wrote
+  stays in the status log for a later sweep of upstreamable patches
+  (backlog). The README and inventory sentences phase 1 wrote saying an
+  upstream issue tracks the defect are corrected in phase 3. Rejected: restamping RX with the host clock (throws away
   Vector/PCAN hardware stamps); a host-side guess at the period (the
   wire would still carry wrong stamps to every other consumer).
 - **Before-session drops become a coalesced system-log warning.**
@@ -83,8 +86,8 @@ with stamps 11.93 h stale, overlapping the capture's first hours.
 1. **`task155-kvaser-unwrap`** (base `task149-units-surfaces`) — the
    sidecar's python-can driver unwraps the Kvaser 32-bit timer per
    channel and logs one WARNING envelope per wrap; tests feed
-   synthetic Messages across a wrap (and across two); a python-can
-   issue is filed; `README`/sidecar docs note the behaviour;
+   synthetic Messages across a wrap (and across two); an issue draft
+   recorded, not filed; `README`/sidecar docs note the behaviour;
    `plans/technology-inventory.md`'s python-can entry records the
    defect and the workaround.
 2. **`task155-drops-loud`** (base phase 1) — `TraceStore` exposes the
@@ -94,7 +97,9 @@ with stamps 11.93 h stale, overlapping the capture's first hours.
    and the rate limit.
 3. **`task155-logger-clamp`** (base phase 2) — the logger's finish and
    split paths log `clamped_timestamp_warning`; a test drives frames
-   before the anchor through a logger and asserts the warning.
+   before the anchor through a logger and asserts the warning. Also
+   corrects phase 1's two sentences (sidecar README, python-can
+   inventory entry) that say an upstream issue tracks the defect.
 
 Phase 1 is Opus (driver behaviour, upstream filing); 2 and 3 are
 Sonnet-shaped. All three share the main tree, strictly sequential.
@@ -107,8 +112,9 @@ Sonnet-shaped. All three share the main tree, strictly sequential.
   (sidecar unit tests).
 - Each wrap produces exactly one WARN `LogMessage` envelope naming
   the channel.
-- The upstream python-can issue is filed and linked from the status
-  log; `technology-inventory.md`'s python-can entry names the defect.
+- `technology-inventory.md`'s python-can entry names the defect and
+  says no upstream change is pursued (owner ruling 2026-09-23); no
+  sentence in the repo claims an upstream issue exists.
 - A frame appended before the session start opens a drop episode with
   one WARN naming bus, stamp and distance; continued drops produce at
   most one line per emitter tick; the episode closes with a total
@@ -313,3 +319,157 @@ Sonnet-shaped. All three share the main tree, strictly sequential.
   line asking to confirm it is withdrawn; the upstream-issue go/no-go
   stays in the queue for the owner. Branch tracked in Graphite under
   `task149-units-surfaces`; phase 2 launched.
+
+- 2026-09-23 — **phase 2 (`task155-drops-loud`) landed**, one commit
+  (`8ce81d11`) on base `task155-kvaser-unwrap`
+  (`3e5f6563`; pre-amend WIP `aa327661`, reflog-reachable, fixed one
+  "an counter" → "a counter" typo in the message).
+
+  **What moved.** `TraceStore` (`trace_store/mod.rs`) gained
+  `first_dropped: Option<FirstDrop>` beside `dropped_before_session`:
+  `FirstDrop { bus_id, frame_ts_ns, before_origin_ns }`, recorded in
+  `append` only on the counter's own 0 → 1 transition (one clone per
+  episode, not per dropped frame — ADR 0049), cleared alongside the
+  counter by `Inner::reset_derived` (`flush.rs`), which both
+  `start_session` and a carry-less `reroot` already call. `StatusSnapshot`
+  and a new `TraceStore::first_dropped_before_session()` accessor expose
+  it the same way the existing counter is exposed.
+
+  `emitters.rs` gained a pure state machine, `DropEpisode` (open: bool,
+  last_total: u64), ticked once per `trace-grew` tick — placed *ahead of*
+  `trace_grew_changed`'s own skip gate, since a rejected frame moves
+  neither count, fps, nor origin and would otherwise go unticked on an
+  otherwise-quiet interval. `tick(total, first, session_changed)`
+  compares `total` against `last_total` (the counter is monotonic within
+  a session) rather than reusing `reported: Option<u64>` naively — the
+  first draft of this reopened a new "episode" every tick after a close
+  because the cumulative total never resets on its own; `last_total`
+  tracks every tick regardless of whether it emitted, closing that hole.
+  `session_changed` (the emitter's own last-seen generation vs. the
+  snapshot's) resets both fields silently — no phantom close, and the
+  next real drop opens cleanly against the new session's own detail
+  rather than the old episode's total.
+
+  Lines: `sys_warn!(&app, "session", ...)`. "session" was free (grepped
+  every `sys_*!` call site — 16 tags in use, "session" not among them)
+  and matches the vocabulary `trace_store.rs` already uses
+  (`session_start_ns`, `start_session`, …) more closely than "capture"
+  (which the existing code uses specifically for Save Capture) or
+  "connection" (connect/disconnect, frame-source lifecycle).
+
+  **Docs.** Rustdoc on everything new. The task brief said to check
+  whether the source-tag catalogue is documented anywhere and add the
+  new line there if so — it is, in two places
+  (`system_log.rs`'s module doc and README's Phase-7 section), and both
+  had already drifted (4 of 16 tags listed). Since adding "session" to
+  an already-wrong list would just make it more wrong, both were
+  brought current to the full 16-tag set instead of patched — one
+  sentence each, not a broader audit. No other README section discusses
+  `dropped_before_session` / the `drop.before_session` DIAG gauge at
+  all (grepped, no hits before this change), and the phase brief didn't
+  ask for a narrative write-up beyond the catalogue, so none was added.
+
+  **Verification (scoped per-phase tier).** `cargo test -p cannet-gui`:
+  1349 passed (10 new — `DropEpisode` open/continue-collapses-a-burst/
+  close/reopen-after-close/session-clear-is-silent/quiet-store-never-
+  opens, `human_duration_ns`'s three bands, the message text, plus
+  `TraceStore`'s first-drop-recorded-and-stable and
+  clear-resets-it). `cargo clippy -p cannet-gui --all-targets -- -D
+  warnings` clean. `cargo fmt --all -- --check` clean. `git grep
+  --untracked -Ein "task [0-9]|plans/" -- apps/ crates/` — one hit on
+  a first draft (a doc comment naming "task 155" as the motivating
+  example), reworded to describe the scenario without the task number,
+  clean after. Frontend: untouched (`frames_dropped_before_session` on
+  `TraceGrew` unchanged, no new field); no frontend checks run.
+  `pnpm --dir apps/gui tauri build --no-bundle` green (sidecar frozen
+  + smoke-tested, `cannet-server` release built, frontend `vite build`,
+  host `release` profile in 1 m 43 s) →
+  `target/release/cannet-gui.exe`.
+
+  **Housekeeping hit in passing:** the shared machine's C: drive was
+  down to ~580 MB free before the first build attempt (`target/debug`
+  had grown to 43 GB, `incremental/` alone 18 GB). Deleted
+  `target/debug/incremental` (compiler cache only, safe to regenerate,
+  not shared source) to free ~15 GB and let the build proceed. Left
+  `target/debug/deps` untouched. Worth a queue line if it recurs across
+  phases — a long-running shared tree's `target/` growing unbounded is
+  a `cargo clean`-on-a-cadence problem, not this phase's to solve.
+
+- 2026-09-23 — **phase 2 amended** after review, same branch, still one
+  commit (`33f9abe9`, pre-amend `8ce81d11`, both on base
+  `task155-kvaser-unwrap`/`3e5f6563`). Two findings from the review:
+
+  1. **Continued lines would have flooded an hours-long episode.** The
+     `trace-grew` tick is sub-second to ~1 s, and the system log's
+     per-`(source, template)` limiter only caps a burst — a 4h46m
+     episode (the motivating field report) would have put thousands of
+     "still dropping…" WARNs in the panel. Fixed: `DropEpisode::tick`
+     takes a `now_ms: u64` (the emitter's own `Instant::elapsed()`, read
+     once per tick and passed in — the type still reads no clock of its
+     own) and rate-limits `Continued` to at most one per
+     `CONTINUED_MIN_GAP_MS` (10 s). `Opened` / `Closed` (now also
+     `Resumed`, next point) are unaffected — each is a one-off
+     transition, not a repeated status line. Required splitting what had
+     been one `last_total` field into two: `last_total` (every tick,
+     including a suppressed one — what still lets `Closed` fire on the
+     first genuinely quiet tick regardless of the rate limit) and
+     `reported_total` (only the total as of the last line actually
+     emitted — the baseline the next `Continued`'s `since_last` reads
+     against, so a suppressed tick's drops aren't lost from the count,
+     only from the cadence). New test
+     `continued_lines_are_rate_limited_to_one_per_ten_seconds_of_wall_clock`
+     ticks every 250 ms for 60 s (one more drop each tick): exactly one
+     `Opened`, exactly `60_000 / CONTINUED_MIN_GAP_MS` = 6 `Continued`
+     (computed from the constant, not hardcoded, so the assertion tracks
+     it if it's ever retuned), and confirms the close line still fires
+     on the very next quiet tick.
+
+  2. **A second episode in one session would have reopened with a
+     stale onset.** `TraceStore::first_dropped` only clears on a session
+     change (by design — it names the *session's* first drop), so a
+     drop episode that closes and later resumes in the same session was
+     replaying the first episode's bus/timestamp/gap as if it were the
+     new one's onset. Fixed in `DropEpisode`, not `TraceStore` — no
+     store change needed: a new `had_episode: bool` field (reset only on
+     `session_changed`) distinguishes a session's first open from a
+     later one, and the later one emits a new
+     `DropEpisodeLine::Resumed { since_last, total }` ("dropping frames
+     stamped before the session start again — N more since it stopped,
+     M this session") instead of a second `Opened`. Chose the
+     emitter-side fix over teaching `TraceStore` to track "first drop of
+     *this* episode" (which would mean either a second stored detail or
+     clearing `first_dropped` on close — the latter breaks a
+     never-resumed episode's own accuracy, since nothing would be left
+     to open a *third* episode's `Opened` line correctly either, and the
+     former is state the store doesn't otherwise need to carry).
+     `drop_episode_resumes_instead_of_reopening_with_a_stale_onset`
+     replaces the old (now-incorrect) reopen test; open→close→resume
+     asserts `Resumed { since_last: 7, total: 9 }`, not `Opened`.
+
+  Incidental, spotted while fixing the above: `Continued` / `Closed`'s
+  wording said "this episode" for a value (`total`) that is actually
+  the store's whole-session cumulative counter — harmless while a
+  session could only ever have one episode, wrong now that it can have
+  several (issue 2 above). Reworded to "this session" in both, and in
+  the new `Resumed` line, while touching this exact code; not a
+  separate pass over the file.
+
+  **Verification (scoped per-phase tier, re-run after the amendment).**
+
+  | Check | Command | Result |
+  |---|---|---|
+  | tests | `cargo test -p cannet-gui` | 1350 passed, 0 failed (net +1 over the pre-amendment 1349: two new tests, one superseded test removed) |
+  | clippy | `cargo clippy -p cannet-gui --all-targets -- -D warnings` | clean |
+  | fmt | `cargo fmt --all -- --check` | clean |
+  | comment-references | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
+  | release build | — | not run — the amendment touches only `apps/gui/src-tauri/src/{emitters,lib,tests}.rs`, nothing outside `src-tauri` |
+
+  Files touched by the amendment: `apps/gui/src-tauri/src/emitters.rs`,
+  `apps/gui/src-tauri/src/lib.rs`, `apps/gui/src-tauri/src/tests.rs`.
+  `apps/gui/src-tauri/Cargo.toml`'s CRLF phantom left unstaged, as
+  before.
+- 2026-09-23 — **owner ruling: no upstream python-can issue or PR.**
+  cannet is not authorized to modify or petition its python-can
+  dependency; the draft phase 1 wrote stays here for a future sweep of
+  upstreamable patches (backlog). Queue line withdrawn; phase 3 also
+  corrects the two phase-1 sentences claiming an upstream issue.
