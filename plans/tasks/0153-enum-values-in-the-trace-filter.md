@@ -267,14 +267,86 @@ term."
     gate, the two modes), `FuzzyCandidate`'s haystack doc, rustdoc on
     `MESSAGE_GATE`, `FuzzyWinner`, `FuzzyMatchMode` and the two new
     page fields. README is phase 2's.
+- 2026-09-23 — **phase 2 (Panel: expand on a signal winner; README) landed**
+  on `task153-panel`, branched from `task153-host-gate`.
+  - **The panel side of `fuzzy_winner`.** Phase 1 left `useFilteredTrace`
+    and `useByIdView` reading the page envelope's `fuzzy_winner` into an
+    unused local; both now expose it (`FilteredTrace.fuzzyWinner`,
+    `ByIdView.fuzzyWinner`), captured inside `fetchPage` via a ref set
+    synchronously before the state update that rides it re-renders the
+    caller — the same trick `useFilteredTrace`'s incremental match-count
+    cursor already used. Reset to `null` on a descriptor change, so a new
+    predicate's first page is what resolves the new winner rather than a
+    stale one leaking across a filter/window change.
+  - **Query-driven open, kept separate from the user's own fold state.**
+    `TraceView` and `ByIdTable` both take a new `fuzzyWinner` prop.
+    Whether a frame row's disclosure is open, and what it discloses, is
+    now decided by one small shared pair in `traceTable.tsx`:
+    `queryOpensDisclosure(fuzzyWinner)` (true for `"signal"` / `"value"`)
+    and `disclosedSignals(frame, fuzzyWinner)` (every decoded signal
+    normally; under an opening winner, only the ones named in
+    `matching_signals`, in decode order). Every place that previously
+    asked the user's `expanded` map/set directly whether a frame row was
+    open — the row-height walk, the open-run walk that feeds the
+    scroll-stacking arithmetic, the gridview adapter's `isExpanded` and
+    `selectionOrder`, the disclosed-row renderer — now asks a small
+    `rowIsOpen` (TraceView) / `queryForcesOpen` (ByIdTable) helper first:
+    under an opening winner it answers from `matching_signals` alone,
+    otherwise it falls through to the user's own map/set exactly as
+    before. **The user's `expanded` map/set is never written to by the
+    query** — clicking a row (the mouse path) still toggles it the same
+    way it always did, so once the winner reverts to `message` or the
+    query clears, whatever the user had (open or shut, full signal list)
+    reappears untouched. This is the overlay-not-mutation the ruling
+    asked for.
+  - **By-id mode shares the same two helpers**, so the behaviour is
+    identical in both modes by construction rather than by two hand-kept
+    implementations agreeing.
+  - **DOM tests, red then green** (`TracePanel.dom.test.tsx`, new
+    `describe("signal/value winner disclosure")`, through the file's
+    existing `invoke` mock — extended with two settable fixtures,
+    `filteredTraceFixture` / `byIdPageFixture`, that feed real rows +
+    `fuzzy_winner` through `fetch_filtered_trace` / `fetch_by_id_page`
+    exactly like the host would):
+    - a `value` winner opens the admitted row and shows only its matched
+      signal, parent row kept;
+    - under a `message` winner a row starts collapsed, the user opens it
+      and sees every signal — proving the winner doesn't force anything
+      when it's message-level;
+    - continuing that test: a later `value` winner forces the same row
+      open narrowed to its match (overlaying the user's full-open state),
+      and clearing the query (predicate falls back to the panel's own
+      sources filter, which keeps it on the filtered path so the test
+      isn't conflating this with the filtered/unfiltered switch) brings
+      back the user's untouched full-open state;
+    - by-id mode: the same forced-open, narrowed disclosure.
+    Verified red: with the `fuzzyWinner` prop wiring in `TracePanel.tsx`
+    reverted (passing `null` unconditionally), all three new tests failed
+    with the expected diffs (row stayed collapsed / showed the wrong
+    signal set); restoring the wiring turned them green with no other
+    change.
+  - **README's trace section** now names the transmitting-ECU field
+    (`FuzzyCandidate`'s haystack always included it; the prose didn't)
+    and adds the signal/value-winner paragraph: what wins (message vs.
+    signal vs. value), what a signal/value winner hides and opens, and
+    how a value match reads in chronological mode (every carrying frame
+    across history) vs. by-ID mode (the message whose signal *can* carry
+    it, from its `VAL_` table, regardless of the latest frame).
+    `docs/CONTEXT.md` untouched — no term was coined.
+  - A stray CRLF flip in `TraceView.tsx` from an early edit was caught
+    (`git diff --stat` showing the whole file as changed) and normalised
+    with `sed -i 's/\r$//'` before committing; the final diff is
+    reviewable (112 lines in a ~1690-line file).
 
-## Exit criteria verdicts (2026-09-23, after phase 1)
+## Exit criteria verdicts (2026-09-23)
 
 | # | Criterion | Verdict |
 | --- | --- | --- |
 | 1 | Label query shows exactly the frames carrying it, chronologically, through `apply_filter_records` *and* the filter index; by-id finds the message whatever the latest frame reads | **Met** — `an_enum_value_query_admits_only_the_frames_carrying_that_value` (both paths, six queries), `the_by_id_page_matches_a_value_against_the_whole_value_table` |
 | 2 | A signal winner shows the carrying messages' frames and hides messages below the gate; a message winner keeps task 142's behaviour and tests | **Met** — `a_signal_name_query_admits_the_frames_of_the_messages_carrying_it`, `a_message_matched_only_by_its_own_haystack_loses_to_a_value_winner`, `fault` row of the table; all five task-142 fuzzy tests pass unchanged in intent |
 | 3 | The gate is one named value and the status log records the fixture scores | **Met** — `fuzzy::MESSAGE_GATE = 1.0`; scores table above, with the falsification run |
-| 4 | Disclosure opens on a signal/value winner — DOM tests | **Phase 2** (host half only here: `fuzzy_winner` + `matching_signals` are returned and tested) |
-| 5 | README / CONTEXT.md | **Phase 2** |
-| 6 | Tests cover 1–4 | **Host half met** — five new Rust tests plus two extended; the DOM half is phase 2's |
+| 4 | Winner-open disclosure narrowed to matching signals, parent kept; message winner / cleared query leaves the user's own disclosure — DOM tests | **Met** — `TraceView.tsx` / `ByIdTable.tsx` `fuzzyWinner` wiring + `rowIsOpen` / `queryForcesOpen`; DOM tests in `TracePanel.dom.test.tsx` (`describe("signal/value winner disclosure")`), verified red→green |
+| 5 | README names the filter box, its haystack (now including transmitter) and the signal-winner behaviour; `docs/CONTEXT.md` if a term is coined | **Met** — README.md trace-panel paragraph rewritten; no term coined, `docs/CONTEXT.md` untouched |
+| 6 | Tests cover 1–4 | **Met** — criteria 1–3 were the host half (phase 1, already verdicted "Met"); criterion 4's DOM half lands here |
+
+Task complete 2026-09-23: 6/6 met. Awaiting owner acceptance (review queue § 4).

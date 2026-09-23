@@ -134,6 +134,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 4. Finished tasks awaiting acceptance
 
+- **153 — enum values in the trace filter** (2 phases,
+  `task153-host-gate` → `task153-panel`): 6/6 exit criteria met. The
+  haystack change is a § 1 item. One reading for the record: a click
+  on a row force-open under a signal or value winner records a full
+  manual expand that shows only once the winner reverts (0153 § Status
+  log, phase 2).
+
 - **152 — nothing heavy in the foreground** (3 phases, `task152-shape-a`
   → `task152-listing-and-mirror`): 7/7 exit criteria met. Perf reading
   on the tip measured an idle bus (fps 0) — see 0152 § Blockers; one
