@@ -7,6 +7,16 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **156: two cannet instances share one project scratch, and that is
+  the crash.** The 1224 panic was the *previous* process still holding
+  the project cache directory's segment mappings while the relaunched
+  one restored it and grew a chain in it (field log, 14 s overlap).
+  Phase 2 proposes an exclusive lock on the cache dir; the open
+  question is what a second instance should then do — fall back to the
+  in-RAM store and run without that project's history, or refuse to
+  open the project and say why. Detail: 0156 § Status log,
+  2026-09-23 (phase 1).
+
 - **155: the upstream python-can issue is drafted, not filed.** Title,
   body, wrap arithmetic and a hardware-free repro are in the status
   log, ready to post; nothing was run against any external repository.
