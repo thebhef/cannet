@@ -272,7 +272,21 @@ the next reader does not open a task on it.
 
 ## Blockers / side effects
 
-(none yet)
+- 2026-09-23 (phase 2) — **fourteen commands no longer serialize
+  against each other.** The IPC thread used to be an implicit global
+  lock over every synchronous command; moving a command to the blocking
+  pool gives that up. Reviewed and judged safe as it stands: the
+  frontend `await`s each of these in turn (the DBC load loop, which
+  depends on load order, is an awaited `for`), and every body still
+  takes the same `AppState` mutexes it did. The pre-existing
+  cross-thread paths (the DBC watcher's reload, the pump threads) were
+  already concurrent with all of them. It is a new shape to keep in
+  mind when a *new* command is written, not a defect found.
+- 2026-09-23 (phase 2) — `SessionTransmitter::transmit` (the blocking
+  single-frame form) now has no caller in the workspace: the manual path
+  uses `try_transmit` and the scheduler uses `transmit_batch`. Left in
+  place — it is a library crate's public API and the python/GUI
+  consumers of `cannet-client` are not all in this repo's tree.
 
 ## Status log
 
@@ -287,3 +301,144 @@ the next reader does not open a task on it.
   shape-A offender rows, the allow-list, the async placement table,
   B0–B3, the poller table, the `ui_last_ms` creep explained as
   sampler/heartbeat aliasing. Phases 2 and 3 carry the fix list.
+- 2026-09-23 — **phase 2 (shape A) landed** on `task152-shape-a`
+  (1 squashed commit). § Audit's fix-list item 1, in full.
+
+  **A1–A16, what each became** (the audit's table, ticked):
+
+  | # | command(s) | now |
+  | --- | --- | --- |
+  | A1 | `delete_project_cache` | `async` + `off_async_workers` |
+  | A2 | `clear_project_cache` | `async` + `off_async_workers` |
+  | A3 | `clear_all_project_caches` | `async` + `off_async_workers` |
+  | A4 | `list_project_caches` | **unchanged — phase 3's (shape B)**; named in the allow-list with that reason |
+  | A5 | `clear_trace_store` | `async` + `off_async_workers`; body split out as `clear_trace_store_now(&app, &state)` for the exit path and A2/A3 |
+  | A6 | `open_project` | `async` + `off_async_workers` |
+  | A7 | `close_project` | `async` + `off_async_workers` |
+  | A8 | `save_project_as` | `async` + `off_async_workers`; `save_project`'s body split out as `save_project_inner` (plain `save_project` stays synchronous — one small file) |
+  | A9 | `set_loggers` | `async` + `off_async_workers` |
+  | A10 | `add_dbc` | `async` + `off_async_workers` |
+  | A11 | `set_settings` | `async` + `off_async_workers` |
+  | A12 | `attach_local_bus_bridge`, `replay_local_virtual_buses` | `async` + `off_async_workers` |
+  | A13 | `clear_dbcs`, `remove_dbc`, `set_dbc_buses`, `set_signal_unit`, `set_signal_dbc_pick`, `define_/update_/delete_math_signal` | **stay synchronous**; `invalidate_dbcs` is now in-memory only and `invalidate_derived_caches` requests `SignalCacheStore::sweep_unreferenced_in_background` |
+  | A14 | `transmit_frame_once` | **stays synchronous**; `SessionTx::transmit` now uses a new `SessionTransmitter::try_transmit` (`try_send`), and a full queue comes back as `TransmitWireStatus::Failed { … outgoing queue is full … }` |
+  | A15 | `restart_sidecar` | `async` + `off_async_workers` |
+  | A16 | `reveal_in_file_manager` | `async` + `off_async_workers` |
+
+  Command census after the phase: **146 commands, 99 synchronous, 47
+  `async`** (was 113 / 33). No `#[allow(clippy::unused_async)]` was
+  added: every converted command's body is inside `off_async_workers`,
+  not merely inside an `async fn`.
+
+  **A13's design.** `SignalCacheStore::invalidate_dbcs` now does the
+  park / drop / revive / evict judgement and returns; the file work —
+  which was a `wipe_prefix` (a `read_dir` of the whole pyramid root)
+  per retired key *plus* a closing `wipe_dir_except` — collapses into
+  one `sweep_unreferenced()`. The sweep recomputes its keep list under
+  the lock from **live** state, never from the set the invalidation
+  planned against (ADR 0048's "treat the plan as a hint"), so a series
+  decoded again before the sweep runs keeps its files; a new pyramid's
+  segment files are created truncating (`cannet_spill::seg::
+  create_segment`), so nothing the sweep is late to take can be read as
+  the new series' own. `park()`'s two "could not park" branches stop
+  unlinking for the same reason — their files fall out of the keep list
+  and the caller's sweep takes them (`restore`'s own closing wipe, or
+  the background one). Single-flight: one sweeper thread, and requests
+  that land while it runs are drained by it.
+
+  **A14's design.** `try_transmit` is a new `cannet-client` method, not
+  a change to `transmit_batch`: the scheduler thread keeps the waiting
+  form (its whole job is to keep offering frames), and only the manual
+  send — a command a view is waiting on — refuses. `TransmitRefused`
+  distinguishes `Closed` from `QueueFull` so the two read differently
+  to the user.
+
+  **The two unmeasured points, measured.**
+  1. **Does `set_scratch_cap` evict synchronously?** *No.*
+     `TraceStore::set_scratch_cap` (`trace_store/scratch.rs`) takes the
+     inner lock and stores the cap; eviction is the periodic flusher's
+     `evict_below`. **But `apply_cache_caps`' other half does**:
+     `SignalCacheStore::set_retention_cap` runs `evict_retained`, which
+     `wipe_prefix`es each park it gives up — so lowering
+     `pyramid_retention_bytes` unlinks inline. That is inside A11
+     (`set_settings`), which is now `async` off the IPC thread, so it is
+     covered; no further offender is left outside the fix list.
+  2. **How many files does `invalidate_dbcs` unlink?** Measured off the
+     new `signal_cache` test fixture: **6 files per cached signal** at
+     200 samples — `…l0.0000`, `…l0.0001`, `…l0.0002`, `…l1.0000`,
+     `…l2.0000`, `…l3.0000` (level-0 is a geometric segment chain, the
+     higher levels one segment each). So the count is
+     `Σ over retired signals (levels + level-0 segments)`, and the
+     *pre-fix* cost was that many unlinks **plus one `read_dir` of the
+     whole pyramid root per retired key** — i.e. quadratic in the
+     retired set. A session with tens of plotted signals over a long
+     capture is in the hundreds-to-low-thousands of files and as many
+     directory walks. Not the six-second freeze on its own, which is why
+     the audit ranked it below A1; comfortably enough to be felt on a
+     DBC reload, and it is now one walk, off-thread.
+
+  **Tests (red first, then green).**
+  - `project_registry::tests::
+    deleting_a_large_project_cache_never_stops_the_ui_heartbeat`
+    (exit criterion 1). Fixture: **4,000 tiny files** across four
+    subdirectories in a temp dir — *not* a multi-GB byte fixture,
+    because the cost that froze the UI is the walk and the unlink
+    count, not the bytes (a multi-GB cache made of a few large segment
+    files removes faster than a megabyte-sized one made of tens of
+    thousands of pyramid levels). Keeps the test in the fast default
+    suite: **3.2 s**, against a 19 s host suite. The test thread stands
+    in for the IPC thread and dispatches the removal the way Tauri
+    dispatches an `async` command; the removal marks its own start and
+    end, and the thread beats at 5 ms in between.
+    **Red run:** with the removal called inline on that thread (what a
+    synchronous command forces), **0 beats landed in 785 ms** of
+    removal. **Green run:** the beats continue throughout, widest gap
+    far below `UI_HEARTBEAT_STALL_MS`.
+  - `command_surface::tests::
+    every_synchronous_command_is_one_the_allow_list_names` (exit
+    criterion 6), plus two guards on the list itself (no stale names;
+    the scan still finds >100 commands). The check reads the crate's own
+    sources — Tauri's sync/async choice is a *declaration*, so there is
+    nothing to ask at run time. **Falsification run:** reverting
+    `reveal_in_file_manager` to `pub fn` fails it by name.
+  - `signal_cache::tests::
+    a_dbc_change_unlinks_nothing_and_the_sweep_does_it_afterwards`,
+    `…the_sweep_keeps_what_is_live_and_takes_only_the_rest`,
+    `…the_background_sweep_drains_what_an_invalidation_left` (A13).
+    The first was **red** against the first cut of the change (`park()`
+    still unlinked when retention was disabled) and is what produced
+    the file-count measurement above.
+  - `cannet_client::tests::
+    a_full_queue_refuses_a_manual_send_instead_of_waiting_for_room` and
+    `…a_closed_session_refuses_a_manual_send_as_closed_not_as_full`
+    (A14). The first pins the *contrast*: on the same full queue,
+    `transmit` is still blocked after 100 ms where `try_transmit`
+    answered at once.
+
+  **Docs.** ADR 0002 DS-8 gains a paragraph: a derived family's orphaned
+  files are now freed by a background sweep, so the measured footprint
+  can briefly include files nothing refers to (the cap was never a hard
+  ceiling — eviction runs on the flush tick). `crash.rs`'s
+  `ui_heartbeat_age_ms` gains the § Audit explanation of the
+  `ui_last_ms` creep, so the next reader does not open a task on it.
+  Rustdoc on every command whose signature changed says why it is
+  `async` and cites ADR 0048. **README unchanged**: it documents neither
+  the per-send wire statuses nor the cache-delete latency, so nothing in
+  it disagrees with the new behaviour.
+
+  **Not in this phase, by design:** A4 / B2 (`list_project_caches` still
+  walks a directory per registered cache, on the IPC thread) and every
+  shape-B/C item. Exit criterion 2 is therefore **not yet met** — see
+  the verdicts below.
+
+## Exit criteria verdicts (2026-09-23, after phase 2)
+
+| # | criterion | verdict |
+| --- | --- | --- |
+| 1 | a multi-GB cache delete/clear never stops the heartbeat, asserted by test | **met** — `deleting_a_large_project_cache_never_stops_the_ui_heartbeat`; red at 0 beats / 785 ms before the fix. Fixture is 4,000 tiny files rather than multi-GB bytes, because the unlink count is the cost (reasoned above, stated in the test's own doc comment). |
+| 2 | no synchronous command walks or removes a directory, reads an unbounded file, or waits on a long-held lock; the audit table records every classification | **partly met — phase 3 owes A4.** Every other row is done: nothing synchronous now removes a directory, joins a thread, spawns a process, parses a DBC or waits on a handshake. `list_project_caches` (A4) still walks one directory per registered cache; § Audit ruled that a shape-B fix (rows now, sizes pending) and put it in phase 3's fix list. The allow-list names it with that reason, so the guard records the debt rather than hiding it. |
+| 3 | `list_logger_files` returns before any scan; N unscanned files cost N scans | not this phase (phase 3). |
+| 4 | `useHostMirror` single-flight + newest-wins | not this phase (phase 3). |
+| 5 | the `ui_last_ms` creep explained, and fixed if ours | **met** — § Audit's explanation (sampler/heartbeat aliasing, ending in a wrap) is now a doc paragraph on `crash.rs`'s `ui_heartbeat_age_ms`. Nothing to fix: neither side got slower. |
+| 6 | the sync-command allow-list test fails on a command it does not name | **met** — `every_synchronous_command_is_one_the_allow_list_names`, falsified by reverting one command to `pub fn`. Two companion guards keep the list from rotting and the scan from silently finding nothing. |
+| 7 | ADR 0049 carries the general rule and the shape-A guard; ADR 0002 and README match the behaviour | **ADR 0002 part met** (DS-8 paragraph on the deferred sweep). **README part met** (nothing in it to change — reasoned above). **ADR 0049 part is phase 3's**, per § Audit's fix list; this phase cites ADR 0048 and 0049 from the code and amends neither. |
