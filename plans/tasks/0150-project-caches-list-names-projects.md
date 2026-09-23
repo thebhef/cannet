@@ -152,7 +152,7 @@ dom test extended, ADR 0042 §5 amended if the row's contents
 are described there, `docs/CONTEXT.md` if a term is added.
 **Phase 3, owner review follow-ups (2026-09-22):** the tooltip on
 every auto-located row, the location chip, `Clear all data caches`
-without `danger`; dom tests first.
+without `danger`; dom tests first. **Landed.**
 
 ## Exit criteria
 
@@ -247,15 +247,49 @@ without `danger`; dom tests first.
 | # | Verdict |
 | --- | --- |
 | 1 | met — name leads, path secondary and in the tooltip (phase 2) |
-| 2 | met — on the `auto-located` badge; the active-and-auto-located row's scope is a queued yes/no |
+| 2 | met — on the `auto-located` badge; the active-and-auto-located row's scope was a queued yes/no, resolved 2026-09-22 (ruling a) — see criterion 9 |
 | 3 | met — "unsaved" (phase 2) |
 | 4 | met — `TwoStageRemoveButton`, disabled on the active row with the existing refusal (phase 2) |
 | 5 | met — `project-dir-changed` from `reroot_session`; host + dom tests (phase 1) |
 | 6 | met — re-hydrates on `onDidVisibilityChange`; a grown cache re-measures (phase 1) |
 | 7 | met — `scrollTop` saved and restored on the visibility bump (phase 1) |
 | 8 | met — six + four dom/host tests; existing settings and list tests pass |
+| 9 | met — the tooltip now keys on `row.auto_located`, so the active-and-auto-located row carries it too; every row wears a location chip (`project dir` / `auto-located`) beside its state badge (phase 3) |
+| 10 | met — `Clear all data caches` no longer has `className="danger"`; the now-unused `.project-caches button.danger` CSS rule is removed; dom tests cover both (phase 3) |
 
 Owner hands-on check still owed (no UI automation from agents): scroll
 holds and a grown cache re-measures on return; a Save As onto a loose
 project's file flips `active` without reopening the view.
+
 - 2026-09-22 — owner review: accepted with follow-ups (rulings above); phase 3 opened.
+- 2026-09-22 — **phase 3 (owner review follow-ups) landed** on
+  `task150-review-followups`. (a) The auto-located tooltip now keys on
+  `row.auto_located` instead of `row.state === "auto-located"`, so the
+  active row gets it too when it is auto-located (this is exactly
+  observation 3's row: opened straight from a loose project file).
+  (b) Every row wears a location chip beside its state badge
+  (`.project-cache-location`, styled next to `.project-cache-badge`):
+  `project dir` when `auto_located` is false, `auto-located` when true,
+  so a Save As now reads `active · project dir`. **Chose the chip as the
+  tooltip's one carrier** (the badge's `title` is dropped) — the chip is
+  what now says a row is auto-located, so that is where the "why" belongs;
+  the state badge goes back to having no tooltip, same as before phase 2
+  gave the `auto-located` state one. **`badgeLabel("auto-located")` now
+  reads `"known"`** — with the chip saying the location, the state badge
+  saying `auto-located` too produced "auto-located · auto-located" on a
+  non-active auto-located row for no new information, and `known` is
+  what that state and `Known` already share (both are "a project
+  directory that exists, isn't active, isn't missing, isn't orphaned";
+  the only thing that distinguished them was location, which the chip
+  now owns). (c) `Clear all data caches` loses `className="danger"`; the
+  `.project-caches button.danger` CSS rule is removed — nothing else
+  under `.project-caches` used it (`Delete` is `TwoStageRemoveButton`,
+  confirmed by grep). ADR 0042 §5 verified unchanged: it describes
+  actions and re-rooting, not badges or the chip (phase 2's judgment
+  holds). README's Project caches passage gained a sentence for the
+  chip. Six new dom tests plus two new unit tests, red first; the
+  existing badge-tooltip dom test updated to point at the chip instead
+  of the badge, and `projectCaches.test.ts`'s badge-label test updated
+  for `auto-located` → `known`. Side effect: `projectCaches.ts` flipped
+  to CRLF on Edit against an LF index (the known trap); normalised back
+  to LF before committing.
