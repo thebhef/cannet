@@ -658,6 +658,16 @@ crate retained long-term).
   other host dirs — so no separate crate is needed. `dirs` remains in
   the graph transitively via `tauri`; we just no longer depend on it
   directly.
+- **`fs4` / `fd-lock`** crates (Rust) — `rejected` 2026-09-23 for the
+  project cache directory's exclusive lock (ADR 0002 DS-7). Both wrap
+  `flock` / `LockFileEx` behind one cross-platform call, which is the
+  right shape and would have been the honest choice over hand-rolled
+  `libc` / `windows-sys` calls — but `std::fs::File::{try_lock,
+  unlock}` has been stable since Rust 1.89 and does exactly that, on
+  the same two syscalls, with no crate. The toolchain is pinned at
+  1.97.1, so the lock is std-only (`crates/cannet-spill/src/scratch_lock.rs`)
+  and neither crate is in the tree. Worth revisiting only if the
+  toolchain ever has to drop below 1.89.
 - **`notify`** crate (Rust, CC0-1.0 / Apache-2.0) — `adopted` in
   Phase 12 follow-up for the GUI host's DBC file watcher
   (`apps/gui/src-tauri/src/dbc_watcher.rs`). Wraps the OS-native
