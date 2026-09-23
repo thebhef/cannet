@@ -1869,7 +1869,11 @@ resample at the end.
   own identity, so the same signal reads the same in every area, every
   panel and the signal view, and re-ordering or moving it changes
   nothing; right-clicking its swatch pins a color of your own, and that
-  pick is the only thing stored. The shared
+  pick is the only thing stored. Right-clicking a swatch whose row is
+  in the current selection picks one color for every selected row at
+  once, in a single areas update — right-clicking a row outside the
+  selection picks for that row alone and makes it the selection first
+  (see **Selecting signal rows** below). The shared
   x-axis spans 0 to the longest plotted signal across the panel's
   areas, so a signal added late still shows over the existing span.
 - **Selecting signal rows.** A **plain click** on a signal row selects
@@ -1889,13 +1893,17 @@ resample at the end.
   area's signal list — in `per-unit` / `individual` mode that means
   across every axis the mode splits the area into. The selection is
   view state; it is not saved with the project. The swatch's hide/show
-  click and its right-click color picker are not selection gestures and
-  leave the selection where it is.
+  click is not a selection gesture and leaves the selection where it
+  is; its right-click color picker *is* one when the clicked row sits
+  outside the current selection — see below.
   **Right-click** a row in the selection for a context menu with
   **Hide** / **Show**, applied to the whole selection in one batch (no
-  bulk recolor, and no dedicated bulk-remove — drag the selection out
-  instead). Right-clicking a row outside the selection selects just
-  that row first, then opens its menu. **Dragging** a row already in
+  dedicated bulk-remove — drag the selection out instead).
+  Right-clicking the **swatch** of a row already in the selection picks
+  one color for every selected row instead, in a single areas update,
+  with no menu of its own. Right-clicking a row (or its swatch) outside
+  the selection selects just that row first, then opens its menu or its
+  color picker. **Dragging** a row already in
   the selection carries every selected row in the drag payload — drop
   it on another area or panel to move or copy the whole selection at
   once, the same convention the Database panel's multi-select drag uses;

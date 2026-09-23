@@ -3002,6 +3002,23 @@ export function App() {
     setDirty(true);
   }, []);
 
+  /// The batched sibling of `handleSetSignalColor`: write every entry
+  /// in one `setSignalColors` call / one dirty step, for the Signals
+  /// panel's name picker applied over a gridview selection rather than
+  /// one signal at a time.
+  const handleSetSignalColors = useCallback((entries: { key: string; color: string }[]) => {
+    if (entries.length === 0) return;
+    setSignalColors((prev) => {
+      let next: Record<string, string> | null = null;
+      for (const { key, color } of entries) {
+        if (prev[key] === color) continue;
+        (next ?? (next = { ...prev }))[key] = color;
+      }
+      return next ?? prev;
+    });
+    setDirty(true);
+  }, []);
+
   // Add a fresh element of `kind` and open its dockview panel. The
   // kind→component map is `elementPanelComponent` (dockLayout), and the
   // panel id is `${component}-${elementId}` — the same scheme
@@ -3770,6 +3787,7 @@ export function App() {
       onUpdateVirtualBus: handleUpdateVirtualBus,
       signalColors,
       onSetSignalColor: handleSetSignalColor,
+      onSetSignalColors: handleSetSignalColors,
     }),
     [
       projectPath,
@@ -3803,6 +3821,7 @@ export function App() {
       handleUpdateVirtualBus,
       signalColors,
       handleSetSignalColor,
+      handleSetSignalColors,
     ],
   );
 

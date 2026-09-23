@@ -616,6 +616,7 @@ const projectCtx: ProjectContextValue = {
   onUpdateVirtualBus: () => {},
   signalColors: {},
   onSetSignalColor: () => {},
+  onSetSignalColors: () => {},
 };
 
 function renderPanel(opts?: {
@@ -1291,6 +1292,10 @@ describe("PlotPanel", () => {
     const { api } = renderPanel();
     addFocusedSignal("EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    // The right-click is the real gesture: it resolves the write to a
+    // selection (here, none yet — so the sole-selection rule makes
+    // this row the selection first).
+    fireEvent.contextMenu(document.querySelector(".plot-signal-swatch")!);
     fireEvent.change(screen.getByLabelText("pick series color"), {
       target: { value: "#123456" },
     });
@@ -1347,6 +1352,7 @@ describe("PlotPanel", () => {
     addFocusedSignal("EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     const picker = screen.getByLabelText("pick series color") as HTMLInputElement;
+    fireEvent.contextMenu(document.querySelector(".plot-signal-swatch")!);
     fireEvent.change(picker, { target: { value: "#123456" } });
     // The swatch's background style should reflect the new color.
     // jsdom normalises hex → rgb() in inline styles.
@@ -1365,6 +1371,7 @@ describe("PlotPanel", () => {
       await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
       const before = uplotInstances.length;
       const redrawsBefore = liveInstanceIn("Area 1").redraws;
+      fireEvent.contextMenu(document.querySelector(".plot-signal-swatch")!);
       fireEvent.change(screen.getByLabelText("pick series color"), {
         target: { value: "#123456" },
       });
@@ -6335,15 +6342,99 @@ describe("PlotPanel signal-row selection", () => {
     expect(row("LimitNominal").classList.contains("hidden")).toBe(false);
   });
 
-  it("right-clicking the swatch still opens the color picker, not the selection menu", async () => {
+  it("right-clicking the swatch opens the color picker, not the selection menu", async () => {
     renderPanel();
     await addToFocused(["EngineSpeed", "EngineTemp"]);
     clickRow("EngineSpeed");
     fireEvent.contextMenu(row("EngineTemp").querySelector(".plot-signal-swatch")!);
     expect(document.querySelector(".plot-selection-menu")).toBeNull();
-    // The row's own context-menu handler never saw the event either —
-    // the selection is unchanged.
-    expect(selectedNames()).toEqual(["EngineSpeed"]);
+    // The row's own context-menu handler never saw the event (it
+    // stops propagation) — but the swatch applies the same
+    // unselected-row rule itself: EngineTemp becomes the sole
+    // selection so the pick that follows has an unambiguous target.
+    expect(selectedNames()).toEqual(["EngineTemp"]);
+  });
+
+  it("bulk-picks the selection's colour from the swatch picker, in one persist", async () => {
+    const { api } = renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    clickRow("EngineSpeed");
+    clickRow("LimitNominal", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "LimitNominal"]);
+
+    const before = persistCalls(api);
+    fireEvent.contextMenu(row("EngineSpeed").querySelector(".plot-signal-swatch")!);
+    fireEvent.change(row("EngineSpeed").querySelector(".plot-signal-swatch-input")!, {
+      target: { value: "#123456" },
+    });
+
+    await waitFor(() => {
+      const signals = persistedAreas(api)[0].signals;
+      const bySig = (n: string) => signals.find((s) => s.signalName === n);
+      expect(bySig("EngineSpeed")?.colorPick).toBe("#123456");
+      expect(bySig("LimitNominal")?.colorPick).toBe("#123456");
+      expect(bySig("EngineTemp")?.colorPick).toBeUndefined();
+    });
+    // One setAreas/persist for the whole batch, not one per touched row.
+    expect(persistCalls(api) - before).toBe(1);
+  });
+
+  it("an unselected row's swatch pick recolours it alone and makes it the selection", async () => {
+    const { api } = renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    clickRow("EngineSpeed");
+    clickRow("EngineTemp", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "EngineTemp"]);
+
+    fireEvent.contextMenu(row("LimitNominal").querySelector(".plot-signal-swatch")!);
+    expect(selectedNames()).toEqual(["LimitNominal"]);
+    fireEvent.change(row("LimitNominal").querySelector(".plot-signal-swatch-input")!, {
+      target: { value: "#abcdef" },
+    });
+
+    await waitFor(() => {
+      const signals = persistedAreas(api)[0].signals;
+      const bySig = (n: string) => signals.find((s) => s.signalName === n);
+      expect(bySig("LimitNominal")?.colorPick).toBe("#abcdef");
+      expect(bySig("EngineSpeed")?.colorPick).toBeUndefined();
+      expect(bySig("EngineTemp")?.colorPick).toBeUndefined();
+    });
+  });
+
+  it("bulk-picks a colour for pattern-derived rows without moving them or turning them into picks", async () => {
+    // Same fixture as the Hide/Show equivalent above: "Engine" matches
+    // both EngineSpeed and EngineTemp, neither Limit signal.
+    const registry = makeRegistry({
+      id: "el-sel-color-patterns",
+      config: { areas: [{ id: "a1", signals: [], patterns: ["Engine"] }] },
+    });
+    const { api } = renderPanel({ params: { elementId: "el-sel-color-patterns" }, registry });
+    await waitFor(() => expect(row("EngineSpeed")).toBeInTheDocument());
+    expect(row("EngineTemp")).toBeInTheDocument();
+    expect(row("EngineSpeed").querySelector(".plot-signal-remove")).toBeNull();
+    expect(row("EngineTemp").querySelector(".plot-signal-remove")).toBeNull();
+
+    clickRow("EngineSpeed");
+    clickRow("EngineTemp", { ctrlKey: true });
+
+    const before = persistCalls(api);
+    fireEvent.contextMenu(row("EngineSpeed").querySelector(".plot-signal-swatch")!);
+    fireEvent.change(row("EngineSpeed").querySelector(".plot-signal-swatch-input")!, {
+      target: { value: "#00ff00" },
+    });
+
+    await waitFor(() => {
+      const signals = persistedAreas(api)[0].signals;
+      const bySig = (n: string) => signals.find((s) => s.signalName === n);
+      expect(bySig("EngineSpeed")?.colorPick).toBe("#00ff00");
+      expect(bySig("EngineTemp")?.colorPick).toBe("#00ff00");
+    });
+    // The entry each pick wrote carries the colour and nothing else:
+    // the rows are still the pattern's, so they keep their place and
+    // no per-row ×.
+    expect(row("EngineSpeed").querySelector(".plot-signal-remove")).toBeNull();
+    expect(row("EngineTemp").querySelector(".plot-signal-remove")).toBeNull();
+    expect(persistCalls(api) - before).toBe(1);
   });
 
   it("drags the whole selection when a selected row starts the drag", async () => {
