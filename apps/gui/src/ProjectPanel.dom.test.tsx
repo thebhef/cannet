@@ -130,7 +130,7 @@ describe("BusInterfaceCombo", () => {
 
   it("offers nothing from a server this machine has not trusted", () => {
     // The caller passes the trusted rows only; a merely-advertising
-    // server is trusted in the Servers panel first.
+    // server is trusted in the Servers section first.
     render(
       <BusInterfaceCombo
         bus={BUS1}

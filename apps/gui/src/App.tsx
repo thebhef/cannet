@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewDefaultTab, DockviewReact, themeAbyss, themeLight } from "dockview";
-import type { DockviewApi, DockviewReadyEvent } from "dockview";
+import type { DockviewApi, DockviewReadyEvent, SerializedDockview } from "dockview";
 
 import type {
   BlfScanResult,
@@ -142,7 +142,6 @@ import { suppressDbcChanges, useDbcGeneration } from "./dbcChanged";
 import { useViewSignalsAttentionCount } from "./viewSignalsAttention";
 import { SignalGeneratorProvider } from "./signalGeneratorContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
-import { ServersPanel } from "./ServersPanel";
 import { ServerTrustDialogs } from "./ServerTrustDialog";
 import { raiseServerTrust } from "./serverTrust";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
@@ -187,13 +186,13 @@ import {
   ABOUT_PANEL_COMPONENT,
   EVENTS_PANEL_COMPONENT,
   BUS_HEALTH_PANEL_COMPONENT,
-  SERVERS_PANEL_COMPONENT,
   SHORTCUTS_PANEL_COMPONENT,
   SIGNALS_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
   VIEW_SIGNALS_PANEL_COMPONENT,
+  dropRetiredPanels,
   elementPanelComponent,
   elementPanelTitle,
   normalizeSingletonTitles,
@@ -326,8 +325,16 @@ const DOCK_COMPONENTS = {
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
   [BUS_HEALTH_PANEL_COMPONENT]: BusHealthPanel,
   [SHORTCUTS_PANEL_COMPONENT]: ShortcutsPanel,
-  [SERVERS_PANEL_COMPONENT]: ServersPanel,
 };
+
+/// A persisted layout made safe to apply: every singleton retitled to
+/// this build's name, and every panel this build no longer has a
+/// component for dropped. Both restore paths — an opened project's
+/// layout and the launch reopen — go through it, because a saved
+/// workspace from any earlier build can carry either kind of staleness.
+function restorableLayout(layout: SerializedDockview): SerializedDockview {
+  return dropRetiredPanels(normalizeSingletonTitles(layout));
+}
 
 /// Rewrite a project's file references into the form it should be
 /// *stored* in (ADR 0030): a DBC or `.cannet_rbs` inside the project
@@ -2165,7 +2172,7 @@ export function App() {
         // histories (same as `seedDefaultLayout`).
         applyingLayoutRef.current = true;
         try {
-          api.fromJSON(normalizeSingletonTitles(layout));
+          api.fromJSON(restorableLayout(layout));
         } catch {
           /* keep the current layout if the saved one won't load */
         } finally {
@@ -3461,7 +3468,7 @@ export function App() {
       const saved = reopenComing ? validateLayout(hostState().layout) : null;
       if (saved) {
         try {
-          api.fromJSON(normalizeSingletonTitles(saved));
+          api.fromJSON(restorableLayout(saved));
           restored = api.panels.length > 0;
         } catch {
           restored = false;

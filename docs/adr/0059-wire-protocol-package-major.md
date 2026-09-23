@@ -19,7 +19,7 @@ What was there before this ADR:
   `crates/cannet-wire/proto/cannet.proto`, baked into every gRPC
   method path and never read as a version by anything.
 - **The mDNS TXT `ver=` key**, which carries the *build* string
-  (vergen `git describe`). It is displayed in the Servers panel and
+  (vergen `git describe`). It is displayed in the Servers section and
   the CLI, never compared, and absent for a hand-added server or one
   started `--no-mdns`.
 - **gRPC metadata** carrying `authorization` and nothing else.
@@ -92,14 +92,14 @@ client asked again. The sentence names both sides:
 
 > serves cannet.v2; this client speaks cannet.v1
 
-The Servers panel, the python client and the CLI all show that same
+The Servers section, the python client and the CLI all show that same
 sentence. An `UNIMPLEMENTED` on *any* RPC is read the same way; it is
 what a peer built before `ServerInfo` existed looks like.
 
 **8. mDNS gains `proto=`**, the comma-separated list of packages
 served; `ver=` stays the build string. Advisory only — it is absent
 for a hand-added server and for one started `--no-mdns` — so it exists
-to let the Servers panel grey out a row *before* anything dials it,
+to let the Servers section grey out a row *before* anything dials it,
 and `ServerInfo` on the connection is the gate.
 
 **9. CI enforces the additive half mechanically.** `buf breaking`
