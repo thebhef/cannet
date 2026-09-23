@@ -225,6 +225,47 @@ project finds its capture where it left it, and reclaiming the disk a
 finished project is using is a per-project action rather than an
 all-or-nothing wipe.
 
+**One session owns a cache, exclusively.** The scratch is keyed on the
+project, not on the process, so two cannet instances with the same
+project open would otherwise share one directory — and a memory mapping
+belongs to the *file*, not to the process that made it. That is not a
+race that can be made safe: a segment file one session has grown past
+the other's manifest is a file the other will `truncate` + `set_len`
+under a live mapping, which Windows refuses outright
+(`ERROR_USER_MAPPED_FILE`, 1224) and POSIX performs silently, zeroing
+the first session's data.
+
+So a session takes an **exclusive lock over the whole cache directory**
+when it opens the scratch, holds it for as long as it is rooted there,
+and releases it on exit and on re-rooting away. The lock is a sentinel
+file in the directory held through an OS file lock (`flock` on POSIX,
+`LockFileEx` on Windows, both via `std::fs::File::try_lock`), with the
+holder's pid and project recorded in a plain sibling file — Windows
+byte-range locks are mandatory, so the identity cannot live inside the
+locked file itself. One lock covers **everything** under the directory:
+the raw meta/payload segments, the `by-id` postings, the signal
+pyramids, the filter index, and the JSON records beside them.
+
+A directory another process holds **refuses the project open,
+immediately**. No wait (the holder is not on a schedule the user is
+waiting for) and no fall-back to an unlocked store over the same files.
+The in-RAM fallback the host keeps is for a cache that cannot be
+**created** — a path that is a file, permissions, a missing volume —
+never for one that is held. The refusal names the holder, because the
+overwhelmingly common cause is a relaunch that overtook the previous
+process's shutdown flush: the window has gone but the host is still
+syncing a multi-gigabyte scratch, and "another cannet (pid N) still
+holds this project's cache — it may still be closing" is the true
+statement about that.
+
+The same rule binds the **launch**. A session does not settle into a
+held directory with a RAM store and carry on: every derived family —
+pyramids, filter index, notes — roots in that same cache, so a session
+that does not own it must not be rooted there at all. It boots in the
+unsaved auto-located project directory instead (where Close Project
+leaves a session), and the `open_project` the frontend performs next is
+what reports the holder.
+
 `cache/` is the home for **all session-scoped data the GUI is
 mutating**, not only the raw frame store. That includes the raw
 metadata and payload (DS-1), the `by-id` and filter indexes (DS-3),

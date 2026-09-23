@@ -64,6 +64,140 @@ fn open_trace_store_falls_back_to_in_ram_when_scratch_is_unavailable() {
     assert_eq!(store.len(), 1);
 }
 
+#[test]
+fn a_held_project_cache_is_refused_and_released_for_the_next_open() {
+    // ADR 0002 DS-7: one session owns a project's cache directory, and a
+    // second is refused outright rather than opening a second mapping
+    // over the same segment files. Open → refused → released → open.
+    let root = tempfile::TempDir::new().unwrap();
+    let cache = root.path().join("cache");
+    let project = root.path().join("demo");
+
+    let (held, held_lock) = open_locked_trace_store(&cache, &project);
+    assert!(held_lock.is_ok(), "an unheld cache is taken");
+    assert_eq!(held.scratch_dir().as_deref(), Some(cache.as_path()));
+    held.append(dummy_frame(1_000, 0x123));
+
+    // Refused: no lock, and — the part that matters — no second disk
+    // store over the directory the first one is mapping.
+    let (second, second_lock) = open_locked_trace_store(&cache, &project);
+    let refusal = second_lock.expect_err("a held cache is refused");
+    assert!(
+        matches!(refusal, cannet_spill::ScratchLockError::Held(_)),
+        "{refusal}"
+    );
+    assert!(
+        second.scratch_dir().is_none(),
+        "a held cache must never open a second disk store over it"
+    );
+    assert_eq!(second.len(), 0, "and it restores nothing");
+
+    // The refusal names the holder, so the message can say who to wait
+    // for.
+    let err = cannet_spill::ScratchLock::acquire(&cache, &project).expect_err("held");
+    let msg = err.to_string();
+    assert!(msg.contains(&std::process::id().to_string()), "{msg}");
+    assert!(msg.contains("may still be closing"), "{msg}");
+
+    // Released, the next open is disk-backed again and reopens what the
+    // holder left.
+    drop(second);
+    drop(held);
+    drop(held_lock);
+    let (next, next_lock) = open_locked_trace_store(&cache, &project);
+    assert!(next_lock.is_ok(), "a released cache opens");
+    assert_eq!(next.scratch_dir().as_deref(), Some(cache.as_path()));
+}
+
+#[test]
+fn a_boot_into_a_held_project_cache_settles_in_the_unsaved_directory() {
+    // A session must never settle in a cache it does not own: the
+    // pyramids, the filter index and the notes all root there too, so
+    // being refused the trace store is not enough (ADR 0002 DS-7). It
+    // boots where a session with no project belongs instead, and the
+    // project open the frontend does next is what reports the holder.
+    let root = tempfile::TempDir::new().unwrap();
+    let cache_root = root.path().join("caches");
+    let wanted = crate::project_dir::create_at(&root.path().join("wanted"), &cache_root);
+    let holder = cannet_spill::ScratchLock::acquire(wanted.cache_dir(), wanted.root())
+        .expect("nobody holds it yet");
+
+    let active = crate::project_dir::ActiveProjectDir::new(cache_root.clone(), wanted.clone());
+    let (resolved, store, lock) = boot_scratch(&active);
+    assert_ne!(
+        resolved.cache_dir(),
+        wanted.cache_dir(),
+        "a held cache is not where the session settles"
+    );
+    assert_eq!(
+        resolved.cache_dir(),
+        crate::project_dir::resolve(None, &cache_root).cache_dir(),
+        "it settles in the unsaved project directory"
+    );
+    assert!(lock.is_some(), "and it owns the one it settled in");
+    assert_eq!(resolved.cache_dir(), active.get().cache_dir());
+    assert_eq!(store.scratch_dir().as_deref(), Some(resolved.cache_dir()));
+    drop(lock);
+    drop(holder);
+}
+
+#[test]
+fn a_boot_into_a_free_project_cache_stays_where_it_resolved() {
+    let root = tempfile::TempDir::new().unwrap();
+    let cache_root = root.path().join("caches");
+    let wanted = crate::project_dir::create_at(&root.path().join("wanted"), &cache_root);
+    let active = crate::project_dir::ActiveProjectDir::new(cache_root, wanted.clone());
+    let (resolved, store, lock) = boot_scratch(&active);
+    assert_eq!(resolved.cache_dir(), wanted.cache_dir());
+    assert!(lock.is_some());
+    assert_eq!(store.scratch_dir().as_deref(), Some(wanted.cache_dir()));
+}
+
+#[test]
+fn ensure_scratch_lock_moves_the_session_and_keeps_what_it_had_on_a_refusal() {
+    // The re-root half: the destination is taken before the source is
+    // released, and a destination somebody else holds leaves the session
+    // owning exactly the cache it already had.
+    let root = tempfile::TempDir::new().unwrap();
+    let cache_root = root.path().join("caches");
+    let a = crate::project_dir::create_at(&root.path().join("a"), &cache_root);
+    let b = crate::project_dir::create_at(&root.path().join("b"), &cache_root);
+    let state = test_state();
+
+    ensure_scratch_lock(&state, &a).expect("nobody holds a");
+    assert_eq!(
+        state.scratch_lock().as_ref().map(|l| l.dir().to_path_buf()),
+        Some(a.cache_dir().to_path_buf())
+    );
+    // Idempotent: asking for the directory the session already owns does
+    // not drop and retake it.
+    ensure_scratch_lock(&state, &a).expect("already ours");
+
+    // Somebody else has b. The session keeps a.
+    let intruder =
+        cannet_spill::ScratchLock::acquire(b.cache_dir(), b.root()).expect("nobody holds b yet");
+    let err = ensure_scratch_lock(&state, &b).expect_err("b is held");
+    assert!(
+        matches!(err, cannet_spill::ScratchLockError::Held(_)),
+        "{err}"
+    );
+    assert_eq!(
+        state.scratch_lock().as_ref().map(|l| l.dir().to_path_buf()),
+        Some(a.cache_dir().to_path_buf()),
+        "a refused move leaves the session owning the cache it had"
+    );
+
+    // Once b is free the move goes through, and a is released with it.
+    drop(intruder);
+    ensure_scratch_lock(&state, &b).expect("b is free");
+    assert_eq!(
+        state.scratch_lock().as_ref().map(|l| l.dir().to_path_buf()),
+        Some(b.cache_dir().to_path_buf())
+    );
+    let back = cannet_spill::ScratchLock::acquire(a.cache_dir(), a.root());
+    assert!(back.is_ok(), "moving away released the old cache");
+}
+
 /// Serve a filtered page over a whole match set of `n` (positions
 /// `[0, n)`), returning `(count, page positions, start_match)` — the
 /// page is the position slice the index would read.
@@ -643,6 +777,7 @@ pub(crate) fn test_state() -> AppState {
         transmit_scheduler: transmit_scheduler::channel().0,
         rbs: Mutex::new(rbs::RbsRuntime::default()),
         verifier: verification::VerificationState::default(),
+        scratch_lock: Mutex::new(None),
         filter_index_dir: Mutex::new(std::env::temp_dir().join("cannet-test-filter")),
         filter_index: Mutex::new(None),
         filter_index_build: Mutex::new(()),

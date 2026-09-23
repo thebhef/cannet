@@ -366,6 +366,11 @@ fn is_reroot(active: &project_dir::ProjectDir, dest: &project_dir::ProjectDir) -
 /// Move the session onto `dest` — everything rooted in a project
 /// directory's cache follows the project directory (ADR 0042 §1).
 ///
+/// The destination's cache is taken exclusively first (ADR 0002 DS-7).
+/// If another cannet still holds it nothing moves at all: the session
+/// stays exactly where it was, owning the cache it already had, and the
+/// error names the holder for the caller to report.
+///
 /// `carry` decides whether the capture comes too: [`Carry::Contents`] for
 /// Save As, which is cannet's managed workflow and would surprise the user
 /// by arriving without their data (ADR 0042 §6); [`Carry::Nothing`] for
@@ -382,13 +387,22 @@ pub(crate) fn reroot_session(
     app: &AppHandle,
     dest: &project_dir::ProjectDir,
     carry: trace_store::Carry,
-) {
+) -> Result<(), cannet_spill::ScratchLockError> {
     let active = app.state::<project_dir::ActiveProjectDir>();
-    if !is_reroot(&active.get(), dest) {
-        return;
-    }
     let state = app.state::<AppState>();
     let cache = dest.cache_dir();
+    // Before anything opens, moves or maps a file under `cache`: the
+    // destination is this session's alone or the move does not happen
+    // (ADR 0002 DS-7).
+    ensure_scratch_lock(&state, dest)?;
+    // A session whose boot was refused is on the in-RAM store with no
+    // directory, so "already here" is not enough to skip the work — it
+    // has just taken the lock it could not get at launch, and rooting on
+    // disk is the whole point of retrying.
+    let rooted_here = state.trace_store.scratch_dir().as_deref() == Some(cache);
+    if !is_reroot(&active.get(), dest) && rooted_here {
+        return Ok(());
+    }
     *state.filter_index() = None;
     state.signal_caches.reroot(signal_cache_dir(cache));
     if let Err(e) = state.trace_store.reroot(cache, carry) {
@@ -416,6 +430,7 @@ pub(crate) fn reroot_session(
         PROJECT_DIR_CHANGED_EVENT,
         ProjectDirChangedPayload::of(dest),
     );
+    Ok(())
 }
 
 /// The open project's workspace-scoped data directory — `.cannet/`
@@ -435,8 +450,15 @@ pub(crate) fn workspace_dir(app: &AppHandle) -> std::path::PathBuf {
 /// Open the production trace store on the disk-spill backend rooted at
 /// `scratch` — the project directory's cache (ADR 0002 DS-6: the disk
 /// store is the only production path). Falls back to the in-RAM store —
-/// logging why — if the disk store can't be opened, so a capture still
-/// runs (degraded to RAM-bounded) rather than the app failing to boot.
+/// logging why — if the disk store can't be **created**, so a capture
+/// still runs (degraded to RAM-bounded) rather than the app failing to
+/// boot.
+///
+/// A cache that cannot be created is the *only* thing this fallback is
+/// for. A cache another cannet still **holds** is a different answer —
+/// [`open_locked_trace_store`] refuses it rather than opening a second
+/// unlocked store over one directory, which is exactly the two-live-
+/// mappings collision ADR 0002 DS-7's lock exists to prevent.
 ///
 /// The directory is (re)created first, because the disk store maps its
 /// segments lazily: handed an unusable path it opens happily and dies on
@@ -453,6 +475,121 @@ fn open_trace_store(scratch: &std::path::Path) -> Arc<TraceStore> {
             Arc::new(TraceStore::new())
         }
     }
+}
+
+/// Take `scratch` exclusively (ADR 0002 DS-7) and open the production
+/// trace store in it. `project` goes into the lock so whichever session
+/// is refused next can name this one.
+///
+/// A held cache yields an in-RAM store and the refusal: the session owns
+/// no directory and writes no segment file into one another process is
+/// mapping. That is **not** the RAM fallback above wearing a different
+/// hat — nothing is restored, and the caller does not settle there (see
+/// [`boot_scratch`]) rather than quietly running out of a cache it does
+/// not own.
+///
+/// The error comes back rather than being swallowed so the caller can
+/// tell the two failures apart: a cache another cannet **holds** is
+/// refused, a cache that cannot be **created** is degraded on.
+fn open_locked_trace_store(
+    scratch: &std::path::Path,
+    project: &std::path::Path,
+) -> (
+    Arc<TraceStore>,
+    Result<cannet_spill::ScratchLock, cannet_spill::ScratchLockError>,
+) {
+    match cannet_spill::ScratchLock::acquire(scratch, project) {
+        Ok(lock) => (open_trace_store(scratch), Ok(lock)),
+        Err(e @ cannet_spill::ScratchLockError::Held(_)) => {
+            tracing::error!(
+                scratch = %scratch.display(),
+                "{e}; this project's capture is not loaded and nothing is written to its cache"
+            );
+            (Arc::new(TraceStore::new()), Err(e))
+        }
+        Err(e) => {
+            // The lock file itself could not be made — the same class of
+            // unusable directory `open_trace_store` degrades on, so let it
+            // make that call.
+            tracing::error!(scratch = %scratch.display(), "{e}");
+            (open_trace_store(scratch), Err(e))
+        }
+    }
+}
+
+/// Root the booting session in a cache it **owns**, and open the trace
+/// store there.
+///
+/// The happy path is the directory [`resolve_project_dir`] chose. When
+/// another cannet still holds that one (ADR 0002 DS-7) the session does
+/// not settle into it anyway: a directory this process does not own is
+/// one it may not write a segment file, a pyramid, a filter index or a
+/// note into, and every one of those roots in the same cache. So the
+/// session boots where a session with no project belongs — the unsaved
+/// auto-located directory, exactly where Close Project leaves one — and
+/// the project open the frontend performs next is what reports the
+/// holder to the user.
+///
+/// Falling back once is deliberate. If the unsaved directory is held too
+/// (two instances, neither with a project) the session boots on the
+/// in-RAM store owning nothing, which is logged and is as far as a
+/// launch can honestly get.
+fn boot_scratch(
+    active: &project_dir::ActiveProjectDir,
+) -> (
+    project_dir::ProjectDir,
+    Arc<TraceStore>,
+    Option<cannet_spill::ScratchLock>,
+) {
+    let resolved = active.get();
+    let (store, lock) = open_locked_trace_store(resolved.cache_dir(), resolved.root());
+    // Only a *held* cache moves the session. One that could not be made
+    // is already degraded onto whatever `open_trace_store` managed, and
+    // walking away from it would lose the project directory the user
+    // asked for over a problem the RAM fallback already covers.
+    if !matches!(lock, Err(cannet_spill::ScratchLockError::Held(_))) {
+        return (resolved, store, lock.ok());
+    }
+    let unsaved = project_dir::resolve(None, active.cache_root());
+    if unsaved.cache_dir() == resolved.cache_dir() {
+        tracing::error!("no project cache could be taken; this session owns none");
+        return (resolved, store, None);
+    }
+    tracing::warn!(
+        held = %resolved.cache_dir().display(),
+        unsaved = %unsaved.root().display(),
+        "the resolved project's cache is held by another cannet; \
+         booting in the unsaved project directory instead"
+    );
+    // Drop the refused session's store before opening the next one, so
+    // nothing maps two scratches at once.
+    drop(store);
+    let (store, lock) = open_locked_trace_store(unsaved.cache_dir(), unsaved.root());
+    active.set(unsaved.clone());
+    log_project_dir(&unsaved, "project directory resolved");
+    (unsaved, store, lock.ok())
+}
+
+/// Make the session the exclusive owner of `dest`'s cache directory
+/// (ADR 0002 DS-7), or say who is holding it.
+///
+/// A no-op when the session already owns that directory. Otherwise the
+/// destination is taken **before** the previous lock is released: the two
+/// are different directories, so they overlap freely, and a refusal
+/// leaves the session owning the cache it was already rooted in rather
+/// than stranded owning none.
+fn ensure_scratch_lock(
+    state: &AppState,
+    dest: &project_dir::ProjectDir,
+) -> Result<(), cannet_spill::ScratchLockError> {
+    let mut held = state.scratch_lock();
+    if held.as_ref().is_some_and(|l| l.dir() == dest.cache_dir()) {
+        return Ok(());
+    }
+    let taken = cannet_spill::ScratchLock::acquire(dest.cache_dir(), dest.root())?;
+    // Assigning drops whatever was held, releasing the old directory.
+    *held = Some(taken);
+    Ok(())
 }
 
 /// Push the two on-disk cache bounds from settings onto the live model:
@@ -741,18 +878,35 @@ pub fn run() -> ! {
             // `last_project` and Tauri's `app_cache_dir()`. Its cache is
             // the disk-spill scratch (ADR 0002 DS-6/DS-7), so each project
             // keeps its own capture instead of sharing one machine-wide
-            // scratch. The trace store opens on the disk backend, or falls
-            // back to RAM (logging why) if it can't be opened. The filter
-            // index, signal pyramids, and notes hang off the same cache.
+            // scratch.
+            //
+            // The cache is taken exclusively for the life of the session
+            // (ADR 0002 DS-7) and the trace store opens on the disk
+            // backend inside it; a cache that cannot be *created* falls
+            // back to RAM (logging why), and one another cannet still
+            // holds is refused — the session then boots in the unsaved
+            // project directory instead (`boot_scratch`), and the
+            // project open the frontend does next reports the holder. The
+            // filter index, signal pyramids, and notes hang off the same
+            // cache, which is why the session never settles in one it
+            // does not own.
+            //
             // `AppState` is managed here rather than on the builder because
             // that resolution needs the handle; no command can run before
             // `setup` returns, so it is in place for every consumer
             // (including `apply_cache_caps` and the DBC watcher below).
             let project_dir = resolve_project_dir(app);
-            let scratch = project_dir.get().cache_dir().to_path_buf();
+            let asked_for = project_dir.get();
+            let (resolved, trace_store, scratch_lock) = boot_scratch(&project_dir);
+            if resolved.root() != asked_for.root() {
+                // The resolved project's cache was held, so the session
+                // fell back to the unsaved directory; that is the one the
+                // cache list should now show as active.
+                remember_project_dir(app.handle(), &resolved, None);
+            }
+            let scratch = resolved.cache_dir().to_path_buf();
             let filter_dir = filter_index_dir(&scratch);
             let signal_dir = signal_cache_dir(&scratch);
-            let trace_store = open_trace_store(&scratch);
             // Managed on its own rather than as an `AppState` field: it
             // is the session's identity, not part of the trace model, and
             // the scoped settings / state reads that need it
@@ -779,6 +933,7 @@ pub fn run() -> ! {
                 rbs: Mutex::new(rbs::RbsRuntime::default()),
                 verifier: verification::VerificationState::default(),
                 undelivered_tx: transmit_commands::UndeliveredTx::default(),
+                scratch_lock: Mutex::new(scratch_lock),
                 filter_index_dir: Mutex::new(filter_dir),
                 filter_index: Mutex::new(None),
                 filter_index_build: Mutex::new(()),
@@ -899,6 +1054,14 @@ pub fn run() -> ! {
                 // left to write here is one tail segment per level.
                 emitters::persist_pyramids(&state, signal_cache::Harden::All);
             }
+            // Last, once every write into the cache is done: hand the
+            // directory back (ADR 0002 DS-7), so a relaunch that arrives
+            // the moment this process lets go is not refused a cache
+            // nobody is using any more. The OS would release it when the
+            // process dies, but that is after `std::process::exit` below
+            // — and the flush above is what makes the difference
+            // measurable.
+            app_handle.state::<AppState>().scratch_lock().take();
         }
     });
     let requested = *requested_exit_code
