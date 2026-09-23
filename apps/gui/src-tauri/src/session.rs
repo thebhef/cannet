@@ -101,6 +101,15 @@ pub(crate) enum SessionTx {
 }
 
 impl SessionTx {
+    /// Offer one frame to the wire **without waiting for room**: a
+    /// remote session whose outgoing queue is full is reported as a
+    /// refusal, not waited on. This is the manual-send path, reached
+    /// from a command a view is waiting on, and a full queue means the
+    /// far end has stopped draining — so waiting would stall the caller
+    /// for as long as the server stays behind without making the frame
+    /// any more sent (ADR 0048). The scheduler's batched tick, which
+    /// runs on a thread of its own, keeps the waiting form
+    /// ([`Self::transmit_batch`]).
     pub(crate) fn transmit(
         &self,
         channel: u8,
@@ -109,7 +118,9 @@ impl SessionTx {
     ) -> Result<(), String> {
         use cannet_core::CanFrameSink;
         match self {
-            SessionTx::Remote(t) => t.transmit(interface_id, frame).map_err(|e| e.to_string()),
+            SessionTx::Remote(t) => t
+                .try_transmit(interface_id, frame)
+                .map_err(|e| e.to_string()),
             SessionTx::Vbus(participants) => {
                 let sink = participants
                     .iter()

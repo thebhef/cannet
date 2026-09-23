@@ -309,8 +309,19 @@ pub fn get_sidecar_status(state: State<'_, SidecarState>) -> SidecarStatus {
 /// the crash counter so the user gets the full retry budget again,
 /// then kills the previous child before spawning a replacement (see
 /// [`cannet_sidecar::SidecarSupervisor::restart`]).
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// the restart kills the previous child's process tree and spawns a
+/// replacement — process work, not a state read (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn restart_sidecar(app: AppHandle, state: State<'_, SidecarState>) {
-    state.supervisor.restart(&host(&app));
+pub async fn restart_sidecar(app: AppHandle) {
+    crate::sampling::off_async_workers(move || {
+        // `try_state` for the same reason [`spawn_sidecar`] uses it: the
+        // supervisor is installed before `setup` runs, so the `None` arm
+        // is unreachable in a built app and is not worth a panic on a
+        // pool thread.
+        if let Some(state) = app.try_state::<SidecarState>() {
+            state.supervisor.restart(&host(&app));
+        }
+    })
+    .await;
 }

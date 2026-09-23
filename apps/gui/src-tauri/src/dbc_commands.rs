@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_core::CanId;
 use cannet_dbc::{Database, DecodedSignal};
@@ -124,46 +124,51 @@ pub(crate) fn install_dbc(
 /// Emits `dbc`-tagged messages on the system log — `info` on
 /// success (loaded or reloaded), `error` if the file can't be read or
 /// the DBC can't be parsed.
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// the body reads and parses the whole DBC file — hundreds of
+/// milliseconds for a large one — so it does not belong on the IPC
+/// thread (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn add_dbc(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<Vec<DbcInfo>, String> {
-    let text = match std::fs::read_to_string(&path) {
+pub(crate) async fn add_dbc(app: AppHandle, path: String) -> Result<Vec<DbcInfo>, String> {
+    crate::sampling::off_async_workers(move || add_dbc_blocking(&app, &path)).await
+}
+
+fn add_dbc_blocking(app: &AppHandle, path: &str) -> Result<Vec<DbcInfo>, String> {
+    let state = app.state::<AppState>();
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
             let msg = format!("failed to read DBC at {path}: {e}");
-            sys_error!(&app, "dbc", "{msg}");
+            sys_error!(app, "dbc", "{msg}");
             return Err(msg);
         }
     };
     // Snapshotted before the swap: afterwards there is no way left to
     // ask what the content this replaces was driving.
     let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state.inner());
-    let installed = match install_dbc(state.inner(), &path, &text) {
+    let installed = match install_dbc(state.inner(), path, &text) {
         Ok(i) => i,
         Err(msg) => {
-            sys_error!(&app, "dbc", "{msg}");
+            sys_error!(app, "dbc", "{msg}");
             return Err(msg);
         }
     };
     for w in &installed.warnings {
-        sys_warn!(&app, "dbc", "{path}: {w}");
+        sys_warn!(app, "dbc", "{path}: {w}");
     }
     if installed.reloaded {
-        sys_info!(&app, "dbc", "reloaded DBC {path}");
-        report_reload_stops(&app, state.inner(), &path, &backed_before);
+        sys_info!(app, "dbc", "reloaded DBC {path}");
+        report_reload_stops(app, state.inner(), path, &backed_before);
     } else {
-        sys_info!(&app, "dbc", "loaded DBC {path}");
+        sys_info!(app, "dbc", "loaded DBC {path}");
         // Start watching this file's parent dir for FS
         // events (only on first-load — a reload is already watched).
         if let Some(w) = state.dbc_watcher().as_mut() {
-            w.watch_file(std::path::Path::new(&path));
+            w.watch_file(std::path::Path::new(path));
         }
     }
-    announce_dbc_change(&app, &path);
+    announce_dbc_change(app, path);
     Ok(dbc_list(state.inner()))
 }
 

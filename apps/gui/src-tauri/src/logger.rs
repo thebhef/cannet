@@ -726,16 +726,24 @@ fn run_logger(
 /// to) and `buses` its ordered bus-id list — position in that list is
 /// the BLF channel a frame on that bus is written as, the same mapping
 /// Save Capture uses.
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// reconciling stops the loggers this set drops, and a stop **joins the
+/// writer thread** so its file is finished before the call returns;
+/// starting one creates a file, which on a cloud-synced destination is
+/// the sync client's latency. Neither belongs on the IPC thread
+/// (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn set_loggers(
+pub async fn set_loggers(
     app: AppHandle,
     loggers: Vec<LoggerConfig>,
     project: String,
     buses: Vec<String>,
 ) {
-    app.state::<LoggerRuntime>().set(loggers, project, buses);
-    reconcile(&app);
+    crate::sampling::off_async_workers(move || {
+        app.state::<LoggerRuntime>().set(loggers, project, buses);
+        reconcile(&app);
+    })
+    .await;
 }
 
 /// Tauri command — every logger's status. The panel reads it to lock
