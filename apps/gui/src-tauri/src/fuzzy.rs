@@ -46,6 +46,27 @@
 /// their frames did not.
 pub const MIN_RELATIVE_SCORE: f64 = 0.7;
 
+/// How well a *message* must match, as a fraction of the winning
+/// match's score, to keep its admission when a more specific match — a
+/// signal name or one of a signal's value-table labels — won the query.
+///
+/// The floor above decides what is a match at all; this decides what a
+/// match is *about*. A message's searchable text is long (bus name,
+/// both id spellings, message name, transmitting ECU), so a query aimed
+/// at a value still lands on it as a scattered subsequence well above
+/// the floor — and a message admission is every frame of that message,
+/// which drowns the handful of frames the value actually names.
+///
+/// At `1.0` a message survives a more specific winner only by tying it,
+/// and a message that ties wins the tie outright (see
+/// `FuzzyResolution`), so in practice the more specific winner takes
+/// the query. That is the rule as stated: a message's admission is
+/// dropped when a more specific match *outscores* it. The constant is
+/// the tuning surface if that proves too sharp — the observed
+/// near-misses run to 0.98 of the winner, so anything looser readmits
+/// the whole message.
+pub const MESSAGE_GATE: f64 = 1.0;
+
 /// One ranked match: the haystack's position in the list handed to
 /// [`rank`], and the score the port assigned it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

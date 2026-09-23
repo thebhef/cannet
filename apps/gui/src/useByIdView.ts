@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { ByIdSnapshotRecord, FilterPredicate } from "./types";
+import type { ByIdSnapshotRecord, FilterPredicate, FuzzyWinner } from "./types";
 import type { SortState } from "./traceColumns";
 import { useTraceModel } from "./traceData";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
@@ -12,6 +12,9 @@ interface ByIdPage {
   count: number;
   start: number;
   rows: ByIdSnapshotRecord[];
+  /// What the fuzzy query matched best, absent when the predicate
+  /// carries none. See `useFilteredTrace`.
+  fuzzy_winner?: FuzzyWinner | null;
 }
 
 /// A paged, host-sorted view of the by-id snapshot of the trace window

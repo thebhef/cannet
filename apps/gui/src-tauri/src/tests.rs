@@ -6,7 +6,7 @@
 //! resolving crate-internal items through `use super::*` at the crate root.
 
 use super::*;
-use crate::filter::{MatchContext, EMPTY_MATCH_CONTEXT};
+use crate::filter::{FuzzyWinner, MatchContext, EMPTY_MATCH_CONTEXT};
 use cannet_core::{CanFramePayload, Direction};
 
 /// The bus test frames arrive on unless a test says otherwise: the
@@ -152,6 +152,7 @@ fn snap(id: u32, channel: u8, rate: f64, bus: &str) -> ByIdSnapshot {
             bus_id: bus.into(),
             violation: None,
             tx_delivery: None,
+            matching_signals: Vec::new(),
         },
         rate,
         count: 0,
@@ -1370,6 +1371,248 @@ fn renaming_a_bus_drops_a_filter_index_built_on_its_old_name() {
         fuzzy_rows(&state, r#"{"fuzzy": "pack"}"#),
         vec![0x400, 0x123]
     );
+}
+
+/// The fault DBC of the enum-value survey: one message whose enum
+/// signal's value table spells the faults, beside a flag signal whose
+/// *name* carries one of the same words. That shape is what made a
+/// value query admit every frame of the message — the message's own
+/// searchable text answered the query before the value test ever ran.
+fn fault_dbc(id: u32, name: &str) -> String {
+    format!(
+        "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Bms\n\n\
+         BO_ {id} {name}: 8 Bms\n \
+         SG_ FaultID : 0|8@1+ (1,0) [0|0] \"\" Vector__XXX\n \
+         SG_ String_Overvoltage_Fault : 8|8@1+ (1,0) [0|0] \"\" Vector__XXX\n\n\
+         VAL_ {id} FaultID 0 \"NO_FAULT\" 1 \"OVERVOLTAGE\" 2 \"THERMAL_RUNAWAY\" 3 \"XQZ\" ;\n"
+    )
+}
+
+/// Append one frame per value-table entry, so the capture holds one
+/// frame carrying each label.
+fn append_fault_frames(state: &AppState, id: u32) {
+    for v in 0..4u8 {
+        let mut f = frame_with_data(id);
+        f.timestamp_ns = u64::from(v) * 1_000_000;
+        if let CanFramePayload::Classic(ref mut d) = f.payload {
+            d[0] = v;
+        }
+        state.trace_store.append(f);
+    }
+}
+
+/// The survey's state: the fault message on the test bus, that bus
+/// named, four frames — one per label.
+fn fault_state() -> AppState {
+    let state = test_state();
+    *state.databases.lock().unwrap() = vec![loaded_scoped(
+        "faults.dbc",
+        &fault_dbc(0x300, "FaultStatus"),
+        &[TEST_BUS],
+    )];
+    state.set_project_bus_names(vec![(TEST_BUS.to_string(), "Pack CAN".to_string())]);
+    append_fault_frames(&state, 0x300);
+    state
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn fault_row_key(r: &TraceFrameRecord) -> (u32, u8) {
+    let v = r
+        .decoded
+        .as_ref()
+        .and_then(|d| d.signals.iter().find(|s| s.name == "FaultID"))
+        .map_or(0.0, |s| s.value);
+    (r.id, v as u8)
+}
+
+/// `(id, FaultID)` of every row a query admits through
+/// [`apply_filter_records`] — the fetch path's per-record test.
+fn fault_rows(state: &AppState, query: &str) -> Vec<(u32, u8)> {
+    let predicate: FilterPredicate =
+        serde_json::from_str(&format!(r#"{{"fuzzy": "{query}"}}"#)).unwrap();
+    let ctx = crate::trace_query::resolve_match_context(state, &predicate);
+    let records = collect_trace_records(state, 0, 64);
+    apply_filter_records(records, Some(&predicate), &ctx)
+        .iter()
+        .map(fault_row_key)
+        .collect()
+}
+
+/// The same rows through the *filter index* — `ensure_active_filter_index`'s
+/// `keep` test under its decode gate, which the per-record path never
+/// exercises.
+fn fault_rows_indexed(state: &AppState, query: &str) -> Vec<(u32, u8)> {
+    let predicate: FilterPredicate =
+        serde_json::from_str(&format!(r#"{{"fuzzy": "{query}"}}"#)).unwrap();
+    let idxs = {
+        let guard = crate::trace_query::ensure_active_filter_index(state, &predicate).unwrap();
+        let active = guard.as_ref().unwrap();
+        let end = active.index.position_of(active.index.built_through());
+        active.index.page(0, end)
+    };
+    let records = collect_trace_records(state, 0, 64);
+    idxs.into_iter()
+        .map(|i| fault_row_key(&records[i]))
+        .collect()
+}
+
+fn with_filter_index_dir(state: &AppState, tag: &str) {
+    *state.filter_index_dir() =
+        std::env::temp_dir().join(format!("cannet-test-fi-{tag}-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&*state.filter_index_dir()).unwrap();
+}
+
+/// The enum-value survey's admitted-frame table, asserted on both
+/// chronological paths. Before signal names were ranked in their own
+/// right, `overvoltage` and `no_fault` admitted all four frames: the
+/// message's haystack carried `String_Overvoltage_Fault`, which
+/// answered both queries, and `admits` was "by key *or* by label".
+#[test]
+fn an_enum_value_query_admits_only_the_frames_carrying_that_value() {
+    let state = fault_state();
+    with_filter_index_dir(&state, "faults");
+    for (query, want) in [
+        ("overvoltage", vec![(0x300, 1u8)]),
+        ("no_fault", vec![(0x300, 0)]),
+        ("thermal_runaway", vec![(0x300, 2)]),
+        ("runaway", vec![(0x300, 2)]),
+        ("xqz", vec![(0x300, 3)]),
+        // A message-name match: every frame of the message — the
+        // message-winner path, untouched by the gate.
+        (
+            "fault",
+            vec![(0x300, 0), (0x300, 1), (0x300, 2), (0x300, 3)],
+        ),
+    ] {
+        assert_eq!(
+            fault_rows(&state, query),
+            want,
+            "query {query:?} through apply_filter_records",
+        );
+        assert_eq!(
+            fault_rows_indexed(&state, query),
+            want,
+            "query {query:?} through the filter index",
+        );
+    }
+}
+
+/// The gate: a message admitted only by its own haystack loses to a
+/// more specific winner unless it ties it. `Node_Fault`'s name is a
+/// near-perfect scatter for `no_fault`, and a looser gate would put all
+/// four of its frames back in the result.
+#[test]
+fn a_message_matched_only_by_its_own_haystack_loses_to_a_value_winner() {
+    let state = test_state();
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("faults.dbc", &fault_dbc(0x300, "FaultStatus"), &[TEST_BUS]),
+        loaded_scoped(
+            "node.dbc",
+            &tiny_dbc(0x301, "Node_Fault", "Count"),
+            &[TEST_BUS],
+        ),
+    ];
+    state.set_project_bus_names(vec![(TEST_BUS.to_string(), "Pack CAN".to_string())]);
+    append_fault_frames(&state, 0x300);
+    append_fault_frames(&state, 0x301);
+    with_filter_index_dir(&state, "gate");
+
+    assert_eq!(fault_rows(&state, "no_fault"), vec![(0x300, 0)]);
+    assert_eq!(fault_rows_indexed(&state, "no_fault"), vec![(0x300, 0)]);
+    // The same message *is* the answer when the query names it.
+    assert_eq!(
+        fault_rows(&state, "node_fault")
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        vec![0x301; 4],
+    );
+}
+
+/// A signal name is a match in its own right: it admits the frames of
+/// the messages carrying it, and each row names the signal so the panel
+/// can open to it.
+#[test]
+fn a_signal_name_query_admits_the_frames_of_the_messages_carrying_it() {
+    let state = fault_state();
+    let predicate: FilterPredicate =
+        serde_json::from_str(r#"{"fuzzy": "string_overvoltage_fault"}"#).unwrap();
+    let ctx = crate::trace_query::resolve_match_context(&state, &predicate);
+    assert_eq!(ctx.winner(), Some(FuzzyWinner::Signal));
+    let rows = apply_filter_records(collect_trace_records(&state, 0, 64), Some(&predicate), &ctx);
+    assert_eq!(rows.len(), 4);
+    for r in &rows {
+        assert_eq!(r.matching_signals, vec!["String_Overvoltage_Fault"]);
+    }
+
+    // The filtered chronological page reads both off the index's own
+    // resolution rather than re-resolving per page fetch, so assert
+    // them there too — that is what rides out with the page.
+    with_filter_index_dir(&state, "signal-winner");
+    let guard = crate::trace_query::ensure_active_filter_index(&state, &predicate).unwrap();
+    let index_ctx = guard.as_ref().unwrap().match_context.clone();
+    drop(guard);
+    assert_eq!(index_ctx.winner(), Some(FuzzyWinner::Signal));
+    let mut record = collect_trace_records(&state, 0, 1).remove(0);
+    crate::trace_query::note_matching_signals(&mut record, &index_ctx);
+    assert_eq!(record.matching_signals, vec!["String_Overvoltage_Fault"]);
+}
+
+/// The winner kind rides out with the page, and a value winner names
+/// the signal that carries it.
+#[test]
+fn a_value_winner_names_the_signal_that_carries_it() {
+    let state = fault_state();
+    let predicate: FilterPredicate = serde_json::from_str(r#"{"fuzzy": "overvoltage"}"#).unwrap();
+    let ctx = crate::trace_query::resolve_match_context(&state, &predicate);
+    assert_eq!(ctx.winner(), Some(FuzzyWinner::Value));
+    let rows = apply_filter_records(collect_trace_records(&state, 0, 64), Some(&predicate), &ctx);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].matching_signals, vec!["FaultID"]);
+    // A message winner leaves the disclosure alone: no signal is named.
+    let predicate: FilterPredicate = serde_json::from_str(r#"{"fuzzy": "faultstatus"}"#).unwrap();
+    let ctx = crate::trace_query::resolve_match_context(&state, &predicate);
+    assert_eq!(ctx.winner(), Some(FuzzyWinner::Message));
+    let rows = apply_filter_records(collect_trace_records(&state, 0, 64), Some(&predicate), &ctx);
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|r| r.matching_signals.is_empty()));
+}
+
+/// By-id mode searches the signal's whole value table: the row is one
+/// *message*, so it shows when the message defines a signal that can
+/// carry the value — whatever the latest frame reads. The capture's
+/// latest frame here carries `XQZ`.
+#[test]
+fn the_by_id_page_matches_a_value_against_the_whole_value_table() {
+    let state = fault_state();
+    let names: HashMap<String, String> = vec![(TEST_BUS.to_string(), "Pack CAN".to_string())]
+        .into_iter()
+        .collect();
+    let page = |query: &str| {
+        let predicate: FilterPredicate =
+            serde_json::from_str(&format!(r#"{{"fuzzy": "{query}"}}"#)).unwrap();
+        crate::trace_query::fetch_by_id_page_inner(
+            &state,
+            Some(&predicate),
+            0,
+            64,
+            None,
+            None,
+            &names,
+            0,
+            10,
+        )
+    };
+    // `NO_FAULT` is not the latest value, but the message defines it.
+    let p = page("no_fault");
+    assert_eq!(p.count, 1);
+    assert_eq!(p.fuzzy_winner, Some(FuzzyWinner::Value));
+    assert_eq!(p.rows[0].frame.id, 0x300);
+    assert_eq!(p.rows[0].frame.matching_signals, vec!["FaultID"]);
+    // The latest value's own label matches too.
+    assert_eq!(page("xqz").count, 1);
+    // A label the table does not hold matches nothing.
+    assert_eq!(page("brownout").count, 0);
 }
 
 #[test]
