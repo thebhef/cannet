@@ -194,7 +194,10 @@ use emitters::{
     spawn_trace_flusher, spawn_trace_grew_emitter,
 };
 #[cfg(test)]
-use emitters::{live_tail_range, smooth_fps, trace_grew_changed, TRACE_GREW_TAIL};
+use emitters::{
+    human_duration_ns, live_tail_range, smooth_fps, trace_grew_changed, DropEpisode,
+    DropEpisodeLine, CONTINUED_MIN_GAP_MS, TRACE_GREW_TAIL,
+};
 #[cfg(test)]
 use filter::FilterPredicate;
 #[cfg(test)]
@@ -219,7 +222,7 @@ use trace_query::{
     filtered_positions_at_ns, frame_indices_at_ns,
 };
 #[cfg(test)]
-use trace_store::RawTraceFrame;
+use trace_store::{FirstDrop, RawTraceFrame};
 use transmit_commands::{
     clear_transmit_frames, fetch_field_validity, list_transmit_frames, remove_transmit_frame,
     reorder_transmit_frames, run_transmit_scheduler, set_transmit_frame, start_periodic_transmit,
