@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ByIdSnapshotRecord, FilterPredicate, FuzzyWinner } from "./types";
@@ -26,6 +26,8 @@ export interface ByIdView {
   version: number;
   getRow: (index: number) => ByIdSnapshotRecord | null;
   ensureVisible: (start: number, end: number) => void;
+  /// The page envelope's `fuzzy_winner` (ADR 0044). See `useFilteredTrace`.
+  fuzzyWinner: FuzzyWinner | null;
 }
 
 /// Page the host-side by-id snapshot of the window `[winStart, winEnd)`,
@@ -69,6 +71,15 @@ export function useByIdView(
     ? `${epoch}:${winStart}:${sortKey ?? ""}:${sortDir ?? ""}:${JSON.stringify(filter)}`
     : "";
 
+  // The query's winner, set synchronously inside `fetchPage` before the
+  // window state it rides in updates — see `useFilteredTrace`, which
+  // this mirrors. Reset on a new descriptor: until that descriptor's
+  // first page lands, there is nothing to force open.
+  const winnerRef = useRef<FuzzyWinner | null>(null);
+  useEffect(() => {
+    winnerRef.current = null;
+  }, [descriptor]);
+
   const fetchPage = useCallback(
     async (
       offset: number,
@@ -94,6 +105,7 @@ export function useByIdView(
         offset: Math.max(0, offset),
         limit,
       });
+      winnerRef.current = res.fuzzy_winner ?? null;
       return { total: res.count, start: res.start, rows: res.rows };
     },
     [filter, winStart, winEnd, sortKey, sortDir, busNames, running],
@@ -111,5 +123,5 @@ export function useByIdView(
       extentSignal: winEnd + (running ? 0 : 1),
     });
 
-  return { count, version, getRow, ensureVisible };
+  return { count, version, getRow, ensureVisible, fuzzyWinner: winnerRef.current };
 }

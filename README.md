@@ -1329,12 +1329,22 @@ sort by it (click again to reverse, again to clear — ▲ / ▼ marks the
 sorted column); *trace* is the chronological view (one row per frame,
 follows the live edge). A **filter** box in the toolbar narrows rows in
 both modes by the same fzf dialect the Database panel's tree uses: a
-query over a bus name, a message name or id (hex or decimal), a signal
-name, or a decoded value's enum label finds the frames it should, and
-composes with the sources filter, show-events and collapse-error-frames
-rather than replacing them; the chronological view stays host-paged
-throughout (the query is evaluated host-side over the row space, not in
-the browser). Timeline events narrow by the same query too, matched
+query over a bus name, a message name or id (hex or decimal), a
+transmitting ECU, a signal name, or a decoded value's enum label finds
+the frames it should, and composes with the sources filter, show-events
+and collapse-error-frames rather than replacing them; the chronological
+view stays host-paged throughout (the query is evaluated host-side over
+the row space, not in the browser). Whichever of those is the query's
+best match — a message (its bus, either id spelling, its name or its
+transmitter), a signal, or one of a signal's enum values — decides what
+narrows: a signal or value match hides a message admitted only by its
+own weaker match and opens the admitted rows' signal disclosure to just
+the signal(s) it matched, keeping the parent row; a message match keeps
+every field of the message on screen, as before. In chronological mode a
+value match shows every frame whose decoded signal carries it across the
+whole history; in by-ID mode it shows the message whose signal *can*
+carry that value (its `VAL_` table), whatever the latest frame reads.
+Timeline events narrow by the same query too, matched
 against their label and body. Clearing the box restores the full view;
 **Ctrl/⌘+F** focuses and selects it. **Add ▸ Trace** creates a new trace element and a
 panel for it (in by-ID mode — toggle it anytime); the new trace starts
