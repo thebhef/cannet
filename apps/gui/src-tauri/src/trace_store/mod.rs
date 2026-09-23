@@ -77,6 +77,25 @@ mod scratch;
 use anchor::TsAnchorIndex;
 use rate::{RateEstimate, RateTrack};
 
+/// Detail of a before-session-drop episode's first frame: the bus it
+/// arrived on, the frame's own timestamp, and how far before the
+/// session start it fell. Recorded by [`TraceStore::append`] only on
+/// [`Self::frames_dropped_before_session`]'s own 0 → 1 transition, and
+/// cleared alongside the counter (a session clear, or a re-root that
+/// starts a store empty) — so it always names the episode currently
+/// open, never a stale one the counter has moved on from. The
+/// `trace-grew` emitter turns it into the coalesced WARN episode's
+/// opening line ([`crate::emitters::DropEpisode`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstDrop {
+    /// Logical bus the dropped frame arrived on.
+    pub bus_id: String,
+    /// The dropped frame's own timestamp (ns).
+    pub frame_ts_ns: u64,
+    /// How far before the session start the frame's timestamp fell (ns).
+    pub before_origin_ns: u64,
+}
+
 /// One coherent read of a trace window's x-axis anchors. See
 /// [`TraceStore::window_anchors`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +146,8 @@ pub struct StatusSnapshot {
     pub buffer_seconds: f64,
     /// As [`TraceStore::frames_dropped_before_session`].
     pub frames_dropped_before_session: u64,
+    /// As [`TraceStore::first_dropped_before_session`].
+    pub first_dropped_before_session: Option<FirstDrop>,
     /// As [`TraceStore::scratch_footprint_bytes`].
     pub scratch_bytes: Option<u64>,
     /// As [`TraceStore::frames_per_second`].
@@ -298,8 +319,13 @@ struct Inner {
     tx_rate: HashMap<String, RateTrack>,
     /// Frames rejected by the session-start guard ([`Self::append`]
     /// returning `None`). Counted so that silent path is visible in the
-    /// diagnostic readout.
+    /// diagnostic readout, and coalesced into WARN system-log lines by
+    /// the `trace-grew` emitter ([`crate::emitters::DropEpisode`]).
     dropped_before_session: u64,
+    /// Detail of the current drop episode's first frame — set on
+    /// `dropped_before_session`'s own 0 → 1 transition, cleared
+    /// alongside it. See [`FirstDrop`].
+    first_dropped: Option<FirstDrop>,
     /// The disk-spill scratch directory, when this store is disk-backed
     /// (`None` for the in-RAM test double). The home for the reopen
     /// manifest (in the raw store) plus the host-side identity and derived
@@ -371,6 +397,7 @@ impl TraceStore {
                 rx_rate: HashMap::new(),
                 tx_rate: HashMap::new(),
                 dropped_before_session: 0,
+                first_dropped: None,
                 scratch_dir,
                 scratch_cap_bytes: None,
                 footprint_bytes: 0,
@@ -445,6 +472,7 @@ impl TraceStore {
             session_generation: inner.session_generation,
             buffer_seconds,
             frames_dropped_before_session: inner.dropped_before_session,
+            first_dropped_before_session: inner.first_dropped.clone(),
             scratch_bytes: inner.scratch_dir.is_some().then_some(inner.footprint_bytes),
             frames_per_second: rate::agg_fps(&mut inner, now),
             frames_per_second_rx,
@@ -459,13 +487,17 @@ impl TraceStore {
     /// rate sample if at least `rate::RATE_SAMPLE_INTERVAL` has passed.
     ///
     /// Frames whose timestamp predates the current
-    /// [`Self::start_session`] are silently dropped (returning
-    /// `None`). That handles the pipeline-in-flight case after a
-    /// Clear / new session: the recv path (sidecar queue, gRPC,
+    /// [`Self::start_session`] are dropped from the trace (returning
+    /// `None`) — right where the pipeline-in-flight case after a
+    /// Clear / new session needs it: the recv path (sidecar queue, gRPC,
     /// packer thread) can still deliver frames captured before the
     /// clear; they'd otherwise land in the freshly-empty buffer with
     /// stale timestamps and show as negative offsets in the trace
-    /// view.
+    /// view. Silent to the trace, not to the operator: the drop bumps
+    /// [`Self::frames_dropped_before_session`] and, on the episode's
+    /// first frame, records [`Self::first_dropped_before_session`]; the
+    /// `trace-grew` emitter turns the pair into coalesced WARN system-log
+    /// lines ([`crate::emitters::DropEpisode`]).
     ///
     /// A frame naming no bus is dropped the same way. Frames enter
     /// through a bus — the pump drops a channel no bus is mapped to —
@@ -485,6 +517,18 @@ impl TraceStore {
         let on_wire_bits = frame.payload.on_wire_bits(frame.extended);
         let mut inner = self.lock_inner();
         if ts_ns < inner.session_start_ns {
+            // Record the episode's first-drop detail only on the 0 → 1
+            // transition — one clone per episode, not per dropped frame
+            // (ADR 0049: nothing heavy on the append path). A later drop
+            // in the same episode leaves it alone; the emitter reads the
+            // count on every tick regardless.
+            if inner.dropped_before_session == 0 {
+                inner.first_dropped = Some(FirstDrop {
+                    bus_id: key.0.clone(),
+                    frame_ts_ns: ts_ns,
+                    before_origin_ns: inner.session_start_ns - ts_ns,
+                });
+            }
             inner.dropped_before_session = inner.dropped_before_session.saturating_add(1);
             return None;
         }
@@ -803,6 +847,15 @@ impl TraceStore {
     pub fn frames_dropped_before_session(&self) -> u64 {
         self.lock_inner().dropped_before_session
     }
+
+    /// Detail of the current drop episode's first frame, or `None` while
+    /// [`Self::frames_dropped_before_session`] reads zero. See
+    /// [`FirstDrop`]; the `trace-grew` emitter is the only reader, and
+    /// only on the tick the counter goes 0 → 1.
+    #[must_use]
+    pub fn first_dropped_before_session(&self) -> Option<FirstDrop> {
+        self.lock_inner().first_dropped.clone()
+    }
 }
 
 /// Lets a [`FilterIndex`] build against the facade without exposing the
@@ -907,8 +960,8 @@ mod tests {
         assert_eq!(ids, vec![2, 3, 4]);
     }
 
-    /// `status_snapshot` is the nine status accessors read under one
-    /// lock: every field must carry what its own accessor returns.
+    /// `status_snapshot` is the status accessors read under one lock:
+    /// every field must carry what its own accessor returns.
     /// Guards the shape the collapse could silently break — a field
     /// wired to the wrong source (rx/tx swapped, `first_index` reading
     /// `len`) still type-checks and still emits a plausible number.
@@ -944,6 +997,10 @@ mod tests {
         assert_eq!(
             snap.frames_dropped_before_session,
             store.frames_dropped_before_session()
+        );
+        assert_eq!(
+            snap.first_dropped_before_session,
+            store.first_dropped_before_session()
         );
         assert_eq!(snap.scratch_bytes, store.scratch_footprint_bytes());
         assert_eq!(snap.frames_per_second, store.frames_per_second());
@@ -1245,6 +1302,42 @@ mod tests {
         store.append(dummy(500, 1)); // stale → dropped + counted
         store.append(dummy(2_000, 2)); // kept
         assert_eq!(store.frames_dropped_before_session(), 1);
+    }
+
+    #[test]
+    fn the_first_drop_of_an_episode_is_recorded_and_later_drops_leave_it_alone() {
+        // What the `trace-grew` emitter's opening line reads: the bus,
+        // the dropped frame's own timestamp, and how far before the
+        // origin it fell — captured once, on the counter's 0 → 1
+        // transition, not re-derived from whichever drop the emitter
+        // happens to observe on its next tick.
+        use test_support::dummy_on_bus;
+        let store = TraceStore::new();
+        store.start_session(50_000);
+        assert_eq!(store.first_dropped_before_session(), None);
+        store.append(dummy_on_bus(10_000, 1, "pt")); // first drop: 40_000 ns short
+        let first = store
+            .first_dropped_before_session()
+            .expect("the first drop is recorded");
+        assert_eq!(first.bus_id, "pt");
+        assert_eq!(first.frame_ts_ns, 10_000);
+        assert_eq!(first.before_origin_ns, 40_000);
+        // A second drop, on a different bus and far stale-r, does not
+        // overwrite the episode's onset.
+        store.append(dummy_on_bus(1_000, 2, "body"));
+        assert_eq!(store.first_dropped_before_session(), Some(first));
+        assert_eq!(store.frames_dropped_before_session(), 2);
+    }
+
+    #[test]
+    fn start_session_clears_the_first_drop_alongside_the_counter() {
+        let store = TraceStore::new();
+        store.start_session(1_000);
+        store.append(dummy(500, 1));
+        assert!(store.first_dropped_before_session().is_some());
+        store.start_session(0); // a Clear — ends the episode without a report
+        assert_eq!(store.first_dropped_before_session(), None);
+        assert_eq!(store.frames_dropped_before_session(), 0);
     }
 
     #[test]

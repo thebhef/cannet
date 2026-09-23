@@ -1215,6 +1215,219 @@ fn trace_grew_skips_only_when_nothing_moved() {
     assert!(trace_grew_changed(Some((10, 0.0, 7, 1)), (10, 0.0, 7, 2)));
 }
 
+fn first_drop(bus_id: &str, frame_ts_ns: u64, before_origin_ns: u64) -> FirstDrop {
+    FirstDrop {
+        bus_id: bus_id.to_string(),
+        frame_ts_ns,
+        before_origin_ns,
+    }
+}
+
+#[test]
+fn drop_episode_opens_on_the_first_nonzero_total() {
+    // The opening tick — however many drops piled up before the emitter
+    // observed one — names the episode's onset, not a count.
+    let mut episode = DropEpisode::default();
+    let first = first_drop("pt", 10_000, 40_000);
+    let line = episode.tick(3, Some(&first), false, 0);
+    assert_eq!(
+        line,
+        Some(DropEpisodeLine::Opened {
+            bus_id: "pt".to_string(),
+            frame_ts_ns: 10_000,
+            before_origin_ns: 40_000,
+        })
+    );
+}
+
+#[test]
+fn drop_episode_reports_at_most_one_line_per_tick_however_many_drops_it_covers() {
+    // Several drops land between two emitter ticks (the counter moves by
+    // more than one); one `tick()` call still yields one line, carrying
+    // the whole gap since the last line. The two ticks are 10 s apart so
+    // the `Continued` rate limit does not itself suppress the second one
+    // (that is a separate test, below).
+    let mut episode = DropEpisode::default();
+    let first = first_drop("pt", 0, 1_000);
+    episode.tick(1, Some(&first), false, 0); // opens
+    let line = episode.tick(9, Some(&first), false, 10_000); // 8 more landed since
+    assert_eq!(
+        line,
+        Some(DropEpisodeLine::Continued {
+            since_last: 8,
+            total: 9,
+        })
+    );
+}
+
+#[test]
+fn drop_episode_closes_on_the_first_quiet_tick_and_stays_quiet_after() {
+    let mut episode = DropEpisode::default();
+    let first = first_drop("pt", 0, 1_000);
+    episode.tick(5, Some(&first), false, 0); // opens
+    let closing = episode.tick(5, Some(&first), false, 1_000); // nothing new
+    assert_eq!(closing, Some(DropEpisodeLine::Closed { total: 5 }));
+    // The control: a closed episode does not reopen every tick just
+    // because the (unmoving) cumulative total is still nonzero.
+    assert_eq!(episode.tick(5, Some(&first), false, 2_000), None);
+    assert_eq!(episode.tick(5, Some(&first), false, 3_000), None);
+}
+
+#[test]
+fn drop_episode_resumes_instead_of_reopening_with_a_stale_onset() {
+    // A second episode in the same session must not be reported as if it
+    // were the first: `first_dropped` in the store only ever names the
+    // session's first episode (only a session change clears it), so a
+    // literal `Opened` here would name a frame from an episode that
+    // isn't this one. `Resumed` carries a count instead.
+    let mut episode = DropEpisode::default();
+    let first = first_drop("pt", 0, 1_000);
+    assert_eq!(
+        episode.tick(2, Some(&first), false, 0),
+        Some(DropEpisodeLine::Opened {
+            bus_id: "pt".to_string(),
+            frame_ts_ns: 0,
+            before_origin_ns: 1_000,
+        }),
+        "opens"
+    );
+    assert_eq!(
+        episode.tick(2, Some(&first), false, 1_000),
+        Some(DropEpisodeLine::Closed { total: 2 }),
+        "closes"
+    );
+    // More drops land later in the same session. The store would still
+    // be handing back the *first* episode's onset here (`first` is the
+    // same stale value) — `Resumed` must ignore it rather than emit a
+    // second `Opened` naming that frame.
+    let line = episode.tick(9, Some(&first), false, 50_000);
+    assert_eq!(
+        line,
+        Some(DropEpisodeLine::Resumed {
+            since_last: 7,
+            total: 9,
+        }),
+        "resumes, not opens with the old frame"
+    );
+}
+
+#[test]
+fn a_session_change_ends_an_open_episode_without_a_phantom_closing_line() {
+    // A Clear resets the counter to zero alongside starting a fresh
+    // session. The tick that observes the generation change must not
+    // report a close (there is no reader left who cares) and must not
+    // leave stale state that misreads the new session's own drops.
+    let mut episode = DropEpisode::default();
+    let first = first_drop("pt", 0, 1_000);
+    episode.tick(4, Some(&first), false, 0); // opens
+    assert_eq!(
+        episode.tick(0, None, true, 1_000),
+        None,
+        "the clear itself is silent"
+    );
+    // The new session's first real drop opens its own episode cleanly —
+    // comparing against the old total would either misreport the delta
+    // or (were the old total not reset) require it to first climb past
+    // the stale value — and reads as `Opened`, not `Resumed`: the prior
+    // session's episode does not count towards this session's first.
+    let after_clear = first_drop("pt", 900_000, 5_000);
+    let line = episode.tick(1, Some(&after_clear), false, 2_000);
+    assert_eq!(
+        line,
+        Some(DropEpisodeLine::Opened {
+            bus_id: "pt".to_string(),
+            frame_ts_ns: 900_000,
+            before_origin_ns: 5_000,
+        })
+    );
+}
+
+#[test]
+fn a_quiet_store_never_opens_an_episode() {
+    let mut episode = DropEpisode::default();
+    assert_eq!(episode.tick(0, None, false, 0), None);
+    assert_eq!(episode.tick(0, None, false, 1_000), None);
+}
+
+#[test]
+fn continued_lines_are_rate_limited_to_one_per_ten_seconds_of_wall_clock() {
+    // An hours-long episode ticks at the `trace-grew` cadence (sub-
+    // second to ~1 s) — without a limiter that is thousands of "still
+    // dropping…" lines. One drop lands every 250 ms tick for a minute:
+    // the open line, plus a `Continued` only every `CONTINUED_MIN_GAP_MS`,
+    // landing exactly on each multiple of it up to the run's length.
+    let step_ms = 250u64;
+    let run_ms = 60_000u64;
+    let mut episode = DropEpisode::default();
+    let first = first_drop("pt", 0, 1_000);
+    let mut opened = 0u32;
+    let mut continued = 0u32;
+    let mut total = 0u64;
+    let mut now_ms = 0u64;
+    while now_ms <= run_ms {
+        total += 1;
+        match episode.tick(total, Some(&first), false, now_ms) {
+            Some(DropEpisodeLine::Opened { .. }) => opened += 1,
+            Some(DropEpisodeLine::Continued { .. }) => continued += 1,
+            None => {}
+            other => panic!("unexpected line: {other:?}"),
+        }
+        now_ms += step_ms;
+    }
+    assert_eq!(opened, 1, "exactly one opening line over the whole run");
+    assert_eq!(
+        u64::from(continued),
+        run_ms / CONTINUED_MIN_GAP_MS,
+        "one every {CONTINUED_MIN_GAP_MS} ms across the {run_ms} ms run"
+    );
+    // The close line is unaffected by the `Continued` rate limit: it
+    // fires on the very next quiet tick, not after another wait.
+    let closing = episode.tick(total, Some(&first), false, now_ms);
+    assert_eq!(closing, Some(DropEpisodeLine::Closed { total }));
+}
+
+#[test]
+fn human_duration_ns_reads_in_the_unit_a_reader_would_reach_for() {
+    assert_eq!(human_duration_ns(250_000_000), "0.250 s");
+    assert_eq!(human_duration_ns(90 * 1_000_000_000), "1.5 m");
+    // The motivating case: a Kvaser 32-bit timer wrap is 42,949.67 s —
+    // about 11.9 h, not a five-digit second count.
+    assert_eq!(human_duration_ns(42_950 * 1_000_000_000), "11.9 h");
+}
+
+#[test]
+fn drop_episode_lines_name_the_bus_the_count_and_the_gap() {
+    let opened = DropEpisodeLine::Opened {
+        bus_id: "pt".to_string(),
+        frame_ts_ns: 10_000,
+        before_origin_ns: 42_950 * 1_000_000_000,
+    };
+    let msg = opened.message();
+    assert!(msg.contains("bus pt"), "{msg}");
+    assert!(msg.contains("10000 ns"), "{msg}");
+    assert!(msg.contains("11.9 h"), "{msg}");
+
+    let continued = DropEpisodeLine::Continued {
+        since_last: 8,
+        total: 9,
+    };
+    let msg = continued.message();
+    assert!(msg.contains('8'), "{msg}");
+    assert!(msg.contains('9'), "{msg}");
+
+    let closed = DropEpisodeLine::Closed { total: 12 };
+    assert!(closed.message().contains("12"), "{}", closed.message());
+
+    let resumed = DropEpisodeLine::Resumed {
+        since_last: 3,
+        total: 15,
+    };
+    let msg = resumed.message();
+    assert!(msg.contains("again"), "{msg}");
+    assert!(msg.contains('3'), "{msg}");
+    assert!(msg.contains("15"), "{msg}");
+}
+
 /// A one-message DBC with an enum signal, for the fuzzy leaf's
 /// value-table half.
 fn enum_dbc(id: u32, name: &str, sig: &str) -> String {
