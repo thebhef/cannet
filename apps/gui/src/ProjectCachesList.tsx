@@ -37,6 +37,7 @@ import {
   clearProjectCache,
   deleteProjectCache,
   loadProjectCaches,
+  locationLabel,
   offersSaveAs,
   type ProjectCacheRow,
 } from "./projectCaches";
@@ -104,7 +105,6 @@ export function ProjectCachesList() {
         </span>
         <button
           type="button"
-          className="danger"
           disabled={busy || rows.every((r) => !canClear(r))}
           onClick={() => void run(clearAllProjectCaches)}
         >
@@ -120,15 +120,16 @@ export function ProjectCachesList() {
           key={row.root}
           className={`project-cache-row${row.state === "missing" ? " gone" : ""}`}
         >
+          <span className={`project-cache-badge ${row.state}`}>{badgeLabel(row.state)}</span>
           <span
-            className={`project-cache-badge ${row.state}`}
+            className={`project-cache-location${row.auto_located ? " auto-located" : ""}`}
             title={
-              row.state === "auto-located"
+              row.auto_located
                 ? "The project file has no .cannet/ beside it, so cannet located its cache here. Save as… moves the project out of cache space."
                 : undefined
             }
           >
-            {badgeLabel(row.state)}
+            {locationLabel(row)}
           </span>
           <span className="project-cache-info" title={row.root}>
             <span className="project-cache-name">{projectName(row.project_file) ?? "unsaved"}</span>
