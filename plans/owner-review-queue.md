@@ -7,6 +7,14 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **151: the *Show servers* command is gone.** `panel.show.servers`
+  retired with the singleton panel; the command palette's *Servers*
+  go-to-view entry and *Manage servers…* open the settings view at the
+  Servers section instead. A user keybinding bound to the old id reads
+  as unknown in the shortcuts view and stops working, with no command
+  to rebind to. Leave it, or restore `panel.show.servers` opening the
+  section? Detail: 0151 § Status log, 2026-09-23 (phase 3).
+
 - **Units section: dimensions now open collapsed.** The settings view's
   Units section is a gridview of dimension branches over unit rows, and
   on open every dimension is shut except one holding a unit this
@@ -142,6 +150,12 @@ keeps the queue's copy). This file shrinks every time it is walked.
   carries a British alternate. Detail: 0149 § Blockers / side effects.
 
 ## 4. Finished tasks awaiting acceptance
+
+- **151 — the settings view's grids are gridviews** (3 phases,
+  `task151-units-gridview` → `task151-caches-gridview` →
+  `task151-servers-section`): 6/6 exit criteria met. `column-defaults`
+  (a fixed ordering editor, not a view onto data) deliberately not
+  converted. Two § 1 items (collapsed default, *Show servers*).
 
 - **153 — enum values in the trace filter** (2 phases,
   `task153-host-gate` → `task153-panel`): 6/6 exit criteria met. The

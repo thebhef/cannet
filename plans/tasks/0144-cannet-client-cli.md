@@ -9,7 +9,7 @@ The python client (task 136) does full ADR-0041 auth on the wire —
 TLS pinned to a stored fingerprint plus a bearer token on every RPC —
 but it only *reads* the GUI's trust store. The acceptance workflow
 (mDNS browse, TOFU fingerprint compare, token entry) exists only in
-the GUI's Servers panel, so a machine without the GUI cannot onboard
+the GUI's Servers section of the settings view, so a machine without the GUI cannot onboard
 against a server at all short of hand-editing `servers.json`.
 
 ## Scope
@@ -44,7 +44,7 @@ panel and nothing more:
   `can.Bus(interface="cannet", server=…)` snippet.
 - **`forget <server>`** — delete the server's trust entry (pin,
   token, flags) from `servers.json` (owner, 2026-09-18); the same
-  act as removing the row in the GUI's Servers panel.
+  act as removing the row in the GUI's Servers section of the settings view.
 
 ## Rulings
 
