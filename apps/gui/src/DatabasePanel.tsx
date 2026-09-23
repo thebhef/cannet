@@ -1688,9 +1688,15 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       return;
     }
     let live = true;
+    // One request in flight at a time (ADR 0049). A snapshot over a wide
+    // viewport can outlive the poll interval, and a tick that fired
+    // another would leave two answers racing for the same state — the
+    // older of which would win if it landed second.
+    let fetching = false;
     const fetchValues = () => {
       const keys = visibleSignalKeysRef.current;
       if (keys.length === 0) return;
+      fetching = true;
       void invoke<{ rows: SignalSnapshotRecord[] }>("fetch_signal_page", {
         selection: { keys, patterns: [] },
         // No sections: this is a keyed value lookup, not a view.
@@ -1714,6 +1720,9 @@ export function DatabasePanel(props: IDockviewPanelProps) {
         })
         .catch(() => {
           /* best effort — the tree renders without values */
+        })
+        .finally(() => {
+          fetching = false;
         });
     };
     const unlisten = listen("trace-grew", () => {
@@ -1721,6 +1730,10 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     });
     const tick = () => {
       if (!valuesDirtyRef.current) return;
+      // A request is still out: leave the dirty flag set so the next
+      // tick after it lands asks once, rather than stacking another
+      // snapshot on top of it.
+      if (fetching) return;
       valuesDirtyRef.current = false;
       fetchValues();
     };

@@ -153,10 +153,6 @@ const SYNCHRONOUS_COMMANDS: &[&str] = &[
     // session's outgoing queue: a full queue comes back as a refusal
     // the caller reports, never as a wait (`session::SessionTx::transmit`).
     "transmit_frame_once",
-    // Returns a row per registered project immediately; each row's size
-    // is the directory walk ADR 0002 DS-8 calls expensive, and that walk
-    // is not this command's to do.
-    "list_project_caches",
 ];
 
 #[cfg(test)]
