@@ -82,6 +82,19 @@ term."
     open their signal disclosure so the matching signal is on screen,
     in both modes; the disclosure closes again when the query changes
     to a message-level winner or clears.
+- **Results hide, parents stay** (owner, 2026-09-22): "hide results
+  that don't match the filter, and keep the parent messages of
+  results that do match." The opened disclosure lists only the
+  matching signal(s); the message's other signals are hidden while
+  the query stands; the parent row stays.
+- **Chronological mode searches the history** (owner, 2026-09-22): a
+  value query over a historical trace shows every frame whose decoded
+  signal carries that value.
+- **By-id mode searches the whole value list** (owner, 2026-09-22):
+  the by-id row is one message, so a value query matches against the
+  signal's entire `VAL_` table, not the latest frame's value — the
+  row shows when the message defines a signal that can carry the
+  value, opened to that signal.
 
 ## Open questions
 
@@ -93,14 +106,18 @@ term."
    red host test, through `apply_filter_records` and the filter index
    path; signal names as their own ranked entries; the gate constant
    and the "winner kind" (message / signal / value) settled per query
-   in `FuzzyResolution` and returned to the frontend with the page;
-   the constant tuned against the fixture and the scores recorded in
-   the status log; `filter.rs` module docs and the
-   `TaggedPredicate::Fuzzy` rustdoc updated.
+   in `FuzzyResolution` and returned to the frontend with the page,
+   together with the matching signal names per row; the by-id page's
+   value match reads the `VAL_` table (definitional, no decode) while
+   the chronological paths keep the per-frame decoded test; the
+   constant tuned against the fixture and the scores recorded in the
+   status log; `filter.rs` module docs and the `TaggedPredicate::Fuzzy`
+   rustdoc updated.
 2. **Panel: expand on a signal winner; README.** The trace panel
    opens the admitted rows' signal disclosure when the winner kind is
-   a signal or a value, in both modes, and closes it when the winner
-   kind changes or the query clears; DOM tests; README's trace section
+   a signal or a value, in both modes, listing only the matching
+   signals, and closes it when the winner kind changes or the query
+   clears; DOM tests; README's trace section
    names the filter box, what it matches — bus, message, id,
    transmitter, signal, enum label — and that a signal or value match
    hides weaker message matches and opens the row.
@@ -108,9 +125,12 @@ term."
 ## Exit criteria
 
 1. Typing a fault enum's label into a trace panel narrowed to fault
-   messages shows exactly the frames whose decoded signal carries
-   that label, in both modes — asserted through
-   `apply_filter_records` and the filter index.
+   messages shows, in chronological mode, exactly the frames whose
+   decoded signal carries that label across the whole history —
+   asserted through `apply_filter_records` and the filter index —
+   and, in by-id mode, the message whose signal's value list holds
+   it whatever the latest frame reads, asserted through the by-id
+   page.
 2. A query whose best match is a signal name shows the frames of the
    messages carrying that signal and hides messages matched only by
    their own haystack below the gate; a query whose best match is a
@@ -118,7 +138,8 @@ term."
 3. The gate constant is one named value, and the status log records
    the fixture scores that set it.
 4. When the winner is a signal or a value, the admitted rows show
-   their signal disclosure open in both modes; a message winner or a
+   their signal disclosure open in both modes with only the matching
+   signals listed and the parent row kept; a message winner or a
    cleared query leaves the disclosure as the user had it — DOM
    tests.
 5. README names the filter box, its haystack and the signal-winner
@@ -137,3 +158,6 @@ term."
   scope: signals ranked in their own right, weaker message matches
   hidden behind a signal or value winner, rows expanded to the
   matching signal. Two phases.
+- 2026-09-22 — owner clarified: the disclosure shows only matching
+  signals (parents kept); chronological mode searches the history;
+  by-id mode matches a value against the signal's whole `VAL_` table.
