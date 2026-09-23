@@ -7,6 +7,19 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **149, criterion 11: should the View signals panel list math
+  signals?** The 2026-09-22 ruling asked for the composed-kind override
+  "in the signal mapping panel"; that panel is a database-mapping
+  surface and drops every math reference by design
+  (`viewSignalsPush.ts`), so the criterion has no row to lock without a
+  new row kind (status, candidates, serving database and a GUID signal
+  name all meaningless for a math signal). The override is already
+  class-locked in the math editor, which opens in place from the
+  Signals panel, the plot side list and the Database panel. (a) accept
+  those three as the surface and reword criterion 11; (b) open a task
+  for a math section in the View signals panel. Detail: 0149 § Status
+  log, 2026-09-23.
+
 - **The ruff locks aligned DOWN to 0.15.16** — *not accepted* (owner,
   2026-09-21). The 0.16 uplift lands as its own branch absorbing the
   ~200 mechanical fixes, with a `[tool.ruff.lint] select` stanza so

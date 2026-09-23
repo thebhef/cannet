@@ -226,9 +226,15 @@ phase 3 gives a math signal's row the editor's class-locked picker.)
 - **`°R` is offered but no spelling reaches it**: the crate gives the
   absolute and the interval Rankine the same `°R`. Its id
   `degree-rankine` still names it.
-- **`mph` now displays `mi/h`** (the crate's symbol); `mph` still
-  recognises. Keeping `mph` would be a hand-typed display override.
-  Queued for the owner.
+- **`mph` displays `mi/h`** (the crate's symbol) until the project
+  aliases it: `mph = mile / hour` in the settings entry (phase 3,
+  2026-09-23) — no display override in the facade. `°R` and
+  `PressureImpulse` above stand: both recognise to nothing, so no name
+  is taken and the alias exception does not bear on them.
+- **A definition wrong in both ways** (a taken name *and* a bad
+  composition) reports the composition's fault first, since whether a
+  name may be taken is a question about what the composition means
+  (phase 3).
 - **The picker renders all 920 base rows at once.** No virtualiser
   (adding one would be a technology-inventory decision). Numbers in
   the 2026-09-22 phase 2 status log; typing narrows it in ~50 ms,
@@ -349,5 +355,73 @@ phase 3 gives a math signal's row the editor's class-locked picker.)
 | 7 | met — +39 s compile, +1.06 MiB binary (phase 1) |
 | 8 | met — `N · m` opens on energy with torque beneath, newton-metre ×1; first resolutions pinned (both phases); energy-first stands (owner, 2026-09-22) |
 | 9 | met — inventory entry, module docs, README (phase 2) |
+| 10 | met — `mph = mile / hour` and the one-term `mph = mile-per-hour` accepted, displays `mph`, ×1 both ways against `mi/h`, `recognize("mph")` returns it; README says what an alias is (phase 3) |
+| 11 | **not met — unimplementable as written**: the View signals panel carries no math rows by documented design (`viewSignalsPush.ts`), so there is no row whose Units button to lock. The override is class-locked in the math editor, which opens in place from the Signals panel, the plot side list and the Database panel. Owner decision queued (§ 1 of the review queue) |
 
 - 2026-09-22 — owner review: accepted with follow-ups (rulings above); phase 3 opened; picker render cost folded into task 151.
+- 2026-09-23 — **phase 3 (owner review follow-ups) landed half** on
+  `task149-alias-and-override` (`82231475`, one commit, no squash).
+  **Criterion 10 met; criterion 11 is not implementable as written and
+  is unimplemented — see below.**
+  **The alias.** `define` now reads the composition *before* it judges
+  the name, and refuses a taken name only where the composition is not
+  that very unit: same dimension, same size (relative 1e-9, since
+  `1609.344 / 3600` need not agree with `0.44704` in the last bits),
+  and a spelling of its own differing from the name. So
+  `mph = mile / hour` is accepted — as is the one-term
+  `mph = mile-per-hour`, a composition of one unit — while `W = V * A`
+  stays refused (it *is* the watt, but the watt already reads `W`, so a
+  second identity for it buys nothing; the existing
+  `a_name_that_already_names_a_unit_is_refused` test held once the
+  spelling condition was added, and its doc now says why). The display
+  symbol needs no new field anywhere: `display_of` already falls
+  through to the custom unit's own name, so the alias reads `mph`
+  host-side and the frontend is untouched. **Recognition order
+  changed**: `recognize` consults the units the user composed by name
+  directly after the customization dict, ahead of the built-in
+  recognitions — a name the user defined is the user speaking, as a
+  customization is, and without it a database writing `mph` would still
+  get the library's `mi/h`. The reorder can only change behaviour for
+  an alias: before this, a name that recognised could never be defined.
+  Tests: 2 new in `units` (80 total) — accept via `check_definition`
+  both ways round, display `mph`, ×1 both directions against
+  `mile-per-hour`, `recognize("mph")` → the alias, and the exception's
+  narrowness (`2 * mile / hour` and `V * A` under taken names still
+  refused). README's composed-unit passage gains the alias paragraph;
+  `units.rs` module docs gain the alias and the new recognition order;
+  `docs/CONTEXT.md` unchanged (it carries no unit-composition
+  vocabulary). 1341 host tests, workspace clippy and rustdoc clean,
+  3633 frontend tests (the diff reaches no frontend file); release host
+  built.
+  **Criterion 11 — the View signals panel carries no math rows.**
+  Observation: `ViewSignalsPanel.tsx`'s only `kind={null}` (line 629,
+  `ResolvedUnitChip`) is on every row of a *database-signal* panel, and
+  the panel never sees a math signal. Hypothesis: a math signal reaches
+  the panel by some path the grooming assumed. Experiment: trace every
+  producer of the panel's rows. Data — (1) the panel's rows are built
+  only from pushed refs (`view_signals.rs::build_rows`); (2) all four
+  callers of `usePushViewSignals` go through `viewSignalsPush.ts`, whose
+  three math-capable builders each `continue` on `s.math` and whose
+  other two carry DBC-catalog picks only; (3) that module's doc states
+  the rule outright — "**Math series push nothing either.** The panel
+  these refs feed is a database-mapping surface… a row for it would
+  name a GUID and flag a unit only its editor can change"; (4) the
+  host's `ViewSignalRef` has no math field at all (the frontend's
+  `types.ts` mirror declares `math?: boolean` and documents it as
+  "never becomes a row" — a stale field the wire ignores). Conclusion:
+  criterion 11 cannot be met without making a database-mapping panel
+  list math signals — a row kind with no status in its taxonomy, no
+  candidates, no serving database, several buses, a GUID for a signal
+  name, and a unit chip that would have to write the *definition*
+  rather than the reinterpretation store. That is a task-sized change
+  against a documented design decision, so it was surfaced rather than
+  landed (owner rulings bind; no silent redesign).
+  What the ruling asked for — "the user can easily override it in the
+  signal mapping panel" — **is already reachable in every surface that
+  lists a math signal**: the Signals panel row disclosure, the plot
+  side list's row disclosure and the Database panel's math section all
+  mount the same `MathSignalEditor`, whose Units button has been
+  class-locked since phase 2 (`kind={record.unitKinds}`: the
+  ISQ-equivalent dimensions, current kind first and preselected). The
+  View signals panel is the one signal list that shows no math signal
+  at all.
