@@ -580,6 +580,17 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
 /// them (ADR 0047), and it is the whole difference between the periodic
 /// caller and the exit one.
 pub(crate) fn persist_pyramids(state: &AppState, harden: Harden) {
+    persist_pyramids_reporting(state, harden, &mut |_, _| {});
+}
+
+/// [`persist_pyramids`], passing `progress(done, total)` through to
+/// [`crate::signal_cache::SignalCacheStore::persist_reporting`] — the
+/// shutdown sequence's signal-cache figure (ADR 0002 DS-7).
+pub(crate) fn persist_pyramids_reporting(
+    state: &AppState,
+    harden: Harden,
+    progress: &mut dyn FnMut(usize, usize),
+) {
     if !state.signal_caches.needs_persist() {
         return;
     }
@@ -587,9 +598,12 @@ pub(crate) fn persist_pyramids(state: &AppState, harden: Harden) {
         // Lock order: the DBC set before the signal caches, as every
         // other path that needs both takes them (`sample_signals`).
         let dbcs = state.databases();
-        state
-            .signal_caches
-            .persist(&validity, &state.decode_model(&dbcs), harden);
+        state.signal_caches.persist_reporting(
+            &validity,
+            &state.decode_model(&dbcs),
+            harden,
+            progress,
+        );
     }
 }
 /// Snapshot the host-side system log. Returns every message

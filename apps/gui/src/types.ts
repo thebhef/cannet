@@ -158,6 +158,19 @@ export type LoadProgress =
   | { phase: "census"; bytes_read: number; total_bytes: number }
   | { phase: "import"; frames: number; total_frames: number };
 
+/// The step the host's shutdown sequence is on (`closing-progress`,
+/// mirrors `closing.rs::ClosingProgress`). Once the window's close is
+/// decided the host runs the sequence behind the still-open window and
+/// exits when it is done (ADR 0002 DS-7); this is all the closing window
+/// shows. `bytes` is the capture scratch's size (`null` for the in-RAM
+/// store); `total` is 0 until the signal count is known.
+export type ClosingProgress =
+  | { step: "disconnecting" }
+  | { step: "finishing_loggers" }
+  | { step: "clearing_capture" }
+  | { step: "writing_capture"; bytes: number | null }
+  | { step: "writing_signals"; done: number; total: number };
+
 /// How far the cold pyramid rebuild a restore forced has got
 /// (`signal_pyramids_rebuilding`, mirrors `ipc.rs::RebuildProgressRecord`).
 /// Polled rather than pushed: the answer is where the caches' decode
