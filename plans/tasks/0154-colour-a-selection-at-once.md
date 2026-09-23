@@ -81,3 +81,33 @@ Settled by the overseer from the code, open to reversal:
 ## Status log
 
 - 2026-09-22 — opened and groomed from the code; no owner questions.
+- 2026-09-23 — **phase 1 (the only phase) landed** on
+  `task154-colour-selection` (`e6af8eab`, one commit). Both panels'
+  colour pickers write over the selection the right-clicked row
+  belongs to, one write per pick, pattern chips and section headers
+  skipped. Signals panel: a batched `onSetSignalColors` on the project
+  context beside the single-key `onSetSignalColor`, one `setSignalColors`
+  update and one dirty step. Plot area: `onSetSelectionColor` on the
+  axis handlers, the selection-scoped sibling of `onSetSelectionHidden`,
+  one `setAreas` call with the same pattern-row materialisation rule; the
+  old single-ref `setSignalColor` plumbing lost its last caller (a lone
+  pick is a one-row selection) and was removed. Three pre-existing plot
+  swatch tests fired the colour input's change directly, bypassing the
+  right-click that now resolves the target; they fire `contextmenu`
+  first now, and one expectation flipped (an unselected right-clicked
+  row becomes the selection). README's plot-area colour passages and
+  ADR 0026's picker bullet updated; two now-false claims corrected
+  ("not selection gestures", "no bulk recolor"). Six new dom tests, red
+  first. Frontend test + build and the comment-references grep green;
+  Rust and Python lanes unreachable (frontend-only diff). No perf
+  capture. Side effect: one dom test file flipped to CRLF on edit,
+  normalised back to LF before the commit.
+
+## Exit criteria verdicts (2026-09-23)
+
+| # | Verdict |
+| --- | --- |
+| 1 | met — three selected, one pick, three `signal_colors` entries in one project change; an unselected row recolours alone and becomes the selection |
+| 2 | met — same through the plot swatch, N `colorPick`s in one areas update |
+| 3 | met — pattern chips skipped in the Signals panel; a pattern-derived plot row keeps its badge and place; no stored shape changed |
+| 4 | met — six dom tests; README and ADR 0026 describe the selection rule |
