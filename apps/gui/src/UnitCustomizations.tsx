@@ -2,14 +2,25 @@
 // **Settings → Units** section — what this project's DBC unit strings
 // mean.
 //
-// One row per unit: the library's full base-unit set, plus any unit the
-// user or project config names, each carrying the strings that read as
-// it. Which row a string lands on is the host's answer and nothing else
-// (`list_unit_mappings` over `units::recognize`, ADR 0025) — so the table
-// cannot disagree with what the app actually does, and a spelling both
-// scopes map appears once, on the reading that wins.
+// A gridview (ADR 0044), not a table of its own: **dimensions are
+// branch nodes and units are leaf rows**, in a bounded row space with
+// its own scrollbar, so the settings view's own scroll no longer walks
+// through the library's thousands of units. The rows themselves are
+// the library's full base-unit set plus any unit the user or project
+// config names, each carrying the strings that read as it. Which row a
+// string lands on is the host's answer and nothing else
+// (`list_unit_mappings` over `units::recognize`, ADR 0025) — so the
+// section cannot disagree with what the app actually does, and a
+// spelling both scopes map appears once, on the reading that wins.
 //
-// **Two scopes, one table.** The mappings live at both:
+// **Disclosure.** Every dimension opens collapsed except one holding a
+// unit this project maps or composes: a library of 109 dimensions is
+// unreadable flat, and the dimensions a project has an interest in are
+// the ones worth showing it. The filter opens what it matches — while
+// one is typed the branches are the headings over its results and
+// nothing is hidden behind a caret.
+//
+// **Two scopes, one section.** The mappings live at both:
 // `unit_customizations` is workspace-scoped — it interprets *this
 // project's* databases and travels with them (ADR 0042 §3) — and
 // `unit_customizations_user` is the same map promoted to every project
@@ -23,22 +34,32 @@
 // its reset-to-default; the user dict has no row and so is written
 // directly through `updateSettings`.
 //
-// **Composed units.** The two-field entry above the table defines a unit
+// **Composed units.** The two-field entry above the rows defines a unit
 // out of ones the model already knows (`VA` = `V * A`). The composition
 // string is read by the host and nowhere else: this section asks
 // `check_unit_definition` before it persists, shows the refusal where it
 // was typed, and from then on holds only the pair it stored — the unit
-// itself arrives back as an ordinary row of the table, in the same
-// normalized order, and is picked, spelled and converted like any other.
-// The definitions live at the same two scopes as the mappings, and the
+// itself arrives back as an ordinary leaf row, in the same normalized
+// order, and is picked, spelled and converted like any other. The
+// definitions live at the same two scopes as the mappings, and the
 // row's own checkboxes move them.
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { DisclosureToggle } from "./DisclosureToggle";
+import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";
 import { subscribeSettings, updateSettings, useSetting, type Settings } from "./hostSettings";
 import type { SettingDescriptor } from "./settingDescriptors";
 import type { UnitId } from "./types";
+import { useGridview } from "./useGridview";
 
 /// One string that reads as a unit, and where that reading comes from.
 interface UnitMapping {
@@ -67,6 +88,20 @@ interface UnitMappingRow {
   error: string | null;
 }
 
+/// The branch a unit with no dimension hangs under: a definition the
+/// host refused names no unit, so it lands on no dimension either, and
+/// it still has to be visible somewhere to be fixed.
+const NO_DIMENSION = "no dimension";
+
+/// The branch node for a dimension label, and the leaf id for a unit.
+/// Namespaced apart so one row space can hold both.
+const branchId = (label: string) => `dim:${label}`;
+const leafId = (row: UnitMappingRow) => `unit:${row.unit.base}/${row.unit.prefix ?? ""}`;
+
+/// How many rows the bounded row space holds — what PageUp/PageDown
+/// move by (`.unit-customizations-grid`'s max-height over a row).
+const PAGE_ROWS = 16;
+
 /// What a refused definition said, as the host phrased it — the whole
 /// point of asking it, so nothing is reworded here.
 function messageOf(e: unknown): string {
@@ -84,6 +119,25 @@ function dictOf(value: unknown): Record<string, string> {
   }
   return out;
 }
+
+/// Does this project hold anything of its own on this row — a spelling
+/// it maps, or a unit it composed? The same fact the scope checkboxes
+/// are about, and what decides which branches open (see the module doc).
+function isProjectsOwn(row: UnitMappingRow): boolean {
+  return row.composition !== null || row.mappings.some((m) => m.source !== "builtIn");
+}
+
+/// One dimension's branch and the unit rows under it.
+interface UnitGroup {
+  id: string;
+  label: string;
+  rows: UnitMappingRow[];
+}
+
+/// One line of the flattened row space.
+type UnitGridEntry =
+  | { kind: "branch"; id: string; group: UnitGroup }
+  | { kind: "leaf"; id: string; row: UnitMappingRow };
 
 export function UnitCustomizations({
   value,
@@ -103,14 +157,14 @@ export function UnitCustomizations({
   const [composition, setComposition] = useState("");
   const [refusal, setRefusal] = useState<string | null>(null);
 
-  // The host reads both dicts from its own settings cache, so the table
-  // is re-asked once a write has **landed** there — which is what the
+  // The host reads both dicts from its own settings cache, so the rows
+  // are re-asked once a write has **landed** there — which is what the
   // settings store publishes, and the only moment the host's answer can
   // have changed. Keying the fetch on the dict this component was
   // handed would ask too early and then not at all: a commit arrives
   // here as a new value the instant it is made (the panel sets it
   // optimistically), while `updateSettings` is still a read-modify-write
-  // round-trip away from the host — so the table would re-read the old
+  // round-trip away from the host — so the section would re-read the old
   // mappings and never see the value settle to what it already showed.
   // A publish also covers a re-hydrate after a hand-edit.
   const [settled, setSettled] = useState(0);
@@ -247,16 +301,137 @@ export function UnitCustomizations({
   };
 
   const needle = filter.trim().toLowerCase();
-  const shown = needle
-    ? rows.filter(
-        (r) =>
-          r.display.toLowerCase().includes(needle) ||
-          r.unit.base.includes(needle) ||
-          r.dimensionLabel.includes(needle) ||
-          (r.composition ?? "").toLowerCase().includes(needle) ||
-          r.mappings.some((m) => m.spelling.toLowerCase().includes(needle)),
-      )
-    : rows;
+  const filtering = needle !== "";
+  const shown = useMemo(
+    () =>
+      needle
+        ? rows.filter(
+            (r) =>
+              r.display.toLowerCase().includes(needle) ||
+              r.unit.base.includes(needle) ||
+              r.dimensionLabel.includes(needle) ||
+              (r.composition ?? "").toLowerCase().includes(needle) ||
+              r.mappings.some((m) => m.spelling.toLowerCase().includes(needle)),
+          )
+        : rows,
+    [needle, rows],
+  );
+
+  /// The host serves its rows dimension-contiguous, so grouping is a
+  /// walk — keyed by label rather than by run, so a dimension that ever
+  /// came back in two pieces would still be one branch with one id.
+  const groups = useMemo(() => {
+    const out: UnitGroup[] = [];
+    const byId = new Map<string, UnitGroup>();
+    for (const row of shown) {
+      const label = row.dimensionLabel === "" ? NO_DIMENSION : row.dimensionLabel;
+      const id = branchId(label);
+      let group = byId.get(id);
+      if (group === undefined) {
+        group = { id, label, rows: [] };
+        byId.set(id, group);
+        out.push(group);
+      }
+      group.rows.push(row);
+    }
+    return out;
+  }, [shown]);
+
+  // View-local: which dimension branches are open (CLAUDE.md § GUI
+  // architecture — disclosure is the view's own state, never the
+  // model's).
+  const [expanded, setExpandedState] = useState<ReadonlySet<string>>(new Set());
+  const setExpanded = useCallback((id: string, on: boolean) => {
+    setExpandedState((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  // A branch opens by itself the **first** time this project is seen to
+  // hold something on one of its units — on load for the dimensions
+  // already customized, and on the spot for a unit just composed or
+  // mapped. Only the first time: a branch the user then shuts stays
+  // shut, because a default that keeps reasserting itself is not a
+  // default.
+  const seeded = useRef(new Set<string>());
+  useEffect(() => {
+    const open: string[] = [];
+    for (const row of rows) {
+      if (!isProjectsOwn(row)) continue;
+      const id = branchId(row.dimensionLabel === "" ? NO_DIMENSION : row.dimensionLabel);
+      if (seeded.current.has(id)) continue;
+      seeded.current.add(id);
+      open.push(id);
+    }
+    if (open.length > 0) setExpandedState((prev) => new Set([...prev, ...open]));
+  }, [rows]);
+
+  /// While a filter is typed the branches are headings over its results
+  /// — everything it matched is shown, and there is nothing behind a
+  /// caret to disclose.
+  const isOpen = useCallback(
+    (id: string) => filtering || expanded.has(id),
+    [filtering, expanded],
+  );
+
+  const entries = useMemo(() => {
+    const out: UnitGridEntry[] = [];
+    for (const group of groups) {
+      out.push({ kind: "branch", id: group.id, group });
+      if (!isOpen(group.id)) continue;
+      for (const row of group.rows) out.push({ kind: "leaf", id: leafId(row), row });
+    }
+    return out;
+  }, [groups, isOpen]);
+
+  const gridRows = useMemo<GridviewRow[]>(
+    () =>
+      entries.map((e) => ({
+        id: e.id,
+        kind: e.kind,
+        expandable: e.kind === "branch" && !filtering,
+        depth: e.kind === "branch" ? 0 : 1,
+      })),
+    [entries, filtering],
+  );
+
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // Read through a ref so the adapter's memo can close over the
+  // gridview's row-id helper before `useGridview` has run — the same
+  // forward reference the other non-virtualized gridviews use, for the
+  // same reason: `scrollToRow` only runs on a later interaction.
+  const rowDomIdRef = useRef<(id: string) => string>((id) => id);
+
+  const adapter = useMemo<GridviewAdapter>(() => {
+    const space = arrayRowSpace(gridRows, isOpen);
+    return {
+      ...space,
+      // The rows are all in the document, so this is the "scroll it
+      // just into view" arithmetic the other non-virtualized gridviews
+      // use.
+      scrollToRow(index) {
+        const id = space.rowIdAt(index);
+        const container = listRef.current;
+        if (id == null || container == null) return;
+        const el = document.getElementById(rowDomIdRef.current(id));
+        if (el == null) return;
+        const c = container.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        if (r.top < c.top) container.scrollTop += r.top - c.top;
+        else if (r.bottom > c.bottom) container.scrollTop += r.bottom - c.bottom;
+      },
+      setExpanded,
+      // A dimension is a heading, not a thing to act on; a unit is the
+      // row everything here is about.
+      isSelectable: (row) => row.kind === "leaf",
+    };
+  }, [gridRows, isOpen, setExpanded]);
+
+  const grid = useGridview({ adapter, pageRows: PAGE_ROWS, idPrefix: "unit-customizations" });
+  rowDomIdRef.current = grid.rowDomId;
 
   return (
     <div className="setting-custom unit-customizations">
@@ -296,32 +471,73 @@ export function UnitCustomizations({
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
       />
-      <table className="unit-customizations-table">
-        <thead>
-          <tr>
-            <th scope="col">unit</th>
-            <th scope="col">dimension</th>
-            <th scope="col">composed from</th>
-            <th scope="col">matched strings</th>
-            <th scope="col">project</th>
-            <th scope="col">user</th>
-          </tr>
-        </thead>
-        <tbody>
-          {shown.map((row) => (
+      <div
+        className="unit-customizations-grid"
+        ref={listRef}
+        role="tree"
+        aria-label="Units"
+        {...grid.containerProps}
+      >
+        <div className="unit-customizations-head" role="presentation">
+          <span>unit</span>
+          <span>composed from</span>
+          <span>matched strings</span>
+          <span>project</span>
+          <span>user</span>
+        </div>
+        {entries.map((entry) =>
+          entry.kind === "branch" ? (
+            <div
+              key={entry.id}
+              id={grid.rowDomId(entry.id)}
+              role="treeitem"
+              aria-level={1}
+              aria-expanded={isOpen(entry.id)}
+              className={`unit-customization-dimension-row${grid.cursor === entry.id ? " cursor" : ""}`}
+              onClick={(e) =>
+                grid.onRowClick(entry.id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey })
+              }
+            >
+              {filtering ? (
+                <span className="unit-customization-dimension-caret" aria-hidden="true" />
+              ) : (
+                <DisclosureToggle
+                  className="unit-customization-dimension-caret"
+                  compact
+                  tabIndex={-1}
+                  expanded={expanded.has(entry.id)}
+                  ariaLabel={`toggle ${entry.group.label}`}
+                  onToggle={(e) => {
+                    e.stopPropagation();
+                    setExpanded(entry.id, !expanded.has(entry.id));
+                  }}
+                />
+              )}
+              <span className="unit-customization-dimension">{entry.group.label}</span>
+              <span className="unit-customization-dimension-count">
+                {entry.group.rows.length}
+              </span>
+            </div>
+          ) : (
             <UnitRow
-              key={`${row.unit.base}/${row.unit.prefix ?? ""}`}
-              row={row}
-              custom={customOf(row)}
-              defined={definedIn(row)}
-              onAdd={(spelling) => addSpelling(row, spelling)}
+              key={entry.id}
+              row={entry.row}
+              domId={grid.rowDomId(entry.id)}
+              cursor={grid.cursor === entry.id}
+              selected={grid.selection.has(entry.id)}
+              onRowClick={(e) =>
+                grid.onRowClick(entry.id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey })
+              }
+              custom={customOf(entry.row)}
+              defined={definedIn(entry.row)}
+              onAdd={(spelling) => addSpelling(entry.row, spelling)}
               onRemove={removeSpelling}
-              onDelete={() => deleteDefinition(row)}
-              onScope={(scope, on) => setScope(row, scope, on)}
+              onDelete={() => deleteDefinition(entry.row)}
+              onScope={(scope, on) => setScope(entry.row, scope, on)}
             />
-          ))}
-        </tbody>
-      </table>
+          ),
+        )}
+      </div>
       {shown.length === 0 && (
         <p className="unit-customizations-empty">
           {rows.length === 0
@@ -335,6 +551,10 @@ export function UnitCustomizations({
 
 function UnitRow({
   row,
+  domId,
+  cursor,
+  selected,
+  onRowClick,
   custom,
   defined,
   onAdd,
@@ -343,6 +563,10 @@ function UnitRow({
   onScope,
 }: {
   row: UnitMappingRow;
+  domId: string;
+  cursor: boolean;
+  selected: boolean;
+  onRowClick: (e: ReactMouseEvent) => void;
   /// The spellings this row persists — what a scope checkbox moves.
   custom: readonly string[];
   /// Which scopes hold this row's definition, or `null` where the app
@@ -361,10 +585,16 @@ function UnitRow({
   // the user composed always does.
   const disabled = custom.length === 0 && defined === null;
   return (
-    <tr>
-      <td className="unit-customization-unit">{row.display}</td>
-      <td className="unit-customization-dimension">{row.dimensionLabel}</td>
-      <td className="unit-customization-composition">
+    <div
+      id={domId}
+      role="treeitem"
+      aria-level={2}
+      aria-selected={selected}
+      className={`unit-customization-row${cursor ? " cursor" : ""}${selected ? " selected" : ""}`}
+      onClick={onRowClick}
+    >
+      <span className="unit-customization-unit">{row.display}</span>
+      <span className="unit-customization-composition">
         {row.composition !== null && (
           <>
             <span>{row.composition}</span>
@@ -380,8 +610,8 @@ function UnitRow({
             )}
           </>
         )}
-      </td>
-      <td>
+      </span>
+      <span className="unit-customization-strings">
         {row.mappings.map((m) => (
           <span
             key={m.spelling}
@@ -423,8 +653,8 @@ function UnitRow({
             setTyped("");
           }}
         />
-      </td>
-      <td className="unit-customization-scope">
+      </span>
+      <span className="unit-customization-scope">
         <input
           type="checkbox"
           aria-label={`Keep ${row.display} mappings in this project`}
@@ -433,8 +663,8 @@ function UnitRow({
           checked={inScope("project")}
           onChange={(e) => onScope("project", e.target.checked)}
         />
-      </td>
-      <td className="unit-customization-scope">
+      </span>
+      <span className="unit-customization-scope">
         <input
           type="checkbox"
           aria-label={`Keep ${row.display} mappings in every project`}
@@ -443,7 +673,7 @@ function UnitRow({
           checked={inScope("user")}
           onChange={(e) => onScope("user", e.target.checked)}
         />
-      </td>
-    </tr>
+      </span>
+    </div>
   );
 }

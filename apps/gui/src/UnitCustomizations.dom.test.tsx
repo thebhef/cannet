@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 //
-// DOM tests for the settings view's units section: one row per unit with
-// the strings that read as it, the per-row add path, and the two scope
+// DOM tests for the settings view's units section: a gridview
+// (ADR 0044) of dimension branches over unit rows, each carrying the
+// strings that read as it, the per-row add path, and the two scope
 // checkboxes that decide where a row's own mappings persist.
 //
 // Which row a string lands on is the host's answer (`list_unit_mappings`
 // over `units::recognize`) — the mock below is that host, so the section
 // is exercised as a thin view over it and re-derives no recognition of
 // its own.
+//
+// Dimensions open collapsed unless the project holds something on one of
+// their units, so `rowFor` opens the branch the host puts a unit under
+// before it reaches for the row. That is the only adaptation these tests
+// needed: what they assert about a unit's row is unchanged.
 
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -197,8 +203,39 @@ function ThroughThePanel() {
   );
 }
 
-const rowFor = (unit: string) =>
-  screen.getByText(unit, { selector: ".unit-customization-unit" }).closest("tr") as HTMLElement;
+/// The branch row for a dimension, by the label the host gives it — a
+/// unit that lands on none hangs under "no dimension".
+const branchFor = (dimension: string) =>
+  screen
+    .getByText(dimension === "" ? "no dimension" : dimension, {
+      selector: ".unit-customization-dimension",
+    })
+    .closest(".unit-customization-dimension-row") as HTMLElement;
+
+/// The unit's row, opening its dimension first where it is still shut.
+/// Which dimension that is comes from the same host answer the section
+/// reads, so nothing here second-guesses the grouping.
+const rowFor = (unit: string) => {
+  let cell = screen.queryByText(unit, { selector: ".unit-customization-unit" });
+  if (cell === null) {
+    const host = mappings().find((r) => r.display === unit);
+    fireEvent.click(
+      within(branchFor(host?.dimensionLabel ?? "")).getByRole("button"),
+    );
+    cell = screen.getByText(unit, { selector: ".unit-customization-unit" });
+  }
+  return cell.closest(".unit-customization-row") as HTMLElement;
+};
+
+/// The dimension a unit's row sits under: the nearest branch row above
+/// it, which is what the grouping means on screen.
+const dimensionOf = (unit: string) => {
+  let el = rowFor(unit).previousElementSibling;
+  while (el !== null && !el.classList.contains("unit-customization-dimension-row")) {
+    el = el.previousElementSibling;
+  }
+  return el?.querySelector(".unit-customization-dimension")?.textContent ?? null;
+};
 
 beforeEach(async () => {
   PROJECT = {};
@@ -215,7 +252,7 @@ describe("the units section", () => {
     await waitFor(() => expect(rowFor("V")).toBeInTheDocument());
     expect(rowFor("°C")).toBeInTheDocument();
     expect(rowFor("A")).toBeInTheDocument();
-    expect(within(rowFor("°C")).getByText("temperature")).toBeInTheDocument();
+    expect(dimensionOf("°C")).toBe("temperature");
   });
 
   it("puts each string on the row the host recognises it to", async () => {
@@ -318,19 +355,52 @@ describe("the per-row scope checkboxes", () => {
   });
 });
 
+describe("the gridview", () => {
+  /// The section is a gridview (ADR 0044), so the row space is what
+  /// answers the arrows: dimensions are branch nodes that Right opens,
+  /// and the units under one are leaf rows the cursor steps onto.
+  it("walks dimensions and their units with the row cursor", async () => {
+    show();
+    await waitFor(() => expect(branchFor("voltage")).toBeInTheDocument());
+    const container = document.querySelector(".unit-customizations-grid") as HTMLElement;
+    const cursorId = () => container.getAttribute("aria-activedescendant");
+
+    fireEvent.keyDown(container, { key: "ArrowDown" });
+    const current = branchFor("current");
+    expect(cursorId()).toBe(current.id);
+    expect(current).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.keyDown(container, { key: "ArrowRight" });
+    expect(branchFor("current")).toHaveAttribute("aria-expanded", "true");
+
+    // Into the branch's first unit — a leaf row of the same space.
+    fireEvent.keyDown(container, { key: "ArrowDown" });
+    const amp = screen.getByText("A", { selector: ".unit-customization-unit" });
+    expect(cursorId()).toBe(amp.closest(".unit-customization-row")!.id);
+
+    // And Left walks back out to the dimension it hangs under.
+    fireEvent.keyDown(container, { key: "ArrowLeft" });
+    expect(cursorId()).toBe(branchFor("current").id);
+    fireEvent.keyDown(container, { key: "ArrowLeft" });
+    expect(branchFor("current")).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
 describe("filtering", () => {
   const filter = (text: string) =>
     fireEvent.change(screen.getByLabelText("Filter units"), { target: { value: text } });
   const units = () =>
-    [...document.querySelectorAll(".unit-customization-unit")].map((td) => td.textContent);
+    [...document.querySelectorAll(".unit-customization-unit")].map((el) => el.textContent);
+  /// The branch rows, in order — one per dimension now, where the flat
+  /// table repeated the label on every row of one.
   const dimensions = () =>
     [...document.querySelectorAll(".unit-customization-dimension")].map(
-      (td) => td.textContent,
+      (el) => el.textContent,
     );
 
   it("narrows the table by unit, dimension or matched string", async () => {
     show();
-    await waitFor(() => expect(rowFor("V")).toBeInTheDocument());
+    await waitFor(() => expect(branchFor("voltage")).toBeInTheDocument());
     filter("temperature");
     expect(rowFor("°C")).toBeInTheDocument();
     expect(screen.queryByText("V", { selector: ".unit-customization-unit" })).toBeNull();
@@ -343,11 +413,10 @@ describe("filtering", () => {
   /// behind, and one that matches nothing says so.
   it("keeps the host's dimension-grouped order, filtered or not", async () => {
     show();
-    await waitFor(() => expect(rowFor("V")).toBeInTheDocument());
+    await waitFor(() => expect(branchFor("voltage")).toBeInTheDocument());
     expect(dimensions()).toEqual([
       "current",
       "temperature",
-      "time",
       "time",
       "voltage",
       "volume",
@@ -380,7 +449,7 @@ describe("composing a unit", () => {
     await waitFor(() => expect(rowFor("VA")).toBeInTheDocument());
     const row = within(rowFor("VA"));
     expect(row.getByText("V * A")).toBeInTheDocument();
-    expect(row.getByText("power")).toBeInTheDocument();
+    expect(dimensionOf("VA")).toBe("power");
     // And it takes a spelling like any other unit.
     expect(row.getByLabelText("Map a unit string to VA")).toBeEnabled();
     // The entry is emptied, ready for the next one.
@@ -400,8 +469,8 @@ describe("composing a unit", () => {
     const row = within(rowFor("LPM"));
     expect(row.getByText("L / min")).toBeInTheDocument();
     // The dimension is the host's answer, shown back rather than
-    // derived here.
-    expect(row.getByText("volume rate")).toBeInTheDocument();
+    // derived here — as the branch the row hangs under.
+    expect(dimensionOf("LPM")).toBe("volume rate");
     fireEvent.change(row.getByLabelText("Map a unit string to LPM"), {
       target: { value: "l/min" },
     });
