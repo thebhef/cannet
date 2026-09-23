@@ -38,7 +38,7 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use cannet_blf::BlfCaptureWriter;
+use cannet_blf::{BlfCaptureWriter, FinishedCapture};
 
 use crate::app_state::AppState;
 use crate::connection_state::{BusConnState, ConnectionStates};
@@ -375,8 +375,22 @@ impl LogWriter {
     /// one reaches the size cap. A frame the writer cannot represent is
     /// skipped with its reason returned, rather than ending the run: a
     /// logger's job is to keep writing.
-    pub(crate) fn write(&mut self, frames: &[RawTraceFrame]) -> Result<Vec<String>, String> {
+    ///
+    /// The second element is one [`FinishedCapture`] per part this call
+    /// closed by rolling — empty on a call that never crosses the cap,
+    /// one entry per roll otherwise (a large batch can cross it more
+    /// than once in a single call). Each carries that closed part's own
+    /// `clamped_count` / `worst_clamp` (a frame the part's writer had to
+    /// write at its own anchor because it arrived before it), the same
+    /// report Save Capture turns into a warning via
+    /// [`crate::capture::clamped_timestamp_warning`]; the caller does
+    /// the same for a run's logger.
+    pub(crate) fn write(
+        &mut self,
+        frames: &[RawTraceFrame],
+    ) -> Result<(Vec<String>, Vec<FinishedCapture>), String> {
         let mut skipped = Vec::new();
+        let mut splits = Vec::new();
         for frame in frames {
             let core = match crate::capture::raw_to_core_frame(frame, &self.buses) {
                 Ok(core) => core,
@@ -394,32 +408,44 @@ impl LogWriter {
                 .map_err(|e| format!("failed to write to {}: {e}", self.path.display()))?;
             self.frame_count += 1;
             if writer.bytes_on_disk() >= self.max_bytes {
-                self.roll()?;
+                if let Some(finished) = self.roll()? {
+                    splits.push(finished);
+                }
             }
         }
-        Ok(skipped)
+        Ok((skipped, splits))
     }
 
-    /// Close the current file and open the next part.
-    fn roll(&mut self) -> Result<(), String> {
-        self.close_current()?;
-        self.open_part(self.part + 1)
+    /// Close the current file and open the next part. `Some` with the
+    /// closed part's outcome, unless there was nothing open to close.
+    fn roll(&mut self) -> Result<Option<FinishedCapture>, String> {
+        let finished = self.close_current()?;
+        self.open_part(self.part + 1)?;
+        Ok(finished)
     }
 
-    fn close_current(&mut self) -> Result<(), String> {
+    /// `Some` with the closed writer's outcome, or `None` when the file
+    /// was already closed (idempotent — `finish` after a failed `roll`
+    /// hits this).
+    fn close_current(&mut self) -> Result<Option<FinishedCapture>, String> {
         let Some(writer) = self.writer.take() else {
-            return Ok(());
+            return Ok(None);
         };
         writer
             .finish()
-            .map(|_| ())
+            .map(Some)
             .map_err(|e| format!("failed to finalise {}: {e}", self.path.display()))
     }
 
     /// Finalise the file this run is on. The files it wrote stay where
     /// they are — a logger's output is the point, so nothing is removed
     /// the way a cancelled export's partial file is.
-    pub(crate) fn finish(mut self) -> Result<(), String> {
+    ///
+    /// `Some` with the finalised part's outcome — see [`Self::write`]'s
+    /// `splits` for what a caller does with it — unless there was
+    /// nothing left open (an already-finished run, or one left over
+    /// from a `roll` whose own close already reported it).
+    pub(crate) fn finish(mut self) -> Result<Option<FinishedCapture>, String> {
         self.close_current()
     }
 }
@@ -678,9 +704,17 @@ fn run_logger(
             let frames = app_state.trace_store.slice(cursor, snapshot.len);
             cursor = snapshot.len;
             match writer.write(&frames) {
-                Ok(skipped) => {
+                Ok((skipped, splits)) => {
                     for reason in skipped.iter().take(1) {
                         sys_warn!(app, "logger", "{name}: skipped a frame — {reason}");
+                    }
+                    // Parity with Save Capture: a split part that had to
+                    // write a frame at its own anchor says so, the same
+                    // warning `clamped_timestamp_warning` gives it.
+                    for finished in &splits {
+                        if let Some(warning) = crate::capture::clamped_timestamp_warning(finished) {
+                            sys_warn!(app, "logger", "{name}: {warning}");
+                        }
                     }
                 }
                 Err(e) => {
@@ -712,7 +746,19 @@ fn run_logger(
         }
     }
     match finish {
-        Ok(()) => sys_info!(app, "logger", "{name}: finished {path} ({frames} frame(s))"),
+        Ok(finished) => {
+            sys_info!(app, "logger", "{name}: finished {path} ({frames} frame(s))");
+            // Parity with Save Capture's warning (`capture.rs`
+            // `clamped_timestamp_warning`): the file this run just
+            // finalised may have had to write a frame at its own
+            // anchor because it arrived stamped before it.
+            if let Some(warning) = finished
+                .as_ref()
+                .and_then(crate::capture::clamped_timestamp_warning)
+            {
+                sys_warn!(app, "logger", "{name}: {warning}");
+            }
+        }
         Err(e) => sys_error!(app, "logger", "{name}: {e}"),
     }
 }
@@ -895,6 +941,60 @@ mod tests {
             }
         }
         assert_eq!(total, 8_000, "every frame reached one of {parts:?}");
+    }
+
+    /// Parity with Save Capture (`capture::clamped_timestamp_warning`):
+    /// a frame appended before the run's own anchor is written *at* the
+    /// anchor rather than dropped, and `finish` hands the caller the
+    /// same [`cannet_blf::FinishedCapture`] Save Capture reports its
+    /// warning from — `run_logger` turns it into the identical
+    /// `sys_warn!` line.
+    #[test]
+    fn finishing_a_run_reports_the_clamp_its_writer_saw() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = LogWriter::open(base(dir.path()), 1024 * 1024, vec!["b".into()]).unwrap();
+        let anchor = 1_700_000_000_000_000_000u64;
+        let early = anchor - 5_000_000_000; // 5 s before the anchor
+        writer
+            .write(&[frame(anchor, 0x100), frame(early, 0x200)])
+            .unwrap();
+        let finished = writer
+            .finish()
+            .unwrap()
+            .expect("a run that wrote frames finalises a part");
+        assert_eq!(finished.clamped_count, 1);
+        let warning =
+            crate::capture::clamped_timestamp_warning(&finished).expect("a clamp is reported");
+        assert!(warning.contains("0x200"), "{warning}");
+    }
+
+    /// The same parity at a size-cap split: the first part to close
+    /// carries the early frame's clamp; every later part this run rolls
+    /// starts fresh.
+    #[test]
+    fn a_split_part_reports_the_clamp_it_saw() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = LogWriter::open(base(dir.path()), 4 * 1024, vec!["b".into()]).unwrap();
+        let anchor = 1_700_000_000_000_000_000u64;
+        let mut frames = vec![frame(anchor, 0x100), frame(anchor - 1_000_000_000, 0x200)];
+        frames.extend((2..20_000u32).map(|i| frame(anchor + u64::from(i) * 1_000_000, 0x100)));
+        let (_, splits) = writer.write(&frames).unwrap();
+        assert!(
+            !splits.is_empty(),
+            "the cap must have split the run: {splits:?}"
+        );
+        assert_eq!(
+            splits[0].clamped_count, 1,
+            "the first closed part carried the early frame: {splits:?}",
+        );
+        let warning =
+            crate::capture::clamped_timestamp_warning(&splits[0]).expect("a clamp is reported");
+        assert!(warning.contains("0x200"), "{warning}");
+        assert!(
+            splits[1..].iter().all(|f| f.clamped_count == 0),
+            "later parts open past the anchor and clamp nothing: {splits:?}",
+        );
+        writer.finish().unwrap();
     }
 
     /// The File template's subdirectories are created, not assumed.
