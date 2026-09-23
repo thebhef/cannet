@@ -7,6 +7,12 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **155: the upstream python-can issue is drafted, not filed.** Title,
+  body, wrap arithmetic and a hardware-free repro are in the status
+  log, ready to post; nothing was run against any external repository.
+  Say go and the overseer files it. Detail: 0155 § Status log,
+  2026-09-23 (phase 1).
+
 - **151: the *Show servers* command is gone.** `panel.show.servers`
   retired with the singleton panel; the command palette's *Servers*
   go-to-view entry and *Manage servers…* open the settings view at the
