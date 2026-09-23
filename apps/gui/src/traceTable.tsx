@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 
-import type { TraceFrameRecord } from "./types";
+import type { FuzzyWinner, SignalRecord, TraceFrameRecord } from "./types";
 import { type BusLookup, type ColumnKey, busDisplayName } from "./traceColumns";
 import {
   formatData,
@@ -38,6 +38,33 @@ export const UNDELIVERED_TX_TITLE =
 /// Whether this row describes a transmit no wire took.
 export function isUndeliveredTx(frame: TraceFrameRecord | null): boolean {
   return frame?.tx_delivery === "undelivered";
+}
+
+/// True when the trace filter's fuzzy query narrowed to a signal or one
+/// of a signal's enum values (ADR 0044) — the host then names, per row,
+/// which signals it matched by. A message-level winner, or no fuzzy
+/// query at all, carries no such narrowing.
+export function queryOpensDisclosure(fuzzyWinner: FuzzyWinner | null | undefined): boolean {
+  return fuzzyWinner === "signal" || fuzzyWinner === "value";
+}
+
+/// The signals a frame row discloses. Ordinarily every decoded signal;
+/// under a signal or value winner, only the ones the host named in
+/// `matching_signals`, in the message's own decode order — so the
+/// query forces the row's disclosure open onto exactly what it matched
+/// rather than the whole message. Shared by `TraceView` and
+/// `ByIdTable`, whose disclosure is otherwise the same idea rendered
+/// two ways (chronological rows vs. a by-id snapshot).
+export function disclosedSignals(
+  frame: TraceFrameRecord | null | undefined,
+  fuzzyWinner: FuzzyWinner | null | undefined,
+): readonly SignalRecord[] {
+  const signals = frame?.decoded?.signals ?? [];
+  if (!queryOpensDisclosure(fuzzyWinner)) return signals;
+  const matching = frame?.matching_signals;
+  if (!matching || matching.length === 0) return [];
+  const names = new Set(matching);
+  return signals.filter((s) => names.has(s.name));
 }
 
 /// The content for one trace cell, given the column. The `#` column is

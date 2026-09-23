@@ -24,11 +24,17 @@ let storedSettings: Record<string, unknown> = {};
 /// collapse, so a test that wants the collapse engaged puts one here.
 let busHealth: Record<string, { errorCount: number; errorRate: number }> = {};
 
+/// What `fetch_filtered_trace` / `fetch_by_id_page` answer, when a test
+/// wants real rows (a page envelope carrying `fuzzy_winner` and rows
+/// carrying `matching_signals`) rather than the default empty page —
+/// see "TracePanel signal/value winner disclosure" below.
+let filteredTraceFixture: Record<string, unknown> | null = null;
+let byIdPageFixture: Record<string, unknown> | null = null;
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "fetch_filtered_trace" || cmd === "fetch_by_id_page") {
-      return { count: 0, start: 0, rows: [] };
-    }
+    if (cmd === "fetch_filtered_trace") return filteredTraceFixture ?? { count: 0, start: 0, rows: [] };
+    if (cmd === "fetch_by_id_page") return byIdPageFixture ?? { count: 0, start: 0, rows: [] };
     if (cmd === "get_settings") return { ...storedSettings };
     if (cmd === "get_bus_health") return { ...busHealth };
     // The host anchors each timeline event to a frame index (ADR 0035);
@@ -166,6 +172,8 @@ beforeEach(async () => {
   resetLiveTailDemand();
   storedSettings = {};
   busHealth = {};
+  filteredTraceFixture = null;
+  byIdPageFixture = null;
   await hydrateSettings();
 });
 afterEach(() => {
@@ -1178,6 +1186,150 @@ describe("TracePanel fuzzy filter", () => {
       expect(document.activeElement).toBe(box);
       expect(box.selectionStart).toBe(0);
       expect(box.selectionEnd).toBe(box.value.length);
+    });
+  });
+
+  describe("signal/value winner disclosure", () => {
+    // A signal or value winner (the page envelope's `fuzzy_winner`, ADR
+    // 0044) forces the admitted rows' signal disclosure open onto
+    // `matching_signals`; a message winner or a cleared query leaves it
+    // exactly as the user had it. `filteredTraceFixture` /
+    // `byIdPageFixture` let these tests hand the panel a page envelope
+    // with real rows, through the same `invoke` mock every other test in
+    // this file uses.
+    let restoreHeight: (() => void) | null = null;
+    beforeEach(() => {
+      // jsdom lays nothing out, so the row virtualizer would see a
+      // zero-height viewport and draw one row. Give it a real one.
+      const spy = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+      restoreHeight = () => spy.mockRestore();
+    });
+    afterEach(() => restoreHeight?.());
+
+    /// One admitted row: a `FaultStatus` frame carrying two signals, only
+    /// one of which the query may have matched by.
+    function faultFrame(matchingSignals: string[]) {
+      return {
+        index: 0,
+        timestamp_seconds: 0,
+        channel: 0,
+        id: 0x100,
+        extended: false,
+        direction: "Rx",
+        kind: { kind: "classic" },
+        data: [1, 2],
+        decoded: {
+          name: "FaultStatus",
+          signals: [
+            { name: "FaultID", value: 1, unit: "", label: "OVERVOLTAGE" },
+            { name: "String_Overvoltage_Fault", value: 1, unit: "" },
+          ],
+        },
+        bus_id: "b1",
+        matching_signals: matchingSignals,
+      };
+    }
+
+    const contentRowNames = () =>
+      [...document.querySelectorAll(".trace-content-row .signal-name")].map(
+        (el) => el.textContent,
+      );
+
+    it("opens an admitted row to only its matching signals under a value winner", async () => {
+      filteredTraceFixture = {
+        count: 1,
+        start: 0,
+        rows: [faultFrame(["FaultID"])],
+        fuzzy_winner: "value",
+      };
+      renderFilterPanel(traceAndFilter);
+      fireEvent.change(filterBox(), { target: { value: "overvoltage" } });
+      // Hops: the 150 ms filter debounce (gridviewFilter.ts), then the
+      // descriptor change's fetch_filtered_trace round-trip — under
+      // contention both can slip past the default 1000 ms ceiling.
+      await waitFor(() => expect(document.querySelector(".trace-row")).toBeTruthy(), {
+        timeout: 5000,
+      });
+      const row = document.querySelector(".trace-row") as HTMLElement;
+      // Forced open — the parent row itself stays (it isn't hidden), and
+      // its disclosure lists only the matched signal.
+      expect(row).toHaveAttribute("aria-expanded", "true");
+      expect(contentRowNames()).toEqual(["FaultID"]);
+    });
+
+    it("leaves a message winner's rows exactly as the user set them, and restores that on clearing", async () => {
+      // Under a message winner (unchanged from before signals and values
+      // were ranked in their own right, ADR 0044) the row starts
+      // collapsed; the user opens it, seeing every signal.
+      filteredTraceFixture = {
+        count: 1,
+        start: 0,
+        rows: [faultFrame([])],
+        fuzzy_winner: "message",
+      };
+      renderFilterPanel(traceAndFilter);
+      fireEvent.change(filterBox(), { target: { value: "fault" } });
+      await waitFor(() => expect(document.querySelector(".trace-row")).toBeTruthy());
+      let row = document.querySelector(".trace-row") as HTMLElement;
+      expect(row).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(row);
+      await waitFor(() =>
+        expect(document.querySelector(".trace-row")).toHaveAttribute("aria-expanded", "true"),
+      );
+      expect(contentRowNames()).toEqual(["FaultID", "String_Overvoltage_Fault"]);
+
+      // A value winner takes over: forced open, narrowed — overlaying the
+      // user's own (fully open) state rather than replacing it.
+      filteredTraceFixture = {
+        count: 1,
+        start: 0,
+        rows: [faultFrame(["FaultID"])],
+        fuzzy_winner: "value",
+      };
+      fireEvent.change(filterBox(), { target: { value: "overvoltage" } });
+      // Same debounce-then-fetch path as above: 150 ms filter debounce,
+      // then fetch_filtered_trace. Give it the same margin under contention.
+      await waitFor(() => expect(contentRowNames()).toEqual(["FaultID"]), { timeout: 5000 });
+
+      // Clearing the fuzzy leaf (the sources filter alone still narrows
+      // the trace, so this stays on the filtered path) drops the winner —
+      // the user's own fully-open state reappears untouched.
+      filteredTraceFixture = {
+        count: 1,
+        start: 0,
+        rows: [faultFrame([])],
+        fuzzy_winner: null,
+      };
+      fireEvent.change(filterBox(), { target: { value: "" } });
+      // Same debounce (150 ms) + fetch_filtered_trace round-trip; this is
+      // the wait that measured the contention failure (AssertionError:
+      // ["FaultID"] vs ["FaultID", "String_Overvoltage_Fault"]) at the
+      // default 1000 ms ceiling.
+      await waitFor(
+        () => expect(contentRowNames()).toEqual(["FaultID", "String_Overvoltage_Fault"]),
+        { timeout: 5000 },
+      );
+      row = document.querySelector(".trace-row") as HTMLElement;
+      expect(row).toHaveAttribute("aria-expanded", "true");
+    });
+
+    it("shows the same forced-open, narrowed disclosure in by-id mode", async () => {
+      byIdPageFixture = {
+        count: 1,
+        start: 0,
+        rows: [{ frame: faultFrame(["FaultID"]), rate: 0, count: 1 }],
+        fuzzy_winner: "value",
+      };
+      renderFilterPanel(plainTrace, { mode: "by-id" });
+      fireEvent.change(filterBox(), { target: { value: "overvoltage" } });
+      // Same debounce-then-fetch path as the chronological tests above
+      // (150 ms filter debounce, then the fetch_by_id_page round-trip).
+      await waitFor(() => expect(document.querySelector(".trace-row")).toBeTruthy(), {
+        timeout: 5000,
+      });
+      const row = document.querySelector(".trace-row") as HTMLElement;
+      expect(row).toHaveAttribute("aria-expanded", "true");
+      expect(contentRowNames()).toEqual(["FaultID"]);
     });
   });
 });
