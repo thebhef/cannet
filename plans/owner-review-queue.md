@@ -7,6 +7,15 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **Units section: dimensions now open collapsed.** The settings view's
+  Units section is a gridview of dimension branches over unit rows, and
+  on open every dimension is shut except one holding a unit this
+  project maps or composes (overseer's ruling, 2026-09-22). A project
+  with no unit customizations therefore sees 109 headings and no units
+  until it opens one or types in the filter. One line to flip if that
+  reads wrong — task 151 phase 1 status log,
+  `plans/tasks/0151-settings-view-grids.md`.
+
 - **153: a signal name is no longer part of its message's searchable
   text.** Ranking signals in their own right required moving them out
   of the message's haystack — a message that ties a signal cannot be
