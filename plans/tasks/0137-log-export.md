@@ -974,6 +974,66 @@ reads the marker off that (`logFileGrid.ts`, tested both ways, plus a
 DOM test rendering a mac folder). The dom test's stand-in folder was
 `C:/logs`, a shape the host no longer produces; it is `C:\logs` now.
 
+### 2026-09-22 — owner report: the logger on a SharePoint folder over a 20 M-frame buffer (diagnosis, no code yet)
+
+**Owner's observations (2026-09-22, verbatim-ish).** With a logger
+enabled and writing into a SharePoint-synced folder (two subdirectories:
+one the logger made, one holding existing BLFs), files moved into the
+tree never appeared in the panel's list. Closing and reopening the
+logger panel while it was writing brought it up with no files listed,
+still enabled, most fields locked. The system went sluggish; the buffer
+held 20 M frames, and an export of it ran fine with the UI responsive. A
+second machine writing to a SharePoint folder is fine — the difference
+is that its logger folder's nested BLF contents were not changed.
+
+**Diagnosis (orchestrator, code read + one measurement).**
+
+- *Observation.* `list_logger_files` is served by `log_files::walk_dir`,
+  which calls `cannet_blf::scan_blf` for every `.blf` whose `(size,
+  modified)` is not in `LogFileCache`. `scan_blf` is not a header read:
+  it walks every object in the file to count frames and find the last
+  timestamp. Measured with a throwaway example, release build, local
+  NVMe: **492 MB / 57.8 M frames → 7.2 s; 1 247 MB / 144.8 M frames →
+  24.8 s.** A cloud-synced folder (Files On-Demand placeholders hydrate
+  on first read) is slower by whatever the network is.
+- *Observation.* While a logger is writing, `LoggerFileGrid` polls the
+  listing every `view_refresh_interval_ms` (default **250 ms**) through
+  `useHostMirror`, whose `setInterval(refresh)` neither skips a tick
+  while a fetch is in flight nor drops a response that arrives after a
+  newer one. Each call runs on tokio's blocking pool (up to 512
+  threads). `LogFileCache::get_or_scan` inserts only *after* the scan,
+  so every listing that starts before the first scan finishes misses the
+  cache and starts its own full read of the same file.
+- *Conclusion (single cause, three symptoms).* Moving BLFs into the
+  watched tree — the very change the owner made — put files needing a
+  scan in front of a 4 Hz poll: concurrent full reads of the same
+  multi-hundred-MB files over a sync client. That is the sluggish
+  system; every listing response is seconds to minutes late and
+  overwritten by the next, so the list "does not respond"; a reopened
+  panel's first listing queues behind the pile and shows nothing.
+  "Most fields locked" is ruling 7 as designed. The writer thread is
+  not implicated: it starts at the live edge (no 20 M-frame backfill)
+  and reads ~400 frames per 250 ms under the store lock. Exporting
+  20 M frames worked for the same reason.
+- *Second, independent gap.* With the logger idle there is no poll and
+  no filesystem watch — the listing refreshes only on `loggers-changed`
+  (start / stop / failure). Files that arrive while nothing is writing
+  are never noticed. `notify` is already adopted (`dbc_watcher`,
+  `project_watch`, `rbs/watch` share one watcher).
+
+**Not reproduced on SharePoint itself** — no repo machine has one, and
+SharePoint workarounds are not on the roadmap. The mechanism reproduces
+locally by dropping a ≥ 500 MB BLF into a writing logger's folder.
+
+**Disposition (owner ruling 2026-09-22):** the listing fix — the walk
+returns stat data at once, metadata columns show pending until one
+single-flight background scan per file fills them and announces it,
+`useHostMirror` gains an in-flight guard and drops out-of-order
+responses — is **task 152 phase 3**, as that task's reference case for
+foreground-driven derivation. The idle gap — a recursive `notify` watch
+on the resolved folder — stays a 137 fix branch, sequenced after 152's
+listing fix.
+
 ## Exit criteria verdicts (orchestrator walk, 2026-09-06)
 
 1. **Met** (phases 1+2): dialog with template preview, range picker (timeline/comboboxes/events/presets, wall-time labels,
