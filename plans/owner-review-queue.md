@@ -7,6 +7,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **152: a manual TX onto a full outbound queue is now refused, not
+  waited on.** `transmit_frame_once` reports `Failed { … outgoing queue
+  is full … }` instead of parking the IPC thread until the server
+  drains. Ruled in 0152 § Audit A14; here because it is the one
+  user-visible change in phase 2. Detail: 0152 § Status log,
+  2026-09-23.
+
 - **149, criterion 11: should the View signals panel list math
   signals?** The 2026-09-22 ruling asked for the composed-kind override
   "in the signal mapping panel"; that panel is a database-mapping
