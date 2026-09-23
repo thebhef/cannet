@@ -6680,11 +6680,22 @@ input.unit-customization-add {
 }
 
 /* Storage › Project caches — the settings view's one management
-   surface (ADR 0042 §5). */
+   surface (ADR 0042 §5), a gridview (ADR 0044) of leaf rows, one per
+   project directory. */
 .project-caches {
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   overflow: hidden;
+}
+/* The bounded row space: the rows scroll here, never in the settings
+   view's own list (ADR 0044 — the view supplies the scrolling). */
+.project-caches-grid {
+  max-height: 24rem;
+  overflow-y: auto;
+}
+.project-caches-grid:focus-visible {
+  outline: 1px solid var(--accent-marker);
+  outline-offset: -1px;
 }
 .project-caches-head,
 .project-cache-row {
@@ -6692,6 +6703,12 @@ input.unit-customization-add {
   align-items: center;
   gap: 0.5rem;
   padding: 0.3rem 0.5rem;
+}
+.project-cache-row.cursor {
+  background: var(--surface-hover-subtle);
+}
+.project-cache-row.selected {
+  background: var(--surface-row-selected);
 }
 .project-caches-head {
   background: var(--surface-hover-subtle);

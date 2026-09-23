@@ -46,6 +46,7 @@
 
 import {
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -58,8 +59,10 @@ import { DisclosureToggle } from "./DisclosureToggle";
 import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";
 import { subscribeSettings, updateSettings, useSetting, type Settings } from "./hostSettings";
 import type { SettingDescriptor } from "./settingDescriptors";
+import { SettingsShownContext } from "./settingsShown";
 import type { UnitId } from "./types";
 import { useGridview } from "./useGridview";
+import { useScrollRestore } from "./useScrollRestore";
 
 /// One string that reads as a unit, and where that reading comes from.
 interface UnitMapping {
@@ -405,6 +408,12 @@ export function UnitCustomizations({
   // same reason: `scrollToRow` only runs on a later interaction.
   const rowDomIdRef = useRef<(id: string) => string>((id) => id);
 
+  // Puts the row space's own scroll offset back across a settings-panel
+  // hide and show — the same mechanism `SettingsPanel.tsx` uses for
+  // `.settings-list`, shared rather than duplicated (`useScrollRestore.ts`).
+  const shownCount = useContext(SettingsShownContext);
+  const onGridScroll = useScrollRestore(listRef, shownCount);
+
   const adapter = useMemo<GridviewAdapter>(() => {
     const space = arrayRowSpace(gridRows, isOpen);
     return {
@@ -476,6 +485,7 @@ export function UnitCustomizations({
         ref={listRef}
         role="tree"
         aria-label="Units"
+        onScroll={onGridScroll}
         {...grid.containerProps}
       >
         <div className="unit-customizations-head" role="presentation">

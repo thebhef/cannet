@@ -1756,9 +1756,11 @@ writes, so the panel teaches the file.
 - **Reclaiming disk — Storage › Project caches.** Every project keeps
   its own capture, so the panel lists every project directory cannet
   holds cached data for and what each one is currently using (measured
-  when you look, not on a timer — the walk is not cheap). The rows
-  appear straight away and each size shows `…` until its measurement
-  lands, so the panel never waits on a directory walk. Each row
+  when you look, not on a timer — the walk is not cheap). The list
+  scrolls in a bounded space of its own rather than in the settings
+  view's list. The rows appear straight away and each size shows `…`
+  until its measurement lands, so the panel never waits on a directory
+  walk. Each row
   wears a chip for where it lives — `project dir` for one you made,
   `auto-located` for one cannet chose because none was named, with a
   tooltip on the chip saying why — beside its badge for what it
