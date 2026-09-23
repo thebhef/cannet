@@ -253,10 +253,15 @@ uv run --project clients/cannet-python-client cannet-client list
 ## Tests
 
 Hardware-free throughout, and off the network by default: the browse
-and the certificate probe are injected, so nothing in the suite sends a
-multicast query or dials a routable address. The unit tests need
-nothing else; the integration tests run against `cannet-server`'s debug
-modes on loopback and skip when the binary is not built.
+and most of the certificate probing are injected, so nothing in the
+suite sends a multicast query or dials a routable address. The unit
+tests need nothing else; the integration tests run against
+`cannet-server`'s debug modes on loopback and skip when the binary is
+not built. Both debug modes can also terminate TLS: `--tls-dir`
+names a directory to load or mint a generated identity in, and the
+suite uses that to run the pinning handshake itself against a real
+TLS-terminating loopback server, rather than only the arithmetic
+around a pin.
 
 ```sh
 cargo build -p cannet-server           # for the integration tests

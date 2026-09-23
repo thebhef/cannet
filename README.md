@@ -2188,9 +2188,13 @@ Tunable via `--speed-bps` (arbitration-phase bit rate, default
 with BRS; `0` leaves the bus classic-only). Runtime reconfiguration
 goes through the wire's `ConfigureBus` envelope and takes effect on
 the next arbitration round. `--bind` defaults to loopback and, like
-`debug replay`, terminates no TLS — a routable bind needs `--insecure`,
-which this dev/test tooling keeps; the production proxy no longer has
-one (§ Running the production server).
+`debug replay`, terminates no TLS by default — a routable bind needs
+`--insecure`, which this dev/test tooling keeps; the production proxy
+no longer has one (§ Running the production server). `--tls-dir <path>`
+opts either debug server into TLS instead, loading or minting a
+generated identity in that directory
+(`ServerIdentity::load_or_generate`); it still carries no bearer
+token, since these are unauthenticated dev/test tooling either way.
 
 **Bridges.** Any session may install a bridge with `AttachBridge {
 remote_address, interface_id, name }`. The server opens a session to

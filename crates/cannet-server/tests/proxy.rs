@@ -365,7 +365,11 @@ async fn a_client_hanging_up_drops_its_upstream_session() {
 
     let mut second = connect(proxy).await;
     // The upstream releases its single-client gate when it sees the
-    // relayed request stream end, which is a round trip away.
+    // relayed request stream end, which is a round trip away — so an
+    // early attempt may legitimately be told Busy. A leak is Busy that
+    // never clears: forty attempts spanning at least a second.
+    let mut last_busy_attempt = None;
+    let mut accepted = false;
     for attempt in 0..40 {
         let (tx, rx) = mpsc::channel::<Envelope>(8);
         let mut stream = second
@@ -375,18 +379,24 @@ async fn a_client_hanging_up_drops_its_upstream_session() {
             .into_inner();
         tx.send(subscribe("blf:0")).await.unwrap();
         match timeout(Duration::from_millis(100), stream.next()).await {
+            Ok(Some(Ok(env))) if matches!(&env.body, Some(Body::Error(e)) if e.code == i32::from(Code::Busy)) =>
+            {
+                last_busy_attempt = Some(attempt);
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
             // A frame from the replay: the session was accepted.
-            Ok(Some(Ok(env))) => {
-                assert!(
-                    !matches!(&env.body, Some(Body::Error(e)) if e.code == i32::from(Code::Busy)),
-                    "the abandoned upstream session was never released"
-                );
+            Ok(Some(Ok(_))) => {
+                accepted = true;
                 break;
             }
-            _ if attempt == 39 => panic!("no reply to the second session"),
             _ => tokio::time::sleep(Duration::from_millis(25)).await,
         }
     }
+    assert!(
+        accepted,
+        "the second session was never accepted (last Busy on attempt {last_busy_attempt:?}): \
+         the abandoned upstream session was never released"
+    );
 
     proxy_handle.abort();
     upstream_handle.abort();

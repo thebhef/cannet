@@ -31,6 +31,10 @@
 //! serves a BLF file on a loop over the gRPC wire protocol defined in
 //! `cannet-wire`, and vbus (ADR 0021) hosts a multi-client virtual CAN
 //! bus. Neither advertises — discovery is a production-server concern.
+//! Both serve plaintext by default; `--tls-dir <PATH>` loads or mints a
+//! generated identity there ([`identity::ServerIdentity::load_or_generate`])
+//! and serves TLS instead, for a pinning client's hardware-free test
+//! coverage — neither debug server carries a bearer token either way.
 
 use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
@@ -280,9 +284,10 @@ fn is_loopback(ip: IpAddr) -> bool {
 /// ([`ProxyArgs::identity`]), so the only way it ever serves
 /// unprotected is `--no-tls`, an explicit choice rather than a refusal
 /// to override. What remains is `debug replay` and `debug vbus`,
-/// dev/test tooling that terminates no TLS at all — the same
-/// loopback-only default, with their own `--insecure` as the escape
-/// hatch.
+/// dev/test tooling that terminates no TLS by default (or, with
+/// `--tls-dir`, TLS but still no bearer token — see [`DebugCommand`]) —
+/// the same loopback-only default, with their own `--insecure` as the
+/// escape hatch.
 fn guard_bind(
     bind: SocketAddr,
     protections: Protections,
@@ -317,6 +322,12 @@ impl std::fmt::Display for UnprotectedBind {
 
 impl std::error::Error for UnprotectedBind {}
 
+/// The identity a `debug` server terminates TLS with, from its
+/// `--tls-dir`, or `None` for the plaintext default.
+fn debug_identity(tls_dir: Option<&Path>) -> Result<Option<ServerIdentity>, IdentityError> {
+    tls_dir.map(ServerIdentity::load_or_generate).transpose()
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Dev/test tooling: BLF replay or a virtual bus, in place of the
@@ -332,14 +343,25 @@ enum DebugCommand {
     Replay {
         /// Path to the BLF file to load and replay on a loop.
         blf: PathBuf,
-        /// Address to bind the gRPC service on. Dev/test tooling takes
-        /// no certificate, so leaving loopback needs `--insecure`.
+        /// Address to bind the gRPC service on. Plaintext by default,
+        /// so leaving loopback needs `--insecure` unless `--tls-dir`
+        /// is also given.
         #[arg(long, default_value = "127.0.0.1:50051")]
         bind: SocketAddr,
         /// Allow this unprotected endpoint to be bound to a routable
         /// address.
         #[arg(long)]
         insecure: bool,
+        /// Directory to load or mint a generated TLS identity from
+        /// ([`identity::ServerIdentity::load_or_generate`]), serving
+        /// this debug server over TLS instead of in the clear. Absent
+        /// (the default) is today's plaintext behaviour. Still no
+        /// bearer token: these servers are unauthenticated dev/test
+        /// tooling by design (ADR 0041 governs the production proxy
+        /// only), and terminating TLS here does not force one through
+        /// any shared code path.
+        #[arg(long, value_name = "PATH")]
+        tls_dir: Option<PathBuf>,
         /// Replay rate multiplier. `1.0` plays the BLF back at its
         /// recorded cadence (real-time emulation); `100.0` would play
         /// it 100× faster; `0.0` (the default) disables pacing
@@ -356,14 +378,22 @@ enum DebugCommand {
     /// whose transmissions fan out to every other participant.
     /// Dev/test tooling.
     Vbus {
-        /// Address to bind the gRPC service on. Dev/test tooling takes
-        /// no certificate, so leaving loopback needs `--insecure`.
+        /// Address to bind the gRPC service on. Plaintext by default,
+        /// so leaving loopback needs `--insecure` unless `--tls-dir`
+        /// is also given.
         #[arg(long, default_value = "127.0.0.1:50051")]
         bind: SocketAddr,
         /// Allow this unprotected endpoint to be bound to a routable
         /// address.
         #[arg(long)]
         insecure: bool,
+        /// Directory to load or mint a generated TLS identity from
+        /// ([`identity::ServerIdentity::load_or_generate`]), serving
+        /// this debug server over TLS instead of in the clear. Absent
+        /// (the default) is today's plaintext behaviour. Still no
+        /// bearer token — see the same flag on `debug replay`.
+        #[arg(long, value_name = "PATH")]
+        tls_dir: Option<PathBuf>,
         /// Arbitration-phase bit rate (bits per second) for the
         /// virtual bus's initial configuration.
         #[arg(long, default_value_t = 500_000)]
@@ -381,8 +411,17 @@ async fn run_replay(
     bind: SocketAddr,
     rate: f64,
     insecure: bool,
+    tls_dir: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    guard_bind(bind, Protections::default(), insecure)?;
+    let identity = debug_identity(tls_dir.as_deref())?;
+    guard_bind(
+        bind,
+        Protections {
+            tls: identity.is_some(),
+            token: false,
+        },
+        insecure,
+    )?;
     let replay = Arc::new(LoopingBlfReplay::open(&blf)?);
 
     logging::info(
@@ -407,18 +446,33 @@ async fn run_replay(
     logging::info(
         REPLAY,
         format!(
-            "listening on {} (rate = {})",
+            "listening on {} (rate = {}, {})",
             bind,
             if rate == 0.0 {
                 "unbounded".to_string()
             } else {
                 format!("{rate}×")
+            },
+            if identity.is_some() {
+                "tls"
+            } else {
+                "plaintext"
             }
         ),
     );
+    if let Some(identity) = &identity {
+        logging::info(
+            REPLAY,
+            format!("certificate fingerprint {}", identity.fingerprint()),
+        );
+    }
 
     let service = CannetServerImpl::new(replay, rate).into_service();
-    Server::builder()
+    let mut builder = Server::builder();
+    if let Some(identity) = &identity {
+        builder = builder.tls_config(identity.tls_config())?;
+    }
+    builder
         .add_service(service)
         .add_service(info_service())
         .serve(bind)
@@ -431,8 +485,17 @@ async fn run_vbus(
     speed_bps: u64,
     fd_data_speed_bps: u64,
     insecure: bool,
+    tls_dir: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    guard_bind(bind, Protections::default(), insecure)?;
+    let identity = debug_identity(tls_dir.as_deref())?;
+    guard_bind(
+        bind,
+        Protections {
+            tls: identity.is_some(),
+            token: false,
+        },
+        insecure,
+    )?;
     let fd_enabled = fd_data_speed_bps > 0;
     let config = BusConfig {
         speed_bps,
@@ -454,9 +517,29 @@ async fn run_vbus(
                 .map_or_else(|| "off".to_string(), |v| format!("{v} bit/s"))
         ),
     );
-    logging::info(VBUS, format!("listening on {bind}"));
+    logging::info(
+        VBUS,
+        format!(
+            "listening on {bind} ({})",
+            if identity.is_some() {
+                "tls"
+            } else {
+                "plaintext"
+            }
+        ),
+    );
+    if let Some(identity) = &identity {
+        logging::info(
+            VBUS,
+            format!("certificate fingerprint {}", identity.fingerprint()),
+        );
+    }
     let service = VirtualBusServerImpl::new(config).into_service();
-    Server::builder()
+    let mut builder = Server::builder();
+    if let Some(identity) = &identity {
+        builder = builder.tls_config(identity.tls_config())?;
+    }
+    builder
         .add_service(service)
         .add_service(info_service())
         .serve(bind)
@@ -893,13 +976,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             bind,
             rate,
             insecure,
-        })) => run_replay(blf, bind, rate, insecure).await,
+            tls_dir,
+        })) => run_replay(blf, bind, rate, insecure, tls_dir).await,
         Some(Command::Debug(DebugCommand::Vbus {
             bind,
             speed_bps,
             fd_data_speed_bps,
             insecure,
-        })) => run_vbus(bind, speed_bps, fd_data_speed_bps, insecure).await,
+            tls_dir,
+        })) => run_vbus(bind, speed_bps, fd_data_speed_bps, insecure, tls_dir).await,
         None => run_proxy(cli.proxy).await,
     }
 }
@@ -1384,6 +1469,7 @@ mod tests {
             bind,
             rate,
             insecure: _,
+            tls_dir,
         })) = cli.command
         else {
             panic!("expected Debug(Replay), got {:?}", cli.command);
@@ -1391,6 +1477,7 @@ mod tests {
         assert_eq!(blf, PathBuf::from("capture.blf"));
         assert_eq!(bind, "127.0.0.1:50051".parse::<SocketAddr>().unwrap());
         assert_eq!(rate, 0.0);
+        assert_eq!(tls_dir, None, "plaintext is the default");
     }
 
     #[test]
@@ -1412,6 +1499,7 @@ mod tests {
             bind,
             rate,
             insecure: _,
+            tls_dir: _,
         })) = cli.command
         else {
             panic!("expected Debug(Replay), got {:?}", cli.command);
@@ -1430,6 +1518,23 @@ mod tests {
     }
 
     #[test]
+    fn debug_replay_accepts_tls_dir() {
+        let cli = Cli::try_parse_from([
+            "cannet-server",
+            "debug",
+            "replay",
+            "capture.blf",
+            "--tls-dir",
+            "/srv/cannet-debug-tls",
+        ])
+        .expect("debug replay with --tls-dir should parse");
+        let Some(Command::Debug(DebugCommand::Replay { tls_dir, .. })) = cli.command else {
+            panic!("expected Debug(Replay), got {:?}", cli.command);
+        };
+        assert_eq!(tls_dir, Some(PathBuf::from("/srv/cannet-debug-tls")));
+    }
+
+    #[test]
     fn debug_vbus_parses_with_defaults() {
         let cli = Cli::try_parse_from(["cannet-server", "debug", "vbus"])
             .expect("debug vbus should parse");
@@ -1438,6 +1543,7 @@ mod tests {
             speed_bps,
             fd_data_speed_bps,
             insecure: _,
+            tls_dir,
         })) = cli.command
         else {
             panic!("expected Debug(Vbus), got {:?}", cli.command);
@@ -1445,6 +1551,7 @@ mod tests {
         assert_eq!(bind, "127.0.0.1:50051".parse::<SocketAddr>().unwrap());
         assert_eq!(speed_bps, 500_000);
         assert_eq!(fd_data_speed_bps, 0);
+        assert_eq!(tls_dir, None, "plaintext is the default");
     }
 
     #[test]
@@ -1464,12 +1571,29 @@ mod tests {
             speed_bps,
             fd_data_speed_bps,
             insecure: _,
+            tls_dir: _,
         })) = cli.command
         else {
             panic!("expected Debug(Vbus), got {:?}", cli.command);
         };
         assert_eq!(speed_bps, 250_000);
         assert_eq!(fd_data_speed_bps, 2_000_000);
+    }
+
+    #[test]
+    fn debug_vbus_accepts_tls_dir() {
+        let cli = Cli::try_parse_from([
+            "cannet-server",
+            "debug",
+            "vbus",
+            "--tls-dir",
+            "/srv/cannet-debug-tls",
+        ])
+        .expect("debug vbus with --tls-dir should parse");
+        let Some(Command::Debug(DebugCommand::Vbus { tls_dir, .. })) = cli.command else {
+            panic!("expected Debug(Vbus), got {:?}", cli.command);
+        };
+        assert_eq!(tls_dir, Some(PathBuf::from("/srv/cannet-debug-tls")));
     }
 
     fn addr(s: &str) -> SocketAddr {

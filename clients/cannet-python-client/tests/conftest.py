@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import shutil
 import socket
+import ssl
 import subprocess
 import time
 from collections.abc import Iterator, Sequence
@@ -27,6 +28,8 @@ import pytest
 from cannet_python_wire import PROTOCOL_PACKAGE
 from cannet_python_wire._proto import cannet_info_pb2 as info_pb
 from cannet_python_wire._proto import cannet_info_pb2_grpc as info_grpc
+
+from cannet_python_client import tls
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -150,3 +153,31 @@ def replay_server() -> Iterator[str]:
         pytest.skip(f"{DEMO_BLF} is missing")
     with spawn_server("debug", "replay", str(DEMO_BLF)) as address:
         yield address
+
+
+#: File name `ServerIdentity::load_or_generate` writes the certificate
+#: to inside `--tls-dir` (`crates/cannet-server/src/identity.rs`).
+_TLS_CERT_FILE = "server-cert.pem"
+
+
+@pytest.fixture(scope="module")
+def tls_vbus_server(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[tuple[str, str]]:
+    """`cannet-server debug vbus --tls-dir <dir>`: the same virtual bus
+    as `vbus_server`, but TLS-terminating against a freshly generated
+    identity — the one hardware-free server this suite can pin a
+    handshake against.
+
+    Yields the address and the fingerprint computed from the
+    certificate `--tls-dir` wrote, in the server's own `SHA256:` form.
+    A bare loopback address always resolves to a plaintext
+    :class:`~cannet_python_client.trust.ServerTarget`
+    (:func:`cannet_python_client.trust.is_local`), so a test that wants
+    this server reached over TLS builds its `ServerTarget` by hand
+    rather than going through `trust.resolve`.
+    """
+    tls_dir = tmp_path_factory.mktemp("cannet-debug-tls")
+    with spawn_server("debug", "vbus", "--tls-dir", str(tls_dir)) as address:
+        der = ssl.PEM_cert_to_DER_cert((tls_dir / _TLS_CERT_FILE).read_text())
+        yield address, tls.fingerprint_of(der)
