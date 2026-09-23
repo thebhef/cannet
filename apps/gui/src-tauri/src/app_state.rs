@@ -165,6 +165,12 @@ pub(crate) struct AppState {
     /// rebuilt on a predicate or capture-session change, extended
     /// incrementally otherwise. `fetch_filtered_trace` serves pages from it.
     pub(crate) filter_index: Mutex<Option<ActiveFilterIndex>>,
+    /// Serializes filter-index *rebuilds* — the O(capture) walk a predicate
+    /// change costs — without holding [`Self::filter_index`] for their
+    /// duration. Two views asking for the same new predicate still pay for
+    /// one walk; every other filtered fetch keeps serving pages meanwhile
+    /// (ADR 0049). Taken **before** `filter_index`, never the other way.
+    pub(crate) filter_index_build: Mutex<()>,
     /// Cooperative cancel flag for the single trace-open pump in flight
     /// right now (`open_log` / `import_mdf`'s spawned thread), or
     /// `None` when nothing is importing. Each of those commands installs
@@ -303,6 +309,12 @@ impl AppState {
         self.filter_index
             .lock()
             .expect("filter index mutex poisoned")
+    }
+
+    pub(crate) fn filter_index_build(&self) -> MutexGuard<'_, ()> {
+        self.filter_index_build
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn active_project_id(&self) -> MutexGuard<'_, Option<uuid::Uuid>> {

@@ -31,6 +31,14 @@ export const LOGGER_EXTENSION = ".blf";
 /// stops, or fails. Must match `logger::LOGGERS_CHANGED_EVENT`.
 export const LOGGERS_CHANGED_EVENT = "loggers-changed";
 
+/// Host event: a background BLF header scan has landed, so the file
+/// grid's pending trace columns have numbers now. Must match
+/// `log_files::LOG_FILES_SCANNED_EVENT`. Carries the file's absolute
+/// path; the grid re-asks for the whole listing rather than patching one
+/// row, because the listing is the host's model and the grid is a view
+/// over it (CLAUDE.md § GUI architecture).
+export const LOG_FILES_SCANNED_EVENT = "logger-files-scanned";
+
 /// The logger fields of a value fresh from a project file, coerced so
 /// the panel can rely on them. Anything missing or malformed reads as
 /// the default rather than poisoning the panel — the same tolerance

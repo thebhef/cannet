@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import { Icon } from "./Icon";
 import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";
@@ -28,7 +29,7 @@ import {
 import { reorderColumn, resizeColumn, toggleColumn, visibleColumns } from "./traceColumns";
 import { useGridview } from "./useGridview";
 import { useHostMirror } from "./useHostMirror";
-import { LOGGERS_CHANGED_EVENT } from "./logger";
+import { LOG_FILES_SCANNED_EVENT, LOGGERS_CHANGED_EVENT } from "./logger";
 import {
   findLogNode,
   flattenLogTree,
@@ -39,6 +40,8 @@ import {
   isSelectableLogNode,
   logPathSeparator,
   MESSAGE_COUNT_HINT,
+  PENDING_CELL,
+  PENDING_CELL_HINT,
   type LogFileNode,
 } from "./logFileGrid";
 
@@ -121,12 +124,24 @@ export function LoggerFileGrid({
         : invoke<LogFileNode[]>("list_logger_files", { folder }),
     [folder],
   );
-  const { value: nodes } = useHostMirror<readonly LogFileNode[]>({
+  const { value: nodes, refresh } = useHostMirror<readonly LogFileNode[]>({
     fetch: fetchNodes,
     fallback: NO_NODES,
     event: LOGGERS_CHANGED_EVENT,
     pollWhile: () => writing,
   });
+
+  // A listing answers with what the host already knows and leaves the
+  // rest pending (ADR 0049); the host announces each background header
+  // scan as it lands and this is what asks again. A folder of freshly
+  // dropped files announces one per scan, and the mirror's single-flight
+  // guard collapses that burst into one refetch per round trip.
+  useEffect(() => {
+    const unlisten = listen(LOG_FILES_SCANNED_EVENT, () => refresh());
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [refresh]);
 
   // View-local: which directories are open. A fresh listing (a new
   // folder) starts collapsed, like every other gridview tree in the app.
@@ -252,6 +267,15 @@ export function LoggerFileGrid({
               {text}
             </span>
           );
+          // The host has not read this file's header yet. Its trace
+          // columns say so rather than showing zeros that would read as
+          // measurements (ADR 0049 — a partial answer is first-class and
+          // announces itself).
+          const pending = node.kind === "file" && node.scanPending;
+          const traceCell = (text: string, className: string, title?: string) =>
+            pending
+              ? fileCell(PENDING_CELL, `${className} pending`, PENDING_CELL_HINT)
+              : fileCell(text, className, title);
           return (
             <GridviewRowLine<LogFileColumnKey>
               key={node.id}
@@ -307,22 +331,22 @@ export function LoggerFileGrid({
                   case "size":
                     return fileCell(node.kind === "file" ? formatLogSize(node.sizeBytes) : "", className);
                   case "start":
-                    return fileCell(
+                    return traceCell(
                       node.kind === "file" ? formatLogTimestamp(node.startNs) : "",
                       className,
                     );
                   case "end":
-                    return fileCell(
+                    return traceCell(
                       node.kind === "file" ? formatLogTimestamp(node.endNs) : "",
                       className,
                     );
                   case "duration":
-                    return fileCell(
+                    return traceCell(
                       node.kind === "file" ? formatLogDuration(node.startNs, node.endNs) : "",
                       className,
                     );
                   case "messages":
-                    return fileCell(
+                    return traceCell(
                       node.kind === "file" ? node.messageCount.toLocaleString() : "",
                       className,
                       node.kind === "file" ? MESSAGE_COUNT_HINT : undefined,

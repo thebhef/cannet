@@ -13,6 +13,12 @@
 // directory walk, which is far too expensive to put on a timer
 // (ADR 0002 DS-8), so the list loads when the panel opens, when the open
 // project changes, and after an action changes something.
+//
+// **And the list never waits for one** (ADR 0049). The host answers with
+// the rows and `bytes: null` for any cache it has not measured, runs one
+// background walk, and announces it with `PROJECT_CACHES_MEASURED_EVENT`;
+// the view renders those rows with a pending size and asks again when
+// the event lands.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -29,6 +35,11 @@ export type ProjectCacheState =
   | "orphaned"
   | "known";
 
+/// Host event: a background measurement of the registered caches has
+/// finished, so the pending sizes have numbers now. Must match
+/// `project_registry::PROJECT_CACHES_MEASURED_EVENT`.
+export const PROJECT_CACHES_MEASURED_EVENT = "project-caches-measured";
+
 /// One project directory's row, as the host serves it.
 export interface ProjectCacheRow {
   /// The project directory itself. Neither action touches it.
@@ -36,9 +47,11 @@ export interface ProjectCacheRow {
   /// The cannet-managed cache directory Clear empties and Delete removes.
   cache: string;
   project_file: string | null;
-  /// Bytes the cache currently holds, measured when the list was asked
-  /// for.
-  bytes: number;
+  /// Bytes the cache held when it was last measured, or `null` while
+  /// that measurement is still pending — a cache never walked, or one a
+  /// Clear or Delete has invalidated. Pending is not zero: zero is a
+  /// measured empty cache.
+  bytes: number | null;
   state: ProjectCacheState;
   /// Whether cannet chose the location. Distinct from `state`, because
   /// the open project may be auto-located too — and that is the row the
@@ -108,9 +121,12 @@ export function locationLabel(row: ProjectCacheRow): string {
 
 /// Clear is offered wherever there is something to empty — and means the
 /// same thing on every row, which is why a missing project's row stays
-/// listed at zero bytes rather than vanishing.
+/// listed at zero bytes rather than vanishing. A row whose size is still
+/// being measured keeps the offer: Clear on an empty cache is a no-op,
+/// and a button that appears a second later is worse than one that does
+/// nothing.
 export function canClear(row: ProjectCacheRow): boolean {
-  return row.bytes > 0;
+  return row.bytes == null || row.bytes > 0;
 }
 
 /// Delete is unavailable for the open project: its store is mapped, so
@@ -132,8 +148,12 @@ export function canSaveAs(row: ProjectCacheRow): boolean {
 }
 
 /// The header line: how many projects, and how much disk they hold
-/// between them.
+/// between them. While any row's size is still being measured the total
+/// would be a sum of an incomplete set, so the line says it is measuring
+/// rather than quoting a figure that is about to change.
 export function cacheSummary(rows: readonly ProjectCacheRow[]): string {
-  const total = rows.reduce((sum, r) => sum + r.bytes, 0);
-  return `${rows.length} project${rows.length === 1 ? "" : "s"} · ${formatBytes(total)} cached`;
+  const count = `${rows.length} project${rows.length === 1 ? "" : "s"}`;
+  if (rows.some((r) => r.bytes == null)) return `${count} · measuring…`;
+  const total = rows.reduce((sum, r) => sum + (r.bytes ?? 0), 0);
+  return `${count} · ${formatBytes(total)} cached`;
 }
