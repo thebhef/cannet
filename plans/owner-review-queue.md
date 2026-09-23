@@ -168,6 +168,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 4. Finished tasks awaiting acceptance
 
+- **155 — The Kvaser Timer Wraps Without Losing Frames, and Drops Are
+  Loud.** Three phases on `task155-kvaser-unwrap` → `task155-drops-loud`
+  → `task155-logger-clamp` (`229f9ca6`), full CI matrix green (one lane
+  skipped, `wire-breaking`: proto untouched, `buf` not installed). One
+  criterion owed, not gating: the ≥ 12 h live Kvaser confirmation run,
+  to schedule with you. Verdicts: 0155 § Exit criteria.
+
 - **151 — the settings view's grids are gridviews** (3 phases,
   `task151-units-gridview` → `task151-caches-gridview` →
   `task151-servers-section`): 6/6 exit criteria met. `column-defaults`

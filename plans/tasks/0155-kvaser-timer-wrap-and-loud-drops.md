@@ -109,22 +109,27 @@ Sonnet-shaped. All three share the main tree, strictly sequential.
 - A synthetic Kvaser channel whose raw stamps cross 2^32 ticks yields
   monotonic, continuous `timestamp_ns` on the wire; two wraps yield
   two periods; a non-kvaser backend's stamps are untouched
-  (sidecar unit tests).
+  (sidecar unit tests). **Met** — phase 1, `test_kvaser_timer_wrap.py`.
 - Each wrap produces exactly one WARN `LogMessage` envelope naming
-  the channel.
+  the channel. **Met** — phase 1, `test_shared_interface.py`.
 - `technology-inventory.md`'s python-can entry names the defect and
   says no upstream change is pursued (owner ruling 2026-09-23); no
-  sentence in the repo claims an upstream issue exists.
+  sentence in the repo claims an upstream issue exists. **Met** —
+  phase 3 corrected the two phase-1 sentences.
 - A frame appended before the session start opens a drop episode with
   one WARN naming bus, stamp and distance; continued drops produce at
   most one line per emitter tick; the episode closes with a total
-  (host tests).
+  (host tests). **Met** — phase 2; continued lines further capped at
+  one per 10 s and a re-open gets its own line (amendment).
 - A logger whose input contains frames before its anchor logs the
   same clamp warning Save Capture does, at finish and at each split
-  part (host tests).
+  part (host tests). **Met** — phase 3; the tests assert the shared
+  formatter on the writer's `FinishedCapture` at finish and at a
+  split, the `sys_warn!` emission in `run_logger` reviewed by eye.
 - Confirmation (not gating): a ≥ 12 h live Kvaser capture after
   landing shows zero before-session drops and continuous RX stamps
-  across the wrap; recorded in the status log with the date.
+  across the wrap; recorded in the status log with the date. **Owed**,
+  not gating — to schedule with the owner.
 
 ## Status log
 
@@ -473,3 +478,24 @@ Sonnet-shaped. All three share the main tree, strictly sequential.
   dependency; the draft phase 1 wrote stays here for a future sweep of
   upstreamable patches (backlog). Queue line withdrawn; phase 3 also
   corrects the two phase-1 sentences claiming an upstream issue.
+- 2026-09-23 — **phase 3 (`task155-logger-clamp`) landed**, one commit
+  (`229f9ca6`) on `task155-drops-loud` (`33f9abe9`). `LogWriter::write`
+  / `finish` hand back the closed part's `FinishedCapture`; `run_logger`
+  emits Save Capture's `clamped_timestamp_warning` text at WARN at the
+  run's finish and at every size-cap split part — no second formatter.
+  Two host tests drive a `LogWriter` through a frame before its anchor
+  (finish, and a split). Corrected the two phase-1 sentences (sidecar
+  README, `technology-inventory.md`) that claimed an upstream python-can
+  issue, per the owner ruling; the inventory's CRLF preserved. Fixed an
+  inherited rustdoc break from phase 2 (`FirstDrop` linked
+  `Self::frames_dropped_before_session`; two bracketed links to the
+  private `DropEpisode`). **Full task-final CI matrix green** except
+  `wire-breaking`, skipped: proto untouched by the task and `buf` not
+  installed locally. Release host built.
+- 2026-09-23 — **phase 3 reviewed and accepted; task 155 complete**
+  (overseer). Exit criteria walked above: five met, the ≥ 12 h live
+  Kvaser confirmation owed and not gating. Queued for owner acceptance.
+  Stack: `task149-units-surfaces` → `task155-kvaser-unwrap`
+  (`3e5f6563`) → `task155-drops-loud` (`33f9abe9`) →
+  `task155-logger-clamp` (`229f9ca6`); task 156's investigation branch
+  restacked on top.
