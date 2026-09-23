@@ -2579,6 +2579,17 @@ nothing, or a malformed string is refused where it was typed and says
 why; a stored definition that stops holding (a term you later deleted)
 says why on its own row rather than silently doing nothing.
 
+The same entry **aliases** a unit the app already has, by composing
+that one unit: `mph` = `mile-per-hour` — or `mile / hour`, which comes
+out as the same unit — gives the unit the library spells `mi/h` the
+name your databases write for it. An alias converts 1:1 with the unit
+it names, reads as the name you gave it wherever it appears, and a
+database that writes that name gets your unit rather than the library's
+spelling. It is the one way to take a name that is already taken, and
+only where the composition is exactly that unit *and* the library
+spells it differently: `W` = `V * A` is still refused, since the watt
+already reads `W` and a second name for it would buy nothing.
+
 A math signal drags to plots and signal views like any other signal.
 Its row there wears one **color chip per bus feeding it** —
 transitively, through any math operands — and reads
