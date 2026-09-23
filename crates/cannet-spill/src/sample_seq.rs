@@ -387,6 +387,7 @@ fn chain_plan(len: usize, first_slot: usize) -> Option<(Vec<usize>, usize)> {
 #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
 mod tests {
     use super::*;
+    use crate::scratch_lock::{ScratchLock, ScratchLockError};
     use tempfile::TempDir;
 
     #[test]
@@ -543,22 +544,26 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "reproduces a known defect: no reopen yet refuses a directory another mapping still holds"]
     fn a_reopen_never_truncates_a_segment_another_mapping_still_holds() {
         // Two live chains over one directory — what two cannet processes
         // sharing a project's scratch are, since a mapping is per *file*,
         // not per process. The first is ahead of the watermark the second
-        // reopens from (it grew into segment 1 after the length the caller
-        // last recorded), so the second's chain is one segment short and
-        // its next push *creates* a segment file the first still maps.
+        // would reopen from (it grew into segment 1 after the length the
+        // caller last recorded), so the second's chain would be one
+        // segment short and its next push would *create* a segment file
+        // the first still maps.
         //
         // `create_segment` opens that path with `truncate(true)` and
         // `set_len`s it (ADR 0002 DS-4). Windows refuses outright
         // (ERROR_USER_MAPPED_FILE, 1224) and the push panics; POSIX
-        // truncates in place and silently zeroes the live mapping. Both
-        // are failures, so this asserts the push neither panics nor
-        // disturbs the other chain's samples.
+        // truncates in place and silently zeroes the live mapping.
+        //
+        // The guard is the scratch lock (ADR 0002 DS-7): the session that
+        // owns the directory holds it, so the second session never gets
+        // far enough to reopen the manifest — let alone grow a chain into
+        // a mapped segment.
         let dir = TempDir::new().unwrap();
+        let held_lock = ScratchLock::acquire(dir.path(), Path::new("held.cannet_prj")).unwrap();
 
         // The chain that is still open elsewhere. 64 entries fill segment
         // 0; the 65th creates and maps segment 1.
@@ -568,29 +573,35 @@ mod tests {
         }
         assert_eq!(held.get(64), (64.0, 128.0));
 
-        // What a manifest written before that growth records: 64 entries,
-        // i.e. segment 0 only. Reopening from it is the documented
-        // contract (ADR 0002 DS-7) — the geometry is deterministic in the
-        // length — and it is exactly one segment behind what is on disk.
+        // A second session over the same directory is refused, and the
+        // refusal names the holder.
+        let err = ScratchLock::acquire(dir.path(), Path::new("second.cannet_prj"))
+            .expect_err("the directory is held");
+        let holder = match &err {
+            ScratchLockError::Held(h) => h.clone().expect("the holder record is readable"),
+            ScratchLockError::Io(e) => panic!("expected a held directory, got {e}"),
+        };
+        assert_eq!(holder.pid, std::process::id());
+        assert!(
+            err.to_string().contains(&std::process::id().to_string()),
+            "the refusal names the holding pid: {err}"
+        );
+
+        // Nothing touched the held chain's segment 1.
+        assert_eq!(held.get(64), (64.0, 128.0));
+
+        // Once the holder releases, the next session opens and the reopen
+        // that used to truncate is safe — the chain it reopens is the
+        // only live one.
+        drop(held);
+        drop(held_lock);
+        let _next = ScratchLock::acquire(dir.path(), Path::new("second.cannet_prj"))
+            .expect("the released directory opens");
         let mut reopened = SampleSeq::reopen(dir.path(), "sig.l0", 64, 0)
             .unwrap()
             .expect("segment 0 is present");
-        assert_eq!(reopened.len(), 64);
-
-        // The push that grows into segment 1.
-        let grew = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            reopened.push(999.0, 999.0);
-        }));
-        assert!(
-            grew.is_ok(),
-            "growing into a segment another mapping holds panicked \
-             (Windows refuses to truncate a mapped file)"
-        );
-        assert_eq!(
-            held.get(64),
-            (64.0, 128.0),
-            "the other chain's segment 1 was truncated under its mapping"
-        );
+        reopened.push(999.0, 999.0);
+        assert_eq!(reopened.get(64), (999.0, 999.0));
     }
 
     #[test]

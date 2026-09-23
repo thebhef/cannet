@@ -95,6 +95,14 @@ one project.
 directory cannet creates in machine-local storage, keyed by a hash of
 the project directory's path.
 
+Because the key is the *project* and not the process, one cache is
+reachable by two cannet instances at once. It is therefore held
+**exclusively** by whichever session is rooted in it, and a second
+instance opening that project is refused with the holder named — see
+[ADR 0002](0002-disk-spill-store.md) DS-7, which owns the lock and the
+reasoning. The refusal is a property of decision 12 (the cache belongs
+to the directory), not an extra rule on top of it.
+
 ### 5. Workspace data is expendable; the capture is not surprising
 
 Losing `.cannet/` costs per-project view state and a re-do of the BLF
