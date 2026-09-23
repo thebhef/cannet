@@ -63,21 +63,26 @@ directly.
 _Avoid_: "sidecar file" — that unrelated term names the forbidden
 companion-file pattern (ADR 0010).
 
-**Servers panel**:
-The singleton panel listing every server this machine knows about —
-what is advertising on the network merged with what has been accepted
-here, one row per `host:port` — and the one place an identity is
-trusted, a token entered, a server forgotten, or an address **added by
-hand** (ADR 0041). Trusting a server is a decision the machine makes
-once, not a project's; a project only references the `host:port` a bus
-is bound to. A bus row has no server affordance beyond *Manage
-servers…*, which jumps here.
+**Servers section**:
+The **Connection › Servers** section of the settings view, listing every
+server this machine knows about — what is advertising on the network
+merged with what has been accepted here, one row per `host:port` — and
+the one place an identity is trusted, a token entered, a server
+forgotten, or an address **added by hand** (ADR 0041). Trusting a
+server is a decision the machine makes once, not a project's; a
+project only references the `host:port` a bus is bound to. A bus row
+has no server affordance beyond *Manage servers…*, which opens the
+settings view scrolled here.
+_Avoid_: "Servers panel" — it was a singleton panel of its own until
+the rows moved into the settings view, and no panel answers to that
+name now. _Avoid_: confusing it with a **server section**, singular,
+which is one server's collapsible element in the project panel (below).
 _Avoid_: "trusted-servers list" for this — one merged list, not a
 separate pinned-only one. _Avoid_: "add a server to a bus" — a bus is
 bound to an interface on a server this machine already trusts.
 
 **Add server…**:
-The panel's affordance for a server discovery cannot produce — one on
+The section's affordance for a server discovery cannot produce — one on
 another subnet, one started `--no-mdns`. Typing its `host:port` dials
 it exactly as a browsed row's *Trust…* does, and the question that
 comes back is answered in the same dialog; an address that was refused
@@ -91,12 +96,12 @@ field is gone, and an address is added once, for the machine.
 What a bus row says when its binding names a server this machine
 cannot reach without an answer from the user: *unknown server
 `host:port`* when nothing is known about the address, *not trusted on
-this machine* when it is in the Servers panel unaccepted, and a
+this machine* when it is in the Servers section unaccepted, and a
 changed-identity line when the certificate stopped matching the pin.
 The host decides which addresses those are — a loopback proxy is
 reached in the clear and is never flagged.
 _Avoid_: calling it an error; the binding is intact and the fix is one
-decision in the Servers panel.
+decision in the settings view's Servers section.
 
 **Server section**:
 One trusted server's collapsible element in the project panel's
@@ -106,8 +111,11 @@ offers, each annotated with the bus it feeds or `(unassigned)`. A
 section is open while one of its interfaces is bound to a bus and
 folded otherwise; the fold is view state, the contents are the host's.
 Only trusted servers get one — a discovered-but-unaccepted server
-lives in the Servers panel until it is trusted. While a session is
+lives in the Servers section until it is trusted. While a session is
 live, the header also carries the **clock offset** — see below.
+_Avoid_: confusing it with the **Servers section** of the settings
+view (above) — that one is the machine's whole list; this one is one
+server's place in a project's wiring.
 _Avoid_: "remote server row" — the old bound-only listing, which
 showed a server because the project referenced it rather than because
 this machine trusts it.

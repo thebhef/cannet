@@ -674,9 +674,9 @@ bind, so it auto-enables TLS and a bearer token
 ([ADR 0041](docs/adr/0041-remote-connection-security.md)), generating
 both on first run and reloading the same pair on every later start. The
 three strings a client needs — address, fingerprint, token — are
-printed together in one block, in the form the GUI's Servers panel asks
-for. `--bind 127.0.0.1:50051` is the loopback-only, plaintext case; the
-default is not it.
+printed together in one block, in the form the GUI's Servers section
+asks for. `--bind 127.0.0.1:50051` is the loopback-only, plaintext case;
+the default is not it.
 
 The first bare launch on Windows opens a listening TCP socket on a
 routable address, so Defender Firewall prompts once for the binary
@@ -754,7 +754,7 @@ Flags:
 The advertisement's TXT record carries two keys: `ver=` — the build
 string, the same one `--version` prints — and `proto=` — the protocol
 packages this server serves, comma-separated (`cannet.v1`). `proto=`
-lets the Servers panel grey out a server this build cannot speak to
+lets the Servers section grey out a server this build cannot speak to
 before anything dials it; it is advisory, and the `ServerInfo` call
 every client makes on the connection is the gate
 ([ADR 0059](docs/adr/0059-wire-protocol-package-major.md)).
@@ -931,11 +931,11 @@ Start the server on the bench machine and leave its console visible:
 # →   token        chug-pruning-unclad-hazard-morphine
 ```
 
-In the GUI, open the **Servers** panel — *Go to view…* → *Servers*, or
-the command palette's *Show servers*. It lists every server
-advertising on this network beside every one this machine has already
-accepted, one row per `host:port`, carrying the instance name, the
-machine's host name, the address, the version, and a trust badge.
+In the GUI, open **Settings → Servers** — *Go to view…* → *Servers*,
+which opens the settings view scrolled to that section. It lists every
+server advertising on this network beside every one this machine has
+already accepted, one row per `host:port`, carrying the instance name,
+the machine's host name, the address, the version, and a trust badge.
 Press *Trust…* on the bench server's row. The server is dialled;
 because nothing has been accepted for that address yet, the connection
 is refused at the certificate and a dialog appears showing the
@@ -976,7 +976,7 @@ true, and the row still says so.
 Both are stored per `host:port` in `servers.json` in the GUI's config
 directory ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)),
 never in the project file, so a project shared with a colleague carries
-no credential. The **Servers** panel is where that store is managed:
+no credential. The **Servers** section is where that store is managed:
 each row shows the same fingerprint string, whether a token is stored,
 a *Token…* field that replaces or clears the stored credential, and a
 *Forget* button that makes the next connection ask again. Both are on
@@ -997,16 +997,16 @@ appears here.
 
 A server on another subnet, or one started `--no-mdns`, advertises
 nowhere this machine can hear, so it never appears in the browsed list.
-**Add server…** in the panel's toolbar is the way to it: type its
+**Add server…** in the section's toolbar is the way to it: type its
 `host:port` and the address is dialled exactly as *Trust…* dials a
 browsed row — refused at the certificate, with the same dialog to
 compare the fingerprint in. Accepting it pins the identity, and the
 server becomes a row like any other, greyed while it is not
 advertising. Nothing is stored for an address that could not be
-reached; the panel says what the attempt hit and the list is left
+reached; the section says what the attempt hit and the list is left
 alone. The same goes for a question dismissed rather than answered —
 nothing is stored, so nothing is added to the list, and reaching that
-server is typing its address again. The panel also says which kind of
+server is typing its address again. The section also says which kind of
 empty it is looking at: it
 distinguishes a network with nothing on it from a browse that could
 not start at all, and reports the error when the mDNS browser itself
@@ -1021,7 +1021,7 @@ correct. The resulting rule is scoped to that exact path and network
 profile, so a new install location, or switching onto a network
 profile you have not answered for yet, prompts again. None of this
 fails silently on the GUI side: a browse blocked by a Windows deny
-shows as `degraded` or `failed` in the Servers panel rather than a
+shows as `degraded` or `failed` in the Servers section rather than a
 quiet empty list, and either way — blocked discovery, a server on
 another subnet, or one that simply isn't advertising — **Add
 server…** reaches it by `host:port` without depending on browse at
@@ -1614,11 +1614,11 @@ project you are not in), it is bounded by the
 and an entry leaves it only when opening it actually fails — nothing
 walks the filesystem to prune it in advance. The project panel lists
 the configured server(s) with **Manage
-servers…**, which opens the Servers panel. That button is always there,
-including on a project with no buses yet, which is exactly when a
-server still has to be added; the same launcher inside a bus row's
-interface combo only exists once a bus does. The panel also lists the
-loaded DBCs with **Add…**
+servers…**, which opens the settings view scrolled to its Servers
+section. That button is always there, including on a project with no
+buses yet, which is exactly when a server still has to be added; the
+same launcher inside a bus row's interface combo only exists once a bus
+does. The project panel also lists the loaded DBCs with **Add…**
 / **Remove** / **Reload all from disk**. The
 last opened/saved project is reopened on launch, unless you turn
 **`reopen_last_project`** off — then a launch starts with nothing open,
@@ -1753,6 +1753,14 @@ writes, so the panel teaches the file.
   **Developer** group rather than mixed into the others. Nothing is
   hidden from the file: they are all in `settings.json` whether the
   panel shows them or not.
+- **Trusting a server — Connection › Servers.** The machine's whole
+  server list lives here: what is advertising on this network merged
+  with what has already been accepted, one row per `host:port`, with
+  *Trust…*, *Token…*, *Forget* and **Add server…** on it. It scrolls in a
+  bounded space of its own rather than in the settings view's list.
+  Accepting a server is a decision this machine makes once, not a
+  project's, which is why it is here and not in a project's panel — see
+  *Connecting the GUI to a protected server* above for the walkthrough.
 - **Reclaiming disk — Storage › Project caches.** Every project keeps
   its own capture, so the panel lists every project directory cannet
   holds cached data for and what each one is currently using (measured
@@ -2304,21 +2312,21 @@ A project carries only the `host:port` a bus is bound to — never a
 fingerprint or a token — so opening one on a machine that has not
 accepted that server is the ordinary case, not an error. The bus row
 says so in as many words: *`host:port` is not trusted on this machine —
-add it in the Servers panel* for an address this machine has no record
-of, and the same line ending *trust it in the Servers panel* for a
-server it can see but has not accepted. One fact, two fixes. A server
-whose identity has changed since it was pinned, or one that refused the
-token stored for it, gets its own line. Each carries the same *Manage
-servers…* jump. Whether an address needs an answer at all is
-the host's call, so a loopback proxy — reached in the clear and never
-asked about — is not flagged.
+add it in Settings → Servers* for an address this machine has no
+record of, and the same line ending *trust it in Settings → Servers*
+for a server it can see but has not accepted. One fact, two fixes. A
+server whose identity has changed since it was pinned, or one that
+refused the token stored for it, gets its own line. Each carries the
+same *Manage servers…* jump. Whether an address needs an answer at all
+is the host's call, so a loopback proxy — reached in the clear and
+never asked about — is not flagged.
 
-*Manage servers…* opens the **Servers** panel, and that is the only
-server affordance a bus row has. Which servers this machine talks to
-is a decision it makes once, not part of wiring a bus: the panel
-lists what is advertising itself via mDNS/DNS-SD (`_cannet._tcp`)
-merged with what has already been accepted here, and a server becomes
-a source on a bus once it is trusted there
+*Manage servers…* opens the **Servers** section of the settings view,
+and that is the only server affordance a bus row has. Which servers
+this machine talks to is a decision it makes once, not part of wiring
+a bus: the section lists what is advertising itself via mDNS/DNS-SD
+(`_cannet._tcp`) merged with what has already been accepted here, and a
+server becomes a source on a bus once it is trusted there
 ([ADR 0041](docs/adr/0041-remote-connection-security.md)). Discovery
 is convenience and never a trust signal
 ([ADR 0040](docs/adr/0040-production-cannet-server.md)): a browsed

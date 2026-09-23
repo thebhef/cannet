@@ -1,11 +1,21 @@
-// The Servers panel: the one place this machine's relationship with
-// every cannet server is managed (ADR 0041).
+// The **Connection › Servers** section of the settings view: the one
+// place this machine's relationship with every cannet server is managed
+// (ADR 0041).
 //
 // **Server selection and authentication are user-level, not
 // per-project.** A server is trusted by this machine, once, in here;
 // what a project does with it is a separate question answered on a bus.
-// That is why this is a singleton panel and not a form inside a bus
-// row.
+// That is why it is a section of the app-global settings view and not a
+// form inside a bus row.
+//
+// A gridview (ADR 0044): one leaf row per server, no branches — there
+// is nothing to group `host:port` under — in a bounded row space with
+// its own scrollbar, so the settings view's own scroll does not walk
+// through it. Modelled on `ProjectCachesList.tsx`: rows as plain
+// elements over `arrayRowSpace`, not through the column framework,
+// because the settings renderer has nowhere to persist a
+// resizable/reorderable column layout and building one would be a
+// gesture that forgets itself on every reopen.
 //
 // One merged list, keyed by `host:port`: a server advertising on the
 // network and a server this machine has accepted are the same row, and
@@ -27,10 +37,9 @@
 //   raised the question made it — so "Review…" puts that question up
 //   without dialling again, which is what lets a server that has since
 //   gone quiet still be reviewed.
-// - **The panel owns no dialog.** A row's affordance raises the one
+// - **The section owns no dialog.** A row's affordance raises the one
 //   app-wide trust dialog (`ServerTrustDialog.tsx`); a second modal of
-//   the panel's own over the same question is impossible by
-//   construction.
+//   its own over the same question is impossible by construction.
 // - **An address can be added by hand**, because discovery is multicast
 //   and a server on another subnet advertises nowhere this machine can
 //   hear. "Add server…" is the same act as a row's "Trust…" for an
@@ -40,8 +49,14 @@
 //   makes the row; a question waved away leaves nothing behind, and the
 //   address is typed again to retry.
 
-import { useCallback, useMemo, useState } from "react";
-import type { IDockviewPanelProps } from "dockview";
+import {
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { useInterfaceDiscovery, type DiscoveryState } from "./ConnectionManagement";
@@ -63,10 +78,18 @@ import {
   setServerToken,
   type TrustPrompt,
 } from "./serverTrust";
+import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";
 import { ChipButton } from "./ChipButton";
 import { Icon } from "./Icon";
+import { SettingsShownContext } from "./settingsShown";
+import { useGridview } from "./useGridview";
+import { useScrollRestore } from "./useScrollRestore";
 
-export function ServersPanel(_props: IDockviewPanelProps) {
+/// How many rows the bounded row space holds — what PageUp/PageDown
+/// move by (`.servers-grid`'s max-height over a row).
+const PAGE_ROWS = 6;
+
+export function ServersSection() {
   const { servers, browse } = useServerList();
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -90,7 +113,7 @@ export function ServersPanel(_props: IDockviewPanelProps) {
 
   // Watch every server the store can actually reach — a pin or an
   // explicit unprotected choice — so its row shows live interfaces and
-  // its connection is exercised (with backoff) while the panel is
+  // its connection is exercised (with backoff) while the section is
   // open, instead of failing silently until a bus needs it. Untrusted
   // rows are left alone: a watch would dial them and raise a
   // first-contact question nobody asked for. So is a server that has
@@ -186,14 +209,58 @@ export function ServersPanel(_props: IDockviewPanelProps) {
 
   const notice = browseNotice(browse);
 
+  // The gridview's row space (ADR 0044): one leaf per server, in the
+  // order the host merged them and the search left them. Nothing
+  // groups servers, so `isExpanded` never matters and no expanded set
+  // is kept.
+  const gridRows = useMemo<GridviewRow[]>(
+    () => matches.map((r) => ({ id: r.address, kind: "leaf", expandable: false, depth: 0 })),
+    [matches],
+  );
+
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // Read through a ref so the adapter's memo can close over the
+  // gridview's row-id helper before `useGridview` has run — the same
+  // forward reference the other non-virtualized gridviews use, for the
+  // same reason: `scrollToRow` only runs on a later interaction.
+  const rowDomIdRef = useRef<(id: string) => string>((id) => id);
+
+  const adapter = useMemo<GridviewAdapter>(() => {
+    const space = arrayRowSpace(gridRows, () => false);
+    return {
+      ...space,
+      // The rows are all in the document, so this is the "scroll it
+      // just into view" arithmetic the other non-virtualized gridviews
+      // use.
+      scrollToRow(index) {
+        const id = space.rowIdAt(index);
+        const container = listRef.current;
+        if (id == null || container == null) return;
+        const el = document.getElementById(rowDomIdRef.current(id));
+        if (el == null) return;
+        const c = container.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        if (r.top < c.top) container.scrollTop += r.top - c.top;
+        else if (r.bottom > c.bottom) container.scrollTop += r.bottom - c.bottom;
+      },
+      setExpanded: () => {
+        /* no branches to expand */
+      },
+      isSelectable: () => true,
+    };
+  }, [gridRows]);
+
+  const grid = useGridview({ adapter, pageRows: PAGE_ROWS, idPrefix: "servers" });
+  rowDomIdRef.current = grid.rowDomId;
+
+  // Puts the row space's own scroll offset back across a settings-panel
+  // hide and show — the same mechanism `SettingsPanel.tsx` uses for
+  // `.settings-list`, shared rather than duplicated (`useScrollRestore.ts`).
+  const shownCount = useContext(SettingsShownContext);
+  const onGridScroll = useScrollRestore(listRef, shownCount);
+
   return (
-    <div className="settings-panel servers-panel">
-      <h2 className="settings-title">Servers</h2>
-      <p className="settings-hint">
-        Servers this machine can reach: the ones advertising on this network
-        and the ones whose identity has been accepted here. Accepting a server
-        is a decision for this machine, not for a project.
-      </p>
+    <div className="setting-custom servers-section">
       <div className="servers-toolbar">
         <span className="chip-field servers-search" title="search servers">
           <Icon name="search" />
@@ -275,11 +342,33 @@ export function ServersPanel(_props: IDockviewPanelProps) {
       ) : matches.length === 0 ? (
         <p className="servers-empty">No server matches.</p>
       ) : (
-        <div className="servers-list">
+        <div
+          className="servers-grid"
+          ref={listRef}
+          onScroll={onGridScroll}
+          {...grid.containerProps}
+        >
           {matches.map((row) => (
             <ServerRowView
               key={row.address}
               row={row}
+              domId={grid.rowDomId(row.address)}
+              cursor={grid.cursor === row.address}
+              selected={grid.selection.has(row.address)}
+              onRowClick={(e) => {
+                grid.onRowClick(row.address, {
+                  mod: e.metaKey || e.ctrlKey,
+                  shift: e.shiftKey,
+                });
+                // Clicking a row hands the grid the keyboard — the
+                // container is the only thing in a gridview that holds
+                // focus (ADR 0044) — unless the click was aimed at a
+                // control that wants it itself.
+                const target = e.target as HTMLElement | null;
+                if (target?.closest("button") == null && target?.closest("input") == null) {
+                  listRef.current?.focus();
+                }
+              }}
               discovery={discovery.entries[row.address]}
               busy={busy === row.address}
               highlighted={highlight === row.address}
@@ -336,7 +425,7 @@ function tokenLabel(row: ServerRow): string {
 /// The row's live-interfaces line. Failures are deliberately not
 /// worded here: a terminal one surfaces as the row's trust prompt and
 /// badge, and a down server keeps its last snapshot (or "discovering…")
-/// rather than flashing transport errors at the panel.
+/// rather than flashing transport errors at the section.
 function interfacesLabel(state: DiscoveryState): string {
   switch (state.status) {
     case "pending":
@@ -352,14 +441,20 @@ function interfacesLabel(state: DiscoveryState): string {
 
 interface ServerRowViewProps {
   row: ServerRow;
+  /// The gridview's dom id for this row, and where its cursor and
+  /// selection currently are (ADR 0044).
+  domId: string;
+  cursor: boolean;
+  selected: boolean;
+  onRowClick: (e: ReactMouseEvent<HTMLDivElement>) => void;
   /// The host's live interface snapshot for this row's address —
-  /// present only for a row the panel watches (something is stored to
+  /// present only for a row the section watches (something is stored to
   /// reach it with).
   discovery: DiscoveryState | undefined;
   busy: boolean;
   /// The last add pointed at this row — either it was just added, or it
-  /// was already here and the panel is saying so rather than adding it
-  /// a second time.
+  /// was already here and the section is saying so rather than adding
+  /// it a second time.
   highlighted: boolean;
   tokenOpen: boolean;
   onTrust: () => void;
@@ -370,6 +465,10 @@ interface ServerRowViewProps {
 
 function ServerRowView({
   row,
+  domId,
+  cursor,
+  selected,
+  onRowClick,
   discovery,
   busy,
   highlighted,
@@ -394,9 +493,11 @@ function ServerRowView({
   const incompatible = incompatibleProtocolNote(row);
   return (
     <div
+      id={domId}
       className={`server-row${row.online ? "" : " offline"}${highlighted ? " highlight" : ""}${
         incompatible === null ? "" : " incompatible"
-      }`}
+      }${cursor ? " cursor" : ""}${selected ? " selected" : ""}`}
+      onClick={onRowClick}
     >
       <span className={`server-badge ${row.trust}`}>{trustLabel(row)}</span>
       <span className="server-name">{row.name ?? "not advertising"}</span>
@@ -448,7 +549,7 @@ function ServerRowView({
               ? "Forget this server's fingerprint and token. The next connection to it asks again."
               : stored
                 ? "Take this address back out of the list. Nothing is stored for it."
-                : "Drop whatever is stored for this server. Nothing is, so the panel will say what is keeping the row here."
+                : "Drop whatever is stored for this server. Nothing is, so the row's notice will say what is keeping it here."
           }
           onClick={onForget}
         >

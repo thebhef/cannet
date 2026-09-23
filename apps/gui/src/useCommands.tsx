@@ -36,7 +36,7 @@ import {
   PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
   PROJECT_PANEL_ID,
-  SERVERS_PANEL_ID,
+  SERVERS_SETTING_KEY,
   SETTINGS_PANEL_COMPONENT,
   SETTINGS_PANEL_ID,
   SHORTCUTS_PANEL_COMPONENT,
@@ -48,7 +48,7 @@ import {
   elementPanelComponent,
   isTabMiddlePress,
   panelKindForFocus,
-  showServersPanel as showServersPanelIn,
+  showSettingsPanelAt,
   validateLayout,
 } from "./dockLayout";
 import {
@@ -385,11 +385,13 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       }),
     [showSingletonPanel],
   );
-  // Not `showSingletonPanel`: the bus row's "Manage servers…" opens the
-  // same panel from outside this hook, and both go through one helper.
-  const showServersPanel = useCallback(() => {
+  // Not `showSingletonPanel`: the Servers rows are a section of the
+  // settings view (ADR 0041), and the project panel's "Manage servers…"
+  // reaches the same section from outside this hook — both go through
+  // one helper, which also carries the scroll-to-section request.
+  const showServersSection = useCallback(() => {
     const api = dockApiRef.current;
-    if (api) showServersPanelIn(api);
+    if (api) showSettingsPanelAt(api, SERVERS_SETTING_KEY);
   }, [dockApiRef]);
 
   // --- command handlers + key dispatch (ADR 0018) ---
@@ -579,7 +581,6 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "panel.show.events": showEventsPanel,
     "panel.show.busHealth": showBusHealthPanel,
     "panel.show.shortcuts": showShortcutsPanel,
-    "panel.show.servers": showServersPanel,
     // Rename in place: the palette stays open and becomes a text field
     // seeded with the focused panel's name, so the user never leaves
     // the view they are renaming. The name is the model-owned one
@@ -891,7 +892,10 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     singleton(EVENTS_PANEL_ID, "Events", showEventsPanel);
     singleton(BUS_HEALTH_PANEL_ID, "Bus health", showBusHealthPanel, "bus load error frames");
     singleton(SHORTCUTS_PANEL_ID, "Keyboard shortcuts", showShortcutsPanel);
-    singleton(SERVERS_PANEL_ID, "Servers", showServersPanel);
+    // Kept as its own entry although it is no longer a view of its
+    // own: "Servers" is what a user looks for, and the settings view
+    // arrives scrolled to that section.
+    singleton(SERVERS_SETTING_KEY, "Servers", showServersSection, "trust token forget");
     return views;
   }, [
     registry,
@@ -906,7 +910,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     showEventsPanel,
     showBusHealthPanel,
     showShortcutsPanel,
-    showServersPanel,
+    showServersSection,
   ]);
   const gotoPaletteItems: PaletteItem[] = useMemo(() => {
     if (openPalette !== "goto") return [];

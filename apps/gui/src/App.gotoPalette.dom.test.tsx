@@ -31,6 +31,49 @@ vi.mock("@tauri-apps/api/core", () => ({
         return "0.0.0-test";
       case "get_sidecar_status":
         return { phase: "offline", address: null };
+      // Enough of the settings view's model for the Servers entry to
+      // land somewhere real: the host serves one descriptor, a `view`
+      // row naming the section's renderer, and one server to put in it.
+      case "get_setting_descriptors":
+        return {
+          surfaces: [{ id: "connection", label: "Connection" }],
+          settings: [
+            {
+              key: "servers",
+              label: "Servers",
+              help: "",
+              surfaces: ["connection"],
+              kind: "behaviour",
+              backing: "view",
+              control: { type: "custom", renderer: "servers" },
+              scope: null,
+              default: null,
+            },
+          ],
+        };
+      case "get_settings_overrides":
+        return [];
+      case "get_server_list":
+        return {
+          servers: [
+            {
+              address: "bench:50051",
+              name: "bench-rig",
+              host: "bench-rig.local",
+              version: "v0.8.1",
+              protocols: ["cannet.v1"],
+              online: true,
+              trust: "new",
+              fingerprint: null,
+              hasToken: false,
+              insecure: false,
+              manual: false,
+              prompt: null,
+              clock: null,
+            },
+          ],
+          browse: { state: "running" },
+        };
       default:
         return null;
     }
@@ -143,5 +186,27 @@ describe("go-to-view palette", () => {
   it("still finds it by its current name", async () => {
     await mountApp();
     expect(await gotoMatches("Database")).toContain("Database");
+  }, 30_000);
+
+  // The Servers rows live in the settings view now (ADR 0041), but
+  // "Servers" is still what a user reaches for, so the entry stays —
+  // re-pointed at the settings view, which arrives scrolled to that
+  // section.
+  it("opens the settings view at the Servers section", async () => {
+    await mountApp();
+    expect(await gotoMatches("Servers")).toContain("Servers");
+    const input = document.querySelector<HTMLInputElement>(".palette input.palette-input");
+    if (!input) throw new Error("go-to-view palette closed early");
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".settings-view .servers-section .servers-grid"))
+        throw new Error("the Servers section is not in the settings view yet");
+    });
+    // And it is the section's own row space that holds the rows, not
+    // the settings view's list (ADR 0044).
+    const grid = document.querySelector(".servers-grid");
+    expect(grid?.querySelector(".server-row")).not.toBeNull();
   }, 30_000);
 });

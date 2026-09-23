@@ -187,7 +187,7 @@ describe("the notice on the bus row", () => {
     expect(notice).toHaveTextContent(
       `${BENCH_ADDRESS} is not trusted on this machine`,
     );
-    expect(notice).toHaveTextContent(/add it in the Servers panel/i);
+    expect(notice).toHaveTextContent(/add it in Settings . Servers/i);
     fireEvent.click(screen.getByRole("button", { name: "Manage servers…" }));
     expect(onManageServers).toHaveBeenCalledTimes(1);
   });
@@ -208,7 +208,7 @@ describe("the notice on the bus row", () => {
     expect(notice).toHaveTextContent(
       `${BENCH_ADDRESS} is not trusted on this machine`,
     );
-    expect(notice).toHaveTextContent(/trust it in the Servers panel/i);
+    expect(notice).toHaveTextContent(/trust it in Settings . Servers/i);
     expect(notice).not.toHaveTextContent("unknown server");
   });
 
