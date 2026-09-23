@@ -121,13 +121,19 @@ contract.
   2026-09-23.**
 - With the lock, a second `TraceStore` (or process) opening a held
   project cache is refused, and the two phase-1 tests pass un-ignored
-  by asserting the refusal.
+  by asserting the refusal. **Met** — phase 2 (`ed8ca713`).
 - Opening a project whose cache another cannet instance holds refuses
   with a message naming the holder; releasing it lets the next open
-  succeed (host test).
+  succeed (host test). **Met** — phase 2, four host tests.
 - Closing the window during a long shutdown flush keeps a visible
   closing state until the host exits; a relaunch during that window
-  hits the lock's refusal, not a panic.
+  hits the lock's refusal, not a panic. **Met in tests** — phase 3
+  (`3c39d590`): six `closing` unit tests, four overlay dom tests, two
+  `App.closeConfirm` tests. The real-app close was not exercised at
+  runtime (phase 3 blockers: `--app-data-dir` does not isolate the
+  project cache, so a harness launch would touch the operator's
+  unsaved cache); an owner check with a large capture is owed at
+  acceptance.
 - The owner has ruled on hardening with the verdict in hand
   (**ruled 2026-09-23: task 157**), and the ruling is recorded here.
 
@@ -168,6 +174,24 @@ contract.
   removed. After the delete, 8.9 GB free; 17.2 GB by the time the
   release build ran. All builds since use `CARGO_INCREMENTAL=0` so it
   does not regrow.
+
+- 2026-09-23 (phase 3) — **`--app-data-dir` does not isolate the
+  project cache.** `resolve_project_dir` roots under `app_cache_dir()`,
+  which the flag does not move. A no-project harness launch therefore
+  opens (and on exit flushes) the machine-wide unsaved-project cache
+  the owner's own session shares — refused if the owner's cannet holds
+  it (phase 2's lock), written into if not. Contradicts ADR 0031's "a
+  run must not write the operator's state"; task 79 already owns
+  making the flag isolate the scratch. This is why phase 3 did no
+  manual launch.
+- 2026-09-23 (phase 3) — **the real-app close path was not exercised
+  at runtime**; it rests on the tests and the Tauri 2.11.1 source
+  reading in the status log. An owner check with a large capture
+  confirms it: close, the overlay reads through the steps, the process
+  exits, a relaunch after that opens the project.
+- 2026-09-23 (phase 3) — **a panicking shutdown step exits with code
+  101** instead of leaving the window up forever; the OS releases the
+  lock when the process ends. The phase's own choice, open to review.
 
 ## Status log
 
@@ -445,3 +469,70 @@ contract.
   (queue § 1): a refused launch boots in the unsaved project directory;
   `Save As` onto a held destination writes the file but does not move
   the session. Phase 3 launched.
+- 2026-09-23 (phase 3, `task156-closing-cue`, `3c39d590`) — **the
+  window stays up until the host is done.** The shutdown sequence
+  moved from the `ExitRequested` arm into `closing::run_shutdown` over
+  a `ShutdownWork` trait; each step is announced on `closing-progress`
+  before it runs; order unchanged, the lock still released last. It
+  runs on its own thread (ADR 0049) and ends with `app.exit(code)`.
+
+  **Tauri 2.11.1, read at source, not assumed.** A webview that
+  listens for close-requested already has Tauri hold the close
+  (`manager/window.rs`: `prevent_close` then emit to JS), and the
+  frontend's `onCloseRequested` is what ends in `destroy()` today — so
+  a host-side `CloseRequested → prevent_close` cannot start the
+  sequence without pre-empting the unsaved-work prompt. Instead the
+  frontend's handler, once the prompt or autosave is settled, calls a
+  new `begin_close` command in place of `destroy()`. Every other exit
+  route arrives as `RunEvent::ExitRequested` (`app.exit(code)` as
+  `Some(code)`, the last window destroyed as `None`); the arm holds it
+  with `api.prevent_exit()` (works for any code but `RESTART_EXIT_CODE`
+  and leaves the loop in `ControlFlow::Wait`), runs the sequence, and
+  the final `app.exit(code)` from the worker thread goes through once
+  `ClosingGate` reads finished. `exit_code_slot` / `final_exit_code`
+  untouched: `exit_process(1)` is held, the sequence runs, the process
+  exits 1; a plain close exits 0. The host `prevent_close`s any window
+  close while the sequence runs, so a second click does nothing.
+
+  **The cue:** `ClosingOverlay` on the splash's `.splash-overlay`
+  layer (task 130's shared modal base does not exist yet, and this is
+  not a dialog) reads "Closing — <step>…" with the capture's
+  `scratch_footprint_bytes` for the flush and "n of m signals" for the
+  pyramids (a new `SignalCacheStore::persist_reporting`, which
+  `persist` delegates to; events throttled to about one per percent).
+  No controls; a window-level capture listener swallows keys so no
+  keybinding fires a command while closing. The perf harness's
+  headless `destroy()` route still runs the sequence with no window.
+
+  **Not delivered as groomed:** a per-segment fraction for the trace
+  flush (would thread a callback through `RawStore::flush` in
+  cannet-spill — more reach than the phase needs; the size is shown
+  instead).
+
+  **Tests.** Six `closing` unit tests (step order, clear-on-exit,
+  throttling, the gate one-shot and keeping the code, payload shape);
+  one `signal_cache` test for `persist_reporting`; four
+  `ClosingOverlay` dom tests; two new `App.closeConfirm` tests
+  (handing the close to the host happens once and never destroys; the
+  overlay shows the reported step; the autosave test now expects
+  `begin_close`). cannet-gui 1356 → **1363**.
+
+  **Full task-final CI matrix green**: fmt, workspace clippy,
+  `cargo test --workspace` (2161 passed, 9 ignored), rustdoc
+  `-D warnings`, frontend test (248 files, 3627) and build, python
+  wire / sidecar (230) / client (145), wire-gencode (no diff), MDF
+  oracle, sidecar-freeze, comment-references, local paths, release
+  host build. `wire-breaking` skipped: proto untouched in phases 1–3,
+  `buf` not installed. No lane was red at branch time.
+
+  **Docs.** README (the window stays until the cache is written) and
+  ADR 0002 DS-7 ("the shutdown flush runs behind the window").
+- 2026-09-23 — **phase 3 reviewed and accepted; task 156 complete**
+  (overseer). One commit on `task156-cache-lock`, tree clean; diff
+  read: the arm now holds the exit with `prevent_exit` and hands the
+  sequence to `closing::begin_shutdown`, window closes are refused
+  while the gate is started, panic in a step still exits (101).
+  Comment-references grep clean. Exit criteria walked above: four met
+  (one in tests only, with the owner's runtime check owed at
+  acceptance), the hardening ruling recorded. Queued for owner
+  acceptance; `doc-closeout-2` restacked on `task156-closing-cue`.
