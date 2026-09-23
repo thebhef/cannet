@@ -7086,6 +7086,14 @@ input.unit-customization-add {
   font-size: 0.85rem;
 }
 
+/* Closing state (`ClosingOverlay`): the splash's full-window layer,
+   holding the window up while the host finishes its shutdown. */
+.closing-step {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.05rem;
+}
+
 /* ---- View signals panel ---- */
 .view-signals-panel {
   display: flex;

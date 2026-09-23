@@ -13,6 +13,11 @@
 // `active_project_is_auto_located` at the moment of close, never guessed
 // from `projectPath` in JS. Off (the default) or against an auto-located
 // directory, the prompt behaves exactly as it always has.
+//
+// A decided close never destroys the window: it hands the close to the
+// host (`begin_close`), which runs its shutdown sequence behind the
+// still-open window and exits the app when done (ADR 0002 DS-7). The
+// window meanwhile shows the step the host reports on `closing-progress`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -45,6 +50,9 @@ const knobs = {
 /// reason).
 const saveCalls: string[] = [];
 
+/// How many times the close was handed to the host.
+let beginCloseCalls = 0;
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
     switch (cmd) {
@@ -76,6 +84,9 @@ vi.mock("@tauri-apps/api/core", () => ({
         };
       case "active_project_is_auto_located":
         return knobs.autoLocated;
+      case "begin_close":
+        beginCloseCalls += 1;
+        return null;
       case "save_project":
       case "save_project_as":
       case "rbs_save":
@@ -210,6 +221,7 @@ beforeEach(async () => {
   knobs.reopen = true;
   knobs.lastProject = null;
   saveCalls.length = 0;
+  beginCloseCalls = 0;
   windowDestroy.mockClear();
   await hydrateState();
   await hydrateSettings();
@@ -255,7 +267,8 @@ describe("autosave_on_exit", () => {
     expect(preventDefault).toHaveBeenCalled(); // native close is still deferred to async work
     expect(screen.queryByText(/unsaved changes to the project/i)).not.toBeInTheDocument();
     expect(saveCalls.length).toBeGreaterThan(0); // the silent save actually ran
-    expect(windowDestroy).toHaveBeenCalled(); // and the window closed on its own
+    expect(beginCloseCalls).toBe(1); // and the close went to the host
+    expect(windowDestroy).not.toHaveBeenCalled(); // which closes the window itself
   });
 
   // Auto-located covers both an auto-located project directory (a loose
@@ -273,7 +286,7 @@ describe("autosave_on_exit", () => {
     expect(preventDefault).toHaveBeenCalled();
     expect(screen.getByText(/unsaved changes to the project/i)).toBeInTheDocument();
     expect(saveCalls).toHaveLength(0);
-    expect(windowDestroy).not.toHaveBeenCalled();
+    expect(beginCloseCalls).toBe(0);
   });
 
   it("still prompts for a dirty explicit-dir project when autosave is disabled", async () => {
@@ -289,7 +302,61 @@ describe("autosave_on_exit", () => {
     expect(preventDefault).toHaveBeenCalled();
     expect(screen.getByText(/unsaved changes to the project/i)).toBeInTheDocument();
     expect(saveCalls).toHaveLength(0);
+    expect(beginCloseCalls).toBe(0);
+  });
+});
+
+describe("the closing state", () => {
+  function emit(event: string, payload: unknown): void {
+    for (const handler of listeners.get(event) ?? []) handler({ payload });
+  }
+
+  it("hands a decided close to the host, once, and never destroys", async () => {
+    await boot();
+
+    const preventDefault = await requestClose();
+    expect(preventDefault).toHaveBeenCalled(); // the host closes the window, not Tauri
+    expect(beginCloseCalls).toBe(0); // not before the user has decided
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /discard & close/i }));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(beginCloseCalls).toBe(1);
+
+    // A second click while the host works: held, not prompted, and not
+    // handed over again.
+    const again = await requestClose();
+    expect(again).toHaveBeenCalled();
+    expect(screen.queryByText(/unsaved changes to the project/i)).not.toBeInTheDocument();
+    expect(beginCloseCalls).toBe(1);
     expect(windowDestroy).not.toHaveBeenCalled();
+  });
+
+  it("shows the step the host reports until the app exits", async () => {
+    await boot();
+    expect(screen.queryByTestId("closing-overlay")).not.toBeInTheDocument();
+
+    await act(async () => emit("closing-progress", { step: "disconnecting" }));
+    expect(screen.getByTestId("closing-overlay")).toHaveTextContent("Closing — disconnecting…");
+
+    await act(async () =>
+      emit("closing-progress", { step: "writing_capture", bytes: 3 * 1024 ** 3 }),
+    );
+    expect(screen.getByTestId("closing-overlay")).toHaveTextContent(
+      "Closing — writing the capture cache (3.0 GB)…",
+    );
+
+    await act(async () =>
+      emit("closing-progress", { step: "writing_signals", done: 40, total: 162 }),
+    );
+    expect(screen.getByTestId("closing-overlay")).toHaveTextContent(
+      "Closing — writing the signal cache (40 of 162 signals)…",
+    );
+
+    // A close request once the host is closing does not prompt again.
+    const preventDefault = await requestClose();
+    expect(preventDefault).toHaveBeenCalled();
+    expect(screen.queryByText(/unsaved changes to the project/i)).not.toBeInTheDocument();
   });
 });
 

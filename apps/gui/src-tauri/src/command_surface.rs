@@ -153,6 +153,9 @@ const SYNCHRONOUS_COMMANDS: &[&str] = &[
     // session's outgoing queue: a full queue comes back as a refusal
     // the caller reports, never as a wait (`session::SessionTx::transmit`).
     "transmit_frame_once",
+    // Flips the closing gate and spawns the shutdown thread; the
+    // sequence itself never runs here (`closing::begin_shutdown`).
+    "begin_close",
 ];
 
 #[cfg(test)]
