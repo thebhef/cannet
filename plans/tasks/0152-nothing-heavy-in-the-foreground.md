@@ -76,6 +76,127 @@ background job, single-flight per key, and announces itself; the
 pending state is the row's own.** ADR 0049 already says this for one
 cache; the proposal below generalises it.
 
+## Audit (2026-09-22, overseer — phase 1 deliverable)
+
+**Method.** Every `#[tauri::command]` under `apps/gui/src-tauri/src`
+(113 synchronous, 33 `async`, by a grep over the attribute and the
+`fn` line), each body read together with the helpers it delegates to;
+every frontend `setInterval` (6) and `pollWhile` consumer (3); the
+health log of 2026-09-22 for the `ui_last_ms` creep. A row is an
+offender when its per-call work is unbounded (scales with a directory,
+a capture or a file), waits on a thread or the network, or spawns a
+process, on a thread the UI depends on.
+
+### Shape A — synchronous commands that do more than read state
+
+The IPC thread runs these; the heartbeat (`report_js_heap`, itself a
+synchronous command) queues behind them, which is what the log shows.
+
+| # | command | what it does that is not a state read | driven by | bound | fix |
+| --- | --- | --- | --- | --- | --- |
+| A1 | `delete_project_cache` | `remove_dir_all` of another project's cache | gesture | the cache (GBs) — **the observed 6.3 s** | `async` + `off_async_workers`; row busy state |
+| A2 | `clear_project_cache` | `clear_cache` removes a cache's contents; for the open project, A5 | gesture | the cache | same |
+| A3 | `clear_all_project_caches` | `remove_dir_all` per registered cache, then A5 | gesture | every cache | same |
+| A4 | `list_project_caches` | `dir_footprint` walks every registered cache directory (ADR 0002 DS-8 "expensive") | settings view shown, `project-dir-changed`, Refresh | caches × files | shape B: rows return at once, size pending, one background walk per row announces |
+| A5 | `clear_trace_store` | `start_session` + `restamp_scratch_for_capture` → `signal_caches.clear()` → `wipe_dir` removes every pyramid file | gesture; A2/A3 | pyramid count | `async` off-thread; or drop in memory, unlink in a background job |
+| A6 | `open_project` | reads + parses the file; `reroot_session` (flushes and reopens the raw store, `signal_caches.reroot` re-reads the cache dir, notes reroot); `logger::stop_all` **joins every writer thread** (each finishes its file first — on a cloud-synced folder that is the freeze); `apply_cache_caps` re-reads settings files | gesture | writer flush + store reopen | `async` off-thread with the join off the IPC thread; the frontend already waits on the result |
+| A7 | `close_project` | `reroot_session` + `logger::stop_all` (join) | gesture | same | same |
+| A8 | `save_project_as` | `save_project` + `create_at` + `carry_workspace_scope` + `reroot_session(Carry::Contents)`: flushes the raw store and moves the capture into the new directory — a rename on one volume, a **copy of the whole capture across volumes** | gesture | the capture | `async` off-thread, busy state on the status bar |
+| A9 | `set_loggers` | `reconcile`: `stop_one` joins the threads of loggers being stopped; `start_one` creates files (cloud folder: sync client) | gesture (logger panel edits, project open) | writer flush | `async` off-thread |
+| A10 | `add_dbc` | `read_to_string` + `Database::parse` of the whole DBC + `invalidate_derived_caches` (A13) | gesture, and the DBC watcher's reload | DBC size (MBs: ~100 ms) | `async` off-thread |
+| A11 | `set_settings` | writes the settings file; `apply_cache_caps` re-reads settings and applies the scratch cap to the live store; `apply_unit_change` invalidates derived caches (A13) | gesture | A13 | `async` off-thread |
+| A12 | `attach_local_bus_bridge`, `replay_local_virtual_buses` | `connect_and_subscribe` spawns the session thread and **blocks on `ready_rx.recv()`** until the remote handshake completes or fails | gesture; project open replay | the client's connect deadline | `async` (as `connect_remote_server` already is) |
+| A13 | `clear_dbcs`, `remove_dbc`, `set_dbc_buses`, `set_signal_unit`, `set_signal_dbc_pick`, `define_/update_/delete_math_signal` | `invalidate_derived_caches` → `signal_caches.invalidate_dbcs` drops the affected pyramids and unlinks their files (`wipe_prefix`) | gesture | cached pyramid count | one change: invalidation drops in memory and hands the unlinking to a background job; the commands then stay synchronous |
+| A14 | `transmit_frame_once` | `SessionTx::transmit` → `blocking_send` on the session's outbound channel: **waits while the queue is full** (a slow server) | gesture | queue drain | `try_send`, and a `Failed { queue full }` wire status |
+| A15 | `restart_sidecar` | `kill_child_tree` + process spawn | gesture | tens of ms | `async` off-thread (cheap) |
+| A16 | `reveal_in_file_manager` | `Command::spawn` | gesture | tens of ms | `async` off-thread (cheap) |
+
+Two things the audit did **not** measure and phase 2 verifies before
+its allow-list is final: whether `set_scratch_cap` (A11) evicts spill
+segments synchronously, and how many files `invalidate_dbcs` (A13)
+unlinks on a typical project.
+
+### Shape A — synchronous commands that are state reads (the allow-list)
+
+Bounded by state already in memory, or one small JSON file under the
+config directory, or a DBC-sized computation. These stay synchronous;
+the regression guard names exactly this set.
+
+| group | commands |
+| --- | --- |
+| snapshots | `get_bus_health`, `get_connection_states`, `get_server_prompts`, `addresses_needing_trust`, `get_discovered_servers`, `get_server_list`, `get_interfaces`, `get_logger_statuses`, `get_sidecar_status`, `capture_extent`, `signal_pyramids_rebuilding`, `fetch_system_log` (ring ≤ 4096), `fetch_notes`, `list_transmit_frames`, `fetch_field_validity`, `list_local_bus_bridges`, `list_view_signals`, `list_signal_units`, `active_project_is_auto_located`, `app_version`, `diag_enabled`, `diag_autostart` |
+| DBC-sized compute | `list_signals`, `list_dbc_content`, `list_dbc_collisions`, `list_value_tables`, `list_file_backed_content`, `describe_message`, `decode_frame`, `encode_frame`, `list_math_signals`, `evaluate_signal_generators`, `validate_signal_generator`, `list_units`, `list_unit_picker`, `list_unit_mappings`, `check_unit_definition`, `resolve_display_units`, `get_setting_descriptors`, `preview_export_template`, `rbs_crc_algorithms` |
+| in-memory mutations that emit | `cancel_import`, `cancel_export`, `set_live_tail_rows`, `clear_system_log`, `gui_emit_system_log`, `add_note` … `clear_notes` (11; the notes store writes its small file), `set_transmit_frame`, `remove_transmit_frame`, `reorder_transmit_frames`, `clear_transmit_frames`, `start_periodic_transmit`, `stop_periodic_transmit`, `set_view_signals`, `remove_view_signals`, `clear_view_signals`, `create_local_virtual_bus`, `drop_local_virtual_bus`, `detach_local_bus_bridge`, `disconnect_remote_server` (drops the handle; the worker disconnects itself, no join), `watch_interfaces`, `unwatch_interfaces`, `diag_capture_start`, `diag_push`, `exit_process` |
+| one small config-dir file | `get_settings`, `get_settings_overrides`, `get_state`, `set_state`, `get_export_state`, `set_export_state`, `save_project` (the project file itself), `accept_server_fingerprint`, `accept_server_insecure`, `set_server_token`, `forget_server`, `add_server_to_path`, `third_party_licenses`, `diag_capture_finish` |
+| the heartbeat | `report_js_heap` — **must** stay synchronous: its arrival on the IPC thread is the liveness evidence |
+
+### `async` commands — where their bodies run
+
+ADR 0048's rule: a body whose duration scales with the capture goes
+through `off_async_workers` (the blocking pool); a `#[tauri::command]
+async fn` that never awaits otherwise runs on the async runtime's
+worker that polls it, and a pool of those is the size of the core
+count.
+
+| where | commands | verdict |
+| --- | --- | --- |
+| blocking pool (`off_async_workers`) | `sample_signals`, `signal_min_max`, `scan_blf_channels`, `scan_mdf_channels`, `list_logger_files`, `connect_remote_server` | right place; `list_logger_files` is shape B by *volume* (below), not placement |
+| awaits real I/O | `refresh_interfaces`, `add_server` | fine |
+| runtime worker, spawns the job and returns | `open_log`, `import_mdf` (pump thread), `save_capture` (export job) | fine, provided the pre-spawn work stays bounded (phase 2 checks the census is inside the thread) |
+| runtime worker, sync body, bounded | `rbs_*` (13: in-memory state, `rbs_load`/`rbs_save` one small file), `rbs_view`, `rbs_signal_rows`, `fetch_trace_range`, `fetch_by_id_page`, `fetch_signal_page`, `frame_indices_at_ns` | fine: a page or an element's size |
+| runtime worker, sync body, **capture-scaled** | `fetch_filtered_trace`, `filtered_positions_at_ns` — a predicate change rebuilds the filter index over the whole capture **under the `filter_index` mutex**, so every other filtered page fetch parks a runtime worker on that lock; `restore_scratch_capture` — reopens the store and restores pyramids, once per open | **B1**: the rebuild through `off_async_workers`, the lock taken for the swap only; `restore_scratch_capture` through `off_async_workers` |
+
+### Shape B — foreground-driven derivation
+
+| # | site | derivation | driver | single-flight | fix |
+| --- | --- | --- | --- | --- | --- |
+| B0 | `list_logger_files` | `scan_blf` of every unlisted `.blf` (7.2 s / 492 MB) | the file grid's 250 ms poll while writing | no — every poll during a scan starts another | phase 3 reference case (§ Rulings) |
+| B1 | `fetch_filtered_trace` index rebuild | O(capture) on predicate change | every filtered view's first page | yes (mutex) — but the waiters hold runtime workers | above |
+| B2 | `list_project_caches` (A4) | directory walk per cache | settings view show / event | no | above |
+| B3 | `rbsAttention` mirror | `rbs_signal_rows` for **every** RBS element per `rbs-changed` event | every RBS mutation, `"*"` on every DBC mutation | no | bounded by element count; acceptable, noted |
+
+### Shape C — the renderer thread and its pollers
+
+| site | cadence | in-flight guard | stale drop | verdict |
+| --- | --- | --- | --- | --- |
+| `useHostMirror` (`LoggerFileGrid` while writing, `RbsPanel` while running, `TransmitPanel` while running; event-driven elsewhere) | `view_refresh_interval_ms` = 250 | **none** | **none** | phase 3: one request in flight, newest response wins |
+| `useWindowedQuery` (trace, filtered trace, by-id, signals, view signals) | 250 | `fetching` + `pending` coalesce | descriptor check | the reference implementation; untouched |
+| `DatabasePanel` value column | 500, gated by a `trace-grew` dirty flag | none | none (a `live` flag only) | phase 3: same guard as the mirror (small) |
+| `App` rebuild-progress poll | 1000 while the chip is up | none, `stopped` flag | — | cheap; untouched |
+| `diag.ts` heartbeat | 1000 | — | — | must stay |
+| `perfInteract.ts` | harness only | — | — | out of scope |
+
+Renderer-thread work proper: the settings view re-hydrates on every
+show with `list_units` (2289 rows), `list_unit_picker` (~920) and
+`list_project_caches` (A4); the units table and picker render every
+row (task 151's remit). Nothing else on the renderer accumulates with
+capture length (CLAUDE.md § GUI architecture holds).
+
+### The `ui_last_ms` creep — explained, no defect
+
+`ui_last_ms` is the age of the last heartbeat at the moment the health
+sampler ticks. The sampler is `std::thread::sleep(20 s)` plus its own
+sampling work, and the log shows its period as 20.033 s (00:00:19.020,
+:39.055, :59.088 …); the heartbeat is a 1 Hz `setInterval`. Each tick
+therefore lands 33 ms later in the heartbeat cycle: 583 → 617 → 649 …
+974, then **8** at 00:04:39Z — a wrap, not a slowdown. Neither the
+frontend nor the host got slower; exit criterion 5 is met by this
+explanation. Phase 2 adds one sentence to `crash.rs`'s module docs so
+the next reader does not open a task on it.
+
+### Fix list, in order
+
+1. **Phase 2 (shape A).** A1–A3, A5–A12, A15, A16 → `async` +
+   `off_async_workers`; A13 → invalidation unlinks in a background
+   job; A14 → `try_send`. The heartbeat test over a generated multi-GB
+   cache directory (red first). The allow-list test over the table
+   above. ADR 0002 DS-8 wording. `crash.rs` doc sentence.
+2. **Phase 3 (shapes B and C).** B0 and `useHostMirror` per § Rulings;
+   B1 (the index rebuild off the runtime workers, lock for the swap
+   only; `restore_scratch_capture` likewise); B2 (cache sizes pending,
+   background walk); the `DatabasePanel` guard. ADR 0049 amended with
+   the general rule.
+
 ## Rulings
 
 - **Heavy work leaves the UI thread** (owner, 2026-09-22). Overseer's
@@ -106,26 +227,25 @@ cache; the proposal below generalises it.
 
 ## Phases (groomed 2026-09-22)
 
-1. **Audit.** Every command classified — sync/async × what it touches
-   (filesystem, lock, network) × whether its per-call work is bounded
-   by the page it serves or scales with disk / capture × who drives it
-   (a gesture, a poll, a re-render) × single-flight or not. Every
-   frontend poll site (`pollWhile` ×3, `setInterval` ×6) reviewed the
-   same way. The `ui_last_ms` creep explained. The freeze reproduced by
-   a test that times the heartbeat across a cache delete of a generated
-   multi-GB directory. Output: the table and the fix list in this file.
-2. **Shape A.** The listed synchronous commands moved off the IPC
-   thread through the host's existing `off_async_workers`; the busy
-   states confirmed; the sync-command allow-list test in place; ADR
-   0002 DS-8 amended if its wording changes.
+1. **Audit** — *done 2026-09-22 by the overseer, § Audit above*:
+   every command classified against the three shapes, every poll
+   site reviewed, the `ui_last_ms` creep explained, the fix list
+   written. The freeze-reproducing heartbeat test moves to phase 2.
+2. **Shape A.** § Audit's fix list item 1: A1–A16 as listed, the
+   heartbeat test over a generated multi-GB cache directory (red
+   first), the two unmeasured points verified, the sync-command
+   allow-list test over § Audit's allow-list table, ADR 0002 DS-8
+   amended if its wording changes, the `crash.rs` doc sentence.
 3. **Shape B + C, reference case.** `list_logger_files` returns stat
    data at once; start / end / duration / count read from the cache or
    show pending; one background scan per file, single-flight, announces
    completion by event and the grid refetches. `useHostMirror` gains an
    in-flight guard and drops out-of-order responses (shared layer:
-   RBS and Transmit pollers benefit too). ADR 0049 amended with the
-   general rule. Any further shape-B/C sites the audit listed follow
-   here or get their own branch, by size.
+   RBS and Transmit pollers benefit too); § Audit's fix list item 2
+   besides: B1 (the filter-index rebuild off the runtime workers,
+   `restore_scratch_capture` likewise), B2 (cache sizes pending, one
+   background walk), the `DatabasePanel` guard. ADR 0049 amended with
+   the general rule.
 
 ## Exit criteria (groomed 2026-09-22)
 
@@ -163,3 +283,7 @@ cache; the proposal below generalises it.
   day and the task was renamed.
 - 2026-09-22 — owner ruled the rule lives in ADR 0049, amended; no
   open questions.
+- 2026-09-22 — phase 1 audit done by the overseer (§ Audit): 16
+  shape-A offender rows, the allow-list, the async placement table,
+  B0–B3, the poller table, the `ui_last_ms` creep explained as
+  sampler/heartbeat aliasing. Phases 2 and 3 carry the fix list.
