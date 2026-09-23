@@ -131,6 +131,44 @@ contract.
 - The owner has ruled on hardening with the verdict in hand
   (**ruled 2026-09-23: task 157**), and the ruling is recorded here.
 
+## Blockers / side effects
+
+- 2026-09-23 (phase 2) — **a refused launch changes where the session
+  roots.** Being refused the trace store was not enough: the pyramids,
+  the filter index and the notes root in the same cache, and two of
+  those are mapped files. So a launch whose resolved project cache is
+  held now boots in the *unsaved* auto-located project directory
+  instead. Visible consequence: after a refused launch the session's
+  workspace scope (`.cannet/settings.json`, view state) resolves
+  through the unsaved directory until the user's project open succeeds
+  — which is correct (the project is not open) but is a behaviour the
+  owner has not seen. Wider than the groomed wording ("refuses the
+  project open"); queued for a ruling.
+- 2026-09-23 (phase 2) — **`Save As` onto a destination another cannet
+  holds now saves the file but does not move the session.** The project
+  file is written (that is what the user asked for) and the refusal
+  goes to the system log; the capture stays in the old directory. The
+  alternative — failing the whole command after the file is on disk —
+  looked worse. Owner's call.
+- 2026-09-23 (phase 2) — **until phase 3 lands, the refusal is the
+  expected experience for a fast relaunch.** Phase 1 measured the
+  previous process holding its mappings ~14–23 s after its window was
+  gone. The message says so ("it may still be closing"), but the user
+  has no cue from the *old* process that it is still working. That is
+  exactly what phase 3 is for.
+- 2026-09-23 (phase 2) — **`README.md` is a second CRLF blob**, not
+  just `plans/technology-inventory.md`. A Python edit that read it as
+  text and wrote LF turned the whole file into a 7 424-line diff;
+  caught and restored before committing. Anything scripting edits to
+  `README.md` must preserve CRLF. (`git cat-file -p HEAD:<path> | file -`
+  is the check; every other file this phase touched is an LF blob.)
+- 2026-09-23 (phase 2) — **`target/debug/incremental` (8.5 GB) was
+  deleted** in the main tree: `rustc-LLVM ERROR: IO failure on output
+  stream: no space on device`, C: at **0 bytes free**. Nothing else was
+  removed. After the delete, 8.9 GB free; 17.2 GB by the time the
+  release build ran. All builds since use `CARGO_INCREMENTAL=0` so it
+  does not regrow.
+
 ## Status log
 
 - 2026-09-23 — opened from ungroomed item 13; grooming complete;
@@ -317,3 +355,93 @@ contract.
   clean; verdict is the previous process's mappings. Owner rulings on
   the verdict recorded above (refuse immediately; a closing cue; the
   hardening becomes task 157). Phases 2 and 3 cut; phase 2 launched.
+- 2026-09-23 (phase 2, `task156-cache-lock`, `ed8ca713`) — **the lock
+  lands; the two reproducing tests are un-ignored.** A session now owns
+  its project cache directory exclusively for its whole life.
+
+  **Mechanism: `std::fs::File::try_lock`, no new crate.** Stable since
+  Rust 1.89 and the toolchain is pinned at 1.97.1, so std gives exactly
+  what `fs4` / `fd-lock` wrap — `flock(LOCK_EX|LOCK_NB)` on POSIX,
+  `LockFileEx` on Windows — with no dependency and no `unsafe`. Both
+  crates recorded `rejected` in `plans/technology-inventory.md` with
+  that rationale. `crates/cannet-spill/src/scratch_lock.rs` publishes
+  `ScratchLock` / `ScratchLockError` / `ScratchHolder`.
+
+  **Two files, measured, not assumed.** `cache.lock` carries the OS
+  lock; `cache.lock.holder` carries `{pid, project}` as plain JSON
+  beside it. Windows byte-range locks are *mandatory*: with the lock
+  held, `std::fs::read` of that file from another handle fails with
+  `os error 33`, so the holder's identity cannot live inside the locked
+  file. The record is only read after a `WouldBlock`, so a stale copy
+  from a process that died cannot mislead — the next holder rewrites
+  it.
+
+  **Where the guard lives: the host, deliberately.** The spill crate's
+  own open paths cannot take it. Many `SampleSeq` chains share one
+  `signals/` directory inside one process (and root in a *subdirectory*
+  of the cache), so a per-instance directory lock refuses itself; and
+  `TraceStore::try_reload` deliberately holds the `open_empty` store
+  alive while `reopen_timed` opens the same directory. So `cannet-spill`
+  publishes the primitive and the host takes it:
+  `open_locked_trace_store` / `boot_scratch` at launch,
+  `ensure_scratch_lock` as the first statement of `reroot_session` (so
+  `TraceStore::reroot` and `SignalCacheStore::reroot` are both behind
+  it), released in the `ExitRequested` arm after the shutdown flush and
+  `persist_pyramids`. A re-root takes the destination **before**
+  releasing the source, so a refusal leaves the session owning the
+  cache it already had.
+
+  **A held cache refuses the project open**, immediately, naming the
+  holder: `open_project` returns `Err` through the same `sys_error!`
+  path a bad project file uses, with "another cannet (pid N) still
+  holds this project's cache (<path>) — it may still be closing". No
+  wait, no in-RAM fall-back. The in-RAM store stays for a cache that
+  cannot be *created*; the code comments, the rustdoc and ADR 0002
+  DS-7 now spell out that distinction.
+
+  **The launch path needed more than a refused trace store.** A session
+  refused the cache must not be *rooted* there at all: the signal
+  pyramids, the filter index and the notes all root in the same
+  directory, and pyramids and filter segments are mapped files — the
+  same 1224 class. `boot_scratch` therefore falls back once, to the
+  unsaved auto-located project directory (where Close Project leaves a
+  session), and the `open_project` the frontend runs next is what
+  reports the holder. Only a *held* cache moves the session; one that
+  could not be created stays where it resolved and degrades onto the
+  RAM store as before. If the unsaved directory is held too (two
+  instances, neither with a project) the session boots owning nothing,
+  logged as such.
+
+  **`Save As` had to stop carrying the lock files.** `move_scratch_files`
+  moved every file in the scratch; it now skips
+  `cannet_spill::SCRATCH_LOCK_FILES`, since the lock belongs to the
+  directory, not to the capture, and both ends have their own.
+
+  **Tests.** The two phase-1 reproducing tests keep their names, lose
+  `#[ignore]`, and assert the refusal instead of the truncate — each
+  then releases the lock and shows the reopen-and-grow succeeding as
+  the only live chain. Eight new `scratch_lock` unit tests cover
+  acquire / refuse-and-name / release / two directories at once / a
+  refused session not overwriting the record / a stale record / an
+  unmakeable directory reading as `Io` and never as `Held`. Four host
+  tests: open → refused with the holder named → released → open;
+  `ensure_scratch_lock`'s take-before-release and idempotence; and both
+  launch paths (held → unsaved directory, free → stays put).
+  cannet-spill 70 → **80 passed**; cannet-gui 1339 → **1356 passed**;
+  clippy, fmt, rustdoc `-D warnings`, comment-references grep and
+  `check_local_paths.py` all clean; release host build green
+  (`target/release/cannet-gui.exe`).
+
+  **Docs.** ADR 0002 DS-7 gains the lock as part of the reopen
+  contract (mechanism, what it covers, the immediate refusal, and the
+  launch rule); ADR 0042 §4 cites it as a property of the
+  cache-belongs-to-the-directory key; README gains "One cannet at a
+  time per project" in the capture-belongs-to-the-project section.
+- 2026-09-23 — **phase 2 reviewed and accepted** (overseer): one commit
+  on `task156-restore-crash-investigation`, diff read (lock primitive in
+  the spill crate, taken at the host; take-before-release on re-root;
+  released after the shutdown flush), comment-references grep clean.
+  Two behaviour changes wider than the groomed wording go to the owner
+  (queue § 1): a refused launch boots in the unsaved project directory;
+  `Save As` onto a held destination writes the file but does not move
+  the session. Phase 3 launched.
