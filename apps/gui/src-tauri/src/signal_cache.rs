@@ -91,7 +91,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cannet_dbc::Database;
@@ -2225,13 +2225,25 @@ fn store_fetch(
 /// to mmap'd files under `root` (a `signals/` subdir of the disk-spill
 /// scratch), so the resident set stays bounded (ADR 0002 DS-5/DS-7).
 pub struct SignalCacheStore {
-    caches: Mutex<Caches>,
+    caches: Arc<Mutex<Caches>>,
+    /// Single-flight gate for the unreferenced-file sweep
+    /// ([`Self::sweep_unreferenced`]): one sweeper thread at a time, and
+    /// a request that arrives while one is running is drained by it
+    /// rather than starting a second.
+    sweep: Arc<Mutex<SweepGate>>,
     /// How long one serve may catch up before it answers with a partial
     /// series ([`CATCH_UP_SERVE_BUDGET`]). A field rather than a constant
     /// read at the call site so a test can serve deterministically —
     /// either one chunk at a time or the whole capture in one call —
     /// instead of racing a wall clock.
     serve_budget: Duration,
+}
+
+/// Whether a sweeper thread is running, and whether one is owed.
+#[derive(Default)]
+struct SweepGate {
+    running: bool,
+    pending: bool,
 }
 
 /// The store's interior: where the pyramids spill, the live caches rooted
@@ -2319,14 +2331,19 @@ fn open_root(root: PathBuf) -> Caches {
 fn park(caches: &mut Caches, key: &SignalKey, row: PersistedSignal) {
     let live_base = key_prefix(key);
     let bytes = row.bytes();
+    // A pyramid that is not parked leaves its level files where they
+    // are. Nothing refers to them once the key is out of the map, so
+    // they fall out of `keep_bases` and are taken by the caller's sweep
+    // — which, for a DBC-set change, is the background
+    // `sweep_unreferenced` (ADR 0048). Unlinking here instead would put
+    // a directory walk per retired signal under the gesture that
+    // retired it.
     if bytes == 0 || caches.retention_cap == 0 {
-        wipe_prefix(&caches.root, &live_base);
         return;
     }
     caches.park_seq += 1;
     let base = parked_base(caches.park_seq, &live_base);
     if !rename_prefix(&caches.root, &live_base, &base) {
-        wipe_prefix(&caches.root, &live_base);
         return;
     }
     caches.retained_bytes += bytes;
@@ -2415,6 +2432,23 @@ fn keep_bases(caches: &Caches) -> Vec<String> {
         .collect()
 }
 
+/// [`keep_bases`] plus whatever a staged set claims — an unjudged
+/// candidate's own files, which no sweep may take because the manifest
+/// describing them is the only thing that says what they are.
+fn keep_bases_with_staged(caches: &Caches) -> Vec<String> {
+    let mut keep = keep_bases(caches);
+    if let Some(manifest) = &caches.staged {
+        keep.extend(
+            manifest
+                .signals
+                .iter()
+                .filter_map(|s| Some(key_prefix(&s.key()?))),
+        );
+        keep.extend(manifest.retained.iter().map(|r| r.base.clone()));
+    }
+    keep
+}
+
 /// How far the cold pyramid rebuild a restore forced (ADR 0047) has
 /// got, and whether it is still running.
 ///
@@ -2437,7 +2471,8 @@ impl SignalCacheStore {
 
     fn rooted(root: impl AsRef<Path>, serve_budget: Duration) -> Self {
         Self {
-            caches: Mutex::new(open_root(root.as_ref().to_path_buf())),
+            caches: Arc::new(Mutex::new(open_root(root.as_ref().to_path_buf()))),
+            sweep: Arc::new(Mutex::new(SweepGate::default())),
             serve_budget,
         }
     }
@@ -2610,36 +2645,92 @@ impl SignalCacheStore {
             };
             let row = cache.parked_row(&key);
             drop(cache);
-            match row {
-                Some(row) => park(&mut caches, &key, row),
-                None => wipe_prefix(&caches.root, &key_prefix(&key)),
+            // A row that cannot be parked leaves its level files behind
+            // for the sweep, which is what takes them: nothing refers to
+            // them once the key is out of the map.
+            if let Some(row) = row {
+                park(&mut caches, &key, row);
             }
         }
         for key in drop_keys {
             caches.by_key.remove(&key);
-            wipe_prefix(&caches.root, &key_prefix(&key));
         }
         let revived = revive_retained(&mut caches, dbcs);
         let evicted = evict_retained(&mut caches);
         caches.dirty |= changed || revived > 0 || evicted > 0;
-        let mut keep = keep_bases(&caches);
-        if let Some(manifest) = &caches.staged {
-            keep.extend(
-                manifest
-                    .signals
-                    .iter()
-                    .filter_map(|s| Some(key_prefix(&s.key()?))),
-            );
-            keep.extend(manifest.retained.iter().map(|r| r.base.clone()));
+        if keep_bases_with_staged(&caches).is_empty() {
+            // Nothing to preserve — the sweep takes the manifest with the
+            // files, so the directory doesn't describe pyramids that are
+            // gone.
+            caches.dirty = false;
         }
+    }
+
+    /// Unlink every file under the pyramid root that no live cache, no
+    /// parked pyramid and no staged manifest row refers to.
+    ///
+    /// Split out of [`Self::invalidate_dbcs`] so a DBC-set change — a
+    /// gesture, answered by a synchronous command — returns as soon as
+    /// the in-memory judgement is made. What is left is a directory walk
+    /// and an unlink per orphaned level file, bounded by what the session
+    /// has cached rather than by the gesture, and ADR 0048's rule is that
+    /// work of that shape does not run where a view is waiting on it.
+    ///
+    /// The keep list is recomputed **here**, under the lock, off the live
+    /// set — never off the set the invalidation planned against. A series
+    /// decoded again between the invalidation and the sweep is live by
+    /// then, so its files are kept; a new pyramid's segment files are
+    /// created truncating, so nothing the sweep is late to remove can be
+    /// read as the new series' own.
+    pub fn sweep_unreferenced(&self) {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let keep = keep_bases_with_staged(&caches);
         if keep.is_empty() {
-            // Nothing to preserve — take the manifest with the files, so
-            // the directory doesn't describe pyramids that are gone.
             caches.dirty = false;
             wipe_dir(&caches.root);
         } else {
             wipe_dir_except(&caches.root, &keep);
         }
+    }
+
+    /// Run [`Self::sweep_unreferenced`] on a thread of its own, one at a
+    /// time. This is what a *command* calls after an invalidation
+    /// (`app_state::invalidate_derived_caches`): the gesture returns on
+    /// the in-memory judgement alone.
+    ///
+    /// A request that lands while a sweeper is running is drained by that
+    /// sweeper instead of starting a second one — the sweep reads live
+    /// state, so one late pass answers for any number of requests.
+    pub fn sweep_unreferenced_in_background(&self) {
+        {
+            let mut gate = self.sweep.lock().expect("pyramid sweep mutex poisoned");
+            gate.pending = true;
+            if gate.running {
+                return;
+            }
+            gate.running = true;
+        }
+        let caches = Arc::clone(&self.caches);
+        let gate = Arc::clone(&self.sweep);
+        let budget = self.serve_budget;
+        std::thread::spawn(move || {
+            let store = SignalCacheStore {
+                caches,
+                sweep: Arc::clone(&gate),
+                serve_budget: budget,
+            };
+            loop {
+                {
+                    let mut g = gate.lock().expect("pyramid sweep mutex poisoned");
+                    if !g.pending {
+                        g.running = false;
+                        return;
+                    }
+                    g.pending = false;
+                }
+                store.sweep_unreferenced();
+            }
+        });
     }
 
     /// Move the pyramids to `root` — the cache directory of a project
@@ -7225,6 +7316,178 @@ mod tests {
                 200,
                 "{signal} served from disk",
             );
+        }
+    }
+
+    /// Every file under the pyramid root, by name.
+    #[cfg(test)]
+    fn files_under(root: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_dbc_change_unlinks_nothing_and_the_sweep_does_it_afterwards() {
+        // ADR 0048: the invalidation is the in-memory judgement and
+        // nothing else. A DBC edit is a gesture answered by a
+        // synchronous command, so the unlinking of the level files it
+        // orphans — a directory walk plus one unlink per file — is the
+        // sweep's, on a thread of its own.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let db = dbc_ab_scaled(1, 1);
+        // No retention: a pyramid whose definition moved is dropped
+        // outright, which is the case that leaves files behind.
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        cache.set_retention_cap(0);
+        for signal in ["A", "B"] {
+            let _ = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &on_test_bus(&[&db]),
+            );
+        }
+        let before = files_under(root.path());
+        assert!(
+            before.len() >= 2,
+            "two pyramids left level files: {before:?}"
+        );
+
+        cache.invalidate_dbcs(&no_dbcs());
+        assert_eq!(cache.usage().live, 0, "both series left the live set");
+        assert_eq!(
+            files_under(root.path()),
+            before,
+            "the invalidation itself unlinked nothing",
+        );
+
+        cache.sweep_unreferenced();
+        assert!(
+            files_under(root.path()).is_empty(),
+            "the sweep took the orphaned level files",
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn the_sweep_keeps_what_is_live_and_takes_only_the_rest() {
+        // The keep list is recomputed from live state at sweep time, so
+        // a series decoded again between the invalidation and the sweep
+        // keeps its files — the sweep can be arbitrarily late without
+        // ever taking a live pyramid's levels.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let db = dbc_ab_scaled(1, 1);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        cache.set_retention_cap(0);
+        for signal in ["A", "B"] {
+            let _ = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &on_test_bus(&[&db]),
+            );
+        }
+        cache.invalidate_dbcs(&no_dbcs());
+        // Decoded again before the sweep gets a turn.
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            &on_test_bus(&[&db]),
+        );
+        cache.sweep_unreferenced();
+
+        assert_eq!(cache.usage().live, 1);
+        let left = files_under(root.path());
+        assert!(!left.is_empty(), "the live series kept its levels");
+        assert_eq!(
+            cache
+                .slice(
+                    Some(TEST_BUS),
+                    256,
+                    false,
+                    "A",
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &undecodable_store(200),
+                    &on_test_bus(&[&db]),
+                )
+                .len(),
+            200,
+            "and they still serve",
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn the_background_sweep_drains_what_an_invalidation_left() {
+        // The production path: the command requests the sweep and
+        // returns; a thread of its own does the unlinking.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let db = dbc_ab_scaled(1, 1);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        cache.set_retention_cap(0);
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            &on_test_bus(&[&db]),
+        );
+        assert!(!files_under(root.path()).is_empty());
+
+        cache.invalidate_dbcs(&no_dbcs());
+        cache.sweep_unreferenced_in_background();
+        // Several requests in a row are drained by one sweeper, not by
+        // one thread each.
+        cache.sweep_unreferenced_in_background();
+        cache.sweep_unreferenced_in_background();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !files_under(root.path()).is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the background sweep never took the orphaned files",
+            );
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
