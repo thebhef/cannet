@@ -132,7 +132,7 @@ import {
   setBlfChannelMaps as persistBlfChannelMaps,
 } from "./hostState";
 import { recordBlfChannelMap, savedBlfChannelMap } from "./blfChannelMap";
-import type { SystemMessage } from "./types";
+import type { ClosingProgress, SystemMessage } from "./types";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
@@ -147,6 +147,7 @@ import { raiseServerTrust } from "./serverTrust";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
 import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
+import { ClosingOverlay } from "./ClosingOverlay";
 import {
   BlfChannelMapModal,
   type ImportContents,
@@ -547,6 +548,13 @@ export function App() {
   const [pendingClose, setPendingClose] = useState<{
     resolve: (choice: CloseChoice) => void;
   } | null>(null);
+  // The host's shutdown sequence, once the close is decided: the step it
+  // is on (`closing-progress`), shown full-window until the host exits
+  // the app. `closingRef` is set the moment the close is handed to the
+  // host, before the first step arrives, so a second close request in
+  // between is ignored rather than prompting again.
+  const [closing, setClosing] = useState<ClosingProgress | null>(null);
+  const closingRef = useRef(false);
   // The project's elements + their runtime state (the element registry,
   // handed down via ElementRegistryContext). Restored from
   // `project.elements`, seeded on first launch / New, serialized back
@@ -2786,10 +2794,34 @@ export function App() {
   }, [projectPath, dirty, state, remoteSessions, appVersion]);
 
   useEffect(() => {
+    const unlisten = listen<ClosingProgress>("closing-progress", (event) => {
+      closingRef.current = true;
+      setClosing(event.payload);
+    });
+    return () => {
+      void unlisten.then((u) => u());
+    };
+  }, []);
+
+  useEffect(() => {
     const win = getCurrentWindow();
     let unlisten: (() => void) | undefined;
+    // The close is decided: hand it to the host, which runs its shutdown
+    // sequence (disconnect, loggers, the capture and signal caches)
+    // behind this window and exits the app when done (ADR 0002 DS-7).
+    // The window is never destroyed from here — that is what used to
+    // leave the host working with nothing on screen. With no host to
+    // hand it to, destroy as before.
+    const handOff = () => {
+      closingRef.current = true;
+      invoke("begin_close").catch(() => void win.destroy());
+    };
     void win
       .onCloseRequested(async (event) => {
+        // Always held: the host closes the window once its shutdown
+        // sequence is done, and a request while it runs changes nothing.
+        event.preventDefault();
+        if (closingRef.current) return;
         // Unsaved state = a dirty project OR any dirty
         // `.cannet_rbs` (the exit prompt covers both — ADR 0028).
         let rbsDirty = false;
@@ -2798,8 +2830,10 @@ export function App() {
         } catch {
           /* host gone — nothing to save */
         }
-        if (!dirtyRef.current && !rbsDirty) return; // nothing unsaved — let it close
-        event.preventDefault();
+        if (!dirtyRef.current && !rbsDirty) {
+          handOff(); // nothing unsaved — close
+          return;
+        }
 
         // Autosave-on-exit: a dirty close saves silently instead of
         // showing the prompt below, but only for a project directory
@@ -2813,7 +2847,7 @@ export function App() {
             "active_project_is_auto_located",
           ).catch(() => true); // host unreachable — fall back to the prompt below
           if (!autoLocated && (await handleSaveAllRef.current())) {
-            void win.destroy();
+            handOff();
             return;
           }
         }
@@ -2824,7 +2858,7 @@ export function App() {
         setPendingClose(null);
         if (choice === "cancel") return;
         if (choice === "save" && !(await handleSaveAllRef.current())) return; // picker cancelled
-        void win.destroy();
+        handOff();
       })
       .then((u) => {
         unlisten = u;
@@ -4163,6 +4197,7 @@ export function App() {
       )}
       <ServerTrustDialogs />
       {splashVisible && <SplashOverlay />}
+      {closing && <ClosingOverlay progress={closing} />}
     </main>
   );
 }
