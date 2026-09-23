@@ -9,6 +9,17 @@
 /// the payload directly and the fetches are only the snapshot pair
 /// around registration.
 ///
+/// **One request in flight at a time, newest response wins** (ADR 0049).
+/// A poll whose fetch outlives its own interval used to start another
+/// one every tick — which is how a 250 ms listing poll over a folder of
+/// large files turned into overlapping full reads of the same file, and
+/// how a response could be overwritten by an older one that landed after
+/// it. A tick that finds a fetch in flight marks the mirror stale
+/// instead, and exactly one refetch runs when the in-flight one lands; a
+/// response whose request has since been superseded is dropped. Same
+/// shape as `useWindowedQuery`'s `fetching` + `pending` coalescing,
+/// which is the reference implementation for it.
+///
 /// `listen` (Tauri) is async, so a change the host emits in the gap
 /// between the initial snapshot fetch and the listener actually being
 /// registered would otherwise be lost until the next event or poll
@@ -84,21 +95,67 @@ export function useHostMirror<T, P = unknown>({
   const fromPayloadRef = useRef(fromPayload);
   fromPayloadRef.current = fromPayload;
 
+  // Single-flight control, mutated outside render and never read for
+  // render output. `generation` is what makes "newest wins" decidable: a
+  // response is applied only while no later request (or event payload)
+  // has superseded it, so an answer that lands out of order is dropped
+  // rather than overwriting a fresher one.
+  const flight = useRef({ fetching: false, stale: false, generation: 0 });
+  // `refresh` is stable, so the coalesced retry inside it reaches itself
+  // through this rather than naming a binding it sits inside.
+  const refreshRef = useRef<() => void>(() => {});
+  // The fetch a coalesced refetch should run: the latest one, not the
+  // one that was current when the tick was skipped.
+  const fetchRef = useRef(fetch);
+  fetchRef.current = fetch;
+
   const refresh = useCallback(() => {
-    void fetch()
-      .then(setValue)
-      .catch(() => setValue(fallbackRef.current));
-  }, [fetch]);
+    const f = flight.current;
+    if (f.fetching) {
+      // A request is already out. Issuing another now would only add
+      // load — record that the mirror is stale and refetch once when
+      // this one lands.
+      f.stale = true;
+      return;
+    }
+    f.fetching = true;
+    const generation = ++f.generation;
+    const current = () => flight.current.generation === generation;
+    void fetchRef
+      .current()
+      .then((v) => {
+        if (current()) setValue(v);
+      })
+      .catch(() => {
+        if (current()) setValue(fallbackRef.current);
+      })
+      .finally(() => {
+        const c = flight.current;
+        c.fetching = false;
+        if (c.stale) {
+          c.stale = false;
+          refreshRef.current();
+        }
+      });
+  }, []);
+  refreshRef.current = refresh;
 
   useEffect(() => {
     let active = true;
+    // A re-aimed `fetch` supersedes whatever is still in flight for the
+    // previous target: its answer is not this mirror's state any more.
+    flight.current.generation += 1;
     // Paint fast from whatever the host already has…
     refresh();
     const un = listen<P>(event, (e) => {
       if (matchesRef.current && !matchesRef.current(e.payload)) return;
       const read = fromPayloadRef.current;
-      if (read) setValue(read(e.payload));
-      else refresh();
+      if (read) {
+        // The payload *is* the newest state, so an answer already in
+        // flight is stale by definition and must not land after it.
+        flight.current.generation += 1;
+        setValue(read(e.payload));
+      } else refresh();
     });
     // …and fetch again once the listener is attached: `listen` is
     // async, so a change emitted in the gap before registration would
@@ -110,7 +167,10 @@ export function useHostMirror<T, P = unknown>({
       active = false;
       void un.then((off) => off());
     };
-  }, [refresh, event]);
+    // `refresh` is stable now (it reads `fetch` through a ref), so
+    // `fetch` — which decides *what* is mirrored — is what has to re-run
+    // the snapshot pair when a consumer re-aims it at something else.
+  }, [refresh, event, fetch]);
 
   const pollWhileRef = useRef(pollWhile);
   pollWhileRef.current = pollWhile;

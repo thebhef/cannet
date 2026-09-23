@@ -644,6 +644,7 @@ pub(crate) fn test_state() -> AppState {
         verifier: verification::VerificationState::default(),
         filter_index_dir: Mutex::new(std::env::temp_dir().join("cannet-test-filter")),
         filter_index: Mutex::new(None),
+        filter_index_build: Mutex::new(()),
         import_cancel: Mutex::new(None),
         export_cancel: Mutex::new(None),
         live_tail_rows: std::sync::atomic::AtomicU64::new(0),
@@ -1369,6 +1370,103 @@ fn renaming_a_bus_drops_a_filter_index_built_on_its_old_name() {
         fuzzy_rows(&state, r#"{"fuzzy": "pack"}"#),
         vec![0x400, 0x123]
     );
+}
+
+#[test]
+fn a_filter_index_rebuild_does_not_hold_the_index_lock_for_its_duration() {
+    // A predicate change rebuilds the index over the whole capture. It
+    // used to do that under the `filter_index` mutex, so every other
+    // filtered fetch — each one on an async-runtime worker — parked on
+    // the lock until it finished (ADR 0049).
+    //
+    // The observable is the *wait*: a second caller taking the lock
+    // while a rebuild runs used to block for the rebuild's duration.
+    // This measures the worst wait any acquisition saw against how long
+    // the rebuild itself took.
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let state = test_state();
+    *state.filter_index_dir() =
+        std::env::temp_dir().join(format!("cannet-test-fi-lock-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&*state.filter_index_dir()).unwrap();
+    // Big enough that the rebuild's walk is long next to a lock
+    // acquisition, small enough to stay in the fast suite.
+    for i in 0..600_000u64 {
+        state
+            .trace_store
+            .append(dummy_frame(i * 1_000, if i % 3 == 0 { 256 } else { 512 }));
+    }
+    let filter: FilterPredicate = serde_json::from_str(r#"{"id_list": [256]}"#).unwrap();
+
+    let running = AtomicBool::new(true);
+    let rebuild_us = AtomicU64::new(0);
+    let worst_wait_us = AtomicU64::new(0);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let at = std::time::Instant::now();
+            drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+            rebuild_us.store(
+                u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX),
+                Ordering::SeqCst,
+            );
+            running.store(false, Ordering::SeqCst);
+        });
+        while running.load(Ordering::SeqCst) {
+            let at = std::time::Instant::now();
+            drop(state.filter_index());
+            let waited = u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX);
+            worst_wait_us.fetch_max(waited, Ordering::SeqCst);
+        }
+    });
+
+    let rebuild = rebuild_us.load(Ordering::SeqCst);
+    let waited = worst_wait_us.load(Ordering::SeqCst);
+    assert!(
+        rebuild > 20_000,
+        "the fixture's rebuild was too quick ({rebuild} us) for this to mean anything"
+    );
+    assert!(
+        waited * 4 < rebuild,
+        "a caller waited {waited} us on the index lock during a {rebuild} us rebuild — \
+         the rebuild is holding it for its duration"
+    );
+    // And the rebuild still landed: the swap happened under the lock.
+    let guard = state.filter_index();
+    let active = guard.as_ref().expect("the rebuild installed an index");
+    assert_eq!(active.predicate, filter);
+    assert_eq!(active.index.len(), 600_000 / 3);
+}
+
+#[test]
+fn two_views_asking_for_the_same_new_predicate_cost_one_rebuild() {
+    // The rebuild left the index lock, so the lock no longer serializes
+    // it. A gate of its own does: the chronological filtered view and the
+    // event-anchor call arrive together on a predicate change, and the
+    // second must find the index built rather than build it again.
+    let state = test_state();
+    *state.filter_index_dir() =
+        std::env::temp_dir().join(format!("cannet-test-fi-single-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&*state.filter_index_dir()).unwrap();
+    for i in 0..50_000u64 {
+        state.trace_store.append(dummy_frame(i * 1_000, 256));
+    }
+    let filter: FilterPredicate = serde_json::from_str(r#"{"id_list": [256]}"#).unwrap();
+
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+            });
+        }
+    });
+
+    let guard = state.filter_index();
+    let active = guard.as_ref().unwrap();
+    // One resolution, not four: a rebuild resolves once, and the
+    // incremental extends every caller runs afterwards do not re-resolve
+    // while no new id has been seen.
+    assert_eq!(active.resolve_count, 1);
+    assert_eq!(active.index.len(), 50_000);
 }
 
 #[test]

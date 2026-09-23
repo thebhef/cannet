@@ -22,6 +22,12 @@ export interface LogFileEntry {
   endNs: number | null;
   messageCount: number;
   modifiedMs: number;
+  /// The host has not read this file's header yet — a background scan is
+  /// queued or running for it, and `startNs` / `endNs` / `messageCount`
+  /// carry no information. Those columns render as pending
+  /// (`PENDING_CELL`) until the scan announces itself
+  /// (`LOG_FILES_SCANNED_EVENT`) and the grid re-asks.
+  scanPending: boolean;
   /// This is the file a logger is writing right now: `sizeBytes` and
   /// `messageCount` are live (`get_logger_statuses`), not header-scanned,
   /// and it renders as the gridview's live status row (ruling: no
@@ -138,6 +144,15 @@ export function formatLogModified(ms: number): string {
   const p2 = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
 }
+
+/// What a trace column shows while its file's header scan is still
+/// queued or running. An ellipsis rather than a blank: blank is what a
+/// file with no frames shows, and the two are different answers.
+export const PENDING_CELL = "\u2026";
+
+/// Why a row's trace columns are empty right now. On the cell's title so
+/// a user who wonders need not guess whether the file is unreadable.
+export const PENDING_CELL_HINT = "Reading this file's header…";
 
 /// A message count includes both directions (the capture holds rx and
 /// tx alike, and a logger writes the whole thing) — roughly twice the

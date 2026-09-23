@@ -2887,17 +2887,24 @@ pub(crate) fn signal_pyramids_rebuilding(state: State<'_, AppState>) -> RebuildP
 /// open project, no scratch, or an identity mismatch) — the gate lives in
 /// [`TraceStore::try_reload`], which only reloads on a matching identity.
 ///
-/// `async` so Tauri runs it off the main thread. The frontend does not
-/// wait for this — the app comes up interactive and the history appears
-/// when it lands — and that only holds if the reopen isn't running on the
-/// thread the window and every other command share: reopening a large
-/// capture is `O(segment files)`, seconds' worth on a multi-million-frame
-/// one. (Commands that read the trace store do queue behind it, because
-/// the reload holds the store lock for the swap; during that window the
-/// store they would read is the new session's empty one.)
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers)
+/// (ADR 0048). The frontend does not wait for this — the app comes up
+/// interactive and the history appears when it lands — and that only
+/// holds if the reopen isn't running on a thread other work needs:
+/// reopening a large capture is `O(segment files)`, seconds' worth on a
+/// multi-million-frame one, and restoring its pyramids is more. An
+/// `async fn` that never awaits would spend all of that on the
+/// async-runtime worker polling it, which is a pool the size of the core
+/// count, shared with the window's close path. (Commands that read the
+/// trace store do queue behind it, because the reload holds the store
+/// lock for the swap; during that window the store they would read is
+/// the new session's empty one.)
 #[tauri::command]
-#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
 pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
+    crate::sampling::off_async_workers(move || restore_scratch_capture_blocking(&app)).await
+}
+
+fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
     let state: State<'_, AppState> = app.state();
     let started = std::time::Instant::now();
     let active = *state.active_project_id();
