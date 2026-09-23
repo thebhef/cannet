@@ -156,6 +156,20 @@ repaired something broken.
   or repaired.
 - Temperatures convert as absolute readings, so °C, °F and K are handled
   correctly rather than merely scaled.
+- **New:** every unit the unit library carries is offered — 2289 units
+  over 109 dimensions, prefixed forms included — instead of a hand-typed
+  list. A database's unit string is recognised by the library's symbol,
+  singular or plural.
+- **New:** a unit you define in the settings view's Units section may be
+  a composition of one unit: `mph = mile / hour` displays `mph`,
+  converts 1:1 with `mi/h`, and a database that writes `mph` reads as it.
+- **Changed:** the Units section is a gridview grouped by dimension, in
+  a scrolling space of its own. Dimensions open collapsed except one
+  holding a unit this project maps or composes; the filter opens what it
+  matches.
+- **Changed:** a math signal's output-unit picker offers every dimension
+  its composition can mean, the composition order's first reading
+  preselected — `N · m` opens on energy with torque beneath.
 
 ## Export
 
@@ -286,6 +300,27 @@ repaired something broken.
   is gone, so there is one control. Each plot keeps its own choice.
 - **Fixed:** an empty area beside a populated one no longer blanks
   every event marker on the panel.
+- **New:** a colour pick in the Signals panel or on a plot series
+  swatch applies to every selected row, in one change; a right-click on
+  an unselected row makes it the selection first.
+
+## Settings view
+
+- **New:** Storage › Project caches names its projects. Each row leads
+  with the project name, the directory path beneath it, a chip saying
+  whether the directory is one you made (`project dir`) or one cannet
+  chose for a loose project file (`auto-located`, with the reason in its
+  tooltip), and the two-stage trash control every other removal uses.
+  Cache sizes are measured in the background and read `…` until they
+  land; the list follows a Save As at once.
+- **Fixed:** the settings view re-reads its file, its overrides and the
+  caches list whenever it is shown again, and keeps its scroll position
+  across a switch to another panel and back — its inner lists included.
+- **Changed:** the project caches list is a gridview.
+- **Changed:** the Servers rows live here, as **Connection › Servers**,
+  rather than in a panel of their own. The command palette's *Servers*
+  entry and *Manage servers…* open the settings view at that section.
+  The *Show servers* command is retired.
 
 ## Trace panel
 
@@ -303,6 +338,28 @@ repaired something broken.
   still shows one page plus the live tail. Ctrl/Cmd+F focuses the
   box. The text is remembered with the layout and never dirties the
   project.
+- **New:** a signal name or an enum value is a match in its own right.
+  Typing a fault enum's label shows exactly the frames whose decoded
+  signal carries that value across the whole history, with each row
+  opened to the matching signal and weaker message-level matches
+  hidden; in by-id mode the value is matched against the signal's whole
+  value list. A query whose best match is a message behaves as before.
+- **Changed:** a signal name is no longer part of its message's
+  searchable text, so a single fuzzy string spanning a message name and
+  a signal name no longer matches.
+
+## Responsiveness
+
+- **Fixed:** deleting or clearing a project cache of several GB,
+  opening or closing a project, Save As across volumes, loading a
+  database, changing settings, or attaching a local bus no longer
+  freezes the window while it runs. Heavy host work leaves the UI
+  thread; a test guards every synchronous command against doing so.
+- **Fixed:** the logger's file list appears at once while the files'
+  headers are read in the background, one read per file however often
+  the list refreshes, and polled panels keep one request in flight.
+- **Changed:** a manual transmit onto a full outgoing queue is refused
+  with the reason instead of waiting for room.
 
 ## Connecting
 
@@ -314,7 +371,7 @@ repaired something broken.
   the bus-health panel, and anything transmitted at it is marked
   undelivered. A bus that simply has no binding is still refused, as
   before — that is a bus nobody has wired up, not one set aside.
-- **New:** the Servers panel greys out a server that does not speak
+- **New:** the Servers section of the settings view greys out a server that does not speak
   this build's protocol, with the reason, before you can connect to
   it; and a connection to one is refused with the same sentence
   instead of retrying forever. See *For application developers*.
@@ -386,7 +443,7 @@ repaired something broken.
   workflow without the GUI. `list` browses the network and merges it
   with the trust store — one row per server with its trust state,
   whether it is answering, and the protocol it serves; `connect`
-  walks the same paths the GUI's Servers panel does (loopback in the
+  walks the same paths the GUI's Servers section does (loopback in the
   clear, a pinned server verified against its stored fingerprint, a
   first contact shown for you to compare and confirm, an explicit
   question before connecting unprotected) and ends by printing the
