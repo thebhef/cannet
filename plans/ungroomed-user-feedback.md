@@ -33,17 +33,19 @@ day).
 6. Drag resizing across plot areas is a bit weird right now.
 7. template views: signal or message filter selection for s1, s2, s3 —
     parameterized
+8. Allow setting the colour on multiple selected items at once, in the
+    Signals panel and the plot panel (owner, 2026-09-22).
 
 ## Server and integration
 
-8. `(Effective|CellNominal|TemperatureTable|Estimator)Limit(Charge|Discharge)`
+9. `(Effective|CellNominal|TemperatureTable|Estimator)Limit(Charge|Discharge)`
     — generator support for more complete capture→sort key syntax —
     server-side message buffer
 
 ## Rx correctness
 
-9. CRC validation on rx
+10. CRC validation on rx
 
 ## Extensions
 
-10. Extension — include signals: allow extensions to read/write signals, messages, events.
+11. Extension — include signals: allow extensions to read/write signals, messages, events.
