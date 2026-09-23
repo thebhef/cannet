@@ -7,15 +7,19 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-- **156: two cannet instances share one project scratch, and that is
-  the crash.** The 1224 panic was the *previous* process still holding
-  the project cache directory's segment mappings while the relaunched
-  one restored it and grew a chain in it (field log, 14 s overlap).
-  Phase 2 proposes an exclusive lock on the cache dir; the open
-  question is what a second instance should then do — fall back to the
-  in-RAM store and run without that project's history, or refuse to
-  open the project and say why. Detail: 0156 § Status log,
-  2026-09-23 (phase 1).
+- **156 phase 2 — a launch refused its project cache boots in the
+  unsaved project directory**, rather than staying rooted in the held
+  one with an in-RAM store. Reason: the pyramids, filter index and
+  notes all root in that same cache and two of them are mapped files,
+  so "refuse the trace store" alone still let a second instance write
+  into a held directory. Wider than the groomed wording, which spoke
+  only of the project *open*. Detail: 0156 § Status log, 2026-09-23
+  phase 2.
+
+- **156 phase 2 — `Save As` onto a held destination cache writes the
+  project file but leaves the session (and its capture) where it
+  was**, reporting the holder on the system log rather than failing the
+  command. Detail: 0156 § Blockers / side effects, 2026-09-23 phase 2.
 
 - **151: the *Show servers* command is gone.** `panel.show.servers`
   retired with the singleton panel; the command palette's *Servers*
