@@ -6670,14 +6670,26 @@ input.unit-customization-add {
 .project-cache-row + .project-cache-row {
   border-top: 1px solid var(--border-list);
 }
-.project-cache-path {
+.project-cache-info {
   flex: 1 1 auto;
-  font-family: ui-monospace, monospace;
-  font-size: 0.72rem;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.project-cache-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.project-cache-path {
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-cache-row.gone .project-cache-name,
 .project-cache-row.gone .project-cache-path {
   color: var(--text-faint);
   text-decoration: line-through;
