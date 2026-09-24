@@ -1414,8 +1414,9 @@ and whether that still matches what the view was configured against
 The button is badged with the count needing attention (Not Decoded,
 Scale, Ambiguous) and is quiet when there is nothing to look at. Assigning or
 unassigning a database moves rows without a reopen. A signal whose unit
-string the app cannot place — neither a built-in spelling nor one of the
-project's own customizations — wears a **≠** beside its name naming the
+string the app cannot place — not a built-in spelling, not a spelling the
+unit library itself gives one of its units, and not one of the project's
+own customizations — wears a **≠** beside its name naming the
 string, and the toolbar's **Unknown unit** chip filters to exactly those
 rows: each needs a mapping under Settings → Units before anything can
 convert through it (a signal that declares no unit is not flagged —
@@ -2490,7 +2491,9 @@ A unit's identity is a **base unit and an SI prefix**, so the editor's
 Units button opens a two-column picker: the base on the left, the whole
 exponent-ordered prefix ladder on the right (each rung carrying its
 `×10ⁿ` and how the pair reads — `mV`, `nAh`). The ratio family takes a
-scale choice (0–1 / % / ppm) instead of prefixes. The picker is
+scale choice instead of prefixes, and the choice is every proportion
+scale the library carries — the bare 0–1 reading, `%`, `‰`, `ppm` and
+on down. The picker is
 **kind-locked**: choosing here is a real conversion, so it offers the
 dimension the series is in and nothing else — for an integration or a
 derivative that is the *composed* dimension (a current integrated over
