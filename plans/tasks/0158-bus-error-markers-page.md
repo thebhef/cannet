@@ -166,6 +166,24 @@ Settled by the overseer, open to reversal:
 5. Pre-existing, not touched: ADR 0002 links ADR 0048 as
    `0048-no-lock-across-rebuild.md`; the file is
    `0048-no-model-lock-across-a-rebuild.md`.
+1. **README's `Collapse Errors` tooltip string is still stale.**
+   `apps/gui/src/TracePanel.tsx:691` reads "show a run of bus error
+   frames as the one summary event the host coalesced it into" — the
+   host-side coalescer that sentence describes was removed in phase 1.
+   Left untouched: phase 3 owns the trace ("derived events leave the
+   trace's event rows"), and the filter this button drives
+   (`withoutErrorFrames`) is a plain row-type predicate, unrelated to
+   the removed coalescer and functionally unaffected — only the tooltip
+   text is wrong.
+2. **README line ~3395** ("a kind that is noise until you go looking
+   for it (bus errors) starts hidden everywhere") is also stale, but
+   predates task 158 entirely (an earlier owner ruling, 2026-09-20,
+   already made every kind — including bus errors — visible by default;
+   `notes.ts`'s `defaultVisibleKinds` doc comment already says as much).
+   Not touched: unrelated to this phase's diff.
+3. Between phases 2 and 3, the Events panel still shows no bus-error
+   section (phase 1's side effect 2, half-resolved: the plot has
+   markers again, the Events panel does not yet).
 
 ## Status log
 
@@ -236,8 +254,103 @@ Settled by the overseer, open to reversal:
   - Docs: ADR 0035 amendment (2026-09-23), ADR 0002 DS-5 paragraph + "on
     disk" table row, `signal_cache.rs` / `bus_health.rs` / `notes.rs`
     module docs, `signal_fingerprint.rs`.
+- 2026-09-23 — **Phase 2 (plot markers) landed** on `task158-plot-markers`
+  (off `task158-error-series`), one commit `5871aee0`.
+  - **Windowed query.** New hook `useBusErrorMarkers` (`apps/gui/src/useBusErrorMarkers.ts`):
+    single-flight, newest-wins, memoised against the last *complete*
+    answer — the same lifecycle shape as `useDecimatedRange`, sized down
+    (no base/winStart anchoring — a bus-error series has no per-signal
+    y-extent or `winEnd`-parked-window concept to track). Driven from
+    `PlotPanel`'s `onAreaResampled` (the rAF-coalesced callback that
+    already runs `slideXWindow` once per frame from every area's own
+    resample tick), not a new poller.
+  - **Bus set: every session bus** (`useProjectContext().buses`, already
+    destructured in `PlotPanel.tsx`), not the plot's own plotted buses.
+    Reasoning: every other event kind on this panel is already
+    session-wide — `plotTimelineEvents` draws every note regardless of
+    which signals/buses this particular panel happens to plot — so
+    scoping bus-error markers to "buses this plot's signals touch" would
+    make them behave differently from every other marker kind for no
+    documented reason, and would need re-deriving on every area/signal
+    change. `project.buses` is also simpler: it doesn't go empty just
+    because an area is momentarily signal-less.
+  - **Point budget: the panel's own rendered width in pixels**
+    (`panelRef.current?.clientWidth`, floored at 64), mirroring the
+    series fetch's own choice (`PlotArea.tsx`'s `maxPts`, one point per
+    canvas pixel). Panel width rather than a single area's canvas width,
+    because this is one query for the whole plot — every area shares the
+    x axis the markers draw on — and there is no single "the" area's
+    canvas to ask.
+  - **Marker construction** (`plotEvents.ts`): `busErrorTimelineEvents`
+    walks a bus's served `(t, running count)` array from index 1,
+    building one `TimelineEvent` per point with `id = bus-error:{bus}:{n}`
+    (`n` the point's own value) and a label from the delta to the
+    *previous* served point — so index 0 (the window's leading boundary
+    sample) supplies the first marker's delta and draws no marker of its
+    own, per the ruling. `busErrorMarkerLabel` formats count/span/rate
+    (`formatDurationSeconds` for span, a fixed-precision `/s` rate).
+    `plotEventsFromTimeline` generalises `plotTimelineEvents`'s
+    projection (display-relative seconds, kind-color, visibility filter)
+    to take a `TimelineEvent[]` directly rather than a `Note[]`, since a
+    bus-error marker has no `Note` to derive from; `plotTimelineEvents`
+    itself is refactored to call it (behavior-preserving — its existing
+    tests are unchanged and still green).
+  - **Merge, not a second renderer.** `PlotPanel`'s `events` (the
+    `NoteEvent[]` `PlotArea` draws chips from) is
+    `[T0, ...notes, ...busErrorMarkers]`. A second list,
+    `allTimelineEvents` (`[...timelineEvents(sessionNotes, ...),
+    ...busErrorEvents]`), feeds `eventHighlight` so a linked reference to
+    a `bus-error:{bus}:{n}` id resolves — and lights the marker,
+    including its extent band — whenever that point is in the currently
+    served window; outside the window it reads as unresolved, the same
+    as any other event id this list does not hold (`notes.ts`'s
+    `linkedEventIds` doc already states that contract).
+  - **Counts are a model fact, not a marker tally.** The Events chip's
+    `busError` count is overridden after `countByKind` with
+    `Σ_bus (last served value − boundary value)` — i.e. the sum of every
+    marker's own delta, which is the actual error count the window
+    covers. This differs from "number of markers" whenever the pyramid
+    folded several errors into one served point at a coarse zoom level.
+  - **Pending state.** `useBusErrorMarkers`'s state only updates on a
+    successful fetch and is never cleared on a failed or superseded one,
+    so a `complete: false` answer (still catching up) or a transient
+    invoke rejection both just leave the last-known markers on screen —
+    no empty flash.
+  - **Tests**, red-then-green against the new production code:
+    - `plotEvents.test.ts`: 8 new (`busErrorTimelineEvents` ×3,
+      `busErrorMarkerLabel` ×3, `plotEventsFromTimeline` ×3 minus the
+      shared one counted once — 33 tests total in the file, up from 25).
+    - `useBusErrorMarkers.test.ts` (new file): 7 — empty start, no-op on
+      a null/bus-less request, fetch fills state per bus, memoised no-op
+      on an identical complete request (and a real re-fetch on a changed
+      one), keeps asking while incomplete, single-flight/newest-wins
+      under three overlapping requests, keeps the last markers across a
+      failed fetch.
+    - `PlotPanel.dom.test.tsx`: 5 new, in a `describe("bus-error
+      markers", ...)` block — a 50,000-error serve renders a marker set
+      ≤ 1200 (`2 × maxPoints` at the 600px test canvas), zooming into a
+      slice below the point budget resolves individual ("1 bus error")
+      markers where the wide view had folded several into each ("N bus
+      error…") one, an exact 5-point fixture asserts the drawn labels
+      match count/span/rate exactly and that the leading boundary point
+      (t=2, before `fromSeconds`) draws no marker of its own, authored
+      notes and bus-error markers appear together in one drawn list, and
+      a `complete: false` answer still draws the markers it has.
+    - `PlotPanel.dom.test.tsx` harness changes: added `bus_error_series`
+      to the mocked `invoke` bridge (with a small windowing/decimation
+      stand-in — bounded to `2 × maxPoints`, boundary sample kept each
+      side — good enough to exercise the *frontend's* windowing and
+      labelling; the pyramid's own decimation fidelity is
+      `signal_cache.rs`'s tests, not this tier's), and a `buses` option
+      on `renderPanel` (defaults to none, so no existing test's harness
+      gained a new round-trip).
+  - **A pre-existing flaky test noticed, not touched.** A full `pnpm
+    test` run once showed `UnitCustomizations.scale.dom.test.tsx` fail
+    under full-suite load (`expected 0 to be 21`) and pass both in
+    isolation and on an immediate full-suite re-run (3694/3694 green). I
+    did not touch that file; noted here rather than silently ignored.
 
-## Exit criteria verdicts (2026-09-23, after phase 1)
+## Exit criteria verdicts (2026-09-23, after phase 2)
 
 | # | Verdict |
 | --- | --- |
@@ -246,3 +359,4 @@ Settled by the overseer, open to reversal:
 | 4 | `MAX_RUNS`, the coalescer and the whole-list derived-note broadcast gone; authored notes broadcast as before; bus-health totals unchanged | **Met** — removed; authored-note tests in `notes.rs` unchanged and green; `bus_health` tally tests + `a_row_is_built_…` green. See side effect 1 on `COALESCE_GAP_NS`. |
 | 6 | ADR 0035 and ADR 0002 describe the series family; README matches | **ADRs met; README deferred to phase 3 per the phase plan** — README lines ~531–550 and ~3387 still describe the coalesced event (side effect 2). |
 | 7 | Tests cover 1–5 (host half) | **Met for 2–4**; 1 is covered on the host by `ten_thousand_episodes_each_resolve_on_their_own` (every one of 10,000 episodes served as exactly its 3 errors at a zoom around it); the plot half is phase 2. |
+| 1 | A capture with more than 256 bus-error episodes shows every episode on the plot at the zoom where it resolves; nothing is evicted | **Met (plot half)** — the query has no cap analogous to the old `MAX_RUNS`; it pages the whole series through the host's pyramid serve. `PlotPanel.dom.test.tsx`'s 50,000-error test exercises two orders of magnitude past the old 256 cap; `ten_thousand_episodes_each_resolve_on_their_own` (host, phase 1) is the deeper proof that a zoom resolves an arbitrary episode. |
