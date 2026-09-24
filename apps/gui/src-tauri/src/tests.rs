@@ -8666,7 +8666,7 @@ fn a_settings_write_that_moves_no_unit_announces_nothing() {
 #[allow(clippy::float_cmp)]
 fn a_math_redefinition_rebuilds_what_the_host_serves() {
     use crate::math_signals::{MathDefinition, MathFunction, MathOperandRef, MathOperands};
-    use crate::signal_cache::{CacheQuery, Reduction};
+    use crate::signal_cache::CacheQuery;
 
     let state = test_state();
     state.databases.lock().unwrap().push(loaded_scoped(
@@ -8711,7 +8711,6 @@ fn a_math_redefinition_rebuilds_what_the_host_serves() {
                 f64::MIN,
                 f64::MAX,
                 0,
-                Reduction::MinMax,
                 &state.trace_store,
                 &model,
             )
