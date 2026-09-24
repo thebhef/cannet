@@ -23,6 +23,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { EventsPanel } from "./EventsPanel";
+import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import { SignalCatalogContext } from "./signalCatalogContext";
@@ -81,15 +82,28 @@ function notesCtx(notes: Note[]): NotesContextValue {
   };
 }
 
+const projectCtx = { buses: [] } as unknown as ProjectContextValue;
+
+/// A dockview panel's props, faked: the `api.onDidVisibilityChange`
+/// subscription the panel's bus-error section needs for its scroll
+/// restore (`useScrollRestore.ts`) — never fired by these tests.
+function panelProps(): Parameters<typeof EventsPanel>[0] {
+  return {
+    api: { onDidVisibilityChange: vi.fn(() => ({ dispose: vi.fn() })) },
+  } as unknown as Parameters<typeof EventsPanel>[0];
+}
+
 function renderPanel(notes: Note[], catalog: SignalDescriptorRecord[] = CATALOG) {
   const ctx = notesCtx(notes);
   render(
     <TraceDataProvider value={traceData}>
-      <SignalCatalogContext.Provider value={{ catalog }}>
-        <NotesContext.Provider value={ctx}>
-          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
-        </NotesContext.Provider>
-      </SignalCatalogContext.Provider>
+      <ProjectContext.Provider value={projectCtx}>
+        <SignalCatalogContext.Provider value={{ catalog }}>
+          <NotesContext.Provider value={ctx}>
+            <EventsPanel {...panelProps()} />
+          </NotesContext.Provider>
+        </SignalCatalogContext.Provider>
+      </ProjectContext.Provider>
     </TraceDataProvider>,
   );
   return ctx;

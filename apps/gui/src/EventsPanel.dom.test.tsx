@@ -7,11 +7,30 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { emit } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
+/// What `bus_error_series` / `get_bus_health` answer — `{}` / an empty
+/// series by default, so a test that doesn't ask for bus errors never
+/// triggers a round-trip it didn't mean to exercise. A function receives
+/// the call's own args, for a fixture whose answer depends on the
+/// requested point budget (the "50,000 errors" scenario below).
+let busErrorFixture: unknown | ((args?: Record<string, unknown>) => unknown) = {
+  series: [],
+  complete: true,
+};
+let busHealthFixture: Record<string, { errorCount: number }> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+    if (cmd === "bus_error_series") {
+      return typeof busErrorFixture === "function" ? busErrorFixture(args) : busErrorFixture;
+    }
+    if (cmd === "get_bus_health") return busHealthFixture;
+    return [];
+  }),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(async () => {}),
   listen: vi.fn(async () => () => {}),
@@ -19,10 +38,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { EventsPanel } from "./EventsPanel";
 import { GOTO_EVENT } from "./gotoEvent";
+import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { diagCounts } from "./diag";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
+import type { Bus } from "./types";
 
 class FakeResizeObserver {
   observe() {}
@@ -40,6 +61,43 @@ const traceData: TraceData = {
   liveTail: { start: 0, rows: [] },
 };
 
+const projectCtx: ProjectContextValue = {
+  projectPath: null,
+  dirty: false,
+  dbcPaths: [],
+  dbcBuses: {},
+  buses: [],
+  interfaceBindings: [],
+  connectedAddresses: [],
+  connectedBusIds: [],
+  remoteConnected: false,
+  blfPath: null,
+  onNewProject: () => {},
+  onOpenProject: () => {},
+  onImportCapture: () => {},
+  onSaveProject: () => {},
+  onSaveProjectAs: () => {},
+  onAddDbc: () => {},
+  onRemoveDbc: () => {},
+  onReloadDbc: () => {},
+  onSetDbcBuses: () => {},
+  onAddBus: () => {},
+  onRemoveBus: () => {},
+  onUpdateBus: () => {},
+  busesWithPendingHwConfig: [],
+  onAddBinding: () => {},
+  onRemoveBinding: () => {},
+  localVirtualBuses: [],
+  onAddVirtualBus: () => {},
+  onRemoveVirtualBus: () => {},
+  onUpdateVirtualBus: () => {},
+  signalColors: {},
+  onSetSignalColor: () => {},
+  onSetSignalColors: () => {},
+};
+
+const CAN1: Bus = { id: "b1", name: "CAN1" };
+
 const notesCtx = (notes: Note[]): NotesContextValue => ({
   notes,
   addNote: vi.fn(),
@@ -53,8 +111,24 @@ const notesCtx = (notes: Note[]): NotesContextValue => ({
   setNoteSubjects: vi.fn(),
 });
 
-function renderPanel(notes: Note[], data: TraceData = traceData) {
-  const props = {} as Parameters<typeof EventsPanel>[0];
+/// A dockview panel's props, faked: the `api.onDidVisibilityChange`
+/// subscription the panel needs for its bus-error section's scroll
+/// restore (`useScrollRestore.ts`) — never fired by these tests, since
+/// none exercise a hide/show round-trip.
+function panelProps(): Parameters<typeof EventsPanel>[0] {
+  return {
+    api: { onDidVisibilityChange: vi.fn(() => ({ dispose: vi.fn() })) },
+  } as unknown as Parameters<typeof EventsPanel>[0];
+}
+
+/// The project's bus list — the bus-error section's scope. Defaults to
+/// none, like `projectCtx` itself: a test that doesn't ask for buses
+/// never triggers a `bus_error_series` round-trip.
+function withProject(buses: Bus[] = []) {
+  return buses.length === 0 ? projectCtx : { ...projectCtx, buses };
+}
+
+function renderPanel(notes: Note[], data: TraceData = traceData, buses: Bus[] = []) {
   // One element object, reused across re-renders. That is how dockview
   // mounts a panel — the element is built when the panel is created and
   // held in the layout's state — so React's same-element bail-out
@@ -62,17 +136,35 @@ function renderPanel(notes: Note[], data: TraceData = traceData) {
   // the only thing that reaches it. Rebuilding the element here instead
   // would re-render the panel unconditionally and prove nothing.
   const child = (
-    <NotesContext.Provider value={notesCtx(notes)}>
-      <EventsPanel {...props} />
-    </NotesContext.Provider>
+    <ProjectContext.Provider value={withProject(buses)}>
+      <NotesContext.Provider value={notesCtx(notes)}>
+        <EventsPanel {...panelProps()} />
+      </NotesContext.Provider>
+    </ProjectContext.Provider>
   );
   const tree = (d: TraceData) => <TraceDataProvider value={d}>{child}</TraceDataProvider>;
   const { rerender } = render(tree(data));
   return { rerender: (d: TraceData) => rerender(tree(d)) };
 }
 
+/// The shape every direct (non-`renderPanel`) render in this file shares:
+/// a notes context plus the trace/project providers `EventsPanel` needs.
+function renderWithNotes(ctx: NotesContextValue, data: TraceData = traceData) {
+  render(
+    <TraceDataProvider value={data}>
+      <ProjectContext.Provider value={projectCtx}>
+        <NotesContext.Provider value={ctx}>
+          <EventsPanel {...panelProps()} />
+        </NotesContext.Provider>
+      </ProjectContext.Provider>
+    </TraceDataProvider>,
+  );
+}
+
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  busErrorFixture = { series: [], complete: true };
+  busHealthFixture = {};
 });
 afterEach(() => {
   cleanup();
@@ -141,13 +233,7 @@ describe("event row focus and editing", () => {
 
   it("enables the field from the edit button, and commits the new label", () => {
     const ctx = notesCtx([note]);
-    render(
-      <TraceDataProvider value={traceData}>
-        <NotesContext.Provider value={ctx}>
-          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
-        </NotesContext.Provider>
-      </TraceDataProvider>,
-    );
+    renderWithNotes(ctx);
 
     fireEvent.click(screen.getByLabelText("rename event"));
     const input = screen.getByLabelText("event label") as HTMLInputElement;
@@ -165,13 +251,7 @@ describe("event row focus and editing", () => {
     // editor consumes the press for that reason; if it stopped doing so
     // the abandoned draft would be committed by the blur that follows.
     const ctx = notesCtx([note]);
-    render(
-      <TraceDataProvider value={traceData}>
-        <NotesContext.Provider value={ctx}>
-          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
-        </NotesContext.Provider>
-      </TraceDataProvider>,
-    );
+    renderWithNotes(ctx);
 
     fireEvent.click(screen.getByLabelText("rename event"));
     const input = screen.getByLabelText("event label") as HTMLInputElement;
@@ -244,13 +324,7 @@ describe("EventsPanel event rows on the keyboard", () => {
 
   it("renames the cursor's event on F2, and commits it to the host", () => {
     const ctx = notesCtx([note]);
-    render(
-      <TraceDataProvider value={traceData}>
-        <NotesContext.Provider value={ctx}>
-          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
-        </NotesContext.Provider>
-      </TraceDataProvider>,
-    );
+    renderWithNotes(ctx);
     cursorToFirstRow();
     fireEvent.keyDown(grid(), { key: "F2" });
     const input = screen.getByLabelText("event label") as HTMLInputElement;
@@ -320,47 +394,50 @@ describe("EventsPanel in a narrow panel", () => {
 });
 
 describe("EventsPanel kind filter", () => {
-  const busError: Note = {
-    id: "e1",
-    timestampNs: 4_000_000_000,
-    label: "bus error x40",
-    kind: "busError",
-  };
   const note: Note = { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" };
 
   const labels = () =>
     Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
 
-  it("shows what the tool found without being asked, and hides it on request", () => {
-    // Bus errors were once filtered out by default as noise. The host
-    // coalesces a run of error frames into one summary event, so a fault
-    // costs one row however many frames it produced — and a fault is
-    // what a reader most wants surfaced without going looking.
-    renderPanel([busError, note]);
-    expect(labels()).toEqual(["bus error x40", "boom"]);
-
-    const box = screen.getByLabelText("Diagnostics") as HTMLInputElement;
-    expect(box.checked).toBe(true);
-    expect(box.closest("label")?.textContent).toContain("1");
-
-    fireEvent.click(box);
+  it("shows what the tool found without being asked, and hides it on request", async () => {
+    // Derived bus errors no longer reach this whole-list section — they
+    // render in the Events panel's own paged section below, and the
+    // checklist's count for the kind comes off the host's per-bus totals
+    // (ADR 0035 amended, fetched async via `useBusHealth`) rather than a
+    // row in this list.
+    busHealthFixture = { [CAN1.id]: { errorCount: 1 } };
+    renderPanel([note], traceData, [CAN1]);
     expect(labels()).toEqual(["boom"]);
+
+    const box = () => screen.getByLabelText("Diagnostics") as HTMLInputElement;
+    expect(box().checked).toBe(true);
+    await waitFor(() => expect(box().closest("label")?.textContent).toContain("1"));
+
+    fireEvent.click(box());
+    // Turning Diagnostics off hides the bus-error section too — it is
+    // one more kind under that same row.
+    expect(document.querySelector(".bus-error-events")).toBeNull();
   });
 
-  it("counts every kind a row covers, not just the first", () => {
-    // One row, two kinds: the number beside it has to be their sum, or
-    // it under-reports what the checkbox is hiding.
-    renderPanel([
-      busError,
-      { id: "t1", timestampNs: 3_000_000_000, label: "another run", kind: "busError" },
-      note,
+  it("counts every kind a row covers, not just the first", async () => {
+    // Two Diagnostics-group kinds present at once: the number beside the
+    // row has to be their sum, or it under-reports what the checkbox is
+    // hiding. Bus errors come off the host's totals; the truncation
+    // marker is the group's other kind.
+    busHealthFixture = { [CAN1.id]: { errorCount: 1 } };
+    renderPanel([note], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 }, [
+      CAN1,
     ]);
-    expect(screen.getByLabelText("Diagnostics").closest("label")?.textContent).toContain("2");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Diagnostics").closest("label")?.textContent).toContain("2"),
+    );
   });
 
   it("offers no edit controls on a host-derived event", () => {
-    renderPanel([busError]);
-    expect(labels()).toEqual(["bus error x40"]);
+    // The truncation marker is this whole-list section's one remaining
+    // read-only kind — derived bus errors left it for the paged section.
+    renderPanel([], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 });
+    expect(labels()).toEqual(["history truncated here"]);
     expect(screen.queryByLabelText("rename event")).toBeNull();
     expect(screen.queryByLabelText("remove event")).toBeNull();
   });
@@ -389,13 +466,7 @@ describe("EventsPanel event body", () => {
 
   it("edits the description in place and commits it to the host", () => {
     const ctx = notesCtx([tagged]);
-    render(
-      <TraceDataProvider value={traceData}>
-        <NotesContext.Provider value={ctx}>
-          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
-        </NotesContext.Provider>
-      </TraceDataProvider>,
-    );
+    renderWithNotes(ctx);
     fireEvent.click(screen.getByLabelText("show event details"));
     fireEvent.click(screen.getByText("opened under load"));
     const input = screen.getByLabelText("event description") as HTMLInputElement;
@@ -553,5 +624,97 @@ describe("EventsPanel record types", () => {
 
     fireEvent.click(screen.getByLabelText("Notes"));
     expect(labels()).toEqual([]);
+  });
+});
+
+describe("EventsPanel bus-error section", () => {
+  // A bounded stand-in for the host's own decimation (~2× the requested
+  // point budget, `signal_cache.rs`'s own tests own that fidelity's
+  // exactness) — enough to prove the *frontend's* own bounding and its
+  // "ask for more resolution" path, the same tier `PlotPanel.dom.test.tsx`
+  // uses its own 50,000-error stand-in for.
+  function fiftyThousandErrorsFixture(args?: Record<string, unknown>) {
+    const total = 50_000;
+    const requested = Math.max(1, Number(args?.maxPoints ?? 1));
+    const n = Math.min(2 * requested, total);
+    const step = total / n;
+    const t: number[] = [];
+    const v: number[] = [];
+    for (let i = 1; i <= n; i++) {
+      const value = Math.round(i * step);
+      v.push(value);
+      t.push(value);
+    }
+    return { series: [{ t, v }], complete: true };
+  }
+
+  function rows(): HTMLElement[] {
+    return Array.from(document.querySelectorAll<HTMLElement>(".bus-error-event-row"));
+  }
+
+  it("asks the host nothing without session buses, and says so plainly", () => {
+    // The section is still listed — "nothing is hidden and unfindable"
+    // holds for Diagnostics the same as every other kind group — but an
+    // empty bus list is nothing to query the host over.
+    busErrorFixture = fiftyThousandErrorsFixture;
+    renderPanel([]);
+    expect(screen.getByText("No bus errors recorded.")).toBeInTheDocument();
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("bus_error_series", expect.anything());
+  });
+
+  it("renders a bounded row set from a window over 50,000 errors", async () => {
+    busErrorFixture = fiftyThousandErrorsFixture;
+    renderPanel([], traceData, [CAN1]);
+    await waitFor(() => expect(rows().length).toBeGreaterThan(0));
+    // Bounded well under the 50,000 episodes the window covers.
+    expect(rows().length).toBeLessThan(1_000);
+
+    const first = rows()[0];
+    expect(first.querySelector(".bus-error-event-bus")?.textContent).toBe("CAN1");
+    expect(first.querySelector(".bus-error-event-count")?.textContent).toMatch(/errors?$/);
+    expect(first.querySelector(".bus-error-event-span")?.textContent).toMatch(/s$/);
+    expect(first.querySelector(".bus-error-event-rate")?.textContent).toMatch(/\/s$|—/);
+  });
+
+  it("re-queries at a larger point budget when scrolled to the bottom", async () => {
+    busErrorFixture = fiftyThousandErrorsFixture;
+    renderPanel([], traceData, [CAN1]);
+    await waitFor(() => expect(rows().length).toBeGreaterThan(0));
+    const before = rows().length;
+
+    const grid = document.querySelector(".bus-error-events-grid") as HTMLElement;
+    Object.defineProperty(grid, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(grid, "clientHeight", { value: 200, configurable: true });
+    grid.scrollTop = 1000; // dragged to the very bottom
+    fireEvent.scroll(grid);
+
+    await waitFor(() => expect(rows().length).toBeGreaterThan(before));
+  });
+
+  it("shows what it has quietly on a partial (`complete: false`) answer", async () => {
+    busErrorFixture = { series: [{ t: [10, 20], v: [1, 2] }], complete: false };
+    renderPanel([], traceData, [CAN1]);
+    await waitFor(() => expect(rows().length).toBe(1));
+    expect(screen.getByText("catching up…")).toBeInTheDocument();
+  });
+
+  it("lists authored events and the bus-error section together", async () => {
+    busErrorFixture = { series: [{ t: [10, 20], v: [1, 2] }], complete: true };
+    renderPanel(
+      [{ id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" }],
+      traceData,
+      [CAN1],
+    );
+    expect(screen.getByText("boom")).toBeInTheDocument();
+    await waitFor(() => expect(rows().length).toBe(1));
+  });
+
+  it("hides on request, like every other Diagnostics-group kind", async () => {
+    busErrorFixture = { series: [{ t: [10, 20], v: [1, 2] }], complete: true };
+    renderPanel([], traceData, [CAN1]);
+    await waitFor(() => expect(rows().length).toBe(1));
+
+    fireEvent.click(screen.getByLabelText("Diagnostics"));
+    expect(document.querySelector(".bus-error-events")).toBeNull();
   });
 });
