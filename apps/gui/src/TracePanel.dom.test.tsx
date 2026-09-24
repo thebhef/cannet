@@ -33,7 +33,10 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "get_bus_health") return { ...busHealth };
     // The host anchors each timeline event to a frame index (ADR 0035);
     // anchor everything at the window start so the events do splice in.
-    if (cmd === "frame_indices_at_ns") {
+    // `filtered_positions_at_ns` is the filtered-trace counterpart —
+    // used once a fuzzy query switches chronological mode onto the
+    // filtered path — and gets the same treatment.
+    if (cmd === "frame_indices_at_ns" || cmd === "filtered_positions_at_ns") {
       return ((args?.timestamps as number[] | undefined) ?? []).map(() => 0);
     }
     return [];
@@ -65,6 +68,7 @@ import { makeLiveRegistry } from "./registryTestKit";
 import { LIVE_TAIL_ROWS, resetLiveTailDemand } from "./liveTailDemand";
 import { PAGE_ROWS } from "./useWindowedQuery";
 import { hydrateSettings } from "./hostSettings";
+import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
 import type { ProjectElement } from "./types";
 
 class FakeResizeObserver {
@@ -936,5 +940,244 @@ describe("TracePanel error-frame collapse", () => {
     await waitFor(() =>
       expect(lastFilter()).toEqual({ all: [{ id_list: [256] }, { error_frame: false }] }),
     );
+  });
+});
+
+describe("TracePanel fuzzy filter", () => {
+  // A thin variant of `renderPanel` that lets a test hand in arbitrary
+  // params (`filterQuery`, a non-default `mode`) — `renderPanel` only
+  // parameterises `mode`.
+  function renderFilterPanel(elements: ProjectElement[], params: Record<string, unknown> = {}) {
+    const api = { updateParameters: vi.fn() };
+    const props = {
+      params: { elementId: "t1", mode: "chronological", ...params },
+      api,
+    } as unknown as Parameters<typeof TracePanel>[0];
+    const registry = makeRegistry(elements);
+    render(
+      <TraceDataProvider value={traceData}>
+        <ProjectContext.Provider value={projectCtx}>
+          <ElementRegistryContext.Provider value={registry}>
+            <TracePanel {...props} />
+          </ElementRegistryContext.Provider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+    return { api, registry };
+  }
+
+  const filterBox = () =>
+    document.querySelector<HTMLInputElement>('input[aria-label="filter trace rows"]')!;
+
+  /// The panel's most recent `api.updateParameters` call, as sent — the
+  /// dockview params blob a real reopen would restore from.
+  const lastParams = (api: { updateParameters: { mock: { calls: unknown[][] } } }) => {
+    const calls = api.updateParameters.mock.calls;
+    return calls[calls.length - 1]?.[0] as Record<string, unknown>;
+  };
+
+  const filterCallsFor = (cmd: string) =>
+    vi.mocked(invoke).mock.calls.filter((c) => c[0] === cmd);
+  const lastFilterArg = (cmd: string) => {
+    const calls = filterCallsFor(cmd);
+    return calls.length === 0
+      ? undefined
+      : (calls[calls.length - 1][1] as { filter: unknown }).filter;
+  };
+
+  const plainTrace = [{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement];
+
+  it("sends nothing to the host while the box hasn't settled", () => {
+    renderFilterPanel(plainTrace);
+    fireEvent.change(filterBox(), { target: { value: "brake" } });
+    // Debounced: the keystroke alone must not have reached the host —
+    // an unsettled query is not the host's filter-index key.
+    expect(filterCallsFor("fetch_filtered_trace")).toHaveLength(0);
+  });
+
+  it("sends only the settled query, chronological mode", async () => {
+    renderFilterPanel(plainTrace);
+    fireEvent.change(filterBox(), { target: { value: "brake" } });
+    await waitFor(() => expect(lastFilterArg("fetch_filtered_trace")).toEqual({ fuzzy: "brake" }));
+  });
+
+  it("sends only the settled query, by-id mode", async () => {
+    renderFilterPanel(plainTrace, { mode: "by-id" });
+    fireEvent.change(filterBox(), { target: { value: "brake" } });
+    await waitFor(() => expect(lastFilterArg("fetch_by_id_page")).toEqual({ fuzzy: "brake" }));
+  });
+
+  it("omits the leaf when the box is empty or whitespace", async () => {
+    renderFilterPanel(plainTrace);
+    fireEvent.change(filterBox(), { target: { value: "   " } });
+    // Give the debounce a chance to settle onto the whitespace query —
+    // still nothing reaches the host, and the plain window stays in
+    // charge (no switch onto the filtered path).
+    await new Promise((r) => setTimeout(r, 250));
+    expect(filterCallsFor("fetch_filtered_trace")).toHaveLength(0);
+  });
+
+  it("switches chronological mode onto the filtered path with no other predicate", async () => {
+    // The control: `sources=["*"]` alone never calls fetch_filtered_trace
+    // (see "TracePanel chronological filtering" above) — a settled query
+    // is what switches it on.
+    renderFilterPanel(plainTrace);
+    fireEvent.change(filterBox(), { target: { value: "brake" } });
+    await waitFor(() => expect(filterCallsFor("fetch_filtered_trace").length).toBeGreaterThan(0));
+  });
+
+  it("ANDs the settled query onto the panel's own filter rather than replacing it", async () => {
+    renderFilterPanel(traceAndFilter);
+    fireEvent.change(filterBox(), { target: { value: "brake" } });
+    await waitFor(() =>
+      expect(lastFilterArg("fetch_filtered_trace")).toEqual({
+        all: [{ id_list: [256] }, { fuzzy: "brake" }],
+      }),
+    );
+  });
+
+  it("clearing the box returns to the unfiltered window", async () => {
+    renderFilterPanel(plainTrace);
+    fireEvent.change(filterBox(), { target: { value: "brake" } });
+    await waitFor(() => expect(lastFilterArg("fetch_filtered_trace")).toEqual({ fuzzy: "brake" }));
+    vi.mocked(invoke).mockClear();
+    fireEvent.change(filterBox(), { target: { value: "" } });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(filterCallsFor("fetch_filtered_trace")).toHaveLength(0);
+  });
+
+  it("shows no match count while a query is active — the trace is host-paged, not client-indexed", async () => {
+    // `filter`'s own entries list is always empty (the box borrows only
+    // the debounce/settled-query mechanics, per the module doc comment),
+    // so a count derived from it would read "0 matches" while the rows
+    // below are narrowed to real matches — worse than no count at all.
+    renderFilterPanel(plainTrace);
+    fireEvent.change(filterBox(), { target: { value: "brake" } });
+    await waitFor(() => expect(lastFilterArg("fetch_filtered_trace")).toEqual({ fuzzy: "brake" }));
+    expect(document.querySelector(".trace-panel-match-count")).toBeNull();
+  });
+
+  describe("persistence", () => {
+    it("seeds the box from the panel's own saved params", () => {
+      renderFilterPanel(plainTrace, { filterQuery: "brake" });
+      expect(filterBox().value).toBe("brake");
+    });
+
+    it("persists the live text into dockview params only, never onto the element config", () => {
+      const { api, registry } = renderFilterPanel(plainTrace);
+      const configBefore = (registry.get("t1")!.element as { config?: Record<string, unknown> })
+        .config;
+      fireEvent.change(filterBox(), { target: { value: "brake" } });
+      expect(lastParams(api).filterQuery).toBe("brake");
+      const configAfter = (registry.get("t1")!.element as { config?: Record<string, unknown> })
+        .config;
+      // Same fields, same values — typing in the box touched nothing the
+      // element carries, so it can never mark the project dirty.
+      expect(configAfter).toEqual(configBefore);
+      expect(configAfter).not.toHaveProperty("filterQuery");
+    });
+
+    it("survives a remount through dockview params", () => {
+      const { api } = renderFilterPanel(plainTrace);
+      fireEvent.change(filterBox(), { target: { value: "brake" } });
+      const params = lastParams(api);
+      cleanup();
+      renderFilterPanel(plainTrace, params);
+      expect(filterBox().value).toBe("brake");
+    });
+  });
+
+  describe("events", () => {
+    const notesCtx = (notes: Note[]): NotesContextValue => ({
+      notes,
+      addNote: vi.fn(),
+      renameNote: vi.fn(),
+      recolorNote: vi.fn(),
+      describeNote: vi.fn(),
+      retagNote: vi.fn(),
+      removeNote: vi.fn(),
+      linkEvents: vi.fn(),
+      unlinkEvents: vi.fn(),
+      setNoteSubjects: vi.fn(),
+    });
+
+    function renderWithNotes(notes: Note[]) {
+      const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+      const props = {
+        params: { elementId: "t1", mode: "chronological" },
+        api: { updateParameters: vi.fn() },
+      } as unknown as Parameters<typeof TracePanel>[0];
+      render(
+        <TraceDataProvider value={{ ...traceData, count: 0 }}>
+          <ProjectContext.Provider value={projectCtx}>
+            <ElementRegistryContext.Provider
+              value={makeRegistry([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement])}
+            >
+              <NotesContext.Provider value={notesCtx(notes)}>
+                <TracePanel {...props} />
+              </NotesContext.Provider>
+            </ElementRegistryContext.Provider>
+          </ProjectContext.Provider>
+        </TraceDataProvider>,
+      );
+      return { restore: () => ch.mockRestore() };
+    }
+
+    const eventLabels = () =>
+      Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+
+    it("narrows event rows by the same settled query, in JS", async () => {
+      const { restore } = renderWithNotes([
+        { id: "n1", timestampNs: 1_000_000_000, label: "brake pressure fault", kind: "note" },
+        { id: "n2", timestampNs: 2_000_000_000, label: "coolant temp warning", kind: "note" },
+      ]);
+      await waitFor(() =>
+        expect(eventLabels()).toEqual(["brake pressure fault", "coolant temp warning"]),
+      );
+      fireEvent.change(filterBox(), { target: { value: "brake" } });
+      await waitFor(() => expect(eventLabels()).toEqual(["brake pressure fault"]));
+      restore();
+    });
+
+    it("matches the event's disclosed body too, not just its label", async () => {
+      const { restore } = renderWithNotes([
+        { id: "n1", timestampNs: 1_000_000_000, label: "boom", kind: "note", description: "brake pressure fault" },
+        { id: "n2", timestampNs: 2_000_000_000, label: "crunch", kind: "note", description: "coolant temp warning" },
+      ]);
+      await waitFor(() => expect(eventLabels()).toEqual(["boom", "crunch"]));
+      fireEvent.change(filterBox(), { target: { value: "brake" } });
+      await waitFor(() => expect(eventLabels()).toEqual(["boom"]));
+      restore();
+    });
+  });
+
+  describe("Mod+F (panel.find)", () => {
+    it("focuses and selects the filter box", () => {
+      const commands = createPanelCommandRegistry();
+      const props = {
+        params: { elementId: "t1", mode: "chronological" },
+        api: { updateParameters: vi.fn() },
+      } as unknown as Parameters<typeof TracePanel>[0];
+      render(
+        <TraceDataProvider value={traceData}>
+          <ProjectContext.Provider value={projectCtx}>
+            <ElementRegistryContext.Provider value={makeRegistry(plainTrace)}>
+              <PanelCommandsContext.Provider value={commands}>
+                <TracePanel {...props} />
+              </PanelCommandsContext.Provider>
+            </ElementRegistryContext.Provider>
+          </ProjectContext.Provider>
+        </TraceDataProvider>,
+      );
+      const box = filterBox();
+      fireEvent.change(box, { target: { value: "brake" } });
+      expect(document.activeElement).not.toBe(box);
+      act(() => {
+        commands.invoke("t1", "panel.find");
+      });
+      expect(document.activeElement).toBe(box);
+      expect(box.selectionStart).toBe(0);
+      expect(box.selectionEnd).toBe(box.value.length);
+    });
   });
 });

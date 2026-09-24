@@ -1317,7 +1317,16 @@ row per arbitration id with its latest frame and its current message
 rate (the **msg/s** column, by-id only) — click a column header to
 sort by it (click again to reverse, again to clear — ▲ / ▼ marks the
 sorted column); *trace* is the chronological view (one row per frame,
-follows the live edge). **Add ▸ Trace** creates a new trace element and a
+follows the live edge). A **filter** box in the toolbar narrows rows in
+both modes by the same fzf dialect the Database panel's tree uses: a
+query over a bus name, a message name or id (hex or decimal), a signal
+name, or a decoded value's enum label finds the frames it should, and
+composes with the sources filter, show-events and collapse-error-frames
+rather than replacing them; the chronological view stays host-paged
+throughout (the query is evaluated host-side over the row space, not in
+the browser). Timeline events narrow by the same query too, matched
+against their label and body. Clearing the box restores the full view;
+**Ctrl/⌘+F** focuses and selects it. **Add ▸ Trace** creates a new trace element and a
 panel for it (in by-ID mode — toggle it anytime); the new trace starts
 **empty and stopped** (hit **Start** to begin capturing), regardless of
 what's already in the session buffer. The project panel

@@ -19,7 +19,7 @@ import { buildEventMerge } from "./eventMerge";
 import { useFilteredTrace } from "./useFilteredTrace";
 import { useByIdView } from "./useByIdView";
 import { useProjectContext } from "./projectContext";
-import { buildSinkPredicate, withoutErrorFrames } from "./sinkPredicate";
+import { buildSinkPredicate, withFuzzyQuery, withoutErrorFrames } from "./sinkPredicate";
 import { anyBusHasErrors, useBusHealth } from "./busHealth";
 import { buildColorResolver } from "./colorMap";
 import { SourcesContextMenu } from "./SourcesPicker";
@@ -27,6 +27,15 @@ import { useElementPanel, useElementRehydrate, useElementSources } from "./useEl
 import { useDismissableMenu } from "./useDismissableMenu";
 import { hostSettings, useSetting } from "./hostSettings";
 import { toggleInSet } from "./toggleSet";
+import { usePanelCommands } from "./panelCommands";
+import { Icon } from "./Icon";
+import {
+  GridviewFilterBox,
+  gridviewMatches,
+  lazyGridviewMatcher,
+  useGridviewFilter,
+  type GridviewFilterEntry,
+} from "./gridviewFilter";
 import {
   type ColumnKey,
   type ColumnState,
@@ -89,6 +98,24 @@ const showEventsFromConfig = (c: TraceConfig | undefined): boolean =>
 /// row each has buried everything else on the bus.
 const collapseErrorFramesFromConfig = (c: TraceConfig | undefined): boolean =>
   typeof c?.collapseErrorFrames === "boolean" ? c.collapseErrorFrames : true;
+
+/// The fuzzy filter box's live text, read from the dockview `params` —
+/// it rides there only (ADR 0044), never onto the element's `config`
+/// like the rest of this panel's view state, so it never dirties the
+/// project (`DatabasePanel`'s search box is the same precedent).
+function filterQueryFromParams(raw: unknown): string {
+  const p = raw as { filterQuery?: unknown } | undefined;
+  return typeof p?.filterQuery === "string" ? p.filterQuery : "";
+}
+
+/// The trace's fuzzy box has no client-side row space to search — both
+/// modes page the host — so it uses `useGridviewFilter` for its
+/// debounce/settled-query mechanics only, over an entries list that is
+/// always empty. `matchSet` / `ancestorsOfMatches` are never read.
+const NO_TRACE_FILTER_ENTRIES: GridviewFilterEntry[] = [];
+function buildNoTraceFilterEntries(): GridviewFilterEntry[] {
+  return NO_TRACE_FILTER_ENTRIES;
+}
 
 /// A frame row's right-click menu: just the create-event action about
 /// that message (ADR 0056). Panel-scoped filtering (the sources
@@ -209,6 +236,29 @@ export function TracePanel(props: IDockviewPanelProps) {
     setExpanded((prev) => toggleInSet(prev, rowKey));
   }, []);
 
+  // The fzf filter box (ADR 0044): narrows both view modes' rows by the
+  // same settled query. Only the debounce/settled-query mechanics are
+  // borrowed from the shared slot — the trace is host-paged, so there
+  // is no client-side row space to build a matcher over
+  // (`buildNoTraceFilterEntries` is always empty; `matchSet` /
+  // `ancestorsOfMatches` go unused). `filter.input` is the live text
+  // (persisted every keystroke); `filter.query` is the 150 ms-settled
+  // value that actually enters `fetchFilter` below, so the host's
+  // filter index rebuilds at most once per pause in typing.
+  const filter = useGridviewFilter(
+    buildNoTraceFilterEntries,
+    filterQueryFromParams(props.params),
+  );
+  /// The filter box, so `panel.find` (Mod+F, ADR 0018) can focus and
+  /// select it.
+  const filterInputRef = useRef<HTMLInputElement | null>(null);
+  usePanelCommands(elementId, {
+    "panel.find": () => {
+      filterInputRef.current?.focus();
+      filterInputRef.current?.select();
+    },
+  });
+
   // …and re-read the same fields when the element's config is rewritten
   // by anyone else — the mirror image of the seeding above.
   useElementRehydrate(panel, (config) => {
@@ -224,15 +274,27 @@ export function TracePanel(props: IDockviewPanelProps) {
   // column layout, events toggle, the open by-id rows) onto the element
   // and into the dockview params — see `useElementPanel`'s `persist`.
   useEffect(() => {
-    persist({
-      mode,
-      autoScroll,
-      columns,
-      showEvents,
-      collapseErrorFrames,
-      expanded: [...expanded],
-    });
-  }, [persist, mode, autoScroll, columns, showEvents, collapseErrorFrames, expanded]);
+    persist(
+      {
+        mode,
+        autoScroll,
+        columns,
+        showEvents,
+        collapseErrorFrames,
+        expanded: [...expanded],
+      },
+      { filterQuery: filter.input },
+    );
+  }, [
+    persist,
+    mode,
+    autoScroll,
+    columns,
+    showEvents,
+    collapseErrorFrames,
+    expanded,
+    filter.input,
+  ]);
 
   // The fetch predicate the host applies before returning rows. Built
   // from the element's `sources` (and any upstream filter's predicate).
@@ -248,8 +310,14 @@ export function TracePanel(props: IDockviewPanelProps) {
     const sinkFilter = element
       ? buildSinkPredicate(element, (id) => registry.get(id)?.element)
       : null;
-    return collapsing ? withoutErrorFrames(sinkFilter) : sinkFilter;
-  }, [element, registry, collapsing]);
+    const withoutErrors = collapsing ? withoutErrorFrames(sinkFilter) : sinkFilter;
+    // The settled fuzzy query ANDs onto whatever the sources filter and
+    // the error-frame collapse already produced — never replaces it —
+    // and, being non-null whenever a query is active, is what switches
+    // chronological mode onto the filtered-trace path even with no
+    // other predicate.
+    return withFuzzyQuery(withoutErrors, filter.query);
+  }, [element, registry, collapsing, filter.query]);
   const { currentSources, availableFilters, handleSourcesChange } = useElementSources(
     registry,
     elementId,
@@ -348,6 +416,34 @@ export function TracePanel(props: IDockviewPanelProps) {
   );
   const eventCounts = useMemo(() => countByKind(allEvents), [allEvents]);
 
+  // The fuzzy query narrows event rows too (owner ruling): events are
+  // frontend-merged (ADR 0035) and no host predicate can see their
+  // text, so this runs the app's one JS fzf — same floor, same
+  // case-insensitive casing as the host's `fuzzy` leaf — over the
+  // bounded (already kind-filtered) event list. The haystack is the
+  // event's own text: its label and its disclosed body.
+  const eventFilterEntries = useCallback(
+    (): GridviewFilterEntry[] =>
+      events.map((e) => ({
+        id: e.id,
+        ancestors: [],
+        haystack: `${e.label} ${e.description ?? ""}`,
+      })),
+    [events],
+  );
+  const eventMatcher = useMemo(
+    () => lazyGridviewMatcher(eventFilterEntries),
+    [eventFilterEntries],
+  );
+  const eventMatches = useMemo(
+    () => gridviewMatches(eventMatcher, filter.query),
+    [eventMatcher, filter.query],
+  );
+  const matchedEvents = useMemo(
+    () => (filter.active ? events.filter((e) => eventMatches.matchSet.has(e.id)) : events),
+    [events, filter.active, eventMatches],
+  );
+
   // Interleave events into the chronological view when the view-local toggle
   // is on — for both the unfiltered and the filtered chronological trace.
   const interleave = mode === "chronological" && showEvents;
@@ -371,7 +467,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   const [anchors, setAnchors] = useState<number[]>([]);
   useEffect(() => {
     let live = true;
-    const ts = events.map((e) => e.timestampNs);
+    const ts = matchedEvents.map((e) => e.timestampNs);
     if (!interleave || ts.length === 0) {
       setAnchors([]);
       return;
@@ -393,7 +489,7 @@ export function TracePanel(props: IDockviewPanelProps) {
     return () => {
       live = false;
     };
-  }, [interleave, chronoFiltered, fetchFilter, events, trace.offset, model.epoch]);
+  }, [interleave, chronoFiltered, fetchFilter, matchedEvents, trace.offset, model.epoch]);
 
   // The merge places each event at `anchor - offset`. Unfiltered anchors are
   // absolute frame indices, so the offset is the window start; filtered
@@ -402,12 +498,12 @@ export function TracePanel(props: IDockviewPanelProps) {
   const merge = useMemo(
     () =>
       buildEventMerge(
-        interleave ? events : [],
-        interleave && anchors.length === events.length ? anchors : [],
+        interleave ? matchedEvents : [],
+        interleave && anchors.length === matchedEvents.length ? anchors : [],
         mergeOffset,
         baseCount,
       ),
-    [interleave, events, anchors, mergeOffset, baseCount],
+    [interleave, matchedEvents, anchors, mergeOffset, baseCount],
   );
   // Base-typed rows (ADR 0035) for TraceView's one renderer: an event, or a
   // frame (resolved through the windowed query at its local index). Inner
@@ -559,6 +655,19 @@ export function TracePanel(props: IDockviewPanelProps) {
             onPress={() => switchMode("by-id")}
           />
         </ChipSegment>
+        <span
+          className="chip-field trace-panel-search"
+          title="filter rows by bus, message, signal, enum value, or event text"
+        >
+          <Icon name="search" />
+          <GridviewFilterBox
+            filter={filter}
+            className="trace-panel-search-input"
+            placeholder="filter…"
+            ariaLabel="filter trace rows"
+            inputRef={filterInputRef}
+          />
+        </span>
         {mode === "chronological" && (
           <ChipButton
             label="Auto-Scroll"
