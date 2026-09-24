@@ -64,6 +64,26 @@ On the Events panel: "yes, paged section."
   2026-09-23), read from the same series through the windowed
   primitive.
 
+- **Episodes down to a minimum time window** (owner, 2026-09-24, on
+  phase 3's growing-budget section): "it should be possible to see
+  them down to some minimum time window (like 5 seconds, maybe user
+  configurable, probably down to like 1s minimum.), and without losing
+  details, such as they are — i.e. different _types_ of failures which
+  occurred in a window, if we even have that detail. Individual bus
+  faults don't seem valuable." Overseer's reading, settled from the
+  code: an **episode** is a burst of errors on one bus separated from
+  the next by at least the **episode gap**, a setting (`bus_error_episode_gap_s`,
+  default 5, minimum 1); the Events section lists episodes, newest
+  first, **paged by offset** over a host-held episode list per
+  `(bus, gap)` derived incrementally from the level-0 series (bounded
+  by capture time ÷ gap, rebuilt from the pyramid on restore off the
+  UI thread); each row carries bus, first and last time, count, span
+  and rate. Phase 3's growing point budget over the whole capture is
+  replaced. **Failure types are not captured today**: `CanFramePayload::Error`
+  carries no kind and the wire, spill and BLF reader flatten the
+  controller's error code away — recorded under § Blockers as a
+  follow-up, not this task's.
+
 Settled by the overseer, open to reversal:
 
 - **The key.** A new `SignalOrigin` variant for the error series, keyed
@@ -117,6 +137,14 @@ Settled by the overseer, open to reversal:
    derived events leave the trace's event rows; README's events,
    bus-health and trace passages; `docs/CONTEXT.md` if a term is
    coined.
+4. **Episodes at a minimum window.** The `bus_error_episode_gap_s`
+   setting (descriptor, settings view, default 5 s, minimum 1 s); the
+   host's per-`(bus, gap)` episode list derived incrementally from the
+   level-0 series with a paged, offset-addressed serve (count known, so
+   `useWindowedQuery` pages it like the trace); the Events section
+   rebuilt on it, newest first, with the growing-budget query removed;
+   a gap change re-derives; host and DOM tests; README's Events passage
+   and the settings entry documented.
 
 ## Exit criteria
 
@@ -134,7 +162,12 @@ Settled by the overseer, open to reversal:
 5. Plot markers, the Events panel's paged bus-error section and the
    trace behave per § Rulings — DOM tests.
 6. ADR 0035 and ADR 0002 describe the series family; README matches.
-7. Tests cover 1–5.
+7. Tests cover 1–5 and 8.
+8. The Events section lists episodes at the configured gap (default
+   5 s, minimum 1 s), pages by offset over the whole capture down to
+   single episodes, and re-derives when the setting changes; the
+   count of episodes is bounded by capture time ÷ gap — host and DOM
+   tests.
 
 ## Blockers / side effects
 
@@ -184,6 +217,13 @@ Settled by the overseer, open to reversal:
 3. Between phases 2 and 3, the Events panel still shows no bus-error
    section (phase 1's side effect 2, half-resolved: the plot has
    markers again, the Events panel does not yet).
+- 2026-09-24 — **Failure types are not available.** The owner asked
+  that an episode keep "different types of failures which occurred in
+  a window, if we even have that detail"; it does not: the core frame's
+  error payload carries no kind, the sidecar reports only the
+  controller's bus state (active / passive / bus-off), and the BLF
+  reader flattens the error code. Surfacing it is a wire, spill and
+  BLF-reader change — a task of its own, not this one.
 
 ## Status log
 
@@ -497,4 +537,7 @@ Settled by the overseer, open to reversal:
 | 6 | ADR 0035 and ADR 0002 describe the series family; README matches | **Met (full, as of phase 3)** — ADRs amended in phase 1; README's Events panel passage now describes the two-section shape and drops the stale "starts hidden" claim; the bus-health and Collapse Errors passages were already accurate (no change needed there). |
 | 7 | Tests cover 1–5 | **Met (full)** — host tests (phase 1) cover 2–4 and the host half of 1 and 3; `PlotPanel.dom.test.tsx` (phase 2) covers the plot half of 1 and 5; `EventsPanel.dom.test.tsx` / `useBusErrorEvents.test.ts` / `TracePanel.dom.test.tsx` (phase 3) cover the Events-panel and trace halves of 5. |
 
-Task complete 2026-09-24: 7/7 met. Awaiting owner acceptance (review queue § 4).
+2026-09-24: the owner's ruling on the Events section's grain reopens the task — phase 4 opened; criterion 5's Events half and 8 pending.
+- 2026-09-24 — owner ruled on the Events section (episodes down to a
+  configurable minimum window); phase 4 opened; failure types recorded
+  as unavailable.
