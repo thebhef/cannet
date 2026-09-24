@@ -7,6 +7,12 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **158: the bus-health panel's error rate keeps a 1 s burst gap.**
+  The coalescer and its run list are gone, but "errors per second over
+  the latest burst" needs a burst boundary, so `RATE_BURST_GAP_NS`
+  stays inside a per-bus tally with no list and no cap. Keep, or
+  redefine the rate? Detail: 0158 § Status log, phase 1.
+
 - **156 phase 2 — a launch refused its project cache boots in the
   unsaved project directory**, rather than staying rooted in the held
   one with an in-RAM store. Reason: the pyramids, filter index and
