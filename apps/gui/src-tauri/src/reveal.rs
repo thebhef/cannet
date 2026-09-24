@@ -33,15 +33,22 @@ fn reveal_command(path: &Path) -> (&'static str, Vec<String>) {
 /// forget: the spawned process outlives this call, and its own success
 /// or failure to open a window is not something the caller can act on
 /// beyond knowing the launch itself succeeded.
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// spawning a process is tens of milliseconds of work the IPC thread
+/// has no reason to do (ADR 0048).
 #[tauri::command]
-pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
-    let path = PathBuf::from(path);
-    let (program, args) = reveal_command(&path);
-    std::process::Command::new(program)
-        .args(&args)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("could not open the file manager: {e}"))
+pub async fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    crate::sampling::off_async_workers(move || {
+        let path = PathBuf::from(path);
+        let (program, args) = reveal_command(&path);
+        std::process::Command::new(program)
+            .args(&args)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("could not open the file manager: {e}"))
+    })
+    .await
 }
 
 #[cfg(test)]

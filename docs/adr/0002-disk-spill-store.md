@@ -333,6 +333,17 @@ raw store would not hold disk: a pyramid grows `O(matches over the
 capture's lifetime)`, so the derived caches must be in the budget or
 the cap leaks.
 
+**A derived family's orphaned files are freed by a background sweep**,
+so the measured footprint can briefly include level files nothing
+refers to any more. A DBC-set change retires the pyramids it
+invalidates in memory and returns — the unlinking is a directory walk
+plus one unlink per file, which
+[ADR 0048](0048-no-lock-across-rebuild.md) keeps off the thread the
+gesture is waiting on — and the sweep that follows takes them within
+moments. The cap is not a hard ceiling in that window — but it never
+was one: eviction runs on the flush tick, not on the byte that crossed
+the line.
+
 **Over-limit behavior is drop-oldest.** When the total exceeds the
 cap, a single **low-water mark** rises and *every* trimmable family
 **front-trims** the segments that fall entirely below it — the oldest

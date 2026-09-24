@@ -919,6 +919,36 @@ impl SessionTransmitter {
         self.transmit_batch(interface_id, std::slice::from_ref(frame))
     }
 
+    /// Send `frame` **without waiting for room** in the outgoing
+    /// channel: a full queue is refused as
+    /// [`TransmitRefused::QueueFull`] instead of parking the caller
+    /// until the worker drains one.
+    ///
+    /// This is what a caller on a thread that must stay responsive uses
+    /// — a GUI's manual "send this frame now" — because the wait is
+    /// unbounded in the only case that matters: the queue is full
+    /// exactly when the far end has stopped taking envelopes, and then
+    /// the frame the user asked for is late whichever way this returns.
+    /// Refusing says so; waiting says nothing and stalls the caller.
+    /// [`Self::transmit_batch`] keeps the waiting form for the scheduler
+    /// thread, whose whole job is to keep offering frames.
+    pub fn try_transmit(
+        &self,
+        interface_id: &str,
+        frame: &CanFrame,
+    ) -> Result<(), TransmitRefused> {
+        let envelope = Envelope {
+            body: Some(Body::FrameBatch(FrameBatch {
+                interface_id: interface_id.to_string(),
+                frames: vec![frame_to_proto(frame)],
+            })),
+        };
+        self.req_tx.try_send(envelope).map_err(|e| match e {
+            tokio_mpsc::error::TrySendError::Full(_) => TransmitRefused::QueueFull,
+            tokio_mpsc::error::TrySendError::Closed(_) => TransmitRefused::Closed,
+        })
+    }
+
     /// Send `frames` over the session as **one** `FrameBatch` envelope,
     /// addressed to `interface_id`, preserving order. The wire protocol
     /// carries batches natively (the server iterates a batch's frames),
@@ -982,6 +1012,32 @@ impl SessionTransmitter {
             .map_err(|_| SessionClosed)
     }
 }
+
+/// Why [`SessionTransmitter::try_transmit`] did not enqueue a frame.
+/// The two cases read differently to a user: one says the session is
+/// gone, the other says it is alive but not draining.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransmitRefused {
+    /// The session is no longer alive — see [`SessionClosed`].
+    Closed,
+    /// The outgoing channel is full: the session is up, but the far end
+    /// is not taking envelopes fast enough to make room for this one.
+    QueueFull,
+}
+
+impl std::fmt::Display for TransmitRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => SessionClosed.fmt(f),
+            Self::QueueFull => f.write_str(
+                "the remote session's outgoing queue is full: the server is not \
+                 keeping up, and the frame was not sent",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TransmitRefused {}
 
 /// Returned by [`SessionTransmitter::transmit`] when the session is
 /// no longer alive — typically because the user disconnected, the
@@ -1686,6 +1742,75 @@ mod tests {
             vec![0x100, 0x101, 0x102],
         );
         assert!(rx.try_recv().is_err(), "exactly one envelope");
+    }
+
+    #[test]
+    fn a_full_queue_refuses_a_manual_send_instead_of_waiting_for_room() {
+        // The manual-send path answers a command a view is waiting on,
+        // so it may not park on a queue the far end has stopped
+        // draining: it reports the refusal and lets the caller show it
+        // (ADR 0048). `transmit_batch` keeps the waiting form for the
+        // scheduler thread — pinned below, so the difference between
+        // the two is not left to the reader.
+        let (tx, mut rx) = tokio_mpsc::channel::<Envelope>(1);
+        let t = SessionTransmitter { req_tx: tx };
+        let frame = CanFrame::classic(
+            0,
+            0,
+            cannet_core::CanId::standard(0x100).unwrap(),
+            cannet_core::Direction::Tx,
+            vec![1],
+        )
+        .unwrap();
+
+        t.try_transmit("if0", &frame).expect("room for the first");
+        assert_eq!(
+            t.try_transmit("if0", &frame),
+            Err(TransmitRefused::QueueFull),
+            "the queue is full and the caller is told so",
+        );
+        assert!(
+            TransmitRefused::QueueFull.to_string().contains("not"),
+            "the message says the server is not keeping up: {}",
+            TransmitRefused::QueueFull,
+        );
+
+        // The waiting form, on the same full queue: still blocked after
+        // a delay the non-blocking one answered within microseconds.
+        let waiter = SessionTransmitter {
+            req_tx: t.req_tx.clone(),
+        };
+        let blocked = std::thread::spawn(move || waiter.transmit("if0", &frame));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !blocked.is_finished(),
+            "`transmit` waits for room — that is why the manual path does not use it",
+        );
+        // Drain, so the parked sender finishes and the thread joins.
+        rx.blocking_recv().expect("the first envelope");
+        blocked.join().unwrap().expect("sent once there was room");
+    }
+
+    #[test]
+    fn a_closed_session_refuses_a_manual_send_as_closed_not_as_full() {
+        // The two refusals read differently to a user: one says the
+        // session is gone, the other says it is up but behind.
+        let (tx, rx) = tokio_mpsc::channel::<Envelope>(4);
+        let t = SessionTransmitter { req_tx: tx };
+        drop(rx);
+        let frame = CanFrame::classic(
+            0,
+            0,
+            cannet_core::CanId::standard(0x100).unwrap(),
+            cannet_core::Direction::Tx,
+            vec![1],
+        )
+        .unwrap();
+        assert_eq!(t.try_transmit("if0", &frame), Err(TransmitRefused::Closed),);
+        assert_eq!(
+            TransmitRefused::Closed.to_string(),
+            SessionClosed.to_string(),
+        );
     }
 
     #[test]

@@ -355,24 +355,28 @@ pub fn list_project_caches(app: tauri::AppHandle) -> Vec<ProjectCacheRow> {
 /// directory wipe — its scratch is mapped, and that path clears it in
 /// place along with the derived caches that index it. For that project
 /// Clear means "discard this session".
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// emptying a cache directory is a walk and an unlink per file, so it
+/// belongs on the blocking pool rather than on the IPC thread every
+/// other command — the UI heartbeat included — is queued behind
+/// (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn clear_project_cache(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, crate::app_state::AppState>,
-    root: String,
-) -> Result<(), String> {
-    let config = crate::persisted_json::config_dir(&app)?;
+pub async fn clear_project_cache(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    crate::sampling::off_async_workers(move || clear_project_cache_blocking(&app, root)).await
+}
+
+fn clear_project_cache_blocking(app: &tauri::AppHandle, root: String) -> Result<(), String> {
+    let config = crate::persisted_json::config_dir(app)?;
     let root = PathBuf::from(root);
-    if root == active_root(&app) {
-        crate::capture::clear_trace_store(app.clone(), state);
-        crate::sys_info!(&app, "project", "cleared the open project's data cache");
+    if root == active_root(app) {
+        crate::capture::clear_trace_store_now(app, &app.state::<crate::app_state::AppState>());
+        crate::sys_info!(app, "project", "cleared the open project's data cache");
         return Ok(());
     }
     let entry = clear_cache(&config, &root).inspect_err(|msg| {
-        crate::sys_warn!(&app, "project", "{msg}");
+        crate::sys_warn!(app, "project", "{msg}");
     })?;
-    crate::sys_info!(&app, "project", "cleared the data cache for {}", entry.root);
+    crate::sys_info!(app, "project", "cleared the data cache for {}", entry.root);
     Ok(())
 }
 
@@ -383,18 +387,25 @@ pub fn clear_project_cache(
 ///
 /// Refused for the active project, whose store is mapped: Clear is what
 /// that project takes.
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers)
+/// for the same reason as [`clear_project_cache`]: the removal walks a
+/// directory whose size is the user's capture history, and the observed
+/// freeze was this command holding the IPC thread for 6.3 s (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn delete_project_cache(app: tauri::AppHandle, root: String) -> Result<(), String> {
-    let config = crate::persisted_json::config_dir(&app)?;
+pub async fn delete_project_cache(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    crate::sampling::off_async_workers(move || delete_project_cache_blocking(&app, root)).await
+}
+
+fn delete_project_cache_blocking(app: &tauri::AppHandle, root: String) -> Result<(), String> {
+    let config = crate::persisted_json::config_dir(app)?;
     let root = PathBuf::from(root);
-    if root == active_root(&app) {
+    if root == active_root(app) {
         return Err("the open project's cache directory is in use; clear it instead".into());
     }
     let entry = delete_cache(&config, &root).inspect_err(|msg| {
-        crate::sys_warn!(&app, "project", "{msg}");
+        crate::sys_warn!(app, "project", "{msg}");
     })?;
-    crate::sys_info!(&app, "project", "removed the data cache for {}", entry.root);
+    crate::sys_info!(app, "project", "removed the data cache for {}", entry.root);
     Ok(())
 }
 
@@ -412,14 +423,17 @@ fn active_root(app: &tauri::AppHandle) -> PathBuf {
 /// Every cache directory and every registry entry stays — including a
 /// missing project's, whose row keeps its place at zero bytes so that
 /// Clear means the same thing on every row.
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// this is [`clear_project_cache`]'s walk once per registered project
+/// (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn clear_all_project_caches(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, crate::app_state::AppState>,
-) -> Result<(), String> {
-    let config = crate::persisted_json::config_dir(&app)?;
-    let active = active_root(&app);
+pub async fn clear_all_project_caches(app: tauri::AppHandle) -> Result<(), String> {
+    crate::sampling::off_async_workers(move || clear_all_project_caches_blocking(&app)).await
+}
+
+fn clear_all_project_caches_blocking(app: &tauri::AppHandle) -> Result<(), String> {
+    let config = crate::persisted_json::config_dir(app)?;
+    let active = active_root(app);
     let cleared = clear_caches_except(&config, &active);
     // The open project through the live-store path: its scratch is
     // mapped, so it is cleared in place rather than unlinked.
@@ -428,12 +442,12 @@ pub fn clear_all_project_caches(
         .iter()
         .any(|e| e.root_path() == active)
     {
-        crate::capture::clear_trace_store(app.clone(), state);
+        crate::capture::clear_trace_store_now(app, &app.state::<crate::app_state::AppState>());
     }
     cleared.inspect_err(|msg| {
-        crate::sys_warn!(&app, "project", "{msg}");
+        crate::sys_warn!(app, "project", "{msg}");
     })?;
-    crate::sys_info!(&app, "project", "cleared every project's data cache");
+    crate::sys_info!(app, "project", "cleared every project's data cache");
     Ok(())
 }
 
@@ -447,6 +461,119 @@ mod tests {
         std::fs::create_dir_all(root.join(crate::project_dir::WORKSPACE_DIR)).unwrap();
         std::fs::write(root.join("p.cannet_prj"), "{}").unwrap();
         crate::project_dir::resolve(Some(&root.join("p.cannet_prj")), &tmp.join("cache-root"))
+    }
+
+    /// A cache directory with `files` small files in it, spread over a
+    /// handful of subdirectories the way a real one is (raw segments,
+    /// `signals/`, `filter/`).
+    ///
+    /// **The count is the cost, not the byte total.** What a delete pays
+    /// for is the directory walk and one unlink per entry; a cache that
+    /// is gigabytes because a few segment files are large removes faster
+    /// than one that is megabytes across tens of thousands of pyramid
+    /// levels. So the fixture is many tiny files, which reproduces the
+    /// freeze without writing the gigabytes.
+    fn cache_with_many_files(cache: &Path, files: usize) {
+        let subdirs = ["", "signals", "filter", "signals/parked"];
+        for sub in subdirs {
+            std::fs::create_dir_all(cache.join(sub)).unwrap();
+        }
+        for i in 0..files {
+            let sub = subdirs[i % subdirs.len()];
+            std::fs::write(cache.join(sub).join(format!("seg.{i:06}")), b"x").unwrap();
+        }
+    }
+
+    /// The heartbeat's cadence in the test below, fast enough that a
+    /// stall of even a fraction of the removal shows up as a missing
+    /// beat.
+    const BEAT: std::time::Duration = std::time::Duration::from_millis(5);
+
+    #[test]
+    fn deleting_a_large_project_cache_never_stops_the_ui_heartbeat() {
+        // Exit criterion: the observed freeze (2026-09-22, 6.3 s with no
+        // UI heartbeat, then "removed the data cache for …") must not be
+        // reproducible. The mechanism was the command being synchronous:
+        // a synchronous Tauri command runs on the IPC thread, and
+        // `report_js_heap` — the heartbeat — is a synchronous command
+        // too, so it could not land until the removal returned.
+        //
+        // This thread stands in for the IPC thread, and dispatches the
+        // removal exactly as Tauri dispatches `delete_project_cache`:
+        // the command is `async`, so its future is spawned on the
+        // runtime and the thread goes straight back to serving. The
+        // heartbeat is what this thread then keeps doing. A regression to
+        // a synchronous body cannot even be written this way — it would
+        // have to run here, and no beat could land during it.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let dir = project_dir(tmp.path(), "big");
+        record(&config, &dir, None, 1_700);
+        cache_with_many_files(dir.cache_dir(), 4_000);
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let root = dir.root().to_path_buf();
+        let config_for_job = config.clone();
+        let started = std::time::Instant::now();
+        // The removal marks when it actually begins and ends, so the
+        // beats below are judged against the removal itself rather than
+        // against how promptly the runtime picked the job up.
+        let (mark, marks) = std::sync::mpsc::channel::<std::time::Duration>();
+        let at_start = mark.clone();
+        let job = rt.spawn(crate::sampling::off_async_workers(move || {
+            at_start.send(started.elapsed()).unwrap();
+            let outcome = delete_cache(&config_for_job, &root);
+            mark.send(started.elapsed()).unwrap();
+            outcome
+        }));
+
+        let began = marks.recv().unwrap();
+        let mut beats = vec![began];
+        let ended = loop {
+            match marks.recv_timeout(BEAT) {
+                Ok(ended) => break ended,
+                Err(_) => beats.push(started.elapsed()),
+            }
+        };
+        beats.push(ended);
+        rt.block_on(job).unwrap().unwrap();
+
+        // The removal really happened, and really took long enough for a
+        // stall to have been visible. The guard is expressed in beats,
+        // not wall-clock: it only needs the removal to span a handful of
+        // them for the assertions below to say anything, and wall-clock
+        // varies by runner (785 ms on a Windows dev box, 74 ms on the
+        // Linux CI runner) while 4,000 unlinks cannot finish within a
+        // few beats on either.
+        assert!(!dir.cache_dir().exists(), "the cache directory is gone");
+        let took = ended.checked_sub(began).unwrap();
+        assert!(
+            took >= 4 * BEAT,
+            "the fixture removed too fast to say anything ({took:?}); \
+             grow cache_with_many_files's file count for this runner"
+        );
+        // The decisive one: on the synchronous body this is zero, because
+        // the thread the heartbeat arrives on is the thread doing the
+        // removal.
+        assert!(
+            beats.len() > 2,
+            "no UI heartbeat landed in the {took:?} the removal took: it is \
+             holding the thread the heartbeat arrives on"
+        );
+        // And the criterion as the host words it.
+        let widest = beats
+            .windows(2)
+            .map(|w| w[1].saturating_sub(w[0]))
+            .max()
+            .unwrap();
+        assert!(
+            widest < std::time::Duration::from_millis(crate::crash::UI_HEARTBEAT_STALL_MS),
+            "the heartbeat went missing for {widest:?}, which the host reports \
+             as `frontend unresponsive`"
+        );
     }
 
     #[test]
