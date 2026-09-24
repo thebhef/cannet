@@ -41,6 +41,7 @@ mod app_state;
 mod bus_health;
 mod capture;
 mod clock_status;
+mod closing;
 mod command_surface;
 mod connect_flow;
 mod connection_state;
@@ -167,9 +168,9 @@ use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
 use capture::{
-    cancel_export, cancel_import, capture_extent, clear_trace_store, clear_trace_store_now,
-    import_mdf, open_log, restore_scratch_capture, save_capture, scan_blf_channels,
-    scan_mdf_channels, signal_pyramids_rebuilding,
+    cancel_export, cancel_import, capture_extent, clear_trace_store, import_mdf, open_log,
+    restore_scratch_capture, save_capture, scan_blf_channels, scan_mdf_channels,
+    signal_pyramids_rebuilding,
 };
 #[cfg(test)]
 use capture::{
@@ -724,6 +725,7 @@ pub fn run() -> ! {
         .manage(logger::LoggerRuntime::default())
         .manage(log_files::LogFileCache::default())
         .manage(project_registry::ProjectCacheSizes::default())
+        .manage(closing::ClosingGate::default())
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -871,6 +873,7 @@ pub fn run() -> ! {
             logger::get_logger_statuses,
             log_files::list_logger_files,
             reveal::reveal_in_file_manager,
+            closing::begin_close,
         ])
         .setup(move |app| {
             // Resolve the session's project directory (ADR 0042) now that
@@ -1009,60 +1012,34 @@ pub fn run() -> ! {
     // below can be handed to the OS ourselves — `run` exits the process
     // with the event loop's own code, which is always 0 (see
     // `final_exit_code`).
-    let event_loop_code = app.run_return(move |app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { code, .. } = event {
+    let event_loop_code = app.run_return(move |app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
             if code.is_some() {
                 *exit_code_slot.lock().expect("exit code mutex poisoned") = code;
             }
-            // Hang up on every server before the process goes away, so
-            // the disconnect is something we did rather than something
-            // the server infers from a socket that stopped answering.
-            // Done host-side rather than in the window's close handler:
-            // this arm is reached by every exit route, including the
-            // ones where the webview is already gone. Bounded — see
-            // `session::disconnect_on_exit`. First, so no more frames
-            // land while the flush below runs.
-            session::disconnect_on_exit(app_handle);
-            // Then finish whatever a project logger has open. A logger
-            // streams straight into its destination, so a file the
-            // process walks away from is left unfinalized — readable
-            // only through the reader's recovery path. Stopping waits
-            // for the writer, so the capture on disk is complete.
-            logger::stop_all(app_handle);
-            // Opt-in "clear scratch cache on exit" (Settings, ADR 0002
-            // DS-7): wipe the session buffer so the prior session isn't
-            // reloaded next launch. This is the same reset the Clear
-            // command runs — it clears the live, still-mapped scratch in
-            // place (dropping segments + manifest + identity/derived), so
-            // no unmap dance is needed. Otherwise harden the scratch with
-            // one synchronous flush, since the periodic flusher only
-            // queues async writeback (ADR 0002 DS-2) and a power loss
-            // right after quit could lose the trailing window.
-            if settings::get_settings(app_handle.clone()).clear_scratch_on_exit {
-                clear_trace_store_now(app_handle, &app_handle.state());
-            } else {
-                let state = app_handle.state::<AppState>();
-                if let Err(e) = state.trace_store.flush() {
-                    tracing::warn!(error = %e, "shutdown trace flush failed");
-                }
-                // Harden the signal pyramids the same way, and record what
-                // they are valid against — this is what the *next* launch
-                // reads instead of re-decoding the whole history (ADR
-                // 0047). After the trace flush, so the low-water mark in
-                // the key is the one the raw store just persisted. The
-                // flusher hardens each segment as it seals, so what is
-                // left to write here is one tail segment per level.
-                emitters::persist_pyramids(&state, signal_cache::Harden::All);
+            // Every exit route lands here — `AppHandle::exit(code)`, a
+            // destroyed window, the OS — and none may leave before the
+            // shutdown sequence has written the capture and handed the
+            // project cache back (ADR 0002 DS-7). So hold the exit and
+            // start the sequence (a no-op if it is already running); it
+            // calls `exit` again when it is done, and that request goes
+            // through. The sequence runs on its own thread, never here:
+            // the event loop must keep the window painted and its events
+            // delivered while it runs (ADR 0049).
+            if !app_handle.state::<closing::ClosingGate>().is_finished() {
+                api.prevent_exit();
+                closing::begin_shutdown(app_handle, code);
             }
-            // Last, once every write into the cache is done: hand the
-            // directory back (ADR 0002 DS-7), so a relaunch that arrives
-            // the moment this process lets go is not refused a cache
-            // nobody is using any more. The OS would release it when the
-            // process dies, but that is after `std::process::exit` below
-            // — and the flush above is what makes the difference
-            // measurable.
-            app_handle.state::<AppState>().scratch_lock().take();
         }
+        // A close request while the sequence runs changes nothing: the
+        // window stays up, showing the closing state, until the sequence
+        // exits the app. (Before it starts, the frontend's close handler
+        // decides — Tauri holds the close open for it.)
+        tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if app_handle.state::<closing::ClosingGate>().is_started() => api.prevent_close(),
+        _ => {}
     });
     let requested = *requested_exit_code
         .lock()

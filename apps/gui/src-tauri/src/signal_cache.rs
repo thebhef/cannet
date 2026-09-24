@@ -2807,6 +2807,22 @@ impl SignalCacheStore {
         dbcs: &DecodeModel<'_>,
         harden: Harden,
     ) -> bool {
+        self.persist_reporting(validity, dbcs, harden, &mut |_, _| {})
+    }
+
+    /// [`Self::persist`], calling `progress(done, total)` as each held
+    /// signal's level pages are flushed — `total` is the number of signals
+    /// held, `done` how many are through. The flush is the long part of an
+    /// exit-time persist, so this is what lets the closing window say how
+    /// far along it is (ADR 0002 DS-7). Nothing is reported when there is
+    /// nothing to write.
+    pub fn persist_reporting(
+        &self,
+        validity: &PyramidValidity,
+        dbcs: &DecodeModel<'_>,
+        harden: Harden,
+        progress: &mut dyn FnMut(usize, usize),
+    ) -> bool {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         if !caches.dirty || caches.staged.is_some() {
             return false;
@@ -2820,8 +2836,10 @@ impl SignalCacheStore {
             Harden::Sealed { budget } => budget,
             Harden::All => usize::MAX,
         };
-        for cache in caches.by_key.values_mut() {
+        let total = caches.by_key.len();
+        for (done, cache) in caches.by_key.values_mut().enumerate() {
             cache.flush_levels(harden, &mut budget);
+            progress(done + 1, total);
         }
         // **A math series is session-scoped.** Its fill carries state
         // the samples do not — a filter's running output, an
@@ -8952,6 +8970,34 @@ mod tests {
         (0..n)
             .map(|i| (i * S, f64::from((i % 50) as u16)))
             .collect()
+    }
+
+    #[test]
+    fn a_reporting_persist_counts_every_held_signal_through() {
+        // The closing window's signal-cache figure is this count, so it
+        // must reach `total` and never run backwards.
+        let root = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(root.path());
+        cache.fill_file_backed(&file_info(7, "Speed"), &ramp(10));
+        cache.fill_file_backed(&file_info(7, "Torque"), &ramp(10));
+        let mut seen = Vec::new();
+        assert!(cache.persist_reporting(
+            &validity("capture-a", 0),
+            &no_dbcs(),
+            Harden::All,
+            &mut |done, total| seen.push((done, total)),
+        ));
+        assert_eq!(seen, vec![(1, 2), (2, 2)]);
+
+        // Nothing moved since: no write, and so nothing to report.
+        seen.clear();
+        assert!(!cache.persist_reporting(
+            &validity("capture-a", 0),
+            &no_dbcs(),
+            Harden::All,
+            &mut |done, total| seen.push((done, total)),
+        ));
+        assert!(seen.is_empty());
     }
 
     #[test]

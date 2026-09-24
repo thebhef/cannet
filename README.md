@@ -1573,9 +1573,12 @@ own cache space; nothing about that is a different mode.
 project's cache exclusively, so opening the same project in a second
 instance is refused rather than letting two sessions write one set of
 capture files. The message names the process holding it. The usual
-cause is a relaunch that beat the previous instance out the door: on a
-very large capture the window closes first and the host spends seconds
-more finishing the cache, so try again once it is gone.
+cause is a relaunch that beat the previous instance out the door. On a
+very large capture, closing takes a while — the capture cache is written
+out before cannet lets go of it — so the window **stays up until the
+cache is written**, reading **Closing — writing the capture cache…**
+with the step it is on and how far along it is, and disappears only
+when the project is free to open again.
 
 Because it lives outside the process, the capture **survives a quit or
 crash**: on the next launch the prior session reloads as a *stopped*
