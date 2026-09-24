@@ -378,4 +378,59 @@ describe("the project cache list following the session's root", () => {
 
     expect(await screen.findByText("64.0 MB")).toBeInTheDocument();
   });
+
+  // The settings view's own `.settings-list` already restores its
+  // scroll offset across a hide and show (dockview detaches a hidden
+  // panel's element, and a detached box keeps no scroll offset). This
+  // row space had no equivalent and reopened at the top;
+  // `useScrollRestore` fixes both from one shared mechanism.
+  it("puts the row space's own scroll offset back when the settings view comes back into view", async () => {
+    rows = [row({ root: "/a" }), row({ root: "/b" }), row({ root: "/c" })];
+    const { rerender } = render(
+      <SettingsShownContext.Provider value={1}>
+        <ProjectCachesList />
+      </SettingsShownContext.Provider>,
+    );
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Delete" })).toHaveLength(3));
+    const grid = document.querySelector(".project-caches-grid") as HTMLElement;
+
+    grid.scrollTop = 40;
+    fireEvent.scroll(grid);
+
+    // dockview removes the hidden panel's element from the document; a
+    // reattached box has no scroll offset of its own until something
+    // puts it back. Simulated here since jsdom does not detach anything
+    // on its own between renders.
+    grid.scrollTop = 0;
+
+    rerender(
+      <SettingsShownContext.Provider value={2}>
+        <ProjectCachesList />
+      </SettingsShownContext.Provider>,
+    );
+
+    expect(grid.scrollTop).toBe(40);
+  });
+});
+
+describe("the gridview", () => {
+  // The list is a gridview (ADR 0044) of flat leaf rows, one per
+  // project directory — no branches, so the row cursor is a plain walk.
+  it("walks the rows with the row cursor", async () => {
+    rows = [row({ root: "/a" }), row({ root: "/b" }), row({ root: "/c" })];
+    await renderList();
+    const container = document.querySelector(".project-caches-grid") as HTMLElement;
+    const cursorId = () => container.getAttribute("aria-activedescendant");
+
+    fireEvent.keyDown(container, { key: "ArrowDown" });
+    const first = screen.getByText("/a").closest(".project-cache-row") as HTMLElement;
+    expect(cursorId()).toBe(first.id);
+
+    fireEvent.keyDown(container, { key: "ArrowDown" });
+    const second = screen.getByText("/b").closest(".project-cache-row") as HTMLElement;
+    expect(cursorId()).toBe(second.id);
+
+    fireEvent.keyDown(container, { key: "ArrowUp" });
+    expect(cursorId()).toBe(first.id);
+  });
 });
