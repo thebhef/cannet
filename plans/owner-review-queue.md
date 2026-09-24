@@ -7,6 +7,12 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- Task 158 phase 4: the new `bus_error_episode_gap_s` setting went in
+  the **Trace** settings group, since no settings group covers bus
+  health or the Events panel. It has a maximum of 3600 s, enforced on
+  ingress and stated in the help text. See the task file's phase 4
+  status log.
+
 - **158: the bus-health panel's error rate keeps a 1 s burst gap.**
   The coalescer and its run list are gone, but "errors per second over
   the latest burst" needs a burst boundary, so `RATE_BURST_GAP_NS`
@@ -184,6 +190,11 @@ keeps the queue's copy). This file shrinks every time it is walked.
   rediscovering it. Detail: 0155 § Status log, 2026-09-23 (phase 2).
 
 ## 4. Finished tasks awaiting acceptance
+
+- **158 — bus-error markers page** (4 phases, `task158-error-series`
+  → `task158-plot-markers` → `task158-events-section` →
+  `task158-episodes`): 8/8 exit criteria met. Two § 1 items (the
+  rate's burst gap; the episode-gap setting's placement and maximum).
 
 - **156 — Restore From Cache Does Not Crash on a Mapped Segment.**
   Three phases on `task156-restore-crash-investigation` →

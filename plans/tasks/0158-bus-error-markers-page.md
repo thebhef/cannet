@@ -224,6 +224,14 @@ Settled by the overseer, open to reversal:
   controller's bus state (active / passive / bus-off), and the BLF
   reader flattens the error code. Surfacing it is a wire, spill and
   BLF-reader change — a task of its own, not this one.
+- 2026-09-24: **One gap per bus is held at a time.** Two views asking
+  at different gaps would rebuild each other's list on every serve.
+  Today only the Events panel asks, and it always uses the setting.
+- 2026-09-24: **An episode row's first time comes from the host's
+  fold.** A front-trim keeps an episode it cuts through whole, so its
+  first time and count can refer to errors whose level-0 samples are
+  gone. The row stays true; only a link to a first error there would
+  not resolve (links target the last error).
 
 ## Status log
 
@@ -524,20 +532,104 @@ Settled by the overseer, open to reversal:
     is the closest faithful reading that stays exact (no interpolated
     offset→time guessing) and bounded (CLAUDE.md's paged-view rule).
     Flagged for the owner below rather than landed silently.
+- 2026-09-24: **Phase 4 (episodes at a minimum window) landed** on
+  `task158-episodes` (off `task158-events-section`), one commit
+  `c690af82`.
+  - **Setting.** `bus_error_episode_gap_s`: default 5, `min: Some(1)` on
+    the descriptor (`MIN_BUS_ERROR_EPISODE_GAP_S`), max 3600
+    (`MAX_BUS_ERROR_EPISODE_GAP_S`) enforced in `validate` and stated in
+    the help text. `Control::Int` has no max field; this follows the
+    `float_mantissa_decimals` precedent. Surface **Trace**, next to
+    `trace_show_events`: no settings row describes bus health, and Trace
+    is the only surface with an events row. Kind Behaviour,
+    UserOverridable.
+  - **Where the list lives.** `SignalCache.episodes: Option<EpisodeList>`
+    sits on the bus's error-series cache in `signal_cache.rs`, beside the
+    level 0 it folds. The pure fold and paging are in the new
+    `bus_error_episodes.rs`. The list is **held in memory, not
+    persisted**. It is bounded by capture time ÷ gap, and rebuilding it
+    is a sequential read of 16-byte level-0 samples with no decoding.
+    Persisting it would add a manifest field and a validity rule for a
+    derivation that already runs in about 6 ms per 30k errors. It is
+    dropped with the cache on a clear, trimmed on a front-trim (episodes
+    that ended before the mark), and started afresh when a serve asks
+    at a different gap. The cache holds one gap at a time.
+  - **Derivation.** The cursor is the next unfolded level-0 slot
+    (absolute, so a trim doesn't move it). Each step folds at most
+    `EPISODE_CHUNK_SAMPLES` = 16,384 samples per bus under one lock hold
+    (ADR 0048). The serve catches the series up first, then folds within
+    the same `ServeLimit` budget, at least one step per serve.
+    `complete` is true only when the series is caught up and every list
+    has reached level 0's end (ADR 0049).
+  - **Serve.** `bus_error_episodes(buses, gapSeconds, offset, limit) ->
+    { count, start, episodes: [{bus, firstT, lastT, count, span, rate,
+    lastOrdinal}], complete }`. Newest first by first time, ties to the
+    lower bus index. The page start is found by rank (binary search per
+    bus), so a page costs `O(buses × log² n + limit)` at any offset. The
+    gap is clamped to the setting's bounds in the command.
+  - **Frontend.** `useBusErrorEvents(buses, gap)` is a thin adapter over
+    `useWindowedQuery` (offset paging, `refresh: "window"`,
+    descriptor `epoch:buses:gap`). A partial answer bumps
+    `extentSignal`, so a stopped capture that is still rebuilding keeps
+    being asked. `BusErrorEventsSection` is a fixed-height (8 × 22 px)
+    virtualized row space on `traceViewport.ts`'s geometry. Rows show
+    bus, first time, count, span and rate (the rate is served by the
+    host). The id is `bus-error:{bus}:{lastOrdinal}`. The header reads
+    "episodes at N s". The growing budget, `BUS_ERROR_*_BUDGET`,
+    `growBudget` and the whole-capture window are removed.
+    `plotEvents.ts`'s `busErrorEpisodes`/`BusErrorEpisode` were renamed
+    `busErrorSpans`/`BusErrorSpan`, because the per-marker delta is not
+    an episode in the new sense (CONTEXT.md).
+  - **Tests.** Host: `bus_error_episodes` ×4 (gap rule incl. exactly-at-gap,
+    just-under, trim, offset paging vs a whole sort over every offset);
+    `signal_cache` ×8: bursts of known shape on two buses (counts,
+    spans, ordinals, the id is a real sample), incremental in three
+    appends equal to whole, gap change re-derives (100 ↔ 2 episodes),
+    offset paging in pages of 7 equal to one page, 10,000 episodes at 1 s
+    all present (count ≤ span ÷ gap + 1), restore rebuilds partially
+    and then equals the original, clear, front-trim. `settings`: gap
+    bounds. cannet-gui 1401 passed / 7 ignored.
+    DOM/hook: `EventsPanel.dom.test.tsx` bus-error section ×7 and
+    `useBusErrorEvents.test.ts` ×5 (offset paging over 10,000, fields,
+    ids by last ordinal, newest first, scroll to the oldest single
+    episode, gap change refetches from offset 0, quiet partial answer
+    that keeps asking). The phase 3 tests pinned the growing budget and
+    were replaced. No wait sits on a debounce path; the default
+    `waitFor` ceiling applies.
+  - **Red then green.**
+    - Frontend: the new tests run against phase 3's section and hook
+      failed 11 of 12. The one that passed, "no buses asks nothing", is
+      a regression guard.
+    - Host falsification (E1): with `<` changed to `<=` in the gap
+      rule, 2 tests failed (the pure gap rule and store bursts).
+    - E2: with the gap-change reset disabled, `a_gap_change_re_derives`
+      failed.
+    - E3: with the cursor skipping one slot per serve, 4 tests failed:
+      incremental, paging, 10k, front-trim.
+    - E3 as first written (cursor left at the chunk start) hung
+      `all_episodes`, because the list never completes. The test
+      binary was killed. That mutation is caught, but only as a hang.
+  - **Cost on the 10,000-episode fixture** (30,000 errors, one bus, debug
+    build, derivation plus a first page of 100): 6.2 / 6.4 / 6.3 ms
+    over three runs.
+  - Docs: README Events passage and a settings bullet; ADR 0035's
+    2026-09-23 amendment now says "the plot has no gap rule" and has a
+    bullet for list-at-a-gap (owner ruling 2026-09-24); CONTEXT.md adds
+    **Bus-error episode**.
+  - Release host: `target/release/cannet-gui.exe` (`tauri build
+    --no-bundle`). No perf reading was taken.
 
 ## Exit criteria verdicts (2026-09-24, final)
 
 | # | Criterion | Verdict |
 | --- | --- | --- |
-| 1 | A capture with >256 bus-error episodes shows every episode on the plot at the zoom where it resolves; nothing is evicted | **Met** (phase 2) — `PlotPanel.dom.test.tsx`'s 50,000-error suite; host's `ten_thousand_episodes_each_resolve_on_their_own` (phase 1). Unaffected by phase 3. |
-| 2 | The series is a signal-cache pyramid: persisted, restored with the capture identity, rebuilt off the UI thread when absent, swept and capped like them — host tests | **Met** (phase 1) — 11 `signal_cache` tests listed in the phase-1 log. |
-| 3 | Any window served within the point budget at every level; consecutive points give exact count and span across three levels | **Met** (phase 1) — `fifty_thousand_errors_serve_within_budget_with_exact_deltas_at_every_level`. |
-| 4 | `MAX_RUNS`, the coalescer and the whole-list derived-note broadcast gone; authored notes broadcast as before; bus-health totals unchanged | **Met** (phase 1) — removed with tests; reconfirmed in phase 3 by inspection (no code path anywhere reintroduces a merge of derived events into any store) and by `cargo test --workspace` staying green (1388 passed / 7 ignored in `cannet-gui`, 0 failed workspace-wide). |
-| 5 | Plot markers, the Events panel's paged bus-error section and the trace behave per § Rulings — DOM tests | **Met (full, as of phase 3)** — plot markers (phase 2); the Events panel's paged section (this phase, `BusErrorEventsSection.dom.test.tsx`-equivalent coverage inside `EventsPanel.dom.test.tsx`, plus `useBusErrorEvents.test.ts`); the trace carries no derived bus-error rows (`TracePanel.dom.test.tsx`'s two rewritten tests, plus structural confirmation — `NotesStore` holds authored events only and `trace_query.rs` anchors whatever list it's handed) while error frames still show and collapse (`TracePanel error-frame collapse`, pre-existing, unedited, still green). |
-| 6 | ADR 0035 and ADR 0002 describe the series family; README matches | **Met (full, as of phase 3)** — ADRs amended in phase 1; README's Events panel passage now describes the two-section shape and drops the stale "starts hidden" claim; the bus-health and Collapse Errors passages were already accurate (no change needed there). |
-| 7 | Tests cover 1–5 | **Met (full)** — host tests (phase 1) cover 2–4 and the host half of 1 and 3; `PlotPanel.dom.test.tsx` (phase 2) covers the plot half of 1 and 5; `EventsPanel.dom.test.tsx` / `useBusErrorEvents.test.ts` / `TracePanel.dom.test.tsx` (phase 3) cover the Events-panel and trace halves of 5. |
+| 1 | >256 episodes all on the plot at the zoom where they resolve; nothing evicted | **Met** (phase 2): `PlotPanel.dom.test.tsx` 50,000-error suite; `ten_thousand_episodes_each_resolve_on_their_own` (phase 1). Unaffected by phase 4. |
+| 2 | Series is a signal-cache pyramid: persisted, restored, rebuilt off the UI thread, swept, capped | **Met** (phase 1): the 11 `signal_cache` tests. |
+| 3 | Any window within budget at every level; exact deltas across three levels | **Met** (phase 1): `fifty_thousand_errors_serve_within_budget_with_exact_deltas_at_every_level`. |
+| 4 | `MAX_RUNS`, coalescer, whole-list derived broadcast gone; authored notes as before; totals unchanged | **Met** (phase 1). Workspace tests are green (2201 passed, 0 failed). |
+| 5 | Plot markers, the Events panel's paged section and the trace behave per § Rulings (DOM tests) | **Met**. Plot: phase 2. Trace: phase 3. Events half: phase 4, which lists episodes paged by offset per the 2026-09-24 ruling (`EventsPanel.dom.test.tsx` "EventsPanel bus-error section", `useBusErrorEvents.test.ts`). |
+| 6 | ADR 0035 and ADR 0002 describe the series family; README matches | **Met**. ADR 0035's amendment now also covers the list at a gap; README's Events passage and settings list are updated in phase 4. |
+| 7 | Tests cover 1–5 and 8 | **Met**. Host tests: 1–4 and 8 (phases 1 and 4). DOM tests: 1, 5 and 8 (phases 2–4). |
+| 8 | Events lists episodes at the configured gap (default 5 s, min 1 s), pages by offset over the whole capture down to single episodes, re-derives on a setting change; count bounded by capture time ÷ gap (host and DOM tests) | **Met** (phase 4). Host: `episodes_group_each_bus_at_the_gap_…`, `a_gap_change_re_derives_the_episodes`, `paging_episodes_by_offset_is_stable_and_newest_first`, `ten_thousand_episodes_at_a_one_second_gap_are_all_listed` (asserts count ≤ span ÷ gap + 1), `a_restored_series_rebuilds_its_episodes_off_the_serve`, `a_bus_error_episode_gap_outside_its_bounds_is_refused_and_reported`. DOM: pages 10,000 by offset, scrolls to the oldest single episode, re-derives on the setting change. |
 
-2026-09-24: the owner's ruling on the Events section's grain reopens the task — phase 4 opened; criterion 5's Events half and 8 pending.
-- 2026-09-24 — owner ruled on the Events section (episodes down to a
-  configurable minimum window); phase 4 opened; failure types recorded
-  as unavailable.
+Task complete 2026-09-24: 8/8 met. Awaiting owner acceptance (review queue § 4).
