@@ -156,6 +156,20 @@ repaired something broken.
   or repaired.
 - Temperatures convert as absolute readings, so °C, °F and K are handled
   correctly rather than merely scaled.
+- **New:** every unit the unit library carries is offered — 2289 units
+  over 109 dimensions, prefixed forms included — instead of a hand-typed
+  list. A database's unit string is recognised by the library's symbol,
+  singular or plural.
+- **New:** a unit you define in the settings view's Units section may be
+  a composition of one unit: `mph = mile / hour` displays `mph`,
+  converts 1:1 with `mi/h`, and a database that writes `mph` reads as it.
+- **Changed:** the Units section is a gridview grouped by dimension, in
+  a scrolling space of its own. Dimensions open collapsed except one
+  holding a unit this project maps or composes; the filter opens what it
+  matches.
+- **Changed:** a math signal's output-unit picker offers every dimension
+  its composition can mean, the composition order's first reading
+  preselected — `N · m` opens on energy with torque beneath.
 
 ## Export
 
@@ -244,6 +258,124 @@ repaired something broken.
 - **Changed:** the two Discover buttons in connection management are now
   icon buttons.
 
+## Plot
+
+- **Changed:** `Points: On` marks every sample the plot is served, with
+  no cap. There used to be a flat 500-marker limit spread evenly along
+  the visible range, and an even stride over a min/max envelope lands
+  on one leg of it — a run of dots hugging one side of a line that
+  swings through both, which read as the plot extrapolating. The dots
+  now sit on every extreme the line passes through.
+- **Fixed:** pointing at a long capture with `Points: On` no longer
+  stalls. Moving the pointer or placing a cursor used to repaint every
+  plot's series layer, and uPlot rebuilds every series' markers on every
+  repaint, so a saturated window re-rasterized thousands of markers per
+  series per pointer move. The crosshair, the cursor lines, the hover
+  markers, the event chrome and every readout now draw on an overlay
+  canvas of their own, and only a data change repaints the series.
+  Sample markers are now solid squares in the series colour, the same
+  size as the old ring, drawn as one batched path, and markers that
+  would land on the same pixels in a column draw once. A held signal
+  gets one marker per pixel column, a noisy one its min and its max,
+  and no extreme is ever left bare.
+- **Changed:** an enum lane is an ordinary series with tiles drawn over
+  it. Its markers are the same markers every other series gets, on the
+  plotted value, in an ink that reads over the tile, and they no
+  longer appear and vanish with zoom. A state held across a wide
+  window is one tile, as before.
+- **Changed:** cursor and event readouts leave the data area. Event
+  labels sit in a band above the top plot; the A and B time readouts
+  and Δt sit between the bottom plot and its time axis; the H1 and H2
+  value readouts and ΔH sit in the value gutter beside their axis. The
+  cursor lines themselves stay where they were. A panel with events
+  gives up 34 pixels of plot height for the two bands, 47 when a label
+  wraps to two lines.
+- **Changed:** an empty plot area still draws the shared time grid and
+  ticks, and takes the A and B cursors by click. A panel with no
+  signals anywhere shows the capture's span and follows live, so a
+  fresh panel is a timeline rather than a blank.
+- **Changed:** the plot toolbar carries an **Events** chip that reveals
+  the event-kind checklist — which kinds show as markers, bus errors
+  included. The copy that lived only in the toolbar's right-click menu
+  is gone, so there is one control. Each plot keeps its own choice.
+- **Fixed:** an empty area beside a populated one no longer blanks
+  every event marker on the panel.
+- **New:** a colour pick in the Signals panel or on a plot series
+  swatch applies to every selected row, in one change; a right-click on
+  an unselected row makes it the selection first.
+
+## Settings view
+
+- **New:** Storage › Project caches names its projects. Each row leads
+  with the project name, the directory path beneath it, a chip saying
+  whether the directory is one you made (`project dir`) or one cannet
+  chose for a loose project file (`auto-located`, with the reason in its
+  tooltip), and the two-stage trash control every other removal uses.
+  Cache sizes are measured in the background and read `…` until they
+  land; the list follows a Save As at once.
+- **Fixed:** the settings view re-reads its file, its overrides and the
+  caches list whenever it is shown again, and keeps its scroll position
+  across a switch to another panel and back — its inner lists included.
+- **Changed:** the project caches list is a gridview.
+- **Changed:** the Servers rows live here, as **Connection › Servers**,
+  rather than in a panel of their own. The command palette's *Servers*
+  entry and *Manage servers…* open the settings view at that section.
+  The *Show servers* command is retired.
+
+## Trace panel
+
+- **New:** a filter box in the toolbar narrows the rows in both modes
+  as you type. It searches the bus name, the message name, its
+  transmitting ECU, its id in hex and decimal, the signal names, and
+  the label of a decoded signal's current enum value; event rows are
+  matched on their text. Fuzzy, the way the Database panel's search
+  is, and ranked the same way, so `pkstat` finds `PackStatus`.
+  Clearing the box restores the full view.
+- The filter composes with the panel's sources, show-events and
+  collapse-error-frames — it narrows further, never replaces. The
+  chronological trace stays paged end to end while a query is active:
+  the host does the matching over the whole capture, and the panel
+  still shows one page plus the live tail. Ctrl/Cmd+F focuses the
+  box. The text is remembered with the layout and never dirties the
+  project.
+- **New:** a signal name or an enum value is a match in its own right.
+  Typing a fault enum's label shows exactly the frames whose decoded
+  signal carries that value across the whole history, with each row
+  opened to the matching signal and weaker message-level matches
+  hidden; in by-id mode the value is matched against the signal's whole
+  value list. A query whose best match is a message behaves as before.
+- **Changed:** a signal name is no longer part of its message's
+  searchable text, so a single fuzzy string spanning a message name and
+  a signal name no longer matches.
+
+## Responsiveness
+
+- **Fixed:** deleting or clearing a project cache of several GB,
+  opening or closing a project, Save As across volumes, loading a
+  database, changing settings, or attaching a local bus no longer
+  freezes the window while it runs. Heavy host work leaves the UI
+  thread; a test guards every synchronous command against doing so.
+- **Fixed:** the logger's file list appears at once while the files'
+  headers are read in the background, one read per file however often
+  the list refreshes, and polled panels keep one request in flight.
+- **Changed:** a manual transmit onto a full outgoing queue is refused
+  with the reason instead of waiting for room.
+
+## Connecting
+
+- **New:** a bus can be set to **no interface** on purpose. Picking
+  "— no interface —" in the project panel now records that choice
+  with the project instead of deleting the binding, and a project with
+  such a bus connects: the bound buses go live, the unbound one reads
+  "unbound" in the connection chip's tooltip, the project graph and
+  the bus-health panel, and anything transmitted at it is marked
+  undelivered. A bus that simply has no binding is still refused, as
+  before — that is a bus nobody has wired up, not one set aside.
+- **New:** the Servers section of the settings view greys out a server that does not speak
+  this build's protocol, with the reason, before you can connect to
+  it; and a connection to one is refused with the same sentence
+  instead of retrying forever. See *For application developers*.
+
 ## Small fixes
 
 - **Fixed:** which cursor mode a plot toolbar is in is readable again. A
@@ -261,9 +393,25 @@ repaired something broken.
   panel.
 - **Fixed:** the Database panel's search box takes a click anywhere in the
   box it draws, not only over the first few characters.
+- **Fixed:** on Windows, the mouse pointer no longer vanishes after typing
+  in the command palette — most visibly when Enter raised the Open
+  dialog and the pointer stayed hidden over the whole window. WebView2
+  runtime 152 began honouring the Windows "Hide pointer while typing"
+  setting and keeps the pointer hidden until the webview itself sees a
+  mouse move; cannet never wanted the pointer hidden, so the window now
+  turns that feature off.
+- **Fixed:** the Database and RBS trees collapse and expand normally
+  while a filter string is present. Typing a query still opens the
+  path to every match; from then on the chevron and the arrow keys
+  work on any row, so a bus, database or ECU you are not interested in
+  folds away and stays folded until you open it or clear the filter.
 
 ## For application developers
 
+- **New:** `cannet-gui --show-points <auto|off|on>` forces every plot
+  panel's show-points mode for one run without writing it back to the
+  project, so a performance reading of `Points: On` can be taken against
+  the unchanged baseline project.
 - **New:** a Python client, `clients/cannet-python-client`, registers
   cannet as a python-can interface. An application opens a remote bus with
   `can.Bus(interface="cannet", server=..., channel=...)` — no
@@ -277,3 +425,30 @@ repaired something broken.
 - Delivered frame timestamps are corrected for the peer's clock, and
   `can.detect_available_configs()` lists the interfaces every trusted
   server currently offers.
+- **New:** the wire protocol states its version, and every client
+  checks it. The protobuf package name — `cannet.v1`, already in every
+  gRPC method path — is the protocol major. Inside a major only
+  additive changes land; a breaking change is a new package served
+  beside the old one for a deprecation window, so an existing client
+  keeps working until it migrates. The rule is written in the header
+  of `cannet.proto`.
+- **New:** every server answers `ServerInfo` — the packages it serves,
+  its build version and its instance name — in a small unversioned
+  package of its own, without a token, so a client whose major the
+  server does not serve is told "serves cannet.v2; this client speaks
+  cannet.v1" rather than an opaque `UNIMPLEMENTED`, and before it is
+  asked for a credential. Servers also advertise the packages they
+  serve over mDNS as `proto=`.
+- **New:** a console script, **`cannet-client`**, does the trust
+  workflow without the GUI. `list` browses the network and merges it
+  with the trust store — one row per server with its trust state,
+  whether it is answering, and the protocol it serves; `connect`
+  walks the same paths the GUI's Servers section does (loopback in the
+  clear, a pinned server verified against its stored fingerprint, a
+  first contact shown for you to compare and confirm, an explicit
+  question before connecting unprotected) and ends by printing the
+  working `can.Bus(...)` line; `forget` removes a server's entry. It
+  writes the same `servers.json` the GUI owns, so accepting once
+  serves every client on the machine.
+- CI now refuses a non-additive change inside `cannet.v1` and a
+  checked-in Python stub that no longer matches the `.proto`.

@@ -1079,3 +1079,9 @@ next planning pass.
   dropped as spec'd (owner, 2026-09-07: YAGNI). The library's
   Quantity-multiplication machinery makes it cheap if a real need
   appears; the prototype round recorded the shape.
+
+- **Sweep the repo for upstreamable patches to third-party
+  dependencies.** Owner, 2026-09-23: out of scope today, and cannet
+  does not modify or petition its dependencies on its own — the first
+  candidate is python-can's Kvaser 32-bit receive-timer wrap, whose
+  issue draft sits in task 155's status log.

@@ -7,29 +7,90 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-- **The ruff locks aligned DOWN to 0.15.16**, not up to 0.16.x: ruff
-  0.16 *changed* its default rule set, and the uplift is ~200
-  mechanical fixes plus two judgment calls (50 deliberate `noqa`s it
-  would delete; 5 silent teardown paths it wants logging). Divergence
-  is gone either way. Want the 0.16 uplift — plus a `[tool.ruff.lint]
-  select` stanza pinning the rule set so defaults can't drift again —
-  as its own task? Detail: 0136 § Status log, 2026-09-16.
+- Task 158 phase 4: the new `bus_error_episode_gap_s` setting went in
+  the **Trace** settings group, since no settings group covers bus
+  health or the Events panel. It has a maximum of 3600 s, enforced on
+  ingress and stated in the help text. See the task file's phase 4
+  status log.
 
-- **`cannet-client connect` refuses a pinned server that is down**
-  rather than offering it in the clear — the task text read
-  "endpoint not speaking TLS → ask", but the GUI only asks on first
-  contact, and asking here would make "server down" a route to
-  dropping a server's protection. Mirrored the GUI; confirm or
-  reverse. Detail: 0144 § Status log, 2026-09-18.
+- **158: the bus-health panel's error rate keeps a 1 s burst gap.**
+  The coalescer and its run list are gone, but "errors per second over
+  the latest burst" needs a burst boundary, so `RATE_BURST_GAP_NS`
+  stays inside a per-bus tally with no list and no cap. Keep, or
+  redefine the rate? Detail: 0158 § Status log, phase 1.
 
-- **The Rust fzf port skips the package's diacritic folding**
-  (`normalize: true`). Reproducing it needs either a new crate — which
-  the no-new-crate ruling forbids — or ~700 lines of generated table.
-  The reachable haystack (DBC identifiers, id spellings, ECU names) is
-  ASCII; only a bus name with a diacritic would rank differently
-  between the host matcher and the frontend's event matcher. Accept
-  the boundary, or reopen the ruling? Detail: 0142 § Blockers,
-  2026-09-20.
+- **156 phase 2 — a launch refused its project cache boots in the
+  unsaved project directory**, rather than staying rooted in the held
+  one with an in-RAM store. Reason: the pyramids, filter index and
+  notes all root in that same cache and two of them are mapped files,
+  so "refuse the trace store" alone still let a second instance write
+  into a held directory. Wider than the groomed wording, which spoke
+  only of the project *open*. Detail: 0156 § Status log, 2026-09-23
+  phase 2.
+
+- **156 phase 2 — `Save As` onto a held destination cache writes the
+  project file but leaves the session (and its capture) where it
+  was**, reporting the holder on the system log rather than failing the
+  command. Detail: 0156 § Blockers / side effects, 2026-09-23 phase 2.
+
+- **151: the *Show servers* command is gone.** `panel.show.servers`
+  retired with the singleton panel; the command palette's *Servers*
+  go-to-view entry and *Manage servers…* open the settings view at the
+  Servers section instead. A user keybinding bound to the old id reads
+  as unknown in the shortcuts view and stops working, with no command
+  to rebind to. Leave it, or restore `panel.show.servers` opening the
+  section? Detail: 0151 § Status log, 2026-09-23 (phase 3).
+
+- **Units section: dimensions now open collapsed.** The settings view's
+  Units section is a gridview of dimension branches over unit rows, and
+  on open every dimension is shut except one holding a unit this
+  project maps or composes (overseer's ruling, 2026-09-22). A project
+  with no unit customizations therefore sees 109 headings and no units
+  until it opens one or types in the filter. One line to flip if that
+  reads wrong — task 151 phase 1 status log,
+  `plans/tasks/0151-settings-view-grids.md`.
+
+- **153: a signal name is no longer part of its message's searchable
+  text.** Ranking signals in their own right required moving them out
+  of the message's haystack — a message that ties a signal cannot be
+  outscored by it (fixture: 272 = 272). Consequence: a query spanning a
+  message name and a signal name as one fuzzy string (`packstatus
+  voltage`) no longer matches, since no single haystack holds both.
+  Detail and scores: 0153 § Status log, 2026-09-23.
+
+- **152: the logger file list and the project-cache list show a dimmed
+  `…` while the host reads.** Trace start / end / duration / count for
+  a file whose header is unread, and a cache's size before its walk
+  lands, instead of blanks or zeros; the caches header reads
+  `N projects · measuring…` until every size is in. Detail: 0152
+  § Status log, 2026-09-23 (phase 3).
+
+- **152: a manual TX onto a full outbound queue is now refused, not
+  waited on.** `transmit_frame_once` reports `Failed { … outgoing queue
+  is full … }` instead of parking the IPC thread until the server
+  drains. Ruled in 0152 § Audit A14; here because it is the one
+  user-visible change in phase 2. Detail: 0152 § Status log,
+  2026-09-23.
+
+- **149, criterion 11: should the View signals panel list math
+  signals?** The 2026-09-22 ruling asked for the composed-kind override
+  "in the signal mapping panel"; that panel is a database-mapping
+  surface and drops every math reference by design
+  (`viewSignalsPush.ts`), so the criterion has no row to lock without a
+  new row kind (status, candidates, serving database and a GUID signal
+  name all meaningless for a math signal). The override is already
+  class-locked in the math editor, which opens in place from the
+  Signals panel, the plot side list and the Database panel. (a) accept
+  those three as the surface and reword criterion 11; (b) open a task
+  for a math section in the View signals panel. Detail: 0149 § Status
+  log, 2026-09-23.
+
+- **The ruff locks aligned DOWN to 0.15.16** — *not accepted* (owner,
+  2026-09-21). The 0.16 uplift lands as its own branch absorbing the
+  ~200 mechanical fixes, with a `[tool.ruff.lint] select` stanza so
+  the rule set can't drift again; the two judgment calls (the 50
+  deliberate `noqa`s, the 5 silent teardown paths) are decided there.
+  Noted for now, not scheduled. Detail: 0136 § Status log, 2026-09-16.
 
 - **The unified enum-lane serve will still lose a held code under
   ~1.5 pixel columns**, where the categorical reducer lost none. The
@@ -74,6 +135,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 3. Fix later
 
+- **`--app-data-dir` leaves the project cache shared with the
+  operator's unsaved session** (`resolve_project_dir` roots under
+  `app_cache_dir`, which the flag does not move), so a harness run can
+  write it — against ADR 0031. Task 79 already owns making the flag
+  isolate the scratch; this is a second observation of the same gap.
+  Detail: 0156 § Blockers / side effects, 2026-09-23 phase 3.
+
 - TLS end-to-end coverage — a TLS-terminating debug identity in
   `cannet-server`; goes to a new or existing task targeting that
   area. (136-1)
@@ -90,7 +158,78 @@ keeps the queue's copy). This file shrinks every time it is walked.
   bites the day the store grows a field an older GUI build rewrites
   away. GUI-side fix, some later task. (0144 § Status log)
 
+- **145: the server token gate is per-service now**, not a server-wide
+  `Server::layer` — `ServerInfo` must answer without a credential and
+  a tonic interceptor cannot see which service a call is for.
+  `crates/cannet-server/tests/auth.rs` holds the line (every gated RPC
+  refuses an absent or wrong token; `ServerInfo` answers with
+  neither). Detail: 0145 § Blockers / side effects.
+- **145: `grpcio-tools` dev pin `>=1.80,<1.81`** on `task136-core-bus`:
+  the wire package's lock had resolved 1.84 while the committed gencode
+  came from 1.80; the new drift check exposed it. Inventory entry
+  records the rule. FYI only.
+- **145: CI runs no `cargo fmt --check`**; only the pre-commit hook
+  does, which `--no-verify` skips. `interfaces.rs` had drifted once
+  (fixed on `task145-server-info`). A one-line CI job would close it.
+
+- **137: the logger's file listing scans whole BLFs on the 250 ms poll
+  path** (owner report 2026-09-22: SharePoint folder, moved-in BLFs,
+  20 M-frame buffer → sluggish system, list never updates, reopened
+  panel empty). Diagnosed; the listing fix is task 152 phase 3 (owner
+  ruling 2026-09-22). The idle listing's missing filesystem watch stays
+  a 137 fix branch after it. Detail: 0137 § Status log, 2026-09-22.
+- **149: `litre` reaches no unit; `liter` and `L` do.** The library
+  spells it American, and neither the picker's filter nor recognition
+  carries a British alternate. Detail: 0149 § Blockers / side effects.
+- **The shared tree's `target/debug` had grown to 43 GB** (`incremental/`
+  alone 18 GB) and left the machine with ~580 MB free before 155 phase
+  2's first build. Cleared `target/debug/incremental` (compiler cache
+  only, safely regenerable, no shared source touched) to unblock; left
+  `deps/` alone. Likely recurs on later phases sharing this tree — worth
+  a periodic `cargo clean` or CI-side cap rather than each phase
+  rediscovering it. Detail: 0155 § Status log, 2026-09-23 (phase 2).
+
 ## 4. Finished tasks awaiting acceptance
+
+- **158 — bus-error markers page** (4 phases, `task158-error-series`
+  → `task158-plot-markers` → `task158-events-section` →
+  `task158-episodes`): 8/8 exit criteria met. Two § 1 items (the
+  rate's burst gap; the episode-gap setting's placement and maximum).
+
+- **156 — Restore From Cache Does Not Crash on a Mapped Segment.**
+  Three phases on `task156-restore-crash-investigation` →
+  `task156-cache-lock` → `task156-closing-cue` (`3c39d590`), full CI
+  matrix green (`wire-breaking` skipped as for 155). Owed at
+  acceptance: your runtime check of the close path with a large
+  capture (close → overlay walks the steps → process exits → relaunch
+  opens the project), which no phase could exercise without touching
+  your unsaved cache. Two behaviour changes from phase 2 are in § 1.
+  Verdicts: 0156 § Exit criteria.
+
+- **155 — The Kvaser Timer Wraps Without Losing Frames, and Drops Are
+  Loud.** Three phases on `task155-kvaser-unwrap` → `task155-drops-loud`
+  → `task155-logger-clamp` (`229f9ca6`), full CI matrix green (one lane
+  skipped, `wire-breaking`: proto untouched, `buf` not installed). One
+  criterion owed, not gating: the ≥ 12 h live Kvaser confirmation run,
+  to schedule with you. Verdicts: 0155 § Exit criteria.
+
+- **151 — the settings view's grids are gridviews** (3 phases,
+  `task151-units-gridview` → `task151-caches-gridview` →
+  `task151-servers-section`): 6/6 exit criteria met. `column-defaults`
+  (a fixed ordering editor, not a view onto data) deliberately not
+  converted. Two § 1 items (collapsed default, *Show servers*).
+
+- **153 — enum values in the trace filter** (2 phases,
+  `task153-host-gate` → `task153-panel`): 6/6 exit criteria met. The
+  haystack change is a § 1 item. One reading for the record: a click
+  on a row force-open under a signal or value winner records a full
+  manual expand that shows only once the winner reverts (0153 § Status
+  log, phase 2).
+
+- **152 — nothing heavy in the foreground** (3 phases, `task152-shape-a`
+  → `task152-listing-and-mirror`): 7/7 exit criteria met. Perf reading
+  on the tip measured an idle bus (fps 0) — see 0152 § Blockers; one
+  usable reading still owed at the stack tip.
 
 - **Task 136 — python-can Cannet Client** (2026-09-06): both phases
   landed (`task136-core-bus` → `task136-clock-detect`); all 7 exit
@@ -99,8 +238,9 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **Task 137 — Log Export** (2026-09-06): all four phases landed
   (`task137-templates` → `task137-export-dialog` → `task137-loggers`
   → `task137-file-grid`); all 6 exit criteria met (verdicts in the
-  task file). Caveats: live 500 MB split unit-tested only; open §2
-  items above.
+  task file). Caveats: live 500 MB split unit-tested only. Owner
+  2026-09-22: manual BLF export works; the logger's listing defect
+  (§ 3) is open against this task.
 - **Task 135 — Plot Math Functions** (2026-09-06): all three phases
   landed (`task135-engine` → `task135-editor` → `task135-surfaces`);
   exit-criteria verdicts in the task file — 7 of 8 met clean,
@@ -119,10 +259,43 @@ keeps the queue's copy). This file shrinks every time it is walked.
   (the `clients/` move absorbed into `task136-core-bus`;
   `task144-client-cli` inserted above `task136-clock-detect`); all 5
   exit criteria met (verdicts in the task file). 138/1 client tests,
-  python-only diff, §1 pinned-but-down item is the one open ruling.
+  python-only diff. Pinned-but-down refusal confirmed 2026-09-21.
 - **Task 140 — Project State Items** (2026-09-08): single phase landed
   (`task140-controls`); all 5 exit criteria met (verdicts in the task
   file). Frontend-only diff; scoped lanes green (3447 frontend).
+- **Task 147 — Collapse Database Items Under a Filter** (2026-09-20):
+  single phase landed (`task147-collapse-under-filter`); all 6 exit
+  criteria met (verdicts in the task file). Frontend-only diff; scoped
+  lanes green. Review fix folded in: the auto-expand seed no longer
+  refires on the RBS value poll.
+- **Task 148 — Connect With a Bus Set to No Interface** (2026-09-20):
+  single phase landed (`task148-no-interface-binding`); all 6 exit
+  criteria met. Schema v8. Review fixes folded in: project-graph
+  phantom node, bus-health wording, ev-zonal bump.
+- **Task 145 — An Explicit Wire Protocol Version** (2026-09-20): both
+  phases landed (`task145-server-info` below `task136-core-bus`;
+  amendments to `task136-core-bus` and `task144-client-cli`); all 5
+  exit criteria met. Full CI matrix green at the tip after the
+  restack, `buf breaking` and gencode-drift jobs proven to bite.
+  § 3 carries the per-service token gate and the `grpcio-tools` pin.
+- **Task 142 — Fzf Filter in the Trace Panel** (2026-09-20): both
+  phases landed (`task142-host-fuzzy` → `task142-trace-filter-panel`);
+  all 7 exit criteria met (verdicts in the task file). Golden vectors
+  pin identical order and scores against the TS `fzf`. Diacritic
+  boundary accepted 2026-09-21.
+- **Task 146 — A Round of Plot Fixes** (2026-09-20): four phases
+  landed as five branches (`task146-lane-investigation` →
+  `task146-markers-host` → `task146-markers` → `task146-gutters` →
+  `task146-panel-plumbing`); all 8 exit criteria met, the perf number
+  from the single tip reading (31/31 gated metrics passed; task file
+  § Status log). § 1 carries the tile layering, the `Points: auto`
+  lane exemption, the ~1.5-column held-code boundary and the wide ΔH
+  clip. Two fix branches followed (2026-09-21): `fix-plot-hover-overlay`
+  and `fix-plot-square-markers`, after the owner reported `Points: On`
+  unusable on a long trace; owner verified the pair on that project the
+  same day (detail: 0146 § Status log, 2026-09-21).
+
+
 
 ## 5. Housekeeping owed at close-out
 
@@ -136,3 +309,21 @@ keeps the queue's copy). This file shrinks every time it is walked.
   matrix once per task — gets reviewed at this campaign's close-out:
   did anything slip through a scoped phase to the task-final run, and
   is the tier split right?
+- **Re-apply the parked ev-zonal layout autosave** on the stack tip:
+  `git apply <scratchpad>/ev-zonal-autosave.patch` (a full copy of the
+  file is beside it). Overseer holds the path; it is the owner's
+  undispositioned edit, not part of any branch.
+- **Re-lock the sidecar and client lockfiles** after the `grpcio-tools`
+  pin (0145): `servers/cannet-local-sidecar/uv.lock` and
+  `clients/cannet-python-client/uv.lock` still carry the wire package's
+  old `>=1.80` `requires-dist`; a plain `uv run` re-locks the sidecar
+  one (one line). Belongs on `task136-core-bus` as an amend + restack;
+  CI's `uv sync --frozen` does not catch it. Patch parked in the
+  overseer's scratchpad.
+- **Retire tasks 142, 145, 146, 147, 148 from the roadmap** once
+  accepted (§ 4), and dispose of the tip perf report
+  `docs/performance-measurements/frontend/2026-09-20-25ffdf9e-feedback-tip-run1.json`
+  (fold into the series review above or delete).
+- **0146's phase-4 status log** carries the tip perf reading
+  (uncommitted edit on the tip, for the close-out planning commit).
+
