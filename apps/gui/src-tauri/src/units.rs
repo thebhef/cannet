@@ -93,11 +93,21 @@
 //! it in the settings table shows what the user typed, not something
 //! re-derived from the model.
 //!
+//! A composition that comes out as a unit the library already has is an
+//! **alias**: a name for that unit, spelled the way this user's
+//! databases spell it. `mph = mile-per-hour` is one unit and nothing
+//! else; `mph = mile / hour` composes the same one. It is the one case where a name
+//! that already reads as something may be taken: it changes no reading,
+//! only the spelling the unit is shown in, and it is refused unless the
+//! composition is exactly that unit and the library spells it
+//! differently.
+//!
 //! ## Recognising a DBC unit string
 //!
 //! [`recognize`] answers a [`UnitId`] or **nothing**; it never guesses.
 //! The order is: the user's customization dict (which is what makes an
-//! arbitrary in-house spelling work at all), then the built-in
+//! arbitrary in-house spelling work at all), then the names of the
+//! units the user composed, then the built-in
 //! recognitions exactly, then a unit's own id exactly, then **every
 //! spelling the library gives a unit** — its symbol, singular and
 //! plural — then `[prefix][base]` exact-case (`nAh`), then the built-in
@@ -1492,6 +1502,49 @@ fn parse_composition(
     Ok((composed, factor))
 }
 
+/// Whether a composition **aliases** the unit a name already reads as —
+/// the one case in which a name that is already taken may be defined.
+///
+/// The refusal it qualifies is there so that a definition cannot
+/// quietly change what a database reads as. An alias changes no
+/// reading: `mph = mile / hour` is the very unit `mph` already meant,
+/// so every value that string ever carried keeps its size, and all that
+/// changes is the spelling it is shown in — the library spells it
+/// `mi/h`.
+///
+/// Three conditions, each load-bearing. **Same dimension** and **same
+/// size**: size alone would let a newton-metre composed as an energy
+/// take the name of a torque, which is the shadowing the refusal exists
+/// for, and an absolute temperature is never an alias since a product
+/// has no offset. And the unit must **spell itself differently** from
+/// the name — a spelling is the whole point of an alias, so `W = V * A`
+/// is still refused: it is the watt, which already reads `W`, and
+/// taking the name would give one unit a second identity for nothing.
+fn is_an_alias_of(
+    name: &str,
+    definition: &UnitDefinition,
+    dimension: Dimension,
+    existing: &UnitId,
+) -> bool {
+    if display_of(existing) == name {
+        return false;
+    }
+    let Some((existing_dimension, constant)) = family(existing) else {
+        return false;
+    };
+    if existing_dimension != dimension || constant != 0.0 {
+        return false;
+    }
+    let Some(theirs) = definition_of(existing) else {
+        return false;
+    };
+    let (ours, theirs) = (definition.multiplier(), theirs.multiplier());
+    // A composition arrives at its size by arithmetic the library did
+    // in one step (1609.344 / 3600 against 0.44704), so the last bits
+    // are not required to agree.
+    (ours - theirs).abs() <= 1e-9 * ours.abs().max(theirs.abs())
+}
+
 /// Read one `name = composition` pair into a unit, or say why it is not
 /// one.
 ///
@@ -1514,13 +1567,9 @@ fn define(
     }
     // Recognition, not the id table: `W` is not an id but every
     // database that writes it means the watt, so taking that name would
-    // quietly change what this project reads.
-    if let Some(existing) = recognize(name, customizations) {
-        return Err(format!(
-            "`{name}` already names {} — pick another name",
-            display_of(&existing)
-        ));
-    }
+    // quietly change what this project reads. Read before the
+    // composition, so the composition cannot change what the name meant.
+    let taken = recognize(name, customizations);
     let (composed, factor) = parse_composition(composition, customizations)?;
     let definition = composed
         .definition()
@@ -1529,6 +1578,13 @@ fn define(
     let dimension = composed
         .dimension()
         .ok_or_else(|| format!("`{composition}` lands on no dimension this app names"))?;
+    if let Some(existing) = taken.filter(|e| !is_an_alias_of(name, &definition, dimension, e)) {
+        return Err(format!(
+            "`{name}` already names {} — pick another name; only a composition of \
+             exactly that unit, spelled differently from it, is an alias",
+            display_of(&existing)
+        ));
+    }
     Ok(Custom {
         name: name.to_string(),
         dimension,
@@ -2267,8 +2323,12 @@ static REFUSED: &[&str] = &["C"];
 ///
 /// The user's `customizations` win — that is the point of them — and are
 /// consulted on the raw string and on its trimmed form, since a DBC
-/// commonly carries padding the user did not type. Then the built-in
-/// recognitions exactly, then a unit's **own id** exactly, then every
+/// commonly carries padding the user did not type. Then the **units the
+/// user composed**, by name: a name they defined is the user speaking
+/// too, and it is what makes an alias read back in the spelling it was
+/// given (`mph`, where the library spells the unit `mi/h`). Then the
+/// built-in recognitions exactly, then a unit's **own id** exactly,
+/// then every
 /// spelling the library gives a unit — its symbol, singular and plural
 /// — where exactly one unit spells itself that way, then
 /// `[prefix][base]` exact-case (`nAh`), then the built-in recognitions
@@ -2299,6 +2359,9 @@ pub fn recognize(raw: &str, customizations: &Customizations) -> Option<UnitId> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
+    }
+    if let Some(unit) = with_custom(trimmed, |c| UnitId::base(&c.name)) {
+        return Some(unit);
     }
     if let Some((_, id)) = RECOGNITIONS.iter().find(|(s, _)| *s == trimmed) {
         return typed(id);
@@ -3897,6 +3960,71 @@ mod tests {
         );
     }
 
+    /// An **alias**: a composition that comes out as a unit the library
+    /// already has, taking the name the databases write for it. Every
+    /// automotive database writes `mph`; the library spells the mile
+    /// per hour `mi/h`, so without this the unit reads as something the
+    /// user did not write. Naming a unit that already means exactly
+    /// this is not the shadowing the name check refuses — nothing a
+    /// database already read changes meaning, only the spelling it is
+    /// shown in.
+    #[test]
+    fn an_alias_takes_the_name_of_the_unit_it_composes() {
+        let mile_per_hour = typed("mile-per-hour").expect("mile-per-hour");
+        assert_eq!(display_of(&mile_per_hour), "mi/h", "the library's spelling");
+        {
+            let _shared = listing();
+            // One term is a composition too, and the quotient the
+            // criterion names composes the same unit.
+            check_definition("mph", "mile-per-hour", &none()).expect("`mile-per-hour` aliases");
+            check_definition("mph", "mile / hour", &none()).expect("`mile / hour` composes");
+        }
+        let (_guard, defined) = install(&[("mph", "mile / hour")]);
+        assert_eq!(refusals(&defined), Vec::<String>::new());
+        let mph = UnitId::base("mph");
+        // It reads as the name the user gave it, not the library's.
+        assert_eq!(display_of(&mph), "mph");
+        assert_eq!(dimension_of(&mph), dimension_of(&mile_per_hour));
+        close(
+            convert_units(&mph, &mile_per_hour).expect("mph→mi/h").gain,
+            1.0,
+        );
+        close(
+            convert_units(&mile_per_hour, &mph).expect("mi/h→mph").gain,
+            1.0,
+        );
+        // A database that writes it gets the alias back, ahead of the
+        // built-in recognition the name had before.
+        assert_eq!(recognize("mph", &none()), Some(mph));
+    }
+
+    /// The alias exception is exactly an alias: a name that already
+    /// means something is still refused where the composition means
+    /// something else, which is the shadowing that would change what a
+    /// database reads as.
+    #[test]
+    fn a_name_that_already_names_a_unit_is_refused_unless_it_is_that_unit() {
+        let (_guard, defined) = install(&[("mph", "2 * mile / hour"), ("kph", "V * A")]);
+        assert!(
+            refusal(&defined, "mph").contains("already names"),
+            "{}",
+            refusal(&defined, "mph")
+        );
+        assert!(
+            refusal(&defined, "kph").contains("already names"),
+            "{}",
+            refusal(&defined, "kph")
+        );
+        // And it reads as one sentence: a wrapped literal is a
+        // user-facing string like any other.
+        assert!(
+            refusal(&defined, "kph").contains("only a composition of exactly that unit"),
+            "{}",
+            refusal(&defined, "kph")
+        );
+        assert_eq!(recognize("mph", &none()), typed("mile-per-hour"));
+    }
+
     fn refusals(defined: &[DefinedUnit]) -> Vec<String> {
         defined.iter().filter_map(|d| d.error.clone()).collect()
     }
@@ -3963,7 +4091,10 @@ mod tests {
 
     /// A shipped unit's spelling is not free to take: `W` is already
     /// the watt, and quietly shadowing it would change what every
-    /// database in the project reads as.
+    /// database in the project reads as. A volt-ampere *is* a watt, so
+    /// this one is not shadowing — it is refused as the alias it is
+    /// not, since the watt already spells itself `W` and a second
+    /// identity for it would buy nothing.
     #[test]
     fn a_name_that_already_names_a_unit_is_refused() {
         let (_guard, defined) = install(&[("W", "V * A"), ("VA", "V * A"), ("VA2", "VA * 1")]);
