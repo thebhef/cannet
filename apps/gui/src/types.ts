@@ -66,7 +66,22 @@ export interface TraceFrameRecord {
   /// routed to no open session, or the session refused it. Absent
   /// everywhere else, including a transmit a session accepted.
   tx_delivery?: string | null;
+  /// The signal names this row matched by, when the trace filter's
+  /// fuzzy query was best answered by a signal or by one of a signal's
+  /// enum labels (see `FuzzyWinner`). The host computes them — which
+  /// signals a query matched is a model fact, not something the view
+  /// re-derives. Absent under a message-level winner and with no
+  /// filter at all.
+  matching_signals?: string[];
 }
+
+/// What kind of thing the trace filter's fuzzy query matched best over
+/// the whole row space (mirrors `filter.rs::FuzzyWinner`): the message
+/// itself (its bus, either id spelling, its name or its transmitting
+/// ECU), one of its signals, or one of a signal's enum labels. It rides
+/// on the row-page envelope because it is a property of the query, not
+/// of the page.
+export type FuzzyWinner = "message" | "signal" | "value";
 
 /// Periodic IPC event carrying the trace store's current size + rate,
 /// plus a short decoded tail of the newest frames so the auto-scrolling

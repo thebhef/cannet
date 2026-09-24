@@ -26,10 +26,12 @@
 //! - `{ "signal_equals": { "name": "<sig>", "value": <number> } }` —
 //!   the decoded signal `<sig>` exists and its physical value equals
 //!   `<number>` within `1e-9` tolerance.
-//! - `{ "fuzzy": "<query>" }` — the frame's *searchable text* matches
-//!   `<query>` under the app's one fzf dialect ([`crate::fuzzy`]). See
-//!   [`TaggedPredicate::Fuzzy`] for what that text is and why the leaf
-//!   needs a [`MatchContext`].
+//! - `{ "fuzzy": "<query>" }` — the row's *searchable text* matches
+//!   `<query>` under the app's one fzf dialect ([`crate::fuzzy`]).
+//!   Messages, signal names and value-table labels are ranked together
+//!   and the best match's kind ([`FuzzyWinner`]) decides what the query
+//!   is about. See [`TaggedPredicate::Fuzzy`] for the whole rule and
+//!   for why the leaf needs a [`MatchContext`].
 //! - `{ "error_frame": <bool> }` — the frame is (`true`) or is not
 //!   (`false`) a bus error frame. Unlike every other leaf this one reads
 //!   nothing that narrows by arbitration id — an error frame carries no
@@ -48,7 +50,7 @@
 //! on the filter node in the project graph view.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +89,7 @@ pub enum TaggedPredicate {
     /// coalesced summary instead of its hundred thousand rows, while
     /// the capture goes on holding every one of them.
     ErrorFrame(bool),
-    /// `{ "fuzzy": "<query>" }` — the frame's searchable text matches
+    /// `{ "fuzzy": "<query>" }` — the row's searchable text matches
     /// `<query>` under the app's one fzf dialect ([`crate::fuzzy`]):
     /// case-insensitive, with the relative floor
     /// ([`fuzzy::MIN_RELATIVE_SCORE`]) cutting the score-descending
@@ -95,24 +97,44 @@ pub enum TaggedPredicate {
     /// rows the same way, so one query narrows a host-paged view and a
     /// client-held one alike.
     ///
-    /// **The searchable text** is the bus name, the arbitration id in
-    /// both spellings the trace renders (`s:1C0` / `s:448`), the
-    /// decoded message name, its transmitting ECU, and its signal
-    /// names — all a pure function of `(id, extended, bus)` plus the
-    /// loaded databases — together with the value-table label of a
-    /// decoded signal's *current* value, which is not. Payload bytes,
-    /// numeric values and timestamps are deliberately out: a filter
-    /// over those is what the other leaves are for.
+    /// **The searchable text** is three lists ranked as one:
+    ///
+    /// - a **message** ([`FuzzyCandidate`]) — its bus name, its
+    ///   arbitration id in both spellings the trace renders
+    ///   (`s:1C0` / `s:448`), its decoded name and its transmitting
+    ///   ECU;
+    /// - a **signal** ([`FuzzySignal`]) — one entry per signal name a
+    ///   message carries;
+    /// - a **value** ([`FuzzyLabel`]) — one entry per value-table label
+    ///   a signal defines.
+    ///
+    /// Payload bytes, numeric values and timestamps are deliberately
+    /// out: a filter over those is what the other leaves are for.
+    ///
+    /// **The winner decides what the query is about.** The best match's
+    /// kind is the query's [`FuzzyWinner`]. A message admits its
+    /// frames; a signal admits the frames of the messages carrying it;
+    /// a value admits the frames whose decoded signal reads it — and
+    /// under a signal or value winner a message admitted only by its
+    /// own haystack is dropped unless it clears
+    /// [`fuzzy::MESSAGE_GATE`]. Without that gate a value query lands
+    /// on the message's long haystack as a scattered subsequence and
+    /// admits every frame of it, which is the whole point of the leaf
+    /// defeated.
+    ///
+    /// **A by-id row is a message, not a frame.** In
+    /// [`FuzzyMatchMode::Definitional`] a value matches when the
+    /// message *defines* a signal whose value table holds it, whatever
+    /// the latest frame reads; the chronological paths keep the
+    /// per-frame decoded test over the whole history.
     ///
     /// **Why it needs a [`MatchContext`].** The floor is a cut on a
-    /// *ranked list*, so "does this frame match" is not a question one
-    /// frame can answer alone. The query is therefore resolved once
-    /// against the databases and the bus names — into the
-    /// `(id, extended, bus)` triples and the `(signal, label)` pairs it
-    /// admits ([`FuzzyResolution`]) — and the per-frame test is a
-    /// lookup in that. A leaf evaluated without its resolution in the
-    /// context matches nothing, the same rule an unparseable predicate
-    /// follows.
+    /// *ranked list*, so "does this row match" is not a question one
+    /// row can answer alone. The query is therefore resolved once
+    /// against the databases and the bus names ([`FuzzyResolution`])
+    /// and the per-row test is a lookup in that. A leaf evaluated
+    /// without its resolution in the context matches nothing, the same
+    /// rule an unparseable predicate follows.
     Fuzzy(String),
 }
 
@@ -251,129 +273,367 @@ pub struct FuzzyCandidate {
     pub bus_id: String,
     pub id: u32,
     pub extended: bool,
-    /// Bus name, both id spellings, message name, transmitting ECU and
-    /// signal names, joined with spaces — the filter slot's haystack
-    /// convention (ADR 0044), one string per searchable thing.
+    /// Bus name, both id spellings, message name and transmitting ECU,
+    /// joined with spaces — the filter slot's haystack convention
+    /// (ADR 0044), one string per searchable thing. The message's
+    /// *signal* names are deliberately not in here: they are ranked as
+    /// [`FuzzySignal`] entries in their own right, so a query aimed at
+    /// a signal (or at one of its values) is not also answered by the
+    /// message that happens to carry it.
     pub haystack: String,
 }
 
-/// One value-table label a database defines, with the signal and
-/// message it belongs to. Separate from [`FuzzyCandidate`] because a
-/// label is only true of a frame whose decoded value *is* that label.
+/// One signal name a database defines for a message on a bus. Ranked
+/// beside the messages and the labels so a query's best match can be
+/// identified as a signal — and so a signal match admits the frames of
+/// the messages carrying it, rather than being one more word in a
+/// message's haystack.
+///
+/// Bus-scoped like [`FuzzyCandidate`], because the database that names
+/// the signal is the one assigned to that bus: the same arbitration id
+/// on another bus is another message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuzzySignal {
+    pub bus_id: String,
+    pub id: u32,
+    pub extended: bool,
+    pub signal: String,
+}
+
+/// One value-table label a database defines, with the signal, message
+/// and bus it belongs to. Separate from [`FuzzyCandidate`] because a
+/// label is a statement about a *value*: on a chronological row it is
+/// only true of a frame whose decoded signal carries it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuzzyLabel {
+    pub bus_id: String,
     pub id: u32,
     pub extended: bool,
     pub signal: String,
     pub label: String,
 }
 
+/// What kind of thing a query's best match was — its **winner kind**.
+///
+/// A query can name a message (its bus, either id spelling, its name or
+/// its transmitting ECU), one of a message's signals, or one of a
+/// signal's value-table labels. Which of the three won decides what the
+/// query admits, and it rides out with the page so the trace panel can
+/// open the admitted rows to the signal a signal- or value-winning
+/// query names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FuzzyWinner {
+    Message,
+    Signal,
+    Value,
+}
+
+impl FuzzyWinner {
+    /// Rung on the message → signal → value ladder. A match admits when
+    /// it is at least as specific as the winner; a less specific one is
+    /// what [`fuzzy::MESSAGE_GATE`] judges.
+    fn specificity(self) -> u8 {
+        match self {
+            Self::Message => 0,
+            Self::Signal => 1,
+            Self::Value => 2,
+        }
+    }
+
+    /// Who wins an exact score tie. A **message** wins any tie: its
+    /// admission is dropped only when a more specific match *outscores*
+    /// it, which is what keeps a query naming a message behaving as it
+    /// always has. Between a signal and one of that signal's values the
+    /// **value** wins: it is the narrower reading of the same text, and
+    /// it still names the signal.
+    fn tie_rank(self) -> u8 {
+        match self {
+            Self::Message => 2,
+            Self::Value => 1,
+            Self::Signal => 0,
+        }
+    }
+}
+
+/// How a value-table label is tested against a row — the one thing the
+/// two trace modes disagree about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FuzzyMatchMode {
+    /// A chronological row is a *frame*: a label matches when the
+    /// frame's decoded signal carries it. Searching a value therefore
+    /// searches the whole history for the frames that were in it.
+    #[default]
+    Chronological,
+    /// A by-id row is a *message*, not a frame: a label matches when
+    /// the message defines a signal whose value table holds it,
+    /// whatever the latest frame happens to read. Definitional, so it
+    /// reads no decode.
+    Definitional,
+}
+
 /// What one `fuzzy` query resolves to — the frames it admits, settled
 /// once so the per-frame test is a lookup.
 ///
-/// Both halves come out of **one** ranked list: the candidates'
-/// haystacks and the labels are scored together and cut at the single
-/// relative floor, so a query that lands squarely on a message name
-/// does not also drag in every loosely-matching enum label, and vice
-/// versa. One query, one ranking, one floor.
+/// All three halves come out of **one** ranked list: the messages'
+/// haystacks, the signal names and the value-table labels are scored
+/// together and cut at the single relative floor. The top of that list
+/// is the query's [`FuzzyWinner`], and it decides what the rest of the
+/// list is allowed to admit:
+///
+/// - a match at least as specific as the winner admits;
+/// - a *message* below the winner admits only if it scores at least
+///   [`fuzzy::MESSAGE_GATE`] of the winner's score — without that, a
+///   value query lands on the message's long haystack as a scattered
+///   subsequence and admits every frame of it;
+/// - any other less specific match is dropped.
+///
+/// One query, one ranking, one floor, one gate.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FuzzyResolution {
-    /// Per `(id, extended)`, the buses whose triple survived the cut.
+    /// The kind of the query's best match, `None` when nothing cleared
+    /// the floor.
+    winner: Option<FuzzyWinner>,
+    /// Per `(id, extended)`, the buses whose message survived the cut.
     /// Answering from this needs no decode at all.
     keys: HashMap<(u32, bool), Vec<String>>,
-    /// Per signal name, the surviving labels. A frame matches when one
-    /// of its decoded signals carries one of them.
-    labels: HashMap<String, HashSet<String>>,
-    /// The messages defining a signal in `labels` — the only ids this
-    /// leaf makes worth decoding.
-    label_ids: Vec<(u32, bool)>,
+    /// Per `(id, extended)`, the signal names that survived.
+    /// Decode-free too: the database that names the signal is the one
+    /// that decodes the bus, so the message does carry it.
+    signals: HashMap<(u32, bool), Vec<SignalHit>>,
+    /// Per `(id, extended)`, the labels that survived. The only half
+    /// that reads a decode, and only in
+    /// [`FuzzyMatchMode::Chronological`].
+    labels: HashMap<(u32, bool), Vec<LabelHit>>,
+}
+
+/// A surviving signal-name match on one message: the bus whose
+/// database names the signal, and the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SignalHit {
+    bus_id: String,
+    signal: String,
+}
+
+/// A surviving value match on one message: the bus, the signal whose
+/// value table defines the label, and the label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LabelHit {
+    bus_id: String,
+    signal: String,
+    label: String,
 }
 
 impl FuzzyResolution {
-    /// Rank `candidates` and `labels` against `query` and keep what
-    /// clears the floor.
+    /// Rank `candidates`, `signals` and `labels` against `query`, keep
+    /// what clears the floor, and apply the winner's gate.
     #[must_use]
-    pub fn resolve(query: &str, candidates: &[FuzzyCandidate], labels: &[FuzzyLabel]) -> Self {
+    pub fn resolve(
+        query: &str,
+        candidates: &[FuzzyCandidate],
+        signals: &[FuzzySignal],
+        labels: &[FuzzyLabel],
+    ) -> Self {
         let haystacks = candidates
             .iter()
             .map(|c| c.haystack.as_str())
+            .chain(signals.iter().map(|s| s.signal.as_str()))
             .chain(labels.iter().map(|l| l.label.as_str()));
         let ranked = fuzzy::rank(query, haystacks);
+        let kept = fuzzy::above_floor(&ranked);
         let mut out = Self::default();
-        for m in fuzzy::above_floor(&ranked) {
-            if let Some(c) = candidates.get(m.index) {
-                out.keys
-                    .entry((c.id, c.extended))
-                    .or_default()
-                    .push(c.bus_id.clone());
+        let Some(best) = kept.first().copied() else {
+            return out;
+        };
+        let kind_of = |index: usize| {
+            if index < candidates.len() {
+                FuzzyWinner::Message
+            } else if index < candidates.len() + signals.len() {
+                FuzzyWinner::Signal
             } else {
-                let l = &labels[m.index - candidates.len()];
-                out.labels
-                    .entry(l.signal.clone())
-                    .or_default()
-                    .insert(l.label.clone());
-                out.label_ids.push((l.id, l.extended));
+                FuzzyWinner::Value
+            }
+        };
+        let winner = kept
+            .iter()
+            .take_while(|m| m.score == best.score)
+            .map(|m| kind_of(m.index))
+            .max_by_key(|k| k.tie_rank())
+            .unwrap_or(FuzzyWinner::Message);
+        let gate = f64::from(best.score) * fuzzy::MESSAGE_GATE;
+        for m in kept {
+            let kind = kind_of(m.index);
+            let admits = kind.specificity() >= winner.specificity()
+                || (kind == FuzzyWinner::Message && f64::from(m.score) >= gate);
+            if !admits {
+                continue;
+            }
+            match kind {
+                FuzzyWinner::Message => {
+                    let c = &candidates[m.index];
+                    out.keys
+                        .entry((c.id, c.extended))
+                        .or_default()
+                        .push(c.bus_id.clone());
+                }
+                FuzzyWinner::Signal => {
+                    let s = &signals[m.index - candidates.len()];
+                    out.signals
+                        .entry((s.id, s.extended))
+                        .or_default()
+                        .push(SignalHit {
+                            bus_id: s.bus_id.clone(),
+                            signal: s.signal.clone(),
+                        });
+                }
+                FuzzyWinner::Value => {
+                    let l = &labels[m.index - candidates.len() - signals.len()];
+                    out.labels
+                        .entry((l.id, l.extended))
+                        .or_default()
+                        .push(LabelHit {
+                            bus_id: l.bus_id.clone(),
+                            signal: l.signal.clone(),
+                            label: l.label.clone(),
+                        });
+                }
             }
         }
-        out.label_ids.sort_unstable();
-        out.label_ids.dedup();
+        out.winner = Some(winner);
         out
     }
 
-    /// Does this frame's searchable text match? The id-keyed half is a
-    /// map lookup; the enum-label half reads the decode the way
-    /// `signal_equals` does.
+    /// Does this row's searchable text match? The message and signal
+    /// halves are map lookups; the label half reads the decode the way
+    /// `signal_equals` does, unless `mode` says the row is a message
+    /// rather than a frame.
+    ///
+    /// A row with no bus is admitted by nothing — the same rule
+    /// [`dbc_applies`] follows, and every stored frame has one.
     fn admits(
         &self,
         id: u32,
         extended: bool,
         bus_id: Option<&str>,
         decoded: Option<&DecodedRecord>,
+        mode: FuzzyMatchMode,
     ) -> bool {
-        let by_key = match (self.keys.get(&(id, extended)), bus_id) {
-            (Some(buses), Some(bus)) => buses.iter().any(|b| b == bus),
-            _ => false,
-        };
-        by_key
-            || decoded.is_some_and(|d| {
-                d.signals.iter().any(|s| {
-                    s.label.as_deref().is_some_and(|label| {
-                        self.labels
-                            .get(s.name.as_str())
-                            .is_some_and(|set| set.contains(label))
-                    })
-                })
+        let Some(bus) = bus_id else { return false };
+        let key = (id, extended);
+        self.keys
+            .get(&key)
+            .is_some_and(|buses| buses.iter().any(|b| b == bus))
+            || self
+                .signals
+                .get(&key)
+                .is_some_and(|v| v.iter().any(|h| h.bus_id == bus))
+            || self.labels.get(&key).is_some_and(|v| {
+                v.iter()
+                    .any(|h| h.bus_id == bus && label_holds(mode, decoded, &h.signal, &h.label))
             })
     }
 
-    /// The `(id, extended)` keys this query can admit — its id-keyed
-    /// matches plus the messages carrying a matching label.
+    /// The signal names this row matched by — what the trace panel
+    /// opens the row's disclosure to. Empty unless the query's winner
+    /// was a signal or a value: a message-level winner says nothing
+    /// about any one signal, and leaves the disclosure as the user had
+    /// it.
+    fn matching_signals(
+        &self,
+        id: u32,
+        extended: bool,
+        bus_id: Option<&str>,
+        decoded: Option<&DecodedRecord>,
+        mode: FuzzyMatchMode,
+    ) -> Vec<String> {
+        let (Some(bus), Some(winner)) = (bus_id, self.winner) else {
+            return Vec::new();
+        };
+        if winner == FuzzyWinner::Message {
+            return Vec::new();
+        }
+        let key = (id, extended);
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |name: &String| {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        };
+        for h in self.signals.get(&key).into_iter().flatten() {
+            if h.bus_id == bus {
+                push(&h.signal);
+            }
+        }
+        for h in self.labels.get(&key).into_iter().flatten() {
+            if h.bus_id == bus && label_holds(mode, decoded, &h.signal, &h.label) {
+                push(&h.signal);
+            }
+        }
+        out
+    }
+
+    /// The `(id, extended)` keys this query can admit — every key any
+    /// of its three halves survived on.
     fn candidate_keys(&self) -> Vec<(u32, bool)> {
         let mut keys: Vec<(u32, bool)> = self.keys.keys().copied().collect();
-        keys.extend(self.label_ids.iter().copied());
+        keys.extend(self.signals.keys().copied());
+        keys.extend(self.labels.keys().copied());
         keys
     }
 }
 
+/// Whether a surviving `(signal, label)` pair is true of a row: of a
+/// frame, that it decoded to that label; of a *message* row, that the
+/// message defines the label at all (it is in the list, so it does).
+fn label_holds(
+    mode: FuzzyMatchMode,
+    decoded: Option<&DecodedRecord>,
+    signal: &str,
+    label: &str,
+) -> bool {
+    match mode {
+        FuzzyMatchMode::Definitional => true,
+        FuzzyMatchMode::Chronological => decoded.is_some_and(|d| {
+            d.signals
+                .iter()
+                .any(|s| s.name == signal && s.label.as_deref() == Some(label))
+        }),
+    }
+}
+
 /// The standing facts predicate evaluation reads that are not on the
-/// frame: today, each `fuzzy` leaf's [`FuzzyResolution`].
+/// frame: each `fuzzy` leaf's [`FuzzyResolution`], and the
+/// [`FuzzyMatchMode`] the consumer's rows are.
 ///
-/// It is keyed by the query text because that is the leaf's whole
-/// identity — two `fuzzy` leaves spelling the same query resolve to the
-/// same thing, and a predicate carries at most a handful, so a linear
-/// scan beats a hash.
+/// The resolutions are keyed by the query text because that is the
+/// leaf's whole identity — two `fuzzy` leaves spelling the same query
+/// resolve to the same thing, and a predicate carries at most a
+/// handful, so a linear scan beats a hash.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MatchContext {
     fuzzy: Vec<(String, FuzzyResolution)>,
+    mode: FuzzyMatchMode,
 }
 
 /// A context that resolves nothing — for the callers whose predicates
 /// carry no `fuzzy` leaf. A fuzzy leaf evaluated against it matches
 /// nothing, as an unresolvable predicate should. A `static` rather than
 /// a `const` so call sites can hand out a `&'static` one.
-pub static EMPTY_MATCH_CONTEXT: MatchContext = MatchContext { fuzzy: Vec::new() };
+pub static EMPTY_MATCH_CONTEXT: MatchContext = MatchContext {
+    fuzzy: Vec::new(),
+    mode: FuzzyMatchMode::Chronological,
+};
 
 impl MatchContext {
+    /// An empty context whose rows are `mode`.
+    #[must_use]
+    pub fn with_mode(mode: FuzzyMatchMode) -> Self {
+        Self {
+            fuzzy: Vec::new(),
+            mode,
+        }
+    }
+
     /// Record a query's resolution. A repeated query is kept once.
     pub fn insert(&mut self, query: &str, resolution: FuzzyResolution) {
         if self.resolution(query).is_none() {
@@ -383,6 +643,39 @@ impl MatchContext {
 
     fn resolution(&self, query: &str) -> Option<&FuzzyResolution> {
         self.fuzzy.iter().find(|(q, _)| q == query).map(|(_, r)| r)
+    }
+
+    /// The winner kind of the first `fuzzy` query in the predicate —
+    /// what the trace panel's one query matched best, returned with the
+    /// page so the panel need not re-derive a model fact. `None` when
+    /// there is no fuzzy leaf, or when nothing cleared the floor.
+    #[must_use]
+    pub fn winner(&self) -> Option<FuzzyWinner> {
+        self.fuzzy.first().and_then(|(_, r)| r.winner)
+    }
+
+    /// The signal names a row matched by, across every `fuzzy` leaf —
+    /// what the trace panel opens the row's disclosure to. Empty
+    /// unless a winner was a signal or a value: a message-level winner
+    /// says nothing about any one signal, and leaves the disclosure as
+    /// the user had it.
+    #[must_use]
+    pub fn matching_signals(
+        &self,
+        id: u32,
+        extended: bool,
+        bus_id: Option<&str>,
+        decoded: Option<&DecodedRecord>,
+    ) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (_, r) in &self.fuzzy {
+            for name in r.matching_signals(id, extended, bus_id, decoded, self.mode) {
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
+        out
     }
 
     /// The `(id, extended)` keys `query` can admit; empty when the
@@ -404,7 +697,7 @@ impl MatchContext {
         let mut out: Vec<(u32, bool)> = self
             .fuzzy
             .iter()
-            .flat_map(|(_, r)| r.label_ids.iter().copied())
+            .flat_map(|(_, r)| r.labels.keys().copied())
             .collect();
         out.sort_unstable();
         out.dedup();
@@ -648,7 +941,7 @@ impl TaggedPredicate {
             Self::ErrorFrame(want) => is_error_frame == *want,
             Self::Fuzzy(q) => ctx
                 .resolution(q)
-                .is_some_and(|r| r.admits(id, extended, bus_id, decoded)),
+                .is_some_and(|r| r.admits(id, extended, bus_id, decoded, ctx.mode)),
         }
     }
 }
@@ -1095,50 +1388,77 @@ mod tests {
     // ---- the `fuzzy` leaf --------------------------------------
 
     /// Three messages on two buses, as the host spells their
-    /// searchable text: bus name, both id spellings, message name,
-    /// transmitting ECU, signal names.
-    fn fuzzy_fixture() -> (Vec<FuzzyCandidate>, Vec<FuzzyLabel>) {
+    /// searchable text: the message's own haystack (bus name, both id
+    /// spellings, message name, transmitting ECU), its signal names,
+    /// and its signals' value-table labels — three lists, ranked as
+    /// one.
+    fn fuzzy_fixture() -> (Vec<FuzzyCandidate>, Vec<FuzzySignal>, Vec<FuzzyLabel>) {
         let candidates = vec![
             FuzzyCandidate {
                 bus_id: "b1".into(),
                 id: 0x400,
                 extended: false,
-                haystack: "Zonal CAN s:400 s:1024 DoorLockStatus BodyGateway LockState".into(),
+                haystack: "Zonal CAN s:400 s:1024 DoorLockStatus BodyGateway".into(),
             },
             FuzzyCandidate {
                 bus_id: "b2".into(),
                 id: 0x400,
                 extended: false,
-                haystack: "Pack CAN s:400 s:1024 PackStatus BMS PackVoltage".into(),
+                haystack: "Pack CAN s:400 s:1024 PackStatus BMS".into(),
             },
             FuzzyCandidate {
                 bus_id: "b1".into(),
                 id: 0x401,
                 extended: true,
-                haystack: "Zonal CAN x:00000401 x:1025 WheelSpeed ZoneFrontLeft Speed".into(),
+                haystack: "Zonal CAN x:00000401 x:1025 WheelSpeed ZoneFrontLeft".into(),
+            },
+        ];
+        let signals = vec![
+            FuzzySignal {
+                bus_id: "b1".into(),
+                id: 0x400,
+                extended: false,
+                signal: "LockState".into(),
+            },
+            FuzzySignal {
+                bus_id: "b2".into(),
+                id: 0x400,
+                extended: false,
+                signal: "PackVoltage".into(),
+            },
+            FuzzySignal {
+                bus_id: "b1".into(),
+                id: 0x401,
+                extended: true,
+                signal: "Speed".into(),
             },
         ];
         let labels = vec![
             FuzzyLabel {
+                bus_id: "b1".into(),
                 id: 0x400,
                 extended: false,
                 signal: "LockState".into(),
                 label: "DoubleLocked".into(),
             },
             FuzzyLabel {
+                bus_id: "b1".into(),
                 id: 0x400,
                 extended: false,
                 signal: "LockState".into(),
                 label: "Unlocked".into(),
             },
         ];
-        (candidates, labels)
+        (candidates, signals, labels)
     }
 
     fn fuzzy_ctx(query: &str) -> MatchContext {
-        let (candidates, labels) = fuzzy_fixture();
+        let (candidates, signals, labels) = fuzzy_fixture();
         let mut ctx = MatchContext::default();
-        ctx.insert(query, FuzzyResolution::resolve(query, &candidates, &labels));
+        ctx.insert(
+            query,
+            FuzzyResolution::resolve(query, &candidates, &signals, &labels),
+        );
         ctx
     }
 
@@ -1216,19 +1536,33 @@ mod tests {
     }
 
     #[test]
-    fn one_ranking_and_one_floor_cover_both_halves_of_the_haystack() {
-        // The candidates and the enum labels are ranked together, so a
+    fn one_ranking_and_one_floor_cover_every_part_of_the_haystack() {
+        // Messages, signal names and labels are ranked together, so a
         // query that lands squarely on a message name does not also
-        // drag in a loosely-matching label.
-        let (candidates, labels) = fuzzy_fixture();
-        let r = FuzzyResolution::resolve("doorlockstatus", &candidates, &labels);
+        // drag in a loosely-matching signal or label.
+        let (candidates, signals, labels) = fuzzy_fixture();
+        let r = FuzzyResolution::resolve("doorlockstatus", &candidates, &signals, &labels);
+        assert_eq!(r.winner, Some(FuzzyWinner::Message));
         assert_eq!(r.candidate_keys(), vec![(0x400, false)]);
         assert!(r.labels.is_empty(), "no label clears the floor here");
         // And the other way: a label query brings its message in as a
         // decode candidate without admitting every frame of it.
-        let r = FuzzyResolution::resolve("doublelocked", &candidates, &labels);
-        assert_eq!(r.label_ids, vec![(0x400, false)]);
+        let r = FuzzyResolution::resolve("doublelocked", &candidates, &signals, &labels);
+        assert_eq!(r.winner, Some(FuzzyWinner::Value));
+        assert_eq!(
+            r.labels.keys().copied().collect::<Vec<_>>(),
+            vec![(0x400, false)]
+        );
         assert!(r.keys.is_empty());
+        // A signal name is a match in its own right, and it does not
+        // drag its message's other frames in behind it.
+        let r = FuzzyResolution::resolve("packvoltage", &candidates, &signals, &labels);
+        assert_eq!(r.winner, Some(FuzzyWinner::Signal));
+        assert_eq!(
+            r.signals.keys().copied().collect::<Vec<_>>(),
+            vec![(0x400, false)]
+        );
+        assert!(r.keys.is_empty(), "the message lost to its own signal");
     }
 
     #[test]
@@ -1258,18 +1592,25 @@ mod tests {
         // The id-keyed half is answered by a lookup, so naming a
         // message must not drag its frames through the decoder; naming
         // one of its labels must.
-        let (candidates, labels) = fuzzy_fixture();
+        let (candidates, signals, labels) = fuzzy_fixture();
         let mut ctx = MatchContext::default();
         ctx.insert(
             "doorlockstatus",
-            FuzzyResolution::resolve("doorlockstatus", &candidates, &labels),
+            FuzzyResolution::resolve("doorlockstatus", &candidates, &signals, &labels),
+        );
+        assert!(ctx.decode_ids().is_empty());
+        // A signal name is answered by a lookup too.
+        let mut ctx = MatchContext::default();
+        ctx.insert(
+            "packvoltage",
+            FuzzyResolution::resolve("packvoltage", &candidates, &signals, &labels),
         );
         assert!(ctx.decode_ids().is_empty());
 
         let mut ctx = MatchContext::default();
         ctx.insert(
             "doublelocked",
-            FuzzyResolution::resolve("doublelocked", &candidates, &labels),
+            FuzzyResolution::resolve("doublelocked", &candidates, &signals, &labels),
         );
         assert_eq!(ctx.decode_ids(), vec![(0x400, false)]);
     }
