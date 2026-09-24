@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 
-import type { SignalRecord, TraceFrameRecord } from "./types";
+import type { FuzzyWinner, SignalRecord, TraceFrameRecord } from "./types";
 import { theme, useThemeName } from "./theme";
 import type { TimelineEvent } from "./notes";
 import type { TraceRow } from "./trace";
@@ -64,7 +64,9 @@ import {
   UNDELIVERED_TX_ROW_CLASS,
   UNDELIVERED_TX_TITLE,
   cellContent,
+  disclosedSignals,
   isUndeliveredTx,
+  queryOpensDisclosure,
 } from "./traceTable";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import { useEditorFocusRecovery, useGridview } from "./useGridview";
@@ -144,6 +146,13 @@ interface TraceViewProps {
   /// about that message. Omitted, a right-click bubbles as it always
   /// did, which is what every view showing no frames wants.
   onFrameContextMenu?: (frame: TraceFrameRecord, e: React.MouseEvent) => void;
+  /// The active query's winner (ADR 0044), from the page envelope this
+  /// view's rows came from. A signal or value winner forces every
+  /// admitted frame row's disclosure open onto its `matching_signals`,
+  /// layered over the user's own fold set below rather than writing
+  /// into it — a message winner or no query (the default) leaves the
+  /// disclosure exactly as the user had it.
+  fuzzyWinner?: FuzzyWinner | null;
 }
 
 /// Inline mutators for an editable timeline event (ADR 0035), wired by the
@@ -184,9 +193,34 @@ export const SUBJECT_ROW_CLASS = "trace-row-subject";
 const frameRowId = (frame: TraceFrameRecord) => `${FRAME_ROW_PREFIX}${frame.index}`;
 /// The decoded signals a frame row discloses — rows of the space in
 /// their own right (ADR 0044), empty for anything that discloses
-/// nothing.
-function signalsOf(r: TraceRow | null): readonly SignalRecord[] {
-  return r?.row === "frame" ? r.frame.decoded?.signals ?? [] : [];
+/// nothing. `fuzzyWinner` narrows an admitted row to its
+/// `matching_signals` under a signal or value winner; see
+/// `disclosedSignals`.
+function signalsOf(
+  r: TraceRow | null,
+  fuzzyWinner: FuzzyWinner | null | undefined,
+): readonly SignalRecord[] {
+  return r?.row === "frame" ? disclosedSignals(r.frame, fuzzyWinner) : [];
+}
+
+/// Whether a row's signal disclosure is open right now: the user's own
+/// toggle for an event row, a message winner, or no query — or, under
+/// a signal or value winner, every frame row the host admitted with a
+/// `matching_signals` entry (ADR 0044). The query forces those open as
+/// an overlay on top of the user's fold set rather than writing into
+/// it, so a message winner or a cleared query snaps straight back to
+/// what the user had.
+function rowIsOpen(
+  r: TraceRow | null,
+  id: string | null,
+  expanded: ReadonlyMap<string, number>,
+  fuzzyWinner: FuzzyWinner | null | undefined,
+): boolean {
+  if (id == null) return false;
+  if (r?.row === "frame" && queryOpensDisclosure(fuzzyWinner)) {
+    return signalsOf(r, fuzzyWinner).length > 0;
+  }
+  return expanded.has(id);
 }
 /// The rows an event discloses when opened (ADR 0035): its label in
 /// full, then its user tag and its description body, each editable in
@@ -248,15 +282,19 @@ function eventDiscloses(e: TimelineEvent): boolean {
 /// How many rows a row discloses when opened — a frame's decoded signals,
 /// or an event's body. One notion, because the row heights, the scroll
 /// space and the keyboard cursor all have to agree on it.
-function contentCountOf(r: TraceRow | null): number {
+function contentCountOf(r: TraceRow | null, fuzzyWinner: FuzzyWinner | null | undefined): number {
   if (r?.row === "event") return eventDiscloses(r.event) ? eventBodyRows(r.event).length : 0;
-  return signalsOf(r).length;
+  return signalsOf(r, fuzzyWinner).length;
 }
 
 /// The name of the `i`th disclosed row, for its stable content-row id.
-function contentNameAt(r: TraceRow | null, i: number): string | null {
+function contentNameAt(
+  r: TraceRow | null,
+  i: number,
+  fuzzyWinner: FuzzyWinner | null | undefined,
+): string | null {
   if (r?.row === "event") return eventBodyRows(r.event)[i] ?? null;
-  return signalsOf(r)[i]?.name ?? null;
+  return signalsOf(r, fuzzyWinner)[i]?.name ?? null;
 }
 
 function rowIdOf(r: TraceRow | null): string | null {
@@ -300,6 +338,7 @@ export function TraceView({
   selectableEvents = false,
   onEventSelectionChange,
   onFrameContextMenu,
+  fuzzyWinner,
 }: TraceViewProps) {
   diagCount("render.TraceView"); // DIAG
 
@@ -369,11 +408,11 @@ export function TraceView({
   // Disclosed-row count for expanded-row sizing: a frame's decoded
   // signals, an event's body, nothing for a not-yet-loaded frame.
   const contentCount = useCallback(
-    (absIdx: number) => contentCountOf(getRow(absIdx)),
+    (absIdx: number) => contentCountOf(getRow(absIdx), fuzzyWinner),
     // `version` is a dep so a page landing re-derives the heights even
     // though it isn't read directly (what `getRow` answers changes
     // behind it).
-    [getRow, version],
+    [getRow, version, fuzzyWinner],
   );
 
   // The rendered height of a row, and what the expanded ones add over
@@ -385,11 +424,17 @@ export function TraceView({
   // grow to make one.
   const rowHeightAt = useCallback(
     (absIdx: number) => {
-      if (expanded.size === 0) return ROW_HEIGHT;
-      const id = rowIdOf(getRow(absIdx));
-      return id != null && expanded.has(id) ? expandedRowHeight(contentCount(absIdx)) : ROW_HEIGHT;
+      // The size-only walk stays skippable when nothing is expanded —
+      // unless the query is forcing rows open, in which case every row
+      // has to be checked for a `matching_signals` entry.
+      if (expanded.size === 0 && !queryOpensDisclosure(fuzzyWinner)) return ROW_HEIGHT;
+      const r = getRow(absIdx);
+      const id = rowIdOf(r);
+      return rowIsOpen(r, id, expanded, fuzzyWinner)
+        ? expandedRowHeight(contentCount(absIdx))
+        : ROW_HEIGHT;
     },
-    [expanded, getRow, contentCount],
+    [expanded, getRow, contentCount, fuzzyWinner],
   );
   // Iterates the open rows, not the trace: `count` here is the whole
   // capture and reaches millions.
@@ -551,18 +596,20 @@ export function TraceView({
   // is a dep so a page landing re-derives it (the content it gates
   // changes behind `getRow`).
   const openRuns = useMemo<readonly OpenContentRun[]>(() => {
-    if (expanded.size === 0) return EMPTY_RUNS;
+    if (expanded.size === 0 && !queryOpensDisclosure(fuzzyWinner)) return EMPTY_RUNS;
     const out: OpenContentRun[] = [];
     for (let i = 0; i < rows; i++) {
       const abs = firstVisibleRow + i;
       if (abs >= count) break;
       const r = getRow(abs);
       const id = rowIdOf(r);
-      if (id != null && expanded.has(id)) out.push({ index: abs, content: contentCountOf(r) });
+      if (rowIsOpen(r, id, expanded, fuzzyWinner)) {
+        out.push({ index: abs, content: contentCountOf(r, fuzzyWinner) });
+      }
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, rows, firstVisibleRow, count, getRow, version]);
+  }, [expanded, rows, firstVisibleRow, count, getRow, version, fuzzyWinner]);
   const contentSpace = useMemo<ContentRowSpace>(
     () => contentRowSpace(count, openRuns),
     [count, openRuns],
@@ -585,6 +632,7 @@ export function TraceView({
     autoScroll,
     anchorMax,
     contentSpace,
+    fuzzyWinner,
   });
   geometry.current = {
     firstVisibleRow,
@@ -594,6 +642,7 @@ export function TraceView({
     autoScroll,
     anchorMax,
     contentSpace,
+    fuzzyWinner,
   };
   /// Where a row id sits in the display space, or `-1`. Runs on a key
   /// press or a click, never in the render path.
@@ -609,8 +658,8 @@ export function TraceView({
       // A disclosed row is named after the row that disclosed it, so
       // only that row's own signals can answer for it.
       if (!id.startsWith(`${rowId}/`)) continue;
-      const k = Array.from({ length: contentCountOf(r) }, (_, i) =>
-        contentRowId(rowId, contentNameAt(r, i) ?? ""),
+      const k = Array.from({ length: contentCountOf(r, g.fuzzyWinner) }, (_, i) =>
+        contentRowId(rowId, contentNameAt(r, i, g.fuzzyWinner) ?? ""),
       ).indexOf(id);
       if (k >= 0) return g.contentSpace.indexOf({ index: abs, content: k });
     }
@@ -624,7 +673,7 @@ export function TraceView({
       const id = rowIdOf(r);
       if (r == null || id == null) return null;
       if (pos.content != null) {
-        const name = contentNameAt(r, pos.content);
+        const name = contentNameAt(r, pos.content, fuzzyWinner);
         // Depth 1, so Left walks out of a disclosed row to the message
         // that disclosed it.
         return name == null
@@ -634,12 +683,12 @@ export function TraceView({
       return {
         id,
         kind: "leaf",
-        expandable: contentCountOf(r) > 0,
+        expandable: contentCountOf(r, fuzzyWinner) > 0,
         depth: 0,
       };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [contentSpace, getRow, version],
+    [contentSpace, getRow, version, fuzzyWinner],
   );
   const scrollToRow = useCallback(
     (index: number) => {
@@ -683,7 +732,17 @@ export function TraceView({
         const i = windowIndexOf(id);
         return i < 0 ? null : rowModelAt(i);
       },
-      isExpanded: (id) => expanded.has(id),
+      // `id` here is always a message row's own id — `gridviewRows.ts`
+      // gates a call on `row.expandable`, and only a depth-0 row is
+      // (disclosed content rows never are) — so it's found the same way
+      // `windowIndexOf` finds one to move the cursor onto.
+      isExpanded: (id) => {
+        if (!queryOpensDisclosure(fuzzyWinner)) return expanded.has(id);
+        const i = windowIndexOf(id);
+        const pos = i < 0 ? null : contentSpace.at(i);
+        const r = pos ? getRow(pos.index) : null;
+        return rowIsOpen(r, id, expanded, fuzzyWinner);
+      },
       scrollToRow,
       setExpanded: setRowExpanded,
       // An event row is not a message: it carries nothing a drop target
@@ -713,8 +772,8 @@ export function TraceView({
           }
           if (!id.startsWith(FRAME_ROW_PREFIX)) continue;
           out.push(id);
-          if (!expanded.has(id)) continue;
-          for (const sig of signalsOf(r)) out.push(contentRowId(id, sig.name));
+          if (!rowIsOpen(r, id, expanded, fuzzyWinner)) continue;
+          for (const sig of signalsOf(r, fuzzyWinner)) out.push(contentRowId(id, sig.name));
         }
         return out;
       },
@@ -731,6 +790,7 @@ export function TraceView({
       selectableEvents,
       setRowExpanded,
       windowIndexOf,
+      fuzzyWinner,
     ],
   );
   /// The timeline event a row id names, or `null` — for a frame row, or
@@ -1007,7 +1067,7 @@ export function TraceView({
                   {isExpanded &&
                     rowId != null &&
                     frame?.decoded &&
-                    signalsOf(r).map((sig, k) => {
+                    signalsOf(r, fuzzyWinner).map((sig, k) => {
                       const id = contentRowId(rowId, sig.name);
                       return (
                         <DecodedSignalCell
