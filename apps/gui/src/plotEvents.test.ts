@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import { defaultVisibleKinds, type EventKind, type Note } from "./notes";
 import {
+  busErrorMarkerLabel,
+  busErrorTimelineEvents,
   plotEventExtents,
+  plotEventsFromTimeline,
   plotTimelineEvents,
   litLast,
   subjectsForSelection,
   wrapMarkerLabel,
+  type BusErrorSeries,
 } from "./plotEvents";
 import { signalRefKey, type SignalRef } from "./plotPanelConfig";
 
@@ -51,6 +55,72 @@ describe("plotTimelineEvents", () => {
     expect(plotTimelineEvents(own, null, 0, defaultVisibleKinds(), KIND_COLOR)[0].color).toBe(
       "#123456",
     );
+  });
+});
+
+describe("busErrorTimelineEvents", () => {
+  it("skips the boundary sample and marks every delta after it", () => {
+    // t in seconds, v the running count — the boundary (t=0, v=10) only
+    // supplies the first delta.
+    const series: BusErrorSeries[] = [{ bus: "b1", t: [0, 1, 3, 3.5], v: [10, 11, 14, 15] }];
+    const events = busErrorTimelineEvents(series);
+    expect(events.map((e) => e.id)).toEqual([
+      "bus-error:b1:11",
+      "bus-error:b1:14",
+      "bus-error:b1:15",
+    ]);
+    expect(events.map((e) => e.timestampNs)).toEqual([1e9, 3e9, 3.5e9]);
+    expect(events.every((e) => e.kind === "busError" && !e.editable)).toBe(true);
+  });
+
+  it("has nothing to mark for a single served point (nothing in the window)", () => {
+    expect(busErrorTimelineEvents([{ bus: "b1", t: [5], v: [3] }])).toEqual([]);
+    expect(busErrorTimelineEvents([{ bus: "b1", t: [], v: [] }])).toEqual([]);
+  });
+
+  it("keeps each bus's ordinals separate — the id names the bus", () => {
+    const series: BusErrorSeries[] = [
+      { bus: "b1", t: [0, 1], v: [1, 2] },
+      { bus: "b2", t: [0, 1], v: [1, 2] },
+    ];
+    expect(busErrorTimelineEvents(series).map((e) => e.id)).toEqual([
+      "bus-error:b1:2",
+      "bus-error:b2:2",
+    ]);
+  });
+});
+
+describe("busErrorMarkerLabel", () => {
+  it("carries count, span and rate", () => {
+    expect(busErrorMarkerLabel(5, 2)).toBe("5 bus errors over 2 s (2.5/s)");
+  });
+
+  it("reads singular for one error", () => {
+    expect(busErrorMarkerLabel(1, 1)).toBe("1 bus error over 1 s (1.0/s)");
+  });
+
+  it("has nothing to divide by when two errors land at once", () => {
+    expect(busErrorMarkerLabel(2, 0)).toBe("2 bus errors over 0 s (—)");
+  });
+});
+
+describe("plotEventsFromTimeline", () => {
+  const events = busErrorTimelineEvents([{ bus: "b1", t: [0, 2], v: [1, 3] }]);
+
+  it("has nowhere to draw before the panel has an origin", () => {
+    expect(plotEventsFromTimeline(events, null, defaultVisibleKinds(), KIND_COLOR)).toEqual([]);
+  });
+
+  it("projects onto display-relative seconds, colored by kind", () => {
+    const [marker] = plotEventsFromTimeline(events, 0, defaultVisibleKinds(), KIND_COLOR);
+    expect(marker.id).toBe("bus-error:b1:3");
+    expect(marker.t).toBe(2);
+    expect(marker.color).toBe("#red");
+  });
+
+  it("leaves it out when the kind is hidden", () => {
+    const notesOnly = new Set<EventKind>(["note", "messageBound"]);
+    expect(plotEventsFromTimeline(events, 0, notesOnly, KIND_COLOR)).toEqual([]);
   });
 });
 

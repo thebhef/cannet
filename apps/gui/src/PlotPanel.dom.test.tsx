@@ -309,6 +309,55 @@ const mockMathSignals: Record<string, unknown>[] = [];
 // which is what a view configured against it sees. Prefixed `mock` for
 // the hoisted factory.
 const mockUnassignedSignals = new Set<string>();
+/// Each bus's full error series (ADR 0035), keyed by bus id — absolute
+/// seconds and the running count, exactly what the real pyramid would
+/// hold at level 0. `bus_error_series` windows and decimates this the
+/// way the host's pyramid serve does (bounded to `2 * maxPoints`,
+/// boundary sample kept on each side), well enough to exercise the
+/// frontend's own windowing and labelling — the decimation's *fidelity*
+/// is `signal_cache.rs`'s tests, not this tier's. Prefixed `mock` for
+/// the hoisted factory.
+const mockBusErrorSeries: Record<string, { t: number[]; v: number[] }> = {};
+/// Whether the fake host's next `bus_error_series` answer reports
+/// `complete: false` (ADR 0049) — a cold pyramid still catching up.
+/// Prefixed `mock` for the hoisted factory.
+const mockBusErrorComplete = { value: true };
+/// Windowed slice of `full` over `[fromSeconds, toSeconds]` plus one
+/// boundary point on each side, decimated by even stride to at most
+/// `2 * maxPoints` points (first and last of the slice always kept) —
+/// the fake host's stand-in for the pyramid serve.
+function windowBusErrorSeries(
+  full: { t: number[]; v: number[] } | undefined,
+  fromSeconds: number,
+  toSeconds: number,
+  maxPoints: number,
+): { t: number[]; v: number[] } {
+  const src = full ?? { t: [], v: [] };
+  let lo = 0;
+  while (lo < src.t.length && src.t[lo] < fromSeconds) lo++;
+  const startIdx = Math.max(0, lo - 1);
+  let hi = src.t.length;
+  while (hi > 0 && src.t[hi - 1] > toSeconds) hi--;
+  const endIdx = Math.min(src.t.length - 1, hi);
+  if (endIdx < startIdx || src.t.length === 0) return { t: [], v: [] };
+  const t = src.t.slice(startIdx, endIdx + 1);
+  const v = src.v.slice(startIdx, endIdx + 1);
+  const budget = Math.max(1, maxPoints) * 2;
+  if (t.length <= budget) return { t, v };
+  const stride = Math.ceil(t.length / budget);
+  const outT: number[] = [];
+  const outV: number[] = [];
+  for (let i = 0; i < t.length; i += stride) {
+    outT.push(t[i]);
+    outV.push(v[i]);
+  }
+  const lastI = t.length - 1;
+  if (outT[outT.length - 1] !== t[lastI]) {
+    outT.push(t[lastI]);
+    outV.push(v[lastI]);
+  }
+  return { t: outT, v: outV };
+}
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals")
@@ -350,6 +399,23 @@ vi.mock("@tauri-apps/api/core", () => ({
         if (mockUnassignedSignals.has(name)) return null;
         return mockSignalExtents[name] ?? { lo: 10, hi: 20 };
       });
+    if (cmd === "bus_error_series") {
+      const a = args as
+        | { buses?: string[]; fromSeconds?: number; toSeconds?: number; maxPoints?: number }
+        | undefined;
+      const busIds = a?.buses ?? [];
+      return {
+        series: busIds.map((bus) =>
+          windowBusErrorSeries(
+            mockBusErrorSeries[bus],
+            a?.fromSeconds ?? -Infinity,
+            a?.toSeconds ?? Infinity,
+            a?.maxPoints ?? 0,
+          ),
+        ),
+        complete: mockBusErrorComplete.value,
+      };
+    }
     if (cmd === "list_math_signals") return mockMathSignals;
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     if (cmd === "get_settings") return { ...mockSettings };
@@ -493,7 +559,7 @@ import { stableSignalColor, wheelColor } from "./palette";
 import { signalKey } from "./plotData";
 import { freshTrace } from "./trace";
 import { makeLiveRegistry } from "./registryTestKit";
-import type { ProjectElement } from "./types";
+import type { Bus, ProjectElement } from "./types";
 import { diagCounts } from "./diag";
 import { AUTO_POINT_MARKER_FLOOR } from "./plotPoints";
 import { FIRST_SAMPLE_INDICATOR_MS } from "./useFirstSampleWait";
@@ -631,16 +697,21 @@ function renderPanel(opts?: {
   /// the existing `f`/`l`/`Mod+F` hotkeys) so a test can drive it with
   /// `commands.invoke(elementId, id, arg)`.
   commands?: ReturnType<typeof createPanelCommandRegistry>;
+  /// The project's bus list — the bus-error markers query's scope (task
+  /// 158). Defaults to none, like `projectCtx` itself: a harness that
+  /// doesn't ask for buses never triggers a `bus_error_series` round-trip.
+  buses?: Bus[];
 }) {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof PlotPanel>[0];
   const registry = opts?.registry ?? makeRegistry();
+  const project = opts?.buses ? { ...projectCtx, buses: opts.buses } : projectCtx;
   let baseData = { ...traceData, ...opts?.trace };
   let generatorIndexes: ReadonlyMap<string, number> = new Map();
   const build = (data: TraceData) => {
     let tree = (
       <TraceDataProvider value={data}>
-        <ProjectContext.Provider value={projectCtx}>
+        <ProjectContext.Provider value={project}>
           <SignalCatalogProvider>
             <MathSignalsProvider>
             <ElementRegistryContext.Provider value={registry}>
@@ -905,6 +976,8 @@ afterEach(async () => {
   mockMathSignals.length = 0;
   mockUnassignedSignals.clear();
   mockUplotPointsShow.answer = false;
+  for (const k of Object.keys(mockBusErrorSeries)) delete mockBusErrorSeries[k];
+  mockBusErrorComplete.value = true;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
   // Awaited: an un-awaited publish here can resolve inside a later
   // test's own `hydrateSettings()` call and clobber settings that
@@ -8935,6 +9008,189 @@ describe("the plot toolbar's Events chip", () => {
       fireEvent.click(screen.getByRole("button", { name: "Events" }));
       fireEvent.click(screen.getByRole("checkbox", { name: "Diagnostics" }));
       expect(await chipTexts()).not.toContain(label);
+    });
+  });
+});
+
+// Bus-error markers (ADR 0035 amended): a windowed `bus_error_series`
+// query over the panel's visible range plus margin, one marker per
+// served point after the first (the boundary sample), labelled from the
+// count/span/rate deltas. `valToPos` in the uPlot mock above is a fixed
+// `v * 100` — real px, not scale-aware — so every fixture in this block
+// keeps its display-relative times within roughly [0, 6] to stay inside
+// the fake plot box (`bbox.width` 600) the marker-chip clip tests
+// against; a value outside that range would silently never draw,
+// regardless of whether the marker itself is correct.
+describe("bus-error markers", () => {
+  const BUS = { id: "b1", name: "Bus 1" };
+  const STOPPED = { id: "el-bus-errors", trace: { start: 0, end: 60, isPaused: false } };
+
+  /// How many `bus_error_series` round-trips the panel has made so far.
+  const busErrorCalls = () =>
+    vi.mocked(invoke).mock.calls.filter((c) => c[0] === "bus_error_series").length;
+
+  /// Mount a stopped panel with one signal in "Area 1" and the given
+  /// buses, wait for the first sample (`baseSeconds` established), then
+  /// set an exact display-relative visible range (drops follow-live and
+  /// forces a re-sample, per `plot.setVisibleRange`) and wait for the
+  /// bus-error query that range triggers to land.
+  async function mountAndSetRange(range: string, buses = [BUS]) {
+    const commands = createPanelCommandRegistry();
+    renderPanel({
+      params: { elementId: STOPPED.id },
+      registry: makeRegistry(STOPPED),
+      commands,
+      buses,
+    });
+    addFocusedSignal("EngineSpeed");
+    await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+    const before = busErrorCalls();
+    act(() => {
+      commands.invoke(STOPPED.id, "plot.setVisibleRange", range);
+    });
+    await act(async () => {});
+    await waitFor(() => expect(busErrorCalls()).toBeGreaterThan(before));
+    // Let the panel's own resample settle so the fetched markers reach
+    // a render before a test reads the canvas.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    return commands;
+  }
+
+  const busErrorChipTexts = (inst: FakeUPlotInst): string[] => {
+    inst.drawOps.length = 0;
+    act(() => {
+      inst.fire("draw");
+    });
+    return inst.drawOps
+      .filter((o) => o.op === "fillText")
+      .map((o) => String(o.args[0]))
+      .filter((t) => t.includes("bus error"));
+  };
+
+  it("renders a bounded marker set for a 50,000-error serve", async () => {
+    await withSizedCanvas(async () => {
+      const n = 50_000;
+      mockBusErrorSeries["b1"] = {
+        t: Array.from({ length: n }, (_, i) => (i * 5) / n), // 0..~5, in the clip box
+        v: Array.from({ length: n }, (_, i) => i + 1),
+      };
+      await mountAndSetRange("0 5");
+      const inst = liveInstanceIn("Area 1");
+      const texts = busErrorChipTexts(inst);
+      // withSizedCanvas's 600px panel width is the point budget
+      // (`maxPoints`); the host bounds a served window to `2 *
+      // maxPoints` per bus, and every point but the first draws a marker.
+      expect(texts.length).toBeGreaterThan(0);
+      expect(texts.length).toBeLessThanOrEqual(1200);
+    });
+  });
+
+  it("zooming in re-queries and resolves more markers", async () => {
+    await withSizedCanvas(async () => {
+      const n = 3000;
+      mockBusErrorSeries["b1"] = {
+        t: Array.from({ length: n }, (_, i) => (i * 3) / n), // 0..~3
+        v: Array.from({ length: n }, (_, i) => i + 1),
+      };
+      const commands = await mountAndSetRange("0 3");
+      const inst = liveInstanceIn("Area 1");
+      const singular = (texts: string[]) => texts.filter((t) => t.startsWith("1 bus error over")).length;
+      const wideCallsBefore = busErrorCalls();
+      const wideSingles = singular(busErrorChipTexts(inst));
+
+      act(() => {
+        commands.invoke(STOPPED.id, "plot.setVisibleRange", "0 0.1");
+      });
+      await act(async () => {});
+      await waitFor(() => expect(busErrorCalls()).toBeGreaterThan(wideCallsBefore));
+
+      // At the wide view the point budget folds several raw errors into
+      // each served point (mostly 3-error deltas here); zoomed into a
+      // slice with fewer raw points than the budget, every one resolves
+      // on its own — the same episodes read as many more, finer markers.
+      // Polled rather than a fixed sleep: the query that landed above is
+      // one microtask ahead of the state update that lets it draw.
+      await waitFor(() => {
+        expect(singular(busErrorChipTexts(inst))).toBeGreaterThan(wideSingles);
+      });
+    });
+  });
+
+  it("labels carry count, span and rate, and the boundary sample feeds the first marker's delta", async () => {
+    await withSizedCanvas(async () => {
+      // t=2 sits before `fromSeconds` (range 3..5, margin 0.4 either
+      // side ⇒ [2.6, 5.4]) — the boundary sample. It must feed marker
+      // i=1's delta and never draw a marker of its own.
+      mockBusErrorSeries["b1"] = {
+        t: [2, 3.5, 4, 4.5, 5.6],
+        v: [1, 4, 9, 10, 13],
+      };
+      await mountAndSetRange("3 5");
+      const inst = liveInstanceIn("Area 1");
+      const texts = busErrorChipTexts(inst);
+
+      expect(texts).toEqual([
+        "3 bus errors over 1.5 s (2.0/s)", // (4−1) errors, 3.5−2 s — boundary's delta
+        "5 bus errors over 0.5 s (10/s)",
+        "1 bus error over 0.5 s (2.0/s)",
+        "3 bus errors over 1.1 s (2.7/s)", // the after-boundary point, still one marker
+      ]);
+    });
+  });
+
+  it("authored notes and bus-error markers coexist in one list", async () => {
+    await withSizedCanvas(async () => {
+      mockBusErrorSeries["b1"] = { t: [1, 2], v: [1, 2] };
+      const commands = createPanelCommandRegistry();
+      renderPanel({
+        params: { elementId: STOPPED.id },
+        registry: makeRegistry(STOPPED),
+        commands,
+        buses: [BUS],
+        notes: {
+          notes: [{ id: "n1", timestampNs: 1_500_000_000, label: "authored note" }],
+          addNote: () => {},
+          renameNote: () => {},
+          recolorNote: () => {},
+          describeNote: () => {},
+          retagNote: () => {},
+          removeNote: () => {},
+          linkEvents: () => {},
+          unlinkEvents: () => {},
+          setNoteSubjects: () => {},
+        },
+      });
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      act(() => {
+        commands.invoke(STOPPED.id, "plot.setVisibleRange", "0 3");
+      });
+      await act(async () => {});
+      await waitFor(() => expect(busErrorCalls()).toBeGreaterThan(0));
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      const inst = liveInstanceIn("Area 1");
+      inst.drawOps.length = 0;
+      act(() => {
+        inst.fire("draw");
+      });
+      const texts = inst.drawOps.filter((o) => o.op === "fillText").map((o) => String(o.args[0]));
+      expect(texts).toContain("authored note");
+      expect(texts.some((t) => t.includes("bus error"))).toBe(true);
+    });
+  });
+
+  it("shows the markers it has while `complete: false`, without an empty state", async () => {
+    await withSizedCanvas(async () => {
+      mockBusErrorSeries["b1"] = { t: [1, 2, 3], v: [1, 2, 3] };
+      mockBusErrorComplete.value = false;
+      await mountAndSetRange("0 3");
+      const inst = liveInstanceIn("Area 1");
+      const texts = busErrorChipTexts(inst);
+      expect(texts.length).toBeGreaterThan(0);
     });
   });
 });
