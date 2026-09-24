@@ -204,6 +204,133 @@ without a canvas so it can pin data, not ink.
 
 ## Status log
 
+### 2026-09-20 — phase 1: lane serve investigation (no product code)
+
+Branch `task146-lane-investigation` off `task142-trace-filter-panel`.
+Fixture only:
+`apps/gui/src-tauri/src/signal_cache.rs` ::
+`plain_min_max_serve_drops_a_held_code_narrower_than_three_pixel_columns`.
+
+**Verdict: a resolvable held code is lost.** Phase 2 changes the
+shared fold, as the ruling's second branch says.
+
+#### The scenario `61379f88` asserted
+
+`git show 61379f88` and its status-log A/B: the V2 scenario is
+`PackState` 0..=5 on 0x100 at **100 Hz**, stepping on every sample, over
+a **301.3 s** window at **`max_points` 2248**; `MainPositiveState` 0..=3
+at 10 Hz is the second lane and `MaxCellVoltage` the numeric control.
+Its checked-in miniature is `signal_sampler.rs` ::
+`runs_survive_a_budget_that_min_max_decimation_would_flatten` (6 codes ×
+50-sample holds, budget 4 buckets). Neither holds a code for longer than
+a served bucket, so neither answers the resolvable-hold question — the
+fixture above adds the hold and sweeps its length.
+
+`max_points` is one point per canvas pixel and the fetch window is padded
+by the same fraction the budget is (`PlotArea.tsx`), so **one served
+bucket is one canvas pixel column**: here 301.3 s / 2248 = **134 ms**.
+
+#### Observation — the control reproduces the commit's signature
+
+Plain `SignalCache::window(0, tip, 2248)` over 30 130 samples serves
+**3768 points carrying two of six codes** ({0, 5}; the lone 3 is the
+forced final input sample at t=301.29, the only one in the serve). The
+commit's live control measured "mean 2.95, last 2" of 6. Same result.
+
+#### Experiment — hold length swept against the plain serve
+
+One held run of **code 3** (adversarial: strictly between the codes its
+bucket neighbours carry, so neither argmin nor argmax) injected mid
+capture, length swept 1..64 samples, and its start offset swept 0..47
+samples so the verdict is not an artefact of one alignment. Measured on
+the real `SignalCache` (pyramid fold + `decimate_min_max`), with a pure
+model of the same path validated against it first (`real == model`
+exactly at holds 0/13/26/32/100, chosen level 1, decimation bucket 4
+level-1 points).
+
+| hold | in columns | served samples carrying code 3 |
+| --- | --- | --- |
+| ≤ 27 samples (0.27 s) | ≤ 2.01 | **0 at every offset tried** |
+| 28–43 samples | 2.09–3.21 | 0 **at some offsets**, ≥1 at others |
+| 43 samples @ offset 41 | 3.21 | **0** (confirmed on the real serve) |
+| ≥ 44 samples (0.44 s) | ≥ 3.28 | ≥ 1 at every offset |
+
+#### Conclusion
+
+A held enum state up to **3.21 canvas pixel columns wide (430 ms here)
+is served with no sample carrying its code at all**. That is not a
+coarse tile — the code is absent, so a tiles-from-served-runs overlay
+has nothing to draw and no downstream renderer can put it back. A
+3-pixel tile is drawable, so the loss is at a resolvable zoom. The
+mechanism is the one `61379f88` named, now bounded: min/max keeps a
+code only when a run **fully contains** a bucket (then min = max =
+code), which at the worst alignment needs ~2 decimation buckets on top
+of ~2 pyramid-fold buckets.
+
+The **single-enum ribbon does not differ**: `PlotArea.tsx:2009` sets
+`categorical: laneModeRef.current || enumActivePre`, so the ribbon and
+the lanes axis share `window_categorical` today and would share
+`window` after unification. The verdict covers both.
+
+#### What the fold change must guarantee — one sentence phase 2 tests
+
+> Every maximal run of equal consecutive raw samples that spans at least
+> **two served buckets** must contribute at least one served sample
+> carrying that run's value, at **every alignment** of the run against
+> the bucket grid.
+
+At the V2 width/budget that is a hold of 21 samples (0.21 s, 1.57
+columns) instead of today's 44 (0.44 s, 3.28 columns).
+
+**Where the change goes, measured.** Three variants over the same
+alignment sweep (largest hold lost at *some* offset; smaller is better):
+
+| variant | largest hold lost | control serve size | pyramid points above L0 |
+| --- | --- | --- | --- |
+| fold min/max, decimate min/max (today) | 0.43 s = **3.21 col** | 3768 | 10 034 |
+| fold min/max, **decimate first+last+min/max** | 0.20 s = **1.49 col** | 5651 (+50 %) | 10 034 |
+| fold first+last+min/max, decimate the same | 0.64 s = **4.78 col**, no safe hold ≤ 64 | 2339 | 23 425 (+133 %) |
+
+So first/last belongs in **`decimate_min_max` only**. Putting it in
+`SignalCache::fold` too makes fidelity *worse*: a fatter level makes
+`window`'s "coarsest level still over budget" rule land a level higher,
+whose points span more raw samples, and it costs 2.3× the pyramid.
+
+#### Consequences phase 2 inherits
+
+- First/last raises the serve from 3768 to 5651 points on this
+  scenario (+50 %), and the output bound from `2·max_points + 2` to
+  `4·max_points + 2`. Phase 2 also drops the 500-marker cap, so that
+  is 5651 markers where there were 500 — the harness reading phase 2
+  takes is over the *combined* change, and the pair-preserving
+  fallback the all-points ruling names should be sized against this
+  number, not against 3768.
+- First/last is what a **stepped numeric line** needs anyway (a step
+  renderer holds a value to the next sample, so a bucket's last sample
+  is the step's end), which is why it is the shared fold and not a
+  lane-only reducer.
+- The residual 1.49-column loss is the pyramid fold's, not the
+  decimation's, and closing it is not available cheaply — see the
+  third row above. Recorded in the owner review queue.
+
+#### Phase 2 size estimate
+
+| where | what | rough |
+| --- | --- | --- |
+| `signal_sampler.rs` | first/last in `decimate_min_max`; delete `reduce_transitions` + 2 tests; update the module rustdoc | −90 / +40 |
+| `signal_cache.rs` | delete `window_categorical` (~95 lines incl. rustdoc), `Reduction`, the `slice_many` branch, 4 categorical-serve tests; update `window` rustdoc; new held-run serve test | −350 / +80 |
+| `sampling.rs` | drop the `categorical` arg and its plumbing | −25 / +5 |
+| `useDecimatedRange.ts` + test | drop `categorical` from the request type and the fetch memo key | −20 / +5 |
+| `PlotArea.tsx` | drop the flag; tiles from runs of equal served values; delete the lane's private marker pass | −80 / +60 |
+| `plotEnumLanes.ts` (325 lines) + `plotPoints.ts` (219) | tiles from served runs; stride thinning out | −120 / +80 |
+| `PlotArea.draw.test.ts`, `PlotPanel.dom.test.tsx`, `plotEnumLanes.test.ts` | the mock categorical reducer goes; lane marker cases move to uPlot's markers | −150 / +120 |
+| ADR 0026 | lane unification recorded | +25 |
+
+**≈ 850 removed, ≈ 420 added, ~10 files** — net a deletion, which is
+the shape the ruling intends. It is still a large phase because the
+marker work rides with it; if it sprawls, the natural split is host
+(fold + reducer deletion) then frontend (tiles + markers).
+
 - 2026-09-19 — task opened from ungroomed feedback items 8–12;
   grooming started.
 - 2026-09-20 — all-points ruled: no cap, measure, pair-preserving
