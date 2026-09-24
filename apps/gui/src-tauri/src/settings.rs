@@ -93,6 +93,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("system_log_rate_limit", Scope::UserOverridable),
     ("health_sample_interval_ms", Scope::UserOverridable),
     ("sidecar_restart_budget", Scope::UserOverridable),
+    ("bus_error_episode_gap_s", Scope::UserOverridable),
     ("reconnect_backoff_ms", Scope::UserOverridable),
     ("default_server_address", Scope::UserOverridable),
     ("sidecar_dir", Scope::UserOverridable),
@@ -295,6 +296,12 @@ pub struct Settings {
     /// dongle, too many for a CI soak. `0` never auto-restarts. A
     /// manual "Restart sidecar" resets the counter either way.
     pub sidecar_restart_budget: u64,
+    /// Seconds of silence on a bus that end a bus-error **episode** — the
+    /// grain the Events panel lists bus errors at (ADR 0035). Default 5.
+    /// Bounded by [`MIN_BUS_ERROR_EPISODE_GAP_S`] and
+    /// [`MAX_BUS_ERROR_EPISODE_GAP_S`]: the episode list is bounded by
+    /// capture time ÷ gap, so the floor is what keeps it small.
+    pub bus_error_episode_gap_s: u64,
     /// How long the interface watcher waits before reconnecting to a
     /// `cannet-server` after the stream ends or a connect fails.
     /// Default 2000 ms: fine on a LAN, short for a flaky VPN to a
@@ -663,6 +670,17 @@ pub const Y_AXIS_MODES: &[&str] = &["unified", "per-unit", "individual"];
 /// in the field's help text instead.
 pub const MAX_MANTISSA_DECIMALS: u64 = 20;
 
+/// The shortest [`Settings::bus_error_episode_gap_s`]. The host holds one
+/// episode list per bus, bounded by capture time ÷ gap, so the floor is
+/// what bounds it; below a second, a fault's retransmit storm would read
+/// as a list of its own gaps rather than of its episodes.
+pub const MIN_BUS_ERROR_EPISODE_GAP_S: u64 = 1;
+
+/// The longest [`Settings::bus_error_episode_gap_s`]: an hour. A gap
+/// longer than that merges a session's unrelated faults into one episode,
+/// and says nothing a longer one would not.
+pub const MAX_BUS_ERROR_EPISODE_GAP_S: u64 = 3_600;
+
 /// The renderings [`Settings::can_id_format`] accepts for a trace-style
 /// table's `id` column. The names are the frontend's `CanIdFormat`
 /// spellings, since the value crosses the IPC verbatim.
@@ -700,6 +718,7 @@ impl Default for Settings {
             system_log_rate_limit: 5,
             health_sample_interval_ms: 20_000,
             sidecar_restart_budget: 3,
+            bus_error_episode_gap_s: 5,
             reconnect_backoff_ms: 2_000,
             default_server_address: "127.0.0.1:50051".to_string(),
             sidecar_dir: String::new(),
@@ -998,8 +1017,22 @@ fn refuse_below_minimums(settings: &mut Settings, complaints: &mut Vec<String>) 
             1,
             d.solo_page_size,
         ),
+        (
+            "bus_error_episode_gap_s",
+            &mut settings.bus_error_episode_gap_s,
+            MIN_BUS_ERROR_EPISODE_GAP_S,
+            d.bus_error_episode_gap_s,
+        ),
     ] {
         refuse_below(complaints, key, value, min, default);
+    }
+    if settings.bus_error_episode_gap_s > MAX_BUS_ERROR_EPISODE_GAP_S {
+        complaints.push(format!(
+            "bus_error_episode_gap_s {} is above the maximum of \
+             {MAX_BUS_ERROR_EPISODE_GAP_S}; ignoring it — using the default ({})",
+            settings.bus_error_episode_gap_s, d.bus_error_episode_gap_s
+        ));
+        settings.bus_error_episode_gap_s = d.bus_error_episode_gap_s;
     }
 }
 
@@ -1324,6 +1357,7 @@ mod tests {
             system_log_rate_limit: 0,
             health_sample_interval_ms: 0,
             sidecar_restart_budget: 1,
+            bus_error_episode_gap_s: 30,
             reconnect_backoff_ms: 10_000,
             default_server_address: "10.0.0.5:50051".to_string(),
             sidecar_dir: "sidecar-source-tree".to_string(),
@@ -1464,6 +1498,27 @@ mod tests {
         assert!(accepted.float_exponential_below.abs() < f64::EPSILON);
         assert!(accepted.float_exponential_from.abs() < f64::EPSILON);
         assert!(complaints.is_empty(), "{complaints:?}");
+    }
+
+    #[test]
+    fn a_bus_error_episode_gap_outside_its_bounds_is_refused_and_reported() {
+        for gap in [0, MAX_BUS_ERROR_EPISODE_GAP_S + 1] {
+            let (accepted, complaints) = validate(Settings {
+                bus_error_episode_gap_s: gap,
+                ..Settings::default()
+            });
+            assert_eq!(accepted.bus_error_episode_gap_s, 5, "{gap}");
+            assert_eq!(complaints.len(), 1, "{gap}: {complaints:?}");
+            assert!(complaints[0].contains("bus_error_episode_gap_s"));
+        }
+        for gap in [MIN_BUS_ERROR_EPISODE_GAP_S, MAX_BUS_ERROR_EPISODE_GAP_S] {
+            let (accepted, complaints) = validate(Settings {
+                bus_error_episode_gap_s: gap,
+                ..Settings::default()
+            });
+            assert_eq!(accepted.bus_error_episode_gap_s, gap);
+            assert!(complaints.is_empty(), "{gap}: {complaints:?}");
+        }
     }
 
     #[test]
