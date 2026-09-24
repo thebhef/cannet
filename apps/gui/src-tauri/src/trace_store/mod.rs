@@ -80,12 +80,12 @@ use rate::{RateEstimate, RateTrack};
 /// Detail of a before-session-drop episode's first frame: the bus it
 /// arrived on, the frame's own timestamp, and how far before the
 /// session start it fell. Recorded by [`TraceStore::append`] only on
-/// [`Self::frames_dropped_before_session`]'s own 0 → 1 transition, and
-/// cleared alongside the counter (a session clear, or a re-root that
+/// [`TraceStore::frames_dropped_before_session`]'s own 0 → 1 transition,
+/// and cleared alongside the counter (a session clear, or a re-root that
 /// starts a store empty) — so it always names the episode currently
 /// open, never a stale one the counter has moved on from. The
 /// `trace-grew` emitter turns it into the coalesced WARN episode's
-/// opening line ([`crate::emitters::DropEpisode`]).
+/// opening line (`crate::emitters::DropEpisode`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstDrop {
     /// Logical bus the dropped frame arrived on.
@@ -497,7 +497,7 @@ impl TraceStore {
     /// [`Self::frames_dropped_before_session`] and, on the episode's
     /// first frame, records [`Self::first_dropped_before_session`]; the
     /// `trace-grew` emitter turns the pair into coalesced WARN system-log
-    /// lines ([`crate::emitters::DropEpisode`]).
+    /// lines (`crate::emitters::DropEpisode`).
     ///
     /// A frame naming no bus is dropped the same way. Frames enter
     /// through a bus — the pump drops a channel no bus is mapped to —

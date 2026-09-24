@@ -540,8 +540,10 @@ without reshaping callers.
   the backend's own `_timestamp_offset` attribute; every other
   backend's hardware stamps are passed through untouched. Restamping
   receive with the host clock was **rejected** — it throws away the
-  hardware stamps Vector and PEAK get right. An upstream issue is
-  drafted; remove the workaround if and when a release fixes it.
+  hardware stamps Vector and PEAK get right. cannet does not modify or
+  petition its python-can dependency, so no upstream issue is filed;
+  the workaround stays until an upstream release fixes the defect on
+  its own.
 - **PyInstaller** (GPL-2.0-or-later **with** the bootloader exception)
   — `adopted` in Task 31 as the freeze tool that builds the sidecar
   onedir. A build tool only: its terms do not attach to our shipped

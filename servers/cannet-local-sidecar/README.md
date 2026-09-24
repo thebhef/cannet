@@ -167,7 +167,9 @@ The sidecar implements the **hardware-server wire model** described in
   restarts at zero on each open, because python-can re-derives its
   offset from the live timer every time the bus is opened. No other
   backend is touched — a hardware stamp that is right is left alone.
-  An upstream python-can issue tracks the defect.
+  The defect is worked around here in the sidecar; cannet does not
+  modify or petition its python-can dependency, so no upstream change
+  is pursued.
 - `Body::ClockProbe { t1 }` is answered with
   `Body::ClockReply { t1, t2, t3 }` — the sidecar's own wall-clock
   receive and send stamps, from the same `time.time_ns()` clock that
