@@ -367,3 +367,10 @@ export function isGridviewContentKey(stroke: KeyStroke): boolean {
 export function isMacPlatform(): boolean {
   return typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
 }
+
+/// Windows detection, the same way as [`isMacPlatform`] — used where a
+/// label needs to name Windows' own tool (e.g. the logger file grid's
+/// "Show in Explorer" reveal entry) rather than just knowing it isn't mac.
+export function isWindowsPlatform(): boolean {
+  return typeof navigator !== "undefined" && /win/i.test(navigator.platform);
+}

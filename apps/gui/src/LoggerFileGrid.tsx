@@ -19,6 +19,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Icon } from "./Icon";
 import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";
 import { GridviewHeader, GridviewRow as GridviewRowLine } from "./gridviewColumns";
+import { isMacPlatform, isWindowsPlatform } from "./keybindings";
 import {
   LOG_FILE_COLUMN_DEFS,
   logFileColumnsFromParams,
@@ -42,6 +43,7 @@ import {
   MESSAGE_COUNT_HINT,
   PENDING_CELL,
   PENDING_CELL_HINT,
+  revealLabel,
   type LogFileNode,
 } from "./logFileGrid";
 
@@ -84,6 +86,7 @@ export function LoggerFileGrid({
   initialColumns,
   onColumnsChange,
 }: LoggerFileGridProps) {
+  const revealMenuLabel = useMemo(() => revealLabel(isMacPlatform(), isWindowsPlatform()), []);
   // The column layout, through the shared column layer — resize,
   // reorder and show/hide are its gestures, not this view's. Changes
   // are reported upward for the panel to persist; the mount value never
@@ -406,7 +409,7 @@ export function LoggerFileGrid({
               setContextMenu(null);
             }}
           >
-            Show in Explorer
+            {revealMenuLabel}
           </button>
         </div>
       )}
