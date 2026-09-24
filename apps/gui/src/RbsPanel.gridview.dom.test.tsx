@@ -439,20 +439,27 @@ describe("RbsPanel on the gridview", () => {
     expect(screen.queryByText("PackStatus")).not.toBeInTheDocument();
   });
 
-  it("a match's ancestors read as expanded even when the user closed them", async () => {
+  it("a chevron collapse on a match's ancestor sticks while the filter stays active", async () => {
+    // Inverts the previous assertion here, which pinned the defect on
+    // purpose: the settle-time seed opens the path to a match once, but from
+    // then on the chevron writes the same set it always does — a
+    // collapse is not silently overridden by a standing force-reopen
+    // for as long as the filter stays active.
     vi.useFakeTimers();
     renderPanel();
     await act(async () => {});
-    // Close the bus by hand.
-    fireEvent.click(screen.getByLabelText("toggle Powertrain"));
-    expect(screen.queryByText("Inverter")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("filter"), {
       target: { value: "TorqueRequest" },
     });
     await act(async () => {
       vi.advanceTimersByTime(200);
     });
+    // The one-shot seed opened the path to the match.
     expect(screen.getByText("TorqueRequest")).toBeInTheDocument();
+    // Collapsing the bus now, by hand, with the query still in the box.
+    fireEvent.click(screen.getByLabelText("toggle Powertrain"));
+    expect(screen.queryByText("Inverter")).not.toBeInTheDocument();
+    expect(screen.queryByText("TorqueRequest")).not.toBeInTheDocument();
   });
 
   // Space is the layer's primary action on the cursor's row (ADR 0044).

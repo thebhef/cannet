@@ -85,3 +85,39 @@ filter-slot paragraph amended.
   filter, nothing more (overseer's first cut with an override set and
   hidden-match counts was over-built and withdrawn). One phase cut;
   exit criteria drafted. Grooming complete.
+- 2026-09-20 — phase implemented on `task147-collapse-under-filter`
+  (commit `2ea32f86`). `gridviewFilter.tsx`'s `effectiveExpanded`
+  read-merge is gone; `useGridviewFilter` instead takes an optional
+  `onMatchesSettled` callback, fired once per settled query (from a
+  `useEffect` keyed on the memoised `ancestorsOfMatches`) with the
+  match ancestors. `DatabasePanel.tsx` and `RbsPanel.tsx` each fold
+  those ids into their own expansion set the same way a chevron click
+  does, and read that same set everywhere a row's open/closed state
+  is asked for — no separate merged view. `gridviewRows.ts`'s cursor
+  arithmetic needed no change: it already read `isExpanded` off
+  whatever the adapter gave it, so unifying the read source was the
+  whole fix. `RbsPanel.gridview.dom.test.tsx`'s force-reopen
+  assertion is inverted (collapsing a match's ancestor mid-filter now
+  removes it); `gridviewFilter.dom.test.tsx` and
+  `DatabasePanel.dom.test.tsx` each gained a case pinning the same
+  settle-then-collapse-sticks behaviour, plus a case pinning that
+  clearing the query touches expansion not at all. ADR 0044 amended.
+  Full frontend suite green (247 files / 3491 tests) and `pnpm build`
+  green at the branch tip; Rust/cargo lanes unreachable (diff touches
+  only `apps/gui/src` and `docs/adr/`). No deviation from the ruling.
+- 2026-09-20 — review finding fixed (pre-amend `007441f4`): the seed
+  effect was keyed on `ancestorsOfMatches`' object identity, memoised
+  through `buildEntries`. For RBS, `buildFilterEntries` depends on
+  `view`, which `useHostMirror` replaces with a fresh object on every
+  `rbs-changed` / 500 ms poll tick, so a settled, unchanged query got a
+  fresh-identity, same-contents ancestor set on every poll and the
+  effect re-fired — reopening a row the user had just collapsed within
+  500 ms. Fixed by comparing the ancestor set's contents (size +
+  membership) against the last set the seed fired for, via a ref, and
+  skipping when unchanged; clearing the query resets the ref so a later
+  retyped query still seeds fresh. Added
+  `gridviewFilter.dom.test.tsx`'s "does not re-fire the seed when
+  entries rebuild but the settled matches don't change" (written first,
+  watched fail against the pre-fix code with 2 seed calls instead of
+  1). Full frontend suite green (247 files / 3492 tests), `pnpm build`
+  green, comment-references grep clean.
