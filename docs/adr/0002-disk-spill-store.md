@@ -103,6 +103,7 @@ frames are present from the first append:
 | `by-id` index | as frames land | append-only mmap postings, extended per frame (DS-3). |
 | Filter index | when a filter is **active** | built lazily per predicate off `by-id`, dropped when the predicate changes (DS-3). |
 | Signal-cache pyramid | first **plot sample** of a signal | *derived*, lazy: built on demand from the raw frames, mmap'd (DS-5). Since [ADR 0047](0047-persisted-signal-pyramids.md) it carries a manifest and is reused across a relaunch when its validity key still matches; a mismatch rebuilds it from the reopened frames on serve, as before. |
+| Bus-error series | first **windowed read** of a bus's error markers | *derived*, lazy: one signal-cache pyramid per bus (DS-5) whose samples are the bus's error frames, each carrying the running count of errors on that bus — persisted, restored, front-trimmed and swept with the signal pyramids. |
 | Time→index anchor index | each **flush** | *derived*: the sampled prefix maxima of the timestamp column that make a time→index lookup a binary search over an arrival-ordered store ([ADR 0024](0024-trace-like-view-timing.md)), 8 B per 1024 rows. The flush tick folds a bounded slice of the rows appended since the last tick and appends the result to `anchor.bin`; a reopen reads it back, so a restored capture's first anchor query walks only the rows since the last flush, never the capture. |
 
 What is genuinely only in **RAM** is bounded and never capture-length: the
@@ -190,6 +191,20 @@ A signal's pyramid is built lazily on first plot and
 **by-id-accelerated**: the signal's frames are located via its message
 id's `by-id` list, decoded once, and folded up the pyramid — so the
 build is O(that id's occurrences), not O(capture).
+
+**The bus-error series is a derived family on the same pyramid.** Each
+bus's error frames become a series of `(frame time, running count of
+errors on the bus)` — one sample per error frame — cached, served,
+persisted and bounded exactly like a decoded signal. Because the series
+never decreases, a bucket's min and max are its first and last samples,
+so every served point at every level is a real sample and two
+consecutive ones give the exact error count and span between them; a
+busy window is thinned by level, and nothing is evicted to make room
+([ADR 0035](0035-timeline-event-model.md)). It is the one family not
+by-id-accelerated: an error frame's id is whatever the controller
+reported, so its build scans the frames for the error flag and the bus
+— `O(capture)` once, then `O(new frames)` per serve, under the same
+serve budget ([ADR 0049](0049-bounded-serves-and-partial-answers.md)).
 
 ### DS-6 — Always-on
 

@@ -2819,8 +2819,7 @@ pub(crate) fn clear_trace_store_now(app: &AppHandle, state: &AppState) {
     if let Some(applied) = state.notes.clear() {
         let _ = app.emit("notes-changed", applied.notes);
     }
-    // The coalescer is the derived events' producer, so clearing them
-    // without clearing it would only have them republished a tick later.
+    // The bus-health tallies count the capture being discarded.
     if let Some(health) = app.try_state::<crate::bus_health::BusHealth>() {
         health.clear();
     }
