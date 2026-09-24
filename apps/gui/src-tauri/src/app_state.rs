@@ -154,6 +154,18 @@ pub(crate) struct AppState {
     /// path once the wire has answered, read by the trace fetch, and
     /// cleared with the capture. Owns its own lock.
     pub(crate) undelivered_tx: crate::transmit_commands::UndeliveredTx,
+    /// The exclusive lock on the open project's cache directory
+    /// ([ADR 0002](../../../docs/adr/0002-disk-spill-store.md) DS-7),
+    /// held for as long as the session is rooted there. `None` when the
+    /// session could not take it — a cache another cannet still holds,
+    /// which refuses the project open rather than opening a second
+    /// mapping over one directory.
+    ///
+    /// Behind a lock for the same reason [`Self::filter_index_dir`] is:
+    /// the session can move to a different project directory mid-flight
+    /// (ADR 0042), and the lock moves with it — destination first, so a
+    /// refusal leaves the session owning the cache it already had.
+    pub(crate) scratch_lock: Mutex<Option<cannet_spill::ScratchLock>>,
     /// Directory the live filter index roots in (a `filter/` subdir of the
     /// disk-spill scratch). The materialized filtered-trace index
     /// ([`ActiveFilterIndex`]) writes its segment files here. Behind a lock
@@ -297,6 +309,12 @@ impl AppState {
 
     pub(crate) fn rbs(&self) -> MutexGuard<'_, rbs::RbsRuntime> {
         self.rbs.lock().expect("rbs mutex poisoned")
+    }
+
+    pub(crate) fn scratch_lock(&self) -> MutexGuard<'_, Option<cannet_spill::ScratchLock>> {
+        self.scratch_lock
+            .lock()
+            .expect("scratch lock mutex poisoned")
     }
 
     pub(crate) fn filter_index_dir(&self) -> MutexGuard<'_, std::path::PathBuf> {

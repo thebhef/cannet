@@ -372,7 +372,18 @@ fn open_project_blocking(app: &tauri::AppHandle, path: &str) -> Result<Project, 
                 .to_path_buf();
             let dir = crate::project_dir::resolve(Some(Path::new(path)), &cache_root);
             crate::remember_project_dir(app, &dir, Some(Path::new(path)));
-            crate::reroot_session(app, &dir, crate::trace_store::Carry::Nothing);
+            // One session owns a project's cache (ADR 0002 DS-7). If
+            // another cannet still holds this one, the open is refused
+            // here — immediately, naming the holder, with nothing
+            // applied: no wait for it to let go, and no second store over
+            // a directory it is still mapping. The commonest cause is a
+            // relaunch that overtook the previous process's shutdown
+            // flush, so the message says the holder may still be closing.
+            if let Err(e) = crate::reroot_session(app, &dir, crate::trace_store::Carry::Nothing) {
+                let msg = format!("project at {path}: {e}");
+                crate::sys_error!(app, "project", "{msg}");
+                return Err(msg);
+            }
             // Record the open project's identity (ADR 0002 DS-7). A prior
             // capture belonging to this project is reloaded *separately* by
             // `restore_scratch_capture`, which the frontend calls after it
@@ -464,7 +475,12 @@ fn close_project_blocking(app: &tauri::AppHandle) {
         .to_path_buf();
     let dir = crate::project_dir::resolve(None, &cache_root);
     crate::remember_project_dir(app, &dir, None);
-    crate::reroot_session(app, &dir, crate::trace_store::Carry::Nothing);
+    // The session leaves the project either way — what a held
+    // destination costs it is the move onto the unsaved directory's
+    // cache, so it keeps the one it has and says why (ADR 0002 DS-7).
+    if let Err(e) = crate::reroot_session(app, &dir, crate::trace_store::Carry::Nothing) {
+        crate::sys_error!(app, "project", "{e}");
+    }
     // Leaving the project leaves its simulation: Run is session state
     // and a fresh project starts stopped.
     crate::rbs::stop_all_elements(&state);
@@ -620,7 +636,17 @@ fn save_project_as_blocking(
     // behind (they may still be mapped, and they rebuild), and the cache
     // list is how those bytes are reclaimed.
     crate::remember_project_dir(app, &dest, Some(Path::new(path)));
-    crate::reroot_session(app, &dest, crate::trace_store::Carry::Contents);
+    // The file is already saved — that is what the user asked for — so a
+    // destination cache another cannet holds is reported rather than
+    // failing the save. The capture stays in the directory it was in
+    // (ADR 0002 DS-7); nothing was moved.
+    if let Err(e) = crate::reroot_session(app, &dest, crate::trace_store::Carry::Contents) {
+        crate::sys_error!(
+            app,
+            "project",
+            "saved {path}, but the session did not move: {e}"
+        );
+    }
     Ok(id)
 }
 

@@ -1569,6 +1569,14 @@ capture — come back and it's still there. If you haven't given a
 project a directory of its own (below), cannet keeps one for it in its
 own cache space; nothing about that is a different mode.
 
+**One cannet at a time per project.** A running cannet holds its
+project's cache exclusively, so opening the same project in a second
+instance is refused rather than letting two sessions write one set of
+capture files. The message names the process holding it. The usual
+cause is a relaunch that beat the previous instance out the door: on a
+very large capture the window closes first and the host spends seconds
+more finishing the cache, so try again once it is gone.
+
 Because it lives outside the process, the capture **survives a quit or
 crash**: on the next launch the prior session reloads as a *stopped*
 historical trace so nothing is lost. The decoded-signal caches behind
