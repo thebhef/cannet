@@ -1759,6 +1759,12 @@ writes, so the panel teaches the file.
   ids overlap as numbers, so it is the only thing saying which frame a
   row is. Display columns only: the transmit and filter editors still
   take hex.
+- **Bus-error episode gap.** **Trace → Bus-error episode gap**
+  (`bus_error_episode_gap_s`, in seconds) is how long a bus must fall
+  silent before the Events panel's bus-error section starts a new
+  episode: 5 by default, at least 1, at most 3600. Shorter splits a
+  fault into more, smaller episodes; longer merges them. The section
+  re-derives as soon as it changes. Project-overridable.
 - **`developer` settings.** Machine-load and internal-cadence knobs —
   the plot's fetch interval, the view refresh interval, the live-update
   rate, the reconnect backoff, the health-sample cadence, the status
@@ -3415,12 +3421,18 @@ file too — inside the BLF marker, no sidecar, and as `cannet.tag` /
 `cannet.description` properties on an MDF `##EV`.
 
 **Bus errors are their own paged section**, below the notes: one row
-per episode — bus, time, count and span since the previous episode,
-rate — read a window at a time from the same pyramid the plot's Bus
-error markers draw from, so the section never holds a capture's whole
-error history in the frontend. Scrolling to the section's edge asks for
-more resolution, exactly as zooming the plot does; a still-catching-up
-answer shows what it has and keeps asking rather than going blank.
+per **episode** — a burst of errors on one bus, ended once the bus has
+been silent for the **episode gap** (**Trace → Bus-error episode gap**,
+`bus_error_episode_gap_s`: 5 s by default, 1 s at the least) — newest
+first, with the bus, the first error's time, the count, the span and
+the rate. Individual error frames are not listed; they are trace rows.
+The host derives the episodes from the same per-bus error series the
+plot's Bus error markers draw from and serves them a page at a time,
+so the section scrolls from the newest episode down to the capture's
+oldest without the frontend ever holding the list, and a change to the
+gap re-derives them. A still-catching-up answer — a capture just
+restored, say — shows what it has and keeps asking rather than going
+blank.
 
 **An event row in the Notes/comments section is the same row wherever
 it is drawn** — in the Events panel and interleaved into the

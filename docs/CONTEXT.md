@@ -143,6 +143,16 @@ hidden.
 
 ### Data and model
 
+**Bus-error episode**:
+A burst of error frames on one bus: every error in it follows the one
+before by less than the **episode gap** (`bus_error_episode_gap_s`,
+default 5 s, minimum 1 s), and a silence of at least the gap ends it.
+It is known by its first and last error — so it carries a count, a
+span and a rate — and its id is its last error's ordinal on the bus.
+The host derives the episodes from the bus's error series; the Events
+panel lists them. Individual error frames are trace rows, not episodes.
+_Avoid_: "run" — the removed coalescer's word, at a fixed 1 s gap.
+
 **Capture**:
 The recorded stream of CAN frames from one session, of indefinite
 length. The live capture and a saved `.blf` are the same logical thing

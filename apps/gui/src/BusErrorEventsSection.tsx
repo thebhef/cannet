@@ -1,45 +1,53 @@
 // The Events panel's bus-error section (ADR 0035 amended, ADR 0044): a
-// paged gridview over the level-0 error series, one row per episode —
-// bus, time, count and span since the previous point, rate. Modelled on
-// `ProjectCachesList.tsx`: rows as plain elements over `arrayRowSpace`,
-// not through the shared column framework — there is nowhere on this
-// section to persist a resizable/reorderable layout, so building one
-// would be a gesture that forgets itself on every reopen (ADR 0044).
+// paged gridview over the host's bus-error **episodes** at the configured
+// gap (`bus_error_episode_gap_s`), newest first — bus, first time, count,
+// span, rate. The row space is the host's whole episode list, paged by
+// offset through `useBusErrorEvents` (`useWindowedQuery`), so scrolling
+// reaches the oldest single episode while the section holds one page
+// (CLAUDE.md § GUI architecture). Rows are fixed-height and virtualized
+// over the trace views' scroll geometry (`traceViewport.ts`), in a
+// bounded row space of `PAGE_ROWS`.
 //
-// Authored events stay the Events panel's other, whole-list section;
-// this one reads `bus_error_series` through `useBusErrorEvents`
-// (`useWindowedQuery`) and never holds more than the current point
-// budget's worth of rows (CLAUDE.md § GUI architecture).
+// Plain rows rather than the shared column framework: there is nowhere on
+// this section to persist a resizable layout, so building one would be a
+// gesture that forgets itself on every reopen (ADR 0044).
 
-import { useCallback, useMemo, useRef, type UIEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 
-import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";
+import type { GridviewAdapter, GridviewRow } from "./gridviewRows";
 import { formatDurationSeconds, formatTimestamp } from "./format";
+import { useSetting } from "./hostSettings";
+import {
+  anchorFromScroll,
+  maxAnchorRow,
+  maxScrollTop,
+  ROW_HEIGHT,
+  scaledHeight,
+  scrollForAnchor,
+} from "./traceViewport";
 import type { Bus } from "./types";
 import { useGridview } from "./useGridview";
 import { useScrollRestore } from "./useScrollRestore";
-import { useBusErrorEvents } from "./useBusErrorEvents";
+import { useBusErrorEvents, type BusErrorEpisodeRow } from "./useBusErrorEvents";
+import { PAGE_ROWS as FETCH_PAGE_ROWS } from "./useWindowedQuery";
 
-/// How many rows the bounded row space holds on screen — what
-/// PageUp/PageDown move by (`.bus-error-events-grid`'s max-height over a
-/// row).
+/// Rows the bounded row space shows at once — its height, and what
+/// PageUp/PageDown move by.
 const PAGE_ROWS = 8;
 
-/// Fraction of the scrolled content's height, measured from the bottom,
-/// that counts as "near the end" — the trigger for asking the host for
-/// more resolution.
-const GROW_NEAR_BOTTOM_PX = 24;
-
-function episodeRate(count: number, spanSeconds: number): string {
-  if (spanSeconds <= 0) return "—";
-  const rate = count / spanSeconds;
+function episodeRate(rate: number | null): string {
+  if (rate == null) return "—";
   return `${rate.toFixed(rate >= 10 ? 0 : 1)}/s`;
+}
+
+function leaf(id: string): GridviewRow {
+  return { id, kind: "leaf", expandable: false, depth: 0 };
 }
 
 export interface BusErrorEventsSectionProps {
   /// Every session bus (ADR 0035 amended) — the same session-wide scope
-  /// the plot's own markers use (phase 2), not just buses some other
-  /// view happens to be showing.
+  /// the plot's own markers use, not just buses some other view happens
+  /// to be showing.
   buses: readonly Bus[];
   /// The session's zero point, for the time column (`formatTimestamp`).
   baseTimestamp: number | null;
@@ -55,103 +63,171 @@ export function BusErrorEventsSection({
   shownCount,
 }: BusErrorEventsSectionProps) {
   const busIds = useMemo(() => buses.map((b) => b.id), [buses]);
-  // The row's own field is the bus id `bus_error_series` was asked
-  // about; the project's name for it is what a reader wants on the row.
+  // The row's own field is the bus id the host was asked about; the
+  // project's name for it is what a reader wants on the row.
   const busName = useMemo(() => new Map(buses.map((b) => [b.id, b.name])), [buses]);
-  const { rows, complete, growBudget, atFullResolution } = useBusErrorEvents(busIds);
-
-  const gridRows = useMemo<GridviewRow[]>(
-    () => rows.map((r) => ({ id: r.id, kind: "leaf" as const, expandable: false, depth: 0 })),
-    [rows],
+  const gapSeconds = useSetting("bus_error_episode_gap_s");
+  const { count, version, getRow, ensureVisible, complete } = useBusErrorEvents(
+    busIds,
+    gapSeconds,
   );
 
+  // The row at the top of the viewport — the single source of truth for
+  // what is drawn, as in the trace views.
+  const [anchoredRow, setAnchoredRow] = useState(0);
+  // The viewport: up to `PAGE_ROWS` fixed-height rows, so the
+  // virtualization needs no measuring.
+  const viewportPx = Math.min(Math.max(count, 1), PAGE_ROWS) * ROW_HEIGHT;
+  const anchorMax = maxAnchorRow(count, viewportPx);
+  const firstVisibleRow = Math.min(anchorMax, anchoredRow);
+  // Rows sit on the anchor, never part-scrolled, so a viewport is exactly
+  // `PAGE_ROWS` of them.
+  const lastVisibleRow = Math.min(count, firstVisibleRow + PAGE_ROWS);
+  const scrollRange = maxScrollTop(count, viewportPx);
+
+  useEffect(() => {
+    if (count > 0) ensureVisible(firstVisibleRow, lastVisibleRow);
+  }, [firstVisibleRow, lastVisibleRow, count, ensureVisible]);
+
+  const visibleRows = useMemo(() => {
+    const out: { index: number; row: BusErrorEpisodeRow | null }[] = [];
+    for (let i = firstVisibleRow; i < lastVisibleRow; i++) out.push({ index: i, row: getRow(i) });
+    return out;
+    // `version` stands for what `getRow` answers changing behind it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstVisibleRow, lastVisibleRow, getRow, version]);
+
   const listRef = useRef<HTMLDivElement | null>(null);
-  // Read through a ref so the adapter's memo can close over the
-  // gridview's row-id helper before `useGridview` has run — the same
-  // forward reference `ProjectCachesList.tsx` uses, for the same reason:
-  // `scrollToRow` only runs on a later interaction.
-  const rowDomIdRef = useRef<(id: string) => string>((id) => id);
+  // The live geometry, read by the adapter's callbacks without making the
+  // adapter a fresh object on every scroll.
+  const geometry = useRef({ firstVisibleRow, anchorMax, scrollRange, getRow });
+  geometry.current = { firstVisibleRow, anchorMax, scrollRange, getRow };
 
   const adapter = useMemo<GridviewAdapter>(() => {
-    const space = arrayRowSpace(gridRows, () => false);
+    // Only the loaded page can name its rows; a row outside it is found
+    // by the page around the viewport, which is the page loaded.
+    const indexOf = (id: string) => {
+      const g = geometry.current;
+      const from = Math.max(0, g.firstVisibleRow - FETCH_PAGE_ROWS);
+      const to = Math.min(count, g.firstVisibleRow + FETCH_PAGE_ROWS);
+      for (let i = from; i < to; i++) if (g.getRow(i)?.id === id) return i;
+      return -1;
+    };
     return {
-      ...space,
+      count,
+      rowIdAt: (index) => geometry.current.getRow(index)?.id ?? null,
+      indexOf,
+      rowAt: (id) => (indexOf(id) < 0 ? null : leaf(id)),
+      isExpanded: () => false,
       scrollToRow(index) {
-        const id = space.rowIdAt(index);
-        const container = listRef.current;
-        if (id == null || container == null) return;
-        const el = document.getElementById(rowDomIdRef.current(id));
-        if (el == null) return;
-        const c = container.getBoundingClientRect();
-        const r = el.getBoundingClientRect();
-        if (r.top < c.top) container.scrollTop += r.top - c.top;
-        else if (r.bottom > c.bottom) container.scrollTop += r.bottom - c.bottom;
+        const g = geometry.current;
+        const next =
+          index < g.firstVisibleRow
+            ? index
+            : index > g.firstVisibleRow + PAGE_ROWS - 1
+              ? index - PAGE_ROWS + 1
+              : null;
+        if (next == null) return;
+        const anchor = Math.max(0, Math.min(g.anchorMax, next));
+        setAnchoredRow(anchor);
+        if (listRef.current) {
+          listRef.current.scrollTop = scrollForAnchor(anchor, g.anchorMax, g.scrollRange);
+        }
       },
       setExpanded: () => {
         /* no branches to expand */
       },
       isSelectable: () => false,
+      // Nothing is selectable, so there is no order to walk the whole
+      // (host-paged) space for.
+      selectionOrder: () => [],
     };
-  }, [gridRows]);
+    // `version`: the page behind `getRow` changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [count, version]);
 
   const grid = useGridview({ adapter, pageRows: PAGE_ROWS, idPrefix: "bus-error-events" });
-  rowDomIdRef.current = grid.rowDomId;
 
   const restoreScroll = useScrollRestore(listRef, shownCount);
   const onScroll = useCallback(
     (e: UIEvent<HTMLDivElement>) => {
       restoreScroll(e);
-      if (atFullResolution) return;
-      const el = e.currentTarget;
-      const nearBottom =
-        el.scrollHeight - el.scrollTop - el.clientHeight <= GROW_NEAR_BOTTOM_PX;
-      if (nearBottom) growBudget();
+      setAnchoredRow(anchorFromScroll(e.currentTarget.scrollTop, anchorMax, scrollRange));
     },
-    [restoreScroll, atFullResolution, growBudget],
+    [restoreScroll, anchorMax, scrollRange],
   );
 
   return (
     <div className="bus-error-events">
       <div className="bus-error-events-head">
         <span className="bus-error-events-title">Bus errors</span>
+        <span className="bus-error-events-gap" title="bus_error_episode_gap_s">
+          episodes at {gapSeconds} s
+        </span>
         {!complete && (
           <span className="bus-error-events-pending" title="still catching up with the capture">
             catching up…
           </span>
         )}
       </div>
-      {rows.length === 0 && <p className="bus-error-events-empty">No bus errors recorded.</p>}
+      {count === 0 && <p className="bus-error-events-empty">No bus errors recorded.</p>}
       <div
         className="bus-error-events-grid"
         ref={listRef}
         role="tree"
         aria-label="Bus errors"
+        style={{ height: count === 0 ? 0 : viewportPx }}
         onScroll={onScroll}
         {...grid.containerProps}
       >
-        {rows.map((row) => (
+        <div
+          role="presentation"
+          style={{ height: scaledHeight(count, viewportPx), position: "relative" }}
+        >
+          {/* Sticky viewport: the rows stay put while the spacer scrolls,
+              and only their content changes. */}
           <div
-            key={row.id}
-            id={grid.rowDomId(row.id)}
-            role="treeitem"
-            className={`bus-error-event-row${grid.cursor === row.id ? " cursor" : ""}`}
-            onClick={(e) => {
-              grid.onRowClick(row.id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey });
-              const target = e.target as HTMLElement | null;
-              if (target?.closest("button") == null) listRef.current?.focus();
-            }}
+            role="presentation"
+            style={{ position: "sticky", top: 0, height: viewportPx, overflow: "hidden" }}
           >
-            <span className="bus-error-event-bus">{busName.get(row.bus) ?? row.bus}</span>
-            <span className="bus-error-event-time">
-              {formatTimestamp(row.timestampNs / 1e9, baseTimestamp)}
-            </span>
-            <span className="bus-error-event-count">
-              {row.count === 1 ? "1 error" : `${row.count} errors`}
-            </span>
-            <span className="bus-error-event-span">{formatDurationSeconds(row.spanSeconds)}</span>
-            <span className="bus-error-event-rate">{episodeRate(row.count, row.spanSeconds)}</span>
+            {visibleRows.map(({ index, row }) => (
+              <div
+                key={row?.id ?? `pending-${index}`}
+                id={row ? grid.rowDomId(row.id) : undefined}
+                role="treeitem"
+                className={`bus-error-event-row${row != null && grid.cursor === row.id ? " cursor" : ""}`}
+                style={{
+                  position: "absolute",
+                  top: (index - firstVisibleRow) * ROW_HEIGHT,
+                  height: ROW_HEIGHT,
+                  left: 0,
+                  right: 0,
+                }}
+                onClick={(e) => {
+                  if (row == null) return;
+                  grid.onRowClick(row.id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey });
+                  listRef.current?.focus();
+                }}
+              >
+                {row && (
+                  <>
+                    <span className="bus-error-event-bus">{busName.get(row.bus) ?? row.bus}</span>
+                    <span className="bus-error-event-time">
+                      {formatTimestamp(row.firstSeconds, baseTimestamp)}
+                    </span>
+                    <span className="bus-error-event-count">
+                      {row.count === 1 ? "1 error" : `${row.count} errors`}
+                    </span>
+                    <span className="bus-error-event-span">
+                      {formatDurationSeconds(row.spanSeconds)}
+                    </span>
+                    <span className="bus-error-event-rate">{episodeRate(row.rate)}</span>
+                  </>
+                )}
+              </div>
+            ))}
           </div>
-        ))}
+        </div>
       </div>
     </div>
   );

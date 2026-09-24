@@ -7,27 +7,31 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
-/// What `bus_error_series` / `get_bus_health` answer — `{}` / an empty
-/// series by default, so a test that doesn't ask for bus errors never
-/// triggers a round-trip it didn't mean to exercise. A function receives
-/// the call's own args, for a fixture whose answer depends on the
-/// requested point budget (the "50,000 errors" scenario below).
+/// What `bus_error_episodes` / `get_bus_health` / `get_settings` answer —
+/// no episodes, `{}` and `{}` by default, so a test that doesn't ask for
+/// bus errors never triggers a round-trip it didn't mean to exercise. A
+/// function receives the call's own args, for a fixture that pages by
+/// offset (the host's episode list, below).
 let busErrorFixture: unknown | ((args?: Record<string, unknown>) => unknown) = {
-  series: [],
+  count: 0,
+  start: 0,
+  episodes: [],
   complete: true,
 };
 let busHealthFixture: Record<string, { errorCount: number }> = {};
+let settingsFixture: Record<string, unknown> = {};
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "bus_error_series") {
+    if (cmd === "bus_error_episodes") {
       return typeof busErrorFixture === "function" ? busErrorFixture(args) : busErrorFixture;
     }
     if (cmd === "get_bus_health") return busHealthFixture;
+    if (cmd === "get_settings") return settingsFixture;
     return [];
   }),
 }));
@@ -41,6 +45,7 @@ import { GOTO_EVENT } from "./gotoEvent";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { diagCounts } from "./diag";
+import { hydrateSettings } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import type { Bus } from "./types";
@@ -123,7 +128,7 @@ function panelProps(): Parameters<typeof EventsPanel>[0] {
 
 /// The project's bus list — the bus-error section's scope. Defaults to
 /// none, like `projectCtx` itself: a test that doesn't ask for buses
-/// never triggers a `bus_error_series` round-trip.
+/// never triggers a `bus_error_episodes` round-trip.
 function withProject(buses: Bus[] = []) {
   return buses.length === 0 ? projectCtx : { ...projectCtx, buses };
 }
@@ -163,7 +168,7 @@ function renderWithNotes(ctx: NotesContextValue, data: TraceData = traceData) {
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
-  busErrorFixture = { series: [], complete: true };
+  busErrorFixture = { count: 0, start: 0, episodes: [], complete: true };
   busHealthFixture = {};
 });
 afterEach(() => {
@@ -628,78 +633,128 @@ describe("EventsPanel record types", () => {
 });
 
 describe("EventsPanel bus-error section", () => {
-  // A bounded stand-in for the host's own decimation (~2× the requested
-  // point budget, `signal_cache.rs`'s own tests own that fidelity's
-  // exactness) — enough to prove the *frontend's* own bounding and its
-  // "ask for more resolution" path, the same tier `PlotPanel.dom.test.tsx`
-  // uses its own 50,000-error stand-in for.
-  function fiftyThousandErrorsFixture(args?: Record<string, unknown>) {
-    const total = 50_000;
-    const requested = Math.max(1, Number(args?.maxPoints ?? 1));
-    const n = Math.min(2 * requested, total);
-    const step = total / n;
-    const t: number[] = [];
-    const v: number[] = [];
-    for (let i = 1; i <= n; i++) {
-      const value = Math.round(i * step);
-      v.push(value);
-      t.push(value);
-    }
-    return { series: [{ t, v }], complete: true };
+  /// The host's episode list on `b1`, newest first, paged by offset as
+  /// `bus_error_episodes` pages it: episode k from the top ends on
+  /// ordinal 3·(n − k); the oldest is a single error.
+  function hostEpisodes(n: number, complete = true) {
+    return (args?: Record<string, unknown>) => {
+      const offset = Number(args?.offset ?? 0);
+      const limit = Number(args?.limit ?? 0);
+      const episodes = [];
+      for (let k = offset; k < Math.min(n, offset + limit); k++) {
+        const oldest = k === n - 1;
+        episodes.push({
+          bus: "b1",
+          firstT: 1_000 + 2 * (n - 1 - k),
+          lastT: 1_000 + 2 * (n - 1 - k) + (oldest ? 0 : 0.004),
+          count: oldest ? 1 : 3,
+          span: oldest ? 0 : 0.004,
+          rate: oldest ? null : 750,
+          lastOrdinal: 3 * (n - k),
+        });
+      }
+      return { count: n, start: offset, episodes, complete };
+    };
   }
 
   function rows(): HTMLElement[] {
     return Array.from(document.querySelectorAll<HTMLElement>(".bus-error-event-row"));
   }
 
+  /// The event id a row stands for, out of its gridview DOM id.
+  function rowEventId(row: HTMLElement): string {
+    return decodeURIComponent(row.id.slice("bus-error-events-".length));
+  }
+
+  function episodeCalls(): Record<string, unknown>[] {
+    return vi
+      .mocked(invoke)
+      .mock.calls.filter((c) => c[0] === "bus_error_episodes")
+      .map((c) => c[1] as Record<string, unknown>);
+  }
+
+  afterEach(async () => {
+    settingsFixture = {};
+    await hydrateSettings();
+  });
+
   it("asks the host nothing without session buses, and says so plainly", () => {
     // The section is still listed — "nothing is hidden and unfindable"
     // holds for Diagnostics the same as every other kind group — but an
     // empty bus list is nothing to query the host over.
-    busErrorFixture = fiftyThousandErrorsFixture;
+    busErrorFixture = hostEpisodes(10);
     renderPanel([]);
     expect(screen.getByText("No bus errors recorded.")).toBeInTheDocument();
-    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("bus_error_series", expect.anything());
+    expect(episodeCalls()).toHaveLength(0);
   });
 
-  it("renders a bounded row set from a window over 50,000 errors", async () => {
-    busErrorFixture = fiftyThousandErrorsFixture;
+  it("pages 10,000 episodes by offset, newest first, a bounded row set at a time", async () => {
+    busErrorFixture = hostEpisodes(10_000);
     renderPanel([], traceData, [CAN1]);
     await waitFor(() => expect(rows().length).toBeGreaterThan(0));
-    // Bounded well under the 50,000 episodes the window covers.
-    expect(rows().length).toBeLessThan(1_000);
+    expect(episodeCalls()[0]).toEqual({ buses: ["b1"], gapSeconds: 5, offset: 0, limit: 1024 });
+    // A viewport's worth, never the list.
+    expect(rows().length).toBe(8);
 
     const first = rows()[0];
+    expect(rowEventId(first)).toBe("bus-error:b1:30000");
+    expect(rowEventId(rows()[1])).toBe("bus-error:b1:29997");
     expect(first.querySelector(".bus-error-event-bus")?.textContent).toBe("CAN1");
-    expect(first.querySelector(".bus-error-event-count")?.textContent).toMatch(/errors?$/);
-    expect(first.querySelector(".bus-error-event-span")?.textContent).toMatch(/s$/);
-    expect(first.querySelector(".bus-error-event-rate")?.textContent).toMatch(/\/s$|—/);
+    expect(first.querySelector(".bus-error-event-time")?.textContent).not.toBe("");
+    expect(first.querySelector(".bus-error-event-count")?.textContent).toBe("3 errors");
+    expect(first.querySelector(".bus-error-event-span")?.textContent).toBe("0.004 s");
+    expect(first.querySelector(".bus-error-event-rate")?.textContent).toBe("750/s");
   });
 
-  it("re-queries at a larger point budget when scrolled to the bottom", async () => {
-    busErrorFixture = fiftyThousandErrorsFixture;
+  it("scrolls down to the oldest single episode by fetching its page", async () => {
+    busErrorFixture = hostEpisodes(10_000);
     renderPanel([], traceData, [CAN1]);
     await waitFor(() => expect(rows().length).toBeGreaterThan(0));
-    const before = rows().length;
 
     const grid = document.querySelector(".bus-error-events-grid") as HTMLElement;
-    Object.defineProperty(grid, "scrollHeight", { value: 1000, configurable: true });
-    Object.defineProperty(grid, "clientHeight", { value: 200, configurable: true });
-    grid.scrollTop = 1000; // dragged to the very bottom
+    grid.scrollTop = 10_000 * 22; // dragged to the very bottom
     fireEvent.scroll(grid);
 
-    await waitFor(() => expect(rows().length).toBeGreaterThan(before));
+    await waitFor(() => expect(episodeCalls().some((c) => Number(c.offset) > 8_000)).toBe(true));
+    await waitFor(() => {
+      const last = rows()[rows().length - 1];
+      expect(rowEventId(last)).toBe("bus-error:b1:3");
+    });
+    const last = rows()[rows().length - 1];
+    expect(last.querySelector(".bus-error-event-count")?.textContent).toBe("1 error");
+    expect(last.querySelector(".bus-error-event-rate")?.textContent).toBe("—");
+  });
+
+  it("re-derives when the episode gap setting changes", async () => {
+    busErrorFixture = hostEpisodes(4);
+    renderPanel([], traceData, [CAN1]);
+    await waitFor(() => expect(rows().length).toBe(4));
+
+    busErrorFixture = hostEpisodes(12);
+    settingsFixture = { bus_error_episode_gap_s: 1 };
+    await act(async () => {
+      await hydrateSettings();
+    });
+    await waitFor(() => expect(rows().length).toBe(8));
+    expect(episodeCalls()[episodeCalls().length - 1]).toEqual({
+      buses: ["b1"],
+      gapSeconds: 1,
+      offset: 0,
+      limit: 1024,
+    });
+    expect(screen.getByText("episodes at 1 s")).toBeInTheDocument();
   });
 
   it("shows what it has quietly on a partial (`complete: false`) answer", async () => {
-    busErrorFixture = { series: [{ t: [10, 20], v: [1, 2] }], complete: false };
+    busErrorFixture = hostEpisodes(2, false);
     renderPanel([], traceData, [CAN1]);
-    await waitFor(() => expect(rows().length).toBe(1));
+    await waitFor(() => expect(rows().length).toBe(2));
     expect(screen.getByText("catching up…")).toBeInTheDocument();
+    expect(screen.queryByText("No bus errors recorded.")).toBeNull();
   });
 
   it("lists authored events and the bus-error section together", async () => {
-    busErrorFixture = { series: [{ t: [10, 20], v: [1, 2] }], complete: true };
+    busErrorFixture = hostEpisodes(1);
     renderPanel(
       [{ id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" }],
       traceData,
@@ -710,7 +765,7 @@ describe("EventsPanel bus-error section", () => {
   });
 
   it("hides on request, like every other Diagnostics-group kind", async () => {
-    busErrorFixture = { series: [{ t: [10, 20], v: [1, 2] }], complete: true };
+    busErrorFixture = hostEpisodes(1);
     renderPanel([], traceData, [CAN1]);
     await waitFor(() => expect(rows().length).toBe(1));
 
