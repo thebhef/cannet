@@ -4535,6 +4535,10 @@ button.color-chip {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A trace column whose file the host has not read the header of yet. */
+.logger-file-cell.pending {
+  opacity: 0.55;
+}
 .logger-file-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6699,6 +6703,10 @@ input.unit-customization-add {
   color: var(--text-muted);
   width: 4.5rem;
   text-align: right;
+}
+/* A cache whose directory walk has not finished yet. */
+.project-cache-size.pending {
+  opacity: 0.55;
 }
 .project-cache-badge {
   font-size: 0.65rem;

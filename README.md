@@ -1746,7 +1746,9 @@ writes, so the panel teaches the file.
 - **Reclaiming disk — Storage › Project caches.** Every project keeps
   its own capture, so the panel lists every project directory cannet
   holds cached data for and what each one is currently using (measured
-  when you look, not on a timer — the walk is not cheap). Each row
+  when you look, not on a timer — the walk is not cheap). The rows
+  appear straight away and each size shows `…` until its measurement
+  lands, so the panel never waits on a directory walk. Each row
   wears a chip for where it lives — `project dir` for one you made,
   `auto-located` for one cannet chose because none was named, with a
   tooltip on the chip saying why — beside its badge for what it
@@ -2947,7 +2949,12 @@ message count** (both directions — rx and tx alike, since a logger writes
 the whole capture) **and filesystem modified time**; start/end/count are
 served from a per-file cache the host keeps, invalidated the moment a
 file's modified time moves, so listing the folder again costs nothing for
-a file nobody has touched. The file currently being written shows as the
+a file nobody has touched. **The list never waits for a file it has not
+read yet**: a file the host has no header for shows `…` in those four
+columns while it reads it in the background, one read per file however
+often the list refreshes, and the columns fill in as each finishes. That
+is what lets the panel keep listing while a logger writes into a folder
+someone has just dropped half a gigabyte of old runs into. The file currently being written shows as the
 list's own live row — a ● beside its name, with its size and message
 count growing — instead of a separate status line. Importing a file from
 the list — the per-row button, its context menu, or Space on the

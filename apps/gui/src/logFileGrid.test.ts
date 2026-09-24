@@ -21,6 +21,7 @@ const FILE_A: LogFileNode = {
   endNs: 1_700_000_010_000_000_000,
   messageCount: 100,
   modifiedMs: 1_700_000_010_000,
+  scanPending: false,
   writing: false,
 };
 
@@ -34,6 +35,7 @@ const WRITING: LogFileNode = {
   messageCount: 3,
   modifiedMs: 1_700_000_020_000,
   writing: true,
+  scanPending: false,
 };
 
 const SUB: LogFileNode = {

@@ -21,15 +21,23 @@
 //! than failing anything. Losing it costs the user the list, not any data
 //! — every entry is re-recorded the next time its project is opened.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::project_dir::ProjectDir;
 
 /// File name under `app_config_dir`.
 const REGISTRY_FILE: &str = "projects.json";
+
+/// Emitted when a background measurement of the registered caches has
+/// finished and the sizes the listing serves are no longer pending. The
+/// settings view's cache list re-asks; it carries no payload, because
+/// the walk measures the whole list at once.
+pub const PROJECT_CACHES_MEASURED_EVENT: &str = "project-caches-measured";
 
 /// One remembered project directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +191,109 @@ pub enum CacheRowState {
     Known,
 }
 
+/// What the last background walk measured, per cache directory, and the
+/// single-flight gate over the walk itself.
+///
+/// The measurement is a directory walk per registered cache — the work
+/// ADR 0002 DS-8 calls expensive — so it is never what a listing waits
+/// for (ADR 0049). A listing answers with what is in here (pending for a
+/// cache never measured, or one whose figure was dropped by a Clear or a
+/// Delete) and asks for a walk; the walk announces itself with
+/// [`PROJECT_CACHES_MEASURED_EVENT`] and the view asks again.
+///
+/// Single-flight, the same shape as the pyramid sweep: requests that
+/// arrive while a walk runs set `pending` and are drained by the walker
+/// already running, so a settings view shown and hidden repeatedly costs
+/// one walk at a time, not one per show.
+#[derive(Default)]
+pub struct ProjectCacheSizes {
+    measured: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    gate: Arc<Mutex<WalkGate>>,
+}
+
+#[derive(Default)]
+struct WalkGate {
+    running: bool,
+    pending: bool,
+}
+
+impl ProjectCacheSizes {
+    /// The last measured size of `cache`, or `None` — never measured, or
+    /// dropped because something changed what it holds.
+    fn get(&self, cache: &Path) -> Option<u64> {
+        self.measured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(cache)
+            .copied()
+    }
+
+    /// Forget what `cache` held. Called by Clear and Delete: the figure
+    /// they invalidate is worse than no figure, because a stale one
+    /// reads as a measurement.
+    fn forget(&self, cache: &Path) {
+        self.measured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(cache);
+    }
+
+    /// Forget every measurement — Clear all.
+    fn forget_all(&self) {
+        self.measured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    /// Measure `caches` in the background and announce the result.
+    ///
+    /// Returns immediately. `measure` walks one directory (the real
+    /// `dir_footprint` in production, a counting stub in tests) and
+    /// `announce` is the event; both injected so the single-flight rule
+    /// is testable without a Tauri app or a multi-gigabyte fixture.
+    fn measure_in_background(
+        &self,
+        caches: Vec<PathBuf>,
+        measure: Arc<dyn Fn(&Path) -> u64 + Send + Sync>,
+        announce: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        {
+            let mut gate = self
+                .gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            gate.pending = true;
+            if gate.running {
+                return;
+            }
+            gate.running = true;
+        }
+        let measured = Arc::clone(&self.measured);
+        let gate = Arc::clone(&self.gate);
+        std::thread::spawn(move || loop {
+            {
+                let mut g = gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !g.pending {
+                    g.running = false;
+                    return;
+                }
+                g.pending = false;
+            }
+            for cache in &caches {
+                let bytes = measure(cache);
+                measured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(cache.clone(), bytes);
+            }
+            announce();
+        });
+    }
+}
+
 /// One project's row in the cache list: where it is, what its cache
 /// holds, and what may be done to it.
 #[derive(Debug, Clone, Serialize)]
@@ -190,9 +301,14 @@ pub struct ProjectCacheRow {
     root: String,
     cache: String,
     project_file: Option<String>,
-    /// Bytes the cache directory currently holds — measured **on
-    /// demand**, never on a timer: the walk is not cheap (ADR 0002 DS-8).
-    bytes: u64,
+    /// Bytes the cache directory held when it was last measured, or
+    /// `None` while that measurement is still pending.
+    ///
+    /// The walk is not cheap (ADR 0002 DS-8), so it is asked for by the
+    /// listing and run in the background, never waited on and never on a
+    /// timer (ADR 0049). A row therefore lists at once and its size
+    /// arrives with [`PROJECT_CACHES_MEASURED_EVENT`].
+    bytes: Option<u64>,
     state: CacheRowState,
     /// Whether cannet chose this directory's location. Separate from
     /// `state`, which is the one badge a row wears: the *open* project may
@@ -202,19 +318,25 @@ pub struct ProjectCacheRow {
     last_used_seconds: u64,
 }
 
-/// Build the cache list from `registry`, measuring each cache as it goes.
+/// Build the cache list from `registry`, reading each cache's size out of
+/// `sizes` — never measuring one here.
 ///
 /// A row is produced for every entry, whatever the filesystem says: a
 /// project directory deleted outside the app shows as
 /// [`CacheRowState::Missing`] at whatever its cache still holds, and one
-/// whose cache is gone shows zero bytes. Nothing here can fail, which is
-/// what keeps a stale entry from stopping the panel opening.
-fn rows(registry: &ProjectRegistry, active_root: &Path) -> Vec<ProjectCacheRow> {
+/// whose cache is gone shows zero bytes once it has been walked. Nothing
+/// here can fail, which is what keeps a stale entry from stopping the
+/// panel opening.
+fn rows(
+    registry: &ProjectRegistry,
+    active_root: &Path,
+    sizes: &ProjectCacheSizes,
+) -> Vec<ProjectCacheRow> {
     registry
         .projects
         .iter()
         .map(|e| ProjectCacheRow {
-            bytes: crate::trace_store::dir_footprint(&e.cache_path()),
+            bytes: sizes.get(&e.cache_path()),
             state: row_state(e, active_root),
             auto_located: e.auto_located,
             root: e.root.clone(),
@@ -332,19 +454,46 @@ fn clear_caches_except(config_dir: &Path, except: &Path) -> Result<(), String> {
 }
 
 /// The project cache list: every project directory cannet has worked in,
-/// with what its cache currently holds (ADR 0042 §5).
+/// and what its cache held when it was last measured (ADR 0042 §5).
 ///
-/// Sizes are measured **when this is called** — the directory walk is too
-/// expensive to put on a timer (ADR 0002 DS-8), so the view asks when it
-/// opens and when an action changes something.
+/// **The rows come back before anything is walked** (ADR 0049). A size is
+/// a directory walk per cache, which ADR 0002 DS-8 calls expensive and
+/// which this command therefore does not do: a cache never measured, or
+/// one a Clear or Delete has invalidated, lists with `bytes: None` and
+/// the view shows it pending. Asking triggers one background walk of the
+/// whole list — single-flight, so a settings view shown repeatedly costs
+/// one at a time — and it announces itself with
+/// [`PROJECT_CACHES_MEASURED_EVENT`].
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// what is left is reading one small file out of the config directory,
+/// but it is still the filesystem, and ADR 0048's rule is that the IPC
+/// thread does none of it.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn list_project_caches(app: tauri::AppHandle) -> Vec<ProjectCacheRow> {
-    let Ok(config) = crate::persisted_json::config_dir(&app) else {
-        return Vec::new();
-    };
-    let active = app.state::<crate::project_dir::ActiveProjectDir>().get();
-    rows(&read(&config), active.root())
+pub async fn list_project_caches(app: tauri::AppHandle) -> Vec<ProjectCacheRow> {
+    crate::sampling::off_async_workers(move || {
+        let Ok(config) = crate::persisted_json::config_dir(&app) else {
+            return Vec::new();
+        };
+        let registry = read(&config);
+        let active = app.state::<crate::project_dir::ActiveProjectDir>().get();
+        let sizes = app.state::<ProjectCacheSizes>();
+        let rows = rows(&registry, active.root(), &sizes);
+        let announce_app = app.clone();
+        sizes.measure_in_background(
+            registry
+                .projects
+                .iter()
+                .map(ProjectEntry::cache_path)
+                .collect(),
+            Arc::new(|p: &Path| crate::trace_store::dir_footprint(p)),
+            Arc::new(move || {
+                let _ = announce_app.emit(PROJECT_CACHES_MEASURED_EVENT, ());
+            }),
+        );
+        rows
+    })
+    .await
 }
 
 /// **Clear**: empty one project's cached data, keeping the cache
@@ -376,6 +525,10 @@ fn clear_project_cache_blocking(app: &tauri::AppHandle, root: String) -> Result<
     let entry = clear_cache(&config, &root).inspect_err(|msg| {
         crate::sys_warn!(app, "project", "{msg}");
     })?;
+    // The figure this row was listing is now wrong, and a wrong figure
+    // reads as a measurement. Drop it: the next listing shows it pending
+    // and the walk it asks for fills it in.
+    app.state::<ProjectCacheSizes>().forget(&entry.cache_path());
     crate::sys_info!(app, "project", "cleared the data cache for {}", entry.root);
     Ok(())
 }
@@ -405,6 +558,7 @@ fn delete_project_cache_blocking(app: &tauri::AppHandle, root: String) -> Result
     let entry = delete_cache(&config, &root).inspect_err(|msg| {
         crate::sys_warn!(app, "project", "{msg}");
     })?;
+    app.state::<ProjectCacheSizes>().forget(&entry.cache_path());
     crate::sys_info!(app, "project", "removed the data cache for {}", entry.root);
     Ok(())
 }
@@ -444,6 +598,7 @@ fn clear_all_project_caches_blocking(app: &tauri::AppHandle) -> Result<(), Strin
     {
         crate::capture::clear_trace_store_now(app, &app.state::<crate::app_state::AppState>());
     }
+    app.state::<ProjectCacheSizes>().forget_all();
     cleared.inspect_err(|msg| {
         crate::sys_warn!(app, "project", "{msg}");
     })?;
@@ -454,6 +609,36 @@ fn clear_all_project_caches_blocking(app: &tauri::AppHandle) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// A [`ProjectCacheSizes`] that has already measured every cache in
+    /// `registry`, for the row tests that are about what a row *says*
+    /// rather than when it says it.
+    fn already_measured(registry: &ProjectRegistry) -> ProjectCacheSizes {
+        let sizes = ProjectCacheSizes::default();
+        let (tx, rx) = mpsc::channel();
+        sizes.measure_in_background(
+            registry
+                .projects
+                .iter()
+                .map(ProjectEntry::cache_path)
+                .collect(),
+            Arc::new(|p: &Path| crate::trace_store::dir_footprint(p)),
+            Arc::new(move || {
+                let _ = tx.send(());
+            }),
+        );
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("the background walk never announced itself");
+        sizes
+    }
+
+    /// The rows a listing would serve once every size has been measured.
+    fn measured_rows(registry: &ProjectRegistry, active_root: &Path) -> Vec<ProjectCacheRow> {
+        rows(registry, active_root, &already_measured(registry))
+    }
 
     /// A project directory, resolved the way a session's is.
     fn project_dir(tmp: &Path, name: &str) -> ProjectDir {
@@ -776,16 +961,114 @@ mod tests {
         let gone = recorded_with_cache(tmp.path(), &config, "gone");
         std::fs::remove_dir_all(gone.root()).unwrap();
 
-        let listed = rows(&read(&config), Path::new("some-other-project"));
+        let listed = measured_rows(&read(&config), Path::new("some-other-project"));
 
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].state, CacheRowState::Missing);
-        assert!(listed[0].bytes > 0, "its cache is still on disk");
+        assert!(
+            listed[0].bytes.is_some_and(|b| b > 0),
+            "its cache is still on disk"
+        );
 
         clear_cache(&config, gone.root()).unwrap();
-        let listed = rows(&read(&config), Path::new("some-other-project"));
+        let listed = measured_rows(&read(&config), Path::new("some-other-project"));
         assert_eq!(listed[0].state, CacheRowState::Missing, "the row stays");
-        assert_eq!(listed[0].bytes, 0);
+        assert_eq!(listed[0].bytes, Some(0));
+    }
+
+    // --- the cache list answers before it measures (ADR 0049) ---
+
+    #[test]
+    fn rows_list_with_their_sizes_pending_before_any_walk_has_run() {
+        // A row's size is a directory walk per cache, which ADR 0002 DS-8
+        // calls expensive. The listing answers with the rows and says the
+        // sizes are not in yet, rather than holding the view for them.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        recorded_with_cache(tmp.path(), &config, "a");
+        recorded_with_cache(tmp.path(), &config, "b");
+
+        let listed = rows(
+            &read(&config),
+            Path::new("elsewhere"),
+            &ProjectCacheSizes::default(),
+        );
+
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed.iter().all(|r| r.bytes.is_none()),
+            "an unmeasured cache lists pending, not at zero"
+        );
+    }
+
+    #[test]
+    fn overlapping_listings_cost_one_walk_at_a_time() {
+        // Single-flight. The settings view re-asks on every show, on
+        // `project-dir-changed` and after every action; without this each
+        // one would start its own walk of every registered cache.
+        let sizes = ProjectCacheSizes::default();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let counted = Arc::clone(&calls);
+        let held = Arc::clone(&gate);
+        let measure: Arc<dyn Fn(&Path) -> u64 + Send + Sync> = Arc::new(move |_: &Path| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let (lock, cv) = &*held;
+            let mut open = lock.lock().unwrap();
+            while !*open {
+                open = cv.wait(open).unwrap();
+            }
+            7
+        });
+        let (tx, rx) = mpsc::channel();
+        let announce: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let _ = tx.send(());
+        });
+        let caches = vec![PathBuf::from("one")];
+
+        for _ in 0..8 {
+            sizes.measure_in_background(
+                caches.clone(),
+                Arc::clone(&measure),
+                Arc::clone(&announce),
+            );
+        }
+        {
+            let (lock, cv) = &*gate;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        // The walk in flight drains the requests that piled up behind it,
+        // so it runs at most twice: the one that started, and one round
+        // for everything asked while it ran.
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(sizes.get(Path::new("one")), Some(7));
+        // Drain any second round before counting.
+        let _ = rx.recv_timeout(Duration::from_millis(500));
+        let measured = calls.load(Ordering::SeqCst);
+        assert!(
+            measured <= 2,
+            "eight overlapping listings must not cost eight walks (measured {measured})"
+        );
+    }
+
+    #[test]
+    fn clearing_a_cache_drops_its_measured_size_so_the_row_reads_pending() {
+        // A figure taken before a Clear is not a measurement of what the
+        // cache holds now; it just reads like one.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let dir = recorded_with_cache(tmp.path(), &config, "a");
+        let registry = read(&config);
+        let sizes = already_measured(&registry);
+        assert!(sizes.get(dir.cache_dir()).is_some_and(|b| b > 0));
+
+        sizes.forget(dir.cache_dir());
+
+        assert_eq!(
+            rows(&registry, Path::new("elsewhere"), &sizes)[0].bytes,
+            None
+        );
     }
 
     #[test]
@@ -802,7 +1085,7 @@ mod tests {
         }
         std::fs::remove_dir_all(gone.root()).unwrap();
 
-        let listed = rows(&read(&config), open.root());
+        let listed = measured_rows(&read(&config), open.root());
         let state_of = |root: &Path| {
             listed
                 .iter()
@@ -827,13 +1110,13 @@ mod tests {
         let dir = project_dir(tmp.path(), "work");
         record(&config, &dir, None, 1_700);
         assert_eq!(
-            rows(&read(&config), Path::new("elsewhere"))[0].state,
+            measured_rows(&read(&config), Path::new("elsewhere"))[0].state,
             CacheRowState::Known
         );
 
         std::fs::remove_file(dir.root().join("p.cannet_prj")).unwrap();
 
-        let listed = rows(&read(&config), Path::new("elsewhere"));
+        let listed = measured_rows(&read(&config), Path::new("elsewhere"));
         assert_eq!(listed[0].state, CacheRowState::Orphaned);
         assert!(dir.workspace_dir().is_dir(), "the .cannet/ is still there");
     }
@@ -849,7 +1132,7 @@ mod tests {
         record(&config, &auto, None, 1_700);
 
         assert_eq!(
-            rows(&read(&config), Path::new("elsewhere"))[0].state,
+            measured_rows(&read(&config), Path::new("elsewhere"))[0].state,
             CacheRowState::AutoLocated
         );
     }
@@ -864,7 +1147,7 @@ mod tests {
         let auto = crate::project_dir::resolve(None, &tmp.path().join("cache-root"));
         record(&config, &auto, None, 1_700);
 
-        let listed = rows(&read(&config), auto.root());
+        let listed = measured_rows(&read(&config), auto.root());
 
         assert_eq!(listed[0].state, CacheRowState::Active);
         assert!(listed[0].auto_located);
