@@ -2562,10 +2562,15 @@ pattern is one row saying what it collects and how much (`Cell.* (24
 matches)`), which opens to the signals themselves.
 
 What a DBC's unit *string* means is per project, since the field is
-free text: Settings → DBC → **Unit customizations** is the table.
-One row per unit — the whole library, plus any unit your config names —
-carrying the strings that read as it, built-in recognitions dimmed
-beside your own. Type a spelling into the row it belongs on (`Deg C`
+free text: Settings → DBC → **Unit customizations** is where it is
+said. One row per unit — the whole library, plus any unit your config
+names — carrying the strings that read as it, built-in recognitions
+dimmed beside your own. The units are **grouped under their
+dimension** and scroll in a space of their own rather than in the
+settings view's list: the library has thousands of them, so a
+dimension opens collapsed unless this project already maps or
+composes one of its units, and the filter box opens whatever it
+matches. Type a spelling into the row it belongs on (`Deg C`
 onto the °C row) and it joins that unit. Each row's **project** and
 **user** checkboxes say where its own mappings persist: project scope
 lives in that project's `.cannet/settings.json` and travels with its
@@ -2573,7 +2578,7 @@ databases, user scope holds in every project you open, and **the
 project wins** where both map one string. Changing an entry rescales
 every math signal that depends on it on the next serve.
 
-The same table's **two-field entry** composes a unit out of ones the
+The same section's **two-field entry** composes a unit out of ones the
 app already knows: a name, and the string it stands for — `VA` =
 `V * A`, `Nm` = `N * m`, `kVA` = `1000 * V * A`, `perSec` = `1 / s`.
 Terms are separated by `*` (or `·`) and `/`, and a term that reads as a
@@ -2583,7 +2588,7 @@ fall out of dimensional analysis, so a composed unit is a unit in every
 respect: it is recognised when a database spells its name, it is
 offered in the pickers in the same place its dimension puts it, and it
 converts against the units it composes (`VA` reads in watts, `kVA` at
-×1000). It gets a row of the table like any other, carrying what it was
+×1000). It gets a row like any other, under its own dimension, carrying what it was
 composed from, a delete control, and the same project / user checkboxes
 — so a unit invented for this project's databases can be promoted to
 every project you open. A name already taken, a term that names

@@ -6450,8 +6450,9 @@ button.color-chip {
   color: var(--text-dim);
   cursor: default;
 }
-/* Settings → Units: one row per unit, its matched strings, and the two
-   scopes those mappings persist at. */
+/* Settings → Units: a gridview (ADR 0044) of dimension branches over
+   unit rows, each carrying its matched strings and the two scopes those
+   mappings persist at. */
 .unit-customizations {
   display: flex;
   flex-direction: column;
@@ -6469,34 +6470,77 @@ button.color-chip {
   padding: 0.1rem 0.3rem;
   width: 12rem;
 }
-.unit-customizations-table {
-  border-collapse: collapse;
-  width: 100%;
+/* The bounded row space: the units scroll here, never in the settings
+   view's own list (ADR 0044 — the view supplies the scrolling). */
+.unit-customizations-grid {
+  max-height: 24rem;
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
   font-size: 0.78rem;
 }
-.unit-customizations-table th {
-  text-align: left;
+.unit-customizations-grid:focus-visible {
+  outline: 1px solid var(--accent-marker);
+  outline-offset: -1px;
+}
+.unit-customizations-head,
+.unit-customization-row {
+  display: grid;
+  grid-template-columns: 9rem 9rem 1fr 3.2rem 3.2rem;
+  gap: 0.4rem;
+  align-items: start;
+  padding: 0.15rem 0.4rem;
+}
+.unit-customizations-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   font-weight: 600;
   font-size: 0.68rem;
   letter-spacing: 0.05em;
   color: var(--text-muted);
   background: var(--surface-section-header);
   border-bottom: 1px solid var(--border-default);
-  padding: 0.15rem 0.4rem;
 }
-.unit-customizations-table td {
-  padding: 0.15rem 0.4rem;
+.unit-customization-row {
   border-bottom: 1px solid var(--border-row);
-  vertical-align: top;
+  padding-left: 1.6rem;
+}
+.unit-customization-row.cursor,
+.unit-customization-dimension-row.cursor {
+  background: var(--surface-hover-subtle);
+}
+.unit-customization-row.selected {
+  background: var(--surface-row-selected);
+}
+/* A dimension branch: the heading its units hang under. */
+.unit-customization-dimension-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.4rem;
+  background: var(--surface-section-header);
+  border-bottom: 1px solid var(--border-row);
+}
+.unit-customization-dimension-caret {
+  flex: 0 0 auto;
+  width: 1.2rem;
 }
 .unit-customization-unit {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--text-primary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .unit-customization-dimension {
-  color: var(--text-faint);
+  color: var(--text-muted);
   white-space: nowrap;
+}
+.unit-customization-dimension-count {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
 }
 .unit-customization-spelling {
   display: inline-flex;
