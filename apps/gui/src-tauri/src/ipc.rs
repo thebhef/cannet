@@ -1301,6 +1301,36 @@ pub struct BusErrorWindows {
     pub complete: bool,
 }
 
+/// One bus-error **episode** as `bus_error_episodes` serves it: a burst of
+/// errors on `bus` in which each followed the last by less than the
+/// episode gap (`crate::bus_error_episodes`). Times are absolute seconds;
+/// `rate` is errors per second over the span, absent for a zero span.
+/// `last_ordinal` is the last error's ordinal on the bus — a real sample
+/// of the bus's error series, and so the episode's id.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BusErrorEpisode {
+    pub bus: String,
+    pub first_t: f64,
+    pub last_t: f64,
+    pub count: u64,
+    pub span: f64,
+    pub rate: Option<f64>,
+    pub last_ordinal: u64,
+}
+
+/// `bus_error_episodes`' answer: a row-addressed page, like a
+/// [`RowPage`] — `count` episodes in all (the row space's extent), the
+/// page starting at newest-first index `start` — and whether the series
+/// and their episode lists had caught up with the capture (ADR 0049).
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct BusErrorEpisodePage {
+    pub count: u64,
+    pub start: u64,
+    pub episodes: Vec<BusErrorEpisode>,
+    pub complete: bool,
+}
+
 /// The frozen **time-addressed, lossy accessor response** of the
 /// windowed-source contract (ADR 0025): the plot's decimated range.
 /// Unlike a [`RowPage`] it is addressed by

@@ -27,9 +27,9 @@ use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
-    Settings, CAN_ID_FORMATS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES,
-    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, THEMES, TRACE_MODES,
-    Y_AXIS_MODES,
+    Settings, CAN_ID_FORMATS, MIN_BUS_ERROR_EPISODE_GAP_S, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES,
+    MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS,
+    THEMES, TRACE_MODES, Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -476,6 +476,22 @@ const DESCRIPTORS: &[Spec] = &[
         surfaces: &[Surface::Trace],
         kind: Kind::Default,
         control: Control::Bool,
+    },
+    Spec {
+        key: "bus_error_episode_gap_s",
+        backing: Backing::Field,
+        label: "Bus-error episode gap",
+        help: "How long a bus must be silent before the Events panel starts a new \
+               bus-error episode. Shorter splits a fault into more, smaller episodes; \
+               longer merges them. At least 1 s, at most 3600 s.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Behaviour,
+        control: Control::Int {
+            unit: Some("s"),
+            scale: 1,
+            min: Some(MIN_BUS_ERROR_EPISODE_GAP_S),
+            unset: None,
+        },
     },
     Spec {
         key: "plot_y_axis_mode",

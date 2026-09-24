@@ -115,6 +115,7 @@ use cannet_dbc::Database;
 use cannet_spill::{lower_bound, SampleSeq, SAMPLE_ENTRY_BYTES};
 use serde::{Deserialize, Serialize};
 
+use crate::bus_error_episodes::{self, Episode, EpisodeList};
 use crate::math_kernels::{self, MathCarry};
 use crate::math_signals::{MathFunction, MathModel, MathOperandRef, ResolvedMath};
 use crate::signal_fingerprint::{self, DecodeModel};
@@ -169,6 +170,14 @@ const CATCH_UP_CHUNK_FRAMES: usize = 16_384;
 /// the per-serve overhead (one lock round-trip and one window read per
 /// signal) stays negligible against the decoding.
 const CATCH_UP_SERVE_BUDGET: Duration = Duration::from_millis(150);
+
+/// How many level-0 samples of a bus's error series one step of the
+/// episode derivation folds under the cache lock
+/// ([`SignalCacheStore::bus_error_episodes`], ADR 0048). A fold is a read
+/// of a 16-byte sample and one comparison, so a step is well under a
+/// millisecond; a rebuild over a long fault is many steps, each giving
+/// the lock back.
+const EPISODE_CHUNK_SAMPLES: usize = 16_384;
 
 /// How many typical raw sample intervals a gap between two consecutive
 /// samples may span before the stretch between them is **extrapolation**
@@ -348,6 +357,14 @@ struct SignalCache {
     /// rather than merely true. Per session by construction: it is not
     /// persisted, because the question is about this run.
     read: bool,
+    /// Set for a bus's **error series** once something has asked for its
+    /// episodes ([`SignalCacheStore::bus_error_episodes`]): the episode
+    /// list at the gap last asked for, folded incrementally off level 0.
+    /// Held in memory only — bounded by capture time ÷ gap, and rebuilt
+    /// from level 0 (a sequential read of 16-byte samples, no decoding)
+    /// more cheaply than a manifest could carry it. It goes with the
+    /// cache, so a clear drops it and a restore starts without it.
+    episodes: Option<EpisodeList>,
 }
 
 impl SignalCache {
@@ -369,6 +386,7 @@ impl SignalCache {
             restored: false,
             encoding: None,
             read: false,
+            episodes: None,
         }
     }
 
@@ -891,6 +909,9 @@ impl SignalCache {
             // to the loaded set, so it is this cache's stamp too.
             encoding: p.encoding.clone(),
             read: false,
+            // Never persisted: the first episode serve rebuilds it from
+            // the restored level 0.
+            episodes: None,
         }
     }
 
@@ -907,6 +928,9 @@ impl SignalCache {
             let floor = partition_by_t(&self.levels[n], ts_seconds);
             self.levels[n].evict_below(floor);
             self.folded[n] = self.folded[n].max(floor);
+        }
+        if let Some(list) = &mut self.episodes {
+            list.trim_below(ts_seconds);
         }
     }
 }
@@ -3847,6 +3871,114 @@ impl SignalCacheStore {
         self.serve_keys(&keys, from_seconds, to_seconds, max_points, store, &dbs)
     }
 
+    /// Serve rows `[offset, offset + limit)` of `buses`' **episodes** at
+    /// `gap_seconds`, newest first, with how many there are in all.
+    ///
+    /// An episode is a burst of errors on one bus in which each error
+    /// follows the last by less than the gap; a silence of at least the
+    /// gap ends it ([`crate::bus_error_episodes`]). Each carries its first
+    /// and last error's time and ordinal, so its count, span and rate —
+    /// and an id, the last error's ordinal, that names a real sample of
+    /// the series.
+    ///
+    /// The episodes are derived from the bus's error series
+    /// ([`Self::bus_error_windows`]'s), so the series is caught up first,
+    /// within the serve's budget like any other (ADR 0048, ADR 0049).
+    /// Each bus's list is then folded **incrementally** from level 0: a
+    /// cursor at the next unfolded slot means the live edge appends
+    /// without a rescan. A list that does not exist yet — the first ask,
+    /// a restore (the list is never persisted), a clear — or that was
+    /// derived at another gap is rebuilt from level 0 in bounded steps,
+    /// each under one short hold of the cache lock, until the budget runs
+    /// out; [`EpisodePage::complete`] says whether it got to the end.
+    ///
+    /// `gap_seconds` must be positive; the command bounds it by the
+    /// setting's limits.
+    pub fn bus_error_episodes(
+        &self,
+        buses: &[&str],
+        gap_seconds: f64,
+        offset: usize,
+        limit: usize,
+        store: &TraceStore,
+    ) -> EpisodePage {
+        let keys = self.ensure_bus_error_caches(buses);
+        let store_len = store.len();
+        let budget = self.serve_limit();
+        let dbs = DecodeModel::plain(Vec::new());
+        self.catch_up_keys(&keys, store_len, &dbs, &store_fetch(store), &budget);
+        // At least one step per serve, so a serve that the catch-up has
+        // already spent still makes progress on the episodes.
+        loop {
+            let (folded, done) = self.fold_episodes(&keys, gap_seconds);
+            if done || budget.spend(folded) {
+                break;
+            }
+        }
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut folded_all = true;
+        let lists: Vec<&[Episode]> = keys
+            .iter()
+            .map(|key| {
+                let cache = key.as_ref().and_then(|k| caches.by_key.get(k));
+                if let Some((cache, list)) = cache.and_then(|c| Some((c, c.episodes.as_ref()?))) {
+                    folded_all &= list.next_slot >= cache.levels[0].len();
+                    list.episodes()
+                } else {
+                    folded_all = false;
+                    &[]
+                }
+            })
+            .collect();
+        EpisodePage {
+            count: lists.iter().map(|l| l.len()).sum(),
+            episodes: bus_error_episodes::newest_first_page(&lists, offset, limit),
+            complete: folded_all && caught_up(&caches, &keys, store_len),
+        }
+    }
+
+    /// One bounded step of [`Self::bus_error_episodes`]' derivation: under
+    /// one hold of the cache lock, fold at most [`EPISODE_CHUNK_SAMPLES`]
+    /// level-0 samples into each key's episode list at `gap_seconds`,
+    /// starting it afresh when it is missing or at another gap. Returns
+    /// how many samples it folded and whether every list has reached the
+    /// end of its series.
+    ///
+    /// The hold is one chunk per bus (ADR 0048): reading 16-byte samples
+    /// off level 0 and comparing each against the gap, no decoding.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn fold_episodes(&self, keys: &[Option<SignalKey>], gap_seconds: f64) -> (usize, bool) {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut folded = 0;
+        let mut done = true;
+        for key in keys.iter().flatten() {
+            let Some(cache) = caches.by_key.get_mut(key) else {
+                continue;
+            };
+            let level = &cache.levels[0];
+            let list = cache
+                .episodes
+                .get_or_insert_with(|| EpisodeList::new(gap_seconds));
+            if list.gap().to_bits() != gap_seconds.to_bits() {
+                *list = EpisodeList::new(gap_seconds);
+            }
+            // A front-trim may have taken slots never folded; they are
+            // gone from the series, so the fold carries on from what is
+            // left.
+            let from = list.next_slot.max(level.first_slot());
+            let to = level.len().min(from + EPISODE_CHUNK_SAMPLES);
+            for slot in from..to {
+                let (t, n) = level.get(slot);
+                // The value is the error's ordinal: a whole count.
+                list.push(t, n as u64);
+            }
+            list.next_slot = to;
+            folded += to - from;
+            done &= to >= level.len();
+        }
+        (folded, done)
+    }
+
     /// Create an error-series cache for every bus in `buses` that has
     /// none, stamped with its fingerprint (ADR 0047), and return their
     /// keys in `buses` order.
@@ -4384,6 +4516,22 @@ fn hline_points(
 pub struct ExtrapolatedSpan {
     pub from_seconds: f64,
     pub to_seconds: f64,
+}
+
+/// One page of [`SignalCacheStore::bus_error_episodes`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpisodePage {
+    /// How many episodes the requested buses hold at the gap, in all —
+    /// the row space a view pages through. Bounded by capture time ÷ gap
+    /// per bus.
+    pub count: usize,
+    /// The requested rows, newest first by first time: `(index into the
+    /// requested buses, episode)`.
+    pub episodes: Vec<(usize, Episode)>,
+    /// `false` while any bus's error series, or its episode list, is
+    /// still behind the capture (ADR 0049): the page is then drawn from
+    /// what has been derived so far, and a further serve continues.
+    pub complete: bool,
 }
 
 /// One batch serve: the windows, and whether the caches behind them had
@@ -11672,5 +11820,281 @@ mod tests {
                 value: totals[0] + 1.0,
             }],
         );
+    }
+
+    /// Every episode of `buses` at `gap`, newest first, served to
+    /// completion in one page.
+    fn all_episodes(
+        store: &SignalCacheStore,
+        buses: &[&str],
+        gap: f64,
+        trace: &TraceStore,
+    ) -> EpisodePage {
+        loop {
+            let page = store.bus_error_episodes(buses, gap, 0, usize::MAX, trace);
+            if page.complete {
+                return page;
+            }
+        }
+    }
+
+    /// `(bus index, first ms, last ms, first n, last n)` per row, for
+    /// comparing pages without float noise.
+    #[allow(clippy::cast_possible_truncation)]
+    fn rows_ms(page: &EpisodePage) -> Vec<(usize, i64, i64, u64, u64)> {
+        page.episodes
+            .iter()
+            .map(|(b, e)| {
+                (
+                    *b,
+                    (e.first_t * 1e3).round() as i64,
+                    (e.last_t * 1e3).round() as i64,
+                    e.first_n,
+                    e.last_n,
+                )
+            })
+            .collect()
+    }
+
+    /// A store holding `frames` in order.
+    fn trace_of(frames: &[RawTraceFrame]) -> TraceStore {
+        let trace = TraceStore::new();
+        for f in frames {
+            trace.append(f.clone());
+        }
+        trace
+    }
+
+    #[test]
+    fn episodes_group_each_bus_at_the_gap_with_their_counts_spans_and_ordinals() {
+        const MS: u64 = 1_000_000;
+        let mut errors: Vec<(u64, &str)> = Vec::new();
+        errors.extend((0..5).map(|i| ((10_000 + 100 * i) * MS, "ea")));
+        errors.extend((0..3).map(|i| ((20_000 + i) * MS, "ea")));
+        // A silence of exactly the gap splits.
+        errors.push((40_000 * MS, "ea"));
+        errors.push((45_000 * MS, "ea"));
+        errors.extend((0..10).map(|i| ((12_000 + i) * MS, "eb")));
+        // A silence just under the gap does not.
+        errors.push((30_000 * MS, "eb"));
+        errors.push((34_999 * MS, "eb"));
+        errors.sort_unstable();
+        let frames: Vec<RawTraceFrame> = errors.iter().map(|&(t, b)| err_frame(t, b)).collect();
+        let trace = trace_of(&frames);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let page = all_episodes(&store, &ERR_BUSES, 5.0, &trace);
+        assert_eq!(page.count, 6);
+        assert_eq!(
+            rows_ms(&page),
+            vec![
+                (0, 45_000, 45_000, 10, 10),
+                (0, 40_000, 40_000, 9, 9),
+                (1, 30_000, 34_999, 11, 12),
+                (0, 20_000, 20_002, 6, 8),
+                (1, 12_000, 12_009, 1, 10),
+                (0, 10_000, 10_400, 1, 5),
+            ],
+        );
+        let burst = page.episodes[5].1;
+        assert_eq!(burst.count(), 5);
+        assert!((burst.span() - 0.4).abs() < 1e-9);
+        assert!((burst.rate().unwrap() - 12.5).abs() < 1e-6);
+        // The id is a real sample: the series' `last_n`th error is at the
+        // episode's last time.
+        let series = store.bus_error_windows(&["eb"], f64::MIN, f64::MAX, 0, &trace);
+        let (_, e) = page.episodes[2];
+        let sample = series.series[0][usize::try_from(e.last_n).unwrap() - 1];
+        assert!((sample.t_seconds - e.last_t).abs() < 1e-12);
+    }
+
+    /// Bursts of varied size and spacing on both [`ERR_BUSES`], amid data
+    /// frames on [`TEST_BUS`]: some quiet gaps are under five seconds and
+    /// some over, so a five-second gap merges some bursts and not others.
+    fn varied_bursts() -> Vec<RawTraceFrame> {
+        const MS: u64 = 1_000_000;
+        let mut frames = Vec::new();
+        let mut t = S;
+        for k in 0..300u64 {
+            let bus = ERR_BUSES[usize::try_from(k % 2).unwrap()];
+            for _ in 0..=(k % 7) {
+                frames.push(err_frame(t, bus));
+                frames.push(dummy(t + MS, 0, vec![0; 8]));
+                t += 10 * MS;
+            }
+            t += ((k * 37) % 80 + 5) * 100 * MS;
+        }
+        frames
+    }
+
+    #[test]
+    fn an_incremental_derivation_matches_a_whole_one() {
+        let frames = varied_bursts();
+        let whole = {
+            let dir = TempDir::new().unwrap();
+            let store = SignalCacheStore::new_unbounded(dir.path());
+            rows_ms(&all_episodes(&store, &ERR_BUSES, 5.0, &trace_of(&frames)))
+        };
+        // Grown in three steps, the middle one ending inside a burst: the
+        // open episode is extended rather than started again.
+        let trace = TraceStore::new();
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let cuts = [0, frames.len() / 3 + 1, 2 * frames.len() / 3, frames.len()];
+        for pair in cuts.windows(2) {
+            for f in &frames[pair[0]..pair[1]] {
+                trace.append(f.clone());
+            }
+            let _ = all_episodes(&store, &ERR_BUSES, 5.0, &trace);
+        }
+        assert_eq!(
+            rows_ms(&all_episodes(&store, &ERR_BUSES, 5.0, &trace)),
+            whole
+        );
+        assert!(
+            whole.len() > 20 && whole.len() < 300,
+            "{} episodes",
+            whole.len()
+        );
+    }
+
+    #[test]
+    fn a_gap_change_re_derives_the_episodes() {
+        // 50 episodes per bus two seconds apart; a five-second gap sees
+        // one episode per bus.
+        let (trace, _) = error_capture(2_000, 20);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let at_one = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        assert_eq!(at_one.count, 100);
+        let at_five = all_episodes(&store, &ERR_BUSES, 5.0, &trace);
+        assert_eq!(at_five.count, 2);
+        for (_, e) in &at_five.episodes {
+            assert_eq!(e.count(), 1_000);
+        }
+        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0, &trace), at_one);
+    }
+
+    #[test]
+    fn paging_episodes_by_offset_is_stable_and_newest_first() {
+        let trace = trace_of(&varied_bursts());
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let whole = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        assert!(whole
+            .episodes
+            .windows(2)
+            .all(|w| w[0].1.first_t >= w[1].1.first_t));
+        let mut paged = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = store.bus_error_episodes(&ERR_BUSES, 1.0, offset, 7, &trace);
+            assert!(page.complete);
+            assert_eq!(page.count, whole.count);
+            if page.episodes.is_empty() {
+                break;
+            }
+            offset += page.episodes.len();
+            paged.extend(page.episodes);
+        }
+        assert_eq!(paged, whole.episodes);
+        // Asking again for the same offset is the same rows.
+        let again = store.bus_error_episodes(&ERR_BUSES, 1.0, 13, 7, &trace);
+        assert_eq!(again.episodes, whole.episodes[13..20]);
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn ten_thousand_episodes_at_a_one_second_gap_are_all_listed() {
+        // Phase one's fixture: three errors a millisecond apart, then two
+        // seconds of quiet, ten thousand times.
+        let trace = TraceStore::new();
+        let mut t = S;
+        for _ in 0..10_000 {
+            for _ in 0..3 {
+                trace.append(err_frame(t, "ea"));
+                t += 1_000_000;
+            }
+            t += 2 * S;
+        }
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let _ = store.bus_error_windows(&["ea"], f64::MIN, f64::MAX, 50, &trace);
+        let started = Instant::now();
+        let first = store.bus_error_episodes(&["ea"], 1.0, 0, 100, &trace);
+        let derived_in = started.elapsed();
+        assert!(first.complete);
+        assert_eq!(first.count, 10_000);
+        let span = (t - S) as f64 / 1e9;
+        assert!(
+            first.count as f64 <= span / 1.0 + 1.0,
+            "bounded by time ÷ gap"
+        );
+        let mut seen = 0u64;
+        let mut offset = 0;
+        while offset < first.count {
+            let page = store.bus_error_episodes(&["ea"], 1.0, offset, 1_000, &trace);
+            for (_, e) in &page.episodes {
+                assert_eq!(e.count(), 3);
+                // Newest first: the kth row from the top ends on the
+                // (10 000 - k)th episode's third error.
+                assert_eq!(e.last_n, 3 * (10_000 - seen));
+                seen += 1;
+            }
+            offset += page.episodes.len();
+        }
+        assert_eq!(seen, 10_000);
+        eprintln!("derived 30 000 errors into 10 000 episodes in {derived_in:?}");
+    }
+
+    #[test]
+    fn a_restored_series_rebuilds_its_episodes_off_the_serve() {
+        // 25 000 errors per bus: more than one derivation step's worth.
+        let (trace, _) = error_capture(50_000, 50);
+        let root = TempDir::new().unwrap();
+        let v = validity("cap", 0);
+        let store = SignalCacheStore::new_unbounded(root.path());
+        let before = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        assert_eq!(before.count, 1_000);
+        assert!(store.persist(&v, &no_dbcs(), Harden::All));
+        drop(store);
+
+        let reopened = SignalCacheStore::new_chunk_at_a_time(root.path());
+        assert_eq!(
+            counts(reopened.restore(&v, &no_dbcs(), trace.len())),
+            (2, 0, 0)
+        );
+        let first = reopened.bus_error_episodes(&ERR_BUSES, 1.0, 0, usize::MAX, &trace);
+        assert!(!first.complete, "the list is rebuilt a step at a time");
+        assert!(first.count < before.count, "{} so far", first.count);
+        assert_eq!(all_episodes(&reopened, &ERR_BUSES, 1.0, &trace), before);
+    }
+
+    #[test]
+    fn clearing_drops_the_episodes_and_the_next_serve_rebuilds_them() {
+        let (trace, _) = error_capture(2_000, 20);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let before = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        store.clear();
+        assert!(store.caches.lock().unwrap().by_key.is_empty());
+        let empty = TraceStore::new();
+        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0, &empty).count, 0);
+        store.clear();
+        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0, &trace), before);
+    }
+
+    #[test]
+    fn a_front_trim_drops_the_episodes_that_ended_before_it() {
+        let (trace, expected) = error_capture(2_000, 20);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let before = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        // Past the tenth episode on each bus.
+        let edge = secs(expected[1][10 * 20 - 1]) + 0.5;
+        store.evict_below(edge);
+        let after = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        assert_eq!(after.count, before.count - 20);
+        assert_eq!(after.episodes[..], before.episodes[..after.count]);
     }
 }
