@@ -528,11 +528,15 @@ retained), so the figure is a floor rather than an estimate. Where no
 bitrate was sent there is nothing to divide by and the panel shows
 nothing rather than a guess.
 
-**Error frames** are surfaced two ways. A run of them is coalesced
-host-side into one **Bus errors** timeline event carrying a count and a
-span, shown by default in every event surface; and each frame is
-otherwise a row in the trace saying `Bus error` — with the `type` column
-hidden by default, an imported log's error frames would otherwise be
+**Error frames** are surfaced two ways. Each bus's error frames feed a
+signal-cache pyramid of running error counts; the plot draws one **Bus
+error** marker per pyramid point a window resolves, labelled with the
+count, span and rate of the errors between it and the marker before it
+— so a fault that produces a hundred thousand error frames still zooms
+smoothly, reading as a handful of markers wide out and resolving toward
+one marker per frame as you zoom in. Each frame is otherwise a row in
+the trace saying `Bus error` — with the `type` column hidden by
+default, an imported log's error frames would otherwise be
 indistinguishable from zero-byte data frames.
 
 Both at once is unreadable. A physical fault aborts the frame in flight,
@@ -540,15 +544,15 @@ which is then retransmitted, so it produces error frames at roughly the
 bus's whole frame rate — about 5,200 a second on the bench — and a trace
 drawing one row each has buried everything else on the bus. So the
 chronological trace's **Collapse Errors** toggle, on by default, holds
-the individual error rows back and leaves the summary event in their
-place. It engages only once a bus has actually reported an error frame,
-so a clean capture keeps the plain unfiltered window.
+the individual error rows back once a bus has actually reported an
+error frame, so a clean capture keeps the plain unfiltered window.
+Nothing stands in their place inline — the plot's markers are where the
+count, span and rate live.
 
-**Neither the coalescing nor the collapse touches what is stored.** A
-saved capture still contains every error frame that was received; the
-summary is host-derived and is never written to a file; and switching
-the collapse off brings every row straight back, because nothing was
-ever dropped.
+**Nothing here touches what is stored.** A saved capture still contains
+every error frame that was received; the pyramid and its markers are
+host-derived and never written to a file; and switching the collapse
+off brings every row straight back, because nothing was ever dropped.
 
 The bar is one row and never wraps — a header that grew a second line
 would reflow every panel beneath it. When the window is too narrow the
@@ -3384,7 +3388,7 @@ lifecycle:
 | Category | Example | Editable | Saved with the capture | Written to BLF |
 |---|---|---|---|---|
 | user-authored | a note | yes | yes | yes |
-| host-derived | a coalesced run of bus errors | no | no | no |
+| host-derived | a bus-error marker (one per pyramid point a window resolves) | no | no | no |
 | frontend-derived | the history-truncated marker | no | no | no |
 
 A host-derived event summarises data the capture already holds, so it
