@@ -146,30 +146,41 @@ export interface ConnectionSummary {
 /// Nothing here is derived from what the frontend can see arriving:
 /// every bus's state is the host's (`connection_state.rs`), and the
 /// only judgement made is which of them the chip counts — the project
-/// buses that carry a binding.
+/// buses bound to a real interface.
 ///
 /// `remoteActive` is the host's other connection fact: a session is up
 /// or coming up. It matters for the gap between a session starting and
 /// the first bus reporting, where there is no per-bus state to read
 /// and "not connected" would be wrong.
+///
+/// `noInterface` is every bus explicitly bound to no interface — the
+/// host never opens a session for them, so they contribute nothing to
+/// `count`, but a project with a third bus set that way would read as
+/// an unexplained "2 / 2" without naming it, so each gets its own
+/// "unbound" tooltip line.
 export function summarizeConnection(
   bound: readonly ConnectionUnit[],
   states: BusConnStates,
   remoteActive: boolean,
+  noInterface: readonly ConnectionUnit[] = [],
 ): ConnectionSummary {
   if (bound.length === 0) {
     return {
       state: "idle",
       label: "Not connected",
       count: null,
-      detail: "No interface bindings — add one in the project panel first.",
+      detail:
+        noInterface.length > 0
+          ? "every bus is set to no interface"
+          : "No interface bindings — add one in the project panel first.",
       action: null,
       actionLabel: "Connect",
     };
   }
-  const detail = bound
-    .map((b) => `${b.name}: ${describeBusConnState(states[b.id], true).detail}`)
-    .join("\n");
+  const detail = [
+    ...bound.map((b) => `${b.name}: ${describeBusConnState(states[b.id], true).detail}`),
+    ...noInterface.map((b) => `${b.name}: unbound`),
+  ].join("\n");
   const entries = bound.map((b) => states[b.id]);
   const connected = entries.filter((s) => s?.kind === "connected").length;
   const connecting = entries.filter((s) => s?.kind === "connecting").length;

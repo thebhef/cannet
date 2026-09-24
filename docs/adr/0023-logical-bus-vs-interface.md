@@ -62,6 +62,29 @@ those kinds. This ADR fixes only the shape: discriminated
 bindings keyed by `bus_id`, with at most one binding per logical
 bus.
 
+## `NoInterface`: connected to nothing, on purpose
+
+A logical bus can be deliberately connected to nothing. Picking
+"— no interface —" in the bus combo writes a `NoInterface` binding —
+a normal row, keyed by `bus_id` like any other kind, `server` and
+`interface` both empty. It is a persisted fact: a project reload
+must be able to tell "the user chose no interface" apart from "no
+one has wired this bus yet," and the absence of a row carries no
+such information to infer it from.
+
+That distinction is also the connect rule, previously an unrecorded
+owner ruling ("Refuse to connect without a bound bus," 2026-08-25):
+
+- **A bus with no binding row at all refuses the connect** for the
+  whole project, loudly, naming the bus. Nothing states that its
+  absence was deliberate, so the safer reading — something is
+  missing — stands.
+- **A bus bound to `NoInterface` connects along with the rest of the
+  project.** The host treats it as a bus with no wire: transmit and
+  RBS frames aimed at it are marked undelivered, with no up-front
+  refusal, the same as any other bus whose wire has gone away. It
+  displays as unbound throughout.
+
 ## Rejected alternatives
 
 - **Inline the interface's definition on the binding.** Couples

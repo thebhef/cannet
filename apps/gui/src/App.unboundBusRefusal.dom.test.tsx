@@ -21,6 +21,11 @@ const listeners = new Map<string, Handler[]>();
 const invokeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 // Project handed back by `open_project`.
 let openProjectResult: Record<string, unknown> = {};
+// The host's per-bus connection map, as `get_connection_states` answers
+// it — static per test rather than simulated through a real connect
+// round-trip, the same simplification `ProjectPanel.connectionState.
+// dom.test.tsx` uses.
+let connectionStatesResult: Record<string, unknown> = {};
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -43,6 +48,10 @@ vi.mock("@tauri-apps/api/core", () => ({
         return "0.0.0-test";
       case "get_sidecar_status":
         return { phase: "offline", address: null };
+      case "get_connection_states":
+        return connectionStatesResult;
+      case "connect_remote_server":
+        return { address: String(args?.address), interfaces: [], subscriptions: [] };
       default:
         return null;
     }
@@ -107,6 +116,7 @@ vi.mock("uplot", () => {
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { App } from "./App";
+import { hydrateState } from "./hostState";
 
 class FakeResizeObserver {
   observe() {}
@@ -145,12 +155,18 @@ async function mountAndSeed() {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   localStorage.clear();
   listeners.clear();
   invokeCalls.length = 0;
   openProjectResult = {};
+  connectionStatesResult = {};
+  // `hostState`'s cache is a module-global (ADR 0032/0034): a prior
+  // test's real Open sets `last_project` in it, and a later test would
+  // otherwise auto-reopen that stale path — via `get_state`, which
+  // this file doesn't mock, so it resets to empty.
+  await hydrateState();
 });
 
 afterEach(() => {
@@ -218,6 +234,89 @@ describe("Connect refuses an unbound bus", () => {
     });
     expect(refusalLogs()).toHaveLength(2);
     expect(statusText()).toContain("Body");
+  }, 30_000);
+});
+
+describe("Connect succeeds with a bus explicitly set to no interface", () => {
+  it("connects the bound bus, reads the other as unbound, and counts it 1 / 1", async () => {
+    // Starts with no host connection state at all — the chip must read
+    // "connect", not "disconnect", or the press below would tear a
+    // session down instead of opening one.
+    connectionStatesResult = {};
+    openProjectResult = {
+      schema_version: 7,
+      project_id: "p2",
+      layout: { grid: {}, panels: {} },
+      elements: [],
+      buses: [
+        { id: "b1", name: "Chassis" },
+        { id: "b2", name: "Body" },
+      ],
+      interface_bindings: [
+        { server: "127.0.0.1:9", interface: "if0", bus_id: "b1" },
+        { kind: "no-interface", server: "", interface: "", bus_id: "b2" },
+      ],
+      dbcs: [],
+      remote_address: null,
+      local_virtual_buses: [],
+      signal_colors: {},
+    };
+    await mountAndSeed();
+    await act(async () => {
+      fireEvent.click(findButton("Open…"));
+    });
+    await waitFor(() => {
+      if (connectionChip().disabled) throw new Error("Connect still disabled");
+    });
+
+    const callsBefore = invokeCalls.length;
+    await act(async () => {
+      fireEvent.click(connectionChip());
+    });
+
+    // The no-interface bus does not refuse the connect, and does not
+    // reach the wire: `connect_remote_server` is called once, for the
+    // bound bus only.
+    await waitFor(() => {
+      const calls = invokeCalls
+        .slice(callsBefore)
+        .filter((c) => c.cmd === "connect_remote_server");
+      if (calls.length === 0) throw new Error("connect_remote_server not called yet");
+    });
+    const connectCalls = invokeCalls
+      .slice(callsBefore)
+      .filter((c) => c.cmd === "connect_remote_server");
+    expect(connectCalls).toHaveLength(1);
+    const bindings = connectCalls[0].args.bindings as Array<{ busId: string }>;
+    expect(bindings.map((b) => b.busId)).toEqual(["b1"]);
+
+    const refusalLogs = invokeCalls
+      .slice(callsBefore)
+      .filter(
+        (c) =>
+          c.cmd === "gui_emit_system_log" &&
+          (c.args as { level: string }).level === "error",
+      );
+    expect(refusalLogs).toHaveLength(0);
+    expect(statusText()).not.toContain("Body");
+
+    // The host settles the bound bus as connected — a real host would
+    // emit this once its own subscribe lands; simulated here the same
+    // way `ProjectPanel.connectionState.dom.test.tsx` drives it.
+    await act(async () => {
+      const handlers = listeners.get("connection-states-changed") ?? [];
+      for (const h of handlers) {
+        h({ payload: { b1: { kind: "connected", applied: null } } });
+      }
+    });
+
+    // The chip counts only the bound bus, names the no-interface one
+    // in its tooltip.
+    await waitFor(() => {
+      expect(connectionChip().textContent).toContain("1 / 1");
+    });
+    expect(connectionChip().title).toContain("Body: unbound");
+    expect(connectionChip().title).not.toContain("Chassis: unbound");
   }, 30_000);
 });
 

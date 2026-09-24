@@ -128,6 +128,28 @@ describe("busHealthRows", () => {
     expect(r.applied).toBeNull();
   });
 
+  it("reads a bus explicitly set to no interface as unbound, not as 'not connected'", () => {
+    // Distinct from `b3` above: this bus carries a binding row — a
+    // deliberate `no-interface` choice (ADR 0023) — rather than no
+    // binding at all. It still has nothing on the wire, so every other
+    // field reads absent the same way; only the word for the state
+    // itself differs, naming the choice rather than reading as a
+    // dropped connection.
+    const busId = "b5";
+    const r = busHealthRows({
+      ...inputs,
+      buses: [...buses, { id: busId, name: "Disabled" }],
+      bindings: [
+        ...bindings,
+        { kind: "no-interface", server: "", interface: "", bus_id: busId },
+      ],
+    }).find((row) => row.busId === busId);
+    expect(r?.stateText).toBe("Unbound");
+    expect(r?.tone).toBe("off");
+    expect(r?.loadPercent).toBeNull();
+    expect(r?.adapter).toBe("");
+  });
+
   it("says why a virtual bus has no load rather than showing it as zero", () => {
     const r = row("b4");
     expect(r.loadPercent).toBeNull();

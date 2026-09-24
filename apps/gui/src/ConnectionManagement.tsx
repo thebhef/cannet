@@ -38,6 +38,7 @@ import type {
 } from "./types";
 import {
   LOCAL_SERVER,
+  bindingKind,
   isLocalBinding,
   localVbusId,
   resolveServer,
@@ -232,18 +233,23 @@ export function useInterfaceDiscovery(addresses: readonly string[]): DiscoveryRe
 // ---- Per-bus interface combo ---------------------------------------------
 
 /// A selection from the bus combo. Either a remote `(server, iface)`
-/// pair (hardware interface or remote-virtual-bus factory) or a
-/// reference to one of the project's virtual buses.
+/// pair (hardware interface or remote-virtual-bus factory), a
+/// reference to one of the project's virtual buses, or the deliberate
+/// "connected to nothing" pick.
 export type ComboPick =
   | { kind: "remote"; server: string; iface: string }
-  | { kind: "local-virtual-bus"; virtual_bus_id: string };
+  | { kind: "local-virtual-bus"; virtual_bus_id: string }
+  | { kind: "no-interface" };
 
 /// True when `pick` selects the same source as `binding`.
 export function samePick(pick: ComboPick, binding: InterfaceBinding): boolean {
   if (pick.kind === "remote") {
     return pick.server === binding.server && pick.iface === binding.interface;
   }
-  return pick.virtual_bus_id === (localVbusId(binding) ?? "");
+  if (pick.kind === "local-virtual-bus") {
+    return pick.virtual_bus_id === (localVbusId(binding) ?? "");
+  }
+  return bindingKind(binding) === "no-interface";
 }
 
 const COMBO_VBUS_PREFIX = "vbus\x00";
@@ -345,7 +351,7 @@ interface BusInterfaceComboProps {
   /// this machine has accepted it in the Servers panel.
   servers: readonly ServerRow[];
   localVirtualBuses: readonly LocalVirtualBusDef[];
-  onPick: (pick: ComboPick | null) => void;
+  onPick: (pick: ComboPick) => void;
   onManageServers: () => void;
   onAddVirtualBus: () => void;
 }
@@ -373,9 +379,11 @@ export function BusInterfaceCombo({
   // Selected option's `value`. When the binding's interface isn't
   // currently in any discovery snapshot (server unreachable, sidecar
   // still starting), the selection is still shown so the user can
-  // see what the bus is bound to.
+  // see what the bus is bound to. No binding row and an explicit
+  // `no-interface` row both show as "— no interface —" — they read
+  // the same here; only the connect refusal tells them apart.
   let selectedValue: string;
-  if (!binding) {
+  if (!binding || bindingKind(binding) === "no-interface") {
     selectedValue = COMBO_NONE;
   } else {
     const vbusId = localVbusId(binding);
@@ -404,7 +412,11 @@ export function BusInterfaceCombo({
       return;
     }
     if (v === COMBO_NONE) {
-      onPick(null);
+      // Picking "— no interface —" writes a `no-interface` binding
+      // row rather than deleting the binding (owner ruling): the
+      // choice is a persisted fact the host can tell apart from a
+      // bus nobody has wired up yet.
+      onPick({ kind: "no-interface" });
       return;
     }
     if (v.startsWith(COMBO_VBUS_PREFIX)) {
