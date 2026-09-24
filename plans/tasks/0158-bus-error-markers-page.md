@@ -80,6 +80,11 @@ Settled by the overseer, open to reversal:
   coalescer, `MAX_RUNS`, `runs_as_events` and the once-a-second
   `notes-changed` broadcast of derived events go; the notes store holds
   authored events only.
+- **Marker ids are the error's ordinal** (overseer, 2026-09-23, from
+  phase 1's finding): every served point at every level is a real
+  level-0 sample — the time of the nth error on the bus and n — so a
+  bus-error marker's id is `bus-error:{bus}:{n}`, stable across zoom
+  levels and restores. Links (ADR 0056) target that id; phase 2 uses it.
 - **ADRs.** ADR 0035 amended: detector-derived events are a windowed
   series family served by the signal cache; authored events stay whole.
   ADR 0002 names the error series among the derived families.
@@ -133,7 +138,34 @@ Settled by the overseer, open to reversal:
 
 ## Blockers / side effects
 
-(none yet)
+1. **The panel's error rate still uses a 1 s burst gap.** The prompt
+   listed `COALESCE_GAP_NS` for removal *and* required bus-health rates
+   unchanged; the rate is "errors/s over the latest burst", which needs
+   a burst boundary. Kept as `RATE_BURST_GAP_NS` inside a per-bus tally
+   (`ErrorTallies`, bounded by bus count, no list, no cap) that feeds
+   only the panel's `error_rate` / `last_error_ts_ns`; documented as
+   having nothing to do with markers. Removing it means redefining the
+   panel's rate (e.g. over the last second, or read off the series).
+2. **Between phases 1 and 2–3 no view shows bus-error markers.** Derived
+   events are gone from `notes-changed`/`fetch_notes`; `PlotPanel`,
+   `EventsPanel` and the trace's event rows show none until phases 2–3
+   read `bus_error_series`.
+   README (§ error frames, § timeline events table) still describes the
+   coalesced event — phase 3's README pass.
+3. **Links to bus-error events.** ADR 0056 lets an authored event name a
+   host-derived event by id; the old ids were `bus-error:{bus}:{first_ts}`
+   and are no longer in any store, so such a subject now reads as
+   unresolved. Phases 2–3 must pick a marker id scheme; a served point's
+   time changes with level, so an id stable across zoom is not free.
+   (Two `notes.rs` tests that linked to a store-held derived event were
+   removed with the derived list.)
+4. **Cost of a cold error series.** No by-id index for error frames, so
+   a rebuild reads every frame of the capture once (`O(capture)`, under
+   the serve budget, off the UI thread), then `O(new frames)` per serve.
+   Not measured on a real capture (no perf reading this phase).
+5. Pre-existing, not touched: ADR 0002 links ADR 0048 as
+   `0048-no-lock-across-rebuild.md`; the file is
+   `0048-no-model-lock-across-a-rebuild.md`.
 
 ## Status log
 
@@ -141,3 +173,76 @@ Settled by the overseer, open to reversal:
   (`MAX_RUNS`); owner ruled paging, the existing pyramid machinery and
   a paged Events section; the cumulative-count series settled by the
   overseer.
+- 2026-09-23 — **Phase 1 (host: the error series) landed** on
+  `task158-error-series` (off `fix-logger-grid-columns`), one commit.
+  - `SignalOrigin::BusErrors`, keyed `SignalKey::bus_errors(bus)`, signal
+    name `BUS_ERROR_SIGNAL` ("bus errors"), key prefix `sig.b…`; no
+    listing reads it.
+  - **Grouping.** `scan_chunk`'s `(message_id, extended)` grouping could
+    *not* carry it as-is: an error frame's id is whatever the controller
+    reported, so the by-id fetch cannot find a bus's error frames. The
+    group key became `ScanUnit { Message{id, ext} | BusErrors }`; every
+    error series in a batch shares one `BusErrors` group whose fetch is
+    `TraceStore::scan_chunk(is error) + frames_at`, and each target takes
+    the error frames on its own bus (`scan_error_chunk`). Budget charge
+    for that unit is the chunk width (the scan reads every frame).
+    Verified by `a_bus_error_series_and_a_decoded_signal_catch_up_in_one_batch`
+    (one error fetch for two buses beside one message fetch).
+  - **Running total.** Assigned at append under the lock, seeded from the
+    cache's widen-only extent max (`error_count`), which survives a
+    front-trim that empties level 0 and rides the manifest — so the count
+    is exact and monotone across chunks, restore and eviction.
+  - **Serve.** New thin command `bus_error_series(buses, fromSeconds,
+    toSeconds, maxPoints) -> { series: [{t, v}], complete }` over
+    `SignalCacheStore::bus_error_windows`, which ensures the error caches
+    and runs the shared `serve_keys` (split out of `slice_many`). Chosen
+    over widening `sample_signals`' query because the series is ruled
+    unlisted (it would need a new flag on the plot's `SignalQuery` wire
+    shape, the frontend's series key and all 28 `CacheQuery` literals),
+    and phase 3's Events panel needs it outside any plot. rustdoc on the
+    command and the store method states the delta property.
+  - **Persistence/restore.** `PersistedSignal.bus_errors` (serde default);
+    fingerprint `signal_fingerprint::bus_errors(bus)` (tag `E`, rule
+    version 1). Restore judges it by the whole-set gates plus its own
+    fingerprint; never parked; a rejected one counts toward `rebuilt` and
+    the cold-rebuild announcement (`rebuild_progress` now counts every
+    frame-filled cache). `invalidate_dbcs` skips it.
+  - **Coalescer removed.** `ErrorRuns`, `ErrorRun`, `MAX_RUNS`,
+    `COALESCE_GAP_NS`, `runs_as_events`, `label_for`/`description_for`,
+    the emitter's `replace_derived` + `notes-changed`; `NotesStore`'s
+    `derived` list, `replace_derived`, `clear_derived`. The store holds
+    authored events only; `notes-changed` fires only on authored changes.
+    Bus-health totals, rate and last-error kept in `ErrorTallies`
+    (per-bus, bounded by bus count).
+  - **Tests (in-process, no `#[ignore]`):** 11 new in `signal_cache`
+    (counting, 50k-frame budget/exactness, 10,000 episodes, mixed batch,
+    cold partial serve, persisted restore + keeps counting, rejected
+    restore rebuilds partial-first to the same totals, clear, DBC change
+    + sweep, front-trim keeps count); `bus_health` 7 coalescer tests → 5
+    tally tests; `notes` 4 derived-list tests removed; `tests.rs`
+    storm-export test rewritten (store refuses a bus-error event, file
+    carries every error frame), coalescer-producer test removed.
+    cannet-gui: 1388 passed, 0 failed.
+  - **50,000-frame test readings** (25,000 errors/bus, 500 episodes/bus,
+    150,000 frames): pyramid depth 7; levels served across the 9
+    budget×window cases {0, 1, 2, 3, 4}. Served length per bus (full /
+    tenth / hundredth window): budget 50 → 71 / 80 / 67; budget 200 →
+    394 / 315 / 254; budget 2000 → 3126 / 2504 / 254. All ≤ 2 × budget.
+  - **Experiments (falsifiability of the new tests):** (1) running count
+    seeded at 0 instead of the extent → 4 tests fail (front-trim,
+    persisted-restore, cold-partial, rejected-restore); reverted, green.
+    (2) bus filter dropped from `scan_error_chunk` → 2 tests fail
+    (counting, mixed batch); reverted, green.
+  - Docs: ADR 0035 amendment (2026-09-23), ADR 0002 DS-5 paragraph + "on
+    disk" table row, `signal_cache.rs` / `bus_health.rs` / `notes.rs`
+    module docs, `signal_fingerprint.rs`.
+
+## Exit criteria verdicts (2026-09-23, after phase 1)
+
+| # | Verdict |
+| --- | --- |
+| 2 | Series is a signal-cache pyramid: persisted, restored with the capture identity, rebuilt off the UI thread when absent, swept and capped like them | **Met (host tests)** — `a_persisted_bus_error_series_comes_back_and_keeps_counting`, `a_rejected_bus_error_series_rebuilds_off_the_serve_to_the_same_totals`, `a_cold_bus_error_series_answers_partially_until_it_catches_up`, `clearing_drops_…`, `a_dbc_change_and_its_sweep_leave_a_live_bus_error_series_alone`, `a_front_trimmed_bus_error_series_keeps_its_count`. Never parked (no definition to return), so the retention pool does not apply. |
+| 3 | Any window served within the point budget at every level; consecutive points give exact count and span across three levels | **Met** — `fifty_thousand_errors_serve_within_budget_with_exact_deltas_at_every_level` (levels 0–4 served, every point a real `(t_n, n)` sample, every Δvalue = count in `(a.t, b.t]`, length ≤ 2 × budget). |
+| 4 | `MAX_RUNS`, the coalescer and the whole-list derived-note broadcast gone; authored notes broadcast as before; bus-health totals unchanged | **Met** — removed; authored-note tests in `notes.rs` unchanged and green; `bus_health` tally tests + `a_row_is_built_…` green. See side effect 1 on `COALESCE_GAP_NS`. |
+| 6 | ADR 0035 and ADR 0002 describe the series family; README matches | **ADRs met; README deferred to phase 3 per the phase plan** — README lines ~531–550 and ~3387 still describe the coalesced event (side effect 2). |
+| 7 | Tests cover 1–5 (host half) | **Met for 2–4**; 1 is covered on the host by `ten_thousand_episodes_each_resolve_on_their_own` (every one of 10,000 episodes served as exactly its 3 errors at a zoom around it); the plot half is phase 2. |
