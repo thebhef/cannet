@@ -4,15 +4,18 @@
 //! per-signal decimation pyramids (ADR 0002 DS-5), packed into the
 //! compact binary layout the frontend decodes; `signal_min_max` answers
 //! the host-owned y-extent (ADR 0025); `bus_error_series` serves each
-//! bus's error series over a window, from the same pyramids. All catch
+//! bus's error series over a window, from the same pyramids, and
+//! `bus_error_episodes` pages the episodes derived from them. All catch
 //! the caches up to the store tip, so per-tick cost is `O(new matches)`.
 
 use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
 use crate::ipc::{
-    BusErrorPoints, BusErrorWindows, DecimatedRange, SampledPoints, SignalExtent, SignalQuery,
+    BusErrorEpisode, BusErrorEpisodePage, BusErrorPoints, BusErrorWindows, DecimatedRange,
+    SampledPoints, SignalExtent, SignalQuery,
 };
+use crate::settings::{MAX_BUS_ERROR_EPISODE_GAP_S, MIN_BUS_ERROR_EPISODE_GAP_S};
 use crate::signal_cache::CacheQuery;
 use crate::signal_sampler;
 
@@ -390,6 +393,69 @@ pub(crate) async fn bus_error_series(
                 })
                 .collect(),
             complete: served.complete,
+        }
+    })
+    .await
+}
+
+/// Page `buses`' bus-error **episodes** at `gap_seconds`: rows
+/// `[offset, offset + limit)`, newest first, with how many there are.
+///
+/// An episode is a burst of errors on one bus in which every error
+/// follows the one before by less than the gap; a silence of at least the
+/// gap ends it. Each row carries the burst's first and last time, its
+/// count, span and rate, and its last error's ordinal on the bus — its id.
+/// The host derives the episodes from each bus's error series and holds
+/// them per bus at the gap last asked for, extending them as the capture
+/// grows and rebuilding them when the gap changes or after a restore
+/// ([`crate::signal_cache::SignalCacheStore::bus_error_episodes`]); a view
+/// pages them and counts nothing.
+///
+/// The gap is held to the `bus_error_episode_gap_s` setting's bounds, so
+/// the list stays bounded by capture time ÷ gap whatever a caller sends.
+/// `complete` is `false` while a series or its episodes are still being
+/// built (ADR 0049); the page is then what has been derived so far.
+#[tauri::command]
+pub(crate) async fn bus_error_episodes(
+    app: AppHandle,
+    buses: Vec<String>,
+    gap_seconds: f64,
+    offset: u64,
+    limit: u64,
+) -> BusErrorEpisodePage {
+    off_async_workers(move || {
+        let state: State<'_, AppState> = app.state();
+        let refs: Vec<&str> = buses.iter().map(String::as_str).collect();
+        #[allow(clippy::cast_precision_loss)]
+        let gap = gap_seconds.clamp(
+            MIN_BUS_ERROR_EPISODE_GAP_S as f64,
+            MAX_BUS_ERROR_EPISODE_GAP_S as f64,
+        );
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        let page = state.signal_caches.bus_error_episodes(
+            &refs,
+            gap,
+            offset,
+            usize::try_from(limit).unwrap_or(usize::MAX),
+            &state.trace_store,
+        );
+        BusErrorEpisodePage {
+            count: page.count as u64,
+            start: offset.min(page.count) as u64,
+            episodes: page
+                .episodes
+                .into_iter()
+                .map(|(bus, e)| BusErrorEpisode {
+                    bus: buses[bus].clone(),
+                    first_t: e.first_t,
+                    last_t: e.last_t,
+                    count: e.count(),
+                    span: e.span(),
+                    rate: e.rate(),
+                    last_ordinal: e.last_n,
+                })
+                .collect(),
+            complete: page.complete,
         }
     })
     .await

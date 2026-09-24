@@ -7786,6 +7786,7 @@ input.unit-customization-add {
 .bus-error-events-title {
   flex: 1 1 auto;
 }
+.bus-error-events-gap,
 .bus-error-events-pending {
   color: var(--text-faint);
 }
@@ -7795,9 +7796,12 @@ input.unit-customization-add {
   color: var(--text-faint);
 }
 /* The bounded row space: the rows scroll here, never in the events
-   panel's own list (ADR 0044 — the view supplies the scrolling). */
+   panel's own list (ADR 0044 — the view supplies the scrolling). Its
+   height is set inline — a fixed number of fixed-height rows, which the
+   virtualization's arithmetic depends on; this bound is that height at
+   its most (`PAGE_ROWS` × the trace's 22 px row). */
 .bus-error-events-grid {
-  max-height: 12rem;
+  max-height: 176px;
   overflow-y: auto;
 }
 .bus-error-events-grid:focus-visible {
@@ -7808,7 +7812,8 @@ input.unit-customization-add {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.2rem 0.5rem;
+  box-sizing: border-box;
+  padding: 0 0.5rem;
   font-size: 0.78rem;
 }
 .bus-error-event-row + .bus-error-event-row {
