@@ -2980,9 +2980,9 @@ overwrites the first.
 **The panel lists the folder's files**, recursively — a subdirectory the
 File template made (e.g. a per-start `{start}\{now}` layout) shows as a
 branch you expand, same as any other file's parent folder. Each file's
-columns are **name, size, trace start/end** (ISO timestamps), **duration,
-message count** (both directions — rx and tx alike, since a logger writes
-the whole capture) **and filesystem modified time**; start/end/count are
+columns are **name, size, duration, trace start/end** (ISO timestamps)
+**and message count** (both directions — rx and tx alike, since a logger
+writes the whole capture) **and filesystem modified time**; start/end/count are
 served from a per-file cache the host keeps, invalidated the moment a
 file's modified time moves, so listing the folder again costs nothing for
 a file nobody has touched. **The list never waits for a file it has not
