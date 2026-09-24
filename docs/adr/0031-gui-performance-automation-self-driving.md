@@ -57,6 +57,12 @@ Two halves make this work:
     real DOM events dispatched at the real elements, so they reach the
     app through the listeners a mouse would — the same "the app is its
     own driver" argument as the rest of this decision.
+  - `--show-points <auto|off|on>` — force every plot panel's show-points
+    mode for the run. The mode is a persisted *panel* setting, so the
+    only other way to measure one is to save it into the project being
+    measured — which changes the comparand every earlier reading was
+    taken against. Nothing is written back; the panels' own modes are
+    untouched.
 
   Everything else the measurement needs is already persisted project
   state: opening the project restores the panel layout (so the views

@@ -321,6 +321,27 @@ marker on its last reading while the pointer moves on past it, which is
 the honest picture: the stretch between the two is already drawn as
 extrapolation.
 
+**Amended 2026-09-21 — the hover chrome draws on an overlay canvas, and
+a marker is filled, not stroked.** Everything above describes what is
+drawn; this says what may repaint to draw it. A plot area stacks a second
+canvas over uPlot's own, covering the whole plot including its gutters,
+and paints there everything whose input is the shared hover x, an A/B or
+H cursor, or the lit event set: the crosshair, the cursor lines, the
+hover markers, the event lines and their extents, the label chips, the
+A/B/Δt chips, the H1/H2/ΔH chips and the bottom axis's time label. What
+is tied to the *data* — the dashed extrapolation stretches, the lane
+tiles and their labels — stays in uPlot's draw, where the data is. So
+moving the pointer or placing a cursor repaints one overlay canvas and
+never the series layer. The placement and the look of every readout are
+unchanged; only the layer they are painted on moved. Sample markers are
+drawn fill-only (the stroke pass over every marker is skipped, at the
+same drawn size), which is the same economy from the other side. The
+reason for both is one measurement: uPlot re-runs a series' point filter
+and rebuilds its marker path on **every** repaint, so with `Points: On`
+marking every served sample a redraw per pointer move re-rasterized every
+marker of every series of every stacked area, and a long trace became
+unusable to point at.
+
 The show-points modes compose with this the way they do with everything
 else. `off` is off, hover or not. `auto` and `on` both reveal, because
 what a hover adds is one marker per series, and neither uPlot's density
@@ -522,7 +543,12 @@ below:
   oscillating through both and most extrema carried no dot at all. The
   markers were on the line; the wrong ones were being chosen, and a cap
   is not needed to bound them — the serve already is, to a few points
-  per canvas pixel column. `auto` carries a **minimum-sample-count
+  per canvas pixel column. *Amended 2026-09-21:* the serve bounds the
+  marker **count**; it does not bound their **cost**, which is paid
+  again on every repaint of the series layer (uPlot caches a series'
+  line path and rebuilds its point layer each time). Two things follow,
+  and both are below: markers are filled and never stroked, and the
+  chrome a pointer moves no longer repaints the series at all. `auto` carries a **minimum-sample-count
   floor**: uPlot's
   automatic rule reads the density of the *axis* — the merged x columns
   every series on it shares — so a series holding a handful of samples

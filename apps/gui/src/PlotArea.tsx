@@ -236,10 +236,16 @@ function measureLabelWidth(text: string): number {
  * panel. */
 const X_AXIS_LABEL = "time (s)";
 /** Bold monospace for that label, so the digits appended below are
- * fixed-pitch. uPlot centres the label string, so a proportional font
- * would shift it under the plot every time a digit changed shape. Same
- * family as the tick font (`AXIS_FONT`) at uPlot's own label size. */
-const X_AXIS_LABEL_FONT = "bold 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+ * fixed-pitch. The label is centred, so a proportional font would shift
+ * it under the plot every time a digit changed shape. Same family as
+ * the tick font (`AXIS_FONT`) at uPlot's own label size.
+ *
+ * Takes the canvas pixel ratio because the overlay paints this label
+ * itself and paints in device pixels; the copy handed to uPlot is the
+ * CSS-px one, which uPlot scales on its own. */
+const xAxisLabelFont = (ratio: number) =>
+  `bold ${12 * ratio}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+const X_AXIS_LABEL_FONT = xAxisLabelFont(1);
 
 /** The bottom x-axis's label text.
  *
@@ -1321,6 +1327,14 @@ const TIME_CURSOR_GUTTER_PX = CANVAS_CHIP_LINE_PX + GUTTER_CHIP_GAP_PX * 2;
  * down by exactly the gutter. */
 const X_TICK_SIZE_PX = 10;
 const X_AXIS_VALUE_GAP_PX = 5;
+/** What the bottom drawing axis reserves above its label (CSS px):
+ * uPlot's own 34 px of tick marks and tick values, plus the time-cursor
+ * gutter inserted between them and the plot box. The overlay hangs the
+ * axis's time label off exactly this, because it is what uPlot's own
+ * label position is measured from. */
+const X_AXIS_SIZE_PX = 34 + TIME_CURSOR_GUTTER_PX;
+/** The band uPlot reserves for that label. */
+const X_AXIS_LABEL_SIZE_PX = 16;
 
 /** Draw one chip — a filled, outlined box of `lines` lines of text,
  * centred vertically on `cy` and hung off `x` by its centre or its left
@@ -1591,6 +1605,297 @@ export function drawValueCursorChips(
   ctx.restore();
 }
 
+/**
+ * The bottom drawing axis's own time label, drawn on the hover overlay.
+ *
+ * uPlot reserves the band (the axis carries a blank label, so the space
+ * is its own layout's) but paints nothing in it: the text carries the
+ * free cursor's position on the timeline, which changes on every
+ * pointer move, and re-running uPlot's axis pass for that would take
+ * the whole series layer with it (ADR 0026). Same font, same colour and
+ * the same centred position uPlot would have drawn it at — it is the
+ * axis label, just painted a layer up.
+ */
+export function drawXAxisTimeLabel(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    hoverX: number | null;
+    /** The plot box, device px. */
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    ratio: number;
+  },
+): void {
+  const text = xAxisLabelText(
+    o.hoverX,
+    u.scales.x.max ?? null,
+    fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)),
+  );
+  ctx.save();
+  ctx.font = xAxisLabelFont(o.ratio);
+  ctx.fillStyle = theme().axisText;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  // Centred on the plot box and hung below the axis, exactly where
+  // uPlot puts a bottom axis's label: its label position is the foot of
+  // the plot box plus the axis's own reserved size.
+  ctx.fillText(
+    text,
+    Math.round(o.left + o.width / 2),
+    Math.round(o.top + o.height + X_AXIS_SIZE_PX * o.ratio),
+  );
+  ctx.restore();
+}
+
+/**
+ * Everything the **pointer and the cursors** put on a plot area, painted
+ * on the overlay canvas rather than into uPlot's own draw (ADR 0026).
+ *
+ * The split is by input, not by looks: a mark whose position or presence
+ * follows the shared hover x, an A/B/H cursor or the lit event set draws
+ * here, and everything tied to the *data* — the dashed extrapolation
+ * stretches, the lane tiles and their labels — stays in the `draw` hook
+ * where the data is. That is what makes a hover free: uPlot caches a
+ * series' line path but rebuilds its point layer on every repaint, so a
+ * `redraw` for a moved crosshair re-rasterized every marker of every
+ * series of every stacked area.
+ *
+ * Order and clipping are the draw hook's, unchanged: lines and markers
+ * inside the plot box, readouts in the gutters outside it, each of the
+ * chip functions clipping to its own gutter so none of them can paint
+ * over a series.
+ */
+export function drawHoverOverlay(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    events: readonly NoteEvent[];
+    litEventIds: ReadonlySet<string>;
+    eventExtents: readonly PlotExtent[];
+    cursorXa: number | null;
+    cursorXb: number | null;
+    cursorYh1: number | null;
+    cursorYh2: number | null;
+    hoverX: number | null;
+    signals: readonly { hidden?: boolean }[];
+    /** Per series (0-based), the merged columns it has a sample at. */
+    sampleColumns: readonly (readonly number[] | undefined)[];
+    color: (seriesIdx0: number) => string;
+    showPoints: ShowPointsMode;
+    /** Whether this area carries the panel's top / bottom once-per-panel
+     * gutter — the same anchoring the drawing axes already use. */
+    isFirst: boolean;
+    isLast: boolean;
+  },
+): void {
+  const ratio = u.ctx.canvas.width / u.width || 1;
+  const { left, top, width, height } = u.bbox;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, top, width, height);
+  ctx.clip();
+  ctx.font = `600 ${9.5 * ratio}px ui-monospace, monospace`;
+  ctx.lineWidth = 1 * ratio;
+  // The *line* only. Every readout that used to ride one — an event's
+  // label chip, a cursor's time — draws in a gutter outside the plot
+  // box (ADR 0026), after this clip is released.
+  const vline = (xVal: number, color: string, dash: number[]) => {
+    const xp = u.valToPos(xVal, "x", true);
+    if (xp < left - 4 || xp > left + width + 4) return;
+    ctx.strokeStyle = color;
+    ctx.setLineDash(dash.map((d) => d * ratio));
+    ctx.beginPath();
+    ctx.moveTo(xp, top);
+    ctx.lineTo(xp, top + height);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  // A linked pair's extent, as an event-colored wash at low opacity
+  // (owner ruling) — behind the marker lines, because it is the region
+  // the two of them bound. Drawn **only** while one of the pair is being
+  // acted on: `eventExtents` is empty at rest, so this loop and
+  // everything the highlight adds below costs nothing and paints nothing
+  // on a plot nobody is pointing at.
+  drawEventExtents(ctx, u, { extents: o.eventExtents, top, height, left, width, ratio });
+  // While an event is being acted on, the ones it says nothing about go
+  // quiet, so the pair (or the single event) reads at a glance.
+  // `litEventIds` is empty at rest, and then every line draws exactly as
+  // it always has.
+  const dimLines = o.litEventIds.size > 0;
+  // Lit markers draw last so nothing paints over the one the reader is
+  // pointing at — fading its neighbours and then burying its label under
+  // one of their chips would say two opposite things at once.
+  for (const ev of litLast(o.events, o.litEventIds)) {
+    ctx.globalAlpha = dimLines && !o.litEventIds.has(ev.id) ? UNLIT_ALPHA : 1;
+    vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3]);
+  }
+  ctx.globalAlpha = 1;
+  // The A/B cursors are panel-level, so their *lines* cross every
+  // stacked area — that is what makes a reading in one area line up with
+  // a reading in another. Their timestamps are not: one x is one time
+  // however many areas it crosses, and repeating it down the stack is
+  // the same number said N times over the data. They ride the bottom
+  // drawing axis, in the gutter above its tick labels, with the x-axis
+  // time label and the Δt chip — so everything the panel says about
+  // *when* is in one place (ADR 0026).
+  if (o.cursorXa != null) {
+    vline(o.cursorXa, theme().cursorA, [4, 3]);
+  }
+  if (o.cursorXb != null) {
+    vline(o.cursorXb, theme().cursorB, [4, 3]);
+  }
+  // The shared mouse crosshair (panel-level, like A/B): drawn in *every*
+  // stacked area at the same x, so the hover in one area lines up with
+  // the readouts everywhere. No label — it tracks the pointer; `vline`
+  // clips it when the x falls outside this area's window, same as A/B.
+  if (o.hoverX != null) {
+    vline(o.hoverX, theme().crosshair, [4, 3]);
+  }
+  // ...and the markers that go with it (ADR 0026). Same shared x, so a
+  // pointer resting in *any* area of the panel reveals every area's
+  // nearest samples at once — the parity the per-instance hover point
+  // uPlot draws could never have, since a uPlot instance only knows
+  // about its own pointer. Drawn after the crosshair so it sits on the
+  // line rather than under it.
+  //
+  // `off` means off here as everywhere else; `auto` and `on` both
+  // reveal, because what the hover adds is one marker per series and
+  // neither the density rule nor the ≤32 floor has an opinion about a
+  // single column under the pointer. Those two go on governing the
+  // *static* markers, which is where the modes differ.
+  if (o.showPoints !== "off") {
+    drawHoverMarkers(ctx, u, {
+      hoverX: o.hoverX,
+      signals: o.signals,
+      sampleColumns: o.sampleColumns,
+      color: o.color,
+      ratio,
+      left,
+      width,
+    });
+  }
+  // The *line* only, like `vline`: H1/H2 and ΔH read out in the y gutter
+  // now (ADR 0026).
+  const hline = (yVal: number, color: string) => {
+    const yp = u.valToPos(yVal, "y", true);
+    if (yp < top - 4 || yp > top + height + 4) return;
+    ctx.strokeStyle = color;
+    ctx.setLineDash([4 * ratio, 3 * ratio]);
+    ctx.beginPath();
+    ctx.moveTo(left, yp);
+    ctx.lineTo(left + width, yp);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  if (o.cursorYh1 != null) hline(o.cursorYh1, theme().cursorA);
+  if (o.cursorYh2 != null) hline(o.cursorYh2, theme().cursorB);
+  ctx.restore();
+  // Out of the data area and into the gutters (ADR 0026). Everything
+  // above this line is a line that ties a readout to a place in the
+  // data; everything below is a readout, and a readout drawn over the
+  // series it is read from is the defect these gutters answer. Each
+  // function clips to its own gutter, so none of them can paint inside
+  // the plot box.
+  ctx.font = `600 ${9.5 * ratio}px ui-monospace, monospace`;
+  ctx.lineWidth = 1 * ratio;
+  if (o.isFirst) {
+    // The gutter the chips hang in is `u.bbox.top`, which is the top
+    // padding the same `isFirst` sized.
+    drawEventLabelChips(ctx, u, {
+      events: o.events,
+      litEventIds: o.litEventIds,
+      left,
+      width,
+      top,
+      gutter: top,
+      ratio,
+    });
+  }
+  if (o.isLast) {
+    drawTimeCursorChips(ctx, u, {
+      cursorXa: o.cursorXa,
+      cursorXb: o.cursorXb,
+      left,
+      width,
+      // Below the tick marks, which keep their length: the gutter was
+      // inserted into the gap between them and the tick values.
+      gutterTop: top + height + X_TICK_SIZE_PX * ratio,
+      gutter: TIME_CURSOR_GUTTER_PX * ratio,
+      xDigits: fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)),
+      ratio,
+    });
+    drawXAxisTimeLabel(ctx, u, { hoverX: o.hoverX, left, top, width, height, ratio });
+  }
+  drawValueCursorChips(ctx, u, {
+    cursorYh1: o.cursorYh1,
+    cursorYh2: o.cursorYh2,
+    left,
+    top,
+    height,
+    ratio,
+  });
+}
+
+/** The overlay canvas of one plot area, and the context it is painted
+ * through. */
+export interface HoverOverlay {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+}
+
+/**
+ * Stack a second canvas over a constructed uPlot instance for
+ * {@link drawHoverOverlay} to paint on, or `null` where the environment
+ * has no 2D context.
+ *
+ * It goes inside `u.over` — uPlot's own topmost layer, so nothing it
+ * draws can be buried by the series — but it is sized and offset to the
+ * *whole* canvas rather than to the plot box, because the readouts it
+ * carries live in the gutters outside it. That also keeps the
+ * coordinates uPlot's own: `u.bbox` addresses the same pixels here as it
+ * does in the `draw` hook.
+ *
+ * `pointer-events: none`, so the surface uPlot listens on is unchanged.
+ */
+export function createHoverOverlay(u: uPlot): HoverOverlay | null {
+  const canvas = document.createElement("canvas");
+  canvas.className = "plot-hover-overlay";
+  u.over.appendChild(canvas);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    canvas.remove();
+    return null;
+  }
+  const overlay = { canvas, ctx };
+  syncHoverOverlay(overlay, u);
+  return overlay;
+}
+
+/** Match the overlay canvas to the instance's current size and plot box.
+ * Called before every paint rather than from a resize hook: the plot box
+ * moves for reasons that are not resizes (the event-label gutter grows
+ * with its labels), and the check is two integer comparisons. */
+export function syncHoverOverlay(o: HoverOverlay, u: uPlot): void {
+  const dev = u.ctx.canvas;
+  // Assigning either dimension clears the canvas, so only do it when it
+  // actually changed — the paint that follows clears it anyway.
+  if (o.canvas.width !== dev.width) o.canvas.width = dev.width;
+  if (o.canvas.height !== dev.height) o.canvas.height = dev.height;
+  const ratio = dev.width / u.width || 1;
+  const style = o.canvas.style;
+  style.position = "absolute";
+  style.pointerEvents = "none";
+  // `u.over` sits at the plot box's origin; back the overlay out to the
+  // canvas's, so device-pixel coordinates line up with uPlot's.
+  style.left = `${-u.bbox.left / ratio}px`;
+  style.top = `${-u.bbox.top / ratio}px`;
+  style.width = `${u.width}px`;
+  style.height = `${u.height}px`;
+}
+
 /** Memoised: a plot panel re-renders for its own reasons (toolbar
  * menus, the ~2 Hz perf badge, cursor placement) far more often than
  * any area's inputs change, and an area render walks its whole signal
@@ -1752,6 +2057,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     if (signalsScrollRef.current) signalsScrollRef.current.scrollTop = 0;
   }, [soloScope]);
   const uplotRef = useRef<uPlot | null>(null);
+  /** The canvas the hover chrome draws on, stacked over `uplotRef`'s
+   * (ADR 0026). Created with the instance and removed with it. */
+  const overlayRef = useRef<HoverOverlay | null>(null);
+  /** The current overlay paint, reachable from the `draw` hook — which
+   * is registered once per instance and would otherwise keep the props
+   * the instance was built with. */
+  const paintHoverOverlayRef = useRef<() => void>(() => {});
   const seriesRef = useRef<Map<string, Series>>(new Map());
   const presentRef = useRef<Map<string, number | null>>(new Map());
   const resampleBusyRef = useRef(false);
@@ -1984,11 +2296,46 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     if (changed) u.redraw();
   }, [litKeys, signals]);
 
-  // Redraw the overlay when a band appears, moves or goes: the extents
-  // and the lit set are read from `liveRef` inside the draw hook, and a
-  // stopped plot has nothing else to nudge it.
+  /** Repaint the hover overlay from the current props: clear it and
+   * re-draw the crosshair, the cursors, their readouts and the event
+   * chrome. Cheap by construction — one canvas, a handful of lines and
+   * chips — and it never touches the series layer, which is the whole
+   * point (ADR 0026). */
+  const paintHoverOverlay = () => {
+    const u = uplotRef.current;
+    const overlay = overlayRef.current;
+    if (!u || !overlay) return;
+    syncHoverOverlay(overlay, u);
+    overlay.ctx.clearRect(0, 0, overlay.canvas.width, overlay.canvas.height);
+    const lr = liveRef.current;
+    drawHoverOverlay(overlay.ctx, u, {
+      events: lr.events,
+      litEventIds: lr.litEventIds,
+      eventExtents: lr.eventExtents,
+      cursorXa: lr.cursorXa,
+      cursorXb: lr.cursorXb,
+      cursorYh1: lr.cursorYh1,
+      cursorYh2: lr.cursorYh2,
+      hoverX: lr.hoverX,
+      signals: signalsRef.current,
+      sampleColumns: sampleColumnsRef.current,
+      color: (i) => seriesColorRef.current(signalsRef.current[i] ?? signals[i]),
+      showPoints,
+      // `lr.isFirst`, not the prop: the area above this one can collapse
+      // without rebuilding this instance, and that is exactly when this
+      // axis starts carrying the event chips.
+      isFirst: lr.isFirst,
+      isLast,
+    });
+  };
+  paintHoverOverlayRef.current = paintHoverOverlay;
+
+  // Repaint the overlay when a band appears, moves or goes. The extents
+  // and the lit set are chrome, so this costs one overlay canvas and
+  // never the series layer (ADR 0026) — which matters most exactly here,
+  // since an extent appears while the pointer is moving over an event.
   useEffect(() => {
-    uplotRef.current?.redraw();
+    paintHoverOverlayRef.current();
   }, [eventExtents, litEventIds]);
 
   // Value-table support for enum / state signals. When the
@@ -2966,28 +3313,27 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     // That one label is also where the free cursor's own time is read
     // out. The crosshair is panel-level (one shared x for the whole
     // stack), so the readout is too: it belongs to the single labelled
-    // axis at the foot of the panel, not to each area. uPlot calls
-    // `label` on every draw, so this reads `liveRef` and costs no React
-    // state of its own — the redraw the shared hover already triggers
-    // repaints it.
+    // axis at the foot of the panel, not to each area.
+    //
+    // The label is **blank here and painted on the overlay** instead
+    // (`drawXAxisTimeLabel`, ADR 0026). A non-empty `label` is what makes
+    // uPlot reserve the band and fix the position, both of which are
+    // still wanted; what is not wanted is the text changing on every
+    // pointer move, because the only way to repaint an axis is a redraw
+    // that takes the whole series layer with it.
     const xAxis: uPlot.Axis = isLast
       ? {
           ...axisCommon,
-          label: (u: uPlot) =>
-            xAxisLabelText(
-              liveRef.current.hoverX,
-              u.scales.x.max ?? null,
-              fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)),
-            ),
+          label: " ",
           labelFont: X_AXIS_LABEL_FONT,
-          labelSize: 16,
+          labelSize: X_AXIS_LABEL_SIZE_PX,
           // The time-cursor gutter (ADR 0026): A, B and Δt read out in
           // the strip between this axis's plot box and its tick values,
           // so the gap that separates the two grows by the gutter and
           // the axis reserves the same. The tick *marks* keep their
           // length — the strip starts below them.
           gap: X_AXIS_VALUE_GAP_PX + TIME_CURSOR_GUTTER_PX,
-          size: 34 + TIME_CURSOR_GUTTER_PX,
+          size: X_AXIS_SIZE_PX,
           space: xTickSpace,
           // Ticks share the trace's elapsed-time format (ADR 0024) so
           // the same timeline position reads identically in both views;
@@ -3016,18 +3362,19 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // box-zoom on right-drag instead (see the `ready` hook), so
       // left-clicks are free for placing cursors / notes. The native
       // vertical cursor line (`x`) is off too: the crosshair is
-      // panel-level (one shared x across the stacked areas), drawn by
-      // our own draw-hook overlay in every area — the native line
-      // would double it up in the hovered one. The horizontal line
-      // stays: y is meaningful only under the pointer.
+      // panel-level (one shared x across the stacked areas), drawn on
+      // our own overlay canvas in every area — the native line would
+      // double it up in the hovered one. The horizontal line stays: y
+      // is meaningful only under the pointer.
       //
       // uPlot's per-series hover point is off for the same two reasons,
       // one of which the crosshair had first: it is a property of *this*
       // instance's pointer, so it can never appear on the areas the
       // pointer is not in — and it snaps to the nearest **merged**
       // column, which is a neighbour's reading as often as it is this
-      // series'. `drawHoverMarkers` draws it in the overlay instead,
-      // from the panel's shared hover x and on the series' own samples.
+      // series'. `drawHoverMarkers` draws it on the overlay canvas
+      // instead, from the panel's shared hover x and on the series' own
+      // samples.
       cursor: { x: false, points: { show: false }, drag: { x: false, y: false } },
       // The event label chips draw in a gutter *above* the plot box
       // rather than inside it (ADR 0026). uPlot re-evaluates a padding
@@ -3301,169 +3648,19 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // place the held value's *name* appears, and it is the one
             // part of a lane that may not be crossed by the waveform.
             //
-            // Drawn before the cursor / event overlays below: tiles are
-            // content, those are annotation, so the readouts you are
-            // actively pointing at have to stay legible over them.
+            // The cursor and event chrome is annotation over this: it
+            // draws on the overlay canvas, which is a layer up, so the
+            // readouts you are actively pointing at stay legible over
+            // the tiles either way.
             drawEnumTileLabels(ctx, tileLabelsRef.current, ratio);
-            // The *line* only. Every readout that used to ride one — an
-            // event's label chip, a cursor's time — now draws in a
-            // gutter outside the plot box (ADR 0026), after this clip is
-            // released.
-            const vline = (xVal: number, color: string, dash: number[]) => {
-              const xp = u.valToPos(xVal, "x", true);
-              if (xp < left - 4 || xp > left + width + 4) return;
-              ctx.strokeStyle = color;
-              ctx.setLineDash(dash.map((d) => d * ratio));
-              ctx.beginPath();
-              ctx.moveTo(xp, top);
-              ctx.lineTo(xp, top + height);
-              ctx.stroke();
-              ctx.setLineDash([]);
-            };
-            // A linked pair's extent, as an event-colored wash at low
-            // opacity (owner ruling) — behind the marker lines, because
-            // it is the region the two of them bound. Drawn **only**
-            // while one of the pair is being acted on: `eventExtents` is
-            // empty at rest, so this loop and everything the highlight
-            // adds below costs nothing and paints nothing on a plot
-            // nobody is pointing at.
-            drawEventExtents(ctx, u, {
-              extents: lr.eventExtents,
-              top,
-              height,
-              left,
-              width,
-              ratio,
-            });
-            // While an event is being acted on, the ones it says nothing
-            // about go quiet, so the pair (or the single event) reads at
-            // a glance. `litEventIds` is empty at rest, and then every
-            // line draws exactly as it always has.
-            const dimLines = lr.litEventIds.size > 0;
-            // Lit markers draw last so nothing paints over the one the
-            // reader is pointing at — fading its neighbours and then
-            // burying its label under one of their chips would say two
-            // opposite things at once.
-            for (const ev of litLast(lr.events, lr.litEventIds)) {
-              ctx.globalAlpha = dimLines && !lr.litEventIds.has(ev.id) ? UNLIT_ALPHA : 1;
-              vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3]);
-            }
-            ctx.globalAlpha = 1;
-            // The A/B cursors are panel-level, so their *lines* cross
-            // every stacked area — that is what makes a reading in one
-            // area line up with a reading in another. Their timestamps
-            // are not: one x is one time however many areas it crosses,
-            // and repeating it down the stack is the same number said N
-            // times over the data. They ride the bottom drawing axis, in
-            // the gutter above its tick labels, with the x-axis time
-            // label and the Δt chip — so everything the panel says about
-            // *when* is in one place (ADR 0026).
-            if (lr.cursorXa != null) {
-              vline(lr.cursorXa, theme().cursorA, [4, 3]);
-            }
-            if (lr.cursorXb != null) {
-              vline(lr.cursorXb, theme().cursorB, [4, 3]);
-            }
-            // The shared mouse crosshair (panel-level, like A/B): drawn
-            // in *every* stacked area at the same x, so the hover in
-            // one area lines up with the readouts everywhere. No label
-            // — it tracks the pointer; `vline` clips it when the x
-            // falls outside this area's window, same as A/B.
-            if (lr.hoverX != null) {
-              vline(lr.hoverX, theme().crosshair, [4, 3]);
-            }
-            // ...and the markers that go with it (ADR 0026). Same shared
-            // x, so a pointer resting in *any* area of the panel reveals
-            // every area's nearest samples at once — the parity the
-            // per-instance hover point uPlot draws could never have,
-            // since a uPlot instance only knows about its own pointer.
-            // Drawn after the tiles so a lane's marker survives them,
-            // and after the crosshair so it sits on the line rather than
-            // under it.
-            //
-            // `off` means off here as everywhere else; `auto` and `on`
-            // both reveal, because what the hover adds is one marker per
-            // series and neither the density rule nor the ≤32 floor has
-            // an opinion about a single column under the pointer. Those
-            // two go on governing the *static* markers, which is where
-            // the modes differ.
-            if (showPoints !== "off") {
-              drawHoverMarkers(ctx, u, {
-                hoverX: lr.hoverX,
-                signals: signalsRef.current,
-                sampleColumns: sampleColumnsRef.current,
-                color: (i) => seriesColorRef.current(signalsRef.current[i] ?? signals[i]),
-                ratio,
-                left,
-                width,
-              });
-            }
-            // The *line* only, like `vline`: H1/H2 and ΔH read out in the
-            // y gutter now (ADR 0026).
-            const hline = (yVal: number, color: string) => {
-              const yp = u.valToPos(yVal, "y", true);
-              if (yp < top - 4 || yp > top + height + 4) return;
-              ctx.strokeStyle = color;
-              ctx.setLineDash([4 * ratio, 3 * ratio]);
-              ctx.beginPath();
-              ctx.moveTo(left, yp);
-              ctx.lineTo(left + width, yp);
-              ctx.stroke();
-              ctx.setLineDash([]);
-            };
-            if (lr.cursorYh1 != null) hline(lr.cursorYh1, theme().cursorA);
-            if (lr.cursorYh2 != null) hline(lr.cursorYh2, theme().cursorB);
             ctx.restore();
-            // Out of the data area and into the gutters (ADR 0026).
-            // Everything above this line is content or a line that ties
-            // a readout to a place in the data; everything below is a
-            // readout, and a readout drawn over the series it is read
-            // from is the defect these gutters answer. Each function
-            // clips to its own gutter, so none of them can paint inside
-            // the plot box.
-            ctx.font = `600 ${9.5 * ratio}px ui-monospace, monospace`;
-            ctx.lineWidth = 1 * ratio;
-            if (lr.isFirst) {
-              // `lr.isFirst`, not the prop: the draw hook is registered
-              // once per uPlot instance and keeps the closure it was
-              // built with, so a plain read goes stale the moment the
-              // area above this one collapses — which is exactly when
-              // this axis is supposed to start drawing the labels. The
-              // gutter it draws into is `u.bbox.top`, which is the top
-              // padding the same `isFirst` sized.
-              drawEventLabelChips(ctx, u, {
-                events: lr.events,
-                litEventIds: lr.litEventIds,
-                left,
-                width,
-                top,
-                gutter: top,
-                ratio,
-              });
-            }
-            if (isLast) {
-              drawTimeCursorChips(ctx, u, {
-                cursorXa: lr.cursorXa,
-                cursorXb: lr.cursorXb,
-                left,
-                width,
-                // Below the tick marks, which keep their length: the
-                // gutter was inserted into the gap between them and the
-                // tick values.
-                gutterTop: top + height + X_TICK_SIZE_PX * ratio,
-                gutter: TIME_CURSOR_GUTTER_PX * ratio,
-                xDigits: fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)),
-                ratio,
-              });
-            }
-            drawValueCursorChips(ctx, u, {
-              cursorYh1: lr.cursorYh1,
-              cursorYh2: lr.cursorYh2,
-              left,
-              top,
-              height,
-              ratio,
-            });
+            // …and the chrome the pointer and the cursors drive, on the
+            // overlay canvas stacked above this one (ADR 0026). It is
+            // repainted from here so that a *data* repaint — a live
+            // tick, a pan, a zoom — carries the crosshair and the
+            // readouts with it; a hover or a cursor placement repaints
+            // the overlay alone, and never asks uPlot to redraw.
+            paintHoverOverlayRef.current();
           },
         ],
         ready: [
@@ -3647,6 +3844,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
     });
     uplotRef.current = u;
+    // The second canvas the hover chrome draws on (ADR 0026). Built per
+    // instance and torn down with it, so it can never outlive the plot
+    // box it is positioned against.
+    overlayRef.current = createHoverOverlay(u);
     // The minimum-count floor under `auto` (see `plotPoints.ts`). It
     // wraps the density rule uPlot just installed, so it has to run on
     // the constructed instance rather than on `opts` — and it reads the
@@ -3743,6 +3944,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       liveRef.current.onHoverX(areaId, null);
       registerInstance(areaId, null);
       diagCount("uplot.destroy"); // DIAG
+      overlayRef.current?.canvas.remove();
+      overlayRef.current = null;
       u.destroy();
       if (uplotRef.current === u) uplotRef.current = null;
     };
@@ -3999,10 +4202,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     void resampleRef.current();
   }, [yScaleKey, resetRange]);
 
-  // Redraw the overlay when cursors / the shared crosshair / events
-  // change (no resample).
+  // Repaint the overlay when cursors / the shared crosshair / events
+  // change (no resample, and no `u.redraw`). uPlot rebuilds every
+  // series' point layer on every repaint — it caches the line path and
+  // nothing else — so a redraw per pointer move re-rasterized every
+  // marker of every series of every stacked area, which is what made
+  // `Points: On` unusable on a long trace. None of this chrome is
+  // series data, so it draws a layer up instead (ADR 0026).
   useEffect(() => {
-    uplotRef.current?.redraw(false, false);
+    paintHoverOverlayRef.current();
   }, [cursorXa, cursorXb, cursorYh1, cursorYh2, hoverX, events, isFirst, isLast]);
 
   // The top gutter is sized from the event labels it holds, and uPlot
