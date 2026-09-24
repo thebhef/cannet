@@ -3163,7 +3163,9 @@ budget are settings (`system_log_ring_capacity`,
 `system_log_rate_limit`), and setting the budget to `0` turns the
 limiter off — diagnosing a message flood is exactly when you want all
 of it. Sources currently in use:
-`project`, `dbc`, `connection`, `blf-import` (vendor sidecars will
+`blf-import`, `capture`, `connection`, `dbc`, `dbc-watch`, `health`,
+`logger`, `mdf-import`, `plot`, `project`, `rbs`, `server`, `session`,
+`settings`, `state`, `transmit`, `virtual-bus` (vendor sidecars will
 use `sidecar:<vendor>` in Phase 8).
 
 **System Messages panel**. Open it from the status bar's *System
