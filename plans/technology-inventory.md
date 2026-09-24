@@ -657,15 +657,29 @@ crate retained long-term).
 - **`runtime_units`** (Rust, MIT, 0.6.x) — `adopted` 2026-09-06 for
   task 139 (unit-aware math scaling). Purpose-built for runtime unit
   work: parses unit strings (abbreviations, singular and plural
-  names), converts at runtime, 86 feature-gated quantity types
-  covering the automotive set (ElectricPotential/Current/Charge,
-  Power, Energy, Torque, AngularVelocity, Pressure, Frequency, Ratio,
-  ThermodynamicTemperature with affine conversion, Velocity, Time),
-  serde support, small dependency footprint. Pre-1.0 (API "largely
+  names), converts at runtime, feature-gated quantity types, serde
+  support, small dependency footprint. Pre-1.0 (API "largely
   stable"), single maintainer — mitigated by wrapping it behind a
   host-side facade (unit id, dimension, affine gain/offset per
   conversion) so the surface we depend on is narrow and a swap stays
-  contained. Features trimmed to the quantities the UI exposes.
+  contained.
+
+  **The `All` feature, and no curation** (owner ruling 2026-09-21,
+  superseding the original "features trimmed to the quantities the UI
+  exposes"): the crate is built with every quantity it has and the
+  facade offers every unit of every one of them. Choosing quantities
+  was the same omission one level up as choosing units within a
+  quantity — a project carrying `LPM` had nothing to map it to because
+  volume and volume rate were not among the 15 enabled. The app's only
+  shaping is presenting each unit as **prefix + base unit**; the
+  picker's grouping and filter are what keep the list usable. In
+  numbers: 108 quantities build (`ThermodynamicTemperature` and
+  `scaled_length` are not in the crate's own `system!`), giving 109
+  facade dimensions — the 108 plus absolute temperature, which is the
+  facade's own — over 2289 rows, of which 930 are base units and 1359
+  prefixed rungs of one. Cost, measured on one machine the same day:
+  compile 137 s → 176 s (+28 %), release `cannet-gui.exe`
+  24,467,968 → 25,579,520 bytes (+1.06 MiB, +4.5 %).
 
   **What 0.6.3 actually delivers, measured while integrating it**
   (2026-09-06) — the adoption stands, with two gaps the facade
@@ -711,6 +725,28 @@ crate retained long-term).
     cross-checks the composed factor against every pair the crate does
     enumerate (several hundred), so the two never become a second
     source of truth.
+
+  **Two defects in 0.6.3's own data**, found when the facade started
+  reading the whole table rather than a hand-picked subset (2026-09-22).
+  Neither blocks the adoption; both are guarded by tests.
+
+  - **`DoseEquivalent`**: every sievert above the sievert carries a
+    stray `prefix!(centi)` factor, so `decasievert` is 0.1 Sv and
+    collides with `decisievert`. The facade's classification rule
+    refuses a rung whose number contradicts its name, so those units
+    are offered as bases of their own and the real ladder is composed
+    from the sievert.
+  - **`PressureImpulse`**: `pound_force_per_square_inch_sec` carries
+    the *pressure* symbol `lbf/in²`, so that spelling is ambiguous and
+    the unique-or-nothing recognition pass refuses it. `psi` itself is
+    unaffected.
+
+  Two further gaps are the crate's enumeration API rather than its
+  data: `CubeRootScaledLength` gives two units each of three singulars
+  and `units()` lists singulars, so three `scaled_*_per_kiloton_tnt`
+  units are unreachable (3 of 2285); and the absolute and interval
+  Rankine share the symbol `°R`, so no spelling reaches it and its id
+  does.
 
   What the library is used for, then: the unit multipliers, the
   abbreviation/name spellings, and the per-quantity unit enums. Those

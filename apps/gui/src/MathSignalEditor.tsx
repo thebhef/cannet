@@ -460,7 +460,13 @@ export function MathSignalEditor({ record, definitions }: MathSignalEditorProps)
         <span>Units</span>
         <UnitButton
           value={typedTarget}
-          kind={record.unitKind}
+          // The whole ISQ-equivalence class, not the one dimension the
+          // composition resolved to: a newton-metre is an energy and a
+          // torque alike, so both are offered and the first resolution
+          // opens the list. Empty means nothing placed the unit, which
+          // is the picker offering everything — reinterpretation, since
+          // there is no kind to convert within.
+          kind={record.unitKinds.length > 0 ? record.unitKinds : null}
           composition={
             record.unitDerived == null
               ? undefined

@@ -10,21 +10,31 @@
 ///
 /// **Kind-locking is the caller's**, and it says which operation this
 /// is. Everywhere a unit is *applied* — a math definition's target, a
-/// plot series' display unit — the picker is locked to one dimension
-/// and choosing is a real conversion. The View-signals chip passes no
-/// kind: reassigning a unit there is *reinterpretation*, the database's
-/// label was wrong about what the signal measures, and a like-kind
-/// picker could not express that repair.
+/// plot series' display unit — the picker is locked and choosing is a
+/// real conversion. The lock may name a *class* of dimensions rather
+/// than one: a newton-metre is an energy and a torque alike, so a
+/// composed kind offers every dimension of the same ISQ exponents under
+/// their own headings, the first resolution first (owner ruling). The
+/// View-signals chip passes no kind at all: reassigning a unit there is
+/// *reinterpretation*, the database's label was wrong about what the
+/// signal measures, and a like-kind picker could not express that
+/// repair.
+///
+/// **The first column filters.** The library offers every base unit of
+/// every quantity it carries, which is more than anyone scrolls, so a
+/// substring over what each row shows narrows it. The filter chooses
+/// among the rows the host handed over and reorders nothing.
 ///
 /// Nothing here composes a unit string or decides what converts: the
 /// rows, their spellings and their groupings are the host's
 /// (`units::list_unit_picker`, ADR 0025).
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useUnitPickerModel } from "./unitLibrary";
 import {
+  filterRows,
   formatScaleFactor,
   pickerEntries,
   rebase,
@@ -32,6 +42,7 @@ import {
   selectedEntryId,
   type PickerRow,
   type UnitPickerComposition,
+  type UnitPickerKind,
 } from "./unitSelection";
 import { useDismissableMenu } from "./useDismissableMenu";
 import type { UnitId } from "./types";
@@ -45,8 +56,9 @@ export interface UnitPickerProps {
   /// The unit currently in force, or `null` for none — which selects the
   /// composition row where the caller offers one.
   value: UnitId | null;
-  /// The dimension to lock to, or `null` to offer everything.
-  kind: string | null;
+  /// The dimension to lock to, the class of dimensions a composed kind
+  /// resolves over, or `null` to offer everything.
+  kind: UnitPickerKind;
   /// The derivation to offer beside the library, where the caller has
   /// one (the math editor).
   composition?: UnitPickerComposition;
@@ -72,11 +84,20 @@ export function UnitPicker({
 }: UnitPickerProps) {
   const model = useUnitPickerModel();
   const ref = useDismissableMenu<HTMLDivElement>(true, onClose);
+  const [filter, setFilter] = useState("");
   const rows = pickerEntries(model, kind, composition, clearable);
+  const shown = filterRows(rows, filter);
+  // Selection is read off the whole list, not the filtered one, so
+  // typing never looks as though it deselected the current unit.
   const selectedId = selectedEntryId(rows, value);
   // With nothing selected the scale column would be empty and the
   // picker would read as broken, so it shows the first row's ladder.
-  const active: PickerRow | undefined = rows.find((r) => r.id === selectedId) ?? rows[0];
+  const active: PickerRow | undefined =
+    rows.find((r) => r.id === selectedId) ?? shown[0] ?? rows[0];
+  const locked = kind === null ? null : typeof kind === "string" ? [kind] : kind;
+  // One dimension names itself in the head; a class names itself in the
+  // group headings, which is how the unlocked list reads too.
+  const headings = locked === null || locked.length > 1;
 
   const basesRef = useRef<HTMLDivElement>(null);
   const scalesRef = useRef<HTMLDivElement>(null);
@@ -100,52 +121,71 @@ export function UnitPicker({
       style={{ left: at.x, top: at.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="unit-picker-column" ref={basesRef} role="listbox" aria-label="unit">
-        <div className="unit-picker-head">{kind === null ? "unit" : `unit · ${kind}`}</div>
-        {rows.length === 0 && <div className="unit-picker-empty">no unit of this kind</div>}
-        {rows.map((row) => {
-          // Group headings only where the list spans dimensions — a
-          // kind-locked picker is one dimension by construction.
-          const heading =
-            kind === null && row.dimensionLabel !== lastGroup ? row.dimensionLabel : null;
-          lastGroup = row.dimensionLabel;
-          return (
-            <div key={row.id} className="unit-picker-groupwrap">
-              {heading && <div className="unit-picker-group">{heading}</div>}
-              <div
-                role="option"
-                tabIndex={-1}
-                aria-selected={row.id === selectedId}
-                className="unit-picker-item"
-                title={row.id === selectedId ? undefined : `read this as ${row.display}`}
-                onClick={() => {
-                  const entry = model.find((e) => e.id === row.id);
-                  onPick(entry ? rebase(entry, value) : null);
-                }}
-              >
-                <span className="unit-picker-symbol">{row.display}</span>
-                <span className="unit-picker-name">{row.id.trim()}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="unit-picker-column" ref={scalesRef} role="listbox" aria-label="scale">
-        <div className="unit-picker-head">scale</div>
-        {(active?.scales ?? []).map((scale) => (
-          <div
-            key={scale.display}
-            role="option"
-            tabIndex={-1}
-            aria-selected={sameUnit(scale.unit, value)}
-            className="unit-picker-item"
-            onClick={() => onPick(scale.unit)}
-          >
-            <span className="unit-picker-symbol">{scale.label || "—"}</span>
-            <span className="unit-picker-factor">{formatScaleFactor(scale.exponent)}</span>
-            <span className="unit-picker-spelling">{scale.display}</span>
+      <input
+        type="search"
+        className="unit-picker-filter"
+        aria-label="Filter units"
+        placeholder="filter"
+        value={filter}
+        // The list is long enough that typing is the way into it, so the
+        // popover opens ready for it.
+        autoFocus
+        onChange={(e) => setFilter(e.target.value)}
+      />
+      <div className="unit-picker-columns">
+        <div className="unit-picker-column" ref={basesRef} role="listbox" aria-label="unit">
+          <div className="unit-picker-head">
+            {headings ? "unit" : `unit · ${locked?.[0]}`}
           </div>
-        ))}
+          {rows.length === 0 && <div className="unit-picker-empty">no unit of this kind</div>}
+          {rows.length > 0 && shown.length === 0 && (
+            <div className="unit-picker-empty">no unit matches</div>
+          )}
+          {shown.map((row) => {
+            // Group headings only where the list spans dimensions — a
+            // picker locked to one dimension is that dimension by
+            // construction, and says so in its head instead.
+            const heading =
+              headings && row.dimensionLabel !== lastGroup ? row.dimensionLabel : null;
+            lastGroup = row.dimensionLabel;
+            return (
+              <div key={row.id} className="unit-picker-groupwrap">
+                {heading && <div className="unit-picker-group">{heading}</div>}
+                <div
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={row.id === selectedId}
+                  className="unit-picker-item"
+                  title={row.id === selectedId ? undefined : `read this as ${row.display}`}
+                  onClick={() => {
+                    const entry = model.find((e) => e.id === row.id);
+                    onPick(entry ? rebase(entry, value) : null);
+                  }}
+                >
+                  <span className="unit-picker-symbol">{row.display}</span>
+                  <span className="unit-picker-name">{row.id.trim()}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="unit-picker-column" ref={scalesRef} role="listbox" aria-label="scale">
+          <div className="unit-picker-head">scale</div>
+          {(active?.scales ?? []).map((scale) => (
+            <div
+              key={scale.display}
+              role="option"
+              tabIndex={-1}
+              aria-selected={sameUnit(scale.unit, value)}
+              className="unit-picker-item"
+              onClick={() => onPick(scale.unit)}
+            >
+              <span className="unit-picker-symbol">{scale.label || "—"}</span>
+              <span className="unit-picker-factor">{formatScaleFactor(scale.exponent)}</span>
+              <span className="unit-picker-spelling">{scale.display}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>,
     document.body,
