@@ -543,6 +543,57 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "reproduces a known defect: no reopen yet refuses a directory another mapping still holds"]
+    fn a_reopen_never_truncates_a_segment_another_mapping_still_holds() {
+        // Two live chains over one directory — what two cannet processes
+        // sharing a project's scratch are, since a mapping is per *file*,
+        // not per process. The first is ahead of the watermark the second
+        // reopens from (it grew into segment 1 after the length the caller
+        // last recorded), so the second's chain is one segment short and
+        // its next push *creates* a segment file the first still maps.
+        //
+        // `create_segment` opens that path with `truncate(true)` and
+        // `set_len`s it (ADR 0002 DS-4). Windows refuses outright
+        // (ERROR_USER_MAPPED_FILE, 1224) and the push panics; POSIX
+        // truncates in place and silently zeroes the live mapping. Both
+        // are failures, so this asserts the push neither panics nor
+        // disturbs the other chain's samples.
+        let dir = TempDir::new().unwrap();
+
+        // The chain that is still open elsewhere. 64 entries fill segment
+        // 0; the 65th creates and maps segment 1.
+        let mut held = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..65u32 {
+            held.push(f64::from(i), f64::from(i) * 2.0);
+        }
+        assert_eq!(held.get(64), (64.0, 128.0));
+
+        // What a manifest written before that growth records: 64 entries,
+        // i.e. segment 0 only. Reopening from it is the documented
+        // contract (ADR 0002 DS-7) — the geometry is deterministic in the
+        // length — and it is exactly one segment behind what is on disk.
+        let mut reopened = SampleSeq::reopen(dir.path(), "sig.l0", 64, 0)
+            .unwrap()
+            .expect("segment 0 is present");
+        assert_eq!(reopened.len(), 64);
+
+        // The push that grows into segment 1.
+        let grew = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reopened.push(999.0, 999.0);
+        }));
+        assert!(
+            grew.is_ok(),
+            "growing into a segment another mapping holds panicked \
+             (Windows refuses to truncate a mapped file)"
+        );
+        assert_eq!(
+            held.get(64),
+            (64.0, 128.0),
+            "the other chain's segment 1 was truncated under its mapping"
+        );
+    }
+
+    #[test]
     fn reopen_restores_a_front_trimmed_run_without_its_dropped_segments() {
         // A run that was evicted before persisting has no leading segment
         // files left; the reopen must map only the surviving ones and put
