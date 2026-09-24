@@ -196,8 +196,8 @@ export function TracePanel(props: IDockviewPanelProps) {
   // View-local: whether timeline events (ADR 0035) interleave into this
   // chronological trace. Persisted with the rest of the config.
   const [showEvents, setShowEvents] = useState(() => showEventsFromConfig(savedConfig));
-  // View-local: whether a run of bus error frames reads as the host's
-  // one coalesced `busError` event row instead of one row per frame.
+  // View-local: whether error frames are hidden from this chronological
+  // trace's rows (`withoutErrorFrames`, a plain row-type predicate).
   // The frames are in the capture either way — this is a view
   // predicate, and turning it off brings every row straight back.
   const [collapseErrorFrames, setCollapseErrorFrames] = useState(() =>
@@ -688,7 +688,7 @@ export function TracePanel(props: IDockviewPanelProps) {
         {mode === "chronological" && (
           <ChipButton
             label="Collapse Errors"
-            title="show a run of bus error frames as the one summary event the host coalesced it into; the capture keeps every frame"
+            title="hide error frames from the trace's rows; the capture keeps every frame"
             pressed={collapseErrorFrames}
             onPress={() => setCollapseErrorFrames((v) => !v)}
           />
