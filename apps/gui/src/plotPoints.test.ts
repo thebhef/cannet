@@ -6,7 +6,6 @@ import {
   applySampleMarkerFilter,
   AUTO_POINT_MARKER_FLOOR,
   hoverMarkerColumn,
-  MAX_POINT_MARKERS,
   sampleMarkerColumns,
   showPointsFromRaw,
   showPointsToUplot,
@@ -119,19 +118,16 @@ describe("sampleMarkerColumns", () => {
     expect(sampleMarkerColumns(own, xs, 9, 10)).toEqual([]);
   });
 
-  it("thins to the marker cap and always keeps the newest sample", () => {
-    // A marker per sample costs the same here as it ever did, so the
-    // same flat cap applies. The last in-view sample is kept whatever
-    // the stride lands on, so a series' leading edge is always marked —
-    // it is the one position a reader is checking.
+  it("marks every sample of a long series, with no cap and no stride", () => {
+    // The `Points: On` defect in miniature. A flat 500-marker cap used
+    // to thin this to an even stride, which aliases onto one leg of a
+    // min/max envelope — a run of dots hugging one side of a line that
+    // oscillates through both, which reads as extrapolation. There is
+    // no cap: every served sample in view carries a marker.
     const grid = Array.from({ length: 2468 }, (_, i) => i / 2);
     const cols = Array.from({ length: 1234 }, (_, i) => i * 2);
     const out = sampleMarkerColumns(cols, grid, 0, 1233);
-    expect(out.length).toBeLessThanOrEqual(MAX_POINT_MARKERS + 1);
-    expect(out[0]).toBe(0);
-    expect(out[out.length - 1]).toBe(2466);
-    // Evenly strided, so the thinning does not bunch the markers.
-    expect(out[1] - out[0]).toBe(2 * Math.ceil(1234 / MAX_POINT_MARKERS));
+    expect(out).toEqual(cols);
   });
 });
 

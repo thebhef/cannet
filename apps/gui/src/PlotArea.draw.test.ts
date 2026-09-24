@@ -16,14 +16,30 @@ import type uPlot from "uplot";
 
 import {
   drawEnumTiles,
+  drawEnumTileLabels,
   drawEventExtents,
   drawExtrapolatedSegments,
   drawHoverMarkers,
+  type TileLabel,
 } from "./PlotArea";
-import { mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
+import { enumSegments, mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
 import { applySampleMarkerFilter } from "./plotPoints";
 import { THEMES, setActiveTheme, theme, type ThemeName } from "./theme";
+
+/** The tile draw as a plot area performs it, in two passes: the tiles
+ * go down in the `drawAxes` hook, before the series layer, and the
+ * labels they hand back are painted in the `draw` hook, after it. The
+ * assertions below read the combined ink, so they drive both. */
+function drawTilesAndLabels(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: Parameters<typeof drawEnumTiles>[2],
+): TileLabel[] {
+  const labels = drawEnumTiles(ctx, u, o);
+  drawEnumTileLabels(ctx, labels, o.ratio);
+  return labels;
+}
 
 /** One recorded canvas operation. */
 type Op = {
@@ -262,7 +278,7 @@ describe("drawEnumTiles extrapolation hatching", () => {
     // run at the `null` and take the tile with it.
     const { ctx, ops } = recorder();
     const u = fakeU([[0, 10], [0, 0]], [{}]);
-    drawEnumTiles(ctx, u, tileOpts({ extrapolated: [[4, 10] as const] }));
+    drawTilesAndLabels(ctx, u, tileOpts({ extrapolated: [[4, 10] as const] }));
     // The tile itself still drew, full width.
     const fills = ops.filter((o) => o.op === "fillRect");
     expect(fills).toHaveLength(1);
@@ -276,7 +292,7 @@ describe("drawEnumTiles extrapolation hatching", () => {
   it("clips the hatching to the stale sub-stretch of a partly-stale tile", () => {
     const { ctx, ops } = recorder();
     const u = fakeU([[0, 10], [0, 0]], [{}]);
-    drawEnumTiles(ctx, u, tileOpts({ extrapolated: [[4, 10] as const] }));
+    drawTilesAndLabels(ctx, u, tileOpts({ extrapolated: [[4, 10] as const] }));
     // One clip rect, covering x = 4..10 (40..100 px) and the band —
     // not the whole tile, which starts at 0.
     const rects = ops.filter((o) => o.op === "rect");
@@ -287,7 +303,7 @@ describe("drawEnumTiles extrapolation hatching", () => {
   it("hatches at the ruling's period with exactly even bands", () => {
     const { ctx, ops } = recorder();
     const u = fakeU([[0, 10], [0, 0]], [{}]);
-    drawEnumTiles(ctx, u, tileOpts({ extrapolated: [[0, 10] as const] }));
+    drawTilesAndLabels(ctx, u, tileOpts({ extrapolated: [[0, 10] as const] }));
     const moves = ops.filter((o) => o.op === "moveTo");
     expect(moves.length).toBeGreaterThan(1);
     const starts = moves.map((o) => o.args[0] as number);
@@ -301,7 +317,7 @@ describe("drawEnumTiles extrapolation hatching", () => {
   it("draws no hatching on a tile the host did not flag", () => {
     const { ctx, ops } = recorder();
     const u = fakeU([[0, 10], [0, 0]], [{}]);
-    drawEnumTiles(ctx, u, tileOpts({ extrapolated: [] }));
+    drawTilesAndLabels(ctx, u, tileOpts({ extrapolated: [] }));
     expect(ops.filter((o) => o.op === "stroke")).toHaveLength(0);
     expect(ops.filter((o) => o.op === "fillRect")).toHaveLength(1);
   });
@@ -312,13 +328,13 @@ describe("drawEnumTiles extrapolation hatching", () => {
     // color. A label over a data-backed tile has nothing to be rescued
     // from and gets none.
     const striped = recorder();
-    drawEnumTiles(
+    drawTilesAndLabels(
       striped.ctx,
       fakeU([[0, 10], [0, 0]], [{}]),
       tileOpts({ extrapolated: [[0, 10] as const] }),
     );
     const clean = recorder();
-    drawEnumTiles(clean.ctx, fakeU([[0, 10], [0, 0]], [{}]), tileOpts({ extrapolated: [] }));
+    drawTilesAndLabels(clean.ctx, fakeU([[0, 10], [0, 0]], [{}]), tileOpts({ extrapolated: [] }));
 
     const shadowPasses = (ops: Op[]) =>
       ops.filter((o) => o.op === "fillText" && String(o.fill).startsWith("shadow:")).length;
@@ -334,138 +350,22 @@ describe("drawEnumTiles extrapolation hatching", () => {
     expect(texts[texts.length - 1].fill).toBe("#ff0000");
   });
 
-  it("marks every served sample, over the tiles rather than under them", () => {
-    // The tiles are 65-75 % opaque and sit in front of the line by
-    // design, so a marker drawn before them is a marker nobody sees.
-    // Order is the whole assertion: every marker's fillRect comes after
-    // the tile's.
-    const { ctx, ops } = recorder();
-    const ts = [0, 1, 2, 3];
-    const u = fakeU([ts, [0, 0, 1, 1]], [{}]);
-    drawEnumTiles(ctx, u, tileOpts({ sampleMarkers: true, sampleColumns: [0, 1, 2, 3] }));
-    const rects = ops.filter((o) => o.op === "fillRect");
-    // Two tiles (code 0 then code 1), then one marker per sample. Told
-    // apart by height: a tile fills the band, a marker is 3 px square.
-    const tiles = rects.filter((o) => (o.args[3] as number) > 3);
-    const markers = rects.filter((o) => (o.args[3] as number) === 3);
-    expect(tiles).toHaveLength(2);
-    expect(markers).toHaveLength(ts.length);
-    expect(rects.indexOf(markers[0])).toBeGreaterThan(rects.indexOf(tiles[tiles.length - 1]));
-    // Each marker is centred on its sample's x and on the plotted lane
-    // position, not on the tile band — it sits on the waveform.
-    expect(markers[0].args).toEqual([-1.5, 98.5, 3, 3]);
-    expect(markers[2].args).toEqual([18.5, 97.5, 3, 3]);
-  });
-
-  it("draws no sample markers when the panel's show-points is off", () => {
+  it("draws no markers of its own: the point layer is uPlot's", () => {
+    // The lane used to turn uPlot's point layer off and mark its own
+    // served samples over the tiles, because the tiles are 65-85 %
+    // opaque and swallowed whatever uPlot drew under them. Two
+    // mechanisms deciding where a marker goes is how a held column came
+    // to be marked as if it were a reading, so the lane's pass is gone
+    // and the tiles draw *before* the series layer instead (ADR 0026).
+    // What is left here paints tiles and nothing else.
     const { ctx, ops } = recorder();
     const u = fakeU([[0, 1, 2, 3], [0, 0, 1, 1]], [{}]);
-    drawEnumTiles(ctx, u, tileOpts({ sampleMarkers: false, sampleColumns: [0, 1, 2, 3] }));
-    expect(ops.filter((o) => o.op === "fillRect" && (o.args[3] as number) === 3)).toHaveLength(0);
-  });
-
-  /** Times `from, from+period, …` up to and including `until`, rounded
-   * the way the fixture's generator rounds them. */
-  function ticks(period: number, until: number, from = 0): number[] {
-    const out: number[] = [];
-    for (let i = 0; from + i * period <= until + 1e-9; i++) {
-      out.push(Number((from + i * period).toFixed(6)));
-    }
-    return out;
-  }
-
-  /** A lane arriving at `period` over `[from, until]`, all one code. */
-  const laneSeries = (period: number, until: number, from = 0, code = 1) => {
-    const t = ticks(period, until, from);
-    return { t, v: t.map(() => code) };
-  };
-
-  /** The x (in the fake uPlot's 1 unit = 10 px world) each sample marker
-   * was centred on. A marker is the 3 px square; a tile fills the band. */
-  const markerTimes = (ops: Op[]) =>
-    ops
-      .filter((o) => o.op === "fillRect" && (o.args[3] as number) === 3)
-      .map((o) => Number((((o.args[0] as number) + 1.5) / 10).toFixed(6)));
-
-  it("marks a lane's own samples, not the columns a dense sibling contributes", () => {
-    // The defect this pins: the markers were selected from `u.data[0]` —
-    // the *merged* column grid — so a 5 Hz sibling on the same lanes axis
-    // put a marker on this lane at every one of its columns, right across
-    // the stretch where this lane had stopped arriving. The fixture's
-    // `StoppedMode` (500 ms, silent after 6 s) beside `DenseMode`
-    // (200 ms, the whole capture).
-    const stopped = { ...laneSeries(0.5, 6), extrapolated: [[6, 20] as const] };
-    const dense = laneSeries(0.2, 20, 0, 2);
-    const merged = mergeSeries([stopped, dense]);
-    const xs = merged[0] as number[];
-    const cols = sampleColumns(xs, [stopped, dense]);
-    const { ctx, ops } = recorder();
-    const u = fakeU([xs, merged[1] as (number | null)[], merged[2] as (number | null)[]], [{}, {}]);
-    drawEnumTiles(
-      ctx,
-      u,
-      tileOpts({
-        sampleMarkers: true,
-        sampleColumns: cols[0],
-        extrapolated: stopped.extrapolated,
-      }),
-    );
-    expect(markerTimes(ops)).toEqual(stopped.t);
-  });
-
-  it("keeps every marker of a lane that really is arriving", () => {
-    // The control, from the other side of the same axis: `DenseMode`
-    // has a sample at every one of its columns, so the honest answer for
-    // it is the one the lane already drew.
-    const stopped = { ...laneSeries(0.5, 6), extrapolated: [[6, 20] as const] };
-    const dense = laneSeries(0.2, 20, 0, 2);
-    const merged = mergeSeries([stopped, dense]);
-    const xs = merged[0] as number[];
-    const { ctx, ops } = recorder();
-    const u = fakeU([xs, merged[1] as (number | null)[], merged[2] as (number | null)[]], [{}, {}]);
-    drawEnumTiles(
-      ctx,
-      u,
-      tileOpts({
-        seriesIdx: 2,
-        sampleMarkers: true,
-        sampleColumns: sampleColumns(xs, [stopped, dense])[1],
-      }),
-    );
-    expect(markerTimes(ops)).toEqual(dense.t);
-  });
-
-  it("marks no sample inside a lane's stalled stretch, and both readings that bound it", () => {
-    // The fixture's `StalledMode`: 200 ms throughout except 7 → 15 s,
-    // which the host classifies as extrapolation. The stall's two ends
-    // *are* readings and keep their markers — what has nothing behind it
-    // is the stretch between them.
-    const before = laneSeries(0.2, 7);
-    const after = laneSeries(0.2, 20, 15);
-    const stalled = {
-      t: [...before.t, ...after.t],
-      v: [...before.v, ...after.v],
-      extrapolated: [[7, 15] as const],
-    };
-    const dense = laneSeries(0.2, 20, 0.1, 2);
-    const merged = mergeSeries([stalled, dense]);
-    const xs = merged[0] as number[];
-    const { ctx, ops } = recorder();
-    const u = fakeU([xs, merged[1] as (number | null)[], merged[2] as (number | null)[]], [{}, {}]);
-    drawEnumTiles(
-      ctx,
-      u,
-      tileOpts({
-        sampleMarkers: true,
-        sampleColumns: sampleColumns(xs, [stalled, dense])[0],
-        extrapolated: stalled.extrapolated,
-      }),
-    );
-    const times = markerTimes(ops);
-    expect(times.filter((t) => t > 7 && t < 15)).toEqual([]);
-    expect(times).toContain(7);
-    expect(times).toContain(15);
-    expect(times).toEqual(stalled.t);
+    drawEnumTiles(ctx, u, tileOpts());
+    const rects = ops.filter((o) => o.op === "fillRect");
+    // Two tiles (code 0 then code 1), each filling the band — and
+    // nothing marker-sized.
+    expect(rects).toHaveLength(2);
+    expect(rects.every((o) => (o.args[3] as number) === 20)).toBe(true);
   });
 
   it("spends halo passes only where no solid box already carries the label", () => {
@@ -484,7 +384,7 @@ describe("drawEnumTiles extrapolation hatching", () => {
       const before = theme().name;
       setActiveTheme(name);
       const r = recorder();
-      drawEnumTiles(
+      drawTilesAndLabels(
         r.ctx,
         fakeU([[0, 10], [0, 0]], [{}]),
         tileOpts({ extrapolated: [[0, 10] as const] }),
@@ -496,6 +396,84 @@ describe("drawEnumTiles extrapolation hatching", () => {
     expect(passes("dark")).toBe(THEMES.dark.laneLabelShadowPasses);
     expect(passes("light")).toBe(0);
     expect(passes("lighthk")).toBe(0);
+  });
+});
+
+describe("a held state at the width the categorical serve was introduced against", () => {
+  // The V2 scenario: a 100 Hz enum cycling 0..=5 over a 301.3 s window
+  // at a 2248-point budget, so one served bucket is one canvas pixel
+  // column (134 ms). The serve keeps each bucket's first and last sample
+  // beside its extremes, so a run held across a bucket boundary arrives
+  // as consecutive equal served values — and a tile is a run of
+  // consecutive equal served values, so it arrives as *one tile*, not as
+  // a stripe of the bucket extremes either side of it.
+  const SPAN = 301.3;
+  const COLUMNS = 2248;
+  const COLUMN = SPAN / COLUMNS;
+  const PX_PER_SECOND = COLUMNS / SPAN;
+  const HELD = 3;
+
+  /** The served window: two points per column, cycling, with `held`
+   * seconds of code 3 in the middle. */
+  function serve(held: number): { ts: number[]; vs: number[]; from: number; to: number } {
+    const from = SPAN / 2;
+    const to = from + held;
+    const ts: number[] = [];
+    const vs: number[] = [];
+    for (let c = 0; c < COLUMNS; c++) {
+      for (const half of [0.25, 0.75]) {
+        const t = (c + half) * COLUMN;
+        ts.push(t);
+        vs.push(t >= from && t < to ? HELD : (c + (half > 0.5 ? 1 : 0)) % 2 === 0 ? 0 : 5);
+      }
+    }
+    return { ts, vs, from, to };
+  }
+
+  const atCanvasWidth = (ts: number[], vs: number[]): uPlot =>
+    ({
+      data: [ts, vs],
+      series: [{}, {}],
+      scales: { x: { min: -Infinity, max: Infinity } },
+      valToPos: (v: number, axis: string) => (axis === "x" ? v * PX_PER_SECOND : 100 - v),
+    }) as unknown as uPlot;
+
+  it("draws one tile, spanning the run", () => {
+    // 3.21 columns — the width a plain min/max serve used to lose
+    // outright, so there was no tile to draw at all.
+    const { ts, vs, from, to } = serve(3.21 * COLUMN);
+    const { ctx, ops } = recorder();
+    drawEnumTiles(ctx, atCanvasWidth(ts, vs), {
+      seriesIdx: 1,
+      table: [{ raw: HELD, label: "Armed" }],
+      target: null,
+      resolveColor: vi.fn(),
+      bandTop: 40,
+      bandBot: 60,
+      accent: "#ff0000",
+      left: 0,
+      width: COLUMNS,
+      ratio: 1,
+    });
+    // The tiles are the runs of equal consecutive served values, and
+    // the held code is exactly one of them.
+    const segments = enumSegments(ts, vs);
+    const held = segments.filter((s) => s.v === HELD);
+    expect(held).toHaveLength(1);
+    expect(held[0].t0).toBeGreaterThanOrEqual(from);
+    expect(held[0].tEnd).toBeLessThanOrEqual(to + COLUMN);
+    expect(held[0].tEnd - held[0].t0).toBeGreaterThan(2 * COLUMN);
+    // …and one tile is drawn per segment, the held one at the run's own
+    // pixel extent rather than at a bucket's.
+    const fills = ops.filter((o) => o.op === "fillRect");
+    // One per segment that has width; the final segment ends at its own
+    // last sample, so it has none until the next fetch extends it.
+    expect(fills).toHaveLength(segments.filter((s) => s.tEnd > s.t0).length);
+    const tile = fills.find(
+      (o) => Math.abs((o.args[0] as number) - held[0].t0 * PX_PER_SECOND) < 1e-6,
+    );
+    expect(tile).toBeDefined();
+    expect(tile!.args[2] as number).toBeCloseTo((held[0].tEnd - held[0].t0) * PX_PER_SECOND, 6);
   });
 });
 
@@ -516,7 +494,7 @@ describe("enum tile label legibility", () => {
     const before = theme().name;
     setActiveTheme(name);
     const r = recorder();
-    drawEnumTiles(r.ctx, fakeU([[0, 10], [1, 1]], [{}]), {
+    drawTilesAndLabels(r.ctx, fakeU([[0, 10], [1, 1]], [{}]), {
       seriesIdx: 1,
       table: TABLE,
       target: { messageId: 513, extended: false, signalName: "StoppedMode", busId: null },
@@ -607,7 +585,7 @@ describe("the lane label's background box", () => {
     const before = theme().name;
     setActiveTheme(name);
     const r = recorder();
-    drawEnumTiles(r.ctx, fakeU([seg, [1, 1]], [{}]), {
+    drawTilesAndLabels(r.ctx, fakeU([seg, [1, 1]], [{}]), {
       seriesIdx: 1,
       table: TABLE,
       target: null,
@@ -679,11 +657,13 @@ describe("the lane label's background box", () => {
   });
 });
 
-describe("point markers on a numeric axis", () => {
+describe("point markers", () => {
   // uPlot's own point layer draws the indices its `points.filter`
-  // returns, so which columns a line marks is decided there rather than
-  // in a draw hook. The filter is installed on the constructed instance
-  // (`applySampleMarkerFilter`), which is what this drives.
+  // returns, so which columns a series marks is decided there rather
+  // than in a draw hook. The filter is installed on the constructed
+  // instance (`applySampleMarkerFilter`), which is what this drives —
+  // for an enum lane exactly as for a line, since the lane no longer
+  // has a marker pass of its own (ADR 0026).
 
   function ticks(period: number, until: number, from = 0): number[] {
     const out: number[] = [];
@@ -760,6 +740,59 @@ describe("point markers on a numeric axis", () => {
     const sparse = ramp(ticks(1, 20));
     const { xs, idxs } = markedColumns([dense, sparse], 0);
     expect((idxs as number[]).map((i) => xs[i])).toEqual(dense.t);
+  });
+
+  it("keeps every marker off the cells the extrapolation blanking takes", () => {
+    // uPlot draws a marker only where the row carries a value, so a
+    // marker on a cell `splitExtrapolatedRows` blanked is a marker that
+    // silently vanishes. It cannot happen by construction — a stretch is
+    // extrapolation *because* the series has no sample in it, and the
+    // blanking runs strictly between the columns that bound it — and
+    // this is the guard that says so, over all three ruled shapes at
+    // once: a stall, a dashed tail, and a one-sample hline's two wings.
+    const stalled = {
+      t: [...ticks(0.1, 6), ...ticks(0.1, 20, 13)],
+      v: [] as number[],
+      extrapolated: [[6, 13] as const],
+    };
+    stalled.v = stalled.t.map((x) => 30 + x);
+    const stoppedTail = { ...ramp(ticks(0.1, 8)), extrapolated: [[8, 20] as const] };
+    const oneShot = { t: [10], v: [12], extrapolated: [[0, 10] as const, [10, 20] as const] };
+    const series = [ramp(ticks(0.05, 20)), stalled, stoppedTail, oneShot];
+    for (let k = 0; k < series.length; k++) {
+      const { row, idxs } = markedColumns(series, k);
+      expect((idxs as number[]).filter((i) => row[i] == null)).toEqual([]);
+      expect((idxs as number[]).length).toBe(series[k].t.length);
+    }
+  });
+
+  it("marks every served sample of a long series, uncapped", () => {
+    // `Points: On` used to thin to a flat 500 markers on an even
+    // stride, which aliases onto one leg of a min/max envelope — a run
+    // of dots hugging one side of a line oscillating through both,
+    // which is what read as extrapolation. Well past that count here:
+    // 2001 samples, 2001 markers.
+    const long = ramp(ticks(0.01, 20));
+    expect(long.t.length).toBeGreaterThan(2000);
+    const { xs, idxs } = markedColumns([long], 0);
+    expect((idxs as number[]).map((i) => xs[i])).toEqual(long.t);
+  });
+
+  it("marks a lane's own samples, not the columns a dense sibling contributes", () => {
+    // The lanes axis is the hard case for the *axis*-wide merge: a 5 Hz
+    // lane beside a 2 Hz one shares its columns, so a marker chosen off
+    // the merged grid lands right across the stretch where this lane has
+    // stopped arriving. The fixture's `StoppedMode` (500 ms, silent
+    // after 6 s) beside `DenseMode` (200 ms, the whole capture) — served
+    // and filtered through the same path a line takes.
+    const stopped = {
+      t: ticks(0.5, 6),
+      v: ticks(0.5, 6).map(() => 1),
+      extrapolated: [[6, 20] as const],
+    };
+    const dense = { t: ticks(0.2, 20), v: ticks(0.2, 20).map(() => 2) };
+    const { xs, idxs } = markedColumns([stopped, dense], 0);
+    expect((idxs as number[]).map((i) => xs[i])).toEqual(stopped.t);
   });
 
   it("returns nothing at all when uPlot's own rule said not to draw", () => {
@@ -915,7 +948,7 @@ describe("a lane label too long for its tile", () => {
    * character. */
   function labelOf(label: string, seg: [number, number] = [0, 10]): string | null {
     const r = recorder();
-    drawEnumTiles(r.ctx, fakeU([seg, [1, 1]], [{}]), {
+    drawTilesAndLabels(r.ctx, fakeU([seg, [1, 1]], [{}]), {
       seriesIdx: 1,
       table: [{ raw: 1, label }],
       target: null,

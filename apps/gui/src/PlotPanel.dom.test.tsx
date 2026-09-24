@@ -296,32 +296,6 @@ const mockMathSignals: Record<string, unknown>[] = [];
 // which is what a view configured against it sees. Prefixed `mock` for
 // the hoisted factory.
 const mockUnassignedSignals = new Set<string>();
-/// The host's categorical reduction, modelled so a lane's serve carries
-/// what the real one carries: an **over-budget** window comes back as
-/// its run boundaries (plus the series' last point, so the final tile
-/// has an end); a window that already fits the point budget is served
-/// whole, because the reduction exists to fit a budget and the sample
-/// positions inside a run are what a renderer marks and a cursor snaps
-/// to. Mirrors `signal_cache.rs::window_categorical`. Prefixed `mock`
-/// for the hoisted factory.
-function mockReduceRuns(s: { t: number[]; v: number[] }, maxPoints: number) {
-  if (maxPoints === 0 || s.t.length <= maxPoints) return s;
-  const t: number[] = [];
-  const v: number[] = [];
-  s.t.forEach((ts, i) => {
-    if (i === 0 || s.v[i] !== s.v[i - 1]) {
-      t.push(ts);
-      v.push(s.v[i]);
-    }
-  });
-  const last = s.t.length - 1;
-  if (t[t.length - 1] !== s.t[last]) {
-    t.push(s.t[last]);
-    v.push(s.v[last]);
-  }
-  return { t, v };
-}
-
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals")
@@ -338,7 +312,6 @@ vi.mock("@tauri-apps/api/core", () => ({
           mockSampleRebuild.of > 0 && n >= mockSampleRebuild.of,
         );
       }
-      const req = args as { categorical?: boolean; maxPoints?: number } | undefined;
       return encodeSample(
         (args?.signals ?? []).map((s) => {
           const q = s as { signalName?: string; fileBacked?: boolean };
@@ -348,8 +321,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           if (mockMathSignals.some((m) => m.id === name) && !qm.math) return { t: [], v: [] };
           if (mockUnassignedSignals.has(name)) return { t: [], v: [] };
           const series = mockSampleSeries[name] ?? { t: [0, 1, 2], v: [10, 20, 15] };
-          const points = req?.categorical ? mockReduceRuns(series, req.maxPoints ?? 0) : series;
-          return { ...points, extrapolated: mockExtrapolated[name] ?? [] };
+          return { ...series, extrapolated: mockExtrapolated[name] ?? [] };
         }),
       );
     }
@@ -2883,11 +2855,16 @@ describe("PlotArea y-normalisation", () => {
     fireEvent.click(row.querySelector(".plot-signal-swatch")!);
   }
 
-  it("enum lanes: each signal is normalised into its own lane band", async () => {
+  it("enum lanes: each signal is normalised into its own lane's tile band", async () => {
     // Two 3-code enums on one per-unit area → a two-lane axis. Lane 0
-    // (top) spans [0.5375, 0.9625], lane 1 spans [0.0375, 0.4625]; each
-    // code maps to its fraction of the table's padded range [-0.5, 2.5],
-    // i.e. 1/6, 1/2, 5/6 of the band.
+    // (top) spans [0.5375, 0.9625], lane 1 spans [0.0375, 0.4625], and a
+    // code is normalised into the **tile** band — the centred 60 % of
+    // the lane, [0.6225, 0.8775] and [0.1225, 0.3775] — not the whole
+    // lane. The tile is what the value's marker has to land on, and
+    // against the full lane band a table's extreme codes plotted into
+    // the gap between lanes instead (ADR 0026). Each code maps to its
+    // fraction of the table's padded range [-0.5, 2.5], i.e. 1/6, 1/2,
+    // 5/6 of that band.
     mockValueTables.EngineSpeed = ENUM3;
     mockValueTables.EngineTemp = ENUM3;
     mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
@@ -2899,26 +2876,32 @@ describe("PlotArea y-normalisation", () => {
       await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
       await waitForData((data) => {
         expect(data[0]).toEqual([0, 1, 2]);
-        expect(data[1]?.[0]).toBeCloseTo(0.6083333, 6);
+        expect(data[1]?.[0]).toBeCloseTo(0.665, 6);
         expect(data[1]?.[1]).toBeCloseTo(0.75, 6);
-        expect(data[1]?.[2]).toBeCloseTo(0.8916667, 6);
+        expect(data[1]?.[2]).toBeCloseTo(0.835, 6);
         // Same codes, lane 1 — a whole band lower.
-        expect(data[2]?.[0]).toBeCloseTo(0.1083333, 6);
+        expect(data[2]?.[0]).toBeCloseTo(0.165, 6);
         expect(data[2]?.[1]).toBeCloseTo(0.25, 6);
-        expect(data[2]?.[2]).toBeCloseTo(0.3916667, 6);
+        expect(data[2]?.[2]).toBeCloseTo(0.335, 6);
+        // Every plotted code is inside its lane's tile band, which is
+        // what makes a marker on the plotted value land on the tile.
+        for (const y of data[1] as number[]) {
+          expect(y).toBeGreaterThanOrEqual(0.6225);
+          expect(y).toBeLessThanOrEqual(0.8775);
+        }
       });
     } finally {
       restore();
     }
   });
 
-  it("enum lanes: the fetch asks the host for the categorical reduction", async () => {
-    // The host reduces an over-budget window either by per-bucket
-    // extremes (right for a line, a category error for codes — the
-    // states held between the bucket's lowest and highest code vanish)
-    // or by run boundaries. Only the view knows which it draws, so a
-    // lane axis must say so on its own fetch, and a numeric one must
-    // not.
+  it("enum lanes: the fetch carries no render mode at all", async () => {
+    // A lane axis used to ask the host for a run reduction of its own,
+    // because a plain min/max envelope over codes dropped every state
+    // held between a bucket's lowest and highest. The serve keeps each
+    // bucket's first and last sample beside its extremes now, so a held
+    // run survives it and the flag is gone (ADR 0026) — a lane's fetch
+    // is a line's fetch.
     mockValueTables.EngineSpeed = ENUM3;
     mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
     mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [10, 11, 12] };
@@ -2931,11 +2914,12 @@ describe("PlotArea y-normalisation", () => {
         const modes = vi
           .mocked(invoke)
           .mock.calls.filter((c) => c[0] === "sample_signals")
-          .map((c) => (c[1] as { categorical?: boolean; signals: { signalName: string }[] }))
-          .filter((a) => a.signals.length > 0)
-          .map((a) => [a.signals[0].signalName, a.categorical === true] as const);
-        expect(modes).toContainEqual(["EngineSpeed", true]);
-        expect(modes).toContainEqual(["EngineTemp", false]);
+          .map((c) => c[1] as { signals: { signalName: string }[] })
+          .filter((a) => a.signals.length > 0);
+        expect(modes.map((a) => a.signals[0].signalName)).toEqual(
+          expect.arrayContaining(["EngineSpeed", "EngineTemp"]),
+        );
+        expect(modes.every((a) => !("categorical" in a))).toBe(true);
       });
     } finally {
       restore();
@@ -3061,7 +3045,7 @@ describe("PlotArea y-normalisation", () => {
       await waitForData((data) => {
         expect(data[1]).not.toEqual([0.75, 0.75, 0.75]);
         expect(data[2]).not.toEqual([0.25, 0.25, 0.25]);
-        expect(data[1]?.[2]).toBeCloseTo(0.8916667, 6);
+        expect(data[1]?.[2]).toBeCloseTo(0.835, 6);
       });
     } finally {
       restore();
@@ -3088,9 +3072,9 @@ describe("PlotArea y-normalisation", () => {
       await waitForData((data) => {
         expect(data[0]).toEqual([0, 1, 2]);
         // Code 0 held across x=1, then code 2.
-        expect(data[1]?.[0]).toBeCloseTo(0.6083333, 6);
-        expect(data[1]?.[1]).toBeCloseTo(0.6083333, 6);
-        expect(data[1]?.[2]).toBeCloseTo(0.8916667, 6);
+        expect(data[1]?.[0]).toBeCloseTo(0.665, 6);
+        expect(data[1]?.[1]).toBeCloseTo(0.665, 6);
+        expect(data[1]?.[2]).toBeCloseTo(0.835, 6);
         // No sample until x=1 → null first, then code 1 held forward.
         expect(data[2]?.[0]).toBeNull();
         expect(data[2]?.[1]).toBeCloseTo(0.25, 6);
@@ -3263,15 +3247,17 @@ describe("PlotArea y-normalisation", () => {
       // Three lanes: lane 1 (the middle) centres on 0.5.
       await waitForData((data) => expect(data[2]?.[1]).toBeCloseTo(0.5, 6));
       hideSignal("EngineTemp");
-      // Two lanes: [0.5375, 0.9625] and [0.0375, 0.4625]; code 1 sits
-      // at the band midpoint, codes 0 / 2 at 1/6 and 5/6 of the band.
+      // Two lanes: [0.5375, 0.9625] and [0.0375, 0.4625], whose tile
+      // bands are the centred 60 % of each — [0.6225, 0.8775] and
+      // [0.1225, 0.3775]. Code 1 sits at the band midpoint, codes 0 / 2
+      // at 1/6 and 5/6 of it.
       await waitForData((data) => {
-        expect(data[1]?.[0]).toBeCloseTo(0.6083333, 6);
+        expect(data[1]?.[0]).toBeCloseTo(0.665, 6);
         expect(data[1]?.[1]).toBeCloseTo(0.75, 6);
-        expect(data[1]?.[2]).toBeCloseTo(0.8916667, 6);
-        expect(data[3]?.[0]).toBeCloseTo(0.1083333, 6);
+        expect(data[1]?.[2]).toBeCloseTo(0.835, 6);
+        expect(data[3]?.[0]).toBeCloseTo(0.165, 6);
         expect(data[3]?.[1]).toBeCloseTo(0.25, 6);
-        expect(data[3]?.[2]).toBeCloseTo(0.3916667, 6);
+        expect(data[3]?.[2]).toBeCloseTo(0.335, 6);
       });
     } finally {
       restore();
@@ -8026,6 +8012,10 @@ describe("single-enum y axis", () => {
       const drawn = inst as unknown as FakeUPlotInst;
       drawn.drawOps.length = 0;
       await act(async () => {
+        // Two passes, as uPlot runs them: the tiles go down in
+        // `drawAxes`, before the series layer, and hand their labels to
+        // the `draw` hook to paint over it (ADR 0026).
+        drawn.fire("drawAxes");
         drawn.fire("draw");
       });
       const texts = drawn.drawOps
