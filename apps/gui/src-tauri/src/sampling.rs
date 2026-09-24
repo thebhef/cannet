@@ -3,13 +3,16 @@
 //! `sample_signals` serves a plot's visible-window slice from the
 //! per-signal decimation pyramids (ADR 0002 DS-5), packed into the
 //! compact binary layout the frontend decodes; `signal_min_max` answers
-//! the host-owned y-extent (ADR 0025). Both catch the caches up to the
-//! store tip, so per-tick cost is `O(new matches)`.
+//! the host-owned y-extent (ADR 0025); `bus_error_series` serves each
+//! bus's error series over a window, from the same pyramids. All catch
+//! the caches up to the store tip, so per-tick cost is `O(new matches)`.
 
 use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
-use crate::ipc::{DecimatedRange, SampledPoints, SignalExtent, SignalQuery};
+use crate::ipc::{
+    BusErrorPoints, BusErrorWindows, DecimatedRange, SampledPoints, SignalExtent, SignalQuery,
+};
 use crate::signal_cache::CacheQuery;
 use crate::signal_sampler;
 
@@ -334,6 +337,62 @@ fn signal_min_max_inner(app: &AppHandle, signals: &[SignalQuery]) -> Vec<Option<
         .collect();
     drop(dbs_guard);
     out
+}
+
+/// Serve each of `buses` its **error series** over
+/// `[from_seconds, to_seconds)` at `max_points` — the windowed read a
+/// view draws a bus's error markers from, and lists them from.
+///
+/// A bus's error series holds one sample per error frame on the bus:
+/// the frame's time and the running count of error frames on that bus so
+/// far. It is a signal-cache pyramid like any decoded series — built from
+/// the capture off the UI thread within a bounded serve, persisted and
+/// restored with the capture, front-trimmed with it
+/// ([`crate::signal_cache::SignalCacheStore::bus_error_windows`]).
+///
+/// **Any two consecutive points of a window are an exact episode:** the
+/// bus had `v[i+1] - v[i]` error frames in `(t[i], t[i+1]]`, a span of
+/// `t[i+1] - t[i]` seconds, whatever pyramid level the window was read
+/// off. A zoomed-out window is thinned by level, never merged by a rule,
+/// so a view labels each point with the count, span and rate from the
+/// deltas and counts nothing itself. A window reaches a point or two
+/// past each edge, so its first in-window point has a predecessor to
+/// difference against, and holds about `2 × max_points` points per bus
+/// at most.
+///
+/// `complete` is `false` while any series is still catching up with the
+/// capture (ADR 0049); the caller asks again for the rest.
+#[tauri::command]
+pub(crate) async fn bus_error_series(
+    app: AppHandle,
+    buses: Vec<String>,
+    from_seconds: f64,
+    to_seconds: f64,
+    max_points: u32,
+) -> BusErrorWindows {
+    off_async_workers(move || {
+        let state: State<'_, AppState> = app.state();
+        let buses: Vec<&str> = buses.iter().map(String::as_str).collect();
+        let served = state.signal_caches.bus_error_windows(
+            &buses,
+            from_seconds,
+            to_seconds,
+            max_points as usize,
+            &state.trace_store,
+        );
+        BusErrorWindows {
+            series: served
+                .series
+                .into_iter()
+                .map(|points| BusErrorPoints {
+                    t: points.iter().map(|p| p.t_seconds).collect(),
+                    v: points.iter().map(|p| p.value).collect(),
+                })
+                .collect(),
+            complete: served.complete,
+        }
+    })
+    .await
 }
 
 /// The wire queries as the signal cache's borrowed form, in order — the

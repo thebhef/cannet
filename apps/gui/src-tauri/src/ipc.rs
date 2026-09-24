@@ -1280,6 +1280,27 @@ pub struct SampledPoints {
     pub extrapolated: Vec<[f64; 2]>,
 }
 
+/// One bus's error series over a served window, as parallel arrays:
+/// `t[i]` is the frame time in seconds of the bus's `v[i]`th error frame.
+/// Consecutive entries give an exact count (`v[i+1] - v[i]`) and span
+/// (`t[i+1] - t[i]`) at whatever level the window was read off
+/// (`crate::sampling::bus_error_series`).
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct BusErrorPoints {
+    pub t: Vec<f64>,
+    pub v: Vec<f64>,
+}
+
+/// `bus_error_series`'s answer: one [`BusErrorPoints`] per requested bus,
+/// in request order, and whether every one of them had caught up with the
+/// capture when it answered (ADR 0049) — `false` while a series is still
+/// being built, in which case each window is the prefix built so far.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct BusErrorWindows {
+    pub series: Vec<BusErrorPoints>,
+    pub complete: bool,
+}
+
 /// The frozen **time-addressed, lossy accessor response** of the
 /// windowed-source contract (ADR 0025): the plot's decimated range.
 /// Unlike a [`RowPage`] it is addressed by
