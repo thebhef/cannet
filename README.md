@@ -3395,30 +3395,41 @@ A host-derived event summarises data the capture already holds, so it
 is never written out — the records it stands for are what a save
 records, and the summary is display only.
 
-**Each kind declares whether it shows by default**, and a kind that is
-noise until you go looking for it (bus errors) starts hidden
-everywhere. Every surface that draws events — the chronological trace,
-the plot, the **Events** view — carries the same per-kind checklist,
-which lists every kind with its count *even while the kind is switched
-off*, so nothing is hidden and unfindable. Switching a kind on is
-per view.
+**Each kind declares whether it shows by default**; every kind,
+including bus errors, is visible everywhere from the start — a fault is
+exactly what a reader most wants surfaced without going looking for it.
+Every surface that draws events — the chronological trace, the plot,
+the **Events** panel — carries the same per-kind checklist, which lists
+every kind with its count *even while the kind is switched off*, so
+nothing is hidden and unfindable. Switching a kind on is per view.
 
-The **Events** view (command palette → *Show events*) is the browsing
-home: the whole event timeline, filtered by kind and by the
-user-defined **tag**. Each row opens to disclose what it is **about**,
-its **tag** and its **description** — the last two editable in place on
-your own events; a host-derived event shows what it computed and takes
-no edits. The tag
-and description ride the saved file too — inside the BLF marker, no
-sidecar, and as `cannet.tag` / `cannet.description` properties on an
-MDF `##EV`.
+The **Events** panel (command palette → *Show events*) is the browsing
+home, in two sections. **Notes and comments** are the whole event
+timeline — your own notes plus any message-bound comments read from a
+capture file — filtered by kind and by the user-defined **tag**. Each
+row opens to disclose what it is **about**, its **tag** and its
+**description** — the last two editable in place on your own events; a
+host-derived event (the history-truncated marker) shows what it
+computed and takes no edits. The tag and description ride the saved
+file too — inside the BLF marker, no sidecar, and as `cannet.tag` /
+`cannet.description` properties on an MDF `##EV`.
 
-**An event row is the same row wherever it is drawn** — in the Events
-view and interleaved into the chronological trace alike. Every one
-carries a `⇥` button that jumps every trace and plot to that moment,
-and your own events carry the ✎ rename, the colour swatch and the ×
-remove beside it. On the keyboard, the arrows walk onto an event row
-like any other gridview row
+**Bus errors are their own paged section**, below the notes: one row
+per episode — bus, time, count and span since the previous episode,
+rate — read a window at a time from the same pyramid the plot's Bus
+error markers draw from, so the section never holds a capture's whole
+error history in the frontend. Scrolling to the section's edge asks for
+more resolution, exactly as zooming the plot does; a still-catching-up
+answer shows what it has and keeps asking rather than going blank.
+
+**An event row in the Notes/comments section is the same row wherever
+it is drawn** — in the Events panel and interleaved into the
+chronological trace alike (bus errors are the one kind that renders
+neither way: markers on the plot, rows in their own paged section).
+Every row carries a `⇥` button that jumps every trace and plot to that
+moment, and your own events carry the ✎ rename, the colour swatch and
+the × remove beside it. On the keyboard, the arrows walk onto an event
+row like any other gridview row
 ([ADR 0044](docs/adr/0044-gridview-interaction-base.md)), **Space** on
 it is that `⇥` jump, and **F2** starts the rename — on the rows that
 can be renamed at all, so a host-derived event stays read-only to the
@@ -3451,7 +3462,7 @@ whole list is drawn under **about**. Nothing is ever more than one click
 away, and a row with a dozen subjects is exactly as tall as a row with
 one.
 
-**Linking is multi-select plus one control.** In the Events view — and
+**Linking is multi-select plus one control.** In the Events panel — and
 only there, since it is the only surface where an event row is a thing
 you select rather than a marker beside the frames — click an event to
 select it and Ctrl/Cmd+click a second. The toolbar's **Link Events**

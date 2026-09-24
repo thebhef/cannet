@@ -7766,6 +7766,72 @@ input.unit-customization-add {
   padding: 0 0.25rem;
 }
 
+/* The Events panel's bus-error section (ADR 0035 amended): a paged
+   gridview of leaf rows over the level-0 error series, one row per
+   episode. Modelled on `.project-caches` — a bounded row space with its
+   own scrollbar, not through the shared column framework. */
+.bus-error-events {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border-subtle);
+}
+.bus-error-events-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  background: var(--surface-hover-subtle);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.bus-error-events-title {
+  flex: 1 1 auto;
+}
+.bus-error-events-pending {
+  color: var(--text-faint);
+}
+.bus-error-events-empty {
+  margin: 0;
+  padding: 0.5rem;
+  color: var(--text-faint);
+}
+/* The bounded row space: the rows scroll here, never in the events
+   panel's own list (ADR 0044 — the view supplies the scrolling). */
+.bus-error-events-grid {
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.bus-error-events-grid:focus-visible {
+  outline: 1px solid var(--accent-marker);
+  outline-offset: -1px;
+}
+.bus-error-event-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.78rem;
+}
+.bus-error-event-row + .bus-error-event-row {
+  border-top: 1px solid var(--border-list);
+}
+.bus-error-event-row.cursor {
+  background: var(--surface-hover-subtle);
+}
+.bus-error-event-bus {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bus-error-event-time,
+.bus-error-event-count,
+.bus-error-event-span,
+.bus-error-event-rate {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 /* --- Export capture: the dialog in front of the OS save picker ---
    The name template with its live preview, the range picker's timeline
    and bound fields, and the informational labels for the capture's own

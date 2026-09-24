@@ -557,7 +557,11 @@ describe("TracePanel event kinds", () => {
     setNoteSubjects: vi.fn(),
   });
 
-  function renderWithNotes(notes: Note[], ctx: NotesContextValue = notesCtx(notes)) {
+  function renderWithNotes(
+    notes: Note[],
+    ctx: NotesContextValue = notesCtx(notes),
+    trace: Partial<TraceData> = {},
+  ) {
     const props = {
       params: { elementId: "t1", mode: "chronological" },
       api: { updateParameters: vi.fn() },
@@ -565,7 +569,7 @@ describe("TracePanel event kinds", () => {
     render(
       // No frames: the display rows are exactly the events, so what the
       // view shows is what the filter let through.
-      <TraceDataProvider value={{ ...traceData, count: 0 }}>
+      <TraceDataProvider value={{ ...traceData, count: 0, ...trace }}>
         <ProjectContext.Provider value={projectCtx}>
           <ElementRegistryContext.Provider
             value={makeRegistry([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement])}
@@ -586,12 +590,16 @@ describe("TracePanel event kinds", () => {
     // jsdom lays nothing out, so the row virtualizer would see a zero-height
     // viewport and render a single row. Give it one.
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
-    renderWithNotes([
-      { id: "n1", timestampNs: 1_000_000_000, label: "boom", kind: "note" },
-      { id: "e1", timestampNs: 500_000_000, label: "bus error x40", kind: "busError" },
-    ]);
-    // Both splice in now — a coalesced bus error is one row, not noise.
-    await waitFor(() => expect(eventLabels()).toEqual(["bus error x40", "boom"]));
+    // The truncation marker (Diagnostics, like a bus error) is the one
+    // Diagnostics-group kind this list can actually carry — derived bus
+    // errors left the trace's event rows for a paged section of their
+    // own (ADR 0035 amended; the Events panel, not here).
+    renderWithNotes(
+      [{ id: "n1", timestampNs: 1_000_000_000, label: "boom", kind: "note" }],
+      undefined,
+      { truncationTsNs: 500_000_000 },
+    );
+    await waitFor(() => expect(eventLabels()).toEqual(["history truncated here", "boom"]));
 
     const box = document.querySelector<HTMLInputElement>(
       '.event-kind-filter input[aria-label="Diagnostics"]',
@@ -628,13 +636,17 @@ describe("TracePanel event rows: the same interactions as the events view", () =
     setNoteSubjects: vi.fn(),
   });
 
-  function renderWithNotes(notes: Note[], ctx: NotesContextValue = notesCtx(notes)) {
+  function renderWithNotes(
+    notes: Note[],
+    ctx: NotesContextValue = notesCtx(notes),
+    trace: Partial<TraceData> = {},
+  ) {
     const props = {
       params: { elementId: "t1", mode: "chronological" },
       api: { updateParameters: vi.fn() },
     } as unknown as Parameters<typeof TracePanel>[0];
     render(
-      <TraceDataProvider value={{ ...traceData, count: 0 }}>
+      <TraceDataProvider value={{ ...traceData, count: 0, ...trace }}>
         <ProjectContext.Provider value={projectCtx}>
           <ElementRegistryContext.Provider
             value={makeRegistry([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement])}
@@ -713,15 +725,13 @@ describe("TracePanel event rows: the same interactions as the events view", () =
   });
 
   it("leaves a derived event read-only here too, but still goes to it", async () => {
-    const busError: Note = {
-      id: "e1",
-      timestampNs: 500_000_000,
-      label: "bus error x40",
-      kind: "busError",
-    };
-    const ctx = notesCtx([busError]);
-    renderWithNotes([busError], ctx);
-    await waitFor(() => expect(eventLabels()).toEqual(["bus error x40"]));
+    // The truncation marker: derived bus errors left this list for the
+    // Events panel's own paged section (ADR 0035 amended), so the
+    // truncation marker is what this describe block's "a derived event"
+    // is exercised against instead.
+    const ctx = notesCtx([]);
+    renderWithNotes([], ctx, { truncationTsNs: 500_000_000 });
+    await waitFor(() => expect(eventLabels()).toEqual(["history truncated here"]));
     // The mouse is offered no rename here…
     expect(document.querySelector('[aria-label="rename event"]')).toBeNull();
 
