@@ -11,7 +11,49 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
-import type { LogFileNode } from "./logFileGrid";
+import css from "./index.css?raw";
+import { isMacPlatform, isWindowsPlatform } from "./keybindings";
+import { LOG_FILE_COLUMN_DEFS } from "./logFileColumns";
+import { revealLabel, type LogFileNode } from "./logFileGrid";
+
+/// The reveal entry's label, computed the same way the component does
+/// (`revealLabel`) so this test doesn't hardcode a platform-specific
+/// string that would fail under a different `navigator.platform`.
+const REVEAL_LABEL = revealLabel(isMacPlatform(), isWindowsPlatform());
+
+/// Every rule in the stylesheet, as `[selector, declarations]` — jsdom
+/// does no layout and never loads the app's stylesheet, so a rendering
+/// test can't see the Import button's real footprint against its cell.
+/// Reading the declared numbers back out of the text is the same idiom
+/// `nameOverflow.test.ts` uses for the same reason.
+function declarationsFor(selector: string): string {
+  const out: string[] = [];
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const sel = m[1].replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
+    if (sel.split(",").some((part) => part.trim() === selector)) out.push(m[2]);
+  }
+  return out.join("\n");
+}
+/// The first space-separated number in a declared value, in px (`rem` is
+/// resolved against the app's unmodified 16px root — index.css sets no
+/// `html { font-size }`). What a `border: <width> <style> <color>`
+/// shorthand needs.
+function firstNumPx(selector: string, property: string): number {
+  const m = declarationsFor(selector).match(new RegExp(`${property}:\\s*([^;]+);`));
+  if (!m) throw new Error(`${selector} has no ${property} in index.css`);
+  const first = m[1].trim().split(/\s+/)[0];
+  return parseFloat(first) * (first.endsWith("rem") ? 16 : 1);
+}
+/// The last space-separated number in a declared value, in px. What a
+/// `padding: <vertical> <horizontal>` shorthand needs for its horizontal
+/// component.
+function lastNumPx(selector: string, property: string): number {
+  const m = declarationsFor(selector).match(new RegExp(`${property}:\\s*([^;]+);`));
+  if (!m) throw new Error(`${selector} has no ${property} in index.css`);
+  const parts = m[1].trim().split(/\s+/);
+  const last = parts[parts.length - 1];
+  return parseFloat(last) * (last.endsWith("rem") ? 16 : 1);
+}
 
 const listing = vi.hoisted(() => ({ value: [] as LogFileNode[] }));
 const invoke = vi.hoisted(() =>
@@ -133,6 +175,52 @@ describe("LoggerFileGrid", () => {
     expect(row.style.gridTemplateColumns.startsWith("minmax(240px")).toBe(true);
   });
 
+  it("gives the action column a default width that clears the Import button's own footprint", () => {
+    // The Import button (`.logger-file-import-btn`): its icon plus its
+    // own side padding and border, twice over (left and right) —
+    // Icon.tsx renders every glyph at a fixed 14px regardless of theme.
+    const iconPx = 14;
+    const buttonWidthPx =
+      iconPx +
+      2 * lastNumPx(".logger-file-import-btn", "padding") +
+      2 * firstNumPx(".logger-file-import-btn", "border");
+    // Every cell in the row — including the action cell the button sits
+    // in — carries this on top.
+    const cellPaddingRightPx = firstNumPx(".logger-file-row > span", "padding-right");
+    const actionDef = LOG_FILE_COLUMN_DEFS.find((d) => d.key === "action")!;
+    expect(actionDef.defaultWidth).toBeGreaterThanOrEqual(
+      Math.ceil(buttonWidthPx + cellPaddingRightPx),
+    );
+  });
+
+  it("the action column is resizable by its own header handle", async () => {
+    listing.value = [FILE];
+    const onColumnsChange = vi.fn();
+    render(
+      <LoggerFileGrid
+        folder="C:\logs"
+        writing={false}
+        onImport={vi.fn()}
+        onColumnsChange={onColumnsChange}
+      />,
+    );
+    await screen.findByText("a.blf");
+    const handle = document.querySelector<HTMLElement>(
+      ".logger-file-grid .trace-header .col-lf-action .col-resize-handle",
+    )!;
+    expect(handle).not.toBeNull();
+    handle.setPointerCapture = () => {};
+    handle.releasePointerCapture = () => {};
+    fireEvent.pointerDown(handle, { clientX: 100, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientX: 130, pointerId: 1 });
+    fireEvent.pointerUp(handle, { clientX: 130, pointerId: 1 });
+    expect(onColumnsChange).toHaveBeenCalled();
+    const calls = onColumnsChange.mock.calls;
+    const last = calls[calls.length - 1][0] as { key: string; width: number }[];
+    // 40px default + 30px of drag.
+    expect(last.find((c) => c.key === "action")?.width).toBe(70);
+  });
+
   it("reports a changed layout for the panel to persist, and seeds from a saved one", async () => {
     listing.value = [FILE];
     const onColumnsChange = vi.fn();
@@ -222,7 +310,7 @@ describe("LoggerFileGrid", () => {
     fireEvent.contextMenu(fileText.closest(".logger-file-row") as HTMLElement);
     const ctx = document.querySelector(".logger-file-ctx") as HTMLElement;
     expect(within(ctx).getByRole("button", { name: /Import/ })).toBeInTheDocument();
-    expect(within(ctx).getByText("Show in Explorer")).toBeInTheDocument();
+    expect(within(ctx).getByText(REVEAL_LABEL)).toBeInTheDocument();
     fireEvent.click(within(ctx).getByRole("button", { name: /Import/ }));
     expect(onImport).toHaveBeenCalledWith(FILE.id);
 
@@ -230,7 +318,7 @@ describe("LoggerFileGrid", () => {
     fireEvent.contextMenu(dirText.closest(".logger-file-row") as HTMLElement);
     const dirCtx = document.querySelector(".logger-file-ctx") as HTMLElement;
     expect(within(dirCtx).queryByRole("button", { name: /Import/ })).toBeNull();
-    expect(within(dirCtx).getByText("Show in Explorer")).toBeInTheDocument();
+    expect(within(dirCtx).getByText(REVEAL_LABEL)).toBeInTheDocument();
   });
 
   it("Show in Explorer reveals the row's own path", async () => {
@@ -238,7 +326,7 @@ describe("LoggerFileGrid", () => {
     render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
     const row = (await screen.findByText("a.blf")).closest(".logger-file-row") as HTMLElement;
     fireEvent.contextMenu(row);
-    fireEvent.click(screen.getByText("Show in Explorer"));
+    fireEvent.click(screen.getByText(REVEAL_LABEL));
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("reveal_in_file_manager", { path: FILE.id }),
     );
