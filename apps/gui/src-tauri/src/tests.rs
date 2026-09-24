@@ -4965,20 +4965,20 @@ fn the_forms_written_before_the_event_block_are_still_read() {
     assert_eq!(back[0].tag.as_deref(), Some("fault"));
 }
 
-/// Coalescing an error storm is a **display** decision with a **write-side**
-/// contract: the summary event never reaches the file, and every error frame
-/// the session received does (ADR 0035).
+/// Bus-error markers are a **display** of the capture with a **write-side**
+/// contract: no bus-error event reaches the file, and every error frame the
+/// session received does (ADR 0035).
 ///
-/// The control that discriminates is the user note alongside the summary —
-/// both are timeline events in the same store, and exactly one is written.
-/// Without it, "no bus-error marker in the file" would also be satisfied by
-/// a save that dropped markers altogether.
+/// The control that discriminates is the user note offered alongside a
+/// bus-error event — the store takes the note and refuses the other, and
+/// exactly one marker is written. Without it, "no bus-error marker in the
+/// file" would also be satisfied by a save that dropped markers altogether.
 ///
 /// Drives `write_blf_capture` off the very expression `save_capture` builds
 /// its marker list from (`NotesStore::exportable`), the layer under the
 /// Tauri command the suite has no `AppHandle` harness for.
 #[test]
-fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises() {
+fn no_bus_error_event_displaces_the_error_frames_it_stands_for() {
     use cannet_core::CanFrameSource as _;
 
     // An error storm at bus frame rate, as a persistent physical fault
@@ -5015,7 +5015,7 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
             unknown_block_lines: Vec::new(),
         })
         .unwrap();
-    store.replace_derived(vec![notes::Note {
+    let refused = store.add(notes::Note {
         id: "bus-error-0".into(),
         timestamp_ns: ts,
         label: format!("bus error x{STORM}"),
@@ -5026,9 +5026,10 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
         commented_event_type: None,
         subjects: Vec::new(),
         unknown_block_lines: Vec::new(),
-    }]);
-    // Both are on the timeline the views render...
-    assert_eq!(store.events().len(), 2);
+    });
+    // The store holds authored events only...
+    assert!(refused.is_none());
+    assert_eq!(store.events().len(), 1);
 
     // ...and exactly one is on the timeline the file records.
     let outcome = capture::write_blf_capture(
@@ -5060,87 +5061,6 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
     assert_eq!(
         read_back,
         frames.iter().map(|f| f.timestamp_ns).collect::<Vec<_>>()
-    );
-}
-
-/// The producer half of the same contract: the *real* coalescer's output,
-/// not a hand-built summary, still leaves the file lossless — and the
-/// event set it produces does not grow with the storm.
-///
-/// The frames go through `TraceStore::append` exactly as any other frame
-/// does, so what must stay bounded is the thing coalescing controls: the
-/// derived event set the views hold whole in RAM (ADR 0035).
-#[test]
-fn a_real_storm_coalesces_to_one_event_while_every_frame_reaches_the_file() {
-    use cannet_core::CanFrameSource as _;
-
-    // 10 000 errors 100 µs apart — the retransmit cadence of a persistent
-    // fault at 500 kbit/s, sustained for a second.
-    const STORM: u64 = 10_000;
-
-    let dir = tempfile::tempdir().unwrap();
-    let dest = dir.path().join("real-storm.blf");
-    let ts = 1_700_000_000_000_000_000u64;
-
-    let mut runs = bus_health::ErrorRuns::default();
-    let frames: Vec<trace_store::RawTraceFrame> = (0..STORM)
-        .map(|i| {
-            let timestamp_ns = ts + i * 100_000;
-            runs.observe("b1", timestamp_ns);
-            trace_store::RawTraceFrame {
-                timestamp_ns,
-                channel: 0,
-                id: 0,
-                extended: false,
-                direction: Direction::Rx,
-                payload: CanFramePayload::Error,
-                bus_id: Some("b1".into()),
-            }
-        })
-        .collect();
-
-    let store = notes::NotesStore::new();
-    let applied = store.replace_derived(bus_health::runs_as_events(runs.runs()));
-    assert_eq!(
-        applied.notes.len(),
-        1,
-        "{STORM} errors, one summary — the event set does not track the storm",
-    );
-    assert!(
-        applied.notes[0].label.starts_with("10000 bus errors"),
-        "the count and the span are what the summary carries: {}",
-        applied.notes[0].label,
-    );
-    assert!(
-        store.exportable().is_empty(),
-        "nothing the coalescer produces is user data",
-    );
-
-    let outcome = capture::write_blf_capture(
-        dest.to_str().unwrap(),
-        &frames,
-        &store.exportable(),
-        &[],
-        &mut capture::ExportRun::inert(),
-    )
-    .unwrap()
-    .written()
-    .expect("an uncancelled export writes a capture");
-    assert_eq!(outcome.marker_count, 0);
-
-    let mut back = cannet_blf::BlfCanFrameSource::open(&dest).unwrap();
-    let read_back: Vec<u64> = std::iter::from_fn(|| back.next_frame().unwrap())
-        .filter(|f| matches!(f.payload, CanFramePayload::Error))
-        .map(|f| f.timestamp_ns)
-        .collect();
-    assert_eq!(
-        read_back.len() as u64,
-        STORM,
-        "every error frame is in the file"
-    );
-    assert_eq!(
-        read_back,
-        frames.iter().map(|f| f.timestamp_ns).collect::<Vec<_>>(),
     );
 }
 
