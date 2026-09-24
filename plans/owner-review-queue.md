@@ -22,6 +22,15 @@ keeps the queue's copy). This file shrinks every time it is walked.
   dropping a server's protection. Mirrored the GUI; confirm or
   reverse. Detail: 0144 § Status log, 2026-09-18.
 
+- **The Rust fzf port skips the package's diacritic folding**
+  (`normalize: true`). Reproducing it needs either a new crate — which
+  the no-new-crate ruling forbids — or ~700 lines of generated table.
+  The reachable haystack (DBC identifiers, id spellings, ECU names) is
+  ASCII; only a bus name with a diacritic would rank differently
+  between the host matcher and the frontend's event matcher. Accept
+  the boundary, or reopen the ruling? Detail: 0142 § Blockers,
+  2026-09-20.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the

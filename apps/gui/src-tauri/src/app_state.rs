@@ -466,6 +466,12 @@ impl AppState {
         *standing = names;
         drop(standing);
         *self.math_model_cache() = None;
+        // A bus *name* is part of the text a trace filter's fuzzy leaf
+        // searches (ADR 0044), and the active filter index caches that
+        // leaf's resolution — so a rename has to drop the index the
+        // same way a DBC change does, or the view keeps narrowing by
+        // the old name.
+        *self.filter_index() = None;
     }
 
     /// The resolved math model every decode model carries.
