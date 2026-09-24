@@ -351,6 +351,48 @@ is where the modes differ. A lane's static markers go through both of
 those like any line's, so what the hover adds to a lane is what it adds
 to a line: the pointer's own sample, told apart from the rest.
 
+**Amended 2026-09-21 — a sample marker is a square, and a pixel
+column's markers collapse.** The fill-only change above removed one of
+the two passes uPlot makes over every marker on every repaint; this
+addresses what the remaining pass builds. uPlot's point-path builder
+puts a `moveTo` and an `arc` per marker into a `Path2D` — four cubic
+Béziers each, flattened and anti-aliased where they are rasterized —
+and `drawSeries` rebuilds that path every time, because it caches a
+series' line path and nothing else. A panel of three plot areas with a
+dozen series over a deep capture therefore rebuilt six figures of arcs
+per data repaint, which is what made `Points: On` unusable at that
+scale while `auto` was fine.
+
+So a static sample marker is now an **axis-aligned square**: one `rect`
+per marker in one `Path2D` per series, its corners snapped to whole
+device pixels so no edge is anti-aliased, its side the diameter the
+disc had (`points.size` at the canvas pixel ratio), still filled and
+never stroked, still in the series' own colour — a lane's in its
+measured marker ink, unchanged. The disc is gone; nothing drawn on the
+overlay canvas is, so a **hover** marker is still a disc, there being
+one of those per series rather than thousands.
+
+Before the path is built, the markers of one **device-pixel column**
+collapse: a marker whose square would land on pixels a marker already
+kept in that column covers is not drawn again. The serve gives a column
+its first, last, min and max sample, so a held signal's four markers are
+one square and a noisy column's usually two — its min and its max. This
+is not a stride and not a cap, the two shapes ruled out above: every
+marker kept still sits on a served sample, a column's extremes are
+dropped only where identical ink is already down, and the collapse never
+reaches across columns — two neighbouring columns whose extremes are a
+pixel apart both draw, because the column is the unit the serve
+decimates to and merging across columns would start choosing which
+readings survive.
+
+Marker **shapes** — circle, triangle, diamond, cross, plus, as a
+per-panel default and as something a colormap rule could set — are
+deliberately not built here. The cheap implementation of them is a
+pre-rendered sprite blitted per marker rather than a path per marker,
+and a rule-driven marker additionally needs the host to serve a point's
+raw value beside its physical one, since colormap rules key on raw
+(ADR 0029). Squares first; the rest is a separate decision.
+
 **Vertical space is fit-to-panel, with draggable splitters.** The
 derived axes of a panel always fit its height — no stack-scrolling
 once N axes exceed it. Each axis carries a **weight** (flex-grow,
@@ -546,9 +588,12 @@ below:
   per canvas pixel column. *Amended 2026-09-21:* the serve bounds the
   marker **count**; it does not bound their **cost**, which is paid
   again on every repaint of the series layer (uPlot caches a series'
-  line path and rebuilds its point layer each time). Two things follow,
-  and both are below: markers are filled and never stroked, and the
-  chrome a pointer moves no longer repaints the series at all. `auto` carries a **minimum-sample-count
+  line path and rebuilds its point layer each time). Three things
+  follow, and all three are below: markers are filled and never
+  stroked, a marker is a pixel-snapped square rather than an arc and
+  the markers of one device-pixel column collapse to the distinct
+  squares they need, and the chrome a pointer moves no longer repaints
+  the series at all. `auto` carries a **minimum-sample-count
   floor**: uPlot's
   automatic rule reads the density of the *axis* — the merged x columns
   every series on it shares — so a series holding a handful of samples

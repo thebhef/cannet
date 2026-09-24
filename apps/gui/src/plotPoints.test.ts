@@ -5,12 +5,14 @@ import {
   applyAutoPointFloor,
   applySampleMarkerFilter,
   AUTO_POINT_MARKER_FLOOR,
+  collapseMarkerSquares,
   hoverMarkerColumn,
   sampleMarkerColumns,
   setShowPointsOverride,
   showPointsFromRaw,
   showPointsOverride,
   showPointsToUplot,
+  squareMarkerPaths,
 } from "./plotPoints";
 
 /** Minimal stub shaped like the bit of a uPlot instance the filter
@@ -31,8 +33,8 @@ describe("showPointsFromRaw", () => {
 
 describe("showPointsToUplot", () => {
   it("maps the tri-state to a uPlot points spec", () => {
-    expect(showPointsToUplot("off")).toEqual({ show: false, width: 0 });
-    expect(showPointsToUplot("auto")).toEqual({ width: 0 });
+    expect(showPointsToUplot("off")).toMatchObject({ show: false, width: 0 });
+    expect(showPointsToUplot("auto").show).toBeUndefined();
     const on = showPointsToUplot("on");
     expect(on.show).toBe(true);
     // *Which* columns are marked is not this function's call — one
@@ -48,6 +50,16 @@ describe("showPointsToUplot", () => {
     // `(size - width) / 2` — so this is ink saved, not size.
     for (const mode of ["auto", "off", "on"] as const) {
       expect(showPointsToUplot(mode).width).toBe(0);
+    }
+  });
+
+  it("builds the marker path itself in every mode", () => {
+    // The other half of the same cost: uPlot's own builder puts a
+    // `moveTo` and an `arc` per marker into the path it rebuilds every
+    // repaint. Ours puts one pixel-snapped `rect`, after collapsing the
+    // markers that would paint the same pixels twice.
+    for (const mode of ["auto", "off", "on"] as const) {
+      expect(showPointsToUplot(mode).paths).toBe(squareMarkerPaths);
     }
   });
 });
@@ -237,5 +249,82 @@ describe("hoverMarkerColumn", () => {
     // reading the grid alone.
     expect(hoverMarkerColumn([1, 3, 5], xs, 0.9)).toBe(1);
     expect(hoverMarkerColumn(mine, xs, 0.9)).toBe(2);
+  });
+});
+
+describe("collapseMarkerSquares", () => {
+  // Flat `[x0, y0, x1, y1, …]` in, flat `[left0, top0, …]` out — one
+  // allocation per repaint each way rather than one per marker. The
+  // tests read as tables of pairs; these two turn them.
+  const centres = (...pts: readonly (readonly [number, number])[]): number[] =>
+    pts.flatMap(([x, y]) => [x, y]);
+  const corners = (flat: readonly number[]): [number, number][] => {
+    const out: [number, number][] = [];
+    for (let i = 0; i + 1 < flat.length; i += 2) out.push([flat[i], flat[i + 1]]);
+    return out;
+  };
+  const SIDE = 5;
+
+  it("draws a held column's four served points once", () => {
+    // The serve gives a pixel column its first, last, min and max
+    // sample. On a held signal those are the same value, so they land on
+    // the same device pixel and four squares would be painted exactly on
+    // top of each other.
+    const held = centres([100, 200], [100, 200], [100, 200], [100, 200]);
+    expect(corners(collapseMarkerSquares(held, SIDE))).toEqual([[98, 198]]);
+  });
+
+  it("draws a noisy column twice — its min and its max, each on a sample", () => {
+    // Same four points on a column the signal swings across: the first
+    // and last samples sit within a marker's side of the extreme they
+    // are nearest, so they are already covered; the two extremes are
+    // not, and both are drawn.
+    const noisy = centres([100, 202], [100, 200], [100, 260], [100, 258]);
+    expect(corners(collapseMarkerSquares(noisy, SIDE))).toEqual([
+      [98, 200],
+      [98, 258],
+    ]);
+  });
+
+  it("never collapses across pixel columns, however close the extremes", () => {
+    // The falsifiable half of the rule above: the collapse is scoped to
+    // one device-pixel column. Two neighbouring columns whose extremes
+    // are a single pixel apart overlap as squares, and still draw twice
+    // — collapsing them would be thinning, and thinning is what left a
+    // column's extreme bare.
+    const adjacent = centres([100, 200], [101, 201]);
+    expect(corners(collapseMarkerSquares(adjacent, SIDE))).toEqual([
+      [98, 198],
+      [99, 199],
+    ]);
+  });
+
+  it("marks every sample of a series sparser than the columns it is drawn on", () => {
+    // No two of these share a column, so nothing is collapsed: a slow
+    // signal keeps one marker per reading, which is the whole point of
+    // `Points: On` for it.
+    const sparse = centres([100, 200], [140, 210], [180, 190], [220, 250], [260, 205]);
+    expect(corners(collapseMarkerSquares(sparse, SIDE))).toEqual([
+      [98, 198],
+      [138, 208],
+      [178, 188],
+      [218, 248],
+      [258, 203],
+    ]);
+  });
+
+  it("snaps every corner to an integer device pixel", () => {
+    // A rect on a fractional boundary is anti-aliased along all four
+    // edges — the cost the disc was paying at every marker. Integer
+    // corners plus an integer side put the square on whole pixels.
+    const fractional = centres([100.4, 200.6], [140.5, 210.2]);
+    for (const [x, y] of corners(collapseMarkerSquares(fractional, SIDE))) {
+      expect(Number.isInteger(x)).toBe(true);
+      expect(Number.isInteger(y)).toBe(true);
+    }
+  });
+
+  it("has nothing to draw for a series with no visible samples", () => {
+    expect(collapseMarkerSquares([], SIDE)).toEqual([]);
   });
 });

@@ -165,6 +165,34 @@ without a canvas so it can pin data, not ink.
   `showPoints: "auto"`, so it never measured `on` at all — which is
   how an uncapped `on` shipped with no reading against it.
 
+- **Square markers** (owner, 2026-09-21): `Points: On` is still far
+  worse than `auto` on a real project — a panel of three plot areas
+  and thirteen series over a multi-GB capture, where every pan, zoom
+  and live tick rebuilds up to `4 · max_points` markers per series.
+  Three rulings:
+  1. **Collapse markers within a pixel column.** The served points in
+     one column are its first, last, min and max; markers that would
+     land within a marker's side of each other (same device-pixel
+     position, or overlapping) draw once. A held signal goes to one
+     marker per column, a noisy one to two — its min and its max —
+     each still on a sample. Nothing that leaves a column's extreme
+     bare: never a stride, never a cap.
+  2. **Markers are squares, drawn as a batched rect path.** A custom
+     `points.paths` for every series returns one `Path2D` of
+     axis-aligned rects, pixel-snapped to integer device pixels, side
+     equal to today's disc diameter (`points.size` at the pixel
+     ratio); `width: 0` stays, fill only. Hover markers on the
+     overlay canvas keep their current look — one per series is no
+     cost. Lane markers keep `laneMarkerInk` as their fill.
+  3. **Sprite-blit shapes are backlogged, not built.** Marker shapes
+     (circle, triangle, diamond, cross, plus) via a pre-rendered
+     sprite blitted per marker and cached per shape / colour / size /
+     DPR; a per-panel default marker beside the `Points:` chip; an
+     optional `marker` on a colormap rule (ADR 0029) drawn in the
+     rule's colour, which needs the host to serve a point's raw value
+     beside its physical one because rules key on raw. Squares only
+     for now.
+
 ## Phases
 
 1. **Lane serve investigation.** Rebuild the `61379f88` V2 scenario
@@ -230,6 +258,140 @@ without a canvas so it can pin data, not ink.
   measurement strip, both unchanged. Filed for a ruling.
 
 ## Status log
+
+### 2026-09-21 — second fix phase: square markers, collapsed per pixel column
+
+Branch `fix-plot-square-markers` off `fix-plot-hover-overlay`, one
+squashed commit. Frontend only — `plotPoints.ts` and two test files —
+plus ADR 0026, this file and `plans/backlog.md`. No host code, and no
+`PlotArea.tsx` change: the panel already spreads whatever
+`showPointsToUplot` returns into every series' `points`, so the new
+`paths` reaches lanes and lines alike through the existing seam.
+
+#### Observation → experiment → cause
+
+Observation (owner, 2026-09-21): `Points: On` is still substantially
+worse than `auto` on a real project — three plot areas, thirteen
+series, a multi-GB capture.
+
+The previous phase's experiment measured the *shape* of the cost (uPlot
+rebuilds a series' point path on every repaint; `width: 0` removes one
+of the two passes over it). What it left unmeasured is what the
+remaining pass builds. Experiment, against uPlot 1.6.32 itself with a
+recording `Path2D` and a real `drawSeries` — now a committed test
+rather than a throwaway — over one 2000-sample series on a 526 px plot
+box, one repaint, flushed:
+
+| one repaint, 2000 served samples, 526 px box | path ops |
+| --- | --- |
+| uPlot's own builder, sawtooth | 2000 `arc` (+ 2000 `moveTo`) |
+| square builder, sawtooth (two distinct values per column) | 1051 `rect`, 0 `arc` |
+| square builder, held at one value | 526 `rect` — one per pixel column |
+
+So the primitive count halves on a noisy series and drops ~4x on a held
+one, and each surviving primitive is a pixel-aligned rect rather than
+four cubic Béziers flattened and anti-aliased at raster. On the scratch
+layout below — 13 series, ~2100 px wide areas, a serve of up to
+`4 · max_points` per series — the before case is ~10^5 arcs per data
+repaint.
+
+#### What landed
+
+- `collapseMarkerSquares(centres, side)` in `plotPoints.ts`: flat
+  `[x, y, ...]` device-pixel centres in, flat top-left corners out (flat
+  both ways so a repaint allocates two arrays, not one per marker).
+  Groups by rounded device-pixel column and drops a marker whose square
+  would land on pixels a marker already kept **in that column** covers.
+  Never across columns — two neighbouring columns whose extremes are a
+  pixel apart both draw, per the ruling.
+- `squareMarkerPaths` — the `points.paths` builder. One `Path2D` of
+  `rect`s, side = `points.size` at the canvas pixel ratio (the diameter
+  the disc had, since `width` is 0), corners snapped to integers, a null
+  stroke path, and the clip inflated by one marker exactly as uPlot's
+  own builder inflates it. `showPointsToUplot` returns it in all three
+  modes, beside `width: 0`.
+- Hover markers are untouched: they are drawn on the overlay canvas, one
+  per series, and stay discs. A lane's `laneMarkerInk` is still the
+  point layer's fill.
+
+#### The readings — one run each, `Points: On`, 13 series
+
+A **scratch** variant of ev-zonal (not in the repo): one plot panel,
+three plot areas, thirteen signals at 10 / 100 / 1000 ms — six pack
+electrical, four wheel speeds, three tyre pressures — buses, DBCs,
+transmit frames and RBS otherwise untouched, with its own `project_id`
+so it shares no cache with the baseline project. 60 s,
+`--perf-interact scrub`, `--rbs-run-on-start`, `--show-points on`.
+
+| metric | before (`372f6afb`) | after (`c5cf43e1`) | limit |
+|---|---|---|---|
+| `longtask_ms_per_s` mean / p95 | 0 / 0 | 0 / 0 | 10 / 17 |
+| `lag_ms_max` | 2.6 | 5.3 | 40.8 |
+| `jank_fraction` | 0 | 0 | 0.05 |
+| `jsheap_mb_peak` | 95.7 | 102.9 | 231.2 |
+| `jsheap_mb_drift_per_min` | 5.26 | 3.01 | 22.9 |
+| **`renderer_mb_peak`** | **408.4** | **323.8** | 697.0 |
+| **`renderer_mb_drift_per_min`** | **91.5** | **34.2** | 96.5 |
+| `tree_mb_peak` | 829.1 | 741.8 | 1547.4 |
+| `tree_mb_drift_per_min` | 131.4 | 64.2 | 154.7 |
+| `flush_ms_mean` / `tx_late_ms_mean` | 3.36 / 3.44 | 2.92 / 3.21 | 25 / 18 |
+| `rx_fps` / `tx_fps` overall | 1610.0 / 1610.2 | 1607.3 / 1613.2 | +/-15 % of 1608 |
+| `rx_gap` ids measured | 174 | 174 | — |
+| `interact` performed / missing | 240 / 0 | 266 / 0 | — |
+
+`cannet-perf-measurement check --expected-rx-fps 1608 --expected-tx-fps
+1608` **passed all 33 gated metrics on both**. Reports:
+`docs/performance-measurements/frontend/2026-09-21-372f6afb-points-on-13series-before.json`
+and `2026-09-21-c5cf43e1-points-on-13series-after.json` beside it.
+
+The reading that moved is renderer memory: the peak drops 85 MB and the
+drift per minute falls from 91.5 — within 5 % of its limit — to 34.2.
+That is the marker path, which was being rebuilt and re-rasterized
+thousands of markers at a time, per series, per repaint. The timing
+metrics were already at the floor on this rig for both builds
+(`longtask` 0, `jank_fraction` 0, `lag_ms_max` single-digit
+milliseconds), so they say nothing either way here; `lag_ms_max`
+2.6 → 5.3 is inside the run-to-run band this metric has always had.
+
+**The pair is not perfectly controlled, and the bias is conservative.**
+The before run started against an empty store; the after run restored
+216 339 frames the before run had written, so it carried the heavier
+model *and* drove 26 extra `plot.follow-live` gestures the before run's
+toolbar had no capture to offer. Both runs are valid on their own terms
+— 174 ids, rx/tx within 0.4 % of the offered 1608 f/s, `missing: 0` —
+and the after run improved on memory while doing more work, so the
+improvement is a lower bound. Not re-run: the economy rule is one run
+each, and a controlled repeat could only widen the gap.
+`scroll_jank_px` (ungated, ADR 0031) is the one metric the asymmetry
+dominates outright — 1.3 → 83 880 — because it measures the *trace*
+scroll, and the after run scrolled a 216 k-frame buffer where the
+before run scrolled one filling from empty.
+
+#### Tests
+
+| file | added | what they pin |
+| --- | --- | --- |
+| `plotPoints.test.ts` | 7 | the collapse table — held column → 1, noisy column → 2 (its min and its max), two columns a pixel apart → still 2, a series sparser than the columns → every sample, integer corners, empty in / empty out — and that every mode asks for `squareMarkerPaths` |
+| `PlotArea.draw.test.ts` | 3 | a real uPlot's `drawSeries`, with a recording `Path2D`: the point path is `rect`s and not one `arc`, its corners are integers, and a held series collapses to one rect per pixel column — plus the CONTROL that uPlot's own builder draws the same data as arcs |
+
+`PlotArea.draw.test.ts` moves from the node environment to jsdom, since
+constructing a real uPlot needs a document. All 81 pre-existing cases in
+it pass unchanged; the file gains a hoisted `matchMedia` stub, which is
+what uPlot reads its device pixel ratio through at import and which
+vitest's jsdom environment does not put on `globalThis`.
+
+#### CI (scoped per-phase set)
+
+| check | command | result |
+| --- | --- | --- |
+| frontend tests | `pnpm --dir apps/gui test` | 247 files / 3599 tests passed |
+| frontend build (typecheck) | `pnpm --dir apps/gui build` | passed (`tsc -b && vite build`) |
+| comment-references grep | over `apps/` and `crates/`, untracked included | clean |
+| `check_local_paths.py` | over the changed files | clean |
+| release build | `pnpm --dir apps/gui tauri build --no-bundle` | `target/release/cannet-gui.exe` |
+| Rust lanes, python / MDF / sidecar / wire / proto lanes | — | **unreachable — the diff touches no Rust, `servers/`, `libs/` or `proto/` file** |
+
+No new blockers, and nothing filed to `plans/owner-review-queue.md`.
 
 ### 2026-09-21 — fix phase: the hover overlay, fill-only markers, `--show-points`
 
