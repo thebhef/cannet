@@ -349,14 +349,152 @@ Settled by the overseer, open to reversal:
     under full-suite load (`expected 0 to be 21`) and pass both in
     isolation and on an immediate full-suite re-run (3694/3694 green). I
     did not touch that file; noted here rather than silently ignored.
+- 2026-09-24 — **Phase 3 (Events panel and trace) landed** on
+  `task158-events-section` (off `task158-plot-markers`), one commit
+  `02fb8027`.
+  - **The Events panel's bus-error section** (`apps/gui/src/BusErrorEventsSection.tsx`,
+    `apps/gui/src/useBusErrorEvents.ts`): a paged gridview (ADR 0044) over the
+    level-0 error series, one row per episode — bus, time, count and span
+    from the delta to the previous served point, rate. Modelled on
+    `ProjectCachesList.tsx` (plain rows over `arrayRowSpace`, not the shared
+    column framework — nowhere to persist a resizable layout) rather than the
+    virtualized trace/by-id shape, because `bus_error_series` has no
+    index-addressable row space to page by offset; it is time-and-budget
+    windowed only.
+  - **How it pages.** The section's *window* is always `[sessionStartSeconds,
+    now)` — "now" is never tracked client-side; `toSeconds:
+    Number.MAX_SAFE_INTEGER` lets the host's own `window()`/`level_points`
+    clip to the series' live edge, so the query is always "everything so
+    far" without this view computing a model fact. The *point budget* starts
+    at 100 per bus (`BUS_ERROR_INITIAL_BUDGET`) and **doubles, capped at 4000
+    (`BUS_ERROR_MAX_BUDGET`)**, when the reader scrolls the section to its
+    bottom edge and the last answer came back at-or-over budget (meaning the
+    host still had more to resolve) — the same "zoom in to resolve" the
+    plot's markers already do (phase 2), reached by growing a grid instead
+    of panning a plot. Every row is a real served point — no interpolation,
+    no approximated index — bounded strictly by what the current budget buys
+    (CLAUDE.md § GUI architecture: never the whole series). Live-follows via
+    `useWindowedQuery`'s existing `followLive`/`extentSignal` lifecycle,
+    tied to `TraceLive.count`.
+  - **Shared delta math.** `plotEvents.ts`'s `busErrorTimelineEvents` was
+    refactored to build on a new exported `busErrorEpisodes` (bus, id,
+    timestampNs, count, spanSeconds) — the one place the delta arithmetic
+    lives now, so the plot's markers and the panel's rows can't disagree on
+    what an episode is. Behavior-preserving refactor; `plotEvents.test.ts`'s
+    existing `busErrorTimelineEvents` tests are unchanged and green, plus
+    two new tests on `busErrorEpisodes` itself.
+  - **Wiring into `EventsPanel.tsx`.** The section renders beside the
+    existing whole-list Notes/comments section, gated by
+    `kindFilter.visible.has("busError")` — the same Diagnostics-group
+    checkbox every other event surface already offers, so toggling
+    Diagnostics off hides the section along with whatever else is in that
+    group. The checklist's own busError count is no longer read off
+    `countByKind(allEvents)` (always 0 in production — the notes store holds
+    authored events only since phase 1) but summed from `get_bus_health`'s
+    per-bus `errorCount`, the same host truth the bus-health panel already
+    reads. `sessionBuses` is `useProjectContext().buses` — every project bus,
+    matching phase 2's "session-wide scope" reasoning for the plot's
+    markers, not just buses some other view happens to be showing.
+  - **Scroll restore.** `EventsPanel` now tracks its own `shownCount` via
+    `props.api.onDidVisibilityChange`, the same pattern `SettingsPanel.tsx`
+    uses — dockview detaches a hidden panel's element, so the section's own
+    scroll offset needs putting back on return (`useScrollRestore.ts`).
+  - **The trace was already clean.** `NotesStore` holds authored events only
+    (phase 1), and `trace_query.rs`'s event-anchoring functions
+    (`anchor_events_to_frames` / the windowed-trace counterpart) operate on
+    whatever event list their caller hands them — nothing host-side hands
+    them a derived bus error, so there was no merge path to remove. Verified
+    by inspection (`git grep` across `apps/gui/src-tauri/src` and
+    `apps/gui/src` for `busError`/`bus_error`/`BusError` turned up nothing
+    beyond the kind constant, the theme color, the plot/panel consumers, and
+    two now-fixed stale test fixtures) and by rewriting
+    `TracePanel.dom.test.tsx`'s two tests that manufactured a synthetic
+    `busError`-kind `Note` (a scenario the real host can no longer produce)
+    to use the truncation marker instead — the one Diagnostics-group kind
+    this whole-list surface can still carry. Error *frames* are untouched:
+    `TracePanel error-frame collapse` (pre-existing, unedited) still covers
+    `withoutErrorFrames`/Collapse Errors row filtering.
+  - **Two stale strings fixed**, per the phase-2 handoff:
+    `TracePanel.tsx`'s "View-local: whether a run of bus error frames
+    reads as the host's one coalesced `busError` event row…" comment and
+    the Collapse Errors tooltip ("show a run of bus error frames as the one
+    summary event the host coalesced it into…") both described the removed
+    coalescer; rewritten to describe the current plain row-type filter
+    (`withoutErrorFrames`). Two more stale strings found in the same sweep
+    and fixed as in-scope drive-by (both directly about the busError kind
+    this phase's own diff touches): `notes.ts`'s `EventKind` module doc
+    comment and `defaultVisibleKinds`' rationale comment both still
+    described "the host coalesces a run of error frames into one summary
+    event" — rewritten to describe the pyramid/episode model. The
+    already-flagged README "starts hidden" line (README.md, the events
+    passage) was also fixed per the orchestrator's direct "two stale
+    strings flagged for you" instruction, which supersedes phase 2's own
+    "not touched, unrelated" note on that same line — see the conflict
+    logged below.
+  - **README.** The Events panel passage (`README.md`, "Timeline events:
+    kinds, filtering, and the events view") rewritten: it now describes two
+    sections (whole-list Notes/comments; the paged bus-error section) rather
+    than one uniform "whole event timeline", drops the false "bus errors
+    starts hidden everywhere" claim (every kind has been visible by default
+    since a 2026-09-20 ruling — `notes.ts`'s `defaultVisibleKinds` already
+    said as much), and "Events view" → "Events panel" throughout that
+    passage for the name the component and command palette actually use.
+    The bus-health passage (README ~531–563) already described the
+    pyramid/marker model accurately (phase 1/2's own doc pass) and named no
+    coalesced runs — left untouched, nothing to fix there.
+  - **DOM tests, red then green.** `EventsPanel.dom.test.tsx`'s new
+    `describe("EventsPanel bus-error section", …)`: a mocked 50,000-error
+    serve (a maxPoints-aware stand-in, ~2× the requested budget, mirroring
+    `PlotPanel.dom.test.tsx`'s own 50,000-error harness) yields a bounded
+    row set (asserted `< 1000` against the 50,000-episode window); scrolling
+    the section to its bottom edge re-queries at a doubled point budget and
+    renders more rows; rows carry bus/count/span/rate text; a `complete:
+    false` answer still renders what it has and shows a "catching up…"
+    indicator rather than going blank; authored events and the bus-error
+    section list together; the section is absent (query never fires) with
+    no session buses, but still says "No bus errors recorded." rather than
+    disappearing outright — Diagnostics stays "nothing is hidden and
+    unfindable" for an empty answer the same as a filtered-off one; the
+    section hides on the Diagnostics checkbox, same as any other kind in
+    that group. `useBusErrorEvents.test.ts` (new, 6 tests): the fetch
+    lifecycle in isolation — inactive without buses, the exact window/budget
+    the first fetch asks for, cross-bus chronological merge, `complete:
+    false` handling, `growBudget` doubling with a hard ceiling, and
+    "already at full resolution" once a served answer comes back under
+    budget. `plotEvents.test.ts`: 2 new tests on `busErrorEpisodes`.
+    Existing `EventsPanel.dom.test.tsx`/`EventsPanel.subjects.dom.test.tsx`/
+    `eventHighlight.dom.test.tsx` needed a `ProjectContext.Provider` (new,
+    since `EventsPanel` now calls `useProjectContext()`) and a real
+    `api.onDidVisibilityChange` fake (since it now destructures `api` from
+    props) added to every render helper in those three files — mechanical,
+    no behavioral assertions changed there.
+  - **A design decision recorded, not a groomed-decision conflict**: the
+    task text says the section reads `bus_error_series` "with a time window
+    and a point budget derived from the section's row space" through
+    `useWindowedQuery`, naming the trace/by-id hooks as reference adapters.
+    Those two adapters page a *host-index-addressable* row space (a real
+    frame index, a real sorted-table offset); `bus_error_series` has no such
+    address space, only `(fromSeconds, toSeconds, maxPoints)`. Implemented
+    instead: `useWindowedQuery` supplies the fetch *lifecycle* (single-flight,
+    descriptor memoisation, live-follow refresh, ADR 0049 partial handling)
+    over a single always-`[sessionStart, now)` window whose *budget* — not
+    an index range — is the thing that grows on interaction, matching
+    `useByIdView`'s *structural* shape (external window state → descriptor →
+    `useWindowedQuery` → one page) rather than its *index* semantics. This
+    is the closest faithful reading that stays exact (no interpolated
+    offset→time guessing) and bounded (CLAUDE.md's paged-view rule).
+    Flagged for the owner below rather than landed silently.
 
-## Exit criteria verdicts (2026-09-23, after phase 2)
+## Exit criteria verdicts (2026-09-24, final)
 
-| # | Verdict |
-| --- | --- |
-| 2 | Series is a signal-cache pyramid: persisted, restored with the capture identity, rebuilt off the UI thread when absent, swept and capped like them | **Met (host tests)** — `a_persisted_bus_error_series_comes_back_and_keeps_counting`, `a_rejected_bus_error_series_rebuilds_off_the_serve_to_the_same_totals`, `a_cold_bus_error_series_answers_partially_until_it_catches_up`, `clearing_drops_…`, `a_dbc_change_and_its_sweep_leave_a_live_bus_error_series_alone`, `a_front_trimmed_bus_error_series_keeps_its_count`. Never parked (no definition to return), so the retention pool does not apply. |
-| 3 | Any window served within the point budget at every level; consecutive points give exact count and span across three levels | **Met** — `fifty_thousand_errors_serve_within_budget_with_exact_deltas_at_every_level` (levels 0–4 served, every point a real `(t_n, n)` sample, every Δvalue = count in `(a.t, b.t]`, length ≤ 2 × budget). |
-| 4 | `MAX_RUNS`, the coalescer and the whole-list derived-note broadcast gone; authored notes broadcast as before; bus-health totals unchanged | **Met** — removed; authored-note tests in `notes.rs` unchanged and green; `bus_health` tally tests + `a_row_is_built_…` green. See side effect 1 on `COALESCE_GAP_NS`. |
-| 6 | ADR 0035 and ADR 0002 describe the series family; README matches | **ADRs met; README deferred to phase 3 per the phase plan** — README lines ~531–550 and ~3387 still describe the coalesced event (side effect 2). |
-| 7 | Tests cover 1–5 (host half) | **Met for 2–4**; 1 is covered on the host by `ten_thousand_episodes_each_resolve_on_their_own` (every one of 10,000 episodes served as exactly its 3 errors at a zoom around it); the plot half is phase 2. |
-| 1 | A capture with more than 256 bus-error episodes shows every episode on the plot at the zoom where it resolves; nothing is evicted | **Met (plot half)** — the query has no cap analogous to the old `MAX_RUNS`; it pages the whole series through the host's pyramid serve. `PlotPanel.dom.test.tsx`'s 50,000-error test exercises two orders of magnitude past the old 256 cap; `ten_thousand_episodes_each_resolve_on_their_own` (host, phase 1) is the deeper proof that a zoom resolves an arbitrary episode. |
+| # | Criterion | Verdict |
+| --- | --- | --- |
+| 1 | A capture with >256 bus-error episodes shows every episode on the plot at the zoom where it resolves; nothing is evicted | **Met** (phase 2) — `PlotPanel.dom.test.tsx`'s 50,000-error suite; host's `ten_thousand_episodes_each_resolve_on_their_own` (phase 1). Unaffected by phase 3. |
+| 2 | The series is a signal-cache pyramid: persisted, restored with the capture identity, rebuilt off the UI thread when absent, swept and capped like them — host tests | **Met** (phase 1) — 11 `signal_cache` tests listed in the phase-1 log. |
+| 3 | Any window served within the point budget at every level; consecutive points give exact count and span across three levels | **Met** (phase 1) — `fifty_thousand_errors_serve_within_budget_with_exact_deltas_at_every_level`. |
+| 4 | `MAX_RUNS`, the coalescer and the whole-list derived-note broadcast gone; authored notes broadcast as before; bus-health totals unchanged | **Met** (phase 1) — removed with tests; reconfirmed in phase 3 by inspection (no code path anywhere reintroduces a merge of derived events into any store) and by `cargo test --workspace` staying green (1388 passed / 7 ignored in `cannet-gui`, 0 failed workspace-wide). |
+| 5 | Plot markers, the Events panel's paged bus-error section and the trace behave per § Rulings — DOM tests | **Met (full, as of phase 3)** — plot markers (phase 2); the Events panel's paged section (this phase, `BusErrorEventsSection.dom.test.tsx`-equivalent coverage inside `EventsPanel.dom.test.tsx`, plus `useBusErrorEvents.test.ts`); the trace carries no derived bus-error rows (`TracePanel.dom.test.tsx`'s two rewritten tests, plus structural confirmation — `NotesStore` holds authored events only and `trace_query.rs` anchors whatever list it's handed) while error frames still show and collapse (`TracePanel error-frame collapse`, pre-existing, unedited, still green). |
+| 6 | ADR 0035 and ADR 0002 describe the series family; README matches | **Met (full, as of phase 3)** — ADRs amended in phase 1; README's Events panel passage now describes the two-section shape and drops the stale "starts hidden" claim; the bus-health and Collapse Errors passages were already accurate (no change needed there). |
+| 7 | Tests cover 1–5 | **Met (full)** — host tests (phase 1) cover 2–4 and the host half of 1 and 3; `PlotPanel.dom.test.tsx` (phase 2) covers the plot half of 1 and 5; `EventsPanel.dom.test.tsx` / `useBusErrorEvents.test.ts` / `TracePanel.dom.test.tsx` (phase 3) cover the Events-panel and trace halves of 5. |
+
+Task complete 2026-09-24: 7/7 met. Awaiting owner acceptance (review queue § 4).
