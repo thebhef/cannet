@@ -715,7 +715,17 @@ below:
   whose geometry comes from a value table rather than a value range.
 - **Per-series color picker** is on each signal-row's swatch
   (right-click opens the browser's native picker). What it writes is
-  the series' `colorPick` — the *only* color a plot stores.
+  the series' `colorPick` — the *only* color a plot stores. A
+  right-click on a swatch whose row is in the area's current selection
+  applies the pick to every selected row in that one area, in a single
+  `setAreas` call rather than one pick per row (the selection's
+  Hide/Show batch has the same shape); a right-click outside the
+  selection makes the clicked row the selection first, so the pick
+  always lands on an unambiguous target. The Signals panel's own
+  right-click-the-name picker (`onSetSignalColors`, writing the
+  project's `signal_colors` map) follows the same rule over its
+  gridview selection, skipping a pattern chip caught up in it — a
+  pattern names no color.
 - **One resolution point**, `signalColorResolver.ts`: pick →
   generator → `stableSignalColor` hash over the signal's canonical
   key, bound once per render and read live by the signal view's rows

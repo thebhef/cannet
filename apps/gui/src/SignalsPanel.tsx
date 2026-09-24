@@ -807,6 +807,38 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     [grid, containerRef],
   );
 
+  /// The name picker's unselected-row rule: a right-click on a row
+  /// outside the current selection becomes the sole selection first,
+  /// same as the plot area's selection-context-menu rule — a picker
+  /// invocation needs an unambiguous, on-screen answer to "what does
+  /// this apply to".
+  const selectSoloIfUnselected = useCallback(
+    (rowId: string) => {
+      if (!grid.selection.has(rowId)) grid.onRowClick(rowId, { mod: false, shift: false });
+    },
+    [grid],
+  );
+
+  /// The name picker's write: every selected signal key in one
+  /// project change (the row alone if it isn't part of a selection by
+  /// the time the picker closes — `selectSoloIfUnselected` above has
+  /// already resolved that). Same "selection the row belongs to" rule
+  /// as `payloadFor`'s drag source below; a pattern chip or section
+  /// header in the selection carries no signal key and drops out
+  /// silently (ADR 0045: a pattern names no colour).
+  const handleSignalColorPick = useCallback(
+    (rowId: string, color: string) => {
+      const ids = grid.selection.has(rowId) ? [...grid.selection] : [rowId];
+      const entries: { key: string; color: string }[] = [];
+      for (const each of ids) {
+        const key = signalKeyOfRowId(each);
+        if (key != null) entries.push({ key, color });
+      }
+      if (entries.length > 0) project.onSetSignalColors(entries);
+    },
+    [grid.selection, project],
+  );
+
   // --- drag sources and intra-panel drops (ADR 0045) ---
   // What a selected signal row resolves to. The manual picks carry the
   // full ref; anything else has to come from a row on screen.
@@ -1177,7 +1209,12 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                     resolveColor={resolveColor}
                     manual={manualKeys}
                     signalColor={signalColor}
-                    onSetSignalColor={project.onSetSignalColor}
+                    onSignalColorPick={
+                      signalRow == null ? undefined : (color) => handleSignalColorPick(signalRow, color)
+                    }
+                    onSelectSolo={
+                      signalRow == null ? undefined : () => selectSoloIfUnselected(signalRow)
+                    }
                     onOpenSectionMenu={openSectionMenu}
                   />
                 );
@@ -1478,7 +1515,14 @@ interface SignalRowProps {
   manual: ReadonlySet<string>;
   /// This row's name color, already resolved (ADR 0026).
   signalColor: (key: string) => string;
-  onSetSignalColor: (key: string, color: string | null) => void;
+  /// Write a colour pick — every selected signal key in one project
+  /// change, or this row alone (`onSelectSolo` below has already made
+  /// it the selection by the time this fires if it wasn't already
+  /// part of one). `undefined` for a row-less slot.
+  onSignalColorPick?: (color: string) => void;
+  /// Make this row the sole selection first — the name picker's
+  /// unselected-row rule. `undefined` for a row-less slot.
+  onSelectSolo?: () => void;
   onOpenSectionMenu: (
     e: React.MouseEvent,
     key: string,
@@ -1509,7 +1553,8 @@ function SignalRow({
   resolveColor,
   manual,
   signalColor,
-  onSetSignalColor,
+  onSignalColorPick,
+  onSelectSolo,
   onOpenSectionMenu,
 }: SignalRowProps) {
   useThemeName();
@@ -1597,8 +1642,13 @@ function SignalRow({
             onContextMenu={(e) => {
               // Right-click the name opens the native color picker —
               // the same affordance as a plot series swatch (ADR 0026).
+              // A right-click outside the current selection becomes
+              // the sole selection first (the plot area's
+              // selection-menu rule), so the pick that follows always
+              // lands on an unambiguous target.
               e.preventDefault();
               e.stopPropagation();
+              if (!selected) onSelectSolo?.();
               colorInputRef.current?.click();
             }}
           >
@@ -1610,7 +1660,7 @@ function SignalRow({
             <ColorChip
               ref={colorInputRef}
               color={nameColor ?? "#ffffff"}
-              onChange={(hex) => onSetSignalColor(key, hex)}
+              onChange={(hex) => onSignalColorPick?.(hex)}
               hideBox
             />
           </span>
