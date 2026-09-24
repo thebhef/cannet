@@ -76,9 +76,6 @@ export const BUS_HEALTH_PANEL_COMPONENT = "bus-health";
 /// The keyboard-shortcuts editor (ADR 0018) — a singleton panel that
 /// lists and rebinds every command.
 export const SHORTCUTS_PANEL_COMPONENT = "shortcuts";
-/// The server list (ADR 0041) — a singleton panel holding this
-/// machine's trust decisions and what is advertising on the network.
-export const SERVERS_PANEL_COMPONENT = "servers";
 /// Singleton id — toolbar's "Database panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
@@ -118,10 +115,23 @@ export const BUS_HEALTH_PANEL_ID = "bus-health";
 /// app-global instance, opened from the command palette.
 export const SHORTCUTS_PANEL_ID = "shortcuts";
 
-/// The server list is a singleton too: trusting a server is a decision
-/// this machine makes once (ADR 0041), not a per-project one, so there
-/// is one instance and it is opened from the command palette.
-export const SERVERS_PANEL_ID = "servers";
+/// The settings key of the **Servers** section (ADR 0041): the machine's
+/// trust decisions and what is advertising on the network, rendered by
+/// the settings view's custom-renderer table. Trusting a server is a
+/// decision the machine makes once, not a per-project one, so it is a
+/// section of the app-global settings view rather than a view of its
+/// own — and the key is both what the host's descriptor calls it and
+/// what [`showSettingsPanelAt`] is asked to reveal.
+export const SERVERS_SETTING_KEY = "servers";
+
+/// Dockview panel ids this build no longer registers a component for.
+/// A persisted layout naming one would be handed to dockview, which
+/// looks the component up in the map React was given and hands
+/// `undefined` to `createElement` — a throw from inside a later render,
+/// not from `fromJSON`, so no restore-path `try` can catch it. Stale
+/// ids are therefore dropped before the layout is applied
+/// ([`dropRetiredPanels`]).
+const RETIRED_PANEL_IDS: readonly string[] = ["servers"];
 
 /// The tab title of every singleton panel, keyed by its fixed dockview
 /// id. A singleton's title is code-defined — it carries no model-owned
@@ -140,7 +150,6 @@ export const SINGLETON_PANEL_TITLES: Readonly<Record<string, string>> = {
   [EVENTS_PANEL_ID]: "Events",
   [BUS_HEALTH_PANEL_ID]: "Bus health",
   [SHORTCUTS_PANEL_ID]: "Keyboard shortcuts",
-  [SERVERS_PANEL_ID]: "Servers",
 };
 
 /**
@@ -170,21 +179,91 @@ export function normalizeSingletonTitles(layout: SerializedDockview): Serialized
   return changed ? { ...layout, panels } : layout;
 }
 
-/// Show-or-focus the Servers panel: bring the one instance forward if
-/// it is open, otherwise add it. One implementation for both ways in —
-/// the `panel.show.servers` command and the bus row's "Manage
-/// servers…" — so a bus row cannot open a second copy of a singleton.
-export function showServersPanel(api: DockviewApi): void {
-  const existing = api.panels.find((p) => p.id === SERVERS_PANEL_ID);
+/// Show-or-focus the settings view, scrolled to one section.
+///
+/// `reveal` is a setting key the view is asked to bring into sight; the
+/// view consumes the request and clears it, so a layout persisted while
+/// it was set does not re-scroll on every later open. One
+/// implementation for every way in — the *Servers* entry in the command
+/// palette's view list and the project panel's "Manage servers…" — so
+/// neither can open a second copy of a singleton.
+export function showSettingsPanelAt(api: DockviewApi, reveal: string): void {
+  const existing = api.panels.find((p) => p.id === SETTINGS_PANEL_ID);
   if (existing) {
+    existing.api.updateParameters({ reveal });
     existing.api.setActive();
     return;
   }
   api.addPanel({
-    id: SERVERS_PANEL_ID,
-    component: SERVERS_PANEL_COMPONENT,
-    title: "Servers",
+    id: SETTINGS_PANEL_ID,
+    component: SETTINGS_PANEL_COMPONENT,
+    title: SINGLETON_PANEL_TITLES[SETTINGS_PANEL_ID],
+    params: { reveal },
   });
+}
+
+/**
+ * Drop every panel a retired component would be asked for, and heal the
+ * grid around it.
+ *
+ * A workspace saved while the Servers panel existed still names it, and
+ * an unregistered component is not a recoverable error — see
+ * [`RETIRED_PANEL_IDS`]. The stale id is removed from `panels`, from the
+ * leaf that held it, and from `activeGroup` if that leaf went with it;
+ * everything else is left byte-for-byte alone, so a layout naming
+ * nothing retired is returned unchanged.
+ */
+export function dropRetiredPanels(layout: SerializedDockview): SerializedDockview {
+  const panels = { ...(layout.panels ?? {}) };
+  const retired = Object.keys(panels).filter((id) => RETIRED_PANEL_IDS.includes(id));
+  if (retired.length === 0) return layout;
+  for (const id of retired) delete panels[id];
+  const dropped: string[] = [];
+  const root = pruneGridNode(layout.grid.root, retired, dropped);
+  const next: SerializedDockview = {
+    ...layout,
+    grid: { ...layout.grid, root: root ?? { type: "branch", data: [] } },
+    panels,
+  };
+  if (next.activeGroup !== undefined && dropped.includes(next.activeGroup)) {
+    delete next.activeGroup;
+  }
+  return next;
+}
+
+/// One node of dockview's serialized grid tree. A branch's `data` is
+/// its children; a leaf's is the group state naming the views in it.
+/// Both are read off `SerializedDockview` rather than imported —
+/// dockview's package index does not re-export the leaf's type.
+type SerializedGridNode = SerializedDockview["grid"]["root"];
+type SerializedLeafData = Exclude<SerializedGridNode["data"], SerializedGridNode[]>;
+
+/// One node of a serialized grid with `retired` views taken out, or
+/// `null` when nothing is left of it. A leaf emptied of views is gone
+/// (its group id is pushed to `dropped`), and so is a branch left with
+/// no children.
+function pruneGridNode(
+  node: SerializedGridNode,
+  retired: readonly string[],
+  dropped: string[],
+): SerializedGridNode | null {
+  if (node.type === "branch") {
+    const children = (node.data as SerializedGridNode[])
+      .map((child) => pruneGridNode(child, retired, dropped))
+      .filter((child): child is SerializedGridNode => child !== null);
+    return children.length === 0 ? null : { ...node, data: children };
+  }
+  const data = node.data as SerializedLeafData;
+  const views = (data.views ?? []).filter((v) => !retired.includes(v));
+  if (views.length === 0) {
+    if (data.id !== undefined) dropped.push(data.id);
+    return null;
+  }
+  const activeView =
+    data.activeView !== undefined && views.includes(data.activeView)
+      ? data.activeView
+      : views[0];
+  return { ...node, data: { ...data, views, activeView } };
 }
 
 /// The RBS signals panel's dockview id for one element — one instance
@@ -272,8 +351,6 @@ export function panelKindForFocus(
       return "bus-health";
     case SHORTCUTS_PANEL_ID:
       return "shortcuts";
-    case SERVERS_PANEL_ID:
-      return "servers";
     default:
       return null;
   }

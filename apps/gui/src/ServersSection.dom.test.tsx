@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 //
-// The Servers panel: one merged list over the host's model, and the
-// trust lifecycle over it (ADR 0041). The panel renders what
-// `server_list.rs` computed — badges, offline greying, browse health —
-// and never re-derives any of it, so these tests feed host snapshots
-// and assert on what reaches the screen.
+// The settings view's Servers section: one merged list over the host's
+// model, and the trust lifecycle over it (ADR 0041). The section
+// renders what `server_list.rs` computed — badges, offline greying,
+// browse health — and never re-derives any of it, so these tests feed
+// host snapshots and assert on what reaches the screen.
+//
+// Moved here from the retired singleton panel. Every affordance
+// assertion is the one it always was; only the render call changed
+// (the section takes no dockview props) and a gridview describe block
+// was added for the row cursor the rows now sit in (ADR 0044).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
+import css from "./index.css?raw";
 import {
   act,
   cleanup,
@@ -17,7 +23,6 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import type { IDockviewPanelProps } from "dockview";
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -26,7 +31,7 @@ const { invokeMock, listenMock } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
-import { ServersPanel } from "./ServersPanel";
+import { ServersSection } from "./ServersSection";
 import { ServerTrustDialogs } from "./ServerTrustDialog";
 import { clearServerTrust } from "./serverTrust";
 import type { ServerPrompts, TrustPrompt } from "./serverTrust";
@@ -121,15 +126,15 @@ afterEach(() => {
 });
 
 function renderPanel() {
-  render(<ServersPanel {...({} as IDockviewPanelProps)} />);
+  render(<ServersSection />);
 }
 
-/// The panel beside the app-wide trust dialog, which is where every
-/// question the panel raises is answered — the shape `App.tsx` mounts.
+/// The section beside the app-wide trust dialog, which is where every
+/// question it raises is answered — the shape `App.tsx` mounts.
 function renderWithDialog() {
   render(
     <>
-      <ServersPanel {...({} as IDockviewPanelProps)} />
+      <ServersSection />
       <ServerTrustDialogs />
     </>,
   );
@@ -904,5 +909,47 @@ describe("live interfaces on stored rows", () => {
     await waitFor(() =>
       expect(rowFor("rippy:50051")).toHaveTextContent("no interfaces"),
     );
+  });
+});
+
+describe("the gridview", () => {
+  // The rows are a gridview (ADR 0044) of flat leaves, one per
+  // `host:port` — nothing groups servers, so the row cursor is a plain
+  // walk — inside a bounded row space of the section's own.
+  it("walks the rows with the row cursor", async () => {
+    snapshot = list([BENCH, DYNO, PINNED]);
+    renderPanel();
+    await screen.findByText(BENCH.address);
+    const container = document.querySelector(".servers-grid") as HTMLElement;
+    const cursorId = () => container.getAttribute("aria-activedescendant");
+
+    fireEvent.keyDown(container, { key: "ArrowDown" });
+    expect(cursorId()).toBe(rowFor(BENCH.address).id);
+
+    fireEvent.keyDown(container, { key: "ArrowDown" });
+    expect(cursorId()).toBe(rowFor(DYNO.address).id);
+
+    fireEvent.keyDown(container, { key: "ArrowUp" });
+    expect(cursorId()).toBe(rowFor(BENCH.address).id);
+  });
+
+  it("puts every row inside the row space, and the scrollbar on it", async () => {
+    snapshot = list([BENCH, DYNO, PINNED, OFFLINE]);
+    renderPanel();
+    await screen.findByText(BENCH.address);
+    const container = document.querySelector(".servers-grid") as HTMLElement;
+    for (const r of [BENCH, DYNO, PINNED, OFFLINE]) {
+      expect(container.contains(rowFor(r.address))).toBe(true);
+    }
+    // jsdom does no layout, so the bound is asserted against the
+    // stylesheet — the `index.css?raw` idiom the other row-space tests
+    // use. Without both declarations the settings view's own list is
+    // what scrolls through the servers.
+    const start = css.indexOf("\n.servers-grid {");
+    expect(start, "no `.servers-grid` rule in index.css").toBeGreaterThan(-1);
+    const open = css.indexOf("{", start);
+    const rule = css.slice(open + 1, css.indexOf("}", open));
+    expect(rule).toMatch(/max-height:/);
+    expect(rule).toMatch(/overflow-y:\s*auto/);
   });
 });

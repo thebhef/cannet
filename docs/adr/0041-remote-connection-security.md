@@ -50,6 +50,16 @@ transport security under it via tonic's `tls` feature (rustls).
   sidecars remain loopback-plaintext — a payoff of the single-endpoint
   proxy (ADR 0040). The GUI's local fast path is untouched.
 
+*Amended 2026-09-23:* the GUI surface for all of the above is the
+**Servers section of the settings view** — one merged row per
+`host:port`, where an identity is trusted, a token entered, a server
+forgotten, or an address added by hand. It was a singleton panel of its
+own until then; trusting a server is a machine-wide decision rather
+than a per-project one, which is what puts it in the app-global
+settings view instead of a view a project's layout carries. Where the
+decision is surfaced changes nothing about the decision: the rules
+above are unchanged.
+
 *Amended 2026-09-18:* the acceptance workflow is no longer the GUI's
 alone. The `cannet-client` command in
 [`clients/cannet-python-client`](../../clients/cannet-python-client)

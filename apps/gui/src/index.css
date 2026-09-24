@@ -1478,9 +1478,24 @@ ul.status-bar-menu .status-chip {
   color: var(--danger-text);
 }
 
-/* The Servers panel (ADR 0041): one merged row per server, greyed when
-   nothing is advertising at that address. Scrolling is the shared
-   `.settings-panel` shell's. */
+/* The settings view's Servers section (ADR 0041): one merged row per
+   server, greyed when nothing is advertising at that address. */
+.servers-section {
+  display: flex;
+  flex-direction: column;
+}
+/* The bounded row space: the rows scroll here, never in the settings
+   view's own list (ADR 0044 — the view supplies the scrolling). */
+.servers-grid {
+  max-height: 24rem;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+.servers-grid:focus-visible {
+  outline: 1px solid var(--accent-marker);
+  outline-offset: -1px;
+}
 .servers-toolbar {
   display: flex;
   align-items: center;
@@ -1529,8 +1544,16 @@ ul.status-bar-menu .status-chip {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.6rem;
-  padding: 0.3rem 0;
+  padding: 0.3rem 0.5rem;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.server-row.cursor {
+  background: var(--surface-hover-subtle);
+}
+
+.server-row.selected {
+  background: var(--surface-row-selected);
 }
 
 /* Trusted, but nothing is answering there right now. */
@@ -2489,7 +2512,7 @@ ul.status-bar-menu .status-chip {
 }
 
 /* Trusted, but nothing is answering there right now — the same grey as
-   the Servers panel's offline rows. */
+   the Servers section's offline rows. */
 .project-server.offline {
   opacity: 0.55;
 }
