@@ -4,15 +4,17 @@
 //! Three things live here, all of them host-side because they are
 //! computation over the frame stream and over the session's own state:
 //!
-//! - **Error-frame coalescing.** An error frame aborts the frame in
-//!   flight, which is then retransmitted, so a persistent physical fault
-//!   yields error → retransmit → error at roughly the bus's whole frame
-//!   rate. [`ErrorRuns`] folds a run of them into one summary carrying a
-//!   count and a span, published as a host-derived `busError` timeline
-//!   event (ADR 0035). **The frames themselves are stored like any
-//!   other frame** — the summary sits beside them, never instead of
-//!   them, so a saved capture is not a lossy restatement of what was
-//!   received.
+//! - **Error tallies.** An error frame aborts the frame in flight, which
+//!   is then retransmitted, so a persistent physical fault yields error
+//!   → retransmit → error at roughly the bus's whole frame rate.
+//!   [`ErrorTallies`] counts them per bus as they arrive — the total, the
+//!   rate over the latest burst and the last error's instant the panel
+//!   shows — in state bounded by the bus count. **The frames themselves
+//!   are stored like any other frame**, and the timeline's bus-error
+//!   markers are read from them: each bus's error series is a
+//!   signal-cache pyramid, paged per window like any other series (ADR
+//!   0035, [`crate::signal_cache::SignalCacheStore::bus_error_windows`]).
+//!   Nothing here produces a timeline event.
 //! - **Controller state.** `InterfaceState` — the ISO 11898-1
 //!   fault-confinement state, the transmit and receive error counters,
 //!   and the driver's count of receive overruns — arrives on the
@@ -48,150 +50,113 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
 use crate::connection_state::AppliedBusConfig;
-use crate::notes::{EventKind, Note};
 
-/// How often the host republishes the coalesced summaries. A fault at
-/// bus frame rate moves the count thousands of times a second and every
-/// republication repaints three event surfaces, so the cadence is the
-/// readout's, not the bus's — the same once-a-second poll the clock
+/// How often the host republishes the health rows. A fault at bus frame
+/// rate moves the count thousands of times a second, so the cadence is
+/// the readout's, not the bus's — the same once-a-second poll the clock
 /// status uses.
 const BUS_HEALTH_POLL: Duration = Duration::from_secs(1);
 
 /// Errors closer together than this — in **frame time**, so an import
-/// reads the same as a live session — belong to one episode. A fault at
-/// bus frame rate produces thousands per second, and what distinguishes
-/// them is the count and the span, not the individual arrivals; a gap
-/// this long is what separates "the bus is still faulting" from "it
-/// faulted again later".
-pub(crate) const COALESCE_GAP_NS: u64 = 1_000_000_000;
+/// reads the same as a live session — are one burst for the panel's
+/// **error rate**, which is the rate over the bus's most recent burst: a
+/// fault at bus frame rate produces thousands per second, and a rate
+/// averaged across a quiet hour between two faults would say nothing
+/// about either.
+///
+/// This is the panel's readout and nothing else. The timeline's bus-error
+/// markers are not bursts: they are the bus's error series, served by the
+/// signal cache and thinned by pyramid level
+/// ([`crate::signal_cache::SignalCacheStore::bus_error_windows`]).
+pub(crate) const RATE_BURST_GAP_NS: u64 = 1_000_000_000;
 
-/// Ceiling on the number of coalesced runs held at once. The runs are
-/// events, and events are held in RAM and rendered whole (ADR 0035), so
-/// the set has to be bounded by something other than how long the
-/// session runs. Past the cap the oldest run is dropped — the same
-/// windowed-ring answer the frame store gives (ADR 0002 DS-8), and the
-/// frames it summarised are still in the capture.
-pub(crate) const MAX_RUNS: usize = 256;
-
-/// One coalesced run of error frames on one bus.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ErrorRun {
-    pub(crate) bus_id: String,
-    pub(crate) first_ts_ns: u64,
+/// One bus's error tally: every error frame seen on it, and the burst the
+/// panel's rate and "last error" read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BusErrorTally {
+    /// Every error frame seen on the bus this session.
+    pub(crate) total: u64,
+    /// Frame time of the current burst's first error.
+    pub(crate) burst_first_ts_ns: u64,
+    /// Frame time of the most recent error.
     pub(crate) last_ts_ns: u64,
-    pub(crate) count: u64,
+    /// Errors in the current burst.
+    pub(crate) burst_count: u64,
 }
 
-impl ErrorRun {
-    /// Frame-time span of the run in seconds. Zero for a run of one.
+impl BusErrorTally {
+    /// Errors per second averaged over the current burst's own span.
+    /// `0.0` for a burst that has not yet spanned any time — one error
+    /// carries a count, not a rate.
     #[allow(clippy::cast_precision_loss)]
-    fn span_secs(&self) -> f64 {
-        self.last_ts_ns.saturating_sub(self.first_ts_ns) as f64 / 1e9
-    }
-
-    /// Errors per second averaged over the run's own span. `0.0` for a
-    /// run that has not yet spanned any time — one error carries a
-    /// count, not a rate.
-    #[allow(clippy::cast_precision_loss)]
-    fn rate(&self) -> f64 {
-        let span = self.span_secs();
+    pub(crate) fn rate(&self) -> f64 {
+        let span = self.last_ts_ns.saturating_sub(self.burst_first_ts_ns) as f64 / 1e9;
         if span <= 0.0 {
             return 0.0;
         }
-        self.count as f64 / span
+        self.burst_count as f64 / span
     }
 }
 
-/// The coalescer: every error frame the ingest path sees, folded into
-/// runs. Pure — no clock, no locks, no Tauri — so the coalescing rule is
-/// testable on its own.
+/// Every error frame the ingest path sees, tallied per bus. Bounded by
+/// the number of buses, whatever the capture holds. Pure — no clock, no
+/// locks, no Tauri — so the tallying rule is testable on its own.
 #[derive(Debug, Default)]
-pub(crate) struct ErrorRuns {
-    runs: Vec<ErrorRun>,
-    /// Every error ever seen per bus, including any whose run has since
-    /// been evicted by [`MAX_RUNS`]. The panel's count must not fall
-    /// when a summary ages out.
-    totals: BTreeMap<String, u64>,
+pub(crate) struct ErrorTallies {
+    buses: BTreeMap<String, BusErrorTally>,
 }
 
-impl ErrorRuns {
-    /// Fold in one error frame on `bus_id`, stamped `ts_ns`.
+impl ErrorTallies {
+    /// Count one error frame on `bus_id`, stamped `ts_ns`.
     pub(crate) fn observe(&mut self, bus_id: &str, ts_ns: u64) {
-        *self.totals.entry(bus_id.to_string()).or_default() += 1;
-        if let Some(open) = self
-            .runs
-            .iter_mut()
-            .rev()
-            .find(|r| r.bus_id == bus_id)
-            .filter(|r| ts_ns.saturating_sub(r.last_ts_ns) <= COALESCE_GAP_NS)
-        {
-            open.count += 1;
-            open.last_ts_ns = open.last_ts_ns.max(ts_ns);
-            return;
+        match self.buses.get_mut(bus_id) {
+            Some(tally) => {
+                tally.total += 1;
+                if ts_ns.saturating_sub(tally.last_ts_ns) <= RATE_BURST_GAP_NS {
+                    tally.burst_count += 1;
+                } else {
+                    tally.burst_first_ts_ns = ts_ns;
+                    tally.burst_count = 1;
+                }
+                tally.last_ts_ns = tally.last_ts_ns.max(ts_ns);
+            }
+            None => {
+                self.buses.insert(
+                    bus_id.to_string(),
+                    BusErrorTally {
+                        total: 1,
+                        burst_first_ts_ns: ts_ns,
+                        last_ts_ns: ts_ns,
+                        burst_count: 1,
+                    },
+                );
+            }
         }
-        if self.runs.len() >= MAX_RUNS {
-            self.runs.remove(0);
-        }
-        self.runs.push(ErrorRun {
-            bus_id: bus_id.to_string(),
-            first_ts_ns: ts_ns,
-            last_ts_ns: ts_ns,
-            count: 1,
-        });
     }
 
-    pub(crate) fn runs(&self) -> &[ErrorRun] {
-        &self.runs
+    /// `bus_id`'s tally, or `None` for a bus that has seen no error.
+    pub(crate) fn get(&self, bus_id: &str) -> Option<&BusErrorTally> {
+        self.buses.get(bus_id)
     }
 
-    /// Every error seen on `bus_id` this session, eviction-proof.
+    /// Every error seen on `bus_id` this session.
     pub(crate) fn total(&self, bus_id: &str) -> u64 {
-        self.totals.get(bus_id).copied().unwrap_or(0)
+        self.get(bus_id).map_or(0, |t| t.total)
     }
 
-    /// The most recent run on `bus_id`, which is where the panel reads
-    /// its error rate and its "last error" instant.
-    pub(crate) fn latest(&self, bus_id: &str) -> Option<&ErrorRun> {
-        self.runs.iter().rev().find(|r| r.bus_id == bus_id)
+    /// The buses that have seen an error, in order.
+    pub(crate) fn buses(&self) -> impl Iterator<Item = &str> {
+        self.buses.keys().map(String::as_str)
     }
 
-    #[allow(dead_code)] // read by tests; the panel reads `runs` directly.
+    #[allow(dead_code)] // read by tests
     pub(crate) fn is_empty(&self) -> bool {
-        self.runs.is_empty()
+        self.buses.is_empty()
     }
 
     pub(crate) fn clear(&mut self) {
-        self.runs.clear();
-        self.totals.clear();
+        self.buses.clear();
     }
-}
-
-/// Render the coalesced runs as the host-derived timeline events every
-/// view reads (ADR 0035).
-///
-/// The event sits at the run's **first** error, which is the instant a
-/// reader navigating to it wants: the onset of the fault, not its tail.
-/// The bus rides the `tag`, the axis the event view already filters on,
-/// because the host holds bus *ids* and the project's bus **names** are
-/// the frontend's — so this is where the summary can honestly name the
-/// bus, and the health panel is where the name appears.
-pub(crate) fn runs_as_events(runs: &[ErrorRun]) -> Vec<Note> {
-    runs.iter()
-        .map(|run| Note {
-            // Stable across republications so a view's row keys and any
-            // open disclosure survive the count ticking up.
-            id: format!("bus-error:{}:{}", run.bus_id, run.first_ts_ns),
-            timestamp_ns: run.first_ts_ns,
-            label: label_for(run),
-            kind: EventKind::BusError,
-            color: None,
-            description: Some(description_for(run)),
-            tag: Some(run.bus_id.clone()),
-            commented_event_type: None,
-            subjects: Vec::new(),
-            unknown_block_lines: Vec::new(),
-        })
-        .collect()
 }
 
 /// One coalesced report of what a peer refused since the last poll.
@@ -274,23 +239,6 @@ fn describe_tallies(tallies: &[cannet_client::rejections::RejectionTally]) -> St
         .join(", ")
 }
 
-fn label_for(run: &ErrorRun) -> String {
-    if run.count == 1 {
-        return "1 bus error".to_string();
-    }
-    format!("{} bus errors over {:.1} s", run.count, run.span_secs())
-}
-
-fn description_for(run: &ErrorRun) -> String {
-    format!(
-        "bus {bus}\n{count} error frames, {rate:.0}/s over {span:.3} s\nthe frames themselves are in the capture and are what a save writes",
-        bus = run.bus_id,
-        count = run.count,
-        rate = run.rate(),
-        span = run.span_secs(),
-    )
-}
-
 /// One interface's controller state as the driver last reported it —
 /// ISO 11898-1 fault confinement plus the two error counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -338,7 +286,8 @@ pub(crate) struct BusHealthRecord {
     pub(crate) load_percent: Option<f64>,
     /// Every error frame seen on this bus this session.
     pub(crate) error_count: u64,
-    /// Errors per second over the most recent run's own span.
+    /// Errors per second over the most recent burst's own span
+    /// ([`RATE_BURST_GAP_NS`]).
     pub(crate) error_rate: f64,
     /// Frame-time instant of the most recent error, or `None` for a bus
     /// that has seen none.
@@ -390,24 +339,24 @@ pub(crate) fn load_percent(
 /// live one.
 #[derive(Default)]
 pub struct BusHealth {
-    errors: Mutex<ErrorRuns>,
+    errors: Mutex<ErrorTallies>,
 }
 
 impl BusHealth {
-    /// Fold one error frame into the coalescer.
+    /// Count one error frame.
     pub(crate) fn observe_error(&self, bus_id: &str, ts_ns: u64) {
         self.errors().observe(bus_id, ts_ns);
     }
 
-    pub(crate) fn errors(&self) -> std::sync::MutexGuard<'_, ErrorRuns> {
+    pub(crate) fn errors(&self) -> std::sync::MutexGuard<'_, ErrorTallies> {
         self.errors
             .lock()
             .expect("bus health errors mutex poisoned")
     }
 
     /// Drop everything — a capture clear or an Open Capture starts a new
-    /// session, and a summary of the previous one has nothing to
-    /// summarise any more.
+    /// session, and a tally of the previous one has nothing to count any
+    /// more.
     pub(crate) fn clear(&self) {
         self.errors().clear();
     }
@@ -466,17 +415,17 @@ pub(crate) fn health_rows(
     applied: &BTreeMap<String, AppliedBusConfig>,
     bits_by_bus: &[(String, f64, f64)],
     mapped_buses: &[String],
-    errors: &ErrorRuns,
+    errors: &ErrorTallies,
 ) -> BTreeMap<String, BusHealthRecord> {
     let mut buses: Vec<&str> = mapped_buses.iter().map(String::as_str).collect();
-    buses.extend(errors.runs().iter().map(|r| r.bus_id.as_str()));
+    buses.extend(errors.buses());
     buses.extend(applied.keys().map(String::as_str));
     buses.sort_unstable();
     buses.dedup();
     buses
         .into_iter()
         .map(|bus_id| {
-            let latest = errors.latest(bus_id);
+            let tally = errors.get(bus_id);
             // Absent bits are a genuine zero, not a missing reading: the
             // bus is configured, so the denominator is known and nothing
             // going over the wire *is* the answer. That is what makes a
@@ -494,8 +443,8 @@ pub(crate) fn health_rows(
                         load_percent(arb_bits, data_bits, cfg.speed_bps, cfg.fd_data_speed_bps)
                     }),
                     error_count: errors.total(bus_id),
-                    error_rate: latest.map_or(0.0, ErrorRun::rate),
-                    last_error_ts_ns: latest.map(|r| r.last_ts_ns),
+                    error_rate: tally.map_or(0.0, BusErrorTally::rate),
+                    last_error_ts_ns: tally.map(|t| t.last_ts_ns),
                 },
             )
         })
@@ -554,20 +503,16 @@ fn applied_configs(
         .collect()
 }
 
-/// Republish the coalesced bus-error summaries on [`BUS_HEALTH_POLL`],
-/// and only when the set has actually moved.
+/// Republish the bus-health rows on [`BUS_HEALTH_POLL`], and only when
+/// they have actually moved; report what peers refused on the same tick.
 ///
 /// A poll rather than a callback for the same reason the clock status is
 /// one: the producer is the ingest path, which runs at bus rate on a
 /// worker thread and must not be the thing that decides when a `WebView`
-/// repaints. The events go in through [`crate::notes::NotesStore::replace_derived`],
-/// so they reach every view on the one delivery path the timeline-event
-/// model already has (ADR 0035) — and stay out of the durable store and
-/// out of a saved capture, which is what keeps the file lossless.
+/// repaints.
 pub(crate) fn spawn_bus_health_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(BUS_HEALTH_POLL);
-        let mut published: Vec<Note> = Vec::new();
         let mut published_rows: BTreeMap<String, BusHealthRecord> = BTreeMap::new();
         let mut reported_rejections: BTreeMap<String, u64> = BTreeMap::new();
         loop {
@@ -589,13 +534,6 @@ pub(crate) fn spawn_bus_health_emitter(app: AppHandle) {
                 published_rows.clone_from(&rows);
                 let _ = app.emit(BUS_HEALTH_CHANGED_EVENT, rows);
             }
-            let events = runs_as_events(health.errors().runs());
-            if events == published {
-                continue;
-            }
-            published.clone_from(&events);
-            let applied = state.notes.replace_derived(events);
-            let _ = app.emit("notes-changed", applied.notes);
         }
     });
 }
@@ -793,109 +731,68 @@ mod tests {
     }
 
     #[test]
-    fn a_storm_at_bus_frame_rate_becomes_one_summary() {
+    #[allow(clippy::float_cmp)] // the rate is exact on these round numbers
+    fn a_storm_at_bus_frame_rate_reads_as_its_count_over_its_span() {
         // 10 000 errors, 100 µs apart — the retransmit cadence of a
-        // persistent fault at 500 kbit/s. One episode, one event.
-        let mut runs = ErrorRuns::default();
+        // persistent fault at 500 kbit/s. One burst: the whole storm.
+        let mut errors = ErrorTallies::default();
         for i in 0..10_000u64 {
-            runs.observe("b1", i * 100_000);
+            errors.observe("b1", i * 100_000);
         }
-        assert_eq!(runs.runs().len(), 1, "one episode is one run");
-        let run = &runs.runs()[0];
-        assert_eq!(run.count, 10_000);
-        assert_eq!(run.first_ts_ns, 0);
-        assert_eq!(run.last_ts_ns, 9_999 * 100_000);
-        assert_eq!(runs_as_events(runs.runs()).len(), 1);
+        let tally = errors.get("b1").unwrap();
+        assert_eq!(tally.total, 10_000);
+        assert_eq!(tally.burst_count, 10_000);
+        assert_eq!(tally.burst_first_ts_ns, 0);
+        assert_eq!(tally.last_ts_ns, 9_999 * 100_000);
+        assert_eq!(tally.rate(), 10_000.0 / 0.9999);
     }
 
     #[test]
-    fn a_quiet_gap_starts_a_new_episode() {
-        // The control for the test above: without it, "one run" would
-        // also pass on a coalescer that merged everything forever.
-        let mut runs = ErrorRuns::default();
-        runs.observe("b1", ms(0));
-        runs.observe("b1", ms(10));
-        runs.observe("b1", ms(10) + COALESCE_GAP_NS + 1);
-        assert_eq!(runs.runs().len(), 2);
-        assert_eq!(runs.runs()[0].count, 2);
-        assert_eq!(runs.runs()[1].count, 1);
+    fn a_quiet_gap_starts_a_new_burst_for_the_rate_and_not_for_the_count() {
+        // The control for the test above: without it, "one burst" would
+        // also pass on a tally that merged everything forever.
+        let mut errors = ErrorTallies::default();
+        errors.observe("b1", ms(0));
+        errors.observe("b1", ms(10));
+        errors.observe("b1", ms(10) + RATE_BURST_GAP_NS + 1);
+        let tally = errors.get("b1").unwrap();
+        assert_eq!(tally.burst_count, 1, "the rate reads the latest burst");
+        assert_eq!(tally.burst_first_ts_ns, ms(10) + RATE_BURST_GAP_NS + 1);
+        assert_eq!(tally.total, 3, "the count reads them all");
     }
 
     #[test]
-    fn two_buses_faulting_at_once_are_two_summaries() {
-        let mut runs = ErrorRuns::default();
+    fn two_buses_faulting_at_once_are_tallied_apart() {
+        let mut errors = ErrorTallies::default();
         for i in 0..100u64 {
-            runs.observe("b1", i * 100_000);
-            runs.observe("b2", i * 100_000);
+            errors.observe("b1", i * 100_000);
+            errors.observe("b2", i * 100_000);
         }
-        assert_eq!(runs.runs().len(), 2);
-        assert_eq!(runs.total("b1"), 100);
-        assert_eq!(runs.total("b2"), 100);
-        let events = runs_as_events(runs.runs());
-        assert_eq!(
-            events
-                .iter()
-                .filter_map(|e| e.tag.as_deref())
-                .collect::<Vec<_>>(),
-            vec!["b1", "b2"],
-            "the bus rides the tag, which is the axis the event view filters on",
-        );
+        assert_eq!(errors.buses().collect::<Vec<_>>(), vec!["b1", "b2"]);
+        assert_eq!(errors.total("b1"), 100);
+        assert_eq!(errors.total("b2"), 100);
     }
 
     #[test]
-    fn the_run_set_is_bounded_but_the_count_is_not() {
-        // Alternating fault-and-quiet is the shape that would otherwise
-        // grow the event set without limit.
-        let mut runs = ErrorRuns::default();
-        for i in 0..(MAX_RUNS as u64 + 50) {
-            runs.observe("b1", i * (COALESCE_GAP_NS + 1));
+    fn ten_thousand_bursts_keep_every_error_on_the_count() {
+        // Alternating fault-and-quiet is the shape that once grew an
+        // event set until it had to evict. The tally is bounded by the
+        // bus count, so nothing is ever dropped from it.
+        let mut errors = ErrorTallies::default();
+        for i in 0..10_000u64 {
+            errors.observe("b1", i * (RATE_BURST_GAP_NS + 1));
         }
-        assert_eq!(runs.runs().len(), MAX_RUNS, "the event set is capped");
-        assert_eq!(
-            runs.total("b1"),
-            MAX_RUNS as u64 + 50,
-            "but an evicted summary does not take its errors off the count",
-        );
-    }
-
-    #[test]
-    fn every_coalesced_event_is_host_derived_and_so_never_exported() {
-        // The write-side contract, read off the producer rather than
-        // asserted about a hand-built note.
-        let mut runs = ErrorRuns::default();
-        runs.observe("b1", 0);
-        for event in runs_as_events(runs.runs()) {
-            assert_eq!(event.kind, EventKind::BusError);
-            assert!(!event.kind.persisted(), "not in the durable store");
-            assert!(!event.kind.exported(), "not written to a saved capture");
-        }
-    }
-
-    #[test]
-    fn an_event_keeps_its_identity_as_its_run_grows() {
-        // The republication cadence must not make a live fault's row
-        // flicker: the id is the run's onset, which does not move.
-        let mut runs = ErrorRuns::default();
-        runs.observe("b1", ms(1));
-        let first = runs_as_events(runs.runs())[0].id.clone();
-        runs.observe("b1", ms(2));
-        let second = runs_as_events(runs.runs());
-        assert_eq!(second[0].id, first);
-        assert_eq!(
-            second[0].timestamp_ns,
-            ms(1),
-            "the marker sits at the onset"
-        );
-        assert!(second[0].label.starts_with("2 bus errors"));
+        assert_eq!(errors.total("b1"), 10_000);
+        assert_eq!(errors.buses().count(), 1);
     }
 
     #[test]
     #[allow(clippy::float_cmp)] // 0.0 is the exact "no rate yet" sentinel.
-    fn a_lone_error_reads_as_one_error_and_claims_no_rate() {
-        let mut runs = ErrorRuns::default();
-        runs.observe("b1", ms(5));
-        assert_eq!(runs_as_events(runs.runs())[0].label, "1 bus error");
-        assert_eq!(runs.latest("b1").unwrap().rate(), 0.0);
+    fn a_lone_error_claims_no_rate() {
+        let mut errors = ErrorTallies::default();
+        errors.observe("b1", ms(5));
+        assert_eq!(errors.get("b1").unwrap().rate(), 0.0);
+        assert_eq!(errors.total("b1"), 1);
     }
 
     #[test]
@@ -987,7 +884,7 @@ mod tests {
 
     #[test]
     fn a_row_is_built_for_a_mapped_bus_and_for_a_bus_that_only_faulted() {
-        let mut errors = ErrorRuns::default();
+        let mut errors = ErrorTallies::default();
         errors.observe("b9", ms(1));
         errors.observe("b9", ms(1001));
         let controllers = BTreeMap::from([(
@@ -1025,7 +922,7 @@ mod tests {
 
     #[test]
     fn a_row_carries_no_load_where_the_host_has_no_bitrate_for_the_bus() {
-        let errors = ErrorRuns::default();
+        let errors = ErrorTallies::default();
         let rows = health_rows(
             &BTreeMap::new(),
             &BTreeMap::new(),
@@ -1083,7 +980,7 @@ mod tests {
             &applied,
             &[("busy".to_string(), 170_000.0, 0.0)],
             &[],
-            &ErrorRuns::default(),
+            &ErrorTallies::default(),
         );
         assert_eq!(rows["busy"].load_percent, Some(34.0));
         assert_eq!(rows["quiet"].load_percent, Some(0.0));

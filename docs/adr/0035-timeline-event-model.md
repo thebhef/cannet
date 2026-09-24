@@ -96,10 +96,10 @@ of the groups would be unreachable from the filter and stuck at its
 default.
 
 **Nothing is filtered out before the user asks.** Bus errors were once
-hidden by default as noise. The host coalesces a run of error frames
-into a single summary event carrying a count and a span, so a fault that
-produces a hundred thousand error frames produces one row — and a fault
-is the thing a reader most wants surfaced without going looking for it.
+hidden by default as noise. A fault that produces a hundred thousand
+error frames is served as a bounded set of markers, each carrying a
+count and a span (see the 2026-09-23 amendment) — and a fault is the
+thing a reader most wants surfaced without going looking for it.
 Visibility is still view-local, so a view that wants quiet can have it.
 
 ## Why
@@ -148,11 +148,12 @@ Visibility is still view-local, so a view that wants quiet can have it.
 - Colored/described markers, message-bound `EVENT_COMMENT`, rendering in
   the trace views, and the markers panel are all consequences of this
   decision, sequenced separately.
-- **Events are a separate sparse channel**, not paged through the
-  windowed row-page contract ([ADR 0025](0025-frontend-windowed-source-contract.md)).
-  The collection is small and bounded by user/detector activity and held
-  in RAM per session, unlike the `O(capture)` frame stream — so views
-  fetch the whole event set, not a window of it.
+- **Authored events are a separate sparse channel**, not paged through
+  the windowed row-page contract ([ADR 0025](0025-frontend-windowed-source-contract.md)).
+  The collection is small, bounded by what the user wrote, and held in
+  RAM per session, unlike the `O(capture)` frame stream — so views fetch
+  the whole authored set, not a window of it. Detector-derived events
+  grow with the capture and are paged instead (2026-09-23 amendment).
 
 ## Rejected alternatives
 
@@ -199,14 +200,14 @@ it:
 |---|---|---|
 | note | user-authored | the user's marker (exists) |
 | message-bound | user-authored | created from a message |
-| busError | host-derived | a coalesced run of CAN error frames |
+| busError | host-derived | a bus's error series (2026-09-23 amendment) |
 | trigger | host-derived | a plot trigger firing |
 | truncation | frontend-derived | the disk-spill low-water mark |
 
 Two consequences worth stating outright:
 
 - **A host-derived event is not a substitute for the data it summarises.**
-  Coalescing is a display decision. The error frames a `busError` event
+  Summarising is a display decision. The error frames a `busError` event
   stands for remain in the capture and are what a save writes; the summary
   is not exported, precisely so the file never carries a lossy restatement
   of records it already holds. Degrading data on the way to disk is the one
@@ -233,3 +234,43 @@ on there.
 The clause is removed from decision point 3 rather than left standing,
 by owner ruling. What ships is what the decision should have said: events
 render in the plot and in both trace modes, and both do.
+
+## Amendment (2026-09-23) — detector-derived events are a windowed series
+
+The 2026-08-21 amendment held host-derived events in the event store
+beside the authored ones and delivered the merged set whole. For bus
+errors that meant folding error frames into runs (a new run after a 1 s
+gap) and holding at most 256 runs, evicting the oldest — so a capture
+with more episodes than that lost markers from every view, and a
+restore started with none, since the runs were never persisted.
+
+**A detector-derived kind is a windowed series family served by the
+signal cache, and views page it; authored events stay whole.**
+
+- **The bus-error series.** Each bus's error frames are a series of
+  `(frame time, running count of error frames on the bus)`, one sample
+  per error frame, held as a signal-cache pyramid
+  ([ADR 0002](0002-disk-spill-store.md) DS-5): caught up off the UI
+  thread within a bounded serve ([ADR 0048](0048-no-model-lock-across-a-rebuild.md),
+  [ADR 0049](0049-bounded-serves-and-partial-answers.md)), persisted and
+  restored with the capture ([ADR 0047](0047-persisted-signal-pyramids.md)),
+  front-trimmed with the scratch cap. A view asks for a bus set over a
+  window at a point budget.
+- **Thinned by level, never merged by a rule.** The series never
+  decreases, so the pyramid's min/max fold keeps each bucket's first and
+  last sample, and every served point — at whatever level the window
+  chose — carries the exact total at its time. Any two consecutive
+  served points are one marker's worth: count is the value difference,
+  span the time difference, rate their ratio. A zoomed-out window shows
+  fewer, larger episodes; zooming in resolves them. There is no gap rule
+  and no cap: nothing is evicted.
+- **The event store holds authored events only**, and `notes-changed`
+  fires only on an authored change. A host-derived kind keeps its
+  category and its lifecycle (not editable, not persisted, not exported
+  — the error frames are what a save writes); it is simply not held in
+  the store, because a list that grows with the capture cannot be
+  delivered whole.
+
+The category table stands; its `busError` row names the bus-error
+series. Detectors added later follow the same shape — a series family
+the signal cache serves — rather than a list in the event store.
