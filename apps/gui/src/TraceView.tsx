@@ -1436,9 +1436,13 @@ function EventRow({
       ) : (
         <span className="trace-event-disclose trace-event-disclose-empty" aria-hidden="true" />
       )}
-      <span className="trace-event-time">
+      <TraceTimeCell
+        className="trace-event-time"
+        seconds={event.timestampNs / 1e9}
+        base={baseTimestamp}
+      >
         {formatTimestamp(event.timestampNs / 1e9, baseTimestamp)}
-      </span>
+      </TraceTimeCell>
       {onGoto && (
         <button
           type="button"

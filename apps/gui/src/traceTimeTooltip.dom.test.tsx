@@ -24,6 +24,7 @@ import { TraceView } from "./TraceView";
 import { formatLocalTimestamp } from "./format";
 import { defaultColumns } from "./traceColumns";
 import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
+import type { TimelineEvent } from "./notes";
 
 /// The session origin (2023-11-14T22:06:40Z) and a frame 200.25 s into it.
 const SESSION_START = 1_699_999_600;
@@ -115,6 +116,59 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+/// A note landing on the same frame time, so the event row's tooltip is
+/// checked against the same instant as the message rows above.
+const event: TimelineEvent = {
+  id: "n1",
+  timestampNs: Math.round(FRAME_SECONDS * 1e9),
+  label: "a note",
+  kind: "note",
+  color: null,
+  description: null,
+  tag: null,
+  editable: false,
+  subjects: [],
+};
+
+/// The chronological trace's event row (`EventRow`, ADR 0035): the same
+/// `TraceTimeCell` a message row uses (owner ruling 2026-09-25), fed the
+/// event's own absolute timestamp rather than a frame's.
+function renderEventRow(base: number | null) {
+  return render(
+    <TraceView
+      count={1}
+      version={0}
+      autoScroll={false}
+      baseTimestampSeconds={base}
+      columns={defaultColumns()}
+      onColumnResize={noop}
+      onColumnToggle={noop}
+      onColumnReorder={noop}
+      resolveColor={null}
+      busLookup={new Map()}
+      getRow={(i) => (i === 0 ? { row: "event", event } : null)}
+      ensureVisible={noop}
+      onAutoScrollDisabled={noop}
+    />,
+  ).container;
+}
+
+describe("the trace view's event row", () => {
+  it("shows the event's local date and time on hover", () => {
+    const container = renderEventRow(SESSION_START);
+    const cell = container.querySelector(".trace-event-time") as HTMLElement;
+    fireEvent.mouseOver(cell);
+    expect(cell).toHaveAttribute("title", formatLocalTimestamp(FRAME_SECONDS, SESSION_START)!);
+  });
+
+  it("shows no tooltip when the session has no wall-clock origin", () => {
+    const container = renderEventRow(null);
+    const cell = container.querySelector(".trace-event-time") as HTMLElement;
+    fireEvent.mouseOver(cell);
+    expect(cell).not.toHaveAttribute("title");
+  });
 });
 
 describe.each(surfaces)("%s time column", (_name, renderSurface) => {

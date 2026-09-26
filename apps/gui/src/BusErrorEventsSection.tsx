@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 
 import type { GridviewAdapter, GridviewRow } from "./gridviewRows";
 import { formatDurationSeconds, formatTimestamp } from "./format";
 import { useSetting } from "./hostSettings";
+import { TraceTimeCell } from "./traceTable";
 import {
   anchorFromScroll,
   maxAnchorRow,
@@ -212,9 +213,13 @@ export function BusErrorEventsSection({
                 {row && (
                   <>
                     <span className="bus-error-event-bus">{busName.get(row.bus) ?? row.bus}</span>
-                    <span className="bus-error-event-time">
+                    <TraceTimeCell
+                      className="bus-error-event-time"
+                      seconds={row.firstSeconds}
+                      base={baseTimestamp}
+                    >
                       {formatTimestamp(row.firstSeconds, baseTimestamp)}
-                    </span>
+                    </TraceTimeCell>
                     <span className="bus-error-event-count">
                       {row.count === 1 ? "1 error" : `${row.count} errors`}
                     </span>
