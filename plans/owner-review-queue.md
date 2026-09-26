@@ -193,10 +193,10 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 - **158 — bus-error markers page** (4 phases, `task158-error-series`
   → `task158-plot-markers` → `task158-events-section` →
-  `task158-episodes` → `task158-event-wall-time`): 8/8 exit criteria
-  met; reopened 2026-09-25 for the owner's addition (event times as
-  wall time on hover, criterion 9), in progress. Two § 1 items (the
-  rate's burst gap; the episode-gap setting's placement and maximum).
+  `task158-episodes` → `task158-event-wall-time`; 5 phases): 9/9 exit
+  criteria met, the ninth the owner's 2026-09-25 addition (event times
+  as wall time on hover). Two § 1 items (the rate's burst gap; the
+  episode-gap setting's placement and maximum).
 
 - **156 — Restore From Cache Does Not Crash on a Mapped Segment.**
   Three phases on `task156-restore-crash-investigation` →

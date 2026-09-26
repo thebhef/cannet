@@ -261,6 +261,26 @@ Settled by the overseer, open to reversal:
   and the episodes section (`BusErrorEventsSection.tsx`) call
   `formatTimestamp` directly with no hover. Branch
   `task158-event-wall-time` off `task158-episodes`.
+- 2026-09-25 — **Phase 5 (event times as wall time on hover) landed** on
+  `task158-event-wall-time` (off `task158-episodes`), one commit
+  `2ef0be83`, five files (+99/-9).
+  - `EventRow` (`TraceView.tsx`) and the episode row
+    (`BusErrorEventsSection.tsx`) render their time through
+    `TraceTimeCell` (`traceTable.tsx`), class names and text unchanged;
+    the cell itself is untouched, so the no-wall-clock rule comes with it.
+    `EventRow` is the one renderer behind the Events panel's authored
+    events and the trace views' interleaved event rows.
+  - Tests, red then green: `traceTimeTooltip.dom.test.tsx` "the trace
+    view's event row" (hover names the local date and time; a null base
+    gives no title); `EventsPanel.dom.test.tsx` "EventsPanel bus-error
+    section" (two cases on the existing `hostEpisodes` fixture, with a
+    wall-clock session start added for them). Falsified by reverting the
+    two production edits: both pairs failed, then passed restored.
+  - README's time-column sentence extended to event rows and bus-error
+    episodes; no ADR change (the model is unchanged).
+  - Verification: frontend suite 3712 passed, build green, grep clean;
+    Rust lanes unreachable (no `.rs` touched). No side effects, nothing
+    queued.
 - 2026-09-23 — opened from the owner's observation; the 256 cap found
   (`MAX_RUNS`); owner ruled paging, the existing pyramid machinery and
   a paged Events section; the cumulative-count series settled by the
@@ -645,7 +665,7 @@ Settled by the overseer, open to reversal:
   - Release host: `target/release/cannet-gui.exe` (`tauri build
     --no-bundle`). No perf reading was taken.
 
-## Exit criteria verdicts (2026-09-24, final)
+## Exit criteria verdicts (2026-09-25, final)
 
 | # | Criterion | Verdict |
 | --- | --- | --- |
@@ -657,6 +677,8 @@ Settled by the overseer, open to reversal:
 | 6 | ADR 0035 and ADR 0002 describe the series family; README matches | **Met**. ADR 0035's amendment now also covers the list at a gap; README's Events passage and settings list are updated in phase 4. |
 | 7 | Tests cover 1–5 and 8 | **Met**. Host tests: 1–4 and 8 (phases 1 and 4). DOM tests: 1, 5 and 8 (phases 2–4). |
 | 8 | Events lists episodes at the configured gap (default 5 s, min 1 s), pages by offset over the whole capture down to single episodes, re-derives on a setting change; count bounded by capture time ÷ gap (host and DOM tests) | **Met** (phase 4). Host: `episodes_group_each_bus_at_the_gap_…`, `a_gap_change_re_derives_the_episodes`, `paging_episodes_by_offset_is_stable_and_newest_first`, `ten_thousand_episodes_at_a_one_second_gap_are_all_listed` (asserts count ≤ span ÷ gap + 1), `a_restored_series_rebuilds_its_episodes_off_the_serve`, `a_bus_error_episode_gap_outside_its_bounds_is_refused_and_reported`. DOM: pages 10,000 by offset, scrolls to the oldest single episode, re-derives on the setting change. |
+| 9 | Hovering any event row's time — an authored event in the Events panel or a trace view, or a bus-error episode — shows the message row's local date and time through the same cell; no tooltip without a wall-clock origin (DOM tests) | **Met** (phase 5): `TraceTimeCell` is the sole time renderer for message, event and episode rows. DOM: `traceTimeTooltip.dom.test.tsx` "the trace view's event row" (2), `EventsPanel.dom.test.tsx` "EventsPanel bus-error section" (2 new). |
 
 Task complete 2026-09-24: 8/8 met. Reopened 2026-09-25 for the owner's
-addition (phase 5, criterion 9); acceptance waits on it (review queue § 4).
+addition (phase 5, criterion 9), landed the same day: 9/9 met. Awaiting
+owner acceptance (review queue § 4).
