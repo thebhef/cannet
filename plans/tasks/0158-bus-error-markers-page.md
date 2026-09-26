@@ -108,6 +108,14 @@ Settled by the overseer, open to reversal:
 - **ADRs.** ADR 0035 amended: detector-derived events are a windowed
   series family served by the signal cache; authored events stay whole.
   ADR 0002 names the error series among the derived families.
+- **Event times read as wall time on hover** (owner, 2026-09-25, after
+  phase 4: "events should show the wall time when you mouse over their
+  timestamps like messages do"): every event row — the Events panel's
+  authored events, the inline event rows in the trace views, and the
+  bus-error episodes section — renders its time through the same
+  `TraceTimeCell` the message rows use, so hovering it names the local
+  date and time; a session with no wall-clock origin gets no tooltip,
+  as for messages. No second implementation.
 
 ## Open questions
 
@@ -145,6 +153,13 @@ Settled by the overseer, open to reversal:
    rebuilt on it, newest first, with the growing-budget query removed;
    a gap change re-derives; host and DOM tests; README's Events passage
    and the settings entry documented.
+5. **Event times read as wall time on hover** (owner addition,
+   2026-09-25). The trace views' event rows (`EventRow` in
+   `TraceView.tsx`) and the bus-error episodes section render their
+   time through `TraceTimeCell` (`traceTable.tsx`), the message rows'
+   cell; DOM tests extend `traceTimeTooltip.dom.test.tsx` (an event
+   row and an episode row show the local date and time on hover; no
+   tooltip without a wall-clock origin). Frontend only.
 
 ## Exit criteria
 
@@ -168,6 +183,10 @@ Settled by the overseer, open to reversal:
    single episodes, and re-derives when the setting changes; the
    count of episodes is bounded by capture time ÷ gap — host and DOM
    tests.
+9. Hovering the time of any event row — an authored event in the
+   Events panel or a trace view, or a bus-error episode — shows the
+   same local date and time a message row shows, through the same
+   cell; no tooltip without a wall-clock origin — DOM tests.
 
 ## Blockers / side effects
 
@@ -235,6 +254,13 @@ Settled by the overseer, open to reversal:
 
 ## Status log
 
+- 2026-09-25 — **Phase 5 opened** on the owner's addition after phase 4:
+  event timestamps read as wall time on hover, as message rows do.
+  Survey: message rows use `TraceTimeCell` (`traceTable.tsx`, from the
+  trace-hover change #158); event rows (`EventRow`, `TraceView.tsx`)
+  and the episodes section (`BusErrorEventsSection.tsx`) call
+  `formatTimestamp` directly with no hover. Branch
+  `task158-event-wall-time` off `task158-episodes`.
 - 2026-09-23 — opened from the owner's observation; the 256 cap found
   (`MAX_RUNS`); owner ruled paging, the existing pyramid machinery and
   a paged Events section; the cumulative-count series settled by the
@@ -632,4 +658,5 @@ Settled by the overseer, open to reversal:
 | 7 | Tests cover 1–5 and 8 | **Met**. Host tests: 1–4 and 8 (phases 1 and 4). DOM tests: 1, 5 and 8 (phases 2–4). |
 | 8 | Events lists episodes at the configured gap (default 5 s, min 1 s), pages by offset over the whole capture down to single episodes, re-derives on a setting change; count bounded by capture time ÷ gap (host and DOM tests) | **Met** (phase 4). Host: `episodes_group_each_bus_at_the_gap_…`, `a_gap_change_re_derives_the_episodes`, `paging_episodes_by_offset_is_stable_and_newest_first`, `ten_thousand_episodes_at_a_one_second_gap_are_all_listed` (asserts count ≤ span ÷ gap + 1), `a_restored_series_rebuilds_its_episodes_off_the_serve`, `a_bus_error_episode_gap_outside_its_bounds_is_refused_and_reported`. DOM: pages 10,000 by offset, scrolls to the oldest single episode, re-derives on the setting change. |
 
-Task complete 2026-09-24: 8/8 met. Awaiting owner acceptance (review queue § 4).
+Task complete 2026-09-24: 8/8 met. Reopened 2026-09-25 for the owner's
+addition (phase 5, criterion 9); acceptance waits on it (review queue § 4).
