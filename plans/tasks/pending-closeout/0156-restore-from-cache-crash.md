@@ -132,8 +132,8 @@ contract.
   `App.closeConfirm` tests. The real-app close was not exercised at
   runtime (phase 3 blockers: `--app-data-dir` does not isolate the
   project cache, so a harness launch would touch the operator's
-  unsaved cache); an owner check with a large capture is owed at
-  acceptance.
+  unsaved cache). **Owner check done 2026-10-02** ("I have seen the
+  shutdown view in action"). Met.
 - The owner has ruled on hardening with the verdict in hand
   (**ruled 2026-09-23: task 157**), and the ruling is recorded here.
 
@@ -536,3 +536,10 @@ contract.
   (one in tests only, with the owner's runtime check owed at
   acceptance), the hardening ruling recorded. Queued for owner
   acceptance; `doc-closeout-2` restacked on `task156-closing-cue`.
+- 2026-10-02 — owner: the shutdown view seen in action; criterion 4 met.
+  Owner order in the same breath: "make sure we have logging to support
+  diagnosis of further similar crashes" — groomed into task 157 as a
+  criterion (the field log had the panic's location, message and
+  backtrace from the hook in `crash.rs`, and nothing from cannet-spill
+  about which chain, segment or mapping was involved). All criteria
+  met; awaiting acceptance.

@@ -43,16 +43,35 @@ free on its system drive.
    / `BeforeSession` / `ScratchFailed(err)`) or an `io::Result` around
    the existing `Option`?
 
+## Rulings
+
+- **Growth failures are diagnosable from the log** (owner, 2026-10-02,
+  on accepting task 156: "let's make sure we have logging to support
+  diagnosis of further similar crashes"). Today cannet-spill emits no
+  log line at all, and the field crash reached the rolling log only as
+  the panic hook's location, message and backtrace. Whatever shape
+  question 1 takes, the failure path reports the store the chain
+  belongs to (raw, by-id, sample sequence, filter index), the segment
+  path and index, the chain's length and capacity, the OS error, and
+  whether this process holds the project-cache lock — as a system
+  message at error level, so it reaches the panel and the rolling log.
+
 ## Phases
 
 To cut at grooming.
 
 ## Exit criteria
 
-To set at grooming.
+To set at grooming; one is fixed by the ruling above:
+
+- A growth failure logs the store, segment path and index, chain
+  length and capacity, OS error and lock state as an error-level system
+  message — host test on an injected failure.
 
 ## Status log
 
 - 2026-09-23 — opened by owner ruling ("lock only in 156; hardening as
   its own task"); cost carried over from task 156's survey and its
   phase-1 re-check.
+- 2026-10-02 — owner order on task 156's acceptance: diagnostic logging
+  for growth failures is this task's (§ Rulings, exit criterion drafted).

@@ -266,8 +266,12 @@ now also fire on wire's paths, because a change there can break either.
    and diffs `_proto` as the drift guard.
 7. **Met** (phases 1+2): top-level README names the package; package README + `examples/rest_bus_sim.py` carry the stafl-style usage.
 
-**Caveat carried in the review queue**: the TLS handshake has no end-to-end coverage (both debug servers are plaintext).
-Awaiting owner acceptance.
+**TLS caveat ruled 2026-10-02**: "should add the integration test with TLS. Absorb into an appropriate existing PR."
+Scope: the `debug vbus` / `debug replay` subcommands take a directory to load or mint the generated identity into
+(`ServerIdentity::load_or_generate`), so a test can run a TLS-terminating debug server on loopback; the Python suite
+gains a fixture that reads the fingerprint from that directory's certificate and two tests — the pinned connect
+subscribes and receives over TLS, a wrong pin is refused at the handshake. Absorbed into `fix-fit-data-test-bound`
+(the stack's test-only fix branch, no PR yet). Awaiting owner acceptance.
 
 ## Post-completion notes
 

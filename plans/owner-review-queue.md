@@ -129,15 +129,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
   isolate the scratch; this is a second observation of the same gap.
   Detail: 0156 § Blockers / side effects, 2026-09-23 phase 3.
 
-- TLS end-to-end coverage — a TLS-terminating debug identity in
-  `cannet-server`; goes to a new or existing task targeting that
-  area. (136-1)
-- Session-scoped pyramids — persist per-kernel resume state beside
-  the level files + park on redefinition. Review at close-out with a
-  reopen-recompute number, which is still owed: 135-3's math case
-  measured only the steady-state cost (host +6.5 MB mean, tree
-  +18 MB peak, flush mean 3.0 → 3.4 ms, timing family unmoved).
-  (135-1, flagged 2026-09-06)
 
 - The GUI's `servers.json` writer **drops JSON keys it doesn't
   know** on every write; the new CLI writer preserves them. Safe in
@@ -188,11 +179,10 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **156 — Restore From Cache Does Not Crash on a Mapped Segment.**
   Three phases on `task156-restore-crash-investigation` →
   `task156-cache-lock` → `task156-closing-cue` (`3c39d590`), full CI
-  matrix green (`wire-breaking` skipped as for 155). Owed at
-  acceptance: your runtime check of the close path with a large
-  capture (close → overlay walks the steps → process exits → relaunch
-  opens the project), which no phase could exercise without touching
-  your unsaved cache. Two behaviour changes from phase 2 are in § 1.
+  matrix green (`wire-breaking` skipped as for 155). Your runtime
+  check of the close path: done 2026-10-02. Diagnostic logging for
+  growth failures groomed into task 157 on your order. Two behaviour
+  changes from phase 2 are in § 1.
   Verdicts: 0156 § Exit criteria.
 
 - **155 — The Kvaser Timer Wraps Without Losing Frames, and Drops Are
@@ -222,8 +212,8 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 - **Task 136 — python-can Cannet Client** (2026-09-06): both phases
   landed (`task136-core-bus` → `task136-clock-detect`); all 7 exit
-  criteria met (verdicts in the task file). TLS e2e-coverage caveat
-  above stands.
+  criteria met (verdicts in the task file). TLS integration test
+  ordered 2026-10-02, absorbed into `fix-fit-data-test-bound`.
 - **Task 137 — Log Export** (2026-09-06): all four phases landed
   (`task137-templates` → `task137-export-dialog` → `task137-loggers`
   → `task137-file-grid`); all 6 exit criteria met (verdicts in the
@@ -233,8 +223,8 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **Task 135 — Plot Math Functions** (2026-09-06): all three phases
   landed (`task135-engine` → `task135-editor` → `task135-surfaces`);
   exit-criteria verdicts in the task file — 7 of 8 met clean,
-  criterion 2 met in-session with the owner-flagged session-scoped-
-  pyramid deviation (§ 3) as the one open ruling. Task-final full CI
+  criterion 2's session-scoped-pyramid deviation ruled 2026-10-02:
+  rationale rejected, task 159 persists them. Task-final full CI
   matrix green (3348 frontend / 1913 workspace tests).
 - **Task 139 — Units and Scaling for Math Signals** (2026-09-07): all
   phases landed (`task139-units` → `task139-editor` → `task139-panel`
