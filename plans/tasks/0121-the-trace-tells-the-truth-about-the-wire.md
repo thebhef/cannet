@@ -12,7 +12,9 @@
 ## The open defect
 
 Owner, 2026-08-30, third report of the same observation (109 item 2,
-re-observed 2026-08-26): *"I'm still not seeing TX messages stop
+re-observed 2026-08-26), and a **fourth on 2026-10-02** ("Message TX
+counts _still_ increment when TX fails, despite several attempts to
+have you fix that", after a 20 s dongle unplug): *"I'm still not seeing TX messages stop
 getting sent when I pull the CAN bus."* RBS into a dead local bus
 shows a healthy stream of plain `Tx` rows beside one collapsed error
 summary — the lie § 1 was written to end.

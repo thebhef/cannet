@@ -682,3 +682,12 @@ Settled by the overseer, open to reversal:
 Task complete 2026-09-24: 8/8 met. Reopened 2026-09-25 for the owner's
 addition (phase 5, criterion 9), landed the same day: 9/9 met. Awaiting
 owner acceptance (review queue § 4).
+- 2026-10-02 — owner test (20 s dongle unplug): the episode-gap setting's
+  placement and maximum **accepted**; the count "seems fine" but is
+  "maybe a bit misplaced in the Events panel"; and "it doesn't seem like
+  it works — what looks like thousands of errors on the bus". Overseer
+  reading: the Events section groups at the gap, but the plot's markers
+  are still one per served point (phase 2, ruled before episodes
+  existed) and so draw a 20 s burst as a wall of markers. Awaiting the
+  owner's answer on where the thousands were seen before reopening;
+  candidate phase 6: plot markers draw episodes.

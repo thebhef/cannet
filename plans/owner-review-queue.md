@@ -7,19 +7,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-- Task 158 phase 4: the new `bus_error_episode_gap_s` setting went in
-  the **Trace** settings group, since no settings group covers bus
-  health or the Events panel. It has a maximum of 3600 s, enforced on
-  ingress and stated in the help text. See the task file's phase 4
-  status log.
-owner: accepted, but it doesn't seem like it works; I unplugged my dongles for a 20s period and have what looks like it must be thousands of errors on the bus
-
 - **158: the bus-health panel's error rate keeps a 1 s burst gap.**
   The coalescer and its run list are gone, but "errors per second over
   the latest burst" needs a burst boundary, so `RATE_BURST_GAP_NS`
   stays inside a per-bus tally with no list and no cap. Keep, or
-  redefine the rate? Detail: 0158 § Status log, phase 1.
-owner: bus error count seems fine but also seems maybe a bit misplaced in the events panel. Other feedback related to that test: I still see the bus reported as error-passive in the bus health view, but it looks like the messages are coming across OK. Message TX counts _still_ increment when TX fails, despite several attempts to have you fix that.
+  redefine the rate? Detail: 0158 § Status log, phase 1. (Owner,
+  2026-10-02: the count itself "seems fine"; the rate's gap is still
+  the open yes/no.)
 
 - **156 phase 2 — a launch refused its project cache boots in the
   unsaved project directory**, rather than staying rooted in the held
@@ -124,6 +118,33 @@ owner: bus error count seems fine but also seems maybe a bit misplaced in the ev
 
 ## 3. Fix later
 
+**Owner's 2026-10-02 dongle-unplug test** (notes taken in this file,
+committed verbatim as 5ef108dd, triaged by the overseer):
+
+- **158: "it doesn't seem like it works" — a 20 s unplug shows what
+  looks like thousands of bus errors**, not one episode. Where the
+  thousands were seen decides the fix: the plot still draws **one
+  marker per served point** (phase 2's ruling, made before episodes
+  existed), so a 20 s burst of thousands fills its stripe with markers
+  at any zoom; the Events section groups at the 5 s gap and should have
+  shown one row. Q to the owner below; candidate fix: the plot's
+  markers draw episodes too, one per episode at the configured gap.
+  Detail: 0158 § Status log, 2026-10-02.
+- **158: the bus-error count "seems maybe a bit misplaced in the
+  Events panel"** — placement feedback on the episodes section; the
+  bus-health panel and the plot are the other homes. Owner to say where.
+- **Bus health: a bus stays error-passive after the dongle is
+  re-plugged while messages flow.** The state is the sidecar's chip
+  reading (`driver_python_can.py`: PCAN status / Vector chip state;
+  Kvaser via python-can's `state`); whether it is re-read, or latched
+  until an event, is the investigation. No task yet.
+- **Message TX counts still increment when TX fails** — the owner's
+  fourth report (109 item 2, 2026-08-26, 2026-08-30, 2026-10-02). This
+  is **task 121's open defect**, roadmap item 1, ungroomed: both landed
+  signals (`Tx ✗` on enqueue refusal, `TX_REJECTED` from a remote peer)
+  sit upstream of the wire, and a pulled bus refuses neither. Recorded
+  in 0121; needs scheduling.
+
 - **`--app-data-dir` leaves the project cache shared with the
   operator's unsaved session** (`resolve_project_dir` roots under
   `app_cache_dir`, which the flag does not move), so a harness run can
@@ -215,7 +236,7 @@ owner: bus error count seems fine but also seems maybe a bit misplaced in the ev
 - **Task 136 — python-can Cannet Client** (2026-09-06): both phases
   landed (`task136-core-bus` → `task136-clock-detect`); all 7 exit
   criteria met (verdicts in the task file). TLS integration test
-  ordered 2026-10-02, absorbed into `fix-fit-data-test-bound`.
+  landed 2026-10-02 in `fix-fit-data-test-bound` (`1fd2136f`).
 - **Task 137 — Log Export** (2026-09-06): all four phases landed
   (`task137-templates` → `task137-export-dialog` → `task137-loggers`
   → `task137-file-grid`); all 6 exit criteria met (verdicts in the

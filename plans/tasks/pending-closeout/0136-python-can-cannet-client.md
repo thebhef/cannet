@@ -271,7 +271,13 @@ Scope: the `debug vbus` / `debug replay` subcommands take a directory to load or
 (`ServerIdentity::load_or_generate`), so a test can run a TLS-terminating debug server on loopback; the Python suite
 gains a fixture that reads the fingerprint from that directory's certificate and two tests — the pinned connect
 subscribes and receives over TLS, a wrong pin is refused at the handshake. Absorbed into `fix-fit-data-test-bound`
-(the stack's test-only fix branch, no PR yet). Awaiting owner acceptance.
+(the stack's test-only fix branch, no PR yet). **Landed 2026-10-02**, amended commit `1fd2136f`
+(pre-amend `97babef0`): `debug replay` / `debug vbus` take `--tls-dir`, serving TLS on loopback with
+the identity minted there and no token (the proxy's gate is its own opt-in); `tests/test_tls_handshake.py`
+pins a session that subscribes and exchanges a frame over TLS, and a wrong pin refused with `PinMismatch`
+before any channel opens. Hand-built `ServerTarget`, since `trust.resolve` answers loopback plaintext by
+design. Server tests, clippy, fmt, rustdoc clean; client lane 147 passed, both new tests ran; CI already
+builds the server for that lane. Nothing open against this task; awaiting owner acceptance.
 
 ## Post-completion notes
 
