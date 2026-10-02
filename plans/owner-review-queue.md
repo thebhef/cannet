@@ -48,7 +48,7 @@ keeps the queue's copy). This file shrinks every time it is walked.
   with no unit customizations therefore sees 109 headings and no units
   until it opens one or types in the filter. One line to flip if that
   reads wrong — task 151 phase 1 status log,
-  `plans/tasks/0151-settings-view-grids.md`.
+  `plans/tasks/pending-closeout/0151-settings-view-grids.md`.
 
 - **153: a signal name is no longer part of its message's searchable
   text.** Ranking signals in their own right required moving them out

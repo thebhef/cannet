@@ -12,6 +12,11 @@ and in [`../../CLAUDE.md`](../../CLAUDE.md).
 
 Tasks keep stable numbers (they don't renumber when the order changes).
 
+A task whose exit criteria are all met but that the owner has not yet
+accepted and retired from this list has its file under
+`pending-closeout/`; the list still links it there until close-out
+removes the item.
+
 ## 0.10.x — fix and stabilize
 
 The development path for the 0.10.x releases: correctness, rework,
@@ -99,14 +104,14 @@ section above comes first. **Exception (owner ruling 2026-09-06): the
 groomed 136 → 137 → 135 run executes now**, moved to the head of this
 section with implementation underway.
 
-14. [Task 136 — python-can Cannet Client](0136-python-can-cannet-client.md)
+14. [Task 136 — python-can Cannet Client](pending-closeout/0136-python-can-cannet-client.md)
     — `CannetBus(can.BusABC)` behind python-can's `can.interface`
     entry point, fed by a factory reading the canonical server trust
     store; SNTP time sync; detection dials the trusted servers; reuses
     the sidecar's gencode and frame mappers. Split out of task 134,
     2026-09-05; groomed 2026-09-06 — all questions ruled, exit
     criteria set. Two phases.
-15. [Task 137 — Log Export](0137-log-export.md)
+15. [Task 137 — Log Export](pending-closeout/0137-log-export.md)
     — templated export naming ({project}/{logger}/{start}/{now}
     resolved host-side), an export dialog with range picker, background
     export with a status-bar progress chip, project loggers writing
@@ -115,7 +120,7 @@ section with implementation underway.
     2026-09-05; groomed 2026-09-06 — prototype
     (`plans/prototypes/export-dialog.html`) accepted as the
     behavioural spec, exit criteria set. Four phases.
-16. [Task 135 — Plot Math Functions](0135-plot-math-functions.md)
+16. [Task 135 — Plot Math Functions](pending-closeout/0135-plot-math-functions.md)
     — math functions on plotted signals (sum, difference, product,
     scale, expfilter, hline, integration, duty cycle, frequency, the
     pointwise set functions, statistic, rms), computed host-side as a
@@ -124,7 +129,7 @@ section with implementation underway.
     Split out of task 134, 2026-09-05; grooming closing 2026-09-06 —
     prototype `plans/prototypes/math-signals.html`, exit-criteria
     draft in the task file pending the in-place-editor rework.
-17. [Task 139 — Units and Scaling for Math Signals](0139-math-units-scaling.md)
+17. [Task 139 — Units and Scaling for Math Signals](pending-closeout/0139-math-units-scaling.md)
     — per-operand and output scalars on math channels, unit-driven via
     a unit library seeded from the DBC's unit strings, with a mapping
     dialog and a persisted sparse dict for arbitrary strings. Opened by
@@ -138,7 +143,7 @@ section with implementation underway.
     (`task135-surfaces`), Ctrl+F reaches the settings search box (own
     branch off `feedback-capture`), and integration produces Ah from
     an A operand (139 phase 4, `task139-units`). **Executes now.**
-19. [Task 144 — cannet-client CLI](0144-cannet-client-cli.md)
+19. [Task 144 — cannet-client CLI](pending-closeout/0144-cannet-client-cli.md)
     — a `cannet-client` console script giving the python client the
     GUI Servers section's affordances without the GUI: `list` (mDNS
     browse ∪ trust store, known servers shown even when absent),
@@ -146,7 +151,7 @@ section with implementation underway.
     writing the shared `servers.json`), `forget`. The package moves
     to top-level `clients/`. Opened by owner instruction 2026-09-17;
     **executes now, on the current stack.**
-20. [Task 145 — An Explicit Wire Protocol Version](0145-wire-protocol-version.md)
+20. [Task 145 — An Explicit Wire Protocol Version](pending-closeout/0145-wire-protocol-version.md)
     — the protobuf package-major convention made explicit and
     checkable: a `ServerInfo` RPC states the packages served, every
     client (GUI, python client, CLI, third parties) refuses a
@@ -155,18 +160,18 @@ section with implementation underway.
     read it. Releases stay lockstep. Opened by owner instruction
     2026-09-19 from user feedback; **executes now, on the current
     stack.**
-21. [Task 146 — A Round of Plot Fixes](0146-plot-fixes-round.md)
+21. [Task 146 — A Round of Plot Fixes](pending-closeout/0146-plot-fixes-round.md)
     — five plot-panel defects from real use: show-points markers off
     the signal extrema, bus markers ignoring the events panel's
     enable/disable, empty plot areas drawing no grid or cursors,
     cursor handles/labels over the signals, point markers wrong on
     enum lanes. Opened 2026-09-19 from user feedback; **executes
     now.**
-22. [Task 147 — Collapse Database Items Under a Filter](0147-collapse-under-filter.md)
+22. [Task 147 — Collapse Database Items Under a Filter](pending-closeout/0147-collapse-under-filter.md)
     — the database view's branch nodes collapse while a filter
     string is present. Opened 2026-09-19 from user feedback;
     **executes now.**
-23. [Task 148 — Connect With a Bus Set to No Interface](0148-connect-with-no-interface.md)
+23. [Task 148 — Connect With a Bus Set to No Interface](pending-closeout/0148-connect-with-no-interface.md)
     — going online works again when a project bus is explicitly set
     to no interface. Opened 2026-09-19 from user feedback;
     **executes now.**
@@ -176,17 +181,17 @@ section with implementation underway.
     all 110 quantities built, so litres and `L / min` exist and a
     database's `LPM` has something to map to. Opened 2026-09-21 from
     user feedback (item 11); **executes now.**
-25. [Task 150 — The Project Caches List Names Its Projects](0150-project-caches-list-names-projects.md)
+25. [Task 150 — The Project Caches List Names Its Projects](pending-closeout/0150-project-caches-list-names-projects.md)
     — the settings view's project caches rows lead with the project
     name instead of a cache-space hash path, and `Delete` becomes the
     shared two-stage trash control. Opened 2026-09-21 from owner
     observations; **executes now.**
-26. [Task 151 — The Settings View's Grids Are Gridviews](0151-settings-view-grids.md)
+26. [Task 151 — The Settings View's Grids Are Gridviews](pending-closeout/0151-settings-view-grids.md)
     — the units table, the project caches list and the Servers rows
     become gridviews with their own bounded row space; the Servers
     panel moves into the settings view. Opened 2026-09-22 from owner
     feedback on tasks 149 and 150; **executes now.**
-27. [Task 152 — Nothing Heavy in the Foreground](0152-nothing-heavy-in-the-foreground.md)
+27. [Task 152 — Nothing Heavy in the Foreground](pending-closeout/0152-nothing-heavy-in-the-foreground.md)
     — a cache delete stalled the UI heartbeat for 6.3 s (a synchronous
     command), and the same day the logger's file listing saturated the
     machine from an *async* one (whole-file scans re-issued by a 250 ms
@@ -195,25 +200,25 @@ section with implementation underway.
     derivation, on the renderer thread — move it off, guard against
     regression, generalise ADR 0049. Opened 2026-09-22 from owner
     observations; **executes now.**
-28. [Task 153 — Enum Values in the Trace Filter](0153-enum-values-in-the-trace-filter.md)
+28. [Task 153 — Enum Values in the Trace Filter](pending-closeout/0153-enum-values-in-the-trace-filter.md)
     — a label query admits every frame of a message whose own
     haystack also clears the floor (reproduced 2026-09-22); a
     score gate hides message matches behind a better signal or value
     match, signals rank in their own right, rows open on a signal or
     value winner (owner ruling 2026-09-22). Opened 2026-09-22 from owner
     feedback; **executes now.**
-29. [Task 154 — Colour a Selection at Once](0154-colour-a-selection-at-once.md)
+29. [Task 154 — Colour a Selection at Once](pending-closeout/0154-colour-a-selection-at-once.md)
     — a colour pick on a selected row in the Signals panel or a plot
     area recolours the whole selection in one change. Opened
     2026-09-22 from owner feedback; **executes now.**
-30. [Task 155 — The Kvaser Timer Wraps Without Losing Frames, and Drops Are Loud](0155-kvaser-timer-wrap-and-loud-drops.md)
+30. [Task 155 — The Kvaser Timer Wraps Without Losing Frames, and Drops Are Loud](pending-closeout/0155-kvaser-timer-wrap-and-loud-drops.md)
     — python-can's Kvaser backend reads a 32-bit 10 µs timer that wraps
     every 11.93 h; the sidecar unwraps it per channel, before-session
     drops become a coalesced system-log warning, and the logger's
     clamp gets Save Capture's warning. Opened 2026-09-23 from user
     feedback (items 11, 12); **executes now, downstack of
     `doc-closeout-2`.**
-31. [Task 156 — Restore From Cache Does Not Crash on a Mapped Segment](0156-restore-from-cache-crash.md)
+31. [Task 156 — Restore From Cache Does Not Crash on a Mapped Segment](pending-closeout/0156-restore-from-cache-crash.md)
     — reopening a project after a large import panicked growing a
     spill chain into a segment file still mapped (OS error 1224) and
     poisoned the session; investigation-then-fix, hardening ruled on
@@ -225,7 +230,7 @@ section with implementation underway.
     sites and 4 APIs and decide what a session does when the scratch
     cannot grow. Opened 2026-09-23 by owner ruling on task 156's
     verdict; **needs grilling**; behind task 156.
-33. [Task 158 — Bus-Error Markers Page](0158-bus-error-markers-page.md)
+33. [Task 158 — Bus-Error Markers Page](pending-closeout/0158-bus-error-markers-page.md)
     — bus-error episodes are capped at 256 and evicted oldest-first;
     each bus's error stream becomes a cumulative-count series on the
     signal cache's pyramids, served windowed to the plot, a paged
@@ -239,13 +244,13 @@ section with implementation underway.
     writes the clean file. Extends task 137's logger; opened by owner
     instruction 2026-09-06, groomed same day — all questions ruled,
     two phases.
-35. [Task 140 — Project State Items](0140-project-state-items.md)
+35. [Task 140 — Project State Items](pending-closeout/0140-project-state-items.md)
     — start/stop on RBS and logger items in the project view, and a
     right-aligned recently-active section in the top-level status
     strip. Opened by owner instruction 2026-09-06; queued behind the
     in-progress stack and task 139; needs grooming and a status-strip
     prototype at pickup.
-36. [Task 142 — Fzf Filter in the Trace Panel](0142-trace-fzf-filter.md)
+36. [Task 142 — Fzf Filter in the Trace Panel](pending-closeout/0142-trace-fzf-filter.md)
     — an fzf-style fuzzy filter in the Trace panel's toolbar, active
     in both view modes (chronological and by-id), composing with the
     sources filter and event toggles. A Rust port of fzf's scoring

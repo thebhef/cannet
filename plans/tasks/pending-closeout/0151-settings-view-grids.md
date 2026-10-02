@@ -145,7 +145,7 @@ Settled by the overseer, open to reversal:
   the overseer in the closeout commit that recorded this phase (the
   chip-redesign prototype's mock chrome left as is). They were the
   overseer's to update; the branch touches nothing under
-  `plans/`. `plans/tasks/0145-wire-protocol-version.md:245` also names
+  `plans/`. `plans/tasks/pending-closeout/0145-wire-protocol-version.md:245` also names
   `ServersPanel.dom.test.tsx`, which is now
   `ServersSection.dom.test.tsx`.
 - **`panel.show.servers` is gone as a command**, so a user keybinding
