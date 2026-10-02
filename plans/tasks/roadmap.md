@@ -135,7 +135,7 @@ section with implementation underway.
     dialog and a persisted sparse dict for arbitrary strings. Opened by
     owner instruction 2026-09-06; **executes now, on the current
     stack**; grooming in progress.
-18. [Task 141 — Bench Rework: Owner-Reported Fixes on the Open Stack](0141-bench-rework.md)
+18. [Task 141 — Bench Rework: Owner-Reported Fixes on the Open Stack](pending-closeout/0141-bench-rework.md)
     — the 2026-09-06 evening bench queue, distributed through the
     stack: the database panel's two-stage delete converges on the
     shared control (amends `task135-editor`), its value rows stop
@@ -175,7 +175,7 @@ section with implementation underway.
     — going online works again when a project bus is explicitly set
     to no interface. Opened 2026-09-19 from user feedback;
     **executes now.**
-24. [Task 149 — Every Unit the Library Has](0149-every-unit-the-library-has.md)
+24. [Task 149 — Every Unit the Library Has](pending-closeout/0149-every-unit-the-library-has.md)
     — the host's unit table stops curating: every base unit of every
     quantity `runtime_units` carries is offered as prefix + base unit,
     all 110 quantities built, so litres and `L / min` exist and a
