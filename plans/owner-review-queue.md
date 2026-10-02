@@ -12,12 +12,14 @@ keeps the queue's copy). This file shrinks every time it is walked.
   health or the Events panel. It has a maximum of 3600 s, enforced on
   ingress and stated in the help text. See the task file's phase 4
   status log.
+owner: accepted, but it doesn't seem like it works; I unplugged my dongles for a 20s period and have what looks like it must be thousands of errors on the bus
 
 - **158: the bus-health panel's error rate keeps a 1 s burst gap.**
   The coalescer and its run list are gone, but "errors per second over
   the latest burst" needs a burst boundary, so `RATE_BURST_GAP_NS`
   stays inside a per-bus tally with no list and no cap. Keep, or
   redefine the rate? Detail: 0158 § Status log, phase 1.
+owner: bus error count seems fine but also seems maybe a bit misplaced in the events panel. Other feedback related to that test: I still see the bus reported as error-passive in the bus health view, but it looks like the messages are coming across OK. Message TX counts _still_ increment when TX fails, despite several attempts to have you fix that.
 
 - **156 phase 2 — a launch refused its project cache boots in the
   unsaved project directory**, rather than staying rooted in the held
