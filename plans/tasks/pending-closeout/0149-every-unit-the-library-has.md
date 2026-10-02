@@ -356,7 +356,7 @@ phase 3 gives a math signal's row the editor's class-locked picker.)
 | 8 | met — `N · m` opens on energy with torque beneath, newton-metre ×1; first resolutions pinned (both phases); energy-first stands (owner, 2026-09-22) |
 | 9 | met — inventory entry, module docs, README (phase 2) |
 | 10 | met — `mph = mile / hour` and the one-term `mph = mile-per-hour` accepted, displays `mph`, ×1 both ways against `mi/h`, `recognize("mph")` returns it; README says what an alias is (phase 3) |
-| 11 | **not met — unimplementable as written**: the View signals panel carries no math rows by documented design (`viewSignalsPush.ts`), so there is no row whose Units button to lock. The override is class-locked in the math editor, which opens in place from the Signals panel, the plot side list and the Database panel. Owner decision queued (§ 1 of the review queue) |
+| 11 | **waived to the backlog** (owner, 2026-10-02): the View signals panel lists no math rows by design, so a math section there is a backlog item, not this task's criterion; the override is class-locked at the math editor's three mount points. Previously: **not met — unimplementable as written**: the View signals panel carries no math rows by documented design (`viewSignalsPush.ts`), so there is no row whose Units button to lock. The override is class-locked in the math editor, which opens in place from the Signals panel, the plot side list and the Database panel. Owner decision queued (§ 1 of the review queue) |
 
 - 2026-09-22 — owner review: accepted with follow-ups (rulings above); phase 3 opened; picker render cost folded into task 151.
 - 2026-09-23 — **phase 3 (owner review follow-ups) landed half** on
@@ -425,3 +425,7 @@ phase 3 gives a math signal's row the editor's class-locked picker.)
   ISQ-equivalent dimensions, current kind first and preselected). The
   View signals panel is the one signal list that shows no math signal
   at all.
+- 2026-10-02 — owner ruling on criterion 11: backlog. The task's ten
+  implemented criteria stand; a math section in the View signals panel
+  is recorded in `plans/backlog.md` (GUI chrome). Task complete; awaiting
+  acceptance.

@@ -72,19 +72,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
   user-visible change in phase 2. Detail: 0152 § Status log,
   2026-09-23.
 
-- **149, criterion 11: should the View signals panel list math
-  signals?** The 2026-09-22 ruling asked for the composed-kind override
-  "in the signal mapping panel"; that panel is a database-mapping
-  surface and drops every math reference by design
-  (`viewSignalsPush.ts`), so the criterion has no row to lock without a
-  new row kind (status, candidates, serving database and a GUID signal
-  name all meaningless for a math signal). The override is already
-  class-locked in the math editor, which opens in place from the
-  Signals panel, the plot side list and the Database panel. (a) accept
-  those three as the surface and reword criterion 11; (b) open a task
-  for a math section in the View signals panel. Detail: 0149 § Status
-  log, 2026-09-23.
-
 - **The ruff locks aligned DOWN to 0.15.16** — *not accepted* (owner,
   2026-09-21). The 0.16 uplift lands as its own branch absorbing the
   ~200 mechanical fixes, with a `[tool.ruff.lint] select` stanza so
@@ -211,9 +198,9 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **155 — The Kvaser Timer Wraps Without Losing Frames, and Drops Are
   Loud.** Three phases on `task155-kvaser-unwrap` → `task155-drops-loud`
   → `task155-logger-clamp` (`229f9ca6`), full CI matrix green (one lane
-  skipped, `wire-breaking`: proto untouched, `buf` not installed). One
-  criterion owed, not gating: the ≥ 12 h live Kvaser confirmation run,
-  to schedule with you. Verdicts: 0155 § Exit criteria.
+  skipped, `wire-breaking`: proto untouched, `buf` not installed). The
+  live Kvaser confirmation: owner 2026-10-02, tested and fine. Verdicts:
+  0155 § Exit criteria.
 
 - **151 — the settings view's grids are gridviews** (3 phases,
   `task151-units-gridview` → `task151-caches-gridview` →
@@ -240,7 +227,7 @@ keeps the queue's copy). This file shrinks every time it is walked.
 - **Task 137 — Log Export** (2026-09-06): all four phases landed
   (`task137-templates` → `task137-export-dialog` → `task137-loggers`
   → `task137-file-grid`); all 6 exit criteria met (verdicts in the
-  task file). Caveats: live 500 MB split unit-tested only. Owner
+  task file). The live split: owner 2026-10-02, seen rolling over. Owner
   2026-09-22: manual BLF export works; the logger's listing defect
   (§ 3) is open against this task.
 - **Task 135 — Plot Math Functions** (2026-09-06): all three phases

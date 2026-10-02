@@ -1043,7 +1043,7 @@ listing fix.
 3. **Met** (phase 1): host-side tokens, ISO-basic bare form, chrono pass-through, polished rejections surfaced to the preview.
 4. **Met** (phase 3): logger project element + panel (folder/file/preview/format order), enabled∧connected write, locks while
    writing, BLF live with size-cap split (`-00N`, collision → next suffix), enabled flag project-persisted. *Caveat:* the split
-   is unit-tested with a small cap override, not exercised live (a real 500 MB split needs ~30 min of traffic).
+   is unit-tested with a small cap override; the owner has since seen a live split roll over (2026-10-02), so the caveat is closed.
 5. **Met** (phase 4): recursive gridview, cached start/end/duration/count columns (mtime-invalidated, host-side), writing row
    as live status, import via button / context menu / Space through the standard import dialog with range selection.
 6. **Met** (each phase): README export + logger sections, rustdoc on new API, CONTEXT.md logger term (phase 3).

@@ -441,6 +441,13 @@ trip over it.
   watchdog covers the case meanwhile, and the user can reload by hand.
   (Owner ruling 2026-09-15: backlog, not in scope.)
 
+- **A math section in the View signals panel.** The panel is a
+  database-mapping surface and drops every math reference by design
+  (`viewSignalsPush.ts`); a math signal's composed-kind unit override is
+  class-locked only where the math editor opens (Signals panel, plot
+  side list, Database panel). Owner, 2026-10-02: a math row kind there
+  is backlog, not a units-task criterion.
+
 ### Graph view (and bus topology)
 
 Items surfaced during the Phase-6.5 default-receive-all / graph-view follow-up

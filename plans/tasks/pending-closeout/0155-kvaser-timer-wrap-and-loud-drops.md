@@ -128,8 +128,8 @@ Sonnet-shaped. All three share the main tree, strictly sequential.
   split, the `sys_warn!` emission in `run_logger` reviewed by eye.
 - Confirmation (not gating): a ≥ 12 h live Kvaser capture after
   landing shows zero before-session drops and continuous RX stamps
-  across the wrap; recorded in the status log with the date. **Owed**,
-  not gating — to schedule with the owner.
+  across the wrap; recorded in the status log with the date.
+  **Confirmed by the owner, 2026-10-02** ("has been tested and is fine").
 
 ## Status log
 
@@ -499,3 +499,5 @@ Sonnet-shaped. All three share the main tree, strictly sequential.
   (`3e5f6563`) → `task155-drops-loud` (`33f9abe9`) →
   `task155-logger-clamp` (`229f9ca6`); task 156's investigation branch
   restacked on top.
+- 2026-10-02 — owner: the live Kvaser confirmation "has been tested and
+  is fine". All criteria met; awaiting acceptance.
