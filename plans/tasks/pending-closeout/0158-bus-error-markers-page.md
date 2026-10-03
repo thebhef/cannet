@@ -175,27 +175,38 @@ Settled by the overseer, open to reversal:
    cell; DOM tests extend `traceTimeTooltip.dom.test.tsx` (an event
    row and an episode row show the local date and time on hover; no
    tooltip without a wall-clock origin). Frontend only.
-6. **Plot markers are episodes** (owner ruling 2026-10-02). Host: a
-   windowed episodes query (`bus_error_episodes_in_window(buses, from,
-   to, gapSeconds, maxMarkers)` → episodes intersecting the window at
-   the smallest gap ≥ the setting whose count fits `maxMarkers`, gap
-   doubling, with the effective gap in the reply; one pass over the
-   level-0 series in the window, `complete` as for the series). Plot:
-   `useBusErrorMarkers` asks for episodes, not points; the markers go
-   through `plotEventsFromTimeline` as kind `busError` events with the
-   authored events' renderer, chip and gutter — one marker at the
-   episode's first error, its extent to the last error drawn as a linked
-   pair's extent is, label "<bus>: N bus errors over S (R/s)", id
+6. **Plot markers are episodes** (owner ruling 2026-10-02; regroomed
+   2026-10-02 from the code). The plot's bus-error markers already go
+   through `plotEventsFromTimeline` as kind `busError` with the authored
+   events' renderer, chip and gutter, coloured by their kind's token
+   (`eventBusError`) as every kind is — there is no band drawing. The
+   "thick bands" are the data source: one marker per served point at
+   `maxPoints = widthPx`, so a 20 s burst of thousands lands one chip
+   per pixel column. The phase changes what is asked for, not how it is
+   drawn. Host: a windowed episodes query
+   (`bus_error_episodes_in_window(buses, from, to, gapSeconds,
+   maxMarkers)` → episodes intersecting the window, the effective gap in
+   the reply) **derived from phase 4's per-bus episode list at the
+   setting's gap**: the window is a binary search on that chronological
+   list, and episodes at gap 2g are exactly the merge of adjacent gap-g
+   episodes closer than 2g, so fitting `maxMarkers` is a merge-fold over
+   the slice with the gap doubling until it fits — no level-0 walk, no
+   per-zoom refold, the Events panel's list untouched; `complete` as the
+   phase-4 page reports it. Plot: `useBusErrorMarkers` asks for episodes
+   per visible range, not points; one marker at the episode's first
+   error, its extent to the last error drawn as a linked pair's extent
+   is, label "<bus>: N bus errors over S (R/s)", id
    `bus-error:{bus}:{lastOrdinal}` kept so links and highlight resolve;
-   `busErrorSpans`, the band drawing and every bus-error-only plot style
-   removed; the Events chip's kind checklist still hides them.
-   `maxMarkers` is the panel width over one chip's minimum width. DOM
-   tests: two bursts give two markers carrying the authored-event
-   classes and no bus-error class; a 50,000-error burst is one marker;
-   a window of 400 one-second episodes at a 300-marker budget comes back
-   at a doubled gap under budget; the kind filter hides them; the label.
-   Host tests: window selection, gap doubling, the burst. ADR 0035's
-   amendment and README's plot passage say a marker is an episode.
+   `busErrorSpans` and `busErrorTimelineEvents` go; the Events chip's
+   kind checklist still hides them. `maxMarkers` is the panel width over
+   one chip's minimum width. DOM tests: two bursts give two markers with
+   the authored events' classes; a 50,000-error burst is one marker with
+   its extent; a window of 400 one-second episodes at a 300-marker
+   budget comes back at a doubled gap under budget with the effective
+   gap reported; the kind filter hides them; the label. Host tests:
+   window selection by binary search, the merge-fold equals a direct fold
+   at the doubled gap, the burst. ADR 0035's amendment and README's plot
+   passage say a marker is an episode.
 
 ## Exit criteria
 
