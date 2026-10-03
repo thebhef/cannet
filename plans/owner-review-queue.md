@@ -168,9 +168,6 @@ committed verbatim as 5ef108dd, triaged by the overseer):
   the wire package's lock had resolved 1.84 while the committed gencode
   came from 1.80; the new drift check exposed it. Inventory entry
   records the rule. FYI only.
-- **145: CI runs no `cargo fmt --check`**; only the pre-commit hook
-  does, which `--no-verify` skips. `interfaces.rs` had drifted once
-  (fixed on `task145-server-info`). A one-line CI job would close it.
 
 - **137: the logger's file listing scans whole BLFs on the 250 ms poll
   path** (owner report 2026-09-22: SharePoint folder, moved-in BLFs,
