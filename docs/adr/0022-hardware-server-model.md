@@ -161,9 +161,10 @@ informs the next step.
 
 **`InterfaceState` over `ResetInterface`.** We considered an
 explicit reset envelope but couldn't justify it: bus-off recovery
-can come from stop + start (last unsubscribe + fresh subscribe),
-which already exists. A separate envelope would be one more piece
-of surface with no use case it uniquely serves.
+needs no client at all. The sidecar resets a controller it has read
+bus-off for a second (ADR 0039, amendment on bus-off), and PEAK's
+driver resets its own sooner. A separate envelope would be one more
+piece of surface with no use case it uniquely serves.
 
 **No proxying of hardware state through other servers.** A
 bridged physical interface's `InterfaceState`, stats, and config

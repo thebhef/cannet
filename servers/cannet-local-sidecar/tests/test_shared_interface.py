@@ -988,3 +988,198 @@ def test_a_reopened_channel_rearms_the_rollover_report() -> None:
         assert len(_wrap_warnings(a, timeout_s=2.0)) == 1
     finally:
         reg.unsubscribe("fake:0", a)
+
+
+# ---- a bus-off controller is brought back ----------------------------------
+
+
+class _LatchingChannel(_FakeChannel):
+    """A controller that, like PCAN-Basic without its auto-reset or a
+    Kvaser circuit, stays bus-off until something resets it. ``reset``
+    is the driver hook the state poll calls; ``fail_resets`` makes the
+    next that many calls raise, and ``in_place`` False makes it answer
+    that this backend can only be reopened."""
+
+    def __init__(self, channel_id: str = "fake:0") -> None:
+        super().__init__(channel_id=channel_id)
+        self.resets = 0
+        self.fail_resets = 0
+        self.in_place = True
+
+    def reset(self) -> bool:
+        self.resets += 1
+        if self.fail_resets:
+            self.fail_resets -= 1
+            raise OSError("controller did not answer")
+        if self.in_place:
+            self.set_state(drv.ControllerState())
+        return self.in_place
+
+
+_BUS_OFF = drv.ControllerState(state=drv.STATE_BUS_OFF, tec=256, rec=0)
+
+
+@pytest.fixture
+def latched(monkeypatch: "pytest.MonkeyPatch"):
+    """A subscribed interface on a ``_LatchingChannel`` whose state poll
+    is driven by hand, against an injected clock, so the threshold is
+    exercised without sleeping through it: the pump thread's own cadence
+    is pushed out of the test's reach."""
+    monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
+    driver = _ChannelDriver(_LatchingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    outbox: "queue.Queue" = queue.Queue()
+    shared = reg.subscribe("fake:0", outbox)
+    _drain(outbox, kind="interface_state")
+    try:
+        yield driver, shared, outbox
+    finally:
+        reg.unsubscribe("fake:0", outbox)
+
+
+def _states(outbox: "queue.Queue") -> list[int]:
+    out = []
+    while True:
+        try:
+            env = outbox.get_nowait()
+        except queue.Empty:
+            return out
+        if env.WhichOneof("body") == "interface_state":
+            out.append(env.interface_state.state)
+
+
+def test_a_bus_off_controller_is_reset_once_the_threshold_passes_and_not_before(
+    latched,
+) -> None:
+    driver, shared, outbox = latched
+    ch = driver.opened[0]
+    ch.set_state(_BUS_OFF)
+    after = si._BUS_OFF_RESET_AFTER_S
+
+    shared._poll_state(ch, now_s=100.0)
+    shared._poll_state(ch, now_s=100.0 + after * 0.9)
+    assert ch.resets == 0
+    shared._poll_state(ch, now_s=100.0 + after)
+    assert ch.resets == 1
+
+
+def test_a_controller_that_recovers_before_the_threshold_is_left_alone(
+    latched,
+) -> None:
+    """The controller's own recovery (128 × 11 recessive bits) takes
+    milliseconds, so a bus-off reading that clears by itself must not be
+    reset -- and the clear re-arms the count, so a second bus-off is
+    timed from its own start rather than the first one's."""
+    driver, shared, outbox = latched
+    ch = driver.opened[0]
+    after = si._BUS_OFF_RESET_AFTER_S
+
+    ch.set_state(_BUS_OFF)
+    shared._poll_state(ch, now_s=0.0)
+    ch.set_state(drv.ControllerState())
+    shared._poll_state(ch, now_s=after * 0.5)
+    ch.set_state(_BUS_OFF)
+    shared._poll_state(ch, now_s=after * 0.9)
+    shared._poll_state(ch, now_s=after * 1.2)
+    assert ch.resets == 0
+    shared._poll_state(ch, now_s=after * 2.0)
+    assert ch.resets == 1
+
+
+def test_the_recovery_is_published_so_bus_health_shows_it(latched) -> None:
+    driver, shared, outbox = latched
+    ch = driver.opened[0]
+    ch.set_state(_BUS_OFF)
+    shared._poll_state(ch, now_s=0.0)
+    shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
+    shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S + 0.5)
+    assert _states(outbox) == [
+        pb.CONTROLLER_STATE_BUS_OFF,
+        pb.CONTROLLER_STATE_ACTIVE,
+    ]
+
+
+def test_a_reset_that_raises_is_retried_on_the_next_pass_and_warned_once(
+    latched, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
+    driver, shared, outbox = latched
+    ch = driver.opened[0]
+    ch.set_state(_BUS_OFF)
+    ch.fail_resets = 2
+    after = si._BUS_OFF_RESET_AFTER_S
+
+    shared._poll_state(ch, now_s=0.0)
+    shared._poll_state(ch, now_s=after)
+    assert ch.resets == 1
+    shared._poll_state(ch, now_s=after + 0.5)
+    assert ch.resets == 2
+    shared._poll_state(ch, now_s=after + 1.0)
+    assert ch.resets == 3
+    assert ch.state().state == drv.STATE_ACTIVE
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert "fake:0" in warnings[0].getMessage()
+
+
+def test_each_reset_logs_one_info_line(
+    latched, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
+    driver, shared, outbox = latched
+    ch = driver.opened[0]
+    ch.set_state(_BUS_OFF)
+    shared._poll_state(ch, now_s=0.0)
+    shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
+
+    infos = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.INFO and "bus-off" in r.getMessage()
+    ]
+    assert len(infos) == 1, [r.getMessage() for r in caplog.records]
+    assert "fake:0" in infos[0].getMessage()
+
+
+def test_a_backend_with_no_in_place_reset_is_reopened(latched) -> None:
+    """The fallback every backend has: the same close-and-reopen a bus
+    configuration change performs. The fresh channel's reading must
+    reach subscribers -- the reopen may not quietly re-pin the
+    published state to active while they were last told bus-off."""
+    driver, shared, outbox = latched
+    ch = driver.opened[0]
+    ch.in_place = False
+    ch.set_state(_BUS_OFF)
+    shared._poll_state(ch, now_s=0.0)
+    shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
+
+    assert len(driver.opened) == 2
+    assert ch.closed.is_set()
+    fresh = shared._current_channel()
+    assert fresh is driver.opened[1]
+    shared._poll_state(fresh, now_s=si._BUS_OFF_RESET_AFTER_S + 0.5)
+    assert _states(outbox) == [
+        pb.CONTROLLER_STATE_BUS_OFF,
+        pb.CONTROLLER_STATE_ACTIVE,
+    ]
+
+
+def test_a_backend_without_the_hook_is_reopened(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    # The hook is optional, like ``timer_wraps``: an alternative driver
+    # that has never heard of it still gets its bus back.
+    monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    outbox: "queue.Queue" = queue.Queue()
+    shared = reg.subscribe("fake:0", outbox)
+    try:
+        ch = driver.opened[0]
+        ch.set_state(_BUS_OFF)
+        shared._poll_state(ch, now_s=0.0)
+        shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
+        assert len(driver.opened) == 2
+    finally:
+        reg.unsubscribe("fake:0", outbox)
