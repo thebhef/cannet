@@ -4,6 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 
 import { useBusHealth } from "./busHealth";
 import { ChipButton } from "./ChipButton";
+import { Icon } from "./Icon";
 import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT } from "./gotoEvent";
 import { useSetting } from "./hostSettings";
@@ -175,13 +176,13 @@ export function EventsPanel(_props: IDockviewPanelProps) {
             Diagnostics: `Diagnostics — what the tool found: bus errors, as episodes at ${gapSeconds} s, and where history was truncated`,
           }}
         />
-        <label className="events-panel-tag-filter">
-          tag
+        <span className="chip-field" title="filter by tag">
+          <Icon name="search" />
           <input
             type="search"
             list="events-panel-tags"
             aria-label="filter by tag"
-            placeholder="any"
+            placeholder="filter by tag"
             value={tagQuery}
             onChange={(e) => setTagQuery(e.target.value)}
           />
@@ -190,7 +191,7 @@ export function EventsPanel(_props: IDockviewPanelProps) {
               <option key={t} value={t} />
             ))}
           </datalist>
-        </label>
+        </span>
         {!page.complete && (
           <span className="events-panel-pending" title="still catching up with the capture">
             catching up…

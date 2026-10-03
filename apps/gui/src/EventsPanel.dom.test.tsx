@@ -604,6 +604,15 @@ describe("EventsPanel event row ARIA", () => {
 });
 
 describe("EventsPanel tag filter", () => {
+  it("carries the gridview filter box's shape, not the bare word 'tag'", () => {
+    // Owner ruling 2026-10-03: the label's bare "tag" prefix goes, in
+    // favour of the same chip-shaped box the trace's own filter uses.
+    renderPanel([]);
+    const input = screen.getByLabelText("filter by tag");
+    expect(input).toHaveAttribute("placeholder", "filter by tag");
+    expect(screen.queryByText("tag")).toBeNull();
+  });
+
   it("narrows to the events carrying a matching tag", async () => {
     // jsdom lays nothing out; give the row virtualizer a viewport so all
     // three rows are drawn.

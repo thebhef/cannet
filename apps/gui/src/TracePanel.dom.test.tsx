@@ -14,9 +14,8 @@ import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react
 import { invoke } from "@tauri-apps/api/core";
 
 /// What the fake host's `settings.json` holds. The view defaults
-/// (`trace_mode`, `trace_auto_scroll`, `trace_show_events`) are read
-/// from it when a panel seeds its state, so the defaults tests write
-/// here and re-hydrate.
+/// (`trace_mode`, `trace_auto_scroll`) are read from it when a panel
+/// seeds its state, so the defaults tests write here and re-hydrate.
 let storedSettings: Record<string, unknown> = {};
 
 /// What the fake host's bus-health map holds. The trace's error-frame
@@ -381,11 +380,16 @@ describe("TracePanel view defaults", () => {
       .map((b) => b.textContent?.replace(/\s+/g, " ").trim())
       .join();
   /// A toolbar toggle chip's pressed state, by its accessible name
-  /// ("Auto-Scroll", "Events").
+  /// ("Auto-Scroll").
   const chipPressed = (container: HTMLElement, name: string) =>
     [...container.querySelectorAll<HTMLButtonElement>(".trace-panel-toolbar button[aria-pressed]")]
       .find((b) => b.getAttribute("aria-label") === name)
       ?.getAttribute("aria-pressed") === "true";
+  /// Whether the event-kind checklist is on the bar at all — unconditional
+  /// in chronological mode, absent in by-id (owner ruling 2026-10-03: no
+  /// separate disclosure toggle any more).
+  const checklistPresent = (container: HTMLElement) =>
+    container.querySelector('[role="group"][aria-label="event kinds"]') !== null;
 
   it("opens a fresh panel in the configured default mode", async () => {
     // `by-id` is the default, so asking for `chronological` proves the
@@ -396,17 +400,27 @@ describe("TracePanel view defaults", () => {
     expect(activeMode(container)).toBe("Trace");
   });
 
-  it("takes auto-scroll and the events overlay from the settings", async () => {
-    // Both default to on, so both off proves the panel read them.
+  it("takes auto-scroll from the settings", async () => {
+    // Defaults to on, so off proves the panel read it.
     storedSettings = {
       trace_mode: "chronological",
       trace_auto_scroll: false,
-      trace_show_events: false,
     };
     await hydrateSettings();
     const { container } = renderPanel(oneTrace, 100, null);
     expect(chipPressed(container, "Auto-Scroll")).toBe(false);
-    expect(chipPressed(container, "Events")).toBe(false);
+  });
+
+  it("carries the event-kind checklist in chronological mode, and not in by-id", async () => {
+    storedSettings = { trace_mode: "chronological" };
+    await hydrateSettings();
+    const { container } = renderPanel(oneTrace, 100, null);
+    expect(checklistPresent(container)).toBe(true);
+
+    storedSettings = { trace_mode: "by-id" };
+    await hydrateSettings();
+    const byId = renderPanel(oneTrace, 100, null);
+    expect(checklistPresent(byId.container)).toBe(false);
   });
 
   it("lets a panel's own saved config win over the default", async () => {
@@ -415,8 +429,24 @@ describe("TracePanel view defaults", () => {
     storedSettings = {
       trace_mode: "by-id",
       trace_auto_scroll: false,
-      trace_show_events: false,
     };
+    await hydrateSettings();
+    const el = {
+      kind: "trace",
+      id: "t1",
+      sources: ["*"],
+      config: { mode: "chronological", autoScroll: true },
+    } as unknown as ProjectElement;
+    const { container } = renderPanel([el], 100, null);
+    expect(activeMode(container)).toBe("Trace");
+    expect(chipPressed(container, "Auto-Scroll")).toBe(true);
+  });
+
+  it("restores a saved config carrying the removed showEvents key", async () => {
+    // A project saved before this ruling has `showEvents` in its
+    // element config; the reader's index signature (`TraceConfig`'s
+    // `[key: string]: unknown`) tolerates the stray key, and the rest
+    // of the config restores exactly as if it weren't there.
     await hydrateSettings();
     const el = {
       kind: "trace",
@@ -427,7 +457,7 @@ describe("TracePanel view defaults", () => {
     const { container } = renderPanel([el], 100, null);
     expect(activeMode(container)).toBe("Trace");
     expect(chipPressed(container, "Auto-Scroll")).toBe(true);
-    expect(chipPressed(container, "Events")).toBe(true);
+    expect(checklistPresent(container)).toBe(true);
   });
 
   it("does not retro-fit an open panel when the default changes", async () => {
@@ -516,17 +546,15 @@ describe("TracePanel rehydration", () => {
     const { container, control } = renderLive({
       mode: "by-id",
       autoScroll: true,
-      showEvents: true,
     });
     expect(activeMode(container)).toBe("By ID");
     act(() => {
       control.update("t1", {
-        config: { mode: "chronological", autoScroll: false, showEvents: false },
+        config: { mode: "chronological", autoScroll: false },
       });
     });
     expect(activeMode(container)).toBe("Trace");
     expect(chipPressed(container, "Auto-Scroll")).toBe(false);
-    expect(chipPressed(container, "Events")).toBe(false);
   });
 
   it("keeps the panel's own edit — a persist is not a resync trigger", () => {

@@ -581,11 +581,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * View-local rather than persisted — a diagnostic you turned on to
    * look at something is not a preference. */
   const [showPerf, setShowPerf] = useState(false);
-  /** Whether the toolbar's Events checklist is open (the trace panel's
-   * chip-reveals-checklist pattern) — a disclosure, not the per-kind
-   * visibility itself (that's `eventKinds`, ADR 0035, unpersisted).
-   * View-local like `showPerf` above, for the same reason. */
-  const [showEventsChip, setShowEventsChip] = useState(false);
   const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(savedConfig?.showPoints));
   /** What the areas and the toolbar actually draw: the launch flag's
    * mode when this run was started with one (`--show-points`, ADR
@@ -2877,8 +2872,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
         cursorMode={cursorMode}
         onCursorMode={setCursorMode}
         onClearCursors={clearCursors}
-        showEvents={showEventsChip}
-        onShowEvents={setShowEventsChip}
         eventsChecklist={<EventKindFilter state={eventKinds} counts={eventKindCounts} />}
         perfText={showPerf ? perfText : null}
         onOpenMenu={setToolbarMenuAt}
