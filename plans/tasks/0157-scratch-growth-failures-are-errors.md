@@ -1,7 +1,7 @@
 # Task 157 — A Scratch That Cannot Grow Is an Error, Not a Panic
 
 Opened 2026-09-23 by owner ruling while walking task 156's verdict.
-**Needs grilling before implementation.** Queued behind task 156.
+Grilled 2026-10-02; two phases. Queued behind the current stack's landing.
 
 ## Why
 
@@ -30,18 +30,9 @@ free on its system drive.
 - One `expect` the survey missed, not on the growth path:
   `seg.rs:134`, the `open_segments` worker-join re-panic.
 
-## Open questions (to grill)
+## Open questions
 
-1. What does a session do when the scratch cannot grow mid-capture:
-   stop the capture with an error, keep running RAM-only from that
-   point, or keep running with the raw store frozen at its last
-   segment and the live edge only in RAM?
-2. Does ADR 0002's accepted-failure stance (SIGBUS on external
-   truncation of an ephemeral store) change, or does it stay for
-   truncation and narrow only for growth?
-3. Is `TraceStore::append`'s return a richer enum (`Appended(index)`
-   / `BeforeSession` / `ScratchFailed(err)`) or an `io::Result` around
-   the existing `Option`?
+(none — grilled 2026-10-02, see § Rulings)
 
 ## Rulings
 
@@ -58,15 +49,50 @@ free on its system drive.
 
 ## Phases
 
-To cut at grooming.
+1. **No panic on the growth path.** cannet-spill's two growth sites
+   (`geometric_push_grow`, `grow_fixed`) return `io::Result`; the four
+   spill APIs and the three host consumers propagate it
+   (`TraceStore::append` → `io::Result<Option<u64>>`); `seg.rs:134`'s
+   worker-join `expect` becomes an error too. A failure emits the
+   diagnostic ruled above (store, segment path and index, chain length
+   and capacity, OS error, lock state) as an error-level system message,
+   and the capture stops — phase 1's behaviour until phase 2 lands.
+   cannet-spill gains a test-only fault hook on segment creation/growth
+   (the deterministic way to inject ENOSPC-class failures; no quotas, no
+   real full volumes). Tests: each store's growth failure surfaces as an
+   error, the message carries every field, no mutex is poisoned.
+2. **Shed and retry.** A raw-store growth failure runs the DS-8 eviction
+   for one leading segment and retries, repeating while a segment
+   remains; the truncation marker advances; a warning-level message
+   names the dropped span and the cause. Derived stores shed in step or
+   drop-and-rebuild. Nothing left to shed, or a retry failing after a
+   shed → the capture stops with phase 1's error message. README's
+   session-buffer passage: the buffer is a ring, growth failure drops
+   the oldest, loggers are the durable capture. ADR 0002 DS-8 amended
+   (growth failure is a second trigger for the ring). Tests through the
+   fault hook: a failure mid-capture keeps the capture running with the
+   marker advanced; a single-segment store stops with the error; a
+   persistent failure stops after one shed.
+
+Both phases Opus; the spill crate's five chains are the design-heavy
+part.
 
 ## Exit criteria
 
-To set at grooming; one is fixed by the ruling above:
-
-- A growth failure logs the store, segment path and index, chain
-  length and capacity, OS error and lock state as an error-level system
-  message — host test on an injected failure.
+1. No panic site remains on cannet-spill's growth path; an injected
+   growth failure in any store surfaces as an error and poisons no
+   mutex — tests through the fault hook.
+2. A growth failure that stops the capture logs the store, segment path
+   and index, chain length and capacity, OS error and lock state as an
+   error-level system message — host test on an injected failure.
+3. A growth failure with history to shed keeps the capture running:
+   the oldest segment goes, the truncation marker advances, a
+   warning-level message names the dropped span and cause — tests.
+4. Nothing left to shed, or a retry failing after a shed, stops the
+   capture with criterion 2's message — tests.
+5. ADR 0002 DS-8 names growth failure as a ring trigger; README's
+   session-buffer passage says the ring drops the oldest and names the
+   logger as the durable capture.
 
 ## Status log
 
@@ -75,3 +101,5 @@ To set at grooming; one is fixed by the ruling above:
   phase-1 re-check.
 - 2026-10-02 — owner order on task 156's acceptance: diagnostic logging
   for growth failures is this task's (§ Rulings, exit criterion drafted).
+- 2026-10-02 — grilled (Q1–Q3 in § Rulings); two phases cut; exit
+  criteria set.

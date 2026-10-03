@@ -73,12 +73,15 @@ survives the code.
 
 ## Phases
 
-1. **Persist, restore, park.** `PersistedSignal` gains a math arm
-   (definition id and the compositional fingerprint already in
-   `encoding`); `persist_reporting` stops filtering math rows;
+1. **Persist, restore, park.** `PersistedSignal` gains a math arm — a
+   `math: bool` flag mirroring `bus_errors`, since a math row's key is
+   already `signal = definition id, origin = Math` (`SignalKey::math`)
+   and the compositional fingerprint is already in `encoding`; `persist_reporting` stops filtering math rows;
    `restore` rebuilds each restored math row's `MathFill` by deriving
    cursors and held values from the operands and warming the carry with
-   a bounded replay; `invalidate_dbcs` parks math rows like decoded
+   a bounded replay, in the dependency order the fill already uses (a
+   math operand's restored samples exist before its dependent's cursor
+   is derived); `invalidate_dbcs` parks math rows like decoded
    ones; a restored series whose operands no longer cover its last
    sample (front-trimmed) rebuilds. ADR 0047 amended (math rows are in
    the manifest; the session-scoped exception goes), `persist_reporting`'s
@@ -115,3 +118,7 @@ survives the code.
 - 2026-10-02 — opened by owner ruling on task 135's criterion 2
   (review queue § 3 item deleted; ruling recorded in 0135). Survey
   above; one phase.
+- 2026-10-02 — regroomed against the code (owner asked for a pass on
+  every outstanding item): the manifest arm is a flag like `bus_errors`
+  (the key already carries the definition id); the restore warm-up runs
+  in the fill's existing dependency order. No open question.

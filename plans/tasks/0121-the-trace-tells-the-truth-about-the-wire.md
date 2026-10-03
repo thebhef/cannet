@@ -31,24 +31,81 @@ of the wire.
 
 A frame queued into a bus that is not delivering produces neither.
 
-## Scope — to be groomed with the owner before code
+## Scope — groomed 2026-10-02/03
 
-A frame queued into a bus that is not delivering (the chip state the
-health panel already reads: error-passive / bus-off, TEC climbing) must
-not read as a plain `Tx`. Candidate shapes, one to be picked at
-grooming:
+**Why the three candidate shapes were wrong:** all three infer from the
+chip state; none observes the wire. The driver's queue answers
+"accepted" for a frame nobody will ever acknowledge, so nothing
+upstream of the wire can say no.
 
-1. Mark tx rows from the chip state (the health poll already carries
-   it per bus).
-2. Pause transmit (RBS and periodic frames) on bus-off, surfaced the
-   way Muted already is.
-3. A coalesced "transmitting into a dead bus" signal beside the error
-   summary, leaving the rows alone.
+**What the drivers offer** (python-can 4.6.1, the sidecar's pin): one
+flag, `receive_own_messages=True`, makes every adapter the sidecar
+opens hand back each frame it actually transmitted, through the
+ordinary receive path, with `Message.is_rx == False` — PCAN via
+`PCAN_ALLOW_ECHO_FRAMES` / `PCAN_MESSAGE_ECHO`, Kvaser via
+`canIOCTL_SET_LOCAL_TXECHO` + `LOCAL_TXACK` (the on-bus ACK;
+`single_handle=False`, the default), Vector via `tx_receipts` /
+`XL_CAN_EV_TAG_TX_OK`. All three vendors document the echo as
+post-transmission. The sidecar sets the flag `False` today
+(`driver_python_can.py`). The wire already carries
+`Frame.direction` (`DIRECTION_RX | DIRECTION_TX`).
+
+### Rulings (owner, 2026-10-02/03)
+
+- **The wire writes the tx row.** "Send the message, and let its
+  reception be how it enters the log." A transmit no longer appends a
+  row when the queue accepts it; the echoed frame — the one the bus
+  carried — arrives as a `DIRECTION_TX` frame and is logged and counted
+  like any frame. A dead bus produces no rows and no counts. No pending
+  state, no acknowledgement protocol, no matching.
+- **A frame the bus will not carry is dropped.** "The messages are
+  periodic and usually fast. Dropping messages happens." Nothing is
+  retried by cannet and nothing is logged for it; the controller's own
+  retry of the one frame it holds is the hardware's business. The
+  enqueue-refused `Tx ✗` row stays: there the queue did say no.
+- The chip-state inference (old shape 1) is **not** used.
+
+### Phases
+
+1. **Echo in, send-time row out.** Sidecar: `receive_own_messages=True`
+   for every python-can bus; a received `is_rx == False` frame is
+   forwarded as `DIRECTION_TX` (today it is not requested at all); the
+   fake driver in the tests gains an echo. The virtual-bus debug server
+   (`cannet-server debug vbus`) echoes a session's own transmits as
+   `DIRECTION_TX` so a vbus trace keeps showing them. Host:
+   `append_tx_row` (`transmit_commands.rs`) writes no row for an
+   accepted send; the frame-ingest path appends `DIRECTION_TX` frames as
+   `Tx` rows (the row renderer already knows the direction); per-message
+   TX counts follow the rows; the manual transmit command's returned row
+   index becomes none (the row appears when the wire reports it — check
+   its one UI consumer); the undelivered mark stays for refused enqueues.
+   Tests: echo → `Tx` row and count; no echo → no row, count unchanged;
+   refused enqueue → `Tx ✗`; a vbus session sees its own frames as
+   `Tx`. README's trace passage: a `Tx` row is a frame the bus carried;
+   a frame the bus would not carry leaves no row. ADR: the one that
+   defines tx rows / the transmit primitive gets the sentence.
+2. **Owner confirmation on the PEAK bench** (existing exit criterion):
+   pull the cable under RBS — rows and counts stop; replug — they
+   resume. The same sitting can read the chip state and load counters
+   for the bus-health finding (review queue § 3, 2026-10-02), which
+   stays its own item until that data says what it is.
+
+Phase 1 is Sonnet-sized: one flag, one direction mapping, one removed
+append, tests.
 
 ## Exit criteria
 
-Firm at grooming; at minimum: pulling the CAN cable on the bench regime
+Pulling the CAN cable on the bench regime
 visibly changes what the trace/transmit surface says about outgoing
 frames within the health poll's cadence, the behaviour is pinned by
 tests against faked chip states, and the owner confirms it on the PEAK
 bench.
+
+## Status log
+
+- 2026-10-03 — groomed: the wire writes the tx row (echo via
+  `receive_own_messages`, logged as `DIRECTION_TX`), unconfirmed frames
+  are dropped; one code phase plus the owner's bench confirmation. The
+  acknowledgement-protocol and chip-state shapes considered on the way
+  are rejected (the first for complexity the echo path makes
+  unnecessary, the second for inaccuracy).

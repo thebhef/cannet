@@ -191,6 +191,12 @@ committed verbatim as 5ef108dd, triaged by the overseer):
 
 ## 4. Finished tasks awaiting acceptance
 
+- **142 — trace fzf filter**, reopened 2026-10-02 for owner feedback
+  (the box gave no feedback while the host walked the index); phase 3
+  landed 2026-10-03 on `fix-trace-filter-feedback` (`82693c13`):
+  `searching…` then the host's match count, both modes; criterion 8
+  met. Back to awaiting acceptance.
+
 - **158 — bus-error markers page** (`task158-error-series` →
   `task158-plot-markers` → `task158-events-section` →
   `task158-episodes` → `task158-event-wall-time`; 5 phases): 9/9 met;

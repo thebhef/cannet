@@ -208,6 +208,40 @@ Settled by the overseer, open to reversal:
    at the doubled gap, the burst. ADR 0035's amendment and README's plot
    passage say a marker is an episode.
 
+7. **Episodes join the Events panel's one list** (owner ruling
+   2026-10-02; groomed 2026-10-02, order ruled Q2: **chronological**).
+   The Events panel is the trace view rendering only events (ADR 0035):
+   a whole authored list in `EventRow`s, oldest first, following live,
+   with a kind filter and a tag filter; the bus-error section
+   (`BusErrorEventsSection.tsx`) is a second, host-paged grid, newest
+   first, with its own row template and no selection. Phase 7 makes one
+   list. Host: an `events_page(offset, limit, kinds, tagQuery)` command
+   merging the authored events (`notes.rs`, whole) with every bus's
+   episode list at the setting's gap (phase 4's `with_episodes`) by time,
+   count known, bounded per ADR 0049 (`complete` while episodes still
+   fold); a `version` the frontend watches bumps on a note change, an
+   episode append and a gap change. Frontend: the panel pages it through
+   `useWindowedQuery` like the trace; an episode is an `EventRow` of kind
+   `busError` — time through `TraceTimeCell` (phase 5), label
+   `<bus>: N bus errors over S (R/s)`, no ✎/× (derived events are not
+   editable), **selectable**, so selecting one lights its extent on the
+   plot (phase 6's transient extent becomes reachable; queue § 1 item
+   resolves as "keep transient" if the owner agrees). A tag query hides
+   episodes (they carry no tags; `matchesTagQuery` as it is). The
+   section, its hook (`useBusErrorEvents`) and its CSS go; the
+   "episodes at N s" hint becomes the Diagnostics kind row's tooltip.
+   Links authored ↔ episode keep resolving by
+   `bus-error:{bus}:{lastOrdinal}`. Branch `task158-events-merged` off
+   `fix-trace-filter-feedback` (beneath `ci-fmt-check`). Host tests: the
+   merge is chronological across notes and two buses, ties stable;
+   paging by offset over 400 episodes and 5 notes; a note edit and an
+   episode append bump the version; the kind filter excludes `busError`.
+   DOM tests: one list with both row kinds in time order; an episode row
+   has no edit controls and is selectable; a tag query hides episodes;
+   the Diagnostics kind unticked hides them; scrolling pages (one page
+   plus the live tail); the time cell's wall-time hover still holds.
+   README's Events passage and ADR 0035's amendment say the one list.
+
 ## Exit criteria
 
 1. A capture with more than 256 bus-error episodes shows every episode
@@ -239,6 +273,11 @@ Settled by the overseer, open to reversal:
     same path and with the same classes as authored events, no style
     of its own; a 20 s burst of thousands is one marker with its extent
     — host and DOM tests.
+
+11. The Events panel is one chronological, host-paged list of authored
+    events and bus-error episodes; an episode row is selectable and not
+    editable; the separate bus-error section is gone — host and DOM
+    tests.
 
 ## Blockers / side effects
 
@@ -884,3 +923,6 @@ owner acceptance (review queue § 4).
 - 2026-10-02 — criterion 10 **met** (phase 6, `e7006038`: one marker per
   episode through the authored events' path; host + DOM tests). Open:
   phase 7 (to groom) and the extent yes/no in the queue.
+- 2026-10-02 — phase 7 groomed (above); owner ruled the one list's order
+  **chronological** (Q2), as every trace-like view. Branch
+  `task158-events-merged`.

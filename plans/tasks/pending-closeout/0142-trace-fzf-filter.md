@@ -339,3 +339,113 @@ reversal:
 - 2026-10-02 — owner feedback: the filter needs feedback about what is
   happening. Groomed as phase 3 / criterion 8 (count + `searching…`;
   progressive count ruled out, Q1). Task reopened for it.
+- 2026-10-03 — **Phase 3 (feedback while the filter works) landed** on
+  `fix-trace-filter-feedback` (off `task158-plot-episodes`), one commit
+  `82693c13`. Agent's status text follows (condensed).
+  - **What landed.**
+    Trace filter box shows `searching…` while the host walks a new query's
+    index, then the host's own match count (singular at 1), in both
+    chronological and by-id mode (`GridviewFilterBox.hostMatches`,
+    `useWindowedQuery`'s new `pending`, piped through `useFilteredTrace` /
+    `useByIdView` into `TracePanel`). This was already implemented and
+    reviewed; this session's job was fixing one defect the by-id test
+    exposed, answering a code question it raised, and running the checks.
+  - **The hang — cause and fix.**
+    **Observation.** `TracePanel.dom.test.tsx`'s "reads searching… then the
+    match count — by-id mode too" never terminated: killed at 120 s with no
+    output, run alone. Every other test in the file passes in ~5 s.
+    **Hypothesis.** The fixture's `byIdPageGate`/`filteredTraceGate` returns
+    the *same* `Gate.promise` for every `fetch_by_id_page` (or
+    `fetch_filtered_trace`) call while the gate variable is set — not just
+    the one call it was meant to hold open. Once the test resolves it, every
+    later call to that command gets the same already-settled promise back
+    synchronously.
+    **Experiment.** Read `useWindowedQuery.ts`'s `load()`: a descriptor
+    change resets the window to empty and fetches page 0; `ByIdTable`'s
+    prefetch effect (`ByIdTable.tsx:201-204`) calls `ensureVisible` whenever
+    `count`/`ensureVisible` changes, with no `autoScroll` guard (unlike
+    `TraceView.tsx:470-473`, which skips the call outright while
+    auto-scrolling — `TracePanel.tsx:452`'s chronological path routes
+    through that guard, which is why the chronological twin of this test
+    doesn't hang). The test's by-id gate resolved with
+    `{ count: 2, start: 0, rows: [] }` — 2 claimed, 0 delivered. `ensureVisible`
+    sees `win.rows.length (0) < end` and calls `load()` again; the already-
+    resolved gate promise answers instantly (microtask, not a macrotask),
+    `ByIdTable`'s effect fires again on the new `win` identity, and the
+    cycle repeats as a tight synchronous microtask recursion that never
+    yields to Node's timer phase — hence no vitest per-test timeout firing,
+    and 120 s of silence.
+    **Conclusion.** Root cause confirmed: the fixture's gate wasn't one-shot,
+    and the gated reply was internally inconsistent (`count` > `rows.length`)
+    for a view whose prefetch effect has no guard against re-asking. Fixed
+    both halves:
+    1. `TracePanel.dom.test.tsx`'s `invoke` mock: the gate is now consumed
+       by the first matching call after it's set (`filteredTraceGate = null`
+       / `byIdPageGate = null` immediately on that call), falling through to
+       the normal fixture for every later call. Tests that resolve a gate
+       now capture it in a local `const gate` before firing the triggering
+       event, since the shared module-level variable is cleared as soon as
+       the gated call lands.
+    2. The by-id gate's resolved payload now carries two rows consistent
+       with its `count: 2` (`byIdRow(0x100)`, `byIdRow(0x200)`, a minimal
+       `ByIdSnapshotRecord`) instead of `rows: []`, so the by-id view's
+       loaded page actually covers what `ensureVisible` asked for and the
+       prefetch effect has nothing left to chase.
+    No production code changed for this fix — it was a test-fixture defect.
+  - **The code question: can production refetch unboundedly?.**
+    **No.** Read `trace_query.rs::fetch_by_id_page_inner` (lines 508-580):
+    `count` and the returned `rows` are both derived from the same in-memory
+    `snaps` vector within one call — `count = snaps.len()`, `rows =
+    snaps.skip(off).take(lim)` — so a single reply is always internally
+    consistent: `rows.length == min(count - start, limit)`. There is no path
+    in the host command that trims rows independently of the count it
+    reports in the same response.
+    The only place `useWindowedQuery` can let `count` (`win.fetchedTotal`)
+    drift from the loaded `rows` is the count-only stale refresh (`load(0,
+    false, true)` in the throttled-tick effect, `useWindowedQuery.ts:259`),
+    which updates `fetchedTotal` alone. For by-id (`useByIdView.ts`) that
+    path requires `!followLive && !extentKnown` — true while paused, since
+    `extent` is never passed — but it only fires when `dirty` is set, and
+    `dirty` is only set when `extentSignal` or `followLive` changes
+    (`useWindowedQuery.ts:241-243`). By-id's `extentSignal` is `winEnd +
+    (running ? 0 : 1)` (`useByIdView.ts:126`); while paused (`running ===
+    false`) that's `winEnd + 1`, constant unless `winEnd` itself moves. So a
+    paused, static by-id snapshot never re-arms `dirty`, the count-only tick
+    never fires, and `count`/`rows` can't desync. While running, the
+    `followLive` branch always does a full-row fetch (`refresh: "window"`),
+    never a count-only one, so the two stay in lockstep there too.
+    Conclusion: the by-id view cannot refetch unboundedly in production —
+    the host's own response is always self-consistent, and the one
+    mechanism that could introduce a count/rows mismatch is inert for this
+    view while paused and bypassed while running. No code change made; this
+    is a test-fixture-only defect.
+  - **Item 3 — `pending` transitions.**
+    Confirmed by reading `useWindowedQuery.ts`: `setPending(true)` is called
+    only in `load()` when a fetch is kicked off or when a request gets
+    queued behind one in flight; `setPending(false)` is called only in the
+    `finally` block when no further request is queued. No other call site
+    sets it, so it cannot flip on a steady-state render. `useByIdView.ts`'s
+    only change is destructuring `pending` out of `useWindowedQuery` and
+    passing it through on the returned `ByIdView` — no new logic. The
+    existing (this phase's) `useWindowedQuery.test.ts` cases "reports
+    pending while a fetch is in flight, clearing once it resolves" and
+    "supersedes a pending fetch rather than dropping the request — pending
+    stays true throughout" exercise exactly this and pass.
+  - **Checks (scoped per-phase tier — frontend + README only).**
+    | Check | Command | Result | Duration |
+    |---|---|---|---|
+    | Targeted vitest | `timeout -k 5 240 pnpm --dir apps/gui exec vitest run src/TracePanel.dom.test.tsx src/useWindowedQuery.test.ts src/gridviewFilter.dom.test.tsx --testTimeout=10000` | 77/77 passed (3 files) | ~10 s |
+    | Full frontend test suite | `timeout -k 5 540 pnpm --dir apps/gui test` | 3720/3720 passed (252 files) | ~94 s |
+    | Frontend build | `timeout -k 5 540 pnpm --dir apps/gui build` | built, `tsc -b && vite build` clean | ~7 s |
+    | Rust / Python | — | skipped — diff is frontend + README only | — |
+    | `comment-references` grep | `git grep --untracked -Ein "task [0-9]|plans/" -- apps/ crates/ clients/` | empty (clean) | — |
+  - **Beyond the fixture.**
+    Only the test fixture (`TracePanel.dom.test.tsx`) and this status file
+    changed. No production code (`useWindowedQuery.ts`, `useByIdView.ts`,
+    `useFilteredTrace.ts`, `TracePanel.tsx`, `gridviewFilter.tsx`,
+    `index.css`, `README.md`) was touched beyond what phase 3 already had —
+    the code question's answer is "no defect," so nothing there needed a
+    guard.
+- 2026-10-03 — criterion 8 **met** (`82693c13`; DOM tests in
+  `TracePanel.dom.test.tsx`, `gridviewFilter.dom.test.tsx`,
+  `useWindowedQuery.test.ts`). Task back to pending closeout.
