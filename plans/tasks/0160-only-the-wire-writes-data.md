@@ -128,3 +128,10 @@ come from an intent.
   socketcan, ixxat, neovi, systec, etas, nixnet, virtual,
   udp_multicast) would show no `Tx` rows; acceptable, the row is the
   wire's.
+- 2026-10-03 — audit follow-ons 1–5 and 7 landed in 121 phase 1
+  (`task121-echo-row` `dd019c33`); 6 holds by ruling. Phase 2's list so
+  far: the refused `Tx ✗` row's reach (decode, counts, `fps.tx`, logger,
+  export — recommend: trace row stays, excluded from the rest); the
+  bridge's `Tx` drop (121 § Blockers); the plot closing raw gaps at
+  decimated zoom (queue § 3); the durable rule (ADR, CONTEXT.md,
+  CLAUDE.md).

@@ -117,6 +117,20 @@ keeps the queue's copy). This file shrinks every time it is walked.
   full value is in the side panel and the measurement strip. Accept, or
   want it elsewhere? Detail: 0146 § Blockers / side effects.
 
+- **121 phase 1: the refused `Tx ✗` row still feeds plots, per-message
+  counts, `fps.tx`, the logger and Save Capture** — the one row the host
+  still writes from an intent. Keep as is, or keep the trace row and
+  exclude undelivered rows from decode, counts, `fps.tx`, logger and
+  export (recommended; 160 phase 2)? Undoing either way is a filter on
+  `UndeliveredTx`. (0121 § Blockers, 2026-10-03)
+- **121 phase 1: a virtual bus's bridge drops every `Tx` frame it pulls
+  from the far side**, so the remote echo of the bridge's own egress is
+  not carried twice. It also drops a co-subscriber's transmits on the
+  bridged adapter and recorded `Tx` frames from a bridged replay server.
+  Keep (recommended), or convert `Tx`→`Rx` at ingress and accept the
+  originator seeing its frame twice? Per-frame matching is excluded by
+  ruling. (0121 § Blockers, 2026-10-03)
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 (none — release notes brought current through the stack's tip, 49afe029)
@@ -139,6 +153,12 @@ Owner rulings 2026-10-03 (new-build walk):
 
 ## 3. Fix later
 
+- A vbus bridge counts as a recipient: a local participant is echoed
+  even when the physical bus behind the bridge carried nothing (ADR 0021
+  model; 0121 § Blockers 2026-10-03).
+- FYI: local venvs need `uv sync --extra dev --reinstall-package
+  cannet-python-wire` after 121 (uv copies the path dependency); the
+  frozen sidecar and release binary were rebuilt.
 - The plot closes raw gaps at decimated zoom: no `null` is inserted,
   `mergeSeries` holds the last value across columns, and the dashed
   "extrapolated" cue needs ≤ 1 raw sample between served points — a

@@ -108,10 +108,9 @@ renamed ("queued to driver"); the manual-send IPC return drops
 the old behaviour are rewritten; ADR 0021/0027/0039 and README passages
 asserting send-time rows are corrected. Opus-sized.
 
-Open (Q2, 2026-10-03): the sidecar's shared interface fans an echo out
-to every session on the adapter as `DIRECTION_TX`. Recommended: accept
-(the sessions on one adapter are one node); the alternative is
-per-session (id, data) matching.
+**Q2 ruled 2026-10-03 (owner):** the sidecar's shared interface fans an
+echo out to every session on the adapter as `DIRECTION_TX`, no
+per-session matching — "consistent with the desired behavior".
 
 ## Exit criteria
 
@@ -120,6 +119,29 @@ visibly changes what the trace/transmit surface says about outgoing
 frames within the health poll's cadence, the behaviour is pinned by
 tests against faked chip states, and the owner confirms it on the PEAK
 bench.
+
+## Blockers / side effects
+
+- 2026-10-03: **Bridge ingress drops every `Tx` frame** — needed so the
+  far side's echo of the bridge's own egress cannot double the
+  originator's echo; it also drops (a) frames a co-subscriber on the
+  bridged remote adapter transmitted and (b) recorded `Tx` frames from a
+  bridged BLF replay server. Distinguishing them needs per-frame
+  matching, which the rulings exclude. Queue § 1.
+- 2026-10-03: **The refused `Tx ✗` row still feeds everything a row
+  feeds** — plot samples, per-message counts, `fps.tx`, the logger, Save
+  Capture. Kept per the ruling ("the queue did say no"), but it is a
+  sample/count/record from an intent, which task 160's rule forbids.
+  Queue § 1; 160 phase 2 owns the disposition.
+- 2026-10-03: A vbus **bridge counts as a recipient**, so a local
+  participant is echoed even when the physical bus behind the bridge
+  carried nothing (ADR 0021's model, unchanged).
+- 2026-10-03: Local venvs hold a stale `cannet-python-wire` (uv installs
+  the path dependency as a copy) until `uv sync --extra dev
+  --reinstall-package cannet-python-wire`; CI syncs fresh; the frozen
+  sidecar and the release binary were rebuilt after the reinstall.
+- 2026-10-03: python-can backends without `receive_own_messages` show no
+  `Tx` rows at all — accepted (the row is the wire's).
 
 ## Status log
 
@@ -133,3 +155,49 @@ bench.
   follow-ons, above); owner moved 121 to the front of the development
   sequence, right after `fix-plot-marker-refresh`. Branch
   `task121-echo-row` off `fix-plot-marker-refresh`.
+- 2026-10-03 — **Phase 1 landed** as `85d8c7d7`, amended to `dd019c33` (the python client's
+  `CannetBus` honours `receive_own_messages`, default `False`: own echoes
+  are dropped unless asked for, as python-can does; red→green in
+  `test_bus_vbus.py`) on `task121-echo-row` (off
+  `fix-plot-marker-refresh`), one commit. The wire writes the `Tx` row:
+  - **Sidecar:** `_bus_kwargs_for` passes `receive_own_messages = not
+    listen_only` for every python-can bus. The echo needs no new code
+    path — `PythonCanChannel.recv` → `message_to_frame` → `DIRECTION_TX`.
+    "tx stats … sent=" → `queued_to_driver=`. Test fake channel echoes
+    every send as `is_rx=False` unless opened listen-only.
+  - **python-wire:** `message_to_frame` read `msg.is_tx` (python-can's
+    `Message` has none, so every echo mapped to Rx) → reads `msg.is_rx`.
+  - **Core:** `SharedBus` echoes the winner's frame to its originator as
+    `ParticipantEvent::Frame { direction: Tx, sender: self }`, stamped with
+    the arbitration timestamp, only when `delivered > 0` (zero recipients:
+    `NoAcknowledger`, no echo). Bridge ingress drops `Direction::Tx`
+    frames (the far side's echo of the bridge's own egress), so the
+    physical/remote echo never doubles the originator echo.
+    `cannet-server debug vbus` echoes through its existing drain
+    (`interface_id` = own allocated id, prefix-routed by both clients).
+  - **Host:** `append_tx_row` → `append_refused_tx_row`, called only when
+    the enqueue is refused (manual send and scheduler batch); always marks
+    `UndeliveredTx`. `TransmitResult.tx_confirm_index` dropped (frontend
+    ignores the return — `TransmitPanel.tsx` `void invoke(...)`);
+    `TransmitWireStatus::Sent` → `Accepted` (serde `accepted`). Ingest
+    unchanged: `run_pump` already appends frames with their wire
+    direction. Error tally: new `session::is_bus_fault` counts only `Rx`
+    error frames (an echoed error frame we injected is a stimulus — this
+    keeps today's behaviour, where the send-time row never reached the
+    tally). ADR 0027 verifier already exempts `Tx` (`verification.rs`
+    `wants`/`observe`) — our own counters are never checked; no change.
+    `diag.rs` `tx_fps` doc reworded.
+  - **Docs:** ADR 0021 (:13, fan-out § incl. bridge drop, NoAck no
+    echo), ADR 0022 (frame flow: echo normalised; the "TX echo" known
+    unknown removed — it was now false), ADR 0027 (step 3), ADR 0039
+    (status line amended, :24, :31-32, :38-40, rejected-alt mark passage,
+    new `## Amendment (2026-10-03)`; :41-47 bus-off premise untouched for
+    161), README (:509-513 "as though it had been sent" clause; transmit
+    § rewritten), perf README (:108-112 tx = echo rate, :343), CONTEXT.md
+    (new **Tx row** entry), `cannet.proto` `direction` comment, frontend
+    comments (`types.ts` `tx_delivery`, `traceTable.tsx`, `index.css`).
+  - **Q2 (echo fan-out): ruled by the owner 2026-10-03** — every session
+    on a shared adapter receives the echo as `DIRECTION_TX`, no
+    per-session matching. Implemented as ruled (the sidecar fans out every
+    received frame, echoes included); pinned by
+    `test_the_drivers_echo_reaches_every_subscriber_as_a_transmitted_frame`.

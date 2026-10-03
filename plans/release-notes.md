@@ -281,8 +281,31 @@ repaired something broken.
   on — until the cache is fully written, so a relaunch never races the
   previous instance's shutdown.
 
+## Transmitting
+
+- **Fixed:** a `Tx` row is now a frame the bus carried. The trace used
+  to write a `Tx` row the moment a transmit was handed to the session,
+  so a pulled cable, an error-passive or a bus-off controller still
+  showed a healthy stream of transmits — in the trace, the plot (the
+  decoded samples came from those rows), the per-message counts, the
+  status bar's tx rate, a running logger and Save Capture. Now the
+  adapter's own echo of each frame it put on the wire is the row
+  (`receive_own_messages`, every vendor the sidecar opens), a virtual
+  bus echoes a participant's frame once another participant received
+  it, and a frame the bus never carries leaves nothing behind. The one
+  row the host still writes itself is `Tx ✗`: a transmit the session
+  refused outright (no interface, not connected). Hardware the driver
+  cannot echo shows no `Tx` rows at all.
+- **Changed:** the manual send no longer answers with a row index, and
+  its wire status reads `accepted` rather than `sent` — the session
+  took the frame; the bus has not spoken yet.
+
 ## Plot
 
+- **Fixed:** the bus-error markers on the plot refresh as errors
+  arrive. They used to be asked for only when the view moved, so on a
+  stopped, paused or scrubbed-back plot a new fault showed only after a
+  pan or zoom.
 - **Changed:** `Points: On` marks every sample the plot is served, with
   no cap. There used to be a flat 500-marker limit spread evenly along
   the visible range, and an even stride over a min/max envelope lands
@@ -476,6 +499,9 @@ repaired something broken.
 
 ## For application developers
 
+- **Changed:** `CannetBus` (python client) follows python-can's
+  `receive_own_messages` convention: a session's own echoed transmits
+  are dropped unless the bus was opened with `receive_own_messages=True`.
 - **New:** `cannet-gui --show-points <auto|off|on>` forces every plot
   panel's show-points mode for one run without writing it back to the
   project, so a performance reading of `Points: On` can be taken against
