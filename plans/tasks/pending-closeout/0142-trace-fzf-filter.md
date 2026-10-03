@@ -148,6 +148,27 @@ reversal:
    the event list; params persistence; `panel.find`; DOM tests for
    the box, both modes and the events; README trace section.
 
+3. **Feedback while the filter works** (owner feedback 2026-10-02: "the
+   filter in the traceview needs to give some feedback about what's
+   happening"; groomed the same day). The box renders nothing while the
+   host walks a new predicate's index — one blocking
+   `ensure_active_filter_index` call per settled query — and nothing
+   after. `GridviewFilterBox` takes an optional host-supplied
+   `{ count, pending }` beside its browser-side `matchSet.size` count
+   and renders `N matches`, or `searching…` while pending; the Database
+   panel's count is unchanged. `useWindowedQuery` exposes `pending` as
+   render state (today `fetching`/`pending` live in a ref the render
+   never sees); `useFilteredTrace` passes it through and `TracePanel`
+   hands `{ count, pending }` to the box while the filter is active, in
+   both modes. No host change: the count is the page's `count` the hook
+   already holds. **Ruled out** (owner, 2026-10-02, Q1): a progressive
+   count during the index walk — that needs a resumable walk and a
+   partial-answer protocol, and `searching…` covers the interval.
+   Branch `fix-trace-filter-feedback`. DOM tests: typing shows
+   `searching…` until the page lands, then `N matches` (singular at 1);
+   clearing hides it; the chronological mode shows it too; the Database
+   panel's count unchanged.
+
 ## Exit criteria
 
 1. A filter field in the Trace panel toolbar narrows rows in both
@@ -170,6 +191,10 @@ reversal:
    tests for the field, both modes, events, persistence and Mod+F.
 7. README trace section names the filter; CONTEXT.md if a term is
    coined.
+
+8. While a query's rows are being fetched the trace toolbar reads
+   `searching…` after the box, and once they land it reads the host's
+   match count; nothing shows with the box empty — DOM tests.
 
 ## Blockers / side effects
 
@@ -311,3 +336,6 @@ reversal:
 - 2026-09-21 — owner accepted the diacritic-folding boundary: the
   Rust port ranks as `normalize: false`; a diacritic in a bus name is
   the one case, and it stands. Queue item dropped.
+- 2026-10-02 — owner feedback: the filter needs feedback about what is
+  happening. Groomed as phase 3 / criterion 8 (count + `searching…`;
+  progressive count ruled out, Q1). Task reopened for it.
