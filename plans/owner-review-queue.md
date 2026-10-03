@@ -144,8 +144,10 @@ Owner rulings 2026-10-03 (new-build walk):
   `trace_show_events` / `TraceConfig.showEvents` are removed outright.
   Supersedes the 2026-09-20 "chip reveals checklist" ruling. The Events
   panel's `tag` prefix on its filter box goes too (gridview filter-box
-  shape, placeholder "filter by tag"). Branch
-  `fix-events-checklist-inline`.
+  shape, placeholder "filter by tag"). **Landed**:
+  `fix-events-checklist-inline` `67692db6` (13 files; `trace_show_events`
+  and `TraceConfig.showEvents` removed; a settings file or saved panel
+  config still carrying either key loads, pinned by tests).
 - **158 phase 7 starts now**; **121 phase 1 moves to the front** of the
   development sequence (fifth report; task 160 opened for the audit and
   the durable rule); **marker refresh fixed now** (`fix-plot-marker-refresh`,

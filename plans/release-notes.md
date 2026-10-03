@@ -361,6 +361,9 @@ repaired something broken.
 
 ## Events panel
 
+- **Changed:** the tag filter box is shaped like the trace's filter
+  box — a search icon and a `filter by tag` placeholder — instead of a
+  bare "tag" label beside the input.
 - **Changed:** the Events panel is one list again, oldest first: your
   notes, the truncation marker and every bus's bus-error episodes (at
   the configured gap) interleaved by time, paged from the host as the
@@ -406,6 +409,12 @@ repaired something broken.
 
 ## Trace panel
 
+- **Changed:** the `Events` chip is gone from the trace toolbar and the
+  plot toolbar. The per-kind checklist it used to hide behind sits on
+  the toolbar itself, and the chronological trace always interleaves
+  timeline events — the checklist alone decides which kinds draw
+  (every kind unticked means no event rows). The "Default events
+  overlay" setting went with it.
 - **New:** a filter box in the toolbar narrows the rows in both modes
   as you type. It searches the bus name, the message name, its
   transmitting ECU, its id in hex and decimal, the signal names, and
