@@ -150,7 +150,8 @@ default 5 s, minimum 1 s), and a silence of at least the gap ends it.
 It is known by its first and last error — so it carries a count, a
 span and a rate — and its id is its last error's ordinal on the bus.
 The host derives the episodes from the bus's error series; the Events
-panel lists them. Individual error frames are trace rows, not episodes.
+panel lists them and the plot draws one marker each (at a doubled gap
+when more fall in its window than fit). Individual error frames are trace rows, not episodes.
 _Avoid_: "run" — the removed coalescer's word, at a fixed 1 s gap.
 
 **Capture**:
