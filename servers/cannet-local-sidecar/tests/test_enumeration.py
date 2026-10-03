@@ -617,29 +617,51 @@ def test_bus_kwargs_for_parses_paren_metadata() -> None:
     # never trips over an unmapped Vector-Hardware-Config slot.
     assert m._bus_kwargs_for("vector:VN1630A(SN:12345, ch:0)", cfg) == (
         "vector",
-        {"serial": 12345, "channel": 0, "bitrate": 500_000},
+        {
+            "serial": 12345,
+            "channel": 0,
+            "bitrate": 500_000,
+            "receive_own_messages": True,
+        },
     )
     # Vector with no serial (XL virtual bus): fall back to app_name.
     assert m._bus_kwargs_for("vector:Virtual(ch:1)", cfg) == (
         "vector",
-        {"app_name": "Virtual", "channel": 1, "bitrate": 500_000},
+        {
+            "app_name": "Virtual",
+            "channel": 1,
+            "bitrate": 500_000,
+            "receive_own_messages": True,
+        },
     )
     assert m._bus_kwargs_for("kvaser:3(SN:67890, ch:1)", cfg) == (
         "kvaser",
-        {"channel": 3, "bitrate": 500_000},
+        {"channel": 3, "bitrate": 500_000, "receive_own_messages": True},
     )
     assert m._bus_kwargs_for("pcan:PCAN_USBBUS1(h:0x51, ch:0)", cfg) == (
         "pcan",
-        {"channel": "PCAN_USBBUS1", "bitrate": 500_000},
+        {
+            "channel": "PCAN_USBBUS1",
+            "bitrate": 500_000,
+            "receive_own_messages": True,
+        },
     )
     assert m._bus_kwargs_for("pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:42)", cfg) == (
         "pcan",
-        {"channel": "PCAN_USBBUS1", "bitrate": 500_000},
+        {
+            "channel": "PCAN_USBBUS1",
+            "bitrate": 500_000,
+            "receive_own_messages": True,
+        },
     )
     # PCAN unknown-handle fallback parses to int for python-can.
     assert m._bus_kwargs_for("pcan:handle=0xFF(h:0xFF, ch:0)", cfg) == (
         "pcan",
-        {"channel": 0xFF, "bitrate": 500_000},
+        {
+            "channel": 0xFF,
+            "bitrate": 500_000,
+            "receive_own_messages": True,
+        },
     )
 
 
@@ -664,6 +686,25 @@ def test_bus_kwargs_for_asks_no_backend_for_a_driver_side_bus_off_reset() -> Non
         ):
             _, kwargs = m._bus_kwargs_for(channel_id, cfg)
             assert "auto_reset" not in kwargs, channel_id
+
+
+def test_bus_kwargs_for_requests_the_echo_unless_listen_only() -> None:
+    """A bus the sidecar may transmit on asks the driver to hand back
+    each frame it actually put on the wire (``is_rx == False``): that
+    echo, not the accepted send, is what the trace records. A
+    listen-only bus transmits nothing and asks for no echo."""
+    from cannet_local_sidecar.driver import OpenConfig
+
+    m = _fresh_driver_module()
+    for channel_id in (
+        "vector:VN1630A(SN:12345, ch:0)",
+        "kvaser:3(SN:67890, ch:1)",
+        "pcan:PCAN_USBBUS1(h:0x51, ch:0)",
+    ):
+        _, kwargs = m._bus_kwargs_for(channel_id, OpenConfig())
+        assert kwargs["receive_own_messages"] is True, channel_id
+        _, kwargs = m._bus_kwargs_for(channel_id, OpenConfig(listen_only=True))
+        assert kwargs["receive_own_messages"] is False, channel_id
 
 
 def test_bus_kwargs_for_fd_routes_through_bit_timing() -> None:
@@ -836,6 +877,7 @@ def test_open_non_pcan_does_not_touch_pcan_basic() -> None:
             "channel": 0,
             "app_name": "Virtual",
             "bitrate": 500_000,
+            "receive_own_messages": True,
         }
     finally:
         _uninstall_fake_vector()

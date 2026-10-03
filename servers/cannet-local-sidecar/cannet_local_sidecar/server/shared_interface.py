@@ -193,7 +193,9 @@ class _SharedInterface:
         # integer updates, never across ``ch.send``). `max_send_ns` is
         # the worst single ``ch.send`` duration in the interval — the
         # signal that distinguishes a host-side late send from a
-        # sidecar/driver TX-buffer stall.
+        # sidecar/driver TX-buffer stall. The count is of frames the
+        # driver accepted into its transmit queue, not frames the bus
+        # carried: those come back as the driver's echo on the rx path.
         self._tx_stats_lock = threading.Lock()
         self._tx_count = 0
         self._tx_count_total = 0
@@ -604,7 +606,7 @@ class _SharedInterface:
                         )
                         tx_rate = tx / secs if secs > 0 else 0.0
                         _log.info(
-                            "tx stats %s: sent=%.0f/s total=%d "
+                            "tx stats %s: queued_to_driver=%.0f/s total=%d "
                             "max_send=%.2f ms max_gap=%.2f ms",
                             cid,
                             tx_rate,

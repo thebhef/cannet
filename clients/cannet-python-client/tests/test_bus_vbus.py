@@ -168,3 +168,37 @@ def test_state_reads_active_while_the_peer_reports_no_fault(bus) -> None:
     # between "reported healthy" and "said nothing" survives.
     assert bus.state is can.BusState.ACTIVE
     assert bus.controller_state is None
+
+
+# --- own transmits: python-can's `receive_own_messages` -----------------
+#
+# The server reports every frame the bus carried for a session back to
+# it as `Tx` — the transmit echo. python-can hands a bus its own frames
+# only when asked for them, so by default the echo is dropped.
+
+
+def test_a_sessions_own_echo_is_dropped_by_default(bus, peer) -> None:
+    bus.send(can.Message(arbitration_id=0x501, data=b"\x01"))
+    assert peer.recv(timeout=5.0) is not None, "the bus carried the frame"
+    assert bus.recv(timeout=0.5) is None
+
+
+def test_receive_own_messages_delivers_the_echo(vbus_server: str, peer) -> None:
+    with open_bus(vbus_server, receive_own_messages=True) as own:
+        own.send(can.Message(arbitration_id=0x502, data=b"\x02"))
+        echo = own.recv(timeout=5.0)
+        assert echo is not None
+        assert echo.arbitration_id == 0x502
+        assert not echo.is_rx
+
+
+@pytest.mark.parametrize("receive_own_messages", [False, True])
+def test_another_participants_frame_is_delivered_either_way(
+    vbus_server: str, peer, receive_own_messages: bool
+) -> None:
+    with open_bus(vbus_server, receive_own_messages=receive_own_messages) as bus:
+        peer.send(can.Message(arbitration_id=0x503, data=b"\x03"))
+        got = bus.recv(timeout=5.0)
+        assert got is not None
+        assert got.arbitration_id == 0x503
+        assert got.is_rx

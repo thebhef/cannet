@@ -43,7 +43,7 @@ class _FakeMsg:
     timestamp: float = 0.0
     arbitration_id: int = 0x100
     is_extended_id: bool = False
-    is_tx: bool = False
+    is_rx: bool = True
     data: bytes = b""
     is_fd: bool = False
     bitrate_switch: bool = False

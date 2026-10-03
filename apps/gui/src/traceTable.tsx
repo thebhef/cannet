@@ -26,10 +26,9 @@ export const ERROR_FRAME_TITLE =
   "CAN bus error frame — the controller reported an error on the wire; it carries no id payload of its own";
 
 /// What a transmit no wire took reads as in the direction column, and
-/// the row class and tooltip that go with it. The row is still shown —
-/// an analyzer shows its own transmits — but it is not evidence that a
-/// bus carried anything, and before this it was indistinguishable from
-/// a row that was.
+/// the row class and tooltip that go with it. A refused send is the one
+/// transmit that writes a row of its own — every other `Tx` row is the
+/// bus's echo of a frame it carried — so it must not read like one.
 export const UNDELIVERED_TX_LABEL = "Tx ✗";
 export const UNDELIVERED_TX_ROW_CLASS = "trace-row-undelivered-tx";
 export const UNDELIVERED_TX_TITLE =

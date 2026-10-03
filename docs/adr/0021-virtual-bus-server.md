@@ -10,8 +10,9 @@ gRPC service ([ADR 0004](0004-grpc-wire-protocol.md)) for the
 remote case; the GUI host uses the same primitive in-process for
 local virtual buses (and, later, rest-of-bus simulation). The
 existing `--loopback` mode (and `cannet-core::loopback_bus`) is
-retired: a virtual bus with the GUI's already-synthesised Tx row
-covers every use case loopback served, with less surface.
+retired: a virtual bus that echoes each participant's carried frames
+back to it as `Tx` covers every use case loopback served, with less
+surface.
 
 The bar: an analyzer connected to a participant observes behaviour
 indistinguishable from real CAN on the dimensions our model carries
@@ -112,15 +113,21 @@ out of scope here).
 
 `FrameBatch` from a session's allocated participant fans out as `Rx` to
 every **other** participant on the bus, each delivery tagged with the
-sender's id so attribution survives. Bridges forward fan-out to
-their physical backend; physical frames a bridge receives fan
-inwards. The originator's session does not receive its own frame
-back — the GUI's locally synthesised `Tx` row is the originator's
-only record, matching real bus-monitor behaviour for a participant's own
-transmissions.
+sender's id so attribution survives. The originator's session receives
+its own frame back once, as `Tx`, stamped with the same arbitration
+instant the recipients saw — the transmit echo a real controller
+reports (python-can's `receive_own_messages`). That echo is the
+originator's only record of the transmit: a cannet trace records a
+frame the bus carried, never a frame merely sent.
 
-A frame with zero recipients reaches no acknowledger and the
-originator gets `Error { code: NoAcknowledger }`.
+Bridges forward fan-out to their physical backend; physical frames a
+bridge receives fan inwards — except the ones its far side reports as
+`Tx`, which are that controller's echo of the bridge's own egress. The
+virtual bus already carried those frames, and their originator already
+has its echo, so they are not fanned in again.
+
+A frame with zero recipients reaches no acknowledger: the originator
+gets `Error { code: NoAcknowledger }` and no echo.
 
 ### Per-participant TX queue, frame-boundary arbitration
 

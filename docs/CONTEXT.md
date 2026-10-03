@@ -319,6 +319,13 @@ attributes); overrides layer on top per message. Received frames with
 a designation are verified at ingest.
 _Avoid_: "checksum signal" — the mechanism covers counters too.
 
+**Tx row**:
+A trace row in the `Tx` direction is a frame the bus carried for us —
+the driver's echo of our own transmit, arriving on the receive path —
+and a send the bus never carries leaves none.
+_Avoid_: "tx-confirm" — nothing is confirmed at send time; the one
+exception, a send refused at enqueue, reads `Tx ✗`.
+
 **Rest-of-bus simulation (RBS)**:
 Transmitting a configured set of DBC messages on a cadence with live,
 editable signal values — cannet plays every node except the device
