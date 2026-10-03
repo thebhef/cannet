@@ -205,12 +205,11 @@ def test_the_recorded_climb_reaches_passive_at_128_not_warning() -> None:
     seen = []
     while (frame := ch.recv(timeout_s=0.0)) is not None:
         assert frame.kind == drv.FrameKind.ERROR
-        seen.append(ch.state().state)
-    assert seen[0] == drv.STATE_ACTIVE, "TEC 8 is a healthy controller"
-    assert drv.STATE_WARNING in seen, "TEC crossed 96 on the way up"
-    assert seen[-1] == drv.STATE_PASSIVE, "TEC 128 is error-passive"
-    assert ch.state().tec == 0x80
-    assert ch.state().rec == 0
+        seen.append(ch.state())
+    assert seen[0].state == drv.STATE_ACTIVE, "TEC 8 is a healthy controller"
+    assert drv.STATE_WARNING in [s.state for s in seen], "TEC crossed 96 on the way up"
+    assert seen[-1].state == drv.STATE_PASSIVE, "TEC 128 is error-passive"
+    assert (seen[-1].tec, seen[-1].rec) == (0x80, 0)
 
 
 def test_the_pin_at_128_holds_passive_however_many_frames_arrive() -> None:
@@ -290,6 +289,156 @@ def test_a_non_pcan_backend_does_not_decode_error_payloads() -> None:
     _drain(ch)
     assert ch.state().state == drv.STATE_ACTIVE
     assert ch.state().tec == 0
+
+
+# ----- The echo gate: a Tx row needs a transmitter that is not passive ----
+
+
+class _PcanScriptBus(_PcanErrorBus):
+    """A PCAN-shaped bus that hands out a scripted mix of error frames,
+    received data frames and echoes of our own transmissions."""
+
+    def __init__(self, msgs: list[_ErrMsg], status: int = 0x00000) -> None:
+        super().__init__([], status=status)
+        self._msgs = list(msgs)
+
+    def feed(self, msgs: list[_ErrMsg]) -> None:
+        self._msgs.extend(msgs)
+
+    def recv(self, timeout: float) -> object:
+        return self._msgs.pop(0) if self._msgs else None
+
+
+def _err(tec: int, rec: int = 0) -> _ErrMsg:
+    return _ErrMsg(_error_payload(tec, rec))
+
+
+def _data() -> _ErrMsg:
+    """A data frame another node sent."""
+    msg = _ErrMsg(bytes([0x11, 0x22]))
+    msg.is_error_frame = False
+    return msg
+
+
+def _echo() -> _ErrMsg:
+    """PEAK's echo of a frame we sent. python-can marks it
+    ``is_rx = False``; ``is_tx`` is set too so the fake reads the same
+    through either spelling of the direction."""
+    msg = _data()
+    msg.is_rx = False
+    msg.is_tx = True  # type: ignore[attr-defined]
+    return msg
+
+
+def _read_all(ch: PythonCanChannel, n: int) -> list[drv.Frame]:
+    """Every frame ``recv`` hands up over ``n`` reads. A dropped echo
+    reads as ``None``, so a drain that stopped at the first ``None``
+    would stop at the gate."""
+    out = []
+    for _ in range(n):
+        frame = ch.recv(timeout_s=0.0)
+        if frame is not None:
+            out.append(frame)
+    return out
+
+
+def _fed(msgs: list[_ErrMsg], status: int = 0x00000) -> PythonCanChannel:
+    ch = _channel(_PcanScriptBus(msgs, status=status))
+    _read_all(ch, len(msgs))
+    return ch
+
+
+def test_an_echo_from_an_error_passive_transmitter_is_dropped_and_counted() -> None:
+    # The bench finding: cable pulled, PEAK retransmits forever and
+    # echoes every attempt. TEC 135 is past the error-passive limit, so
+    # the echo is no evidence any node took the frame.
+    ch = _channel(_PcanScriptBus([_err(135), _echo(), _echo()]))
+    frames = _read_all(ch, 3)
+    assert [f.kind for f in frames] == [drv.FrameKind.ERROR]
+    assert ch.echoes_dropped() == 2
+
+
+def test_an_echo_at_the_passive_limit_is_still_forwarded() -> None:
+    # 127 is warning, not passive: fewer than 16 consecutive failures.
+    ch = _channel(_PcanScriptBus([_err(127), _echo()]))
+    frames = _read_all(ch, 2)
+    assert [f.is_rx for f in frames] == [True, False]
+    assert ch.echoes_dropped() == 0
+
+
+def test_a_received_frame_is_never_dropped_however_passive_we_are() -> None:
+    ch = _channel(_PcanScriptBus([_err(200, rec=200), _data()]))
+    frames = _read_all(ch, 2)
+    assert [f.kind for f in frames] == [drv.FrameKind.ERROR, drv.FrameKind.CLASSIC]
+    assert frames[1].is_rx
+    assert ch.echoes_dropped() == 0
+
+
+def test_a_passive_rec_alone_does_not_close_the_gate() -> None:
+    # REC > 127 says our receiver is seeing errors; our transmissions
+    # may still be acknowledged, so their echoes stay.
+    ch = _channel(_PcanScriptBus([_err(0, rec=200), _echo()]))
+    assert len(_read_all(ch, 2)) == 2
+    assert ch.echoes_dropped() == 0
+
+
+def test_received_frames_and_echoes_leave_the_counters_alone() -> None:
+    # Neither is a reading of the controller: a PEAK echo is "on the
+    # wire", not "acknowledged", so it cannot lower TEC.
+    st = _fed([_err(100, rec=130)] + [_data(), _echo()] * 5).state()
+    assert (st.tec, st.rec) == (100, 130)
+
+
+# ----- Re-sync on the status poll, between error frames --------------------
+
+
+def test_counters_hold_while_error_frames_keep_arriving() -> None:
+    bus = _PcanScriptBus([_err(135)])
+    ch = _channel(bus)
+    _read_all(ch, 1)
+    for _ in range(4):
+        assert ch.state().tec == 135
+        bus.feed([_err(135)])
+        _read_all(ch, 1)
+    assert ch.state() == drv.ControllerState(state=drv.STATE_PASSIVE, tec=135, rec=0)
+
+
+def test_a_poll_with_no_error_frame_and_a_clean_status_clears_the_counters() -> None:
+    bus = _PcanScriptBus([_err(135, rec=130)])
+    ch = _channel(bus)
+    _read_all(ch, 1)
+    assert ch.state().state == drv.STATE_PASSIVE
+    bus.feed([_echo(), _data()])
+    _read_all(ch, 2)
+    assert ch.state() == drv.ControllerState(state=drv.STATE_ACTIVE, tec=0, rec=0)
+
+
+def test_a_cleared_reading_reopens_the_gate() -> None:
+    bus = _PcanScriptBus([_err(135)])
+    ch = _channel(bus)
+    _read_all(ch, 1)
+    ch.state()
+    ch.state()
+    bus.feed([_echo()])
+    assert len(_read_all(ch, 1)) == 1
+    assert ch.echoes_dropped() == 0
+
+
+def test_a_poll_with_no_error_frame_keeps_counters_the_status_word_backs() -> None:
+    bus = _PcanScriptBus([_err(135)], status=0x00008)  # BUSWARNING
+    ch = _channel(bus)
+    _read_all(ch, 1)
+    ch.state()
+    st = ch.state()
+    assert (st.state, st.tec) == (drv.STATE_PASSIVE, 135)
+
+
+def test_the_status_word_still_floors_cleared_counters_at_bus_off() -> None:
+    bus = _PcanScriptBus([_err(135)], status=0x00010)
+    ch = _channel(bus)
+    _read_all(ch, 1)
+    ch.state()
+    assert ch.state().state == drv.STATE_BUS_OFF
 
 
 # ----- The status word, now masked -------------------------------------------

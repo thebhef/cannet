@@ -321,6 +321,55 @@ def test_vector_does_not_decode_error_frame_payloads_as_peak_counters() -> None:
     assert (st.state, st.tec, st.rec) == (drv.STATE_ACTIVE, 0, 0)
 
 
+# ----- The echo gate, precautionary on Vector -------------------------------
+
+
+class _EchoVectorBus(_VectorBus):
+    """Hands out TX_OK receipts -- our own frames, ``is_rx`` false --
+    and frames another node sent."""
+
+    def __init__(self, chip_state: tuple[int, int, int], msgs: list) -> None:
+        super().__init__(chip_state)
+        self._msgs = list(msgs)
+
+    def recv(self, timeout: float) -> object:
+        return self._msgs.pop(0) if self._msgs else None
+
+
+def _vector_msg(*, is_rx: bool) -> _ErrMsg:
+    msg = _ErrMsg(bytes([0x11]))
+    msg.is_error_frame = False
+    msg.is_rx = is_rx  # type: ignore[attr-defined]
+    msg.is_tx = not is_rx
+    return msg
+
+
+def _read_all(ch: PythonCanChannel, n: int) -> list[drv.Frame]:
+    frames = (ch.recv(timeout_s=0.0) for _ in range(n))
+    return [f for f in frames if f is not None]
+
+
+def test_a_tx_receipt_from_an_error_passive_vector_chip_is_dropped() -> None:
+    # The XL documentation this was written from does not say whether a
+    # receipt waits for the acknowledge, so the gate PEAK needs applies.
+    bus = _EchoVectorBus((0x04, 200, 0), [_vector_msg(is_rx=False)] * 2)
+    ch = _channel(bus)
+    assert _read_all(ch, 2) == []
+    assert ch.echoes_dropped() == 2
+
+
+def test_a_tx_receipt_below_the_passive_limit_is_forwarded() -> None:
+    bus = _EchoVectorBus((0x08, 127, 0), [_vector_msg(is_rx=False)])
+    ch = _channel(bus)
+    assert [f.is_rx for f in _read_all(ch, 1)] == [False]
+    assert ch.echoes_dropped() == 0
+
+
+def test_a_received_vector_frame_is_never_dropped() -> None:
+    bus = _EchoVectorBus((0x04, 200, 200), [_vector_msg(is_rx=True)])
+    assert len(_read_all(_channel(bus), 1)) == 1
+
+
 # ----- The sidecar still runs with no Vector library at all ------------------
 
 

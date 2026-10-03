@@ -278,6 +278,19 @@ class OpenChannel(Protocol):
         driver's Kvaser path ever returns anything but zero.
         """
 
+    def echoes_dropped(self) -> int:
+        """How many echoes of our own frames :meth:`recv` has withheld
+        since this channel was opened, because the backend's echo is not
+        proof of an acknowledge and the transmitter was error-passive.
+
+        A withheld echo produces no ``Tx`` frame; :meth:`recv` returns
+        ``None`` for it, as it would on a timeout. The rx pump reports
+        the total on its periodic stats line.
+
+        **Optional**, like :meth:`timer_wraps`: a driver that gates no
+        echoes omits it, and the stats line then omits the field.
+        """
+
     def reset(self) -> bool:
         """Bring a bus-off controller back on bus.
 

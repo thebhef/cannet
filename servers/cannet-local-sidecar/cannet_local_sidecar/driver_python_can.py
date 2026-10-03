@@ -121,6 +121,11 @@ _PCAN_RX_OVERRUN_MASK = _PCAN_ERROR_OVERRUN | _PCAN_ERROR_QOVERRUN
 _PCAN_ERR_REC_OFFSET = 2
 _PCAN_ERR_TEC_OFFSET = 3
 
+#: The highest transmit error counter that is not yet error-passive under
+#: ISO 11898-1 -- the limit ``state_from_counters`` applies. An echo
+#: arriving above it is withheld; see ``PythonCanChannel._echo_unproven``.
+_ERROR_PASSIVE_TEC = 127
+
 #: Kvaser's receive timer, and why the sidecar has to unwrap it.
 #:
 #: ``canReadWait`` reports a frame's arrival as a 32-bit count of
@@ -532,6 +537,15 @@ class PythonCanChannel:
         # from the rx thread's write. `(rec, tec)`, matching the payload
         # order they are decoded from.
         self._counters: tuple[int, int] = (0, 0)
+        # How many error frames `_note_pcan_counters` has read, and the
+        # figure the previous state poll saw. Equal means no error frame
+        # arrived for a whole poll interval -- see `_pcan_state`.
+        self._pcan_error_frames = 0
+        self._pcan_error_frames_polled = 0
+        # Echoes of our own frames that `recv` withheld because the
+        # transmitter was error-passive -- see `_echo_unproven`. Written
+        # and read only on the rx thread.
+        self._echoes_dropped = 0
         # Rx-overrun episodes counted off PEAK's status word, and
         # whether the last word we read was already inside one. The
         # bits stay set for as long as the condition lasts, so an
@@ -565,9 +579,75 @@ class PythonCanChannel:
         if self._is_kvaser:
             self._unwrap_kvaser_timestamp(msg)
         frame = message_to_frame(msg)
-        if self._is_pcan and frame.kind == FrameKind.ERROR:
-            self._note_pcan_counters(frame.data)
+        if frame.kind == FrameKind.ERROR:
+            if self._is_pcan:
+                self._note_pcan_counters(frame.data)
+        elif not frame.is_rx and self._echo_unproven():
+            # Returned as a timeout would be, so the rx pump goes round
+            # its loop -- stop flag, stats tick -- rather than this
+            # method spinning inside a fault that echoes continuously.
+            self._echoes_dropped += 1
+            return None
         return frame
+
+    def _echo_unproven(self) -> bool:
+        """Whether an echo of our own frame, arriving now, would claim a
+        transmission no node acknowledged.
+
+        **PEAK.** Its echo (``PCAN_ALLOW_ECHO_FRAMES``, delivered as
+        ``PCAN_MESSAGE_ECHO``) fires when the controller puts the frame
+        on the wire, not when another node acknowledges it. Measured with
+        the CAN cable pulled: a lone PEAK transmitter retransmits the
+        unacknowledged frame indefinitely and the echoes keep arriving at
+        the normal cadence, so every one of them would be a ``Tx`` row
+        for a frame nobody took. ISO 11898-1 fault confinement is what
+        tells the two apart: each failed transmission raises TEC by 8, so
+        16 consecutive failures take the transmitter past 127 into
+        error-passive, and PEAK reports TEC in every error frame at the
+        error rate -- the reading is live throughout the fault and the
+        gate closes within about 16 frames.
+
+        **Vector.** python-can maps the XL driver's transmit receipt
+        (``XL_CAN_EV_TAG_TX_OK``, or ``XL_CAN_MSG_FLAG_TX_COMPLETED`` on
+        the classic queue) to ``is_rx`` false. The XL documentation
+        describes it as a receipt for a message "transmitted by the CAN
+        chip" and does not say it waits for the acknowledge, so the same
+        gate applies as a precaution, on the chip state's TEC (one poll
+        old; see :meth:`_vector_state`).
+
+        **Kvaser** is not gated. python-can enables
+        ``canIOCTL_SET_LOCAL_TXACK`` and marks only ``canMSG_LOCAL_TXACK``
+        messages ``is_rx`` false; CANlib documents those as sent "every
+        time a message is successfully transmitted on the bus", and a
+        transmission is successful under ISO 11898-1 only once the
+        acknowledge slot was dominant.
+
+        TEC only, not REC. A receive counter past 127 says our receiver
+        is seeing errors, which does not stop other nodes acknowledging
+        what we send; dropping those echoes would hide real transmissions.
+        The threshold is the error-passive limit
+        :func:`~cannet_local_sidecar.driver.state_from_counters` applies,
+        so the gate and the bus-health state close together.
+
+        Called for every echo on the receive thread: one tuple read and
+        one compare.
+        """
+        if self._is_pcan:
+            tec = self._counters[1]
+        elif self._is_vector:
+            reading = getattr(self._bus, "chip_state", None)
+            if reading is None:
+                return False
+            tec = reading[1]
+        else:
+            return False
+        return tec > _ERROR_PASSIVE_TEC
+
+    def echoes_dropped(self) -> int:
+        """Echoes withheld by the error-passive gate since this channel
+        was opened (see :meth:`_echo_unproven`). Read by the rx pump's
+        stats tick, on the thread that writes it."""
+        return self._echoes_dropped
 
     def _unwrap_kvaser_timestamp(self, msg) -> None:
         """Undo the rollover of Kvaser's 32-bit receive timer, in place
@@ -613,18 +693,20 @@ class PythonCanChannel:
         return self._kvaser_wraps
 
     def _note_pcan_counters(self, data: bytes) -> None:
-        """Record the error counters carried by a PEAK error frame.
+        """Re-sync the error counters to the ones a PEAK error frame
+        carries.
 
         This is the only live reading of the controller's registers that
         PCAN offers. ``CAN_GetStatus`` and the queued
         ``PCAN_MESSAGE_STATUS`` frames both stop at ``BUSWARNING`` on a
         transmitter driving an open circuit, while these counters climb
-        past the error-passive threshold and count back down when the
-        wire is restored.
+        past the error-passive threshold. A reading arrives only while
+        errors do; :meth:`_pcan_state` clears the pair once a whole poll
+        interval passes without one.
 
-        Costs two array reads on the receive thread, which matters: the
-        measured rate on that fault was about 5,200 error frames a
-        second. Nothing is published from here — the state poll reads
+        Costs an increment and two array reads on the receive thread,
+        which matters: the measured rate on that fault was about 5,200
+        error frames a second. Nothing is published from here — the state poll reads
         the latest pair on its own 500 ms cadence, which is where the
         coalescing happens.
 
@@ -633,6 +715,7 @@ class PythonCanChannel:
         shorter one is a backend we do not have a layout for, not a
         controller reporting zero.
         """
+        self._pcan_error_frames += 1
         if len(data) <= _PCAN_ERR_TEC_OFFSET:
             return
         self._counters = (data[_PCAN_ERR_REC_OFFSET], data[_PCAN_ERR_TEC_OFFSET])
@@ -731,10 +814,24 @@ class PythonCanChannel:
         error frames carry and floored by its live channel status.
 
         **The counters are the state source.** ISO 11898-1 defines fault
-        confinement on TEC and REC, and PEAK reports both in every error
-        frame (see :meth:`_note_pcan_counters`). They rise 8 per failed
-        transmission, fall on every success, and therefore recover
-        without anything having to notice that a fault ended.
+        confinement on TEC and REC. PEAK reports both in every error
+        frame (see :meth:`_note_pcan_counters`) and nowhere else -- not
+        in the status word, not in an echo, which on PEAK is not proof of
+        an acknowledge (see :meth:`_echo_unproven`).
+
+        **A poll interval without an error frame clears them.** At the
+        ~1,600 frames/s this tool runs, half a second with no error
+        frame is hundreds of error-free frames or a silent bus, either
+        of which the controller's own counters fall through; and during
+        a real fault error frames arrive with every retransmission, so
+        the pair never goes a whole interval unrefreshed. The clear is
+        skipped while the status word itself reports a bus error, so
+        the vendor's floor keeps the reading it backs. Without this, a
+        restored wire -- which ends the error frames -- would leave the
+        last fault reading in place indefinitely, holding the bus-health
+        state at error-passive and the echo gate shut. An error frame
+        landing between the count read and the clear is overwritten; the
+        next one, milliseconds later during a fault, restores it.
 
         **The status word is a floor, not the answer.** Measured on a
         transmitter driving an open circuit, ``CAN_GetStatus`` reported
@@ -773,7 +870,17 @@ class PythonCanChannel:
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         self._note_pcan_overrun(status)
-        state = worse_state(_pcan_status_state(status), from_counters)
+        from_status = _pcan_status_state(status)
+        error_frames = self._pcan_error_frames
+        if (
+            error_frames == self._pcan_error_frames_polled
+            and from_status == STATE_ACTIVE
+        ):
+            self._counters = (0, 0)
+            rec = tec = 0
+            from_counters = STATE_ACTIVE
+        self._pcan_error_frames_polled = error_frames
+        state = worse_state(from_status, from_counters)
         return ControllerState(state=state, tec=tec, rec=rec)
 
     def _note_pcan_overrun(self, status: int) -> None:
