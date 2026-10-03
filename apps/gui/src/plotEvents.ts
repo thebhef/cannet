@@ -68,7 +68,8 @@ function busErrorEpisodeId(e: BusErrorEpisodeWire): string {
   return `bus-error:${e.bus}:${e.lastOrdinal}`;
 }
 
-/// The plot's bus-error markers (ADR 0035 amended): one `TimelineEvent`
+/// The plot's bus-error markers (ADR 0035 amended) — and the Events
+/// panel's rows for them: one `TimelineEvent`
 /// of kind `busError` per **episode** the host served, at its first
 /// error, labelled `<bus>: N bus errors over S (R/s)` with the bus's
 /// project name. They draw through {@link plotEventsFromTimeline}, the

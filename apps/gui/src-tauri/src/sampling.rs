@@ -3,19 +3,21 @@
 //! `sample_signals` serves a plot's visible-window slice from the
 //! per-signal decimation pyramids (ADR 0002 DS-5), packed into the
 //! compact binary layout the frontend decodes; `signal_min_max` answers
-//! the host-owned y-extent (ADR 0025); `bus_error_episodes` pages the
-//! bus-error episodes derived from each bus's error series in the same
-//! pyramids, and `bus_error_episodes_in_window` answers the ones a plot
-//! window holds. All catch
+//! the host-owned y-extent (ADR 0025); `events_page` pages the Events
+//! panel's one list — the authored events merged with the bus-error
+//! episodes derived from each bus's error series in the same pyramids —
+//! and `bus_error_episodes_in_window` answers the episodes a plot window
+//! holds. All catch
 //! the caches up to the store tip, so per-tick cost is `O(new matches)`.
 
 use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
 use crate::bus_error_episodes::Episode;
+use crate::events_page::{EventsQuery, EventsRow, ListedKind};
 use crate::ipc::{
-    BusErrorEpisode, BusErrorEpisodePage, BusErrorEpisodeWindow, DecimatedRange, SampledPoints,
-    SignalExtent, SignalQuery,
+    BusErrorEpisode, BusErrorEpisodeWindow, DecimatedRange, EventsPage, EventsPageRow,
+    SampledPoints, SignalExtent, SignalQuery,
 };
 use crate::settings::{MAX_BUS_ERROR_EPISODE_GAP_S, MIN_BUS_ERROR_EPISODE_GAP_S};
 use crate::signal_cache::CacheQuery;
@@ -344,31 +346,43 @@ fn signal_min_max_inner(app: &AppHandle, signals: &[SignalQuery]) -> Vec<Option<
     out
 }
 
-/// Page `buses`' bus-error **episodes** at `gap_seconds`: rows
-/// `[offset, offset + limit)`, newest first, with how many there are.
+/// One page of the **Events panel's list**: the authored events and
+/// `buses`' bus-error episodes at `gap_seconds`, merged by time, oldest
+/// first — rows `[offset, offset + limit)`, or the last `limit` with
+/// `from_end` — with how many there are (ADR 0035).
 ///
 /// An episode is a burst of errors on one bus in which every error
-/// follows the one before by less than the gap; a silence of at least the
-/// gap ends it. Each row carries the burst's first and last time, its
-/// count, span and rate, and its last error's ordinal on the bus — its id.
-/// The host derives the episodes from each bus's error series and holds
-/// them per bus at the gap last asked for, extending them as the capture
-/// grows and rebuilding them when the gap changes or after a restore
-/// ([`crate::signal_cache::SignalCacheStore::bus_error_episodes`]); a view
-/// pages them and counts nothing.
+/// follows the one before by less than the gap; the host derives each
+/// bus's list from its error series and holds it at the gap last asked
+/// for ([`crate::signal_cache::SignalCacheStore::with_episodes`]). The
+/// authored events are the notes store's whole list. Neither is copied
+/// whole into a page: the page is located by rank and merged from there
+/// ([`crate::events_page`]). At equal times the authored events come
+/// first, then the truncation marker, then the buses in `buses` order.
 ///
-/// The gap is held to the `bus_error_episode_gap_s` setting's bounds, so
-/// the list stays bounded by capture time ÷ gap whatever a caller sends.
-/// `complete` is `false` while a series or its episodes are still being
-/// built (ADR 0049); the page is then what has been derived so far.
+/// `kinds` and `tag_query` are the panel's filters, applied here so the
+/// count is the filtered one: a kind left out drops its list, and a
+/// non-empty tag query keeps the authored events whose tag contains it
+/// and drops every untagged row — the truncation marker and every
+/// episode.
+///
+/// The gap is held to the `bus_error_episode_gap_s` setting's bounds.
+/// `complete` is `false` while an episode list is still being built (ADR
+/// 0049). `version` moves whenever the list could have changed — a note
+/// edit, an episode appended or grown, a gap change, a trim — so equal
+/// versions answer equal rows.
 #[tauri::command]
-pub(crate) async fn bus_error_episodes(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn events_page(
     app: AppHandle,
     buses: Vec<String>,
     gap_seconds: f64,
     offset: u64,
     limit: u64,
-) -> BusErrorEpisodePage {
+    from_end: bool,
+    kinds: Vec<ListedKind>,
+    tag_query: String,
+) -> EventsPage {
     off_async_workers(move || {
         let state: State<'_, AppState> = app.state();
         let refs: Vec<&str> = buses.iter().map(String::as_str).collect();
@@ -377,23 +391,38 @@ pub(crate) async fn bus_error_episodes(
             MIN_BUS_ERROR_EPISODE_GAP_S as f64,
             MAX_BUS_ERROR_EPISODE_GAP_S as f64,
         );
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
-        let page = state.signal_caches.bus_error_episodes(
-            &refs,
-            gap,
-            offset,
-            usize::try_from(limit).unwrap_or(usize::MAX),
+        let page = crate::events_page::events_page(
+            &state.notes,
+            &state.signal_caches,
             &state.trace_store,
+            &EventsQuery {
+                buses: &refs,
+                gap_seconds: gap,
+                kinds: &kinds,
+                tag_query: &tag_query,
+                offset: usize::try_from(offset).unwrap_or(usize::MAX),
+                limit: usize::try_from(limit).unwrap_or(usize::MAX),
+                from_end,
+            },
         );
-        BusErrorEpisodePage {
+        EventsPage {
             count: page.count as u64,
-            start: offset.min(page.count) as u64,
-            episodes: page
-                .episodes
+            start: page.start as u64,
+            rows: page
+                .rows
                 .into_iter()
-                .map(|(bus, e)| wire_episode(&buses[bus], &e))
+                .map(|row| match row {
+                    EventsRow::Note(note) => EventsPageRow::Note(note),
+                    EventsRow::Truncation(timestamp_ns) => {
+                        EventsPageRow::Truncation { timestamp_ns }
+                    }
+                    EventsRow::BusError(bus, e) => {
+                        EventsPageRow::BusError(wire_episode(&buses[bus], &e))
+                    }
+                })
                 .collect(),
             complete: page.complete,
+            version: page.version,
         }
     })
     .await
@@ -403,7 +432,7 @@ pub(crate) async fn bus_error_episodes(
 /// `[from_seconds, to_seconds]`, chronological — what a plot draws one
 /// marker each for.
 ///
-/// They are the episodes [`bus_error_episodes`] pages, read off the same
+/// They are the episodes [`events_page`] lists, read off the same
 /// host-held list. When more intersect the window than `max_markers`, the
 /// gap doubles until they fit, and the reply's `gapSeconds` says the gap
 /// the answer is folded at: a long window reads as fewer, longer
@@ -412,7 +441,7 @@ pub(crate) async fn bus_error_episodes(
 /// `errorCount` sums their errors, so a view counts nothing itself.
 ///
 /// The gap is held to the `bus_error_episode_gap_s` setting's bounds, as
-/// for [`bus_error_episodes`]. `complete` is `false` while a series or
+/// for [`events_page`]. `complete` is `false` while a series or
 /// its episodes are still being built (ADR 0049).
 #[tauri::command]
 pub(crate) async fn bus_error_episodes_in_window(

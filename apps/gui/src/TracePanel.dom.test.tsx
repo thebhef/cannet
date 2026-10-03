@@ -657,8 +657,8 @@ describe("TracePanel event kinds", () => {
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
     // The truncation marker (Diagnostics, like a bus error) is the one
     // Diagnostics-group kind this list can actually carry — derived bus
-    // errors left the trace's event rows for a paged section of their
-    // own (ADR 0035 amended; the Events panel, not here).
+    // errors left the trace's event rows for the Events panel's list
+    // (ADR 0035 amended), not here.
     renderWithNotes(
       [{ id: "n1", timestampNs: 1_000_000_000, label: "boom", kind: "note" }],
       undefined,
@@ -791,7 +791,7 @@ describe("TracePanel event rows: the same interactions as the events view", () =
 
   it("leaves a derived event read-only here too, but still goes to it", async () => {
     // The truncation marker: derived bus errors left this list for the
-    // Events panel's own paged section (ADR 0035 amended), so the
+    // Events panel's list (ADR 0035 amended), so the
     // truncation marker is what this describe block's "a derived event"
     // is exercised against instead.
     const ctx = notesCtx([]);

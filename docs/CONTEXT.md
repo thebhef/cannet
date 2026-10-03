@@ -149,9 +149,11 @@ before by less than the **episode gap** (`bus_error_episode_gap_s`,
 default 5 s, minimum 1 s), and a silence of at least the gap ends it.
 It is known by its first and last error — so it carries a count, a
 span and a rate — and its id is its last error's ordinal on the bus.
-The host derives the episodes from the bus's error series; the Events
-panel lists them and the plot draws one marker each (at a doubled gap
-when more fall in its window than fit). Individual error frames are trace rows, not episodes.
+The host derives the episodes from the bus's error series; the
+**Events panel** lists each as a row among the authored events (not
+editable, but selectable) and the plot draws one marker each (at a
+doubled gap when more fall in its window than fit). Individual error
+frames are trace rows, not episodes.
 _Avoid_: "run" — the removed coalescer's word, at a fixed 1 s gap.
 
 **Capture**:
@@ -348,6 +350,14 @@ data, nor a model fact (order, extent, rate, decimation).
 The chronological view of a capture — frames in arrival order. Names a
 *view*, never the data.
 _Avoid_: "trace" for the capture itself, or for a plotted signal.
+
+**Events panel**:
+The view of the timeline events alone: **one list, oldest first**, of
+the authored events (notes and message-bound comments), the
+history-truncated marker and every bus's **bus-error episodes**,
+merged by time. The host merges, filters (by kind and by tag) and pages
+it; the panel holds one page. Its rows are selectable — two authored
+events selected can be linked.
 
 **By-ID view**:
 The keyed snapshot of a capture — one summary row per arbitration id
