@@ -272,6 +272,63 @@ describe("useWindowedQuery", () => {
     expect(fetchPage).not.toHaveBeenCalled();
     expect(result.current.count).toBe(0);
     expect(result.current.getRow(0)).toBeNull();
+    expect(result.current.pending).toBe(false);
+  });
+
+  it("reports pending while a fetch is in flight, clearing once it resolves", async () => {
+    // `fetching`/`pending` already lived in the single-flight control
+    // ref; this is that state surfaced as render state, so a caller
+    // (the trace filter's "searching…" cue) can read it.
+    let resolveFetch!: (page: WindowPage<string>) => void;
+    const fetchPage = vi.fn(
+      () =>
+        new Promise<WindowPage<string>>((res) => {
+          resolveFetch = res;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useWindowedQuery({ ...base, descriptor: "cap1", extent: 1000, fetchPage }),
+    );
+    await flush();
+
+    expect(result.current.pending).toBe(true);
+
+    await act(async () => {
+      resolveFetch({ total: 1000, start: 0, rows: ["r0"] });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.pending).toBe(false);
+    expect(result.current.getRow(0)).toBe("r0");
+  });
+
+  it("supersedes a pending fetch rather than dropping the request — pending stays true throughout", async () => {
+    let resolveFirst!: (page: WindowPage<string>) => void;
+    const first = new Promise<WindowPage<string>>((res) => {
+      resolveFirst = res;
+    });
+    const fetchPage = vi
+      .fn<(offset: number, limit: number, fromEnd: boolean) => Promise<WindowPage<string>>>()
+      .mockReturnValueOnce(first)
+      .mockResolvedValue({ total: 1000, start: 640, rows: ["r640"] });
+    const { result } = renderHook(() =>
+      useWindowedQuery({ ...base, descriptor: "cap1", extent: 1000, fetchPage }),
+    );
+    await flush();
+    expect(result.current.pending).toBe(true);
+
+    // Scroll while the first fetch is still outstanding — superseded,
+    // not dropped, and pending must not flicker false in between.
+    act(() => result.current.ensureVisible(640, 680));
+    expect(result.current.pending).toBe(true);
+
+    await act(async () => {
+      resolveFirst({ total: 1000, start: 0, rows: ["r0"] });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // The superseded request fired and is itself in flight.
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(result.current.pending).toBe(false);
+    expect(result.current.getRow(640)).toBe("r640");
   });
 
   it("follow-live overlays the live tail past the loaded page", async () => {

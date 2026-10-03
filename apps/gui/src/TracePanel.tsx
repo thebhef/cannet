@@ -666,6 +666,12 @@ export function TracePanel(props: IDockviewPanelProps) {
             placeholder="filter…"
             ariaLabel="filter trace rows"
             inputRef={filterInputRef}
+            matchCountClassName="trace-panel-match-count"
+            hostMatches={
+              mode === "by-id"
+                ? { count: byId.count, pending: byId.pending }
+                : { count: filtered.count, pending: filtered.pending }
+            }
           />
         </span>
         {mode === "chronological" && (

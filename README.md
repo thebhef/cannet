@@ -1377,7 +1377,10 @@ value match shows every frame whose decoded signal carries it across the
 whole history; in by-ID mode it shows the message whose signal *can*
 carry that value (its `VAL_` table), whatever the latest frame reads.
 Timeline events narrow by the same query too, matched
-against their label and body. Clearing the box restores the full view;
+against their label and body. While the host is still walking a newly
+settled query's filter index the box reports **searching…**; once it
+lands the box reports the host's own match count (singular at one),
+in both modes. Clearing the box restores the full view;
 **Ctrl/⌘+F** focuses and selects it. **Add ▸ Trace** creates a new trace element and a
 panel for it (in by-ID mode — toggle it anytime); the new trace starts
 **empty and stopped** (hit **Start** to begin capturing), regardless of
