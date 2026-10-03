@@ -457,6 +457,15 @@ repaired something broken.
 
 ## Connecting
 
+- **Fixed:** a bus that goes bus-off comes back on its own. Disconnect
+  the CAN side of a PEAK dongle and reconnect it and the controller
+  stayed bus-off for good — opened without PCAN's auto-reset, and
+  nothing in cannet ever reset it, while every transmit into it was
+  refused. PEAK channels now open with the driver's bus-off auto-reset,
+  and for every vendor the sidecar resets a controller it has read
+  bus-off for a second (Vector and Kvaser in place, anything else by
+  reopening the channel), then publishes the recovery to the bus-health
+  panel. The Vector and Kvaser paths have not met hardware yet.
 - **New:** a bus can be set to **no interface** on purpose. Picking
   "— no interface —" in the project panel now records that choice
   with the project instead of deleting the binding, and a project with

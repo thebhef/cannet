@@ -152,7 +152,10 @@ Owner rulings 2026-10-03 (new-build walk):
   development sequence (fifth report; task 160 opened for the audit and
   the durable rule); **marker refresh fixed now** (`fix-plot-marker-refresh`,
   `f8b17451`); **bus-off recovery** is task 161, beside
-  `task155-kvaser-unwrap`, Kvaser and Vector alike.
+  `task155-kvaser-unwrap`, Kvaser and Vector alike — **landed**
+  (`task161-bus-off-recovery` `18a99527`; Kvaser bus-off detection added
+  along the way, since python-can's Kvaser bus reports no state; Vector
+  and Kvaser resets unverified on hardware).
 
 ## 3. Fix later
 
