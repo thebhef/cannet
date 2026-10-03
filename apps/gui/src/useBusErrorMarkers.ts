@@ -10,9 +10,9 @@
 //
 // `PlotPanel` drives `request` from `onAreaResampled` — the same
 // per-area resample cadence the plot's series fetch already runs at —
-// rather than running a poller of its own (CLAUDE.md § GUI
-// architecture: fetch only the visible slice plus margin, no
-// unbounded accumulation).
+// and whenever the host's bus-health error count moves, rather than
+// running a poller of its own (CLAUDE.md § GUI architecture: fetch only
+// the visible slice plus margin, no unbounded accumulation).
 
 import { useCallback, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -27,6 +27,11 @@ export interface BusErrorMarkerRequest {
   gapSeconds: number;
   /// How many markers the plot has room for.
   maxMarkers: number;
+  /// The host's error count over `buses` when the request was made
+  /// (`get_bus_health`'s `errorCount`, summed). Not sent: it only makes
+  /// a request for an unmoved window differ from the last one once the
+  /// buses have faulted since, so new errors are not memoised away.
+  errorsSeen: number;
 }
 
 /// One episode as `bus_error_episodes_in_window` serves it (`ipc.rs`'s
@@ -97,7 +102,7 @@ export function useBusErrorMarkers(): BusErrorMarkerQuery {
 
   const request = useCallback((req: BusErrorMarkerRequest | null) => {
     if (req === null || req.buses.length === 0) return;
-    const key = `${req.buses.join(",")}:${req.fromSeconds}:${req.toSeconds}:${req.gapSeconds}:${req.maxMarkers}`;
+    const key = `${req.buses.join(",")}:${req.fromSeconds}:${req.toSeconds}:${req.gapSeconds}:${req.maxMarkers}:${req.errorsSeen}`;
     const c = ctl.current;
     if (c.lastKey === key && c.lastComplete) return;
     if (c.fetching) {
