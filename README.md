@@ -562,7 +562,8 @@ linked pair's does. When more episodes fall in the visible window than
 fit across the plot at one chip's width each, the gap doubles until they
 fit — so a fault that produces a hundred thousand error frames is one
 marker, and a long window reads as fewer, longer episodes rather than
-hitting a cap. Each frame is otherwise a row in the trace
+hitting a cap. Markers refresh as errors arrive — the host's per-bus
+error count moving asks again — not only on a pan or zoom. Each frame is otherwise a row in the trace
 saying `Bus error` — with the `type` column hidden by
 default, an imported log's error frames would otherwise be
 indistinguishable from zero-byte data frames.
