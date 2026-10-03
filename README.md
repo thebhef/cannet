@@ -481,7 +481,8 @@ query stops at its bus-warning bit on a channel transmitting into an
 open circuit, so a state read from the status word alone under-reports a
 broken wire as a healthy bus. The counters climb 8 per failed
 transmission, cross the standard's thresholds, and fall again on every
-success, so recovery needs no separate signal.
+success, so recovery from warning and error-passive needs no separate
+signal.
 
 On a Vector adapter the same two counters arrive as **chip-state
 events**: the XL driver reports `busStatus`, `txErrorCounter` and
@@ -493,11 +494,18 @@ hardware** — it is written from the XL API's field definitions and
 covered by unit tests against faked events, so treat a Vector reading as
 unconfirmed until someone has watched one move.
 
-Neither vendor's state comes from python-can's `Bus.state`. That
-enum has three values and cannot hold error-warning, error-passive and
-bus-off apart, its meaning has been unsettled upstream since 2019, and
-its default getter returns "active" for any backend that does not
-override it — which both of these do not.
+On a Kvaser adapter the state is read from CANlib's circuit status
+(`canReadStatus`) floored by its error counters
+(`canReadErrorCounters`), by the same rule. **This path has never met
+Kvaser hardware either** — python-can binds neither call, so cannet
+binds them itself against the library python-can loaded, and covers
+them with unit tests against a fake.
+
+None of the three vendors' state comes from python-can's `Bus.state`.
+That enum has three values and cannot hold error-warning, error-passive
+and bus-off apart, its meaning has been unsettled upstream since 2019,
+and its default getter returns "active" for any backend that does not
+override it — which none of these do usefully.
 
 A row can also read **adapter unavailable**, which is not one of that
 standard's states: the driver can no longer reach the interface, which
@@ -509,8 +517,14 @@ the adapter coming back. Without that, the app goes on handing frames
 to a driver that cannot carry them, and each one still appears in the
 trace as though it had been sent. A controller over the warning limit,
 one that has gone error-passive, and even one that is bus-off all keep
-transmitting: each is present and recovers by itself as its counters
-fall.
+their periodics running. The first two recover by themselves as their
+counters fall. A bus-off controller cannot — it transmits nothing, so
+its counters never fall — and it is **reset without user action**: a
+PEAK adapter's driver resets its own (`PCAN_BUSOFF_AUTORESET`), and the
+sidecar resets any controller still bus-off after a second, in place on
+Vector and Kvaser and by reopening the channel elsewhere. The row then
+reads bus-off followed by the recovered state, and the sidecar's log
+carries one line per reset.
 
 **Absent is not zero anywhere in that panel.** An in-process virtual bus
 has no configurable bitrate and therefore no defined load; a bus with no

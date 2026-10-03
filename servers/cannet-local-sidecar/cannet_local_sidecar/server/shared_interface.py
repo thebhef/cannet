@@ -58,6 +58,14 @@ _BATCH_MAX_FRAMES = 2048
 #: and the watcher does nothing.
 _STATE_POLL_INTERVAL_S = 0.5
 
+#: How long a controller may read bus-off before the state poll resets
+#: it. The controller's own way back -- 128 occurrences of 11 recessive
+#: bits -- takes milliseconds at any bitrate, so a controller still
+#: bus-off after a second is latched: the driver is holding it there
+#: until something resets it. Two poll intervals, so one stale reading
+#: cannot trigger a reset on its own.
+_BUS_OFF_RESET_AFTER_S = 1.0
+
 #: How often the reader thread logs its driver-read rate and rx-queue
 #: depth. Diagnostic only: comparing the read rate here against the
 #: host's append rate localises frame loss to *before* Python (driver RX
@@ -133,6 +141,15 @@ class _SharedInterface:
         # is only ever compared against the *current* channel's count,
         # so it resets with the baseline below.
         self._reported_timer_wraps = 0
+        # When the state poll first read the current run of bus-off, or
+        # ``None`` outside one. Owned by the state poll's thread. A reset
+        # clears it, so a bus that recovers and drops again is timed from
+        # its new start; a reset that fails leaves it, so the next pass
+        # that still reads bus-off tries again.
+        self._bus_off_since: Optional[float] = None
+        # Whether the current bus-off run has already had a reset fail,
+        # so a reset that keeps failing warns once per run, not per pass.
+        self._bus_off_reset_failing = False
         # Transmit-side counters, emitted alongside the rx stats on the
         # rx pump's periodic tick. `transmit` runs on gRPC handler
         # threads while the tick reads/resets on the rx thread, so a
@@ -320,10 +337,9 @@ class _SharedInterface:
                     new_config,
                 )
                 return
-            old = self._channel
             _log.debug("reopening %s with %r", self._channel_id, new_config)
             try:
-                new = self._driver.open(self._channel_id, new_config)
+                old = self._swap_channel_locked()
             except Exception as e:  # noqa: BLE001
                 msg = f"reconfigure {self._channel_id} failed: {e}"
                 _log.warning(msg)
@@ -334,14 +350,28 @@ class _SharedInterface:
                 _log.debug("reconfigure %s failed", self._channel_id, exc_info=True)
                 self._broadcast_error(pb.LOG_LEVEL_ERROR, msg, lock_held=True)
                 return
-            self._channel = new
             self._reset_state_baseline_locked()
-            # `old` is about to be closed out from under any in-flight
-            # `ch.recv()` the rx pump is blocked on -- the same race
-            # `_close_locked` has, but this is a swap, not a shutdown,
-            # so `_stop` stays clear (overloading it here would make a
-            # genuine shutdown mid-reconfigure look like a swap instead).
-            self._reconfigure_closing_channel = old
+        self._close_swapped(old)
+
+    def _swap_channel_locked(self) -> drv.OpenChannel:
+        """Open a fresh channel with the current config and make it the
+        current one; returns the old one, for :meth:`_close_swapped`
+        once the lock is released. Raises whatever the open raises, with
+        the old channel still current."""
+        old = self._channel
+        assert old is not None
+        new = self._driver.open(self._channel_id, self._config)
+        self._channel = new
+        # `old` is about to be closed out from under any in-flight
+        # `ch.recv()` the rx pump is blocked on -- the same race
+        # `_close_locked` has, but this is a swap, not a shutdown,
+        # so `_stop` stays clear (overloading it here would make a
+        # genuine shutdown mid-swap look like a swap instead).
+        self._reconfigure_closing_channel = old
+        return old
+
+    @staticmethod
+    def _close_swapped(old: drv.OpenChannel) -> None:
         try:
             old.close()
         except Exception:  # noqa: BLE001
@@ -654,35 +684,104 @@ class _SharedInterface:
             ob.put(env)
 
     def _state_pump(self) -> None:
-        cid = self._channel_id
         while not self._stop.is_set():
             if self._stop.wait(_STATE_POLL_INTERVAL_S):
                 break
             ch = self._current_channel()
             if ch is None:
                 continue
-            self._report_timer_wraps(ch)
-            try:
-                st = ch.state()
-            except Exception as e:  # noqa: BLE001
-                # A controller read that fails is not silence: the
-                # driver could not reach the interface. Publishing that
-                # is the whole point of the poll — swallowing it left an
-                # unplugged adapter reading error-active forever.
-                _log.debug("state poll for %s failed: %s", cid, e)
-                self._publish_state(
-                    pb.CONTROLLER_STATE_UNAVAILABLE,
-                    0,
-                    0,
-                    self._read_rx_overruns(ch),
-                )
-                continue
+            self._poll_state(ch, now_s=time.monotonic())
+
+    def _poll_state(self, ch: drv.OpenChannel, *, now_s: float) -> None:
+        """One pass of the state poll: read the controller, publish what
+        it says, and reset it if it has read bus-off for longer than it
+        could take to come back by itself. ``now_s`` is a monotonic
+        reading, passed in so the threshold can be tested without
+        waiting it out."""
+        cid = self._channel_id
+        self._report_timer_wraps(ch)
+        try:
+            st = ch.state()
+        except Exception as e:  # noqa: BLE001
+            # A controller read that fails is not silence: the
+            # driver could not reach the interface. Publishing that
+            # is the whole point of the poll — swallowing it left an
+            # unplugged adapter reading error-active forever.
+            _log.debug("state poll for %s failed: %s", cid, e)
+            self._bus_off_since = None
             self._publish_state(
-                _state_name_to_proto(st.state),
-                st.tec,
-                st.rec,
+                pb.CONTROLLER_STATE_UNAVAILABLE,
+                0,
+                0,
                 self._read_rx_overruns(ch),
             )
+            return
+        self._publish_state(
+            _state_name_to_proto(st.state),
+            st.tec,
+            st.rec,
+            self._read_rx_overruns(ch),
+        )
+        if st.state != drv.STATE_BUS_OFF:
+            self._bus_off_since = None
+            self._bus_off_reset_failing = False
+            return
+        if self._bus_off_since is None:
+            self._bus_off_since = now_s
+            return
+        if now_s - self._bus_off_since >= _BUS_OFF_RESET_AFTER_S:
+            self._reset_bus_off(ch, now_s - self._bus_off_since)
+
+    def _reset_bus_off(self, ch: drv.OpenChannel, held_s: float) -> None:
+        """Reset a controller latched bus-off (ADR 0039): in place
+        through the driver's ``reset`` where it has one, otherwise by
+        reopening the channel with its current config.
+
+        Bus-off is transient by nature -- the bus is usable again the
+        moment whatever drove the controller off it is gone -- but a
+        controller that is bus-off transmits nothing, so its error
+        counters cannot fall and nothing on the wire brings it back.
+        PEAK's driver resets its own (``PCAN_BUSOFF_AUTORESET``); this
+        is the backstop for every backend, and the only mechanism for
+        those whose driver has no such setting.
+        """
+        cid = self._channel_id
+        try:
+            reset = getattr(ch, "reset", None)
+            in_place = bool(reset()) if callable(reset) else False
+            if not in_place:
+                with self._lock:
+                    if self._channel is not ch:
+                        # Swapped or closed since this pass read it;
+                        # the fresh channel gets its own count.
+                        self._bus_off_since = None
+                        return
+                    old = self._swap_channel_locked()
+                    # Counts restart with the fresh channel. The
+                    # published state deliberately does not: subscribers
+                    # were told bus-off, and the next pass has to be
+                    # able to tell them otherwise.
+                    self._last_rx_overruns = None
+                    self._reported_timer_wraps = 0
+                self._close_swapped(old)
+        except Exception as e:  # noqa: BLE001
+            # Retried on the next pass that still reads bus-off -- the
+            # poll's own cadence, never a tighter loop. One warning per
+            # run of failures; the rest go to the debug sink.
+            if not self._bus_off_reset_failing:
+                self._bus_off_reset_failing = True
+                _log.warning("bus-off reset of %s failed: %s", cid, e)
+            else:
+                _log.debug("bus-off reset of %s failed again: %s", cid, e)
+            return
+        _log.info(
+            "%s was bus-off for %.1f s; %s",
+            cid,
+            held_s,
+            "reset the controller" if in_place else "reopened the channel",
+        )
+        self._bus_off_since = None
+        self._bus_off_reset_failing = False
 
     def _report_timer_wraps(self, ch: drv.OpenChannel) -> None:
         """Emit one WARNING ``LogMessage`` per rollover of the channel's
