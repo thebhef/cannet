@@ -551,13 +551,19 @@ bitrate was sent there is nothing to divide by and the panel shows
 nothing rather than a guess.
 
 **Error frames** are surfaced two ways. Each bus's error frames feed a
-signal-cache pyramid of running error counts; the plot draws one **Bus
-error** marker per pyramid point a window resolves, labelled with the
-count, span and rate of the errors between it and the marker before it
-— so a fault that produces a hundred thousand error frames still zooms
-smoothly, reading as a handful of markers wide out and resolving toward
-one marker per frame as you zoom in. Each frame is otherwise a row in
-the trace saying `Bus error` — with the `type` column hidden by
+signal-cache pyramid of running error counts, and the host groups them
+into **episodes** — a burst of errors on one bus, ended once the bus has
+been silent for the episode gap (**Trace → Bus-error episode gap**). The
+plot draws one **Bus error** marker per episode, at its first error,
+labelled with the bus, the count, the span and the rate, and drawn as
+any other event is; while it is being acted on (selected, or linked to
+the event that is) its extent from first error to last washes in, as a
+linked pair's does. When more episodes fall in the visible window than
+fit across the plot at one chip's width each, the gap doubles until they
+fit — so a fault that produces a hundred thousand error frames is one
+marker, and a long window reads as fewer, longer episodes rather than
+hitting a cap. Each frame is otherwise a row in the trace
+saying `Bus error` — with the `type` column hidden by
 default, an imported log's error frames would otherwise be
 indistinguishable from zero-byte data frames.
 
@@ -3425,7 +3431,7 @@ lifecycle:
 | Category | Example | Editable | Saved with the capture | Written to BLF |
 |---|---|---|---|---|
 | user-authored | a note | yes | yes | yes |
-| host-derived | a bus-error marker (one per pyramid point a window resolves) | no | no | no |
+| host-derived | a bus-error marker (one per episode in view) | no | no | no |
 | frontend-derived | the history-truncated marker | no | no | no |
 
 A host-derived event summarises data the capture already holds, so it
@@ -3457,13 +3463,13 @@ been silent for the **episode gap** (**Trace → Bus-error episode gap**,
 `bus_error_episode_gap_s`: 5 s by default, 1 s at the least) — newest
 first, with the bus, the first error's time, the count, the span and
 the rate. Individual error frames are not listed; they are trace rows.
-The host derives the episodes from the same per-bus error series the
-plot's Bus error markers draw from and serves them a page at a time,
-so the section scrolls from the newest episode down to the capture's
-oldest without the frontend ever holding the list, and a change to the
-gap re-derives them. A still-catching-up answer — a capture just
-restored, say — shows what it has and keeps asking rather than going
-blank.
+The host derives the episodes from the per-bus error series — the same
+list the plot's Bus error markers are drawn from — and serves them a
+page at a time, so the section scrolls from the newest episode down to
+the capture's oldest without the frontend ever holding the list, and a
+change to the gap re-derives them. A still-catching-up answer — a
+capture just restored, say — shows what it has and keeps asking rather
+than going blank.
 
 **An event row in the Notes/comments section is the same row wherever
 it is drawn** — in the Events panel and interleaved into the

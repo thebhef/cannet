@@ -279,8 +279,8 @@ pub enum EventKind {
     /// it a kind of its own is the record it rides, which tracks with its
     /// message rather than floating on the timeline.
     MessageBound,
-    /// CAN bus errors: a stretch of a bus's error series, with the count
-    /// and span between two served points of it. Host-derived: not
+    /// CAN bus errors: an episode of a bus's error series — its first and
+    /// last error, so its count, span and rate. Host-derived: not
     /// editable, not persisted, not exported, and never in this store —
     /// the error frames it stands for stay in the capture and are what a
     /// save writes.

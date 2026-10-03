@@ -1,7 +1,12 @@
 // The bus-error marker windowed query (ADR 0035 amended, ADR 0025): a
-// per-plot fetch of `bus_error_series` over the visible window plus a
-// prefetch margin, single-flighted with newest-wins like every other
-// windowed fetch in this app (`useDecimatedRange`, `useWindowedQuery`).
+// per-plot fetch of `bus_error_episodes_in_window` over the visible window
+// plus a prefetch margin, single-flighted with newest-wins like every
+// other windowed fetch in this app (`useDecimatedRange`,
+// `useWindowedQuery`).
+//
+// The host answers **episodes** at the configured gap — doubled until the
+// window's episodes fit the marker budget — so the answer is bounded by
+// that budget whatever the capture holds, and this view folds nothing.
 //
 // `PlotPanel` drives `request` from `onAreaResampled` — the same
 // per-area resample cadence the plot's series fetch already runs at —
@@ -12,37 +17,61 @@
 import { useCallback, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { BusErrorSeries } from "./plotEvents";
-
 /// Everything that determines one fetch's answer.
 export interface BusErrorMarkerRequest {
-  /// The buses to serve, in request order — the answer comes back
-  /// positional (`BusErrorWindows.series`), so this order is what
-  /// `BusErrorMarkerState.series` inherits.
+  /// The buses to serve.
   buses: readonly string[];
   fromSeconds: number;
   toSeconds: number;
-  maxPoints: number;
+  /// The configured episode gap (`bus_error_episode_gap_s`).
+  gapSeconds: number;
+  /// How many markers the plot has room for.
+  maxMarkers: number;
+}
+
+/// One episode as `bus_error_episodes_in_window` serves it (`ipc.rs`'s
+/// `BusErrorEpisode`): absolute seconds; `lastOrdinal` is the last
+/// error's ordinal on the bus, and so the episode's id.
+export interface BusErrorEpisodeWire {
+  bus: string;
+  firstT: number;
+  lastT: number;
+  count: number;
+  span: number;
+  rate: number | null;
+  lastOrdinal: number;
 }
 
 export interface BusErrorMarkerState {
-  /// One entry per requested bus, in request order. Empty until the
+  /// The episodes intersecting the window, chronological. Empty until the
   /// first successful fetch — never cleared on a failed or superseded
   /// one, so a transient host hiccup leaves the last markers on screen
   /// rather than flashing empty.
-  series: readonly BusErrorSeries[];
-  /// ADR 0049: `false` while any bus's series is still catching up with
-  /// the capture — the caller keeps asking; the view shows what it has
-  /// rather than an empty state.
+  episodes: readonly BusErrorEpisodeWire[];
+  /// The gap the episodes are folded at — the configured one, or that
+  /// doubled until they fit. `null` before the first answer.
+  gapSeconds: number | null;
+  /// The errors those episodes hold, summed by the host.
+  errorCount: number;
+  /// ADR 0049: `false` while any bus's series or episode list is still
+  /// catching up with the capture — the caller keeps asking; the view
+  /// shows what it has rather than an empty state.
   complete: boolean;
 }
 
-const EMPTY_STATE: BusErrorMarkerState = { series: [], complete: true };
+const EMPTY_STATE: BusErrorMarkerState = {
+  episodes: [],
+  gapSeconds: null,
+  errorCount: 0,
+  complete: true,
+};
 
-/// The wire shape `bus_error_series` answers with (`ipc.rs`'s
-/// `BusErrorWindows` / `BusErrorPoints`).
-interface BusErrorWindowsWire {
-  series: { t: number[]; v: number[] }[];
+/// The wire shape `bus_error_episodes_in_window` answers with (`ipc.rs`'s
+/// `BusErrorEpisodeWindow`).
+interface BusErrorEpisodeWindowWire {
+  episodes: BusErrorEpisodeWire[];
+  gapSeconds: number;
+  errorCount: number;
   complete: boolean;
 }
 
@@ -68,7 +97,7 @@ export function useBusErrorMarkers(): BusErrorMarkerQuery {
 
   const request = useCallback((req: BusErrorMarkerRequest | null) => {
     if (req === null || req.buses.length === 0) return;
-    const key = `${req.buses.join(",")}:${req.fromSeconds}:${req.toSeconds}:${req.maxPoints}`;
+    const key = `${req.buses.join(",")}:${req.fromSeconds}:${req.toSeconds}:${req.gapSeconds}:${req.maxMarkers}`;
     const c = ctl.current;
     if (c.lastKey === key && c.lastComplete) return;
     if (c.fetching) {
@@ -76,22 +105,20 @@ export function useBusErrorMarkers(): BusErrorMarkerQuery {
       return;
     }
     c.fetching = true;
-    const buses = [...req.buses];
-    void invoke<BusErrorWindowsWire>("bus_error_series", {
-      buses,
+    void invoke<BusErrorEpisodeWindowWire>("bus_error_episodes_in_window", {
+      buses: [...req.buses],
       fromSeconds: req.fromSeconds,
       toSeconds: req.toSeconds,
-      maxPoints: req.maxPoints,
+      gapSeconds: req.gapSeconds,
+      maxMarkers: req.maxMarkers,
     })
       .then((res) => {
         c.lastKey = key;
         c.lastComplete = res.complete;
         setState({
-          series: buses.map((bus, i) => ({
-            bus,
-            t: res.series[i]?.t ?? [],
-            v: res.series[i]?.v ?? [],
-          })),
+          episodes: res.episodes,
+          gapSeconds: res.gapSeconds,
+          errorCount: res.errorCount,
           complete: res.complete,
         });
       })

@@ -36,7 +36,8 @@ import { PERF_TITLE, PlotToolbar } from "./PlotToolbar";
 import { useNotes } from "./notesContext";
 import { authorEvent, timelineEvents, type EventSubject } from "./notes";
 import {
-  busErrorTimelineEvents,
+  busErrorEpisodeEvents,
+  busErrorEpisodeExtents,
   plotEventExtents,
   plotEventsFromTimeline,
   plotTimelineEvents,
@@ -251,15 +252,11 @@ function targetLagFor(fetchIntervalMs: number): number {
 }
 
 /** Fraction of the visible span fetched beyond each edge of the
- * `bus_error_series` query — the same reason and the same fraction as
- * the series resample's own margin (`PlotArea.tsx`'s
+ * `bus_error_episodes_in_window` query — the same reason and the same
+ * fraction as the series resample's own margin (`PlotArea.tsx`'s
  * `FETCH_MARGIN_FRACTION`): the window slides between fetches, so a
  * slice cut exactly to it is already stale by the time it renders. */
 const BUS_ERROR_MARKER_MARGIN_FRACTION = 0.2;
-/** Floor for the bus-error query's `maxPoints` (one point per plot
- * pixel — see the point-budget note where it is used), for early-mount
- * or degenerate-width panels. */
-const MIN_BUS_ERROR_MARKER_POINTS = 64;
 
 // Pattern-selection helpers live in `./signalSelection` so the
 // pure-logic tests can import them without dragging uplot into a jsdom run.
@@ -349,7 +346,7 @@ import {
 } from "./plotAreaTransfer";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
-import { PlotArea } from "./PlotArea";
+import { eventChipMinWidthPx, PlotArea } from "./PlotArea";
 import { PlotMeasurementStrip, type PlottedSignal } from "./PlotMeasurements";
 
 
@@ -675,9 +672,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // default draws no cursor here until this panel is told to show it.
   const eventKinds = useEventKindFilter();
 
-  // Bus-error markers (ADR 0035 amended): a windowed query
-  // over every session bus's error series (`buses` below, from the
-  // project — the same session-wide scope every other event kind
+  // Bus-error markers (ADR 0035 amended): a windowed query for every
+  // session bus's error **episodes** at the configured gap (`buses`
+  // below, from the project — the same session-wide scope every other event kind
   // already has here: `sessionNotes` isn't filtered to what this panel
   // plots either, so a bus error explains a gap on a panel showing only
   // an unrelated signal just as a note does). `request` is driven from
@@ -688,6 +685,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
   useEffect(() => {
     busesRef.current = buses;
   }, [buses]);
+  const episodeGapSeconds = useSetting("bus_error_episode_gap_s");
+  const episodeGapRef = useRef(episodeGapSeconds);
   const fetchBusErrorMarkers = useCallback(() => {
     const base = baseSecondsRef.current;
     const vis = xSyncRef.current;
@@ -696,19 +695,28 @@ export function PlotPanel(props: IDockviewPanelProps) {
     if (busIds.length === 0) return;
     const span = vis.xMax - vis.xMin;
     const pad = span * BUS_ERROR_MARKER_MARGIN_FRACTION;
-    // One point per plot pixel — the panel's own rendered width, the
-    // same choice the series fetch makes off its canvas width
-    // (`PlotArea.tsx`'s `maxPts`). The panel, not a single area, because
-    // this is one query for the whole plot (every area shares the x
-    // axis the markers draw on).
+    // As many markers as chips fit across the panel: its rendered width
+    // over one chip's narrowest (`eventChipMinWidthPx`). The panel, not
+    // a single area, because this is one query for the whole plot (every
+    // area shares the x axis the markers draw on). More episodes than
+    // that in the window come back merged at a doubled gap.
     const widthPx = panelRef.current?.clientWidth || 600;
     requestBusErrors({
       buses: busIds,
       fromSeconds: base + vis.xMin - pad,
       toSeconds: base + vis.xMax + pad,
-      maxPoints: Math.max(MIN_BUS_ERROR_MARKER_POINTS, Math.round(widthPx)),
+      gapSeconds: episodeGapRef.current,
+      maxMarkers: Math.max(1, Math.floor(widthPx / eventChipMinWidthPx())),
     });
   }, [requestBusErrors]);
+  // A gap change asks again at once: the fetch otherwise runs only off
+  // an area's resample, and a stopped capture nobody pans would keep the
+  // markers at the old gap.
+  useEffect(() => {
+    if (episodeGapRef.current === episodeGapSeconds) return;
+    episodeGapRef.current = episodeGapSeconds;
+    fetchBusErrorMarkers();
+  }, [episodeGapSeconds, fetchBusErrorMarkers]);
 
   // Per-area last-sampled series (only kept while the measurement strip
   // is on — it's the only consumer; the side-panel values come from the
@@ -2676,17 +2684,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
       ),
     [sessionNotes, model.truncationTsNs, baseSeconds, eventKinds.visible, themeName],
   );
-  // Bus-error markers (ADR 0035 amended): the windowed query's series,
-  // walked into one `TimelineEvent` per delta (`busErrorTimelineEvents`)
-  // and projected the same way `notes` is — same origin, same
-  // visibility filter (the Diagnostics row hides these too), same kind
-  // color. Authored notes and bus-error markers merge into `events`
-  // below — the one timeline-event list `PlotArea` renders, so there is
-  // no second marker renderer.
-  const busErrorEvents = useMemo(
-    () => busErrorTimelineEvents(busErrorState.series),
-    [busErrorState.series],
-  );
+  // Bus-error markers (ADR 0035 amended): one `TimelineEvent` per
+  // episode the host served (`busErrorEpisodeEvents`), projected the
+  // same way `notes` is — same origin, same visibility filter (the
+  // Diagnostics row hides these too), same kind color. Authored notes
+  // and bus-error markers merge into `events` below — the one
+  // timeline-event list `PlotArea` renders, so there is no second
+  // marker renderer.
+  const busErrorEvents = useMemo(() => {
+    const names = new Map(buses.map((b) => [b.id, b.name]));
+    return busErrorEpisodeEvents(busErrorState.episodes, (id) => names.get(id) ?? id);
+  }, [busErrorState.episodes, buses]);
   const busErrorMarkers = useMemo<NoteEvent[]>(
     () =>
       plotEventsFromTimeline(busErrorEvents, baseSeconds, eventKinds.visible, (k) =>
@@ -2716,19 +2724,26 @@ export function PlotPanel(props: IDockviewPanelProps) {
     () => eventHighlight(allTimelineEvents, activeEvents),
     [allTimelineEvents, activeEvents],
   );
-  /// The bands: a linked pair's extent, on the same origin and in the
-  /// same colors as the marker lines that bound it.
-  const eventExtents = useMemo(
-    () =>
-      plotEventExtents(highlight?.extents ?? EMPTY_EXTENTS, baseSeconds, (k) =>
-        k === "truncation"
-          ? theme().eventTruncation
-          : k === "busError"
-            ? theme().eventBusError
-            : undefined,
-      ),
-    [highlight, baseSeconds, themeName],
-  );
+  /// The bands: a linked pair's extent, and a lit bus-error episode's
+  /// own (first error to last) drawn the same way, on the same origin
+  /// and in the same colors as the marker lines that bound them.
+  const eventExtents = useMemo(() => {
+    const episodeExtents =
+      highlight !== null && eventKinds.visible.has("busError")
+        ? busErrorEpisodeExtents(busErrorState.episodes, highlight.events)
+        : EMPTY_EXTENTS;
+    const extents =
+      episodeExtents.length === 0
+        ? (highlight?.extents ?? EMPTY_EXTENTS)
+        : [...(highlight?.extents ?? EMPTY_EXTENTS), ...episodeExtents];
+    return plotEventExtents(extents, baseSeconds, (k) =>
+      k === "truncation"
+        ? theme().eventTruncation
+        : k === "busError"
+          ? theme().eventBusError
+          : undefined,
+    );
+  }, [highlight, busErrorState.episodes, eventKinds.visible, baseSeconds, themeName]);
   /// The marker lines that stay bright — the event being acted on and
   /// whatever it is linked to. Empty means "dim nothing".
   const litEventIds = highlight?.events ?? EMPTY_KEY_SET;
@@ -2753,19 +2768,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // What the kind filter is hiding, counted off the *unfiltered* set so a
   // kind with something to show says so even while it is off. Bus
   // errors are the one kind whose count is not "how many markers are
-  // drawn" — a marker at a coarse zoom level can fold many errors into
-  // one delta — so it is overridden with the model fact the query
-  // already carries: the served window's last running count minus its
-  // boundary sample, summed per bus (never re-derived — CLAUDE.md § GUI
-  // architecture).
+  // drawn" — a marker is an episode of many errors — so it is the model
+  // fact the query carries: the errors the window's episodes hold,
+  // summed by the host (never re-derived — CLAUDE.md § GUI architecture).
   const eventKindCounts = useMemo(() => {
     const counts = countByKind(allTimelineEvents);
-    counts.busError = busErrorState.series.reduce(
-      (sum, s) => sum + (s.v.length > 0 ? s.v[s.v.length - 1] - s.v[0] : 0),
-      0,
-    );
+    counts.busError = busErrorState.errorCount;
     return counts;
-  }, [allTimelineEvents, busErrorState.series]);
+  }, [allTimelineEvents, busErrorState.errorCount]);
   // Cursor *positions* render in the trace's elapsed-time format
   // (ADR 0024 — one string for one timeline position across views), with
   // precision adapted to the shared x-window's span like the axis ticks.

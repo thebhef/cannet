@@ -2,17 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import { defaultVisibleKinds, type EventKind, type Note } from "./notes";
 import {
-  busErrorSpans,
+  busErrorEpisodeEvents,
+  busErrorEpisodeExtents,
   busErrorMarkerLabel,
-  busErrorTimelineEvents,
   plotEventExtents,
   plotEventsFromTimeline,
   plotTimelineEvents,
   litLast,
   subjectsForSelection,
   wrapMarkerLabel,
-  type BusErrorSeries,
 } from "./plotEvents";
+import type { BusErrorEpisodeWire } from "./useBusErrorMarkers";
 import { signalRefKey, type SignalRef } from "./plotPanelConfig";
 
 const KIND_COLOR = (k: EventKind) =>
@@ -59,56 +59,49 @@ describe("plotTimelineEvents", () => {
   });
 });
 
-describe("busErrorSpans", () => {
-  it("carries bus, count and span as their own fields, not just a label", () => {
-    // Shared by the plot's markers (busErrorTimelineEvents) and the
-    // Events panel's paged section (useBusErrorEvents) — this is the one
-    // place the delta math lives, so the two surfaces can't disagree.
-    const series: BusErrorSeries[] = [{ bus: "b1", t: [0, 1, 3], v: [10, 11, 14] }];
-    expect(busErrorSpans(series)).toEqual([
-      { id: "bus-error:b1:11", bus: "b1", timestampNs: 1e9, count: 1, spanSeconds: 1 },
-      { id: "bus-error:b1:14", bus: "b1", timestampNs: 3e9, count: 3, spanSeconds: 2 },
-    ]);
-  });
+/// An episode on `bus` from `firstT` to `lastT` holding `count` errors,
+/// its last the bus's `lastOrdinal`th.
+function episode(
+  bus: string,
+  firstT: number,
+  lastT: number,
+  count: number,
+  lastOrdinal: number,
+): BusErrorEpisodeWire {
+  const span = lastT - firstT;
+  return { bus, firstT, lastT, count, span, rate: span > 0 ? count / span : null, lastOrdinal };
+}
 
-  it("is what busErrorTimelineEvents' labels are built from", () => {
-    const series: BusErrorSeries[] = [{ bus: "b1", t: [0, 1, 3], v: [10, 11, 14] }];
-    const episodes = busErrorSpans(series);
-    const events = busErrorTimelineEvents(series);
-    expect(events.map((e) => e.label)).toEqual(
-      episodes.map((e) => busErrorMarkerLabel(e.count, e.spanSeconds)),
+const BUS_NAME = (bus: string) => (bus === "b1" ? "Bus 1" : bus);
+
+describe("busErrorEpisodeEvents", () => {
+  it("is one busError event per episode, at its first error, labelled with its bus", () => {
+    const events = busErrorEpisodeEvents(
+      [episode("b1", 1, 21, 50_000, 50_000), episode("b2", 30, 30, 1, 7)],
+      BUS_NAME,
+    );
+    expect(events.map((e) => e.id)).toEqual(["bus-error:b1:50000", "bus-error:b2:7"]);
+    expect(events.map((e) => e.timestampNs)).toEqual([1e9, 30e9]);
+    expect(events.map((e) => e.label)).toEqual([
+      "Bus 1: 50000 bus errors over 20 s (2500/s)",
+      "b2: 1 bus error over 0 s (—)",
+    ]);
+    expect(events.every((e) => e.kind === "busError" && !e.editable && e.color === null)).toBe(
+      true,
     );
   });
 });
 
-describe("busErrorTimelineEvents", () => {
-  it("skips the boundary sample and marks every delta after it", () => {
-    // t in seconds, v the running count — the boundary (t=0, v=10) only
-    // supplies the first delta.
-    const series: BusErrorSeries[] = [{ bus: "b1", t: [0, 1, 3, 3.5], v: [10, 11, 14, 15] }];
-    const events = busErrorTimelineEvents(series);
-    expect(events.map((e) => e.id)).toEqual([
-      "bus-error:b1:11",
-      "bus-error:b1:14",
-      "bus-error:b1:15",
-    ]);
-    expect(events.map((e) => e.timestampNs)).toEqual([1e9, 3e9, 3.5e9]);
-    expect(events.every((e) => e.kind === "busError" && !e.editable)).toBe(true);
+describe("busErrorEpisodeExtents", () => {
+  const eps = [episode("b1", 1, 21, 50_000, 50_000), episode("b1", 40, 41, 2, 50_002)];
+
+  it("draws nothing at rest", () => {
+    expect(busErrorEpisodeExtents(eps, new Set())).toEqual([]);
   });
 
-  it("has nothing to mark for a single served point (nothing in the window)", () => {
-    expect(busErrorTimelineEvents([{ bus: "b1", t: [5], v: [3] }])).toEqual([]);
-    expect(busErrorTimelineEvents([{ bus: "b1", t: [], v: [] }])).toEqual([]);
-  });
-
-  it("keeps each bus's ordinals separate — the id names the bus", () => {
-    const series: BusErrorSeries[] = [
-      { bus: "b1", t: [0, 1], v: [1, 2] },
-      { bus: "b2", t: [0, 1], v: [1, 2] },
-    ];
-    expect(busErrorTimelineEvents(series).map((e) => e.id)).toEqual([
-      "bus-error:b1:2",
-      "bus-error:b2:2",
+  it("is a lit episode's first error to its last, as a pair's extent", () => {
+    expect(busErrorEpisodeExtents(eps, new Set(["bus-error:b1:50002", "n1"]))).toEqual([
+      { startNs: 40e9, endNs: 41e9, color: null, kind: "busError", key: "bus-error:b1:50002" },
     ]);
   });
 });
@@ -128,7 +121,7 @@ describe("busErrorMarkerLabel", () => {
 });
 
 describe("plotEventsFromTimeline", () => {
-  const events = busErrorTimelineEvents([{ bus: "b1", t: [0, 2], v: [1, 3] }]);
+  const events = busErrorEpisodeEvents([episode("b1", 2, 3, 2, 3)], BUS_NAME);
 
   it("has nowhere to draw before the panel has an origin", () => {
     expect(plotEventsFromTimeline(events, null, defaultVisibleKinds(), KIND_COLOR)).toEqual([]);
