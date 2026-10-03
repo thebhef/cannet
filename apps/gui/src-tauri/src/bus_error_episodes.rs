@@ -10,7 +10,7 @@
 //! second and say nothing one at a time.
 //!
 //! The list is derived from the bus's error series in the signal cache
-//! ([`crate::signal_cache::SignalCacheStore::bus_error_episodes`]), whose
+//! ([`crate::signal_cache::SignalCacheStore::with_episodes`]), whose
 //! level-0 sample for the `n`th error on the bus is `(its time, n)`. It is
 //! folded one sample at a time (`EpisodeList::push`), so the live edge
 //! appends without rescanning, and it is **bounded by capture time ÷
@@ -24,8 +24,10 @@
 //! answered by merging its slice of the list at a doubled gap, again
 //! until it fits, never by refolding the errors.
 //!
-//! This module is the pure part — the fold, the newest-first paging and
-//! the window fit. Where the list lives, how it is caught up and when it
+//! The Events panel lists every episode among the authored events, by
+//! time (`events_page`).
+//!
+//! This module is the pure part — the fold and the window fit. Where the list lives, how it is caught up and when it
 //! is rebuilt is the signal cache's.
 
 use std::ops::Range;
@@ -129,106 +131,6 @@ impl EpisodeList {
         let gone = self.episodes.partition_point(|e| e.last_t < ts_seconds);
         self.episodes.drain(..gone);
     }
-}
-
-/// Rows `[offset, offset + limit)` of the **newest-first** merge of
-/// several buses' episode lists, each `(index into lists, episode)`.
-///
-/// Newest first by first time, which never moves once an episode exists —
-/// only the newest episode's end grows — so an offset names the same row
-/// from one serve to the next except as new episodes arrive at the top.
-/// Ties on first time go to the lower list index.
-///
-/// Costs `O(buses × log² episodes + limit × buses)`, whatever the offset:
-/// the page's start is located by rank rather than by walking the rows
-/// above it.
-pub(crate) fn newest_first_page(
-    lists: &[&[Episode]],
-    offset: usize,
-    limit: usize,
-) -> Vec<(usize, Episode)> {
-    let total: usize = lists.iter().map(|l| l.len()).sum();
-    if limit == 0 || offset >= total {
-        return Vec::new();
-    }
-    // How many of each list's newest episodes the page's first row has
-    // above it.
-    let mut above: Vec<usize> = cut_at(lists, offset);
-    let mut page = Vec::with_capacity(limit.min(total - offset));
-    while page.len() < limit {
-        let mut next: Option<(usize, Episode)> = None;
-        for (c, list) in lists.iter().enumerate() {
-            let Some(i) = list.len().checked_sub(above[c] + 1) else {
-                continue;
-            };
-            let e = list[i];
-            // Strictly newer wins, so an equal first time stays with the
-            // lower list index found first.
-            if next.is_none_or(|(_, n)| e.first_t > n.first_t) {
-                next = Some((c, e));
-            }
-        }
-        let Some((c, e)) = next else { break };
-        above[c] += 1;
-        page.push((c, e));
-    }
-    page
-}
-
-/// For the row at merged position `offset`, how many of each list's
-/// episodes precede it in the newest-first order.
-fn cut_at(lists: &[&[Episode]], offset: usize) -> Vec<usize> {
-    for (b, list) in lists.iter().enumerate() {
-        // Rank falls as the index rises (older rows sit lower), so the
-        // first index whose rank is at most `offset` is the only
-        // candidate in this list.
-        let mut lo = 0;
-        let mut hi = list.len();
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            if rank(lists, b, mid) <= offset {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        }
-        if lo < list.len() && rank(lists, b, lo) == offset {
-            return (0..lists.len())
-                .map(|c| {
-                    if c == b {
-                        list.len() - 1 - lo
-                    } else {
-                        preceding(lists[c], c, b, list[lo].first_t)
-                    }
-                })
-                .collect();
-        }
-    }
-    unreachable!("every position below the total is some row's rank")
-}
-
-/// The merged newest-first position of `lists[b][j]`.
-fn rank(lists: &[&[Episode]], b: usize, j: usize) -> usize {
-    let t = lists[b][j].first_t;
-    let own = lists[b].len() - 1 - j;
-    own + lists
-        .iter()
-        .enumerate()
-        .filter(|&(c, _)| c != b)
-        .map(|(c, list)| preceding(list, c, b, t))
-        .sum::<usize>()
-}
-
-/// How many of list `c`'s episodes precede a row of list `b` whose first
-/// time is `t`: the newer ones, and the equally new ones when `c` is the
-/// lower index.
-fn preceding(list: &[Episode], c: usize, b: usize, t: f64) -> usize {
-    let older = if c < b {
-        list.partition_point(|e| e.first_t < t)
-    } else {
-        list.partition_point(|e| e.first_t <= t)
-    };
-    list.len() - older
 }
 
 /// The episodes of `list` that intersect `[from, to]` seconds: those
@@ -409,43 +311,6 @@ mod tests {
             vec![5.0, 10.0],
             "the cut-through episode stays whole"
         );
-    }
-
-    fn ep(first_t: f64) -> Episode {
-        Episode {
-            first_t,
-            last_t: first_t,
-            first_n: 1,
-            last_n: 1,
-        }
-    }
-
-    /// Every page of the merge, at every offset and a few limits, matches
-    /// a whole sort — ties across buses included.
-    #[test]
-    fn paging_by_offset_matches_a_whole_newest_first_sort() {
-        let a: Vec<Episode> = [1.0, 3.0, 5.0, 7.0, 9.0].map(ep).to_vec();
-        let b: Vec<Episode> = [2.0, 3.0, 8.0].map(ep).to_vec();
-        let c: Vec<Episode> = Vec::new();
-        let d: Vec<Episode> = [0.5, 9.0, 10.0, 11.0].map(ep).to_vec();
-        let lists: Vec<&[Episode]> = vec![&a, &b, &c, &d];
-        let mut whole: Vec<(usize, Episode)> = lists
-            .iter()
-            .enumerate()
-            .flat_map(|(i, l)| l.iter().map(move |e| (i, *e)))
-            .collect();
-        whole.sort_by(|x, y| y.1.first_t.total_cmp(&x.1.first_t).then(x.0.cmp(&y.0)));
-        for offset in 0..=whole.len() + 1 {
-            for limit in [0, 1, 3, 100] {
-                let want: Vec<(usize, Episode)> =
-                    whole.iter().skip(offset).take(limit).copied().collect();
-                assert_eq!(
-                    newest_first_page(&lists, offset, limit),
-                    want,
-                    "offset {offset} limit {limit}",
-                );
-            }
-        }
     }
 
     #[test]

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
- * The events view's cross-panel "goto" control (ADR 0035): clicking the
- * goto button on an event broadcasts its absolute timestamp on the goto bus,
- * which the trace and plot panels listen for and re-centre on. This guards
- * the wiring from the button to `emit(GOTO_EVENT, timestampNs)`.
+ * The Events panel (ADR 0035): one list of the authored events and every
+ * bus's bus-error episodes, by time, oldest first, paged from the host
+ * (`events_page`) — and the controls on its rows, among them the
+ * cross-panel "goto" that broadcasts an event's absolute timestamp on the
+ * goto bus for the trace and plot panels to re-centre on.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -12,24 +13,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
-/// What `bus_error_episodes` / `get_bus_health` / `get_settings` answer —
-/// no episodes, `{}` and `{}` by default, so a test that doesn't ask for
-/// bus errors never triggers a round-trip it didn't mean to exercise. A
-/// function receives the call's own args, for a fixture that pages by
-/// offset (the host's episode list, below).
-let busErrorFixture: unknown | ((args?: Record<string, unknown>) => unknown) = {
-  count: 0,
-  start: 0,
-  episodes: [],
-  complete: true,
-};
+import { answerEventsPage, fakeEventsHost, type FakeEventsHost } from "./eventsPageFake";
+
+/// The host behind the panel: `events_page` answers from `host` the way
+/// `events_page.rs` would; `get_bus_health` / `get_settings` answer `{}`
+/// unless a test says otherwise.
+let host: FakeEventsHost = fakeEventsHost();
 let busHealthFixture: Record<string, { errorCount: number }> = {};
 let settingsFixture: Record<string, unknown> = {};
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "bus_error_episodes") {
-      return typeof busErrorFixture === "function" ? busErrorFixture(args) : busErrorFixture;
-    }
+    if (cmd === "events_page") return answerEventsPage(host, args);
     if (cmd === "get_bus_health") return busHealthFixture;
     if (cmd === "get_settings") return settingsFixture;
     return [];
@@ -41,15 +35,18 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { EventsPanel } from "./EventsPanel";
+import { activeEventIds, resetEventHighlight } from "./eventHighlight";
 import { formatLocalTimestamp } from "./format";
 import { GOTO_EVENT } from "./gotoEvent";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { TraceDataProvider, type TraceData } from "./traceData";
+import { maxScrollTop, ROW_HEIGHT } from "./traceViewport";
 import { diagCounts } from "./diag";
 import { hydrateSettings } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import type { Bus } from "./types";
+import type { BusErrorEpisodeWire } from "./useBusErrorMarkers";
 
 class FakeResizeObserver {
   observe() {}
@@ -104,9 +101,9 @@ const projectCtx: ProjectContextValue = {
 
 const CAN1: Bus = { id: "b1", name: "CAN1" };
 
-/// A wall-clock session origin (2023-11-14T22:06:40Z), for the bus-error
-/// section's time-cell hover test — `traceData.sessionStartSeconds` (0)
-/// is below `WALL_CLOCK_FLOOR_SECONDS`, so it never anchors on its own.
+/// A wall-clock session origin (2023-11-14T22:06:40Z), for the time-cell
+/// hover tests — `traceData.sessionStartSeconds` (0) is below
+/// `WALL_CLOCK_FLOOR_SECONDS`, so it never anchors on its own.
 const SESSION_START = 1_699_999_600;
 
 const notesCtx = (notes: Note[]): NotesContextValue => ({
@@ -122,24 +119,29 @@ const notesCtx = (notes: Note[]): NotesContextValue => ({
   setNoteSubjects: vi.fn(),
 });
 
-/// A dockview panel's props, faked: the `api.onDidVisibilityChange`
-/// subscription the panel needs for its bus-error section's scroll
-/// restore (`useScrollRestore.ts`) — never fired by these tests, since
-/// none exercise a hide/show round-trip.
+/// A dockview panel's props, faked — the panel reads none of them.
 function panelProps(): Parameters<typeof EventsPanel>[0] {
   return {
     api: { onDidVisibilityChange: vi.fn(() => ({ dispose: vi.fn() })) },
   } as unknown as Parameters<typeof EventsPanel>[0];
 }
 
-/// The project's bus list — the bus-error section's scope. Defaults to
-/// none, like `projectCtx` itself: a test that doesn't ask for buses
-/// never triggers a `bus_error_episodes` round-trip.
+/// The project's bus list — the buses whose episodes join the list.
+/// Defaults to none, like `projectCtx` itself.
 function withProject(buses: Bus[] = []) {
   return buses.length === 0 ? projectCtx : { ...projectCtx, buses };
 }
 
+/// The model the host serves from follows what the test hands the panel:
+/// the notes store holds `notes`, and history is truncated where the
+/// trace data says.
+function hostHolds(notes: Note[], data: TraceData) {
+  host.notes = notes;
+  host.truncationTsNs = data.truncationTsNs;
+}
+
 function renderPanel(notes: Note[], data: TraceData = traceData, buses: Bus[] = []) {
+  hostHolds(notes, data);
   // One element object, reused across re-renders. That is how dockview
   // mounts a panel — the element is built when the panel is created and
   // held in the layout's state — so React's same-element bail-out
@@ -161,6 +163,7 @@ function renderPanel(notes: Note[], data: TraceData = traceData, buses: Bus[] = 
 /// The shape every direct (non-`renderPanel`) render in this file shares:
 /// a notes context plus the trace/project providers `EventsPanel` needs.
 function renderWithNotes(ctx: NotesContextValue, data: TraceData = traceData) {
+  hostHolds(ctx.notes as Note[], data);
   render(
     <TraceDataProvider value={data}>
       <ProjectContext.Provider value={projectCtx}>
@@ -172,9 +175,36 @@ function renderWithNotes(ctx: NotesContextValue, data: TraceData = traceData) {
   );
 }
 
+/// Every event row on screen.
+function eventRows(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(".trace-event-row"));
+}
+
+/// The rows arrive from the host: wait for `n` of them.
+async function rowsShown(n: number): Promise<HTMLElement[]> {
+  await waitFor(() => expect(eventRows()).toHaveLength(n));
+  return eventRows();
+}
+
+const labels = () =>
+  Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+
+function eventsPageCalls(): Record<string, unknown>[] {
+  return vi
+    .mocked(invoke)
+    .mock.calls.filter((c) => c[0] === "events_page")
+    .map((c) => c[1] as Record<string, unknown>);
+}
+
+/// The latest `events_page` ask.
+function lastEventsPageCall(): Record<string, unknown> | undefined {
+  const calls = eventsPageCalls();
+  return calls[calls.length - 1];
+}
+
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
-  busErrorFixture = { count: 0, start: 0, episodes: [], complete: true };
+  host = fakeEventsHost();
   busHealthFixture = {};
 });
 afterEach(() => {
@@ -184,7 +214,7 @@ afterEach(() => {
 });
 
 describe("EventsPanel", () => {
-  it("does not re-render when only the live half of the capture moves", () => {
+  it("does not re-render when only the live half of the capture moves", async () => {
     // A `trace-grew` tick moved `count` / `firstIndex` / `liveTail` ~10x a
     // second and re-rendered every consumer of the trace context — this
     // view among them, though it reads none of those fields. Splitting the
@@ -193,6 +223,10 @@ describe("EventsPanel", () => {
     const { rerender } = renderPanel([
       { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" },
     ]);
+    await rowsShown(1);
+    // The first page, then the one refresh the mount marks owed.
+    await waitFor(() => expect(eventsPageCalls().length).toBeGreaterThanOrEqual(2));
+    await act(async () => {});
     const before = diagCounts().get("render.EventsPanel") ?? 0;
     for (let n = 1; n <= 5; n++) {
       rerender({ ...traceData, count: n * 10, firstIndex: n, liveTail: { start: n, rows: [] } });
@@ -206,16 +240,9 @@ describe("event row focus and editing", () => {
   // chronological trace panel, so this covers both surfaces.
   const note: Note = { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" };
 
-  /// The one event row on screen.
-  function row(): HTMLElement {
-    const el = document.querySelector<HTMLElement>(".trace-event-row");
-    if (!el) throw new Error("no event row rendered");
-    return el;
-  }
-
-  it("focuses the row that was clicked, and only that row", () => {
+  it("focuses the row that was clicked, and only that row", async () => {
     renderPanel([note, { ...note, id: "n2", timestampNs: 6_000_000_000, label: "thud" }]);
-    const rows = Array.from(document.querySelectorAll<HTMLElement>(".trace-event-row"));
+    const rows = await rowsShown(2);
     expect(rows.map((r) => r.classList.contains("trace-event-focused"))).toEqual([false, false]);
 
     fireEvent.click(rows[1]);
@@ -236,17 +263,17 @@ describe("event row focus and editing", () => {
     expect(rows.map((r) => r.classList.contains("trace-event-focused"))).toEqual([true, false]);
   });
 
-  it("does not start editing when the row is clicked", () => {
+  it("does not start editing when the row is clicked", async () => {
     renderPanel([note]);
-    fireEvent.click(screen.getByText("boom"));
+    fireEvent.click(await screen.findByText("boom"));
     expect(screen.queryByLabelText("event label")).toBeNull();
   });
 
-  it("enables the field from the edit button, and commits the new label", () => {
+  it("enables the field from the edit button, and commits the new label", async () => {
     const ctx = notesCtx([note]);
     renderWithNotes(ctx);
 
-    fireEvent.click(screen.getByLabelText("rename event"));
+    fireEvent.click(await screen.findByLabelText("rename event"));
     const input = screen.getByLabelText("event label") as HTMLInputElement;
     expect(input.value).toBe("boom");
 
@@ -256,7 +283,7 @@ describe("event row focus and editing", () => {
     expect(screen.queryByLabelText("event label")).toBeNull();
   });
 
-  it("abandons a rename on Escape without committing the draft", () => {
+  it("abandons a rename on Escape without committing the draft", async () => {
     // The row sits inside a gridview, whose Escape takes focus back to
     // the container (ADR 0044) — and this field commits on blur. The
     // editor consumes the press for that reason; if it stopped doing so
@@ -264,7 +291,7 @@ describe("event row focus and editing", () => {
     const ctx = notesCtx([note]);
     renderWithNotes(ctx);
 
-    fireEvent.click(screen.getByLabelText("rename event"));
+    fireEvent.click(await screen.findByLabelText("rename event"));
     const input = screen.getByLabelText("event label") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "crunch" } });
     fireEvent.keyDown(input, { key: "Escape" });
@@ -273,21 +300,22 @@ describe("event row focus and editing", () => {
     expect(screen.getByText("boom")).toBeInTheDocument();
   });
 
-  it("still takes a double-click on the label as a rename", () => {
+  it("still takes a double-click on the label as a rename", async () => {
     renderPanel([note]);
-    fireEvent.doubleClick(screen.getByText("boom"));
+    fireEvent.doubleClick(await screen.findByText("boom"));
     expect((screen.getByLabelText("event label") as HTMLInputElement).value).toBe("boom");
   });
 
-  it("offers no edit button on a derived event", () => {
+  it("offers no edit button on a derived event", async () => {
     // The truncation marker is not user-editable (ADR 0035).
     renderPanel([], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 });
-    expect(row()).toBeTruthy();
+    await rowsShown(1);
     expect(screen.queryByLabelText("rename event")).toBeNull();
   });
 
-  it("draws goto/rename/remove as the registry's icons, not the retired text glyphs", () => {
+  it("draws goto/rename/remove as the registry's icons, not the retired text glyphs", async () => {
     renderPanel([note]);
+    await rowsShown(1);
     for (const label of ["go to this event", "rename event", "remove event"]) {
       const btn = screen.getByLabelText(label);
       // The old glyphs (⇥ ✎ ×) were the button's entire text content;
@@ -301,9 +329,9 @@ describe("event row focus and editing", () => {
 });
 
 describe("EventsPanel goto", () => {
-  it("broadcasts the event's absolute timestamp on the goto bus", () => {
+  it("broadcasts the event's absolute timestamp on the goto bus", async () => {
     renderPanel([{ id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" }]);
-    fireEvent.click(screen.getByLabelText("go to this event"));
+    fireEvent.click(await screen.findByLabelText("go to this event"));
     expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 5_000_000_000);
   });
 });
@@ -321,22 +349,23 @@ describe("EventsPanel event rows on the keyboard", () => {
   }
 
   /// Step the gridview cursor onto the view's first row.
-  function cursorToFirstRow() {
+  async function cursorToFirstRow() {
+    await rowsShown(1);
     fireEvent.keyDown(grid(), { key: "ArrowDown" });
     expect(document.querySelector(".trace-event-row")).toHaveClass("trace-event-focused");
   }
 
-  it("goes to the cursor's event on Space", () => {
+  it("goes to the cursor's event on Space", async () => {
     renderPanel([note]);
-    cursorToFirstRow();
+    await cursorToFirstRow();
     fireEvent.keyDown(grid(), { key: " " });
     expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 5_000_000_000);
   });
 
-  it("renames the cursor's event on F2, and commits it to the host", () => {
+  it("renames the cursor's event on F2, and commits it to the host", async () => {
     const ctx = notesCtx([note]);
     renderWithNotes(ctx);
-    cursorToFirstRow();
+    await cursorToFirstRow();
     fireEvent.keyDown(grid(), { key: "F2" });
     const input = screen.getByLabelText("event label") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "crunch" } });
@@ -344,11 +373,11 @@ describe("EventsPanel event rows on the keyboard", () => {
     expect(ctx.renameNote).toHaveBeenCalledWith("n1", "crunch");
   });
 
-  it("takes no F2 on the truncation marker, which offers no rename either", () => {
+  it("takes no F2 on the truncation marker, which offers no rename either", async () => {
     // The derived event of this view's own space (ADR 0035).
     renderPanel([], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 });
+    await cursorToFirstRow();
     expect(screen.queryByLabelText("rename event")).toBeNull();
-    cursorToFirstRow();
     fireEvent.keyDown(grid(), { key: "F2" });
     expect(screen.queryByLabelText("event label")).toBeNull();
     // …and Space still goes to it: read-only is about editing.
@@ -392,9 +421,9 @@ describe("EventsPanel in a narrow panel", () => {
   // The controls come after the label in the row, which is what
   // `margin-left: auto` pins to the right edge; the label is the flex item
   // that gives way (`flex: 0 1 auto; min-width: 0; overflow: hidden`).
-  it("renders the rename and remove controls after the label", () => {
+  it("renders the rename and remove controls after the label", async () => {
     renderPanel([{ id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" }]);
-    const row = document.querySelector(".trace-event-row") as HTMLElement;
+    const [row] = await rowsShown(1);
     const classes = Array.from(row.children).map((c) => c.className);
     expect(classes.slice(-3)).toEqual([
       "trace-event-label trace-event-label-editable",
@@ -407,27 +436,20 @@ describe("EventsPanel in a narrow panel", () => {
 describe("EventsPanel kind filter", () => {
   const note: Note = { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" };
 
-  const labels = () =>
-    Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
-
-  it("shows what the tool found without being asked, and hides it on request", async () => {
-    // Derived bus errors no longer reach this whole-list section — they
-    // render in the Events panel's own paged section below, and the
-    // checklist's count for the kind comes off the host's per-bus totals
-    // (ADR 0035 amended, fetched async via `useBusHealth`) rather than a
-    // row in this list.
+  it("counts the bus errors off the host's totals, and hides what a row covers", async () => {
     busHealthFixture = { [CAN1.id]: { errorCount: 1 } };
+    host.episodes = [episode(1, 4)];
     renderPanel([note], traceData, [CAN1]);
-    expect(labels()).toEqual(["boom"]);
+    await rowsShown(2);
 
     const box = () => screen.getByLabelText("Diagnostics") as HTMLInputElement;
     expect(box().checked).toBe(true);
     await waitFor(() => expect(box().closest("label")?.textContent).toContain("1"));
 
     fireEvent.click(box());
-    // Turning Diagnostics off hides the bus-error section too — it is
-    // one more kind under that same row.
-    expect(document.querySelector(".bus-error-events")).toBeNull();
+    await waitFor(() => expect(labels()).toEqual(["boom"]));
+    // The filter is the host's: the next page is asked without the kind.
+    expect(lastEventsPageCall()?.kinds).toEqual(["messageBound", "note"]);
   });
 
   it("counts every kind a row covers, not just the first", async () => {
@@ -444,13 +466,21 @@ describe("EventsPanel kind filter", () => {
     );
   });
 
-  it("offers no edit controls on a host-derived event", () => {
-    // The truncation marker is this whole-list section's one remaining
-    // read-only kind — derived bus errors left it for the paged section.
+  it("offers no edit controls on a host-derived event", async () => {
     renderPanel([], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 });
-    expect(labels()).toEqual(["history truncated here"]);
+    await waitFor(() => expect(labels()).toEqual(["history truncated here"]));
     expect(screen.queryByLabelText("rename event")).toBeNull();
     expect(screen.queryByLabelText("remove event")).toBeNull();
+  });
+
+  it("says on the Diagnostics row's tooltip the gap bus errors are grouped at", async () => {
+    // The hint the separate bus-error section's header carried.
+    renderPanel([note], traceData, [CAN1]);
+    await rowsShown(1);
+    expect(screen.getByLabelText("Diagnostics").closest("label")).toHaveAttribute(
+      "title",
+      expect.stringContaining("episodes at 5 s"),
+    );
   });
 });
 
@@ -464,10 +494,9 @@ describe("EventsPanel event body", () => {
     description: "opened under load",
   };
 
-  it("keeps the body collapsed until the row is disclosed", () => {
+  it("keeps the body collapsed until the row is disclosed", async () => {
     renderPanel([tagged]);
-    expect(screen.queryByText("opened under load")).toBeNull();
-    fireEvent.click(screen.getByLabelText("show event details"));
+    fireEvent.click(await screen.findByLabelText("show event details"));
     expect(screen.getByText("opened under load")).toBeInTheDocument();
     expect(screen.getByText("fault")).toBeInTheDocument();
     // ...and folds back up.
@@ -475,10 +504,10 @@ describe("EventsPanel event body", () => {
     expect(screen.queryByText("opened under load")).toBeNull();
   });
 
-  it("edits the description in place and commits it to the host", () => {
+  it("edits the description in place and commits it to the host", async () => {
     const ctx = notesCtx([tagged]);
     renderWithNotes(ctx);
-    fireEvent.click(screen.getByLabelText("show event details"));
+    fireEvent.click(await screen.findByLabelText("show event details"));
     fireEvent.click(screen.getByText("opened under load"));
     const input = screen.getByLabelText("event description") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "welded shut" } });
@@ -491,22 +520,6 @@ describe("EventsPanel event body", () => {
     fireEvent.change(again, { target: { value: "  " } });
     fireEvent.keyDown(again, { key: "Enter" });
     expect(ctx.describeNote).toHaveBeenLastCalledWith("n1", null);
-  });
-
-  it("shows a host-derived event's body but takes no edits on it", () => {
-    renderPanel([
-      {
-        id: "e1",
-        timestampNs: 4_000_000_000,
-        label: "bus error x40",
-        kind: "busError",
-        description: "bit errors on powertrain over 1.2 s",
-      },
-    ]);
-    fireEvent.click(screen.getByLabelText("show event details"));
-    expect(screen.getByText("bit errors on powertrain over 1.2 s")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("bit errors on powertrain over 1.2 s"));
-    expect(screen.queryByLabelText("event description")).toBeNull();
   });
 });
 
@@ -536,11 +549,12 @@ describe("EventsPanel event row ARIA", () => {
     return id == null ? null : document.getElementById(id);
   }
 
-  it("states its expanded state on the row the container names, not only on the caret", () => {
+  it("states its expanded state on the row the container names, not only on the caret", async () => {
     // The caret is a nested node; the cursor is on the *row*, so a
     // reader following `aria-activedescendant` never reaches the caret's
     // own `aria-expanded` and was told nothing about the disclosure.
     renderPanel([tagged]);
+    await rowsShown(1);
     fireEvent.keyDown(grid(), { key: "ArrowDown" });
     expect(activeRow()).toHaveClass("trace-event-row");
     expect(activeRow()).toHaveAttribute("aria-expanded", "false");
@@ -550,31 +564,34 @@ describe("EventsPanel event row ARIA", () => {
     expect(activeRow()).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("says nothing about expansion on an event with nothing to disclose", () => {
+  it("says nothing about expansion on an event with nothing to disclose", async () => {
     // The truncation marker: derived, and carrying neither tag nor
     // description, so there is no body behind it to open.
     renderPanel([], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 });
+    await rowsShown(1);
     fireEvent.keyDown(grid(), { key: "ArrowDown" });
     expect(activeRow()).toHaveClass("trace-event-row");
     expect(activeRow()).not.toHaveAttribute("aria-expanded");
   });
 
-  it("advertises its selection, because this view's event rows are selectable", () => {
+  it("advertises its selection, because this view's event rows are selectable", async () => {
     // An event row takes no part in the selection where it is drawn
     // beside frames (ADR 0044) — but this view's Link Events control
     // acts on exactly two selected events, so here the adapter declares
     // them selectable and the row says which it is.
     renderPanel([tagged]);
+    await rowsShown(1);
     fireEvent.keyDown(grid(), { key: "ArrowDown" });
     expect(activeRow()).toHaveAttribute("aria-selected", "true");
   });
 
-  it("keeps the caret out of the tab order, so Tab lands on a control that needs it", () => {
+  it("keeps the caret out of the tab order, so Tab lands on a control that needs it", async () => {
     // The layer's Tab moves into the cursor row's first tab stop
     // (ADR 0044). The caret's job is already Left/Right's, so it opts
     // out the way every other gridview's caret does — otherwise Tab
     // spends its first press on a control the keyboard already has.
     renderPanel([tagged]);
+    await rowsShown(1);
     fireEvent.keyDown(grid(), { key: "ArrowDown" });
     grid().focus();
     fireEvent.keyDown(grid(), { key: "Tab" });
@@ -587,7 +604,7 @@ describe("EventsPanel event row ARIA", () => {
 });
 
 describe("EventsPanel tag filter", () => {
-  it("narrows to the events carrying a matching tag", () => {
+  it("narrows to the events carrying a matching tag", async () => {
     // jsdom lays nothing out; give the row virtualizer a viewport so all
     // three rows are drawn.
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
@@ -596,12 +613,12 @@ describe("EventsPanel tag filter", () => {
       { id: "b", timestampNs: 2_000_000_000, label: "two", kind: "note", tag: "contactor" },
       { id: "c", timestampNs: 3_000_000_000, label: "three", kind: "note" },
     ]);
-    const labels = () =>
-      Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
-    expect(labels()).toEqual(["one", "two", "three"]);
+    await waitFor(() => expect(labels()).toEqual(["one", "two", "three"]));
 
     fireEvent.change(screen.getByLabelText("filter by tag"), { target: { value: "cont" } });
-    expect(labels()).toEqual(["two"]);
+    await waitFor(() => expect(labels()).toEqual(["two"]));
+    // The filter is the host's: the query carries it.
+    expect(lastEventsPageCall()?.tagQuery).toBe("cont");
 
     // The suggestions are the tags actually in use.
     expect(
@@ -611,13 +628,13 @@ describe("EventsPanel tag filter", () => {
     ).toEqual(["contactor", "fault"]);
 
     fireEvent.change(screen.getByLabelText("filter by tag"), { target: { value: "" } });
-    expect(labels()).toEqual(["one", "two", "three"]);
+    await waitFor(() => expect(labels()).toEqual(["one", "two", "three"]));
     ch.mockRestore();
   });
 });
 
 describe("EventsPanel record types", () => {
-  it("files a comment beside the notes, with no row of its own", () => {
+  it("files a comment beside the notes, with no row of its own", async () => {
     // A `messageBound` event differs from a note only in the BLF record
     // it is written as, and nothing in the application can author one.
     // A checkbox for it offered the reader a category they cannot
@@ -626,176 +643,190 @@ describe("EventsPanel record types", () => {
       { id: "n1", timestampNs: 1_000_000_000, label: "a marker", kind: "note" },
       { id: "c1", timestampNs: 2_000_000_000, label: "a comment", kind: "messageBound" },
     ]);
-    const labels = () =>
-      Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
-    expect(labels()).toEqual(["a marker", "a comment"]);
+    await waitFor(() => expect(labels()).toEqual(["a marker", "a comment"]));
     expect(screen.queryByLabelText("Comments")).toBeNull();
     // Both counted on the one row, and both hidden by it.
     expect(screen.getByLabelText("Notes").closest("label")?.textContent).toContain("2");
 
     fireEvent.click(screen.getByLabelText("Notes"));
-    expect(labels()).toEqual([]);
+    await waitFor(() => expect(labels()).toEqual([]));
   });
 });
 
-describe("EventsPanel bus-error section", () => {
-  /// The host's episode list on `b1`, newest first, paged by offset as
-  /// `bus_error_episodes` pages it: episode k from the top ends on
-  /// ordinal 3·(n − k); the oldest is a single error.
-  function hostEpisodes(n: number, complete = true) {
-    return (args?: Record<string, unknown>) => {
-      const offset = Number(args?.offset ?? 0);
-      const limit = Number(args?.limit ?? 0);
-      const episodes = [];
-      for (let k = offset; k < Math.min(n, offset + limit); k++) {
-        const oldest = k === n - 1;
-        episodes.push({
-          bus: "b1",
-          firstT: 1_000 + 2 * (n - 1 - k),
-          lastT: 1_000 + 2 * (n - 1 - k) + (oldest ? 0 : 0.004),
-          count: oldest ? 1 : 3,
-          span: oldest ? 0 : 0.004,
-          rate: oldest ? null : 750,
-          lastOrdinal: 3 * (n - k),
-        });
-      }
-      return { count: n, start: offset, episodes, complete };
-    };
-  }
+/// Episode `k` on `bus`, at `1000 + 2k` s: three errors over 4 ms
+/// (750/s), its last error the bus's `3(k + 1)`th — except a single
+/// error when `single`.
+function episode(k: number, at = 1_000 + 2 * k, bus = "b1", single = false): BusErrorEpisodeWire {
+  return {
+    bus,
+    firstT: at,
+    lastT: at + (single ? 0 : 0.004),
+    count: single ? 1 : 3,
+    span: single ? 0 : 0.004,
+    rate: single ? null : 750,
+    lastOrdinal: 3 * (k + 1),
+  };
+}
 
-  function rows(): HTMLElement[] {
-    return Array.from(document.querySelectorAll<HTMLElement>(".bus-error-event-row"));
-  }
-
-  /// The event id a row stands for, out of its gridview DOM id.
-  function rowEventId(row: HTMLElement): string {
-    return decodeURIComponent(row.id.slice("bus-error-events-".length));
-  }
-
-  function episodeCalls(): Record<string, unknown>[] {
-    return vi
-      .mocked(invoke)
-      .mock.calls.filter((c) => c[0] === "bus_error_episodes")
-      .map((c) => c[1] as Record<string, unknown>);
-  }
-
+describe("EventsPanel bus-error episodes in the one list", () => {
   afterEach(async () => {
     settingsFixture = {};
     await hydrateSettings();
+    resetEventHighlight();
   });
 
-  it("asks the host nothing without session buses, and says so plainly", () => {
-    // The section is still listed — "nothing is hidden and unfindable"
-    // holds for Diagnostics the same as every other kind group — but an
-    // empty bus list is nothing to query the host over.
-    busErrorFixture = hostEpisodes(10);
-    renderPanel([]);
-    expect(screen.getByText("No bus errors recorded.")).toBeInTheDocument();
-    expect(episodeCalls()).toHaveLength(0);
-  });
+  /// The row standing for event `id`, out of the gridview DOM ids.
+  function rowFor(id: string): HTMLElement | null {
+    return eventRows().find((r) => r.id.endsWith(`-${encodeURIComponent(`e:${id}`)}`)) ?? null;
+  }
 
-  it("pages 10,000 episodes by offset, newest first, a bounded row set at a time", async () => {
-    busErrorFixture = hostEpisodes(10_000);
-    renderPanel([], traceData, [CAN1]);
-    await waitFor(() => expect(rows().length).toBeGreaterThan(0));
-    expect(episodeCalls()[0]).toEqual({ buses: ["b1"], gapSeconds: 5, offset: 0, limit: 1024 });
-    // A viewport's worth, never the list.
-    expect(rows().length).toBe(8);
-
-    const first = rows()[0];
-    expect(rowEventId(first)).toBe("bus-error:b1:30000");
-    expect(rowEventId(rows()[1])).toBe("bus-error:b1:29997");
-    expect(first.querySelector(".bus-error-event-bus")?.textContent).toBe("CAN1");
-    expect(first.querySelector(".bus-error-event-time")?.textContent).not.toBe("");
-    expect(first.querySelector(".bus-error-event-count")?.textContent).toBe("3 errors");
-    expect(first.querySelector(".bus-error-event-span")?.textContent).toBe("0.004 s");
-    expect(first.querySelector(".bus-error-event-rate")?.textContent).toBe("750/s");
-  });
-
-  it("scrolls down to the oldest single episode by fetching its page", async () => {
-    busErrorFixture = hostEpisodes(10_000);
-    renderPanel([], traceData, [CAN1]);
-    await waitFor(() => expect(rows().length).toBeGreaterThan(0));
-
-    const grid = document.querySelector(".bus-error-events-grid") as HTMLElement;
-    grid.scrollTop = 10_000 * 22; // dragged to the very bottom
-    fireEvent.scroll(grid);
-
-    await waitFor(() => expect(episodeCalls().some((c) => Number(c.offset) > 8_000)).toBe(true));
-    await waitFor(() => {
-      const last = rows()[rows().length - 1];
-      expect(rowEventId(last)).toBe("bus-error:b1:3");
+  it("lists authored events and episodes together, oldest first", async () => {
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    host.episodes = [episode(0), episode(1), episode(2)]; // 1000, 1002, 1004 s
+    renderPanel(
+      [
+        { id: "a", timestampNs: 999_000_000_000, label: "before", kind: "note" },
+        { id: "b", timestampNs: 1_003_000_000_000, label: "between", kind: "note" },
+      ],
+      traceData,
+      [CAN1],
+    );
+    const ep = "CAN1: 3 bus errors over 0.004 s (750/s)";
+    await waitFor(() => expect(labels()).toEqual(["before", ep, ep, "between", ep]));
+    const rows = eventRows();
+    expect(rows[1]).toHaveClass("trace-event-busError");
+    expect(eventsPageCalls()[0]).toMatchObject({
+      buses: ["b1"],
+      gapSeconds: 5,
+      kinds: ["busError", "messageBound", "note", "truncation"],
+      tagQuery: "",
     });
-    const last = rows()[rows().length - 1];
-    expect(last.querySelector(".bus-error-event-count")?.textContent).toBe("1 error");
-    expect(last.querySelector(".bus-error-event-rate")?.textContent).toBe("—");
+    ch.mockRestore();
   });
 
-  it("re-derives when the episode gap setting changes", async () => {
-    busErrorFixture = hostEpisodes(4);
+  it("has no edit controls on an episode, but selects it — and the plot's highlight hears", async () => {
+    host.episodes = [episode(0)];
     renderPanel([], traceData, [CAN1]);
-    await waitFor(() => expect(rows().length).toBe(4));
+    const [row] = await rowsShown(1);
+    expect(row.querySelector(".trace-event-edit")).toBeNull();
+    expect(row.querySelector(".trace-event-remove")).toBeNull();
+    expect(screen.queryByLabelText("pick event color")).toBeNull();
+    fireEvent.doubleClick(row.querySelector(".trace-event-label")!);
+    expect(screen.queryByLabelText("event label")).toBeNull();
 
-    busErrorFixture = hostEpisodes(12);
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-selected", "true");
+    // Selecting an episode is acting on it (ADR 0056): the plot lights it
+    // and draws its extent.
+    expect(activeEventIds()).toEqual(["bus-error:b1:3"]);
+  });
+
+  it("hides every episode under a tag query, which they cannot match", async () => {
+    host.episodes = [episode(0)];
+    renderPanel(
+      [{ id: "a", timestampNs: 999_000_000_000, label: "tagged", kind: "note", tag: "fault" }],
+      traceData,
+      [CAN1],
+    );
+    await rowsShown(2);
+    fireEvent.change(screen.getByLabelText("filter by tag"), { target: { value: "fau" } });
+    await waitFor(() => expect(labels()).toEqual(["tagged"]));
+  });
+
+  it("hides the episodes when Diagnostics is unticked", async () => {
+    host.episodes = [episode(0)];
+    renderPanel(
+      [{ id: "a", timestampNs: 999_000_000_000, label: "kept", kind: "note" }],
+      traceData,
+      [CAN1],
+    );
+    await rowsShown(2);
+    fireEvent.click(screen.getByLabelText("Diagnostics"));
+    await waitFor(() => expect(labels()).toEqual(["kept"]));
+  });
+
+  it("asks the host for no episodes without project buses", async () => {
+    host.episodes = [episode(0)];
+    renderPanel([{ id: "a", timestampNs: 999_000_000_000, label: "only", kind: "note" }]);
+    await waitFor(() => expect(labels()).toEqual(["only"]));
+    expect(eventsPageCalls()[0]?.buses).toEqual([]);
+  });
+
+  it("re-asks at the new gap when the setting changes", async () => {
+    host.episodes = [episode(0)];
+    renderPanel([], traceData, [CAN1]);
+    await rowsShown(1);
     settingsFixture = { bus_error_episode_gap_s: 1 };
     await act(async () => {
       await hydrateSettings();
     });
-    await waitFor(() => expect(rows().length).toBe(8));
-    expect(episodeCalls()[episodeCalls().length - 1]).toEqual({
-      buses: ["b1"],
-      gapSeconds: 1,
-      offset: 0,
-      limit: 1024,
-    });
-    expect(screen.getByText("episodes at 1 s")).toBeInTheDocument();
-  });
-
-  it("shows what it has quietly on a partial (`complete: false`) answer", async () => {
-    busErrorFixture = hostEpisodes(2, false);
-    renderPanel([], traceData, [CAN1]);
-    await waitFor(() => expect(rows().length).toBe(2));
-    expect(screen.getByText("catching up…")).toBeInTheDocument();
-    expect(screen.queryByText("No bus errors recorded.")).toBeNull();
-  });
-
-  it("lists authored events and the bus-error section together", async () => {
-    busErrorFixture = hostEpisodes(1);
-    renderPanel(
-      [{ id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" }],
-      traceData,
-      [CAN1],
+    await waitFor(() => expect(lastEventsPageCall()?.gapSeconds).toBe(1));
+    expect(screen.getByLabelText("Diagnostics").closest("label")).toHaveAttribute(
+      "title",
+      expect.stringContaining("episodes at 1 s"),
     );
-    expect(screen.getByText("boom")).toBeInTheDocument();
-    await waitFor(() => expect(rows().length).toBe(1));
+  });
+
+  describe("over a long fault", () => {
+    // The trace's own windowed test, mirrored (`TraceView.anchor.dom.test.tsx`):
+    // a stubbed viewport, a thumb dragged to the bottom.
+    const VH = 440; // exactly 20 rows
+    let restore: (() => void) | null = null;
+    beforeEach(() => {
+      const prev = Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight");
+      Object.defineProperty(Element.prototype, "clientHeight", {
+        configurable: true,
+        get: () => VH,
+      });
+      restore = () => Object.defineProperty(Element.prototype, "clientHeight", prev!);
+    });
+    afterEach(() => restore?.());
+
+    const N = 10_000;
+    const all = Array.from({ length: N }, (_, k) => episode(k, 1_000 + 2 * k, "b1", k === N - 1));
+
+    it("holds one page and fetches the page under the viewport as it scrolls", async () => {
+      host.episodes = all;
+      renderPanel([], traceData, [CAN1]);
+      await waitFor(() => expect(eventRows().length).toBeGreaterThan(0));
+      // Never the list: every ask is one page.
+      expect(eventsPageCalls().every((c) => Number(c.limit) <= 1024)).toBe(true);
+      expect(rowFor("bus-error:b1:3")).not.toBeNull();
+
+      const rowsEl = document.querySelector(".trace-rows") as HTMLElement;
+      Object.defineProperty(rowsEl, "scrollTop", { value: 0, writable: true });
+      rowsEl.scrollTop = maxScrollTop(N, VH); // drag the thumb to the bottom
+      fireEvent.scroll(rowsEl);
+
+      await waitFor(() =>
+        expect(eventsPageCalls().some((c) => Number(c.offset) > N - 1024 - 1)).toBe(true),
+      );
+      await waitFor(() => expect(rowFor(`bus-error:b1:${3 * N}`)).not.toBeNull());
+      expect(rowFor(`bus-error:b1:${3 * N}`)?.textContent).toContain(
+        "CAN1: 1 bus error over 0 s (—)",
+      );
+      expect(eventsPageCalls().every((c) => Number(c.limit) <= 1024)).toBe(true);
+      expect(ROW_HEIGHT).toBe(22);
+    });
   });
 
   it("shows an episode row's local date and time on hover (owner ruling 2026-09-25)", async () => {
-    busErrorFixture = hostEpisodes(1);
+    host.episodes = [episode(0)];
     renderPanel([], { ...traceData, sessionStartSeconds: SESSION_START }, [CAN1]);
-    await waitFor(() => expect(rows().length).toBe(1));
+    const [row] = await rowsShown(1);
 
-    const cell = rows()[0].querySelector(".bus-error-event-time") as HTMLElement;
+    const cell = row.querySelector(".trace-event-time") as HTMLElement;
     fireEvent.mouseOver(cell);
     expect(cell).toHaveAttribute("title", formatLocalTimestamp(1_000, SESSION_START)!);
   });
 
   it("shows no tooltip on an episode row without a wall-clock origin", async () => {
-    busErrorFixture = hostEpisodes(1);
+    host.episodes = [episode(0)];
     renderPanel([], traceData, [CAN1]); // sessionStartSeconds: 0 — capture-relative
-    await waitFor(() => expect(rows().length).toBe(1));
+    const [row] = await rowsShown(1);
 
-    const cell = rows()[0].querySelector(".bus-error-event-time") as HTMLElement;
+    const cell = row.querySelector(".trace-event-time") as HTMLElement;
     fireEvent.mouseOver(cell);
     expect(cell).not.toHaveAttribute("title");
-  });
-
-  it("hides on request, like every other Diagnostics-group kind", async () => {
-    busErrorFixture = hostEpisodes(1);
-    renderPanel([], traceData, [CAN1]);
-    await waitFor(() => expect(rows().length).toBe(1));
-
-    fireEvent.click(screen.getByLabelText("Diagnostics"));
-    expect(document.querySelector(".bus-error-events")).toBeNull();
   });
 });

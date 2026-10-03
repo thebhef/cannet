@@ -15,11 +15,21 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+
+import { answerEventsPage, fakeEventsHost } from "./eventsPageFake";
 
 let storedSettings: Record<string, unknown> = {};
+/// The host behind the events view: `events_page` answers from it.
+const host = fakeEventsHost();
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...storedSettings } : null)),
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) =>
+    cmd === "get_settings"
+      ? { ...storedSettings }
+      : cmd === "events_page"
+        ? answerEventsPage(host, args)
+        : null,
+  ),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(async () => {}),
@@ -58,9 +68,7 @@ const traceData: TraceData = {
 
 const projectCtx = { buses: [] } as unknown as ProjectContextValue;
 
-/// A dockview panel's props, faked: the `api.onDidVisibilityChange`
-/// subscription the panel's bus-error section needs for its scroll
-/// restore (`useScrollRestore.ts`) — never fired by these tests.
+/// A dockview panel's props, faked — the panel reads none of them.
 function panelProps(): Parameters<typeof EventsPanel>[0] {
   return {
     api: { onDidVisibilityChange: vi.fn(() => ({ dispose: vi.fn() })) },
@@ -110,7 +118,9 @@ const ELSEWHERE: Note = {
 /// in the first row slot whatever else is on screen.
 const LONE: Note = { ...ELSEWHERE, id: "lone", label: "lone", timestampNs: 100 };
 
-function renderEventsPanel(notes: Note[]) {
+/// Mount the events view over `notes` and wait for the host's page.
+async function renderEventsPanel(notes: Note[]) {
+  host.notes = notes;
   render(
     <TraceDataProvider value={traceData}>
       <ProjectContext.Provider value={projectCtx}>
@@ -122,6 +132,7 @@ function renderEventsPanel(notes: Note[]) {
       </ProjectContext.Provider>
     </TraceDataProvider>,
   );
+  await waitFor(() => expect(eventRows().length).toBeGreaterThan(0));
 }
 
 function eventRows(): HTMLElement[] {
@@ -202,14 +213,14 @@ afterEach(() => {
 });
 
 describe("the events view raises the highlight", () => {
-  it("lights nothing at rest", () => {
-    renderEventsPanel([CONTACTOR, FAULT, ELSEWHERE]);
+  it("lights nothing at rest", async () => {
+    await renderEventsPanel([CONTACTOR, FAULT, ELSEWHERE]);
     expect(litLabels()).toEqual([]);
     expect(activeEventIds()).toEqual([]);
   });
 
-  it("lights a hovered event and the event it is linked to, from either end", () => {
-    renderEventsPanel([CONTACTOR, FAULT, ELSEWHERE]);
+  it("lights a hovered event and the event it is linked to, from either end", async () => {
+    await renderEventsPanel([CONTACTOR, FAULT, ELSEWHERE]);
     // The reference is stored on `fault`; hovering the *other* end has
     // to light the pair all the same (ADR 0056 § 4).
     act(() => {
@@ -224,8 +235,8 @@ describe("the events view raises the highlight", () => {
     expect(litLabels()).toEqual(["contactor open", "fault"]);
   });
 
-  it("puts everything back the moment the pointer leaves", () => {
-    renderEventsPanel([CONTACTOR, FAULT, ELSEWHERE]);
+  it("puts everything back the moment the pointer leaves", async () => {
+    await renderEventsPanel([CONTACTOR, FAULT, ELSEWHERE]);
     act(() => {
       fireEvent.mouseEnter(eventRows()[0]);
     });
@@ -236,16 +247,16 @@ describe("the events view raises the highlight", () => {
     expect(litLabels()).toEqual([]);
   });
 
-  it("lights an event that is linked to nothing, alone", () => {
-    renderEventsPanel([LONE, CONTACTOR]);
+  it("lights an event that is linked to nothing, alone", async () => {
+    await renderEventsPanel([LONE, CONTACTOR]);
     act(() => {
       fireEvent.mouseEnter(eventRows()[0]);
     });
     expect(litLabels()).toEqual(["lone"]);
   });
 
-  it("holds the highlight on a selected event after the pointer has gone", () => {
-    renderEventsPanel([LONE, CONTACTOR]);
+  it("holds the highlight on a selected event after the pointer has gone", async () => {
+    await renderEventsPanel([LONE, CONTACTOR]);
     act(() => {
       fireEvent.click(eventRows()[0]);
     });
@@ -258,8 +269,8 @@ describe("the events view raises the highlight", () => {
     expect(litLabels()).toEqual(["lone"]);
   });
 
-  it("goes back to rest when the view that raised it unmounts", () => {
-    renderEventsPanel([LONE, CONTACTOR]);
+  it("goes back to rest when the view that raised it unmounts", async () => {
+    await renderEventsPanel([LONE, CONTACTOR]);
     act(() => {
       fireEvent.click(eventRows()[0]);
     });

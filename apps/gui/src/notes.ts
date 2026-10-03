@@ -10,9 +10,9 @@ import { wheelColor } from "./palette";
 /// marker the host stores; `messageBound` is a comment attached to the
 /// message it sits beside (BLF's own `EVENT_COMMENT`); `busError` is one
 /// episode of a bus's error series, read off the signal-cache pyramid
-/// (ADR 0035 amended) — the plot's markers and the Events panel's paged
-/// section (`useBusErrorEvents.ts`) both build it, but it never enters
-/// this module's own event store; `truncation` is the disk-spill marker
+/// (ADR 0035 amended) — the plot's markers and the Events panel's rows
+/// (`useEventsPage.ts`) both build it, but it never enters this module's
+/// own event store; `truncation` is the disk-spill marker
 /// synthesised here in the frontend (never sent by the host).
 export type EventKind = "note" | "messageBound" | "busError" | "truncation";
 

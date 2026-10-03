@@ -267,11 +267,24 @@ signal cache, and views page it; authored events stay whole.**
   marks, a bus's **episodes**: bursts in which each error
   follows the last by less than `bus_error_episode_gap_s` (default 5 s,
   minimum 1 s), a silence of at least the gap ending one. The host
-  derives them from the series' level 0, incrementally, holds the list
-  beside the series (bounded by capture time ÷ gap, rebuilt from level 0
-  rather than persisted) and serves it paged by offset, newest first,
-  with its count; the view pages it and derives nothing. An episode's id
-  is its last error's, `bus-error:{bus}:{n}`, on the plot as in the list.
+  derives them from the series' level 0, incrementally, and holds the
+  list beside the series (bounded by capture time ÷ gap, rebuilt from
+  level 0 rather than persisted). An episode's id is its last error's,
+  `bus-error:{bus}:{n}`, on the plot as in the list.
+- **The Events panel is one list** (owner rulings 2026-10-02, order
+  2026-10-03). The authored events, the truncation marker's place and
+  every bus's episodes are merged **by time, oldest first** — as every
+  trace-like view reads — by the host, which also applies the panel's
+  kind and tag filters (a tag query drops every untagged row: the
+  truncation marker and the episodes) and serves the result paged by
+  offset with its count. The authored list stays whole in the store; the
+  merge never copies an episode list, but locates a page by rank in each
+  list. At equal times the authored events come first, then the
+  truncation marker, then the buses in the order asked. The view holds
+  one page and derives nothing. An episode row is an event row like any
+  other — not editable, but selectable, and selecting it lights it and
+  its extent on the plot. A new link still joins two authored events;
+  the store holds the reference on one of them.
 - **A plot marker is an episode, in the events' own style** (owner
   ruling 2026-10-02). The plot asks for the episodes intersecting its
   window, at most as many as chips fit across it, and draws each as any

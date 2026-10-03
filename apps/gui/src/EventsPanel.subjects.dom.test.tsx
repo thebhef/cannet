@@ -14,9 +14,17 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
+import { answerEventsPage, fakeEventsHost } from "./eventsPageFake";
+
+/// The host behind the panel: `events_page` answers from it.
+const host = fakeEventsHost();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) =>
+    cmd === "events_page" ? answerEventsPage(host, args) : [],
+  ),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(async () => {}),
   listen: vi.fn(async () => () => {}),
@@ -84,16 +92,16 @@ function notesCtx(notes: Note[]): NotesContextValue {
 
 const projectCtx = { buses: [] } as unknown as ProjectContextValue;
 
-/// A dockview panel's props, faked: the `api.onDidVisibilityChange`
-/// subscription the panel's bus-error section needs for its scroll
-/// restore (`useScrollRestore.ts`) — never fired by these tests.
+/// A dockview panel's props, faked — the panel reads none of them.
 function panelProps(): Parameters<typeof EventsPanel>[0] {
   return {
     api: { onDidVisibilityChange: vi.fn(() => ({ dispose: vi.fn() })) },
   } as unknown as Parameters<typeof EventsPanel>[0];
 }
 
-function renderPanel(notes: Note[], catalog: SignalDescriptorRecord[] = CATALOG) {
+/// Mount the panel over `notes` and wait for the host's page to land.
+async function renderPanel(notes: Note[], catalog: SignalDescriptorRecord[] = CATALOG) {
+  host.notes = notes;
   const ctx = notesCtx(notes);
   render(
     <TraceDataProvider value={traceData}>
@@ -106,6 +114,7 @@ function renderPanel(notes: Note[], catalog: SignalDescriptorRecord[] = CATALOG)
       </ProjectContext.Provider>
     </TraceDataProvider>,
   );
+  await waitFor(() => expect(rows().length).toBeGreaterThan(0));
   return ctx;
 }
 
@@ -135,8 +144,8 @@ afterEach(() => {
 });
 
 describe("subject chips on the event row", () => {
-  it("names a signal and a message from the assigned databases", () => {
-    renderPanel([
+  it("names a signal and a message from the assigned databases", async () => {
+    await renderPanel([
       {
         ...at(1_000, "n1"),
         subjects: [
@@ -151,10 +160,10 @@ describe("subject chips on the event row", () => {
     ]);
   });
 
-  it("still shows what an unresolvable reference points at, muted", () => {
+  it("still shows what an unresolvable reference points at, muted", async () => {
     // No assigned database defines this field. The reference is not
     // broken and is not repaired — it renders as what it is.
-    renderPanel([
+    await renderPanel([
       {
         ...at(1_000, "n1"),
         subjects: [
@@ -170,9 +179,9 @@ describe("subject chips on the event row", () => {
     expect(screen.getByTitle(/BMS_Status\.CellTemp — no assigned database/)).toBeInTheDocument();
   });
 
-  it("resolves against the databases assigned now, not against a stored name", () => {
+  it("resolves against the databases assigned now, not against a stored name", async () => {
     // The same event, read against a database set that names nothing.
-    renderPanel(
+    await renderPanel(
       [
         {
           ...at(1_000, "n1"),
@@ -186,15 +195,15 @@ describe("subject chips on the event row", () => {
     expect(chipsOn(0)).toEqual([["PackCurrent", false]]);
   });
 
-  it("draws no chip region at all on an event that is about nothing", () => {
-    renderPanel([at(1_000, "n1")]);
+  it("draws no chip region at all on an event that is about nothing", async () => {
+    await renderPanel([at(1_000, "n1")]);
     expect(document.querySelector(".event-subject-chips")).toBeNull();
   });
 });
 
 describe("event links on the row", () => {
-  it("shows the link on both events, though it is stored on one", () => {
-    renderPanel([
+  it("shows the link on both events, though it is stored on one", async () => {
+    await renderPanel([
       at(1_000, "first"),
       { ...at(2_000, "second"), subjects: [{ kind: "event", id: "first" }] },
     ]);
@@ -202,15 +211,15 @@ describe("event links on the row", () => {
     expect(chipsOn(1)).toEqual([["first", true]]);
   });
 
-  it("shows nothing for a link whose event this set does not hold", () => {
-    renderPanel([{ ...at(1_000, "n1"), subjects: [{ kind: "event", id: "gone" }] }]);
+  it("shows nothing for a link whose event this set does not hold", async () => {
+    await renderPanel([{ ...at(1_000, "n1"), subjects: [{ kind: "event", id: "gone" }] }]);
     expect(document.querySelector(".event-subject-chips")).toBeNull();
   });
 });
 
 describe("the disclosed subject line", () => {
-  it("lists every subject under the row, which is where the … sends you", () => {
-    renderPanel([
+  it("lists every subject under the row, which is where the … sends you", async () => {
+    await renderPanel([
       {
         ...at(1_000, "n1"),
         subjects: [
@@ -226,10 +235,10 @@ describe("the disclosed subject line", () => {
       .toEqual(["PackCurrent", "s:2A1 DriveCmd"]);
   });
 
-  it("gives an event with subjects something to disclose even when it is not editable", () => {
+  it("gives an event with subjects something to disclose even when it is not editable", async () => {
     // A host-derived event takes no edits, so before subjects it had a
     // body only if it carried a tag or a description.
-    renderPanel([
+    await renderPanel([
       {
         ...at(1_000, "n1"),
         kind: "busError",
@@ -247,15 +256,15 @@ describe("linking two events", () => {
     return screen.getByLabelText(/Link Events|Unlink Events/) as HTMLButtonElement;
   }
 
-  it("is off until exactly two events are selected", () => {
-    renderPanel(two);
+  it("is off until exactly two events are selected", async () => {
+    await renderPanel(two);
     expect(linkChip()).toBeDisabled();
     fireEvent.click(rows()[0]);
     expect(linkChip()).toBeDisabled();
   });
 
-  it("links the pair, storing the reference on the later event", () => {
-    const ctx = renderPanel(two);
+  it("links the pair, storing the reference on the later event", async () => {
+    const ctx = await renderPanel(two);
     fireEvent.click(rows()[0]);
     fireEvent.click(rows()[1], { ctrlKey: true });
     expect(linkChip()).toBeEnabled();
@@ -263,8 +272,8 @@ describe("linking two events", () => {
     expect(ctx.linkEvents).toHaveBeenCalledWith("second", "first");
   });
 
-  it("becomes the unlink control when the two are already linked", () => {
-    const ctx = renderPanel([
+  it("becomes the unlink control when the two are already linked", async () => {
+    const ctx = await renderPanel([
       at(1_000, "first"),
       { ...at(2_000, "second"), subjects: [{ kind: "event", id: "first" }] },
     ]);
@@ -276,8 +285,8 @@ describe("linking two events", () => {
     expect(ctx.linkEvents).not.toHaveBeenCalled();
   });
 
-  it("goes off again when the selection collapses to one", () => {
-    renderPanel(two);
+  it("goes off again when the selection collapses to one", async () => {
+    await renderPanel(two);
     fireEvent.click(rows()[0]);
     fireEvent.click(rows()[1], { ctrlKey: true });
     expect(linkChip()).toBeEnabled();
@@ -299,19 +308,19 @@ describe("reading a note's full text", () => {
     );
   }
 
-  it("shows the whole label under the expanded note", () => {
+  it("shows the whole label under the expanded note", async () => {
     // The plot marker caps its label at 50 characters and the row
     // ellipsises at whatever width it has, so without this the text is
     // readable nowhere.
-    renderPanel([{ id: "n1", timestampNs: 1_000, label: LONG, kind: "note" }]);
+    await renderPanel([{ id: "n1", timestampNs: 1_000, label: LONG, kind: "note" }]);
     fireEvent.click(screen.getByLabelText("show event details"));
     const row = bodyRow("label");
     expect(row).not.toBeNull();
     expect(row!.querySelector(".trace-event-body-value")?.textContent).toBe(LONG);
   });
 
-  it("gives a long label enough rows to wrap into", () => {
-    renderPanel([{ id: "n1", timestampNs: 1_000, label: LONG, kind: "note" }]);
+  it("gives a long label enough rows to wrap into", async () => {
+    await renderPanel([{ id: "n1", timestampNs: 1_000, label: LONG, kind: "note" }]);
     fireEvent.click(screen.getByLabelText("show event details"));
     const value = bodyRow("label")!.querySelector<HTMLElement>(".trace-event-body-value")!;
     // 98 characters at 60 a line is two rows of the 18 px row space.
@@ -319,14 +328,14 @@ describe("reading a note's full text", () => {
     expect(value.classList.contains("trace-event-body-wrap")).toBe(true);
   });
 
-  it("keeps a short label to one row", () => {
-    renderPanel([{ id: "n1", timestampNs: 1_000, label: "brake on", kind: "note" }]);
+  it("keeps a short label to one row", async () => {
+    await renderPanel([{ id: "n1", timestampNs: 1_000, label: "brake on", kind: "note" }]);
     fireEvent.click(screen.getByLabelText("show event details"));
     expect(bodyRow("label")!.style.height).toBe("18px");
   });
 
-  it("still shows the tag and description below it", () => {
-    renderPanel([
+  it("still shows the tag and description below it", async () => {
+    await renderPanel([
       { id: "n1", timestampNs: 1_000, label: LONG, kind: "note", tag: "brakes", description: "why" },
     ]);
     fireEvent.click(screen.getByLabelText("show event details"));
@@ -340,11 +349,11 @@ describe("reading a note's full text", () => {
     expect(topOf("description") - topOf("tag")).toBe(18);
   });
 
-  it("opens a read-only event whose label is too long to read on the row", () => {
+  it("opens a read-only event whose label is too long to read on the row", async () => {
     // A bus-error event takes no edits and may carry no tag or
     // description, so before this it had no body at all — and its label
     // is exactly the kind that overruns.
-    renderPanel([{ id: "e1", timestampNs: 1_000, label: LONG, kind: "busError" }]);
+    await renderPanel([{ id: "e1", timestampNs: 1_000, label: LONG, kind: "busError" }]);
     fireEvent.click(screen.getByLabelText("show event details"));
     expect(bodyRow("label")?.querySelector(".trace-event-body-value")?.textContent).toBe(LONG);
   });

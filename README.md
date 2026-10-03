@@ -555,8 +555,8 @@ into **episodes** — a burst of errors on one bus, ended once the bus has
 been silent for the episode gap (**Trace → Bus-error episode gap**). The
 plot draws one **Bus error** marker per episode, at its first error,
 labelled with the bus, the count, the span and the rate, and drawn as
-any other event is; while it is being acted on (selected, or linked to
-the event that is) its extent from first error to last washes in, as a
+any other event is; while it is being acted on (its row selected in the
+Events panel, or linked to the event that is) its extent from first error to last washes in, as a
 linked pair's does. When more episodes fall in the visible window than
 fit across the plot at one chip's width each, the gap doubles until they
 fit — so a fault that produces a hundred thousand error frames is one
@@ -1793,10 +1793,10 @@ writes, so the panel teaches the file.
   take hex.
 - **Bus-error episode gap.** **Trace → Bus-error episode gap**
   (`bus_error_episode_gap_s`, in seconds) is how long a bus must fall
-  silent before the Events panel's bus-error section starts a new
-  episode: 5 by default, at least 1, at most 3600. Shorter splits a
-  fault into more, smaller episodes; longer merges them. The section
-  re-derives as soon as it changes. Project-overridable.
+  silent before the Events panel starts a new bus-error episode: 5 by
+  default, at least 1, at most 3600. Shorter splits a fault into more,
+  smaller episodes; longer merges them. The panel's list re-derives as
+  soon as it changes. Project-overridable.
 - **`developer` settings.** Machine-load and internal-cadence knobs —
   the plot's fetch interval, the view refresh interval, the live-update
   rate, the reconnect backoff, the health-sample cadence, the status
@@ -3454,34 +3454,41 @@ every kind with its count *even while the kind is switched off*, so
 nothing is hidden and unfindable. Switching a kind on is per view.
 
 The **Events** panel (command palette → *Show events*) is the browsing
-home, in two sections. **Notes and comments** are the whole event
-timeline — your own notes plus any message-bound comments read from a
-capture file — filtered by kind and by the user-defined **tag**. Each
-row opens to disclose what it is **about**, its **tag** and its
-**description** — the last two editable in place on your own events; a
-host-derived event (the history-truncated marker) shows what it
-computed and takes no edits. The tag and description ride the saved
-file too — inside the BLF marker, no sidecar, and as `cannet.tag` /
-`cannet.description` properties on an MDF `##EV`.
+home: **one list, oldest first**, like every trace-like view — your own
+notes, any message-bound comments read from a capture file, the
+history-truncated marker and the **bus-error episodes**, interleaved by
+time. Each row opens to disclose what it is **about**, its **tag** and
+its **description** — the last two editable in place on your own
+events; a derived event (the history-truncated marker, an episode)
+shows what was computed and takes no edits. The tag and description
+ride the saved file too — inside the BLF marker, no sidecar, and as
+`cannet.tag` / `cannet.description` properties on an MDF `##EV`.
 
-**Bus errors are their own paged section**, below the notes: one row
-per **episode** — a burst of errors on one bus, ended once the bus has
-been silent for the **episode gap** (**Trace → Bus-error episode gap**,
-`bus_error_episode_gap_s`: 5 s by default, 1 s at the least) — newest
-first, with the bus, the first error's time, the count, the span and
-the rate. Individual error frames are not listed; they are trace rows.
-The host derives the episodes from the per-bus error series — the same
-list the plot's Bus error markers are drawn from — and serves them a
-page at a time, so the section scrolls from the newest episode down to
-the capture's oldest without the frontend ever holding the list, and a
-change to the gap re-derives them. A still-catching-up answer — a
-capture just restored, say — shows what it has and keeps asking rather
-than going blank.
+**A bus-error episode** is a burst of errors on one bus, ended once the
+bus has been silent for the **episode gap** (**Trace → Bus-error
+episode gap**, `bus_error_episode_gap_s`: 5 s by default, 1 s at the
+least; the **Diagnostics** row's tooltip says the gap in use). Its row
+sits at the first error and reads `<bus>: N bus errors over S (R/s)` —
+the same label as its marker on the plot. Individual error frames are
+not listed; they are trace rows. An episode row takes no edits, but it
+is **selectable** like any other row: selecting it lights the episode
+on the plot, extent and all. A link between two of your own events is
+made here as before; an episode cannot be one end of a new link.
 
-**An event row in the Notes/comments section is the same row wherever
-it is drawn** — in the Events panel and interleaved into the
-chronological trace alike (bus errors are the one kind that renders
-neither way: markers on the plot, rows in their own paged section).
+**The list is the host's.** It merges the notes with each bus's episode
+list — the same one the plot's markers are drawn from — and applies
+the **kind** filter and the **tag** filter itself (a tag query hides
+every episode and the truncation marker: they carry no tag), then
+serves the result a page at a time, so the panel scrolls from the
+capture's oldest event to its newest without ever holding the list, and
+a change to the gap re-derives it. A still-catching-up answer — a
+capture just restored, say — shows what it has, says *catching up…*,
+and keeps asking rather than going blank.
+
+**An event row is the same row wherever it is drawn** — in the Events
+panel and interleaved into the chronological trace alike (bus errors
+are the one kind the trace leaves out: its error frames are already
+rows there).
 Every row carries a `⇥` button that jumps every trace and plot to that
 moment, and your own events carry the ✎ rename, the colour swatch and
 the × remove beside it. On the keyboard, the arrows walk onto an event
@@ -3523,7 +3530,8 @@ only there, since it is the only surface where an event row is a thing
 you select rather than a marker beside the frames — click an event to
 select it and Ctrl/Cmd+click a second. The toolbar's **Link Events**
 button then joins them; with two already-linked events selected the same
-button reads **Unlink Events** and takes the link away.
+button reads **Unlink Events** and takes the link away. Both must be
+your own events: a link is stored on one of them.
 
 **Two gestures put a subject on an event as it is created.**
 

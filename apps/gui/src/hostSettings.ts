@@ -111,7 +111,7 @@ export interface Settings {
   /// Auto-restarts allowed per session for a crashed sidecar.
   sidecar_restart_budget: number;
   /// Seconds of silence on a bus that end a bus-error episode — the grain
-  /// of the Events panel's bus-error section.
+  /// of the bus-error rows in the Events panel's list.
   bus_error_episode_gap_s: number;
   /// Wait before reconnecting to a `cannet-server` after a drop.
   reconnect_backoff_ms: number;
