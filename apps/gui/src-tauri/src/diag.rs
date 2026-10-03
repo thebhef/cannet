@@ -198,7 +198,8 @@ pub struct RenderReport {
     /// Receive throughput (the `fps.rx` gauge) reduced for gating —
     /// overall level and first/second-half retention.
     pub rx_fps: RateReport,
-    /// Transmit-confirmed throughput (the `fps.tx` gauge), same reduction.
+    /// Transmit throughput the bus carried — the rate of echoed `Tx`
+    /// rows (the `fps.tx` gauge), same reduction.
     /// Split from rx so a transmit-only stall is gated even when receive
     /// holds.
     pub tx_fps: RateReport,

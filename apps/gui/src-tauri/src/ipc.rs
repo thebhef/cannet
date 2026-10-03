@@ -569,22 +569,20 @@ mod opt_hex_u64 {
     }
 }
 
-/// Returned from `transmit_frame`. The frame *always* lands in the
-/// trace as a Tx-direction row at `tx_confirm_index` (the tx-confirm a
-/// real analyzer shows for its own transmits). `wire_status` reports
-/// what happened with the wire forward:
+/// Returned from `transmit_frame`. `wire_status` reports the enqueue
+/// outcome — what the session answered, not what the bus did:
 ///
-/// - `not_connected` — no remote session is open; only the local
-///   tx-confirm fired.
-/// - `sent` — handed off to the gRPC session; the server's
-///   acknowledgement (e.g. `Error::TX_REJECTED`) surfaces inline on
-///   the next frame the receive pump observes.
+/// - `not_connected` — no remote session is open; the send is refused
+///   and leaves a marked `Tx ✗` row.
+/// - `accepted` — the session took the frame. Nothing is appended: the
+///   frame's `Tx` row is the driver's echo, which arrives on the receive
+///   path once the bus carried it (and never, if it did not). A server
+///   rejection (e.g. `Error::TX_REJECTED`) surfaces on that path too.
 /// - `failed { message }` — the session was open but the transmit
-///   could not be enqueued (session closed mid-call, or the channel
-///   has no mapped interface).
+///   could not be enqueued (session closed mid-call, the channel has no
+///   mapped interface, or its adapter is gone); a marked `Tx ✗` row.
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct TransmitResult {
-    pub tx_confirm_index: u64,
     pub wire_status: TransmitWireStatus,
 }
 
@@ -592,7 +590,7 @@ pub struct TransmitResult {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TransmitWireStatus {
     NotConnected,
-    Sent { interface_id: String },
+    Accepted { interface_id: String },
     Failed { message: String },
 }
 

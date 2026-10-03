@@ -64,7 +64,8 @@ export interface TraceFrameRecord {
   violation?: string | null;
   /// `"undelivered"` on a Tx row whose frame reached no wire — the bus
   /// routed to no open session, or the session refused it. Absent
-  /// everywhere else, including a transmit a session accepted.
+  /// everywhere else, including every echoed Tx row: a send the
+  /// session accepted has no row until the bus reports carrying it.
   tx_delivery?: string | null;
   /// The signal names this row matched by, when the trace filter's
   /// fuzzy query was best answered by a signal or by one of a signal's

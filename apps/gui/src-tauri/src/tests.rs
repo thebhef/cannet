@@ -2400,7 +2400,9 @@ fn encode_frame_inner_errors_when_no_dbc_matches() {
 }
 
 #[test]
-fn transmit_frame_inner_appends_tx_confirm_when_not_connected() {
+fn a_send_no_session_carries_is_refused_and_leaves_its_tx_x_row() {
+    // The enqueue said no, so the row stays: the one transmit the trace
+    // records without the wire, and it is marked as such.
     let state = test_state();
     let req = ipc::TransmitRequest {
         bus_id: "p".into(),
@@ -2413,19 +2415,19 @@ fn transmit_frame_inner_appends_tx_confirm_when_not_connected() {
         dlc: 0,
     };
     let result = transmit_frame_inner(&state, &req).unwrap();
-    assert_eq!(result.tx_confirm_index, 0);
     assert!(
         matches!(result.wire_status, ipc::TransmitWireStatus::NotConnected),
         "expected NotConnected, got {:?}",
         result.wire_status,
     );
     // The trace store now has exactly one frame, with Direction::Tx
-    // and the payload we asked for.
+    // and the payload we asked for, marked undelivered.
     assert_eq!(state.trace_store.len(), 1);
     let only = state.trace_store.slice(0, 1).pop().unwrap();
     assert_eq!(only.direction, Direction::Tx);
     assert_eq!(only.id, 0x123);
     assert!(matches!(&only.payload, CanFramePayload::Classic(d) if d == &[1, 2, 3, 4]));
+    assert!(state.undelivered_tx.contains(0));
 }
 
 #[test]
@@ -2477,11 +2479,10 @@ fn the_capture_keeps_every_error_frame_the_view_collapses() {
 }
 
 #[test]
-fn a_tx_row_the_wire_never_carried_says_so() {
-    // The defect this pins: the row used to be appended before any
-    // wire attempt, so a frame nothing carried was indistinguishable
-    // from one that reached a bus. The row still lands — an analyzer
-    // shows its own transmits — but it now carries the outcome.
+fn a_refused_send_leaves_a_row_that_says_so() {
+    // A send no session would take is the one transmit the host writes
+    // into the trace itself, and the row is marked so it cannot read as
+    // a frame the bus carried.
     let state = test_state();
     let req = ipc::TransmitRequest {
         bus_id: "p".into(),
@@ -2493,10 +2494,10 @@ fn a_tx_row_the_wire_never_carried_says_so() {
         esi: false,
         dlc: 0,
     };
-    let result = transmit_frame_inner(&state, &req).unwrap();
-    assert_eq!(state.trace_store.len(), 1, "the row still lands");
+    transmit_frame_inner(&state, &req).unwrap();
+    assert_eq!(state.trace_store.len(), 1, "the refused row lands");
     assert!(
-        state.undelivered_tx.contains(result.tx_confirm_index),
+        state.undelivered_tx.contains(0),
         "no session carried bus p, so nothing reached a wire",
     );
     let rows = crate::trace_query::collect_trace_records(&state, 0, 1);
@@ -2504,16 +2505,18 @@ fn a_tx_row_the_wire_never_carried_says_so() {
 }
 
 #[test]
-fn a_tx_row_the_wire_took_carries_no_mark() {
-    // The control for the test above. A route that resolved and a
-    // transmit the session accepted is the ordinary case, and marking
-    // it would make the mark meaningless.
+fn an_accepted_send_appends_no_row() {
+    // Only the wire writes data. A session accepting the frame says
+    // nothing about the bus carrying it — the row, its count and its
+    // rate come from the echo, when the bus reports one. This session
+    // has no pump, so no echo ever lands: the trace stays empty.
     let state = test_state();
     state
         .local_buses
         .create("vbus", "v", cannet_core::BusConfig::classic_500k())
         .unwrap();
     let (sink_p, _source_p) = state.local_buses.attach_participant("vbus").unwrap();
+    let (_sink_q, _source_q) = state.local_buses.attach_participant("vbus").unwrap();
     state.remote_sessions.lock().unwrap().insert(
         format!("{}vbus", project::LOCAL_VBUS_URL_SCHEME),
         RemoteSession {
@@ -2542,11 +2545,14 @@ fn a_tx_row_the_wire_took_carries_no_mark() {
     };
     let result = transmit_frame_inner(&state, &req).unwrap();
     assert!(
-        !state.undelivered_tx.contains(result.tx_confirm_index),
-        "the session took the frame",
+        matches!(result.wire_status, ipc::TransmitWireStatus::Accepted { .. }),
+        "expected Accepted, got {:?}",
+        result.wire_status,
     );
-    let rows = crate::trace_query::collect_trace_records(&state, 0, 1);
-    assert_eq!(rows[0].tx_delivery, None);
+    assert_eq!(state.trace_store.len(), 0, "an accepted send is not a row");
+    assert!(!state.undelivered_tx.contains(0));
+    let (_, tx_fps) = state.trace_store.frames_per_second_by_direction();
+    assert!(tx_fps.abs() < f64::EPSILON, "no echo, no tx rate: {tx_fps}");
 }
 
 #[test]
@@ -2570,8 +2576,9 @@ fn a_transmit_onto_a_gone_adapter_marks_its_row() {
         esi: false,
         dlc: 0,
     };
-    let result = transmit_frame_inner(&state, &req).unwrap();
-    assert!(state.undelivered_tx.contains(result.tx_confirm_index));
+    transmit_frame_inner(&state, &req).unwrap();
+    assert_eq!(state.trace_store.len(), 1);
+    assert!(state.undelivered_tx.contains(0));
 }
 
 #[test]
@@ -2610,17 +2617,17 @@ fn clearing_the_capture_clears_the_undelivered_marks() {
 fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
     // Two project buses ("p", "q") bound to the same vbus, with
     // an in-process session open against `local-vbus://vbus`.
-    // Transmit on "p"; the tx-confirm appends to "p"'s trace
-    // immediately, and the SharedBus fans the frame out to "q"'s
-    // participant as a Direction::Rx copy. We don't spawn the
-    // pump threads here — we drain the LocalSource manually to
+    // Transmit on "p"; nothing is appended at send time, the SharedBus
+    // fans the frame out to "q"'s participant as a Direction::Rx copy
+    // and echoes it to "p"'s as Direction::Tx. We don't spawn the
+    // pump threads here — we drain the LocalSources manually to
     // assert the routing without depending on thread timing.
     let state = test_state();
     state
         .local_buses
         .create("vbus", "v", cannet_core::BusConfig::classic_500k())
         .unwrap();
-    let (sink_p, _source_p) = state.local_buses.attach_participant("vbus").unwrap();
+    let (sink_p, mut source_p) = state.local_buses.attach_participant("vbus").unwrap();
     let (_sink_q, mut source_q) = state.local_buses.attach_participant("vbus").unwrap();
 
     let session = RemoteSession {
@@ -2654,44 +2661,44 @@ fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
     };
     let result = transmit_frame_inner(&state, &req).unwrap();
     assert!(
-        matches!(result.wire_status, ipc::TransmitWireStatus::Sent { .. }),
-        "expected Sent, got {:?}",
+        matches!(result.wire_status, ipc::TransmitWireStatus::Accepted { .. }),
+        "expected Accepted, got {:?}",
         result.wire_status,
     );
+    assert_eq!(state.trace_store.len(), 0, "no row at send time");
 
-    // Tx-confirm landed in the trace store for bus "p".
-    assert_eq!(state.trace_store.len(), 1, "expected tx-confirm row");
-    let confirm = state.trace_store.slice(0, 1).pop().unwrap();
-    assert_eq!(confirm.bus_id.as_deref(), Some("p"));
-    assert_eq!(confirm.direction, Direction::Tx);
-    assert_eq!(confirm.id, 0x321);
-
-    // The fan-out is delivered to "q"'s LocalSource. Wait briefly
-    // for the SharedBus's arbitration worker to run.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let frame_q = loop {
-        match source_q.try_next() {
-            Ok(Some(cannet_core::ParticipantEvent::Frame { frame, .. })) => break frame,
-            Ok(_) => {}
-            Err(e) => panic!("q's participant detached unexpectedly: {e:?}"),
+    // The fan-out is delivered to "q"'s LocalSource and the echo to
+    // "p"'s. Wait briefly for the SharedBus's arbitration worker.
+    let next_frame = |source: &mut cannet_core::LocalSource, who: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match source.try_next() {
+                Ok(Some(cannet_core::ParticipantEvent::Frame { frame, .. })) => break frame,
+                Ok(_) => {}
+                Err(e) => panic!("{who}'s participant detached unexpectedly: {e:?}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "vbus frame never arrived on {who}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "vbus fan-out never arrived on q"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
     };
+    let frame_q = next_frame(&mut source_q, "q");
     assert_eq!(frame_q.direction, Direction::Rx);
     assert_eq!(frame_q.id.raw(), 0x321);
+    let echo_p = next_frame(&mut source_p, "p");
+    assert_eq!(echo_p.direction, Direction::Tx);
+    assert_eq!(echo_p.id.raw(), 0x321);
 }
 
-/// A frame sent through the transmit panel should land in the
-/// signal cache for a plot panel scoped to the same bus — the
-/// tx-confirm is the only record on the sending bus (the wire
-/// fan-out goes elsewhere), so a plot of "what I just sent on
-/// bus X" must include `Direction::Tx` rows.
+/// A frame the bus carried for us — the driver's echo, ingested as a
+/// `Direction::Tx` row — should land in the signal cache for a plot
+/// panel scoped to the same bus: the echo is the only record on the
+/// sending bus (the fan-out goes elsewhere), so a plot of "what I just
+/// sent on bus X" must include `Direction::Tx` rows.
 #[test]
-fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
+fn an_echoed_tx_row_is_visible_via_sample_signals_signal_cache() {
     let state = test_state();
 
     // One-message DBC: id 0x123, 8-bit signal "Sig" at byte 0.
@@ -2702,28 +2709,20 @@ fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
         .unwrap()
         .push(loaded_scoped("test.dbc", &dbc_text, &["p"]));
 
-    // Transmit a frame on bus "p" with payload [42, ...]. No
-    // session is required for the tx-confirm row to land.
-    let req = ipc::TransmitRequest {
-        bus_id: "p".into(),
-        id: 0x123,
-        extended: false,
-        kind: ipc::TransmitKind::Classic,
-        data: vec![42, 0, 0, 0, 0, 0, 0, 0],
-        brs: false,
-        esi: false,
-        dlc: 0,
-    };
-    transmit_frame_inner(&state, &req).unwrap();
-
-    // One tx-confirm row, Direction::Tx, bus_id "p".
-    assert_eq!(state.trace_store.len(), 1);
-    let row = state.trace_store.slice(0, 1).pop().unwrap();
-    assert_eq!(row.direction, Direction::Tx);
-    assert_eq!(row.bus_id.as_deref(), Some("p"));
+    // The echo of a frame on bus "p" with payload [42, ...], as the
+    // ingest path appends it.
+    state
+        .trace_store
+        .append(RawTraceFrame {
+            direction: Direction::Tx,
+            payload: CanFramePayload::Classic(vec![42, 0, 0, 0, 0, 0, 0, 0]),
+            bus_id: Some("p".into()),
+            ..dummy_frame(1_000, 0x123)
+        })
+        .unwrap();
 
     // The signal cache for `(bus=p, id=0x123, "Sig")` must include
-    // the tx-confirm's decoded value (42).
+    // the echo's decoded value (42).
     let dbs_guard = state.databases.lock().unwrap();
     let db_refs = state.decode_model(&dbs_guard);
     let samples = state.signal_caches.slice(
@@ -2739,18 +2738,134 @@ fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
     );
     assert!(
         samples.iter().any(|p| (p.value - 42.0).abs() < 1e-9),
-        "expected tx-confirm decoded as Sig=42 in signal cache; got {samples:?}",
+        "expected the echo decoded as Sig=42 in signal cache; got {samples:?}",
     );
+}
+
+/// Mirror of the per-participant pump `connect_local_vbus` spawns:
+/// `LocalSourceFrameSource` forces `frame.channel`, and the pump
+/// stamps `bus_id` via `route_channel` and appends. Spliced in by hand
+/// so the tests need no `AppHandle`. Ends when the participant
+/// detaches or `stop` is set.
+fn spawn_vbus_pump(
+    store: Arc<crate::trace_store::TraceStore>,
+    source: cannet_core::LocalSource,
+    channel: u8,
+    bus: &str,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    let channel_to_bus = vec![(channel, bus.to_string())];
+    std::thread::spawn(move || {
+        let mut adapter = LocalSourceFrameSource { source, channel };
+        while !stop.load(Ordering::Relaxed) {
+            let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
+                .ok()
+                .flatten()
+            else {
+                break;
+            };
+            let mut raw = RawTraceFrame::from(frame);
+            if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
+                raw.bus_id = Some(bid);
+                store.append(raw);
+            }
+        }
+    })
+}
+
+/// `fps.tx` — the transmit rate the status line and the perf gate read —
+/// is the rate of `Tx` rows, and those now come only from echoes the
+/// ingest path appends. Two accepted sends on a vbus whose sender has
+/// its pump running (and whose receiver's copies nobody ingests) must
+/// read as a transmit rate and no receive rate.
+#[test]
+fn the_tx_rate_is_fed_by_ingested_echoes() {
+    let state = test_state();
+    state
+        .local_buses
+        .create("vbus", "v", cannet_core::BusConfig::classic_500k())
+        .unwrap();
+    let (sink_p, source_p) = state.local_buses.attach_participant("vbus").unwrap();
+    let (_sink_q, _source_q) = state.local_buses.attach_participant("vbus").unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let pump_p = spawn_vbus_pump(state.trace_store.clone(), source_p, 0, "p", stop.clone());
+    state.remote_sessions.lock().unwrap().insert(
+        format!("{}vbus", project::LOCAL_VBUS_URL_SCHEME),
+        RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(vec![(
+                0,
+                std::sync::Arc::new(std::sync::Mutex::new(sink_p)),
+            )]),
+            channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
+            channel_to_bus: vec![(0, "p".into())],
+            stop: Arc::new(AtomicBool::new(false)),
+            clock: None,
+            controllers: None,
+            rejections: None,
+        },
+    );
+    let req = ipc::TransmitRequest {
+        bus_id: "p".into(),
+        id: 0x456,
+        extended: false,
+        kind: ipc::TransmitKind::Classic,
+        data: vec![7],
+        brs: false,
+        esi: false,
+        dlc: 0,
+    };
+    let wait_rows = |n: usize| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && state.trace_store.len() < n {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(state.trace_store.len(), n, "echo rows");
+    };
+    transmit_frame_inner(&state, &req).unwrap();
+    wait_rows(1);
+    // Past the rate tracker's sample interval, so the second echo
+    // records a second sample.
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    transmit_frame_inner(&state, &req).unwrap();
+    wait_rows(2);
+
+    let (rx_fps, tx_fps) = state.trace_store.frames_per_second_by_direction();
+    assert!(tx_fps > 0.0, "the echoes feed the tx rate");
+    assert!(
+        rx_fps.abs() < f64::EPSILON,
+        "nothing was received: {rx_fps}"
+    );
+
+    stop.store(true, Ordering::Relaxed);
+    state.remote_sessions.lock().unwrap().clear();
+    assert!(state.local_buses.drop_bus("vbus"));
+    let _ = pump_p.join();
+}
+
+/// An error frame we transmitted comes back as its echo and is stored
+/// like any frame, but it is our stimulus, not a fault the bus
+/// suffered: the bus-health tally counts only received error frames.
+#[test]
+fn an_echoed_error_frame_is_not_a_bus_fault() {
+    let error = |direction| RawTraceFrame {
+        payload: CanFramePayload::Error,
+        direction,
+        ..dummy_frame(1_000, 0)
+    };
+    assert!(crate::session::is_bus_fault(&error(Direction::Rx)));
+    assert!(!crate::session::is_bus_fault(&error(Direction::Tx)));
+    assert!(!crate::session::is_bus_fault(&dummy_frame(1_000, 0x100)));
 }
 
 /// The user's actual scenario: two project buses ("p", "q") both
 /// bound to the same vbus. Transmit a frame on "p" through the
-/// host's transmit-frame command (so the tx-confirm appends to
-/// the trace store as `Direction::Tx` with `bus_id` "p", and the
-/// `SharedBus` fans the frame out to "q"'s participant; a pump
-/// stamps the fan-out copy with `bus_id` "q" and `Direction::Rx`).
-/// A plot scoped to *either* bus must then find the decoded
-/// signal in its signal cache — Tx for "p", Rx for "q".
+/// host's transmit-frame command: nothing is appended at send time;
+/// the `SharedBus` fans the frame out to "q"'s participant and echoes
+/// it to "p"'s, and each participant's pump stamps its copy with its
+/// bus — "p" as `Direction::Tx`, "q" as `Direction::Rx`. A plot scoped
+/// to *either* bus must then find the decoded signal in its signal
+/// cache, and the echo is what feeds the transmit rate.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
@@ -2769,37 +2884,13 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
         .local_buses
         .create("vbus", "v", cannet_core::BusConfig::classic_500k())
         .unwrap();
-    let (sink_p, _source_p) = state.local_buses.attach_participant("vbus").unwrap();
+    let (sink_p, source_p) = state.local_buses.attach_participant("vbus").unwrap();
     let (_sink_q, source_q) = state.local_buses.attach_participant("vbus").unwrap();
 
-    // Spawn the rx pump for "q" — mirrors the per-participant
-    // pump `connect_local_vbus` spawns. `LocalSourceFrameSource`
-    // forces frame.channel = self.channel; `run_pump` then
-    // stamps `bus_id` via `route_channel`. We splice both in
-    // manually here so the test doesn't need an `AppHandle`.
-    let store_for_pump = state.trace_store.clone();
+    // One pump per participant, as `connect_local_vbus` spawns them.
     let stop = Arc::new(AtomicBool::new(false));
-    let stop_for_pump = stop.clone();
-    let pump = std::thread::spawn(move || {
-        let mut adapter = LocalSourceFrameSource {
-            source: source_q,
-            channel: 1,
-        };
-        let channel_to_bus = vec![(1u8, "q".to_string())];
-        while !stop_for_pump.load(Ordering::Relaxed) {
-            let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
-                .ok()
-                .flatten()
-            else {
-                break;
-            };
-            let mut raw = RawTraceFrame::from(frame);
-            if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
-                raw.bus_id = Some(bid);
-                store_for_pump.append(raw);
-            }
-        }
-    });
+    let pump_p = spawn_vbus_pump(state.trace_store.clone(), source_p, 0, "p", stop.clone());
+    let pump_q = spawn_vbus_pump(state.trace_store.clone(), source_q, 1, "q", stop.clone());
 
     // Register a vbus session with `p` on channel 0 (the only
     // sink the transmit path uses).
@@ -2838,8 +2929,8 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
     };
     transmit_frame_inner(&state, &req).unwrap();
 
-    // Wait for the pump to absorb the fan-out and the trace store
-    // to grow to two rows (tx-confirm + Rx fan-out).
+    // Wait for the pumps to absorb the echo and the fan-out and the
+    // trace store to grow to two rows.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline && state.trace_store.len() < 2 {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2847,11 +2938,25 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
     assert_eq!(
         state.trace_store.len(),
         2,
-        "expected tx-confirm + fan-out; got {} rows",
+        "expected the echo + the fan-out; got {} rows",
         state.trace_store.len(),
     );
-
-    // The tx-confirm and the fan-out must share one clock. The plot
+    let mut rows: Vec<(Option<String>, Direction)> = state
+        .trace_store
+        .slice(0, 2)
+        .into_iter()
+        .map(|r| (r.bus_id, r.direction))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        rows,
+        vec![
+            (Some("p".to_string()), Direction::Tx),
+            (Some("q".to_string()), Direction::Rx),
+        ],
+        "a vbus session sees its own frame as Tx",
+    );
+    // The echo and the fan-out must share one clock. The plot
     // anchors its x-axis on the window's first-frame timestamp
     // (`frame_timestamps`); if the two rows sit on different clocks
     // the receiver's samples land ~decades off that anchor and the
@@ -2862,13 +2967,13 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
     let spread = last_ns.unwrap().abs_diff(first_ns.unwrap());
     assert!(
         spread < 1_000_000_000,
-        "tx-confirm and fan-out are {spread} ns apart — two clocks in one buffer",
+        "echo and fan-out are {spread} ns apart — two clocks in one buffer",
     );
 
     let dbs_guard = state.databases.lock().unwrap();
     let db_refs = state.decode_model(&dbs_guard);
 
-    // Plot scoped to "p" sees the tx-confirm.
+    // Plot scoped to "p" sees the echo.
     let samples_p = state.signal_caches.slice(
         Some("p"),
         0x456,
@@ -2882,7 +2987,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
     );
     assert!(
         samples_p.iter().any(|p| (p.value - 7.0).abs() < 1e-9),
-        "plot on sender bus 'p' missed the tx-confirm; got {samples_p:?}",
+        "plot on sender bus 'p' missed the echo; got {samples_p:?}",
     );
 
     // Plot scoped to "q" sees the fan-out.
@@ -2902,12 +3007,14 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
         "plot on receiver bus 'q' missed the fan-out; got {samples_q:?}",
     );
 
-    // Tear down the pump cleanly so the test doesn't leak the
-    // participant (drop sink → source returns None → pump exits).
+    // Tear down the pumps cleanly so the test doesn't leak the
+    // participants (drop the bus → sources return None → pumps exit).
     stop.store(true, Ordering::Relaxed);
     drop(dbs_guard);
+    state.remote_sessions.lock().unwrap().clear();
     assert!(state.local_buses.drop_bus("vbus"));
-    let _ = pump.join();
+    let _ = pump_p.join();
+    let _ = pump_q.join();
 }
 
 /// Read a BLF's notes exactly the way an import does: drain the frame
@@ -6487,9 +6594,9 @@ fn next_tick_deadline_is_fixed_rate_not_fixed_delay() {
 //   cargo test -p cannet-gui -- --ignored --nocapture bench_tx
 //
 // `bench_tx_model_only` is the model-side ceiling (build a frame +
-// append a tx-confirm, no session). `bench_tx_vbus_real_path` is the
+// append a `Tx` row, no session). `bench_tx_vbus_real_path` is the
 // real per-tick cost the scheduler pays: `transmit_frame_inner` over a
-// live virtual-bus session, with the loopback pump appending the
+// live virtual-bus session, with the pumps appending the echo and the
 // fan-out concurrently (so it captures `trace_store` lock contention).
 // Comparing the two tells us whether a slow real tick is the core
 // pipeline or the vbus/transport path.
@@ -6533,35 +6640,15 @@ fn bench_tx_vbus_real_path() {
         .local_buses
         .create("vbus", "v", cannet_core::BusConfig::classic_500k())
         .unwrap();
-    let (sink_p, _source_p) = state.local_buses.attach_participant("vbus").unwrap();
+    let (sink_p, source_p) = state.local_buses.attach_participant("vbus").unwrap();
     let (_sink_q, source_q) = state.local_buses.attach_participant("vbus").unwrap();
 
-    // Loopback pump for "q" — mirrors `connect_local_vbus`; drains the
-    // fan-out into the trace store, so the benchmark sees the same
-    // `trace_store` contention the real scheduler does.
-    let store_for_pump = state.trace_store.clone();
+    // Pumps for "p" (the echo) and "q" (the fan-out) — mirror
+    // `connect_local_vbus`, so the benchmark sees the same
+    // `trace_store` contention the real path does.
     let stop = Arc::new(AtomicBool::new(false));
-    let stop_for_pump = stop.clone();
-    let pump = std::thread::spawn(move || {
-        let mut adapter = LocalSourceFrameSource {
-            source: source_q,
-            channel: 1,
-        };
-        let channel_to_bus = vec![(1u8, "q".to_string())];
-        while !stop_for_pump.load(Ordering::Relaxed) {
-            let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
-                .ok()
-                .flatten()
-            else {
-                break;
-            };
-            let mut raw = RawTraceFrame::from(frame);
-            if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
-                raw.bus_id = Some(bid);
-                store_for_pump.append(raw);
-            }
-        }
-    });
+    let pump_p = spawn_vbus_pump(state.trace_store.clone(), source_p, 0, "p", stop.clone());
+    let pump = spawn_vbus_pump(state.trace_store.clone(), source_q, 1, "q", stop.clone());
 
     let session = RemoteSession {
         handle: None,
@@ -6610,8 +6697,9 @@ fn bench_tx_vbus_real_path() {
     );
 
     stop.store(true, Ordering::Relaxed);
-    drop(state); // closes the bus → pump's next_frame returns
+    drop(state); // closes the bus → pumps' next_frame returns
     let _ = pump.join();
+    let _ = pump_p.join();
 }
 
 /// A DBC declaring calculated fields on `Status` via the cannet
@@ -8609,7 +8697,7 @@ fn a_signal_the_picked_database_withholds_has_no_value_in_the_row() {
 // The defect these cover: with the adapter unplugged, the session, its
 // subscription and its bus binding all stayed exactly as they were, so
 // the transmit path kept resolving a route and kept appending
-// tx-confirm rows. The trace showed a bus that looked like it was
+// send-time `Tx` rows. The trace showed a bus that looked like it was
 // sending while nothing reached a wire, and — because bus load is
 // derived from what the store holds — its load reading stayed steady
 // off those rows alone. A controller reporting `unavailable` is what
@@ -8671,9 +8759,9 @@ fn a_bus_off_controller_still_has_a_route() {
 
 #[test]
 fn transmitting_onto_an_unavailable_interface_says_why() {
-    // The manual single-shot still appends its tx-confirm row — ADR
-    // 0039 keeps that, an analyzer shows its own transmits — but the
-    // wire status has to name the reason. Before, the bus fell through
+    // The manual single-shot onto a gone adapter is refused, so it
+    // still leaves its marked `Tx ✗` row (ADR 0039) — and the wire
+    // status has to name the reason. Before, the bus fell through
     // to the generic "not bound on any active server", which is false:
     // it is bound, and the binding is the problem's context, not its
     // cause.
@@ -8704,11 +8792,8 @@ fn transmitting_onto_an_unavailable_interface_says_why() {
         !message.contains("not bound"),
         "the bus is bound; the adapter is gone: {message}",
     );
-    assert_eq!(
-        state.trace_store.len(),
-        1,
-        "the local tx-confirm still lands"
-    );
+    assert_eq!(state.trace_store.len(), 1, "the refused row lands");
+    assert!(state.undelivered_tx.contains(0));
 }
 
 #[test]

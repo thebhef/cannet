@@ -131,6 +131,10 @@ client whichever language is talking to it:
   allocates a fresh participant, and the bus waits for the server to
   name it. `bus.allocated_id` is that name, and it is what transmits
   are addressed to.
+- **Your own transmits come back only when asked for.** The server
+  reports each frame the bus carried for a session back to it as a
+  transmit echo (`is_rx == False`); as in python-can, the bus drops them
+  unless opened with `receive_own_messages=True`.
 - **Per-frame errors do not end the session.** `TX_REJECTED`,
   `NOT_SUBSCRIBED` and `NO_ACKNOWLEDGER` each describe one transmit;
   they are tallied on `bus.rejections` and the stream goes on. Every

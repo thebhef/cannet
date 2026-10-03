@@ -174,6 +174,47 @@ async fn frames_fan_out_to_other_subscribers_tagged_with_sender_id() {
 }
 
 #[tokio::test]
+async fn a_carried_transmit_echoes_to_its_sender_as_tx() {
+    // Only the wire writes a transmit into a trace: the sender learns
+    // its frame was carried from the echo, as a hardware controller's
+    // receive-own-messages reports it.
+    let (addr, server) = spawn_server(BusConfig::classic_500k()).await;
+
+    let (a_tx, mut a_stream, a_id) = open_and_subscribe(addr).await;
+    let (_b_tx, mut b_stream, _b_id) = open_and_subscribe(addr).await;
+
+    a_tx.send(Envelope {
+        body: Some(Body::FrameBatch(FrameBatch {
+            interface_id: a_id.clone(),
+            frames: vec![classic_tx(0x321, vec![0xAA])],
+        })),
+    })
+    .await
+    .unwrap();
+
+    let env = next_envelope(&mut a_stream, "the sender's echo").await;
+    let Some(Body::FrameBatch(echo)) = env.body else {
+        panic!("expected FrameBatch envelope, got {env:?}");
+    };
+    assert_eq!(echo.interface_id, a_id);
+    assert_eq!(echo.frames.len(), 1);
+    assert_eq!(echo.frames[0].can_id, 0x321);
+    assert_eq!(echo.frames[0].direction, ProtoDirection::Tx as i32);
+
+    let env = next_envelope(&mut b_stream, "the peer's copy").await;
+    let Some(Body::FrameBatch(rx)) = env.body else {
+        panic!("expected FrameBatch envelope, got {env:?}");
+    };
+    assert_eq!(rx.frames[0].direction, ProtoDirection::Rx as i32);
+    assert_eq!(
+        echo.frames[0].timestamp_ns, rx.frames[0].timestamp_ns,
+        "the echo and the copy are the same moment on the bus"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn solo_participant_transmit_yields_no_acknowledger() {
     let (addr, server) = spawn_server(BusConfig::classic_500k()).await;
 
@@ -505,6 +546,14 @@ async fn cross_server_bridge_carries_traffic_in_both_directions() {
     assert_eq!(batch.frames.len(), 1);
     assert_eq!(batch.frames[0].can_id, 0x111);
     assert_eq!(batch.frames[0].data, vec![0xA1, 0xA2]);
+    assert_eq!(batch.frames[0].direction, ProtoDirection::Rx as i32);
+    // A hears its own frame back once, as its echo.
+    let env = next_envelope(&mut a_stream, "A's echo").await;
+    let Some(Body::FrameBatch(batch)) = env.body else {
+        panic!("expected FrameBatch on A, got {env:?}");
+    };
+    assert_eq!(batch.frames[0].can_id, 0x111);
+    assert_eq!(batch.frames[0].direction, ProtoDirection::Tx as i32);
 
     // B → A: participant on B transmits; participant on A sees Rx.
     b_tx.send(Envelope {
@@ -515,6 +564,9 @@ async fn cross_server_bridge_carries_traffic_in_both_directions() {
     })
     .await
     .unwrap();
+    // B's own echo of 0x111 to the bridge's participant on B came back
+    // over the bridge as `Tx` and was dropped there, so the next thing
+    // A sees is B's frame, once.
     let env = next_envelope(&mut a_stream, "A receives B's frame").await;
     let Some(Body::FrameBatch(batch)) = env.body else {
         panic!("expected FrameBatch on A, got {env:?}");
@@ -522,6 +574,20 @@ async fn cross_server_bridge_carries_traffic_in_both_directions() {
     assert_eq!(batch.frames.len(), 1);
     assert_eq!(batch.frames[0].can_id, 0x222);
     assert_eq!(batch.frames[0].data, vec![0xB1, 0xB2]);
+    assert_eq!(batch.frames[0].direction, ProtoDirection::Rx as i32);
+    let env = next_envelope(&mut b_stream, "B's echo").await;
+    let Some(Body::FrameBatch(batch)) = env.body else {
+        panic!("expected FrameBatch on B, got {env:?}");
+    };
+    assert_eq!(batch.frames[0].can_id, 0x222);
+    assert_eq!(batch.frames[0].direction, ProtoDirection::Tx as i32);
+    // Nothing doubled: no second copy of either frame reaches A.
+    assert!(
+        timeout(Duration::from_millis(300), a_stream.next())
+            .await
+            .is_err(),
+        "A received a duplicate"
+    );
 
     a_server.abort();
     b_server.abort();

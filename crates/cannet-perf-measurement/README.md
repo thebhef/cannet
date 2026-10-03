@@ -106,7 +106,9 @@ cargo run -p cannet-perf-measurement -- check         # exit non-zero on regress
 # RenderReport, which `baseline` stores and `check` compares. The expected
 # rx/tx rates gate the live example sim's throughput as a two-sided band
 # (too few *or* too many frames fails); they apply to the frontend tier
-# only — host modes gate ingest relative to their own baseline.
+# only — host modes gate ingest relative to their own baseline. The tx
+# rate is the rate of `Tx` rows, which are the bus's echoes of what we
+# sent: a bus that echoes nothing reads ~0 tx.
 cargo run -p cannet-perf-measurement -- \
     --frontend-report <render-report.json> \
     --expected-rx-fps 1608 --expected-tx-fps 1608 check
@@ -340,7 +342,7 @@ record per commit, not a cross-machine constant.
 A real bus delivers ~500 frames/s; the GUI refreshes its filtered
 match-count ~8×/s by scanning the buffer under the trace-store mutex. As
 the buffer grows the scan takes longer, and while it holds the lock,
-append (ingest and tx-confirm) is starved — the diagnosed "ingest FPS
+append (ingest, our own echoes included) is starved — the diagnosed "ingest FPS
 halves / tx spacing grows" symptom.
 
 The harness reproduces that with a **paced** ingest side and a scan

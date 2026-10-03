@@ -519,8 +519,7 @@ fault rather than a warning, and it is the one state that **suspends
 transmission** — periodic messages targeting the bus park (as they do
 for any route loss) and resume on their own within about a second of
 the adapter coming back. Without that, the app goes on handing frames
-to a driver that cannot carry them, and each one still appears in the
-trace as though it had been sent. A controller over the warning limit,
+to a driver that cannot carry them. A controller over the warning limit,
 one that has gone error-passive, and even one that is bus-off all keep
 their periodics running. The first two recover by themselves as their
 counters fall. A bus-off controller cannot — it transmits nothing, so
@@ -2242,21 +2241,25 @@ for the ownership and source-of-truth rules.
 
 Where a sent frame goes:
 
-- **Onto the wire first**, if a session carries the bus, as a one-frame
+- **Onto the wire**, if a session carries the bus, as a one-frame
   `FrameBatch` envelope on the bus's bound interface (the periodic
   scheduler sends its tick as one batch per destination).
-- **Then into the trace** as a `Tx`-direction tx-confirm row, just like
-  a real analyzer shows for its own transmits — always, so the transmit
-  pipeline is observable end-to-end even with no remote source open,
-  **but carrying what the wire answered**. A row whose frame reached no
-  wire at all — no session carried its bus, or the session refused it —
-  reads `Tx ✗` in the direction column and says why on hover. That order
-  is the point: a row appended before the attempt made a frame nothing
-  carried indistinguishable from one a bus took. On a PEAK adapter, whose
-  echo fires when a frame goes onto the wire rather than when a node
-  acknowledges it, the sidecar withholds the echoes of an error-passive
-  transmitter, so a frame retransmitted into a pulled cable is not
-  reported back as sent.
+- **Into the trace only when the bus carries it.** A send the session
+  accepts appends nothing. The adapter's driver hands back each frame
+  it actually put on the wire (python-can's `receive_own_messages`
+  echo; the virtual bus echoes the same way), and that echo arrives on
+  the receive path as a `Tx` frame — shown, counted, decoded, plotted,
+  logged and saved like any other. **A `Tx` row is a frame the bus
+  carried**; a frame the bus would not carry — a pulled cable, a dead
+  bus — leaves no row and is not retried. An adapter whose backend
+  cannot echo shows no `Tx` rows.
+  On a PEAK adapter, whose echo fires when a frame goes onto the wire
+  rather than when a node acknowledges it, the sidecar withholds the
+  echoes of an error-passive transmitter, so a frame retransmitted
+  into a pulled cable is not reported back as sent.
+- **A send refused outright** — no session carried its bus, or the
+  session would not take it — is the one transmit that writes its own
+  row: it reads `Tx ✗` in the direction column and says why on hover.
 - The far end can still refuse a frame it accepted from us. `TX_REJECTED`
   and its two siblings (`NOT_SUBSCRIBED`, `NO_ACKNOWLEDGER`) arrive later
   on the receive stream and belong to no single row, so they are tallied

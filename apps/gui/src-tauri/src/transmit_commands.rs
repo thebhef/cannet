@@ -3,10 +3,12 @@
 //! The host owns the TX-message pool; every transmit panel is a thin
 //! view onto it (mutations go through these commands, each emitting
 //! `transmit-frames-changed`). `transmit_frame_inner` / `build_frame` +
-//! `append_tx_row` are the single transmit primitive (attempt the wire,
-//! then append the tx-confirm row saying what it answered), shared by the manual send and
-//! the single `run_transmit_scheduler` thread that drives every running
-//! periodic (fixed-rate grid, ADR 0039). `resolve_effective_calc` layers a
+//! `append_refused_tx_row` are the single transmit primitive (offer the
+//! frame to the wire; append a row only when the enqueue was refused),
+//! shared by the manual send and the single `run_transmit_scheduler`
+//! thread that drives every running periodic (fixed-rate grid, ADR 0039).
+//! A frame the session accepted enters the trace only when the bus
+//! carries it — as the driver's echo, ingested like any frame (ADR 0039). `resolve_effective_calc` layers a
 //! message's calculated-field overrides over the DBC defaults (ADR 0027).
 
 use std::time::Duration;
@@ -34,8 +36,7 @@ const PARKED_ROUTE_PROBE: Duration = Duration::from_secs(1);
 type WireDestination = (String, u8, String);
 
 /// One due frame plus the request that composed it, carried together so
-/// the tx-confirm row can be appended after the batch has been offered
-/// to the wire.
+/// a refused batch's rows can be appended once the wire has answered.
 type DueFrame<'a> = (&'a ipc::TransmitRequest, cannet_core::CanFrame);
 
 /// Ceiling on the number of undelivered runs [`UndeliveredTx`] holds.
@@ -47,13 +48,14 @@ type DueFrame<'a> = (&'a ipc::TransmitRequest, cannet_core::CanFrame);
 /// then the rows it described are the ones nearest eviction.
 pub(crate) const MAX_UNDELIVERED_RUNS: usize = 4096;
 
-/// Which tx-confirm rows describe a frame **no wire took**.
+/// Which `Tx` rows describe a frame **no wire took** — the `Tx ✗` rows.
 ///
-/// A tx row is provisional until the transmit path has an answer: the
-/// bus has to route to an open session and that session has to accept
-/// the frame. Only then is the row appended, and only rows whose answer
-/// was "no" are recorded here — the ordinary case costs nothing and the
-/// mark keeps its meaning. The trace fetch reads this the way it reads
+/// A send the session accepts appends nothing: its row is the echo the
+/// bus reports once it carried the frame. A send the transmit path
+/// refused — no session routes the bus, or the session would not take
+/// the frame — is the one transmit the host writes into the trace
+/// itself, and every such row is recorded here so it cannot read as a
+/// frame the bus carried. The trace fetch reads this the way it reads
 /// the ingest-time violation index, decorating the row it names.
 ///
 /// Rows are held as inclusive index runs rather than one entry each:
@@ -710,11 +712,10 @@ pub(crate) fn run_transmit_scheduler(
         // `(session, channel, interface)` instead of one envelope per
         // frame: per-envelope channel + proto overhead is paid once per
         // tick per destination. A request whose bus route is down is
-        // skipped entirely — no emission and no tx-confirm — matching
-        // the single-frame path's connected gate. The tx-confirm rows
-        // append per frame (the trace shows every transmit) and, as on
-        // the single-frame path, only *after* the batch has been
-        // offered to the wire, carrying what it answered.
+        // skipped entirely — no emission and no row — matching the
+        // single-frame path's connected gate. An accepted batch appends
+        // nothing (its rows are the bus's echoes); a refused one appends
+        // its marked `Tx ✗` rows, as the single-frame path does.
         if !due.is_empty() {
             let sessions = state.remote_sessions();
             let mut routed: Vec<(WireDestination, DueFrame<'_>)> = Vec::new();
@@ -732,9 +733,9 @@ pub(crate) fn run_transmit_scheduler(
                     (request, frame),
                 ));
             }
-            // Batch order is the row order: `group_wire_batches`
+            // Batch order is the refused-row order: `group_wire_batches`
             // preserves per-destination frame order, and the batches
-            // are appended in the order they were sent.
+            // are offered in that order.
             for ((address, channel, interface_id), pairs) in group_wire_batches(routed) {
                 let frames: Vec<cannet_core::CanFrame> =
                     pairs.iter().map(|(_, f)| f.clone()).collect();
@@ -747,8 +748,10 @@ pub(crate) fn run_transmit_scheduler(
                     // has since gone: nothing carried these frames.
                     None => false,
                 };
-                for (request, frame) in &pairs {
-                    append_tx_row(state.inner(), request, frame, delivered);
+                if !delivered {
+                    for (request, frame) in &pairs {
+                        append_refused_tx_row(state.inner(), request, frame);
+                    }
                 }
             }
         }
@@ -761,7 +764,7 @@ pub(crate) fn run_transmit_scheduler(
 
 /// Whether each due entry's target bus currently has a live route —
 /// checked *before* `fire_info` so a route-down message parks with its
-/// counter untouched and no trace row (ADR 0039). An id with no
+/// counter untouched and nothing offered to the wire (ADR 0039). An id with no
 /// registry row reports `true`: it falls through to `fire_info`'s
 /// None, which drops it from the schedule.
 fn routes_up(state: &AppState, due: &[(String, std::time::Instant)]) -> Vec<bool> {
@@ -812,32 +815,33 @@ fn resume_parked_routes(state: &AppState, schedule: &mut transmit_scheduler::Per
     }
 }
 
-/// The one transmit primitive: compose a frame from a request, offer it
-/// to the wire if a session carries its bus, and *then* append the
-/// `Tx`-direction tx-confirm row — always, even when nothing carried it
-/// (that's what a real analyzer shows for its own transmits), but
-/// carrying the wire's answer. Both the manual `transmit_frame_once`
-/// command and the scheduler thread (`run_transmit_scheduler`) route
-/// through here, so there's no special-casing for the periodic case.
+/// The one transmit primitive: compose a frame from a request and offer
+/// it to the wire if a session carries its bus. Both the manual
+/// `transmit_frame_once` command and the scheduler thread
+/// (`run_transmit_scheduler`) route through here, so there's no
+/// special-casing for the periodic case.
 ///
-/// The order is the point. Appending first made a frame nothing carried
-/// indistinguishable from one a bus took, which is what an analyzer
-/// exists not to do. A row whose frame reached no wire is recorded in
-/// [`UndeliveredTx`] and reads as such.
+/// Only the wire writes data. A send the session accepts appends
+/// nothing: the frame enters the trace when the bus carries it, as the
+/// driver's echo — a `Tx` frame on the receive path, logged, counted
+/// and decoded like any other — and a frame the bus never carries
+/// leaves no row. A send that is refused (no session routes the bus, or
+/// the session would not take it) appends its `Tx` row here, recorded
+/// in [`UndeliveredTx`] so it reads as `Tx ✗`.
 ///
-/// `wire_status` — and the mark — report the *enqueue* outcome.
-/// Server-side rejection (e.g. the BLF replay server's
-/// `Error::TX_REJECTED`) arrives later on the receive stream and is
-/// reported as its own coalesced count, not against a row.
+/// `wire_status` reports the *enqueue* outcome. Server-side rejection
+/// (e.g. the BLF replay server's `Error::TX_REJECTED`) arrives later on
+/// the receive stream and is reported as its own coalesced count, not
+/// against a row.
 pub(crate) fn transmit_frame_inner(
     state: &AppState,
     request: &ipc::TransmitRequest,
 ) -> Result<ipc::TransmitResult, String> {
     // Resolve `bus_id` → `(session, channel, interface_id)`. With no
-    // active session for the target bus, we still want a local Tx-
-    // confirm to land (the user sees what they tried to send); use
-    // wire channel 0 in that case — the trace view shows the *bus*
-    // column, not the wire channel, so it stays unambiguous.
+    // active session for the target bus, the refused `Tx ✗` row still
+    // lands (the user sees what they tried to send); use wire channel 0
+    // in that case — the trace view shows the *bus* column, not the
+    // wire channel, so it stays unambiguous.
     let sessions_guard = state.remote_sessions();
     let routing = resolve_bus_route(&sessions_guard, &request.bus_id);
     let wire_channel = routing.as_ref().map_or(0u8, |r| r.channel);
@@ -872,20 +876,18 @@ pub(crate) fn transmit_frame_inner(
                 .get(&address)
                 .expect("session for resolved route disappeared mid-transmit");
             match session.tx.transmit(channel, &interface_id, &frame) {
-                Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
+                Ok(()) => ipc::TransmitWireStatus::Accepted { interface_id },
                 Err(message) => ipc::TransmitWireStatus::Failed { message },
             }
         }
     };
     drop(sessions_guard);
 
-    let delivered = matches!(wire_status, ipc::TransmitWireStatus::Sent { .. });
-    let tx_confirm_index = append_tx_row(state, request, &frame, delivered);
+    if !matches!(wire_status, ipc::TransmitWireStatus::Accepted { .. }) {
+        append_refused_tx_row(state, request, &frame);
+    }
 
-    Ok(ipc::TransmitResult {
-        tx_confirm_index,
-        wire_status,
-    })
+    Ok(ipc::TransmitResult { wire_status })
 }
 
 /// Compose the wire [`cannet_core::CanFrame`] for `request`. Shared by
@@ -903,8 +905,8 @@ fn build_frame(
     };
     let id =
         CanId::new(request.id, request.extended).map_err(|e| format!("invalid {mode} id: {e}"))?;
-    // Best-effort monotonic timestamp tied to the host's clock — for a
-    // tx-confirm the analyzer's wall-time stamp is what we want.
+    // Best-effort wall-clock stamp: the wire restamps a carried frame,
+    // so this is what a refused `Tx ✗` row shows.
     let timestamp_ns = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
@@ -945,23 +947,21 @@ fn build_frame(
     Ok(frame)
 }
 
-/// Append `frame`'s `Tx`-direction tx-confirm row to the trace, stamped
-/// with the target `bus_id` so the local trace shows it on the right bus
-/// even when no session carried it, and record the row in
-/// [`UndeliveredTx`] when `delivered` is false. Returns the row's index.
-fn append_tx_row(
+/// Append a refused send's `Tx ✗` row: `frame` as a `Tx`-direction row,
+/// stamped with the target `bus_id` so the trace shows it on the right
+/// bus even though no session carried it, and recorded in
+/// [`UndeliveredTx`]. Only a refused enqueue writes a row here — an
+/// accepted send's row is the echo the bus reports.
+fn append_refused_tx_row(
     state: &AppState,
     request: &ipc::TransmitRequest,
     frame: &cannet_core::CanFrame,
-    delivered: bool,
-) -> u64 {
+) {
     let mut raw = RawTraceFrame::from(frame.clone());
     raw.bus_id = Some(request.bus_id.clone());
-    let index = state.trace_store.append(raw).unwrap_or(u64::MAX);
-    if !delivered {
+    if let Some(index) = state.trace_store.append(raw) {
         state.undelivered_tx.mark(index);
     }
-    index
 }
 
 /// Group `(destination, frame)` pairs into per-destination batches,
