@@ -1,6 +1,10 @@
 # 0121 — The Trace Tells the Truth About the Wire
 
-> **Reopened 2026-08-30** on the PEAK bench. Everything else this task
+> **Reopened 2026-08-30** on the PEAK bench; **fifth report 2026-10-03**
+> (the plot sat untouched through a 0.5 s dongle unplug under RBS —
+> the same synthesised row, read through the signal cache). Task 160's
+> audit found the row is the one writer and every consumer reads it;
+> its seven follow-ons are folded into phase 1 below. Everything else this task
 > carried — the tx-row append-after-answer split, the `Tx ✗` enqueue
 > mark, the `TX_REJECTED` tally, the error-frame collapse, the
 > Connected label, the rx-loss counter, the Overruns column and the
@@ -90,8 +94,24 @@ post-transmission. The sidecar sets the flag `False` today
    for the bus-health finding (review queue § 3, 2026-10-02), which
    stays its own item until that data says what it is.
 
-Phase 1 is Sonnet-sized: one flag, one direction mapping, one removed
-append, tests.
+Phase 1 also carries what task 160's audit (2026-10-03) found it would
+otherwise miss — see 0160's status log for the citations:
+`cannet-python-wire` maps direction off a field python-can does not have
+(`is_tx` → read `is_rx`); the normal open must pass
+`receive_own_messages=True`; in-process virtual buses skip the
+originator (`shared_bus.rs`) and need an originator echo
+(`Direction::Tx`, arbitration timestamp, only when `delivered > 0`;
+bridges must not double it); `fps.tx` is the row's rate (perf README and
+`diag.rs` "Transmit-confirmed" reword); the sidecar's "sent=" stat is
+renamed ("queued to driver"); the manual-send IPC return drops
+`tx_confirm_index` and `Sent` becomes accepted; the six tests pinning
+the old behaviour are rewritten; ADR 0021/0027/0039 and README passages
+asserting send-time rows are corrected. Opus-sized.
+
+Open (Q2, 2026-10-03): the sidecar's shared interface fans an echo out
+to every session on the adapter as `DIRECTION_TX`. Recommended: accept
+(the sessions on one adapter are one node); the alternative is
+per-session (id, data) matching.
 
 ## Exit criteria
 
@@ -109,3 +129,7 @@ bench.
   acknowledgement-protocol and chip-state shapes considered on the way
   are rejected (the first for complexity the echo path makes
   unnecessary, the second for inaccuracy).
+- 2026-10-03 — fifth report (plot); task 160 audit widens phase 1 (seven
+  follow-ons, above); owner moved 121 to the front of the development
+  sequence, right after `fix-plot-marker-refresh`. Branch
+  `task121-echo-row` off `fix-plot-marker-refresh`.

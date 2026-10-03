@@ -926,3 +926,20 @@ owner acceptance (review queue § 4).
 - 2026-10-02 — phase 7 groomed (above); owner ruled the one list's order
   **chronological** (Q2), as every trace-like view. Branch
   `task158-events-merged`.
+- 2026-10-03 — **Phase 6 defect, fixed** (owner: "the bus error markers
+  I was able to induce looked better, but I had to zoom in/out before
+  it appeared"; "yes, fix now"). Root cause: the episode fetch ran only
+  off an area resample (live-follow only) and a gap change, and
+  `useBusErrorMarkers` dropped a repeat request for an unmoved window
+  once complete — new errors inside it never showed. Fix on
+  `fix-plot-marker-refresh` (off `ci-fmt-check`), one commit `f8b17451`:
+  `PlotPanel` sums `useBusHealth()`'s `errorCount` over the plotted
+  buses and asks again when it moves (the host's `bus-health-changed`
+  fires on every poll tick a row changed); the sum rides the request
+  key as `errorsSeen` (not sent). Red→green: hook test "same window,
+  higher `errorsSeen` asks again"; DOM test "a bus fault asks again for
+  the unmoved window" (settled mount, same from/to, one new request).
+  Frontend 3722 passed (252 files), build green; no Rust touched.
+  README marker passage: one sentence. Residual (not seen): on a still
+  window a `complete: false` answer is re-pulled only on the next
+  error-count move or resample.

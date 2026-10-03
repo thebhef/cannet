@@ -121,7 +121,29 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 (none — release notes brought current through the stack's tip, 49afe029)
 
+Owner rulings 2026-10-03 (new-build walk):
+
+- **The Events chip goes, in the trace and the plot** — both behave as
+  if it were pressed: the kind checklist sits inline in the toolbar,
+  the trace interleaves event rows per the checklist alone, and
+  `trace_show_events` / `TraceConfig.showEvents` are removed outright.
+  Supersedes the 2026-09-20 "chip reveals checklist" ruling. The Events
+  panel's `tag` prefix on its filter box goes too (gridview filter-box
+  shape, placeholder "filter by tag"). Branch
+  `fix-events-checklist-inline`.
+- **158 phase 7 starts now**; **121 phase 1 moves to the front** of the
+  development sequence (fifth report; task 160 opened for the audit and
+  the durable rule); **marker refresh fixed now** (`fix-plot-marker-refresh`,
+  `f8b17451`); **bus-off recovery** is task 161, beside
+  `task155-kvaser-unwrap`, Kvaser and Vector alike.
+
 ## 3. Fix later
+
+- The plot closes raw gaps at decimated zoom: no `null` is inserted,
+  `mergeSeries` holds the last value across columns, and the dashed
+  "extrapolated" cue needs ≤ 1 raw sample between served points — a
+  0.5 s hole inside a bucket is never shown (2026-10-03, from the 0.5 s
+  unplug; secondary to 121's row). Task 160 phase 2 may absorb it.
 
 **Owner's 2026-10-02 dongle-unplug test** (notes taken in this file,
 committed verbatim as 5ef108dd, triaged by the overseer):
