@@ -121,23 +121,19 @@ keeps the queue's copy). This file shrinks every time it is walked.
 **Owner's 2026-10-02 dongle-unplug test** (notes taken in this file,
 committed verbatim as 5ef108dd, triaged by the overseer):
 
-- **158: "it doesn't seem like it works" — a 20 s unplug shows what
-  looks like thousands of bus errors**, not one episode. Where the
-  thousands were seen decides the fix: the plot still draws **one
-  marker per served point** (phase 2's ruling, made before episodes
-  existed), so a 20 s burst of thousands fills its stripe with markers
-  at any zoom; the Events section groups at the 5 s gap and should have
-  shown one row. Q to the owner below; candidate fix: the plot's
-  markers draw episodes too, one per episode at the configured gap.
-  Detail: 0158 § Status log, 2026-10-02.
+- **158: the plot draws a 20 s outage as thick per-point bands in a
+  style of its own** — owner screenshot 2026-10-02, "not acceptable".
+  Ruled: markers are episodes in the authored events' style; **task 158
+  reopened, phase 6 groomed** (0158 § Phases 6, criterion 10).
 - **158: the bus-error count "seems maybe a bit misplaced in the
   Events panel"** — placement feedback on the episodes section; the
   bus-health panel and the plot are the other homes. Owner to say where.
-- **Bus health: a bus stays error-passive after the dongle is
-  re-plugged while messages flow.** The state is the sidecar's chip
-  reading (`driver_python_can.py`: PCAN status / Vector chip state;
-  Kvaser via python-can's `state`); whether it is re-read, or latched
-  until an event, is the investigation. No task yet.
+- **Bus health after an outage, on PEAK: the bus stays error-passive
+  after re-plug while messages flow on the other adapter, and its load
+  reading jumps between 36 % and 100 %.** The state is the sidecar's
+  PCAN status reading (`driver_python_can.py`); whether it is re-read or
+  latched, and what the load counts during error-passive, is the
+  investigation. Needs the owner's adapters; no task yet.
 - **Message TX counts still increment when TX fails** — the owner's
   fourth report (109 item 2, 2026-08-26, 2026-08-30, 2026-10-02). This
   is **task 121's open defect**, roadmap item 1, ungroomed: both landed
@@ -192,12 +188,12 @@ committed verbatim as 5ef108dd, triaged by the overseer):
 
 ## 4. Finished tasks awaiting acceptance
 
-- **158 — bus-error markers page** (4 phases, `task158-error-series`
-  → `task158-plot-markers` → `task158-events-section` →
-  `task158-episodes` → `task158-event-wall-time`; 5 phases): 9/9 exit
-  criteria met, the ninth the owner's 2026-09-25 addition (event times
-  as wall time on hover). Two § 1 items (the rate's burst gap; the
-  episode-gap setting's placement and maximum).
+- **158 — bus-error markers page** (`task158-error-series` →
+  `task158-plot-markers` → `task158-events-section` →
+  `task158-episodes` → `task158-event-wall-time`; 5 phases): 9/9 met;
+  **reopened 2026-10-02** for phase 6 (plot markers are episodes, in
+  the events' style; criterion 10). One § 1 item (the rate's burst
+  gap).
 
 - **156 — Restore From Cache Does Not Crash on a Mapped Segment.**
   Three phases on `task156-restore-crash-investigation` →

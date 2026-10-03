@@ -117,9 +117,24 @@ Settled by the overseer, open to reversal:
   date and time; a session with no wall-clock origin gets no tooltip,
   as for messages. No second implementation.
 
+- **Plot markers are episodes, in the events' own style** (owner,
+  2026-10-02, with a screenshot): a 20 s outage draws as a thick band of
+  per-point markers, each labelled with a sub-millisecond delta ("1 bus
+  error over 0.000277996 s (3597/s)"), and "they really don't look like
+  any of the other events … a completely different visual style, which
+  is not acceptable." Two episodes for the two outages read correctly in
+  the Events section. Ruling: the plot draws **one marker per episode**
+  at the configured gap — the same renderer, chip, gutter and line as an
+  authored event, labelled with the episode's bus, count, span and rate,
+  its extent drawn the way a linked pair's extent is — and no bus-error
+  styling of its own. When a window holds more episodes than fit, the
+  effective gap doubles until they do, so a long window reads as fewer,
+  longer episodes rather than a cap. Phase 2's "one marker per served
+  point" ruling is superseded.
+
 ## Open questions
 
-(none — ruled 2026-09-23.)
+(none — ruled 2026-09-23; plot markers re-ruled 2026-10-02.)
 
 ## Phases
 
@@ -160,6 +175,27 @@ Settled by the overseer, open to reversal:
    cell; DOM tests extend `traceTimeTooltip.dom.test.tsx` (an event
    row and an episode row show the local date and time on hover; no
    tooltip without a wall-clock origin). Frontend only.
+6. **Plot markers are episodes** (owner ruling 2026-10-02). Host: a
+   windowed episodes query (`bus_error_episodes_in_window(buses, from,
+   to, gapSeconds, maxMarkers)` → episodes intersecting the window at
+   the smallest gap ≥ the setting whose count fits `maxMarkers`, gap
+   doubling, with the effective gap in the reply; one pass over the
+   level-0 series in the window, `complete` as for the series). Plot:
+   `useBusErrorMarkers` asks for episodes, not points; the markers go
+   through `plotEventsFromTimeline` as kind `busError` events with the
+   authored events' renderer, chip and gutter — one marker at the
+   episode's first error, its extent to the last error drawn as a linked
+   pair's extent is, label "<bus>: N bus errors over S (R/s)", id
+   `bus-error:{bus}:{lastOrdinal}` kept so links and highlight resolve;
+   `busErrorSpans`, the band drawing and every bus-error-only plot style
+   removed; the Events chip's kind checklist still hides them.
+   `maxMarkers` is the panel width over one chip's minimum width. DOM
+   tests: two bursts give two markers carrying the authored-event
+   classes and no bus-error class; a 50,000-error burst is one marker;
+   a window of 400 one-second episodes at a 300-marker budget comes back
+   at a doubled gap under budget; the kind filter hides them; the label.
+   Host tests: window selection, gap doubling, the burst. ADR 0035's
+   amendment and README's plot passage say a marker is an episode.
 
 ## Exit criteria
 
@@ -187,6 +223,11 @@ Settled by the overseer, open to reversal:
    Events panel or a trace view, or a bus-error episode — shows the
    same local date and time a message row shows, through the same
    cell; no tooltip without a wall-clock origin — DOM tests.
+10. The plot draws one marker per bus-error episode at the configured
+    gap (doubled when the window holds more than fit), rendered by the
+    same path and with the same classes as authored events, no style
+    of its own; a 20 s burst of thousands is one marker with its extent
+    — host and DOM tests.
 
 ## Blockers / side effects
 
@@ -691,3 +732,9 @@ owner acceptance (review queue § 4).
   existed) and so draw a 20 s burst as a wall of markers. Awaiting the
   owner's answer on where the thousands were seen before reopening;
   candidate phase 6: plot markers draw episodes.
+- 2026-10-02 — owner answered with a screenshot: the thousands are on the
+  **plot** (thick per-point bands, sub-millisecond delta labels); the
+  Events section's two episodes match the two outages. Ruling recorded
+  (§ Rulings): markers are episodes, in the authored events' own style.
+  **Phase 6 opened**, criterion 10 added; task reopened. Branch
+  `task158-plot-episodes` off `task158-event-wall-time`.
