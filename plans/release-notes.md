@@ -234,12 +234,23 @@ repaired something broken.
   `-002`, `-003`… before the extension. A run that starts where files
   already sit takes the next free suffix, so it never overwrites them.
 - **New:** the panel lists the folder's contents recursively, with columns
-  for name, size, trace start and end, duration, message count and
-  modified time. The file being written right now is the list's own live
-  row, with its size and count growing — there is no separate status line.
+  for name, size, duration, the action buttons, trace start and end,
+  message count and modified time. The file being written right now is
+  the list's own live row, with its size and count growing — there is no
+  separate status line.
+- **Fixed:** the action column was a couple of pixels narrower than
+  its own Import button, so the button clipped. It is wide enough
+  now, and still resizes like any other column.
 - **New:** importing a file from that list — the row button, its context
   menu, or Space — opens the same import flow "Import trace…" does, range
-  picker included. A folder's context menu offers Show in Explorer.
+  picker included. A folder's context menu offers the platform's own
+  reveal command — Show in Finder on macOS, Show in Explorer on
+  Windows, Show in file manager on Linux.
+- **Fixed:** a logger that has to move a frame's timestamp forward —
+  because it arrived stamped before the file's own anchor — now logs
+  the same warning Save Capture already does, both when the run
+  finishes and at every file a size cap closes along the way. It used
+  to say nothing.
 - A folder or file template may be typed with either separator and always
   resolves in the running OS's own, so the default `logs/{logger}` is one
   subdirectory on Windows and on macOS alike and a project written on
@@ -257,6 +268,18 @@ repaired something broken.
   whether that element's own buses are connected.
 - **Changed:** the two Discover buttons in connection management are now
   icon buttons.
+
+## Opening and closing
+
+- **New:** a running cannet holds its project's cache directory
+  exclusively, so opening the same project from a second instance is
+  refused rather than letting two sessions write one set of capture
+  files. The refusal names the process already holding it.
+- **Changed:** closing a project with a large capture no longer takes
+  the window down and finishes in the background. It now stays up —
+  reading **Closing — writing the capture cache…** with the step it is
+  on — until the cache is fully written, so a relaunch never races the
+  previous instance's shutdown.
 
 ## Plot
 
@@ -300,9 +323,36 @@ repaired something broken.
   is gone, so there is one control. Each plot keeps its own choice.
 - **Fixed:** an empty area beside a populated one no longer blanks
   every event marker on the panel.
+- **Changed:** the plot's **Bus error** markers are episodes, not one
+  per pyramid point. A fault that once painted a solid band of markers
+  across a window now draws as one, at its first error, labelled with
+  the bus, count, span and rate like any other event. When more
+  episodes intersect the visible window than fit at one marker each,
+  the gap between them doubles until they do, so a wide window reads
+  as fewer, longer episodes rather than hitting a cap. Acting on a
+  marker washes in its extent from first error to last, the same as a
+  linked pair's.
 - **New:** a colour pick in the Signals panel or on a plot series
   swatch applies to every selected row, in one change; a right-click on
   an unselected row makes it the selection first.
+
+## Events panel
+
+- **New:** bus errors get their own paged section, below Notes and
+  comments: one row per **episode** — a burst of errors on one bus,
+  ended by a silence of at least the **episode gap** — newest first,
+  with the bus, the first error's time, the count, the span and the
+  rate. The gap is a new setting, **Trace → Bus-error episode gap**
+  (`bus_error_episode_gap_s`, 5 seconds by default, 1 to 3600). The
+  section reads a window at a time rather than holding a capture's
+  whole error history, and a change to the gap re-derives it at once.
+  This section sits on its own for now, separate from the whole
+  chronological event list.
+- **Changed:** hovering an event row's time — in the Events panel or
+  interleaved into the trace — reads the same instant as a message
+  row's hover: the local date and time. A bus-error episode row gets
+  the same hover. A capture with no wall-clock origin still shows no
+  tooltip, as before.
 
 ## Settings view
 
@@ -338,6 +388,9 @@ repaired something broken.
   still shows one page plus the live tail. Ctrl/Cmd+F focuses the
   box. The text is remembered with the layout and never dirties the
   project.
+- **New:** the box reports **searching…** while the host is still
+  walking a newly-typed query, then its own match count once it
+  lands, in both chronological and by-id mode.
 - **New:** a signal name or an enum value is a match in its own right.
   Typing a fault enum's label shows exactly the frames whose decoded
   signal carries that value across the whole history, with each row
@@ -375,6 +428,21 @@ repaired something broken.
   this build's protocol, with the reason, before you can connect to
   it; and a connection to one is refused with the same sentence
   instead of retrying forever. See *For application developers*.
+- **Fixed:** a Kvaser interface's receive timestamps no longer jump
+  backward roughly every 12 hours. python-can's Kvaser backend's
+  receive timer rolls over every 2^32 ticks (just under 11h56m) with
+  no correction, so on a long capture the frames right after a
+  rollover arrived stamped before the session and were dropped, and
+  every frame after that read stale by a further 12 hours per
+  rollover. The sidecar now tracks and corrects the rollover itself,
+  and logs a warning each time one happens. No other interface is
+  affected.
+- **New:** a received frame the host has to drop because it is
+  stamped before the session started — the symptom of a timestamp
+  defect like the Kvaser one above — no longer passes silently. It
+  now raises a WARN in the System Messages panel, naming the bus and
+  how far before the session start the frame fell, and keeps you
+  posted while the drops continue.
 
 ## Small fixes
 
@@ -450,5 +518,11 @@ repaired something broken.
   working `can.Bus(...)` line; `forget` removes a server's entry. It
   writes the same `servers.json` the GUI owns, so accepting once
   serves every client on the machine.
+- **New:** the debug servers (`debug replay`, `debug vbus`) can
+  terminate TLS instead of the clear, with `--tls-dir <path>`, for
+  testing a TLS-pinned client against them without a production
+  server.
 - CI now refuses a non-additive change inside `cannet.v1` and a
   checked-in Python stub that no longer matches the `.proto`.
+- CI also runs `cargo fmt --all -- --check` as its own job, so a Rust
+  change that drifted from the formatter is caught before merge.
