@@ -7,6 +7,12 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+- **158 phase 6: a bus-error episode's extent on the plot draws only
+  while the episode is lit** (ADR 0056's transient rule for a linked
+  pair), and until phase 7 makes episode rows selectable nothing lights
+  one directly — it shows through a link from an authored event. Keep
+  transient, or draw it at rest? Detail: 0158 § Blockers, 2026-10-02.
+
 - **158: the bus-health panel's error rate keeps a 1 s burst gap.**
   The coalescer and its run list are gone, but "errors per second over
   the latest burst" needs a burst boundary, so `RATE_BURST_GAP_NS`
@@ -121,10 +127,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
 **Owner's 2026-10-02 dongle-unplug test** (notes taken in this file,
 committed verbatim as 5ef108dd, triaged by the overseer):
 
-- **158: the plot draws a 20 s outage as thick per-point bands in a
-  style of its own** — owner screenshot 2026-10-02, "not acceptable".
-  Ruled: markers are episodes in the authored events' style; **task 158
-  reopened, phase 6 groomed** (0158 § Phases 6, criterion 10).
 - **158: episodes join the Events panel's one list** — owner ruling
   2026-10-02 ("totally fine for the error events to live in the same
   view as other events, so long as they get summarized properly and
@@ -192,9 +194,10 @@ committed verbatim as 5ef108dd, triaged by the overseer):
 - **158 — bus-error markers page** (`task158-error-series` →
   `task158-plot-markers` → `task158-events-section` →
   `task158-episodes` → `task158-event-wall-time`; 5 phases): 9/9 met;
-  **reopened 2026-10-02** for phase 6 (plot markers are episodes, in
-  the events' style; criterion 10). One § 1 item (the rate's burst
-  gap).
+  **reopened 2026-10-02**; phase 6 landed the same day on
+  `task158-plot-episodes` (`e7006038`, criterion 10 met: one plot marker
+  per episode). Phase 7 (episodes join the Events list) to groom. Two
+  § 1 items (the rate's burst gap; the episode extent at rest).
 
 - **156 — Restore From Cache Does Not Crash on a Mapped Segment.**
   Three phases on `task156-restore-crash-investigation` →

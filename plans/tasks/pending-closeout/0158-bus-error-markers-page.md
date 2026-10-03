@@ -303,6 +303,22 @@ Settled by the overseer, open to reversal:
   first time and count can refer to errors whose level-0 samples are
   gone. The row stays true; only a link to a first error there would
   not resolve (links target the last error).
+- 2026-10-02: **An episode's extent is not reachable from the UI yet.**
+  It draws as a linked pair's does — only while the episode is lit — and
+  today nothing lights one directly: plot chips take no hover, and the
+  Events panel's bus-error rows set a grid cursor but not a selection.
+  It shows when an authored event linked to the episode is selected.
+  Phase 7 (episodes join the Events list) makes the rows selectable,
+  which lights it.
+- 2026-10-02: **At a doubled gap, a merged episode's id is its last
+  error's**, so a link to an inner gap-`g` episode reads as unresolved
+  while the window is zoomed out far enough to merge it, and resolves
+  again when zoomed in. Same rule as before for anything outside the
+  served window.
+- 2026-10-02: Widening a slice at a doubled gap walks out of the window
+  for as long as neighbours keep joining — `O(chain)` under the lock,
+  bounded by the list (capture time ÷ gap). Not measured on a real
+  capture.
 
 ## Status log
 
@@ -716,6 +732,113 @@ Settled by the overseer, open to reversal:
     **Bus-error episode**.
   - Release host: `target/release/cannet-gui.exe` (`tauri build
     --no-bundle`). No perf reading was taken.
+- 2026-10-02 — **Phase 6 (plot markers are episodes) landed** on
+  `task158-plot-episodes` (off `task158-event-wall-time`), one commit
+  `e7006038` (first cut `8248c1f9`, amended in review).
+  - **Host.** New command `bus_error_episodes_in_window(buses, fromSeconds,
+    toSeconds, gapSeconds, maxMarkers) -> { episodes, gapSeconds,
+    errorCount, complete }` (`sampling.rs`, wire `BusErrorEpisodeWindow` in
+    `ipc.rs`) over `SignalCacheStore::bus_error_episodes_in_window`. It
+    shares phase 4's catch-up and fold verbatim: the old body of
+    `bus_error_episodes` became `with_episodes` (ensure caches, catch up,
+    fold within the serve budget, then one lock hold handing the per-bus
+    lists to a reader); both serves call it. The held list stays at the
+    asked-for gap, so the plot and the Events panel (same setting) never
+    rebuild each other's list.
+  - **Fit** (`bus_error_episodes.rs`, pure): `in_window` is two
+    `partition_point`s (last ≥ from, first ≤ to). While the count is over
+    `maxMarkers` and some bus has more than one episode, the gap doubles,
+    each bus's slice is widened by the out-of-window neighbours the wider
+    gap joins to it (`widen` — without it a merged episode straddling the
+    window edge would be cut short), and merged at the gap (`merge_at`).
+    Result chronological, ties to the lower bus index. `errorCount` is the
+    episodes' counts summed host-side (feeds the Events chip's
+    Diagnostics count).
+  - **Frontend.** `useBusErrorMarkers` asks for episodes (same
+    single-flight/newest-wins/memo lifecycle); state holds the episodes
+    (bounded by `maxMarkers`), the effective gap and `errorCount`.
+    `plotEvents.ts`: `busErrorSpans`/`busErrorTimelineEvents`/
+    `BusErrorSeries`/`BusErrorSpan` removed; `busErrorEpisodeEvents` (one
+    `busError` `TimelineEvent` per episode at its first error, id
+    `bus-error:{bus}:{lastOrdinal}`, label `<bus name>: N bus errors over
+    S (R/s)` via `busErrorMarkerLabel`) and `busErrorEpisodeExtents`.
+    `PlotPanel` passes the `bus_error_episode_gap_s` setting and
+    `maxMarkers = floor(panel width / eventChipMinWidthPx())`; the Events
+    chip count reads `errorCount`. Renderer, chip, gutter and colour
+    untouched.
+  - **Chip minimum width.** The chips are canvas-drawn, so no CSS holds a
+    width. `PlotArea.tsx` now names `drawChip`'s padding
+    (`CHIP_PAD_X_PX = 4`) and exports `eventChipMinWidthPx()` = 2 × that +
+    one average character of the marker-label font (the same
+    `MARKER_LABEL_WIDTH_SAMPLE` average `markerLabelWrapWidth` uses) —
+    ≈ 13.7 px, so ≈ 43 markers on a 600 px panel (was 600).
+  - **Extent.** Drawn exactly as a linked pair's: an `EventExtent` through
+    `plotEventExtents` → `drawEventExtents`, **transiently**, while the
+    episode is lit (active, or linked to the active event) — ADR 0056 § 3
+    ("drawn … while one of the two events is selected or hovered; at rest
+    there is no span"). Hidden with the kind.
+  - **Tests.** Host (`bus_error_episodes.rs` ×5 new):
+    `the_window_is_the_episodes_that_intersect_it` (binary search vs a
+    linear filter over 300 windows), `merging_at_a_doubled_gap_equals_folding_the_errors_at_it`
+    (2g/4g/8g over sliding windows, edge-straddlers included),
+    `a_fifty_thousand_error_burst_is_one_episode`,
+    `too_many_episodes_for_the_budget_double_the_gap_until_they_fit`
+    (400 one-second episodes, budget 300 → gap 2, where every 1 s silence
+    joins into one episode, equal to a
+    direct fold at 2), `a_fit_across_buses_is_chronological_and_stops_at_one_episode_a_bus`;
+    `signal_cache.rs` ×1 through the store
+    (`a_plot_window_reads_the_episode_list_at_its_gap_and_fits_the_budget`:
+    50,000-error burst → 1 episode, errorCount 50,000; 400 episodes →
+    gap 2, ≤ 300; the paged list still 400 at gap 1). DOM
+    (`PlotPanel.dom.test.tsx` "bus-error markers", rewritten, 5): asks at
+    the setting's gap with `maxMarkers = floor(600 / eventChipMinWidthPx())`;
+    two bursts → two chips whose chip ops (`fillRect, strokeRect,
+    fillText`) and marker line equal an authored note's; a 50,000-error
+    burst → one chip, no wash at rest, a 100 px→300 px wash once selected;
+    Diagnostics row shows the host's `errorCount` and unticking hides the
+    chips; `complete: false` still draws. No sleeps — every wait is a
+    `waitFor` on the drawn result. `plotEvents.test.ts` (3 new, span tests
+    removed), `useBusErrorMarkers.test.ts` (7, rewired to the episode
+    reply).
+  - **Falsification.** Host: `widen` disabled → the 2g-merge test fails;
+    `first_t <= to` → `< to` → the window test fails. DOM: extents never
+    lit → the 50,000 test fails; `maxMarkers = widthPx` → the request test
+    fails; `counts.busError = 0` → the kind-filter test fails. All
+    restored green.
+  - **Docs.** ADR 0035's 2026-09-23 amendment: "Views read episodes at a
+    gap" (rulings 2026-09-24 and 2026-10-02) and a "plot marker is an
+    episode" bullet (doubling rule, transient extent). README: error-frames
+    passage, the timeline-events category table row, the Events passage's
+    "same list" sentence. `docs/CONTEXT.md` *Bus-error episode*: the plot
+    draws one marker each. `notes.rs` `EventKind::BusError` doc.
+  - Verification: cannet-gui 1407 passed / 7 ignored; clippy, fmt,
+    rustdoc `-D warnings` clean; frontend 3710 passed (252 files), build
+    green; comment-references grep empty.
+
+- 2026-10-02 — **Phase 6 review fixes** (fix mode), amended into the one
+  commit, now `e7006038` (was `8248c1f9`).
+  - **A gap setting change refetches at once.** `PlotPanel`'s gap effect
+    now calls `fetchBusErrorMarkers()` instead of only updating the ref,
+    which the area-resample callback alone read, so a stopped capture
+    nobody panned stayed at the old gap. DOM test "a gap setting change
+    asks again at the new gap, with the window unmoved": after the mount's
+    one-shot rebuild has settled (`settleMountedAreas`), the next request
+    carries the new gap with the same from/to and no area resample.
+    Experiment: with the call removed and the mount **not** settled, the
+    test still passed — the mount's owed rebuild resampled twice
+    (`plot.areaResampled` +2) and carried the new gap by accident.
+    Settling first, the same mutation fails (`expected 5 to be 12`). With
+    the fix restored it passes.
+  - **`bus_error_series` removed**: the command (`sampling.rs`), its wire
+    types `BusErrorPoints`/`BusErrorWindows` (`ipc.rs`) and its
+    registration (`lib.rs`). No caller anywhere (`git grep` over the tree
+    found only phase 1's test names). There was no frontend type left
+    for it. `SignalCacheStore::bus_error_windows` kept.
+  - Tip run: `cargo test -p cannet-gui` 1407 passed / 7 ignored;
+    clippy `-D warnings`, `cargo fmt --check` and rustdoc `-D warnings`
+    clean; `pnpm --dir apps/gui test` 3711 passed (252 files);
+    `pnpm --dir apps/gui build` green; the comment-references grep is
+    empty.
 
 ## Exit criteria verdicts (2026-09-25, final)
 
@@ -758,3 +881,6 @@ owner acceptance (review queue § 4).
   them. The list is host-paged already for episodes and whole for
   authored events (ADR 0035), so the merge is a host page over both.
   **Phase 7 to groom**; not yet opened.
+- 2026-10-02 — criterion 10 **met** (phase 6, `e7006038`: one marker per
+  episode through the authored events' path; host + DOM tests). Open:
+  phase 7 (to groom) and the extent yes/no in the queue.
