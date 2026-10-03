@@ -75,6 +75,19 @@ _BUS_OFF_RESET_AFTER_S = 1.0
 _RX_STATS_INTERVAL_NS = 2_000_000_000  # 2 s
 
 
+def _echoes_dropped_field(ch: drv.OpenChannel) -> str:
+    """The rx stats line's ``echoes_dropped=`` field: echoes of our own
+    frames the driver withheld because the transmitter was error-passive,
+    so they carry no proof any node acknowledged them. Running total for
+    the channel. Empty for a driver that gates nothing (no
+    ``echoes_dropped`` method), so the line does not claim a zero nobody
+    counted."""
+    read = getattr(ch, "echoes_dropped", None)
+    if not callable(read):
+        return ""
+    return f" echoes_dropped={int(read())}"
+
+
 class _SharedInterface:
     """One open physical channel, shared across all subscribed sessions.
 
@@ -555,11 +568,12 @@ class _SharedInterface:
                     if read > 0 or tx > 0:
                         read_rate = read / secs if secs > 0 else 0.0
                         _log.info(
-                            "rx stats %s: read=%.0f/s total=%d queue=%d",
+                            "rx stats %s: read=%.0f/s total=%d queue=%d%s",
                             cid,
                             read_rate,
                             read_total,
                             self._rx_queue.qsize(),
+                            _echoes_dropped_field(ch),
                         )
                         tx_rate = tx / secs if secs > 0 else 0.0
                         _log.info(
