@@ -738,3 +738,12 @@ owner acceptance (review queue § 4).
   (§ Rulings): markers are episodes, in the authored events' own style.
   **Phase 6 opened**, criterion 10 added; task reopened. Branch
   `task158-plot-episodes` off `task158-event-wall-time`.
+- 2026-10-02 — owner on the Events panel: "with the grouping working as
+  it is, it would be totally fine for the error events to live in the
+  same view as other events, so long as they get summarized properly and
+  stably, which they do appear to be doing." Reading: the separate
+  paged bus-error section goes; episodes join the Events panel's one
+  list, in time order with the authored events, as one row kind among
+  them. The list is host-paged already for episodes and whole for
+  authored events (ADR 0035), so the merge is a host page over both.
+  **Phase 7 to groom**; not yet opened.

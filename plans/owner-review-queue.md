@@ -125,9 +125,10 @@ committed verbatim as 5ef108dd, triaged by the overseer):
   style of its own** — owner screenshot 2026-10-02, "not acceptable".
   Ruled: markers are episodes in the authored events' style; **task 158
   reopened, phase 6 groomed** (0158 § Phases 6, criterion 10).
-- **158: the bus-error count "seems maybe a bit misplaced in the
-  Events panel"** — placement feedback on the episodes section; the
-  bus-health panel and the plot are the other homes. Owner to say where.
+- **158: episodes join the Events panel's one list** — owner ruling
+  2026-10-02 ("totally fine for the error events to live in the same
+  view as other events, so long as they get summarized properly and
+  stably"); the separate section goes. Phase 7 to groom.
 - **Bus health after an outage, on PEAK: the bus stays error-passive
   after re-plug while messages flow on the other adapter, and its load
   reading jumps between 36 % and 100 %.** The state is the sidecar's
