@@ -361,6 +361,15 @@ repaired something broken.
 
 ## Events panel
 
+- **Changed:** the Events panel is one list again, oldest first: your
+  notes, the truncation marker and every bus's bus-error episodes (at
+  the configured gap) interleaved by time, paged from the host as the
+  trace is. The separate newest-first bus-error section below the list
+  is gone. An episode row reads `<bus>: N bus errors over S (R/s)`,
+  shows wall time on hover, cannot be edited, and can be selected —
+  selecting it draws the episode's extent on the plot while it is
+  selected. A tag filter hides episodes (they carry no tag); the
+  Diagnostics row's tooltip says the gap they are grouped at.
 - **New:** bus errors get their own paged section, below Notes and
   comments: one row per **episode** — a burst of errors on one bus,
   ended by a silence of at least the **episode gap** — newest first,

@@ -358,6 +358,29 @@ Settled by the overseer, open to reversal:
   for as long as neighbours keep joining — `O(chain)` under the lock,
   bounded by the list (capture time ÷ gap). Not measured on a real
   capture.
+- 2026-10-03: **An episode cannot be an end of a new link.** The
+  store's `link_events` requires the target in the notes store; an
+  episode is not. Linking stays authored ↔ authored; references to an
+  episode id written another way still resolve. Widening it is a
+  store/ADR 0056 change.
+- 2026-10-03: **The panel does not watch `version` itself.** The reply
+  carries it, but the panel's trigger to re-ask is its own change
+  signal (new `notes` snapshot, Σ bus-health `errorCount`, truncation
+  point, a partial answer); a host-pushed version event would need an
+  emitter, since episodes fold lazily on serve. Effect: a change the
+  three signals miss (none known) shows on the next one.
+- 2026-10-03: **The "live tail" is a re-fetch in place, not an
+  overlay.** Events have no pushed tail like `trace-grew`'s; the loaded
+  page is re-asked (`refresh: "window"`). The panel does not
+  auto-scroll to the newest row (it never did).
+- 2026-10-03: **Truncation marker placement moved host-side** for this
+  panel only (the host reads its own low-water mark); the marker is
+  still built and drawn by the frontend (`truncationEvent`). Other
+  surfaces unchanged.
+- 2026-10-03: removed test "shows a host-derived event's body but takes
+  no edits on it" (a `busError`-kind *note*, which the store refuses);
+  the read-only body path stays covered by the truncation-marker tests
+  and the subjects file's two `busError`-note renderer tests.
 
 ## Status log
 
@@ -943,3 +966,115 @@ owner acceptance (review queue § 4).
   README marker passage: one sentence. Residual (not seen): on a still
   window a `complete: false` answer is re-pulled only on the next
   error-count move or resample.
+- 2026-10-03 — **Phase 7 (episodes join the Events panel's one list)
+  landed** on `task158-events-merged` (off `task121-echo-row`), one
+  commit `2962a34b` (no squash needed: one commit from the start).
+  25 files, +1576/−1299.
+  - **Host.** New command `events_page(buses, gapSeconds, offset, limit,
+    fromEnd, kinds, tagQuery) -> { count, start, rows, complete, version }`
+    (`sampling.rs`, wire `EventsPage` / `EventsPageRow` tagged `row:
+    note | truncation | busError` in `ipc.rs`, registered in `lib.rs`).
+    The merge is `events_page.rs`: notes store's whole authored list
+    (filtered by kind + tag) + the truncation marker's place (trace
+    store low-water, `first_index > 0`) + each bus's episode list at the
+    gap via `SignalCacheStore::with_episodes` (now `pub`). A page is
+    located by **rank** (binary search per list) and k-way merged from
+    there — no list is copied. **Tie rule:** authored events, then the
+    truncation marker, then buses in the order asked. Tag query (trim,
+    case-insensitive substring) drops every untagged row (episodes,
+    truncation marker). `version` = `NotesStore::revision()` (new
+    counter, bumped in `persist`, i.e. on every edit) +
+    `SignalCacheStore::episodes_version()` (generation + a new
+    `episode_revision` bumped when a fold appends/extends or restarts at
+    another gap, and on a trim).
+  - **Removed outright:** `BusErrorEventsSection.tsx`,
+    `useBusErrorEvents.ts` (+ test), their CSS, the `bus_error_episodes`
+    command and `BusErrorEpisodePage`, the store's newest-first
+    `bus_error_episodes` serve, `EpisodePage` (moved into the tests), and
+    `newest_first_page` (+ its pure test). Phase 4's signal-cache tests
+    now page the same lists oldest first (orders flipped, assertions
+    otherwise unchanged).
+  - **Frontend.** `useEventsPage.ts`: thin adapter over
+    `useWindowedQuery` (descriptor `epoch:buses:gap:kinds:tag`,
+    `followLive` + `refresh: "window"`); re-fetches the loaded page in
+    place when the panel's change signal moves (new `notes` snapshot,
+    Σ bus-health `errorCount`, `truncationTsNs`) or after a partial
+    answer. `EventsPanel` hands `TraceView` the page (`count`, `getRow`,
+    `ensureVisible`); an episode row is an `EventRow` of kind `busError`
+    built by `busErrorEpisodeEvents` (label via `busErrorMarkerLabel`),
+    `editable: false`, selectable; selection feeds `selectEvents` as
+    before. Counts stay model facts (authored kinds off the whole
+    authored list; `busError` off `get_bus_health`). "episodes at N s"
+    is the Diagnostics row's tooltip (`EventKindFilter` gained an
+    optional `titles` prop). A "catching up…" note sits in the toolbar
+    while `complete` is false.
+  - **Linking:** left at authored pairs. `NotesStore::link_events`
+    refuses a target the store does not hold, so an episode cannot be
+    an end of a new link (`pair` already reads only authored events, so
+    the control is disabled with an episode selected). Existing
+    references to an episode id resolve as before. Not widened.
+  - **Tests (red → green).**
+    - Host (`events_page.rs`, 8): chronological merge across notes and
+      two buses with ties stable; paging over 400 episodes + 5 notes in
+      pages of 1/7/64 equals the whole, plus the `fromEnd` tail; a page
+      is partial while episodes still fold (`new_chunk_at_a_time`),
+      then complete at 40,000; note edit / episode append / gap change
+      each move `version` (and nothing moved keeps it); kind filter
+      picks lists; tag query keeps matching authored events and drops
+      episodes; truncation marker placed by time (ranks before a bus at
+      a tie); pure `chronological_page` vs a whole stable sort at every
+      offset × 4 limits.
+    - DOM (`EventsPanel.dom.test.tsx`, 35; new block "bus-error episodes
+      in the one list", 9): one list in time order with both kinds;
+      episode row has no ✎/×/colour picker, no rename on double-click,
+      is selectable and `activeEventIds()` carries `bus-error:b1:3`; tag
+      query hides episodes; Diagnostics unticked hides them; no buses →
+      no episodes asked; gap setting change re-asks and the tooltip
+      follows; 10,000 episodes: every ask ≤ 1024 rows, dragging to the
+      bottom fetches the last page and draws the oldest-last single
+      episode; wall-time hover on an episode row (and none without a
+      wall-clock origin). Diagnostics tooltip test in "kind filter".
+      Existing tests made async (rows arrive from the host).
+    - `EventsPanel.subjects.dom.test.tsx` and
+      `eventHighlight.dom.test.tsx` mount the panel over the same fake
+      host (`eventsPageFake.ts`); assertions unchanged.
+    - Red: the new DOM file against the old panel: 13 failed / 22
+      passed.
+  - **Falsification** (each mutation applied alone, run, restored):
+    | Mutation | Failed |
+    |---|---|
+    | E1 tie `<` → `<=` in `chronological_page` | 4 host (ties, stable sort, truncation, 400-paging) |
+    | E2 notes revision never moves | version test |
+    | E3 fold never bumps `episode_revision` | version test |
+    | E4 tag query keeps episodes | tag test |
+    | E5 kind filter ignores `busError` | kind-filter test |
+    | E6 `from_end` ignored | 400-paging test |
+    | E7 `complete` forced true | partial test |
+    | F1 frontend never asks for `busError` | 9 DOM |
+    | F2 episodes editable | episode-row test |
+    | F3 rows not selectable | episode-row + ARIA selection |
+    | F4 tag query not sent | 2 tag tests |
+    | F5 kind filter not sent | 3 (Diagnostics, kind-filter, record types) |
+    | F6 `ensureVisible` no-op | 10,000 scroll test |
+    | F7 no wall-clock base | episode hover test |
+    | F8 no Diagnostics tooltip | 2 tooltip tests |
+    | F9 rows reversed | 4 order tests |
+  - **Docs:** README (Events passage → the one list, chronological,
+    episodes selectable, host filters; error-frames sentence; settings
+    bullet; linking sentence), ADR 0035 2026-09-23 amendment (new "The
+    Events panel is one list" bullet), `docs/CONTEXT.md` (*Bus-error
+    episode* updated, new *Events panel* entry). rustdoc on the command,
+    `with_episodes`, `episodes_version`, `NotesStore::revision`.
+  - **Verification** (scoped lanes, once at the end): `cargo test -p
+    cannet-gui` 1416 passed / 7 ignored; clippy `-D warnings` clean;
+    `cargo fmt --check` clean; rustdoc `-D warnings` clean (after making
+    `with_episodes` `pub` and unlinking `events_page` in public docs);
+    `pnpm --dir apps/gui test` 3717 passed (251 files); build green;
+    comment-references grep empty. No release build, no perf run (per
+    prompt).
+- 2026-10-03 — criterion 11 **met** (phase 7, `2962a34b`: one chronological
+  host-paged list, episode rows selectable and not editable, the section
+  gone; 8 host + 9 DOM tests). The phase 6 extent yes/no resolves as
+  **keep transient**: selecting an episode row lights it. Open: linking
+  an episode (queue § 1). All eleven criteria met; the task awaits
+  acceptance (queue § 4).

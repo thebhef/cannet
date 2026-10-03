@@ -7,11 +7,12 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-- **158 phase 6: a bus-error episode's extent on the plot draws only
-  while the episode is lit** (ADR 0056's transient rule for a linked
-  pair), and until phase 7 makes episode rows selectable nothing lights
-  one directly — it shows through a link from an authored event. Keep
-  transient, or draw it at rest? Detail: 0158 § Blockers, 2026-10-02.
+- **158 phase 7: an episode row can be selected but not linked** — a
+  selected episode lights its extent on the plot (the phase 6 extent
+  question resolved: transient, reachable), but Link Events stays
+  authored ↔ authored because the notes store refuses a link target it
+  does not hold. Widen it (store + ADR 0056), or leave links to
+  authored pairs (recommended)? Detail: 0158 § Blockers, 2026-10-03.
 
 - **158: the bus-health panel's error rate keeps a 1 s burst gap.**
   The coalescer and its run list are gone, but "errors per second over
