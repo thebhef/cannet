@@ -357,6 +357,18 @@ committed verbatim as 5ef108dd, triaged by the overseer):
   a 15 ms stored baseline, but the same-day `main` control reads 31–35,
   so it is the machine, not the stack. Fold into `baseline.json` or
   delete at close-out; never promote without the owner.
+- Perf reports at the new tip (2026-10-03, `e04f9087`, four 60 s
+  ev-zonal captures, same files): all 31 gated metrics green on all
+  four. Two shifts worth reading, both from 121 (the wire writes the
+  Tx row): `tx_late_ms_max` **fell** 33–72 → 4–5 ms and `flush_ms_max`
+  13–65 → 8 ms (the scheduler thread no longer appends a row per
+  frame); `lag_ms_max` **rose** 2–6 → 7–17 ms warm (limit 40.8) and the
+  host now ingests twice the frames (`hardware-peak ingest_fps`
+  999 → 1999: each transmit comes back as an echo row). Memory flat
+  (host 65 MB, renderer ~325 MB, tree ~750 MB). `tx_fps` 1603–1606
+  measured from echoes — the PEAK echo arrives at full rate. Below the
+  owner's stop threshold (not >10 ms across all runs); recorded, not
+  acted on.
 
 - Perf series review + baseline fold-in (owner ruling 2026-09-06:
   collect during the campaign, never gate; judge the series at
