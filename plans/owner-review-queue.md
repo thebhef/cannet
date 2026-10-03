@@ -119,8 +119,7 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
-- Bring `plans/release-notes.md` up to date with everything on the
-  stack (it is tracked, contrary to the earlier entry).
+(none — release notes brought current through the stack's tip, 49afe029)
 
 ## 3. Fix later
 
@@ -303,6 +302,13 @@ committed verbatim as 5ef108dd, triaged by the overseer):
 
 
 ## 5. Housekeeping owed at close-out
+
+- Perf reports at the tip (2026-10-03, `60ee06cf`, four 60 s ev-zonal
+  captures in `docs/performance-measurements/frontend/`): warm runs
+  green on all 31 gated metrics; `tx_late_ms_max` sits at 33–59 ms vs
+  a 15 ms stored baseline, but the same-day `main` control reads 31–35,
+  so it is the machine, not the stack. Fold into `baseline.json` or
+  delete at close-out; never promote without the owner.
 
 - Perf series review + baseline fold-in (owner ruling 2026-09-06:
   collect during the campaign, never gate; judge the series at

@@ -324,7 +324,7 @@ repaired something broken.
 - **Fixed:** an empty area beside a populated one no longer blanks
   every event marker on the panel.
 - **Changed:** the plot's **Bus error** markers are episodes, not one
-  per pyramid point. A fault that once painted a solid band of markers
+  per sampled point. A fault that once painted a solid band of markers
   across a window now draws as one, at its first error, labelled with
   the bus, count, span and rate like any other event. When more
   episodes intersect the visible window than fit at one marker each,
