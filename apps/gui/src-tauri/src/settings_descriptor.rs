@@ -468,16 +468,6 @@ const DESCRIPTORS: &[Spec] = &[
         control: Control::Bool,
     },
     Spec {
-        key: "trace_show_events",
-        backing: Backing::Field,
-        label: "Default events overlay",
-        help: "Timeline events are your notes and the capture-truncation \
-               marker.",
-        surfaces: &[Surface::Trace],
-        kind: Kind::Default,
-        control: Control::Bool,
-    },
-    Spec {
         key: "bus_error_episode_gap_s",
         backing: Backing::Field,
         label: "Bus-error episode gap",

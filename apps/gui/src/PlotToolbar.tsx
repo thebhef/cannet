@@ -80,15 +80,10 @@ export interface PlotToolbarProps {
   cursorMode: CursorMode;
   onCursorMode: (mode: CursorMode) => void;
   onClearCursors: () => void;
-  /// Whether the Events checklist is open — the trace panel's own
-  /// chip-reveals-checklist pattern (ADR 0035: what a kind actually
-  /// shows stays view-local and lives in `eventsChecklist` below; this
-  /// is only whether the control that sets it is open).
-  showEvents: boolean;
-  onShowEvents: (on: boolean) => void;
   /// The event-kind checklist (`EventKindFilter`), pre-built by the
-  /// panel — it owns the per-kind visibility state and the counts, the
-  /// bar only places it under the chip when `showEvents` is on.
+  /// panel — it owns the per-kind visibility state and the counts, and
+  /// sits on the bar unconditionally (ADR 0035: what a kind actually
+  /// shows stays view-local; there is no separate disclosure toggle).
   eventsChecklist: ReactNode;
   /// The performance read-out as one line, or `null` while it is
   /// hidden — which it is unless the bar's right-click menu turned it
@@ -169,8 +164,6 @@ export function plotToolbarItems({
   cursorMode,
   onCursorMode,
   onClearCursors,
-  showEvents,
-  onShowEvents,
   eventsChecklist,
   perfText,
 }: Omit<PlotToolbarProps, "onOpenMenu">): PlotBarItem[] {
@@ -365,28 +358,13 @@ export function plotToolbarItems({
         />
       ),
     },
-    {
-      key: "events",
-      sep: true,
-      node: (
-        <ChipButton
-          icon="flag"
-          label="Events"
-          ariaLabel="Events"
-          title="which kinds of timeline events draw as markers here"
-          pressed={showEvents}
-          onPress={() => onShowEvents(!showEvents)}
-        />
-      ),
-    },
   );
 
-  // Its own bar item (not folded into the chip's), so a narrow bar can
-  // overflow the checklist into the "…" menu on its own rather than
-  // taking the chip with it.
-  if (showEvents) {
-    items.push({ key: "events-checklist", node: eventsChecklist });
-  }
+  // Always on the bar (owner ruling 2026-10-03: both plot and trace
+  // behave as if the redundant disclosure chip were permanently
+  // pressed) — its own bar item, so a narrow bar can overflow it into
+  // the "…" menu on its own.
+  items.push({ key: "events-checklist", sep: true, node: eventsChecklist });
 
   if (perfText !== null) {
     items.push({

@@ -102,7 +102,6 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("sidecar_log_level", Scope::UserOverridable),
     ("trace_mode", Scope::UserOverridable),
     ("trace_auto_scroll", Scope::UserOverridable),
-    ("trace_show_events", Scope::UserOverridable),
     ("plot_y_axis_mode", Scope::UserOverridable),
     ("dbc_auto_reload", Scope::UserOverridable),
     ("can_id_format", Scope::UserOverridable),
@@ -381,12 +380,6 @@ pub struct Settings {
     /// panel's auto-scroll checkbox (and scrolling away from the tail)
     /// still wins for a panel that exists.
     pub trace_auto_scroll: bool,
-    /// Whether a **freshly created** chronological trace interleaves
-    /// timeline events (ADR 0035) among its frame rows. Default `true`.
-    ///
-    /// Read once at panel creation, like [`Settings::trace_mode`]; the
-    /// panel's events checkbox still wins for a panel that exists.
-    pub trace_show_events: bool,
     /// How a **newly created** plot area lays its series out across
     /// y-axes (ADR 0026) — one of [`Y_AXIS_MODES`], default `unified`.
     ///
@@ -727,7 +720,6 @@ impl Default for Settings {
             sidecar_log_level: "info".to_string(),
             trace_mode: "by-id".to_string(),
             trace_auto_scroll: true,
-            trace_show_events: true,
             plot_y_axis_mode: "unified".to_string(),
             dbc_auto_reload: true,
             can_id_format: "hex".to_string(),
@@ -1366,7 +1358,6 @@ mod tests {
             sidecar_log_level: "debug".to_string(),
             trace_mode: "chronological".to_string(),
             trace_auto_scroll: false,
-            trace_show_events: false,
             plot_y_axis_mode: "individual".to_string(),
             dbc_auto_reload: false,
             can_id_format: "decimal".to_string(),
@@ -1717,6 +1708,24 @@ mod tests {
     fn unknown_fields_are_ignored() {
         let s = parse_settings(r#"{"scratch_cap_bytes": 1024, "future_key": 42}"#);
         assert_eq!(s.scratch_cap_bytes, Some(1024));
+    }
+
+    #[test]
+    fn a_settings_file_carrying_the_removed_trace_show_events_key_still_loads() {
+        // The owner ruling that removed the Events toggle (2026-10-03)
+        // took `trace_show_events` out of the struct and the scope
+        // table; this is the same unknown-key tolerance exercised above,
+        // named for the field that actually disappeared, so an existing
+        // `settings.json` with that key keeps loading rather than
+        // failing on the removal.
+        let s = parse_settings(r#"{"trace_show_events": false, "trace_auto_scroll": false}"#);
+        assert_eq!(
+            s,
+            Settings {
+                trace_auto_scroll: false,
+                ..Settings::default()
+            }
+        );
     }
 
     #[test]

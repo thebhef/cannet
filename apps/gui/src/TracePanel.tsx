@@ -70,7 +70,6 @@ interface TraceConfig {
   mode?: unknown;
   autoScroll?: unknown;
   columns?: unknown;
-  showEvents?: unknown;
   collapseErrorFrames?: unknown;
   expanded?: unknown;
 }
@@ -90,8 +89,6 @@ const modeFromConfig = (c: TraceConfig | undefined): TraceMode =>
   traceMode(c?.mode ?? hostSettings().trace_mode);
 const autoScrollFromConfig = (c: TraceConfig | undefined): boolean =>
   typeof c?.autoScroll === "boolean" ? c.autoScroll : hostSettings().trace_auto_scroll;
-const showEventsFromConfig = (c: TraceConfig | undefined): boolean =>
-  typeof c?.showEvents === "boolean" ? c.showEvents : hostSettings().trace_show_events;
 /// Collapsing a fault's error frames is on unless this panel says
 /// otherwise: a bench fault produces them at bus frame rate — the
 /// owner's produced about 5,200 a second — and a trace that draws one
@@ -159,12 +156,14 @@ function FrameRowMenu(props: {
  * column layout (resize a divider; right-click a header to show / hide
  * columns) and the trace controls; the element lives in the registry,
  * so closing the panel doesn't destroy it. The mode, auto-scroll
- * (chronological), the events overlay, the column layout, and the by-id
+ * (chronological), the column layout, and the by-id
  * rows left open are this view's config, persisted on the element (so
  * they survive closing and reopening the panel) and mirrored into the
  * dockview `params`. A panel
  * with none of them yet — a brand-new one — seeds them from the
- * `trace_mode` / `trace_auto_scroll` / `trace_show_events` settings.
+ * `trace_mode` / `trace_auto_scroll` settings. Chronological always
+ * interleaves timeline events (owner ruling 2026-10-03); the per-kind
+ * checklist alone decides which draw.
  */
 export function TracePanel(props: IDockviewPanelProps) {
   diagCount("render.TracePanel"); // DIAG
@@ -183,19 +182,16 @@ export function TracePanel(props: IDockviewPanelProps) {
     [registry.entries],
   );
 
-  // The three view defaults (`trace_mode`, `trace_auto_scroll`,
-  // `trace_show_events`) are read *here* and nowhere else — once, as
-  // this panel seeds its state. A panel that already carries the value
-  // keeps it, and a later change to a default leaves open panels alone.
+  // The two view defaults (`trace_mode`, `trace_auto_scroll`) are read
+  // *here* and nowhere else — once, as this panel seeds its state. A
+  // panel that already carries the value keeps it, and a later change
+  // to a default leaves open panels alone.
   const [mode, setMode] = useState<TraceMode>(() => modeFromConfig(savedConfig));
   const switchMode = useCallback((m: TraceMode) => setMode(m), []);
 
   // Per-panel: auto-scroll (chronological) and the column layout.
   const [autoScroll, setAutoScroll] = useState(() => autoScrollFromConfig(savedConfig));
   const handleAutoScrollDisabled = useCallback(() => setAutoScroll(false), []);
-  // View-local: whether timeline events (ADR 0035) interleave into this
-  // chronological trace. Persisted with the rest of the config.
-  const [showEvents, setShowEvents] = useState(() => showEventsFromConfig(savedConfig));
   // View-local: whether error frames are hidden from this chronological
   // trace's rows (`withoutErrorFrames`, a plain row-type predicate).
   // The frames are in the capture either way — this is a view
@@ -264,14 +260,13 @@ export function TracePanel(props: IDockviewPanelProps) {
   useElementRehydrate(panel, (config) => {
     setMode(modeFromConfig(config));
     setAutoScroll(autoScrollFromConfig(config));
-    setShowEvents(showEventsFromConfig(config));
     setCollapseErrorFrames(collapseErrorFramesFromConfig(config));
     setColumns(columnsFromParams(config.columns));
     setExpanded(expandedFromConfig(config.expanded));
   });
 
   // Dual-write this panel's persistable state (mode, auto-scroll,
-  // column layout, events toggle, the open by-id rows) onto the element
+  // column layout, the open by-id rows) onto the element
   // and into the dockview params — see `useElementPanel`'s `persist`.
   useEffect(() => {
     persist(
@@ -279,7 +274,6 @@ export function TracePanel(props: IDockviewPanelProps) {
         mode,
         autoScroll,
         columns,
-        showEvents,
         collapseErrorFrames,
         expanded: [...expanded],
       },
@@ -290,7 +284,6 @@ export function TracePanel(props: IDockviewPanelProps) {
     mode,
     autoScroll,
     columns,
-    showEvents,
     collapseErrorFrames,
     expanded,
     filter.input,
@@ -444,9 +437,11 @@ export function TracePanel(props: IDockviewPanelProps) {
     [events, filter.active, eventMatches],
   );
 
-  // Interleave events into the chronological view when the view-local toggle
-  // is on — for both the unfiltered and the filtered chronological trace.
-  const interleave = mode === "chronological" && showEvents;
+  // Interleave events into the chronological view — for both the
+  // unfiltered and the filtered chronological trace. The per-kind
+  // checklist alone decides which events actually draw (owner ruling
+  // 2026-10-03: no separate on/off for interleaving itself).
+  const interleave = mode === "chronological";
   const baseCount = chronoFiltered ? filtered.count : trace.frameCount;
   const baseGetFrame = chronoFiltered ? filtered.getFrame : trace.getFrame;
   const baseEnsureVisible = chronoFiltered ? filtered.ensureVisible : trace.ensureVisible;
@@ -684,22 +679,13 @@ export function TracePanel(props: IDockviewPanelProps) {
         )}
         {mode === "chronological" && (
           <ChipButton
-            icon="flag"
-            label="Events"
-            title="interleave timeline events"
-            pressed={showEvents}
-            onPress={() => setShowEvents((v) => !v)}
-          />
-        )}
-        {mode === "chronological" && (
-          <ChipButton
             label="Collapse Errors"
             title="hide error frames from the trace's rows; the capture keeps every frame"
             pressed={collapseErrorFrames}
             onPress={() => setCollapseErrorFrames((v) => !v)}
           />
         )}
-        {mode === "chronological" && showEvents && (
+        {mode === "chronological" && (
           <EventKindFilter state={kindFilter} counts={eventCounts} />
         )}
       </div>
