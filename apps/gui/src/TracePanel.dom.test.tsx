@@ -31,10 +31,73 @@ let busHealth: Record<string, { errorCount: number; errorRate: number }> = {};
 let filteredTraceFixture: Record<string, unknown> | null = null;
 let byIdPageFixture: Record<string, unknown> | null = null;
 
+/// Holds a `fetch_filtered_trace` / `fetch_by_id_page` reply open so a
+/// test can observe the pending state before resolving it by hand — no
+/// sleeps standing in for the host's actual answer. `null` (the default)
+/// answers immediately from the fixture above, as every other test
+/// wants.
+interface Gate {
+  promise: Promise<Record<string, unknown>>;
+  resolve: (v: Record<string, unknown>) => void;
+}
+function makeGate(): Gate {
+  let resolve!: (v: Record<string, unknown>) => void;
+  const promise = new Promise<Record<string, unknown>>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+let filteredTraceGate: Gate | null = null;
+let byIdPageGate: Gate | null = null;
+
+/// A minimal `fetch_by_id_page` row — just enough `TraceFrameRecord`
+/// shape (mirrors the `frame()` helper further down) for `ByIdTable` to
+/// render it without decoding anything.
+function byIdRow(id: number): Record<string, unknown> {
+  return {
+    frame: {
+      index: id,
+      timestamp_seconds: 0,
+      channel: 0,
+      id,
+      extended: false,
+      direction: "Rx",
+      kind: { kind: "classic" },
+      data: [],
+      decoded: null,
+      bus_id: "b1",
+    },
+    rate: 0,
+    count: 1,
+  };
+}
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "fetch_filtered_trace") return filteredTraceFixture ?? { count: 0, start: 0, rows: [] };
-    if (cmd === "fetch_by_id_page") return byIdPageFixture ?? { count: 0, start: 0, rows: [] };
+    if (cmd === "fetch_filtered_trace") {
+      // One-shot: only the call that was in flight when the gate was set
+      // waits on it. The by-id/filtered views refetch on every window
+      // change (ADR 0025's single-flight re-anchor), so a gate that kept
+      // answering every later call with the same already-resolved
+      // promise turned a trimmed reply into a tight microtask loop —
+      // never yielding to the timer queue, hence no vitest timeout.
+      // Falling through to the fixture after the first call keeps the
+      // "walking the index" window narrow and deterministic.
+      if (filteredTraceGate) {
+        const gate = filteredTraceGate;
+        filteredTraceGate = null;
+        return gate.promise;
+      }
+      return filteredTraceFixture ?? { count: 0, start: 0, rows: [] };
+    }
+    if (cmd === "fetch_by_id_page") {
+      if (byIdPageGate) {
+        const gate = byIdPageGate;
+        byIdPageGate = null;
+        return gate.promise;
+      }
+      return byIdPageFixture ?? { count: 0, start: 0, rows: [] };
+    }
     if (cmd === "get_settings") return { ...storedSettings };
     if (cmd === "get_bus_health") return { ...busHealth };
     // The host anchors each timeline event to a frame index (ADR 0035);
@@ -174,6 +237,8 @@ beforeEach(async () => {
   busHealth = {};
   filteredTraceFixture = null;
   byIdPageFixture = null;
+  filteredTraceGate = null;
+  byIdPageGate = null;
   await hydrateSettings();
 });
 afterEach(() => {
@@ -1064,15 +1129,75 @@ describe("TracePanel fuzzy filter", () => {
     expect(filterCallsFor("fetch_filtered_trace")).toHaveLength(0);
   });
 
-  it("shows no match count while a query is active — the trace is host-paged, not client-indexed", async () => {
+  describe("match-count feedback (owner feedback 2026-10-02)", () => {
     // `filter`'s own entries list is always empty (the box borrows only
-    // the debounce/settled-query mechanics, per the module doc comment),
-    // so a count derived from it would read "0 matches" while the rows
-    // below are narrowed to real matches — worse than no count at all.
-    renderFilterPanel(plainTrace);
-    fireEvent.change(filterBox(), { target: { value: "brake" } });
-    await waitFor(() => expect(lastFilterArg("fetch_filtered_trace")).toEqual({ fuzzy: "brake" }));
-    expect(document.querySelector(".trace-panel-match-count")).toBeNull();
+    // the debounce/settled-query mechanics, per the module doc comment
+    // on `useGridviewFilter`'s usage above) — a count derived from it
+    // would read "0 matches" throughout, worse than no count at all.
+    // The box instead takes the host's own `{ count, pending }`
+    // (`GridviewFilterBox.hostMatches`), sourced from whichever windowed
+    // query is actually paging this mode's rows.
+    const matchCountText = () =>
+      document.querySelector(".trace-panel-match-count")?.textContent ?? null;
+
+    it("shows nothing while the box is empty", () => {
+      renderFilterPanel(plainTrace);
+      expect(matchCountText()).toBeNull();
+    });
+
+    it("reads searching… while the host walks the index, then the match count — chronological mode", async () => {
+      // Hold a local reference: the mock clears the shared
+      // `filteredTraceGate` as soon as the gated call lands (one-shot —
+      // see the mock), so resolving by way of that shared variable would
+      // throw once it's null.
+      const gate = makeGate();
+      filteredTraceGate = gate;
+      renderFilterPanel(plainTrace);
+      fireEvent.change(filterBox(), { target: { value: "brake" } });
+      await waitFor(() => expect(matchCountText()).toBe("searching…"));
+      gate.resolve({ count: 3, start: 0, rows: [] });
+      await waitFor(() => expect(matchCountText()).toBe("3 matches"));
+    });
+
+    it("reads the singular form for exactly one match", async () => {
+      const gate = makeGate();
+      filteredTraceGate = gate;
+      renderFilterPanel(plainTrace);
+      fireEvent.change(filterBox(), { target: { value: "brake" } });
+      await waitFor(() => expect(matchCountText()).toBe("searching…"));
+      gate.resolve({ count: 1, start: 0, rows: [] });
+      await waitFor(() => expect(matchCountText()).toBe("1 match"));
+    });
+
+    it("hides the count once the box is cleared", async () => {
+      filteredTraceFixture = { count: 3, start: 0, rows: [] };
+      renderFilterPanel(plainTrace);
+      fireEvent.change(filterBox(), { target: { value: "brake" } });
+      await waitFor(() => expect(matchCountText()).toBe("3 matches"));
+      fireEvent.change(filterBox(), { target: { value: "" } });
+      await waitFor(() => expect(matchCountText()).toBeNull());
+    });
+
+    it("reads searching… then the match count — by-id mode too", async () => {
+      // Let the mode's own initial (unfiltered) page land normally
+      // before gating the fetch the typed query triggers — by-id mode
+      // pages continuously, so gating from the start would hold the
+      // *first* page open instead of the one under test.
+      renderFilterPanel(plainTrace, { mode: "by-id" });
+      await waitFor(() => expect(filterCallsFor("fetch_by_id_page").length).toBeGreaterThan(0));
+      // Local reference, same reason as the chronological twin above.
+      const gate = makeGate();
+      byIdPageGate = gate;
+      fireEvent.change(filterBox(), { target: { value: "brake" } });
+      await waitFor(() => expect(matchCountText()).toBe("searching…"));
+      // Rows consistent with `count` — two frames, not an empty page —
+      // so the by-id view's own re-anchor (it refetches on every window
+      // change, unlike the chronological view, which skips it while
+      // auto-scrolling) finds its loaded page already covers what it
+      // asked for and settles instead of asking again.
+      gate.resolve({ count: 2, start: 0, rows: [byIdRow(0x100), byIdRow(0x200)] });
+      await waitFor(() => expect(matchCountText()).toBe("2 matches"));
+    });
   });
 
   describe("persistence", () => {

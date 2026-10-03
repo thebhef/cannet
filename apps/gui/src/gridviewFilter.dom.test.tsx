@@ -195,3 +195,63 @@ describe("the gridview filter slot", () => {
     expect(document.querySelector(".test-match-count")).toHaveTextContent(/match/);
   });
 });
+
+// `hostMatches`: a host-paged view (the trace, ADR 0044) has no
+// client-side row space for `filter.matchSet` to ever hold a real count
+// — these exercise the box's rendering of the host-supplied count/pending
+// directly, decoupled from `useGridviewFilter`'s own matcher.
+describe("GridviewFilterBox hostMatches", () => {
+  const activeFilter = {
+    input: "q",
+    setInput: () => {},
+    query: "q",
+    active: true,
+    matchSet: new Set<string>(),
+    ancestorsOfMatches: new Set<string>(),
+  };
+  const matchCountText = () => document.querySelector(".test-match-count")?.textContent;
+
+  it("reads searching… while pending, ignoring the count it also carries", () => {
+    render(
+      <GridviewFilterBox
+        filter={activeFilter}
+        ariaLabel="x"
+        matchCountClassName="test-match-count"
+        hostMatches={{ count: 7, pending: true }}
+      />,
+    );
+    expect(matchCountText()).toBe("searching…");
+  });
+
+  it("reads the host's count once settled — plural, then singular at 1", () => {
+    const { rerender } = render(
+      <GridviewFilterBox
+        filter={activeFilter}
+        ariaLabel="x"
+        matchCountClassName="test-match-count"
+        hostMatches={{ count: 4, pending: false }}
+      />,
+    );
+    expect(matchCountText()).toBe("4 matches");
+    rerender(
+      <GridviewFilterBox
+        filter={activeFilter}
+        ariaLabel="x"
+        matchCountClassName="test-match-count"
+        hostMatches={{ count: 1, pending: false }}
+      />,
+    );
+    expect(matchCountText()).toBe("1 match");
+  });
+
+  it("falls back to the client matchSet when no hostMatches is given", () => {
+    render(
+      <GridviewFilterBox
+        filter={{ ...activeFilter, matchSet: new Set(["a", "b"]) }}
+        ariaLabel="x"
+        matchCountClassName="test-match-count"
+      />,
+    );
+    expect(matchCountText()).toBe("2 matches");
+  });
+});

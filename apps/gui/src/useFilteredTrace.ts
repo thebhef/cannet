@@ -25,6 +25,10 @@ interface FilteredTracePage {
 export interface FilteredTrace {
   count: number;
   version: number;
+  /// A fetch for the current window/predicate is in flight (or queued
+  /// behind one) — the panel's cue that the host is still walking the
+  /// filter index and `count` isn't the settled answer yet.
+  pending: boolean;
   getFrame: (matchIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
   /// The page envelope's `fuzzy_winner` (ADR 0044): what the settled
@@ -126,7 +130,7 @@ export function useFilteredTrace(
     [filter, winStart, winEnd],
   );
 
-  const { count, version, getRow, ensureVisible } =
+  const { count, version, pending, getRow, ensureVisible } =
     useWindowedQuery<TraceFrameRecord>({
       descriptor,
       fetchPage,
@@ -136,5 +140,12 @@ export function useFilteredTrace(
       extentSignal: winEnd + (running ? 0 : 1),
     });
 
-  return { count, version, getFrame: getRow, ensureVisible, fuzzyWinner: winnerRef.current };
+  return {
+    count,
+    version,
+    pending,
+    getFrame: getRow,
+    ensureVisible,
+    fuzzyWinner: winnerRef.current,
+  };
 }
