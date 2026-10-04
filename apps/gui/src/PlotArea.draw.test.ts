@@ -19,12 +19,17 @@ import {
   drawEnumTileLabels,
   drawEventExtents,
   drawExtrapolatedSegments,
+  drawEventLabelChips,
   drawHoverMarkers,
+  drawTimeCursorChips,
+  drawValueCursorChips,
+  eventChipGutterPx,
   type TileLabel,
 } from "./PlotArea";
 import { enumSegments, mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
 import { applySampleMarkerFilter } from "./plotPoints";
+import { wrapMarkerLabel } from "./plotEvents";
 import { THEMES, setActiveTheme, theme, type ThemeName } from "./theme";
 
 /** The tile draw as a plot area performs it, in two passes: the tiles
@@ -1068,5 +1073,282 @@ describe("drawEventExtents", () => {
       ],
     });
     expect(r.ops.map((o) => o.fill)).toEqual(["#00ff00"]);
+  });
+});
+
+// The cursor and event chrome in its gutters (ADR 0026). The claim each
+// case below makes is a *place*: these readouts used to be painted
+// inside the data area, over the series they are read from, and the
+// whole of the fix is that they are not any more. So the assertions are
+// on coordinates, and every one of them ends in "and none of it is
+// inside the plot box".
+
+describe("eventChipGutterPx", () => {
+  // 6 px per character, as the recorder measures — so the 50-character
+  // budget is 300 px and a 400 px plot wraps at the budget.
+  const measure = (t: string) => 6 * t.length;
+
+  it("takes uPlot's own easement alone when there is nothing to hold", () => {
+    // The 17 px uPlot already reserves keeps the topmost y tick label
+    // from being chopped. With no chips, the gutter is that and no more.
+    expect(eventChipGutterPx([], 400, measure)).toBe(17);
+  });
+
+  it("adds a chip band on top of the easement, never inside it", () => {
+    // One chip line plus its clearance is 17 px, and it is 17 px *above*
+    // the easement — an opaque chip sharing those pixels would cover the
+    // tick label the easement exists for.
+    expect(eventChipGutterPx(["brake on"], 400, measure)).toBe(34);
+  });
+
+  it("grows to a second line for a label that needs one", () => {
+    const long = "the brake pedal was pressed hard while the pack was still charging";
+    expect(wrapMarkerLabel(long, measure, 300, 2)).toHaveLength(2);
+    expect(eventChipGutterPx([long], 400, measure)).toBe(47);
+  });
+
+  it("never grows past two lines, however long the label", () => {
+    const essay = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ");
+    expect(eventChipGutterPx([essay], 400, measure)).toBe(47);
+  });
+
+  it("takes what the widest of its labels needs, not the last one", () => {
+    const long = "the brake pedal was pressed hard while the pack was still charging";
+    expect(eventChipGutterPx([long, "ok"], 400, measure)).toBe(47);
+    expect(eventChipGutterPx(["ok", "also ok"], 400, measure)).toBe(34);
+  });
+
+  it("wraps against the plot it labels when that is narrower than the budget", () => {
+    // Same label, same budget, narrower plot: the chip may not be wider
+    // than the area it hangs over, so a narrow area takes two lines
+    // where a wide one took one.
+    const label = "brake pedal pressed";
+    expect(eventChipGutterPx([label], 400, measure)).toBe(34);
+    expect(eventChipGutterPx([label], 80, measure)).toBe(47);
+  });
+});
+
+describe("drawEventLabelChips", () => {
+  /** A plot box with a 47 px gutter above it: uPlot's 17 px tick
+   * easement plus a 30 px band for two chip lines. */
+  const box = { left: 0, width: 400, top: 60, gutter: 47, ratio: 1 };
+  /** The easement the chips may not enter — the bottom 17 px of the
+   * gutter, where the topmost y tick label is drawn. */
+  const EASEMENT = 17;
+  const ev = (id: string, t: number, label: string) => ({ id, t, label, color: "#ff8800" });
+  const u = () => fakeU([[0, 1, 2, 3]], [{}]);
+
+  /** Every inked op's vertical extent, as `[y0, y1]`. */
+  const spans = (ops: ReturnType<typeof recorder>["ops"]) =>
+    ops
+      .filter((o) => o.op === "fillRect" || o.op === "strokeRect" || o.op === "fillText")
+      .map((o) =>
+        o.op === "fillText"
+          ? [o.args[2] as number, o.args[2] as number]
+          : [o.args[1] as number, (o.args[1] as number) + (o.args[3] as number)],
+      );
+
+  it("draws a label above the plot box, never inside it", () => {
+    const r = recorder();
+    drawEventLabelChips(r.ctx, u(), { ...box, events: [ev("n1", 2, "brake on")], litEventIds: new Set() });
+    expect(r.ops.some((o) => o.op === "fillText" && o.args[0] === "brake on")).toBe(true);
+    // Every pixel of it is above the plot box's top edge.
+    for (const [, y1] of spans(r.ops)) expect(y1).toBeLessThanOrEqual(box.top);
+  });
+
+  it("leaves the tick easement clear, so a chip cannot cover the topmost tick label", () => {
+    // The gutter is added *above* the easement uPlot already reserves,
+    // not taken out of it: the chip is opaque, and the label it would
+    // otherwise sit on is the axis's own reading.
+    const r = recorder();
+    drawEventLabelChips(r.ctx, u(), { ...box, events: [ev("n1", 2, "brake on")], litEventIds: new Set() });
+    expect(r.ops.some((o) => o.op === "fillText")).toBe(true);
+    for (const [, y1] of spans(r.ops)) expect(y1).toBeLessThanOrEqual(box.top - EASEMENT);
+  });
+
+  it("clips to the gutter, so nothing it draws can reach the data area", () => {
+    const r = recorder();
+    drawEventLabelChips(r.ctx, u(), { ...box, events: [ev("n1", 2, "brake on")], litEventIds: new Set() });
+    // The band only — the easement is not part of it, so the clip
+     // itself is what stops a chip reaching the tick label.
+    const clip = r.ops.find((o) => o.op === "rect");
+    expect(clip?.args).toEqual([box.left, box.top - box.gutter, box.width, box.gutter - EASEMENT]);
+  });
+
+  it("grows a two-line chip upward, so its last line still sits on the marker", () => {
+    const r = recorder();
+    const long = "the brake pedal was pressed hard while the pack was still charging";
+    drawEventLabelChips(r.ctx, u(), { ...box, events: [ev("n1", 2, long)], litEventIds: new Set() });
+    const texts = r.ops.filter((o) => o.op === "fillText");
+    expect(texts).toHaveLength(2);
+    const plate = r.ops.find((o) => o.op === "fillRect");
+    // Two chip lines tall, bottom edge two px clear of the easement.
+    expect(plate?.args[3]).toBe(26);
+    expect((plate?.args[1] as number) + 26).toBe(box.top - EASEMENT - 2);
+  });
+
+  it("centres the chip on the marker it names", () => {
+    const r = recorder();
+    drawEventLabelChips(r.ctx, u(), { ...box, events: [ev("n1", 2, "hi")], litEventIds: new Set() });
+    // 1 unit = 10 px, so the marker is at x = 20.
+    expect(r.ops.find((o) => o.op === "fillText")?.args[1]).toBe(20);
+  });
+
+  it("skips a marker outside this area's window", () => {
+    const r = recorder();
+    drawEventLabelChips(r.ctx, u(), {
+      ...box,
+      events: [ev("far", 90, "far"), ev("near", 1, "near")],
+      litEventIds: new Set(),
+    });
+    expect(r.ops.filter((o) => o.op === "fillText").map((o) => o.args[0])).toEqual(["near"]);
+  });
+
+  it("fades the events a highlight does not name, and draws the lit one last", () => {
+    const r = recorder();
+    drawEventLabelChips(r.ctx, u(), {
+      ...box,
+      events: [ev("lit", 1, "lit"), ev("other", 2, "other")],
+      litEventIds: new Set(["lit"]),
+    });
+    const texts = r.ops.filter((o) => o.op === "fillText");
+    expect(texts.map((o) => o.args[0])).toEqual(["other", "lit"]);
+    expect(texts[0].alpha).toBeLessThan(1);
+    expect(texts[1].alpha).toBe(1);
+  });
+
+  it("leaves the context's opacity where it found it", () => {
+    const r = recorder();
+    drawEventLabelChips(r.ctx, u(), {
+      ...box,
+      events: [ev("lit", 1, "lit"), ev("other", 2, "other")],
+      litEventIds: new Set(["lit"]),
+    });
+    expect(r.state.globalAlpha).toBe(1);
+  });
+
+  it("paints nothing when there are no events", () => {
+    const r = recorder();
+    drawEventLabelChips(r.ctx, u(), { ...box, events: [], litEventIds: new Set() });
+    expect(r.ops).toEqual([]);
+  });
+});
+
+describe("drawTimeCursorChips", () => {
+  /** The plot box is [0, 200] vertically; the gutter sits below it,
+   * past the 10 px tick marks. */
+  const box = { left: 0, width: 400, gutterTop: 210, gutter: 17, xDigits: 3, ratio: 1 };
+  const u = () => fakeU([[0, 1, 2, 3]], [{}]);
+
+  it("draws A and B below the plot box, in the gutter above the tick labels", () => {
+    const r = recorder();
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 3 });
+    const texts = r.ops.filter((o) => o.op === "fillText");
+    expect(texts.map((o) => String(o.args[0]).slice(0, 2))).toEqual(["Δt", "A ", "B "]);
+    // Every one of them inside the gutter band and none above it — i.e.
+    // none inside the plot box.
+    for (const o of r.ops) {
+      if (o.op === "fillText") expect(o.args[2] as number).toBeGreaterThanOrEqual(box.gutterTop);
+      if (o.op === "fillRect" || o.op === "strokeRect") {
+        expect(o.args[1] as number).toBeGreaterThanOrEqual(box.gutterTop);
+      }
+    }
+  });
+
+  it("clips to the gutter band", () => {
+    const r = recorder();
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 3 });
+    expect(r.ops.find((o) => o.op === "rect")?.args).toEqual([0, 210, 400, 17]);
+  });
+
+  it("draws Δt first, so a narrow span leaves the two readings on top", () => {
+    const r = recorder();
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 1.02 });
+    const texts = r.ops.filter((o) => o.op === "fillText").map((o) => String(o.args[0]));
+    expect(texts[0].startsWith("Δt")).toBe(true);
+    expect(texts).toHaveLength(3);
+  });
+
+  it("puts each chip at its own cursor and Δt between them", () => {
+    const r = recorder();
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 3 });
+    const at = (prefix: string) =>
+      r.ops.find((o) => o.op === "fillText" && String(o.args[0]).startsWith(prefix))?.args[1];
+    expect(at("A ")).toBe(10);
+    expect(at("B ")).toBe(30);
+    expect(at("Δt")).toBe(20);
+  });
+
+  it("says nothing about a cursor that is not placed", () => {
+    const r = recorder();
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: null });
+    expect(r.ops.filter((o) => o.op === "fillText").map((o) => String(o.args[0]).slice(0, 2))).toEqual(["A "]);
+  });
+
+  it("paints nothing when neither cursor is placed", () => {
+    const r = recorder();
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: null, cursorXb: null });
+    expect(r.ops).toEqual([]);
+  });
+
+  it("skips a cursor outside this area's window", () => {
+    const r = recorder();
+    drawTimeCursorChips(r.ctx, u(), { ...box, width: 15, cursorXa: 9, cursorXb: null });
+    expect(r.ops.filter((o) => o.op === "fillText")).toEqual([]);
+  });
+});
+
+describe("drawValueCursorChips", () => {
+  /** A 52 px y gutter left of a plot box 100 units tall. */
+  const box = { left: 52, top: 0, height: 100, ratio: 1 };
+  const u = () => fakeU([[0, 1, 2, 3]], [{}]);
+
+  it("draws H1, H2 and ΔH in the y gutter, left of the plot box", () => {
+    const r = recorder();
+    drawValueCursorChips(r.ctx, u(), { ...box, cursorYh1: 80, cursorYh2: 40 });
+    const texts = r.ops.filter((o) => o.op === "fillText");
+    expect(texts.map((o) => String(o.args[0]).slice(0, 2))).toEqual(["ΔH", "H1", "H2"]);
+    // The whole of each chip is left of the plot box's left edge.
+    for (const o of r.ops) {
+      if (o.op === "fillText") expect(o.args[1] as number).toBeLessThanOrEqual(box.left);
+      if (o.op === "fillRect" || o.op === "strokeRect") {
+        expect((o.args[0] as number) + (o.args[2] as number)).toBeLessThanOrEqual(box.left);
+      }
+    }
+  });
+
+  it("clips to the gutter, so a wide ΔH cannot reach into the plot box", () => {
+    const r = recorder();
+    drawValueCursorChips(r.ctx, u(), { ...box, cursorYh1: 80, cursorYh2: 40 });
+    expect(r.ops.find((o) => o.op === "rect")?.args).toEqual([0, 0, 52, 100]);
+  });
+
+  it("puts each chip at its own cursor's height and ΔH between them", () => {
+    const r = recorder();
+    drawValueCursorChips(r.ctx, u(), { ...box, cursorYh1: 80, cursorYh2: 40 });
+    const at = (prefix: string) =>
+      r.ops.find((o) => o.op === "fillText" && String(o.args[0]).startsWith(prefix))?.args[2];
+    // y is inverted over a 100 px box: 80 → 20, 40 → 60, midpoint → 40.
+    expect(at("H1")).toBe(20);
+    expect(at("H2")).toBe(60);
+    expect(at("ΔH")).toBe(40);
+  });
+
+  it("says nothing about a cursor that is not placed", () => {
+    const r = recorder();
+    drawValueCursorChips(r.ctx, u(), { ...box, cursorYh1: 80, cursorYh2: null });
+    expect(r.ops.filter((o) => o.op === "fillText").map((o) => String(o.args[0]))).toEqual(["H1"]);
+  });
+
+  it("paints nothing when neither cursor is placed", () => {
+    const r = recorder();
+    drawValueCursorChips(r.ctx, u(), { ...box, cursorYh1: null, cursorYh2: null });
+    expect(r.ops).toEqual([]);
+  });
+
+  it("skips a cursor scrolled out of this axis's range", () => {
+    const r = recorder();
+    drawValueCursorChips(r.ctx, u(), { ...box, cursorYh1: -50, cursorYh2: null });
+    expect(r.ops.filter((o) => o.op === "fillText")).toEqual([]);
   });
 });
