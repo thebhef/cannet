@@ -52,6 +52,7 @@ import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { PlotPanel } from "./PlotPanel";
+import { setShowPointsOverride, showPointsFromRaw } from "./plotPoints";
 import { SignalsPanel } from "./SignalsPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
@@ -268,6 +269,10 @@ type AutomationConfig = {
   out: string | null;
   label: string | null;
   interact: string | null;
+  /// `--show-points <auto|off|on>`: force the plot panels' show-points
+  /// mode for this run. Not persisted — a measurement that had to save
+  /// the project to pin what it measures would change the comparand.
+  showPoints: string | null;
 };
 
 // How long to let the connected session settle before bracketing a
@@ -3509,6 +3514,10 @@ export function App() {
         } catch {
           /* no host / not armed — fall through to the last-opened path */
         }
+        // Armed before the project opens, so every panel the project
+        // brings up is already drawing in the mode the run asked for
+        // (`plotPoints.ts`). Unset leaves each panel's own mode alone.
+        setShowPointsOverride(cfg?.showPoints != null ? showPointsFromRaw(cfg.showPoints) : null);
         // Reopen the named project (automation) or the last one opened —
         // it replaces the layout restored above (and re-applies the
         // bus/DBC config). A stale pointer (file moved/deleted) is

@@ -1200,6 +1200,15 @@ report is written.
   drove — a gesture whose target is not on screen is skipped, and
   `performed: 0` with a non-empty `missing_by_gesture` is a run that
   measured a resting app while looking exactly like one that scrubbed.
+- `--show-points <auto|off|on>` forces the show-points mode of every
+  plot panel for this run — what the panel's own `Points:` control
+  cycles, per ADR 0026. It exists because that mode is persisted panel
+  state: measuring `on` by saving it into the project would change the
+  project every other reading on this rig was taken against. The
+  override is applied where the panels draw and nowhere else, so nothing
+  is written back and each panel's saved mode survives the run. An
+  unrecognised value reads as `auto`; omit the flag to measure whatever
+  the project saved.
 - `--diag` arms the frontend's diagnostic machinery: the per-event
   render / resample counters and gauges, their burst logger, the
   `longtask` observer, the once-a-second `[diag]` console line, and the
@@ -1239,6 +1248,7 @@ place. Off unless a flag turns it on:
 | Synthetic gesture driving | off — no interval scheduled | `--perf-interact` |
 | Project auto-open / auto-connect / auto-exit | off | `--project`, `--connect-on-start` |
 | Rest-of-bus simulation Run (the load a measurement run needs) | off — the flag is session state no project carries | `--rbs-run-on-start` |
+| Forced plot show-points mode | off — each panel draws its own saved mode | `--show-points` |
 | User-scope redirection | off — the real profile | `--app-data-dir` |
 | `tx-flush` / `tx-sched` dev-log lines (stderr only; they never reach the System Messages panel or `cannet.log`) | off — the default log filter excludes both targets, so the lines are never formatted | `RUST_LOG=tx-flush=info,tx-sched=info` |
 | WebView DevTools / remote debugging port | closed — the release build has no inspector | the `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` environment variable, read by the WebView2 runtime (what the screenshot harness sets) |

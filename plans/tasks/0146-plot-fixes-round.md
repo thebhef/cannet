@@ -148,6 +148,23 @@ without a canvas so it can pin data, not ink.
   which a stepped numeric line needs too — not a separate reducer.
   Applies to the single-enum ribbon as well. ADR 0026 amended.
 
+- **Hover cost of `Points: On`** (owner, 2026-09-21): reported that
+  `Points: On` is "back to being a performance disaster on long
+  traces". Ruled, as a fix phase on top of the feedback stack:
+  1. the hover-driven chrome moves to an **overlay canvas** stacked
+     over uPlot's, so a pointer move or a cursor placement never
+     redraws the series layer — same placement, same look, pinned by a
+     `drawSeries` counter;
+  2. sample markers are **fill-only** (`points.width: 0`), size
+     unchanged;
+  3. the ADR 0031 harness gains **`--show-points <auto|off|on>`**,
+     forcing the mode for a run without persisting it;
+  4. one reading under `on`, one release build, one 60 s run.
+
+  The 2026-09-20 tip reading below was taken with ev-zonal's persisted
+  `showPoints: "auto"`, so it never measured `on` at all — which is
+  how an uncapped `on` shipped with no reading against it.
+
 ## Phases
 
 1. **Lane serve investigation.** Rebuild the `61379f88` V2 scenario
@@ -213,6 +230,184 @@ without a canvas so it can pin data, not ink.
   measurement strip, both unchanged. Filed for a ruling.
 
 ## Status log
+
+### 2026-09-21 — fix phase: the hover overlay, fill-only markers, `--show-points`
+
+Branch `fix-plot-hover-overlay` off `fix-palette-pick-order`, one
+squashed commit. Frontend plus one host file (`diag.rs`, for the launch
+flag), ADRs 0026 and 0031, README, `docs/CONTEXT.md`.
+
+#### Observation → experiment → cause
+
+Observation (owner, 2026-09-21): `Points: On` is a performance disaster
+on long traces. The reading of the code in the brief — uPlot never
+caches the point layer, and the plot area redraws on every pointer move
+— was taken as a hypothesis, not a cause.
+
+Experiment, against uPlot 1.6.32 itself rather than our wrapper: one
+series of 2000 samples with `points.show: true`, a counting
+`points.filter` and a wrapped `points.paths`, driven through ten
+`redraw(false, false)` calls — the exact call the hover effect made —
+each flushed to its own commit. The flush is load-bearing: uPlot
+coalesces synchronous redraws into one microtask, so an unflushed loop
+measures a single repaint and *looks* like a cache (it read 0 filter
+calls before the flush was added). Falsifiable: a cached point layer
+runs the filter once and builds the arcs once.
+
+| per 10 repaints, one 2000-sample series | count |
+| --- | --- |
+| `points.filter` calls | 10 |
+| `points.paths` rebuilds | 10 |
+| `Path2D.arc` calls | 20 000 |
+| `ctx.stroke()` per repaint, default `points.width` | 4 |
+| `ctx.stroke()` per repaint, `points.width: 0` | 3 |
+
+Cause confirmed, and the source says why: `drawSeries` rebuilds a
+series' line path only when `s._paths == null`, but runs
+`points.filter`, `points.paths` and `drawPath` unconditionally. So the
+cost is one marker path plus a fill *and* a stroke per series **per
+repaint**, and at ev-zonal's serve (`4 · max_points` — a few markers per
+canvas pixel column, thousands per series on a wide canvas) every
+rAF-coalesced pointer move was paying it for every series of every
+stacked area. `width: 0` removes exactly one stroke pass, which is the
+marker layer's.
+
+#### `drawSeries` per hover, before and after
+
+| | repaints of the series layer |
+| --- | --- |
+| before, one pointer move | one `redraw(false, false)` per stacked area → `drawSeries` once per series per area, each rebuilding that series' whole marker path |
+| after, one pointer move | **none** — one overlay canvas cleared and repainted per area |
+| after, a cursor placement | **none** (same path) |
+| after, a live tick / pan / zoom | unchanged — the data moved, so the series layer redraws and repaints the overlay at the end of its `draw` hook |
+
+Pinned by `PlotPanel.dom.test.tsx :: "hover and cursor chrome stay off
+the series layer"`, which installs a `drawSeries` counter, asserts a
+plain `redraw()` moves it, and then asserts a hover, a second hover and
+a click-placed A cursor leave it untouched while the overlay clears and
+repaints.
+
+#### The split: by input, not by looks
+
+`drawHoverOverlay` paints on a second canvas stacked inside `u.over`,
+sized and offset to the *whole* canvas rather than the plot box, because
+the readouts live in the gutters. That also keeps `u.bbox` addressing
+the same pixels in both layers, so every function that moved kept its
+coordinates and its clip.
+
+| on the overlay canvas | still in uPlot's own draw |
+| --- | --- |
+| crosshair, A/B and H1/H2 cursor lines | dashed extrapolation stretches |
+| hover markers | lane tile labels (tiles stay in `drawAxes`) |
+| event lines, extents, label chips | the scroll-jank sample |
+| A/B/Δt chips, H1/H2/ΔH chips | |
+| the bottom axis's time label | |
+
+That last row is the one mechanical consequence. The label carries the
+free cursor's time, so it changes on every pointer move, and an axis can
+only be repainted by the redraw this phase exists to remove. uPlot now
+gets a blank label — which is what reserves the band and fixes the
+position — and the overlay paints the text at the same centred spot, in
+the same font and colour. Placement and look are otherwise untouched.
+
+The two effects that called `u.redraw` for chrome (cursors / crosshair /
+events, and extents / the lit set) now repaint the overlay.
+`eventChipKey`'s `redraw(false, true)` stays: the top gutter is sized by
+a padding function, only a layout convergence re-evaluates it, and a
+label set changes far more rarely than a pointer moves.
+
+#### Fill-only markers
+
+`showPointsToUplot` returns `width: 0` in every mode. Drawn size is
+unchanged — the radius is `(size - width) / 2`, so dropping a 1 px
+stroke centred on the arc grows the disc by exactly what that stroke
+covered. The middle changes: uPlot's stroked marker defaults to a white
+fill, an unstroked one takes the series colour throughout. A lane's
+markers already set `fill` (`laneMarkerInk`) and keep it.
+
+#### `--show-points <auto|off|on>`
+
+Parsed in `diag.rs` beside `--perf-interact`, served through
+`diag_autostart`, armed in `plotPoints.ts` as a module flag before the
+automation opens its project — the same shape `diag.ts` uses for its own
+launch-time arming. `PlotPanel` draws `override ?? its own state` and
+persists only the state, so a measurement run never edits the project it
+measures. It arms autostart but not diag (it shapes what is drawn, not
+what is recorded), and the diag scanner skips its value for the same
+reason it skips a project path.
+
+#### The reading — one run, `Points: On`
+
+Release build of `3dd860cc` (`tauri build --no-bundle`), ev-zonal, 60 s,
+`--perf-interact scrub`, `--rbs-run-on-start`, `--show-points on`;
+report
+`docs/performance-measurements/frontend/2026-09-21-3dd860cc-points-on-hover-overlay.json`.
+`cannet-perf-measurement check --expected-rx-fps 1608 --expected-tx-fps
+1608` **passed all 33 gated metrics**.
+
+| metric | baseline | this run | limit |
+|---|---|---|---|
+| `longtask_ms_per_s` mean / p95 | 0 / 0 | 0 / 0 | 10 / 17 |
+| `lag_ms_max` | 10.4 | 5.7 | 40.8 |
+| `jank_fraction` | 0 | 0 | 0.05 |
+| `jsheap_mb_peak` | 83.6 | 97.1 | 231.2 |
+| `renderer_mb_peak` | 316.5 | 330.1 | 697.0 |
+| `tree_mb_peak` | 741.7 | 753.4 | 1547.4 |
+| `flush_ms_mean` / `tx_late_ms_mean` | 25.0 / 18.0 | 2.8 / 2.8 | 25 / 18 |
+| `rx_fps` / `tx_fps` overall | — | 1607.5 / 1611.3 | ±15 % of 1608 |
+| `rx_gap` ids measured | — | 174 | — |
+
+Load and gestures sanity-checked before reading any of it: 174 ids
+measured, rx/tx within 0.2 % of the offered 1608 f/s, `interact`
+`performed: 266`, `missing: 0` across seven gesture kinds. `cannet.log`
+carries no error from this run — the only warnings are the usual absent
+Vector/Kvaser backends, the unreachable `10.10.10.50` interface the
+project also names, and one clock-offset correction that recovered.
+
+The comparand: the 2026-09-20 tip reading was `showPoints: "auto"` (what
+ev-zonal persists), so the two runs are not a controlled pair for the
+marker cost — this is the first reading of `on` at all. Read as a
+series against the baseline, every gated metric is inside its limit and
+`lag_ms_max` came in at 5.7 against the 22.4 that run posted.
+
+#### Tests
+
+| file | added | what they pin |
+| --- | --- | --- |
+| `PlotPanel.dom.test.tsx` | 3 | the `drawSeries` counter above; the overlay canvas is stacked in `u.over`, offset to the canvas origin and pointer-transparent; the launch flag draws `on` over a panel that persists `off`, and persists nothing |
+| `PlotArea.draw.test.ts` | 8 | `drawHoverOverlay` puts the crosshair and the pointer's nearest sample down in one pass, honours `off`, keeps every readout out of the plot box, and carries the panel-level gutters only on the axes that anchor them; `drawXAxisTimeLabel`'s text and its position |
+| `App.perfCaptureConnect.dom.test.tsx` | 1 | the flag's last hop: the webview arms the override from the launch config, and leaves it unset without one |
+| `plotPoints.test.ts` | 2 | `width: 0` in every mode; the override's lifecycle |
+| `diag.rs` | 2 | the flag parses, is absent by default, and does not arm diag |
+
+Three existing panel-tier tests moved with the mechanism: the x-axis
+label case now reads the drawn text instead of calling the axis's
+`label` function, the highlight-repaint case asserts an overlay repaint
+with the redraw count *unchanged*, and the enum-axis measurer stub was
+taught to leave the overlay's canvas alone. The suite-wide `getContext`
+routing (an instance's overlay canvas draws through that instance's own
+recorder) is what keeps every other assertion about crosshairs, hover
+markers and gutter chips reading the same array in the same order.
+
+#### CI (scoped per-phase set)
+
+| check | command | result |
+| --- | --- | --- |
+| frontend tests | `pnpm --dir apps/gui test` | 247 files / 3589 tests passed |
+| frontend build | `pnpm --dir apps/gui build` | passed (`tsc -b && vite build`) |
+| `cargo test -p cannet-gui` | — | 1326 passed |
+| `cargo clippy -p cannet-gui --all-targets -- -D warnings` | — | clean |
+| `cargo fmt --all -- --check` | — | clean |
+| `cargo doc -p cannet-gui --no-deps` | — | clean |
+| comment-references grep | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
+| `check_local_paths.py` | over the changed files | clean |
+| release build | `pnpm --dir apps/gui tauri build --no-bundle` | `target/release/cannet-gui.exe` |
+| python / MDF / sidecar / wire / proto lanes | — | **unreachable — the diff touches no `servers/`, `libs/`, `proto/` or MDF code** |
+| `cargo test --workspace`, workspace clippy | — | not run: the only Rust change is `diag.rs`'s launch-flag parser, which no other crate compiles against |
+
+No new blockers. Nothing filed to `plans/owner-review-queue.md` — the
+one open item there (the ΔH gutter clip) is phase 3's and is unchanged
+by this phase.
 
 ### 2026-09-20 — phase 4: panel plumbing (task close-out)
 

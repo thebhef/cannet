@@ -79,7 +79,7 @@ import {
   type LiveEdge,
   type LiveEdgeTuning,
 } from "./followWindow";
-import { showPointsFromRaw, type ShowPointsMode } from "./plotPoints";
+import { showPointsFromRaw, showPointsOverride, type ShowPointsMode } from "./plotPoints";
 import { formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
@@ -570,6 +570,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * View-local like `showPerf` above, for the same reason. */
   const [showEventsChip, setShowEventsChip] = useState(false);
   const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(savedConfig?.showPoints));
+  /** What the areas and the toolbar actually draw: the launch flag's
+   * mode when this run was started with one (`--show-points`, ADR
+   * 0031), otherwise the panel's own. The override is read at render
+   * and nowhere else, so the state above — and with it what the project
+   * persists — is untouched by a measurement run. */
+  const effectiveShowPoints = showPointsOverride() ?? showPoints;
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel config. */
   const [signalsWidth, setSignalsWidth] = useState(() => signalsWidthFromRaw(savedConfig?.signalsWidthPx));
@@ -2722,7 +2728,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onFitY={fitYAll}
         followLive={followLive}
         onFollowLive={setFollowLive}
-        showPoints={showPoints}
+        showPoints={effectiveShowPoints}
         onShowPoints={setShowPoints}
         solo={{
           pattern: solo.pattern,
@@ -2933,7 +2939,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               modelEpoch={model.epoch}
               live={live}
               followLive={followLive}
-              showPoints={showPoints}
+              showPoints={effectiveShowPoints}
               signalsWidth={signalsWidth}
               onResizeSignalsWidth={resizeSignalsWidth}
               cursorMode={cursorMode}
