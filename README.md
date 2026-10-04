@@ -2025,12 +2025,16 @@ resample at the end.
   capture-start "T0" plus your notes — draw as vertical lines across the
   areas; the event log under the panel renames (click the label) and
   removes notes.
+- **Events chip.** A toolbar chip (same pattern as the Trace panel's)
+  reveals the per-kind event checklist — notes, and diagnostics (bus
+  error runs, history truncation) — that decides which kinds' markers
+  draw on the plot. Visibility is view-local per panel.
 - **The toolbar's right-click menu.** Right-click the plot toolbar for
   the seldom-used switches: **show diagnostics** (the per-signal
   y-range / cached-t-range line in each row), **show performance
   readout** (update rate, worst recent resample, device pixel ratio,
-  frames in the trace window, cached plot points — off by default), the
-  event-kind filter and the sources picker.
+  frames in the trace window, cached plot points — off by default), and
+  the sources picker.
 - **Number formatting.** Every float the plot shows — the signal
   panel, the cursor readouts, the measurement strip, the y-axis tick
   labels — reads under **one magnitude rule**, so a value can't read

@@ -564,6 +564,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * View-local rather than persisted — a diagnostic you turned on to
    * look at something is not a preference. */
   const [showPerf, setShowPerf] = useState(false);
+  /** Whether the toolbar's Events checklist is open (the trace panel's
+   * chip-reveals-checklist pattern) — a disclosure, not the per-kind
+   * visibility itself (that's `eventKinds`, ADR 0035, unpersisted).
+   * View-local like `showPerf` above, for the same reason. */
+  const [showEventsChip, setShowEventsChip] = useState(false);
   const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(savedConfig?.showPoints));
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel config. */
@@ -671,6 +676,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const instancesRef = useRef<Map<string, uPlot>>(new Map());
   const extentByAreaRef = useRef<Map<string, number>>(new Map());
   const startByAreaRef = useRef<Map<string, number>>(new Map());
+  /** Per-area last-reported x-axis base, keyed by area id — see
+   * `reportBase` below. An empty area reports `null` on every tick just
+   * as a populated one reports a number; keying by area is what keeps
+   * the empty one from nulling a populated sibling's report. */
+  const baseByAreaRef = useRef<Map<string, number | null>>(new Map());
 
   /// One y-gutter for the whole stack, so every axis's plot box starts
   /// at the same x and the shared cursors / gridlines / enum tiles are
@@ -823,12 +833,65 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /** Pending coalesced slide, or `0` when none is scheduled (ADR 0024 —
    * "one slide per frame"). */
   const slideRafRef = useRef(0);
+  // `winStart`/`winEnd` mirrored into refs so `seedEmptyExtent` (below)
+  // reads the latest window without being a dependency of `slideXWindow`
+  // — that callback is invoked from every area's resample tick (up to
+  // the fetch cadence), and closing over the plain values would rebuild
+  // it, and everything downstream of its identity, at the same rate.
+  const winStartRef = useRef(winStart);
+  const winEndRef = useRef(winEnd);
+  useEffect(() => {
+    winStartRef.current = winStart;
+    winEndRef.current = winEnd;
+  });
+  /** Guards {@link seedEmptyExtent}'s host round-trip so at most one is
+   * in flight. */
+  const emptyExtentBusyRef = useRef(false);
+  /** Seed the shared x-window from the session's own span when **no**
+   * area in the panel has an extent — a panel with no signals plotted
+   * anywhere, or only empty areas (owner ruling, ADR 0026: an empty
+   * area still shows the shared x grid, ticks and placeable A/B
+   * cursors). The extent is a host-side model fact, read the same way
+   * "Fit Data" reads it (`fetchWindowExtent`) rather than derived from
+   * frames in JS: `originSeconds`/`model.sessionStartSeconds` is the
+   * panel's x-axis zero, and the round-trip over the trace's current
+   * window answers where the capture ends *now*.
+   *
+   * Self-throttled to one request in flight rather than gated to a
+   * timer, so it runs at roughly the cadence a populated area's own
+   * resample loop would (`slideXWindow` is already called at that rate
+   * by every area's tick) without piling up round-trips while one is
+   * outstanding. A result that lands after a real area has anchored the
+   * window (or after the panel's window otherwise moved) is dropped. */
+  const seedEmptyExtent = useCallback(() => {
+    if (emptyExtentBusyRef.current) return;
+    const origin = baseSecondsRef.current ?? model.sessionStartSeconds;
+    const ws = winStartRef.current;
+    const we = winEndRef.current;
+    if (origin == null || we <= ws) return;
+    emptyExtentBusyRef.current = true;
+    fetchWindowExtent(ws, we)
+      .then((last) => {
+        if (last == null || sharedExtent() != null) return;
+        const min = sharedStart();
+        applyXAll(min, Math.max(last - origin, min + 1), null);
+      })
+      .catch(() => {
+        /* host unreachable — try again on the next tick */
+      })
+      .finally(() => {
+        emptyExtentBusyRef.current = false;
+      });
+  }, [model.sessionStartSeconds, sharedExtent, sharedStart, applyXAll]);
   /** Recompute the shared x-window from the panel's current extent and
    * push it to every area. One clock read, one fan-out — see
    * {@link onAreaResampled}. */
   const slideXWindow = useCallback(() => {
       const ext = sharedExtent();
-      if (ext == null) return;
+      if (ext == null) {
+        seedEmptyExtent();
+        return;
+      }
       // Follow-live slides to a *clock*-derived edge, not to the data
       // edge. Stepping straight to `ext` moves the window by however
       // much data happened to arrive since the last tick — a quantity
@@ -864,7 +927,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         diagGauge("ext", ext); // DIAG
         applyXAll(win.min, win.max, null);
       }
-  }, [sharedExtent, sharedStart, applyXAll]);
+  }, [sharedExtent, sharedStart, applyXAll, seedEmptyExtent]);
 
   // An area finished a re-sample. Record its contribution to the panel's
   // data extent / window floor *now* — Fit Data reads those synchronously
@@ -1127,6 +1190,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
       for (const k of keys) next.delete(k);
       return next;
     });
+    // A departed area must stop holding a vote in `reportBase`'s map —
+    // otherwise its last-reported value (possibly non-null) lingers
+    // forever as a candidate for the panel's base.
+    for (const k of [...baseByAreaRef.current.keys()].filter(belongsToArea)) {
+      baseByAreaRef.current.delete(k);
+    }
   }, []);
   const removeArea = useCallback(
     (id: string) => {
@@ -1454,14 +1523,27 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const reportRate = useCallback((_areaId: string, hz: number) => badgeSink.rate(hz), [badgeSink]);
   const reportCache = useCallback((_areaId: string, n: number) => badgeSink.cache(n), [badgeSink]);
   // Not a diagnostic: the x-axis origin projects notes, the truncation
-  // marker and Fit Data onto this panel's timeline. Every area reports the
-  // same value every tick, so gate the commit on a real change rather than
-  // leaning on React's bail-out.
+  // marker and Fit Data onto this panel's timeline. Populated areas all
+  // report (near enough) the same value every tick, so any one of them is
+  // representative — but keyed by area, not last-writer-wins: an empty
+  // area reports `null` on every tick too, and without a key its report
+  // would overwrite a populated sibling's the moment it ran, nulling
+  // `baseSeconds` and every event marker with it. The panel's base is
+  // the first populated area's report; only when every area is empty
+  // (the map holds nothing but nulls) does the panel's base go null.
   const lastBaseRef = useRef<number | null>(null);
-  const reportBase = useCallback((_areaId: string, secs: number | null) => {
-    if (lastBaseRef.current === secs) return;
-    lastBaseRef.current = secs;
-    setBaseSeconds(secs);
+  const reportBase = useCallback((areaId: string, secs: number | null) => {
+    baseByAreaRef.current.set(areaId, secs);
+    let next: number | null = null;
+    for (const v of baseByAreaRef.current.values()) {
+      if (v != null) {
+        next = v;
+        break;
+      }
+    }
+    if (lastBaseRef.current === next) return;
+    lastBaseRef.current = next;
+    setBaseSeconds(next);
   }, []);
   // Group the area→panel readouts into one stable object so each
   // PlotArea gets a single `reports` prop / liveRef entry rather than
@@ -2657,6 +2739,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
         cursorMode={cursorMode}
         onCursorMode={setCursorMode}
         onClearCursors={clearCursors}
+        showEvents={showEventsChip}
+        onShowEvents={setShowEventsChip}
+        eventsChecklist={<EventKindFilter state={eventKinds} counts={eventKindCounts} />}
         perfText={showPerf ? perfText : null}
         onOpenMenu={setToolbarMenuAt}
       />
@@ -2705,7 +2790,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
             </span>
             show performance readout
           </button>
-          <EventKindFilter state={eventKinds} counts={eventKindCounts} />
           <SourcesMenuSection
             value={currentSources}
             buses={buses}

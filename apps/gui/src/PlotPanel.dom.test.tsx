@@ -8547,6 +8547,252 @@ describe("where the A/B cursors put their timestamps", () => {
   });
 });
 
+// Empty plot areas (ADR 0026, owner ruling 2026-09-20): an area with
+// nothing plotted still draws the shared x grid, ticks and placeable
+// A/B cursors over the panel's shared x window. With no area anywhere
+// in the panel holding an extent, that window seeds from the session's
+// own span — read the same way "Fit Data" reads it
+// (`sample_signals` with an empty signal list) rather than derived from
+// frames in JS.
+describe("empty plot areas", () => {
+  const sig = (signalName: string, unit: string) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+    color: "#4ecbff",
+  });
+
+  /// Calls into the host's cheap "where does the window end" probe —
+  /// `sample_signals` with no signals — which is what both "Fit Data"
+  /// and the empty-panel fallback use. Filtered off the *signals* list
+  /// rather than a dedicated mock so this pins the real request shape.
+  function emptyProbeCalls(): number {
+    return vi
+      .mocked(invoke)
+      .mock.calls.filter((c) => {
+        if (c[0] !== "sample_signals") return false;
+        const a = c[1] as { signals?: unknown[] } | undefined;
+        return Array.isArray(a?.signals) && a.signals.length === 0;
+      }).length;
+  }
+
+  it("seeds the shared x window from the session's own span when nothing has one", async () => {
+    await withSizedCanvas(async () => {
+      mockSampleBounds.from = 0;
+      mockSampleBounds.last = 42;
+      renderPanel();
+      const inst = () => liveInstanceIn("Area 1");
+      await waitFor(() => expect(inst().xCalls.length).toBeGreaterThan(0));
+      expect(inst().xCalls[inst().xCalls.length - 1]).toEqual({ min: 0, max: 42 });
+    });
+  });
+
+  it("constructs uPlot with a blank y axis, and the ordinary x axis grid and ticks", async () => {
+    // Same shape as the lanes axis's blank gutter (`laneModeAtConstruct`
+    // above): nothing plotted means nothing to scale on y, so the axis
+    // reserves alignment width and draws no grid, no ticks, no splits.
+    // The x axis is untouched — its grid and ticks are what an empty
+    // area still owes the panel (owner ruling, ADR 0026).
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = uplotInstances[uplotInstances.length - 1] as unknown as {
+        opts: {
+          axes: {
+            splits?: () => number[];
+            grid?: { show?: boolean };
+            ticks?: { show?: boolean };
+            values?: () => unknown[];
+          }[];
+        };
+      };
+      const [xAxis, yAxis] = inst.opts.axes;
+      expect(yAxis.splits!()).toEqual([]);
+      expect(yAxis.values!()).toEqual([]);
+      expect(yAxis.grid?.show).toBe(false);
+      expect(yAxis.ticks?.show).toBe(false);
+      // The x axis keeps uPlot's default grid/ticks (no `show: false`
+      // override) — undefined here reads as "on", the same as every
+      // populated area's x axis.
+      expect(xAxis.grid?.show).not.toBe(false);
+      expect(xAxis.ticks?.show).not.toBe(false);
+    });
+  });
+
+  it("stops asking the host for the session span once the area has its own extent", async () => {
+    await withSizedCanvas(async () => {
+      renderPanel();
+      const inst = () => liveInstanceIn("Area 1");
+      // The fallback answers at least once while the area is still empty.
+      await waitFor(() => expect(emptyProbeCalls()).toBeGreaterThan(0));
+      // The area becomes populated — a real extent to anchor the window,
+      // so nothing should ask the fallback's question again.
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(drawnPoints(inst())).toBeGreaterThan(0));
+      const before = emptyProbeCalls();
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 300));
+      });
+      expect(emptyProbeCalls()).toBe(before);
+    });
+  });
+
+  it("places A and B cursors by click, the same as a populated area", async () => {
+    await withSizedCanvas(async () => {
+      const registry = makeRegistry({
+        id: "el-empty-click",
+        config: { areas: [{ id: "a1", signals: [] }], cursorMode: "x" },
+      });
+      const { api } = renderPanel({ params: { elementId: "el-empty-click" }, registry });
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = uplotInstances[uplotInstances.length - 1]!;
+      await act(async () => inst.fire("ready"));
+      const lastCursorX = () => {
+        const calls = api.updateParameters.mock.calls;
+        return (calls[calls.length - 1]?.[0] ?? {}) as { cursorX?: unknown };
+      };
+      fireEvent.mouseDown(inst.over, { button: 0, clientX: 150, clientY: 100 });
+      fireEvent.mouseUp(window, { button: 0, clientX: 150, clientY: 100 });
+      await waitFor(() => expect(lastCursorX().cursorX).toEqual({ a: 1.5, b: null }));
+      fireEvent.mouseDown(inst.over, { button: 2, clientX: 250, clientY: 100 });
+      fireEvent.mouseUp(window, { button: 2, clientX: 250, clientY: 100 });
+      await waitFor(() => expect(lastCursorX().cursorX).toEqual({ a: 1.5, b: 2.5 }));
+    });
+  });
+
+  it("no longer blanks the panel's event markers when it sits beside a populated area", async () => {
+    // Regression on `reportBase`: last-writer-wins let the empty area's
+    // `null` report clobber the populated one's, nulling `baseSeconds`
+    // and every event marker with it.
+    await withSizedCanvas(async () => {
+      const label = "brake on";
+      renderPanel({
+        params: { elementId: "el-reportbase" },
+        registry: makeRegistry({
+          id: "el-reportbase",
+          config: {
+            areas: [
+              { id: "a1", signals: [] },
+              { id: "a2", signals: [sig("EngineSpeed", "rpm")] },
+            ],
+          },
+        }),
+        notes: {
+          notes: [{ id: "n1", timestampNs: 1_000_000_000, label }],
+          addNote: () => {},
+          renameNote: () => {},
+          recolorNote: () => {},
+          describeNote: () => {},
+          retagNote: () => {},
+          removeNote: () => {},
+          linkEvents: () => {},
+          unlinkEvents: () => {},
+          setNoteSubjects: () => {},
+        },
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      // The label chip draws on the *topmost drawing axis* (`isFirst`),
+      // which is "Area 1" here — the empty one. Reading it there also
+      // pins that an empty area draws event markers at all, not just
+      // that the populated sibling isn't blanked.
+      const inst = liveInstanceIn("Area 1");
+      inst.drawOps.length = 0;
+      await act(async () => {
+        inst.fire("draw");
+      });
+      const texts = inst.drawOps.filter((o) => o.op === "fillText").map((o) => String(o.args[0]));
+      expect(texts).toContain(label);
+    });
+  });
+});
+
+// The plot toolbar's Events chip (owner ruling 2026-09-20): the trace
+// panel's own chip-reveals-checklist pattern, replacing the checklist
+// copy that used to live only in the toolbar's right-click menu — one
+// control instead of two. Visibility itself stays view-local (ADR
+// 0035, unchanged); `busError` stays grouped under Diagnostics.
+describe("the plot toolbar's Events chip", () => {
+  it("is hidden until pressed, and reveals the checklist", () => {
+    renderPanel();
+    expect(screen.queryByRole("group", { name: "event kinds" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Events" }));
+    expect(screen.getByRole("group", { name: "event kinds" })).toBeInTheDocument();
+  });
+
+  it("no longer carries the checklist in the toolbar's right-click menu", () => {
+    renderPanel();
+    fireEvent.contextMenu(document.querySelector(".plot-panel-toolbar")!, {
+      clientX: 10,
+      clientY: 10,
+    });
+    const menu = document.querySelector(".plot-toolbar-menu") as HTMLElement;
+    expect(menu).not.toBeNull();
+    expect(within(menu).queryByRole("group", { name: "event kinds" })).toBeNull();
+  });
+
+  it("hides bus-error markers once the Diagnostics row is unticked", async () => {
+    await withSizedCanvas(async () => {
+      const label = "bus errors (12)";
+      renderPanel({
+        params: { elementId: "el-events-chip" },
+        registry: makeRegistry({
+          id: "el-events-chip",
+          config: {
+            areas: [
+              {
+                id: "a1",
+                signals: [
+                  {
+                    busId: null,
+                    messageId: 256,
+                    extended: false,
+                    signalName: "EngineSpeed",
+                    messageName: "EngineData",
+                    unit: "rpm",
+                    color: "#4ecbff",
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+        notes: {
+          notes: [{ id: "n1", timestampNs: 1_000_000_000, label, kind: "busError" }],
+          addNote: () => {},
+          renameNote: () => {},
+          recolorNote: () => {},
+          describeNote: () => {},
+          retagNote: () => {},
+          removeNote: () => {},
+          linkEvents: () => {},
+          unlinkEvents: () => {},
+          setNoteSubjects: () => {},
+        },
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      const inst = liveInstanceIn("Area 1");
+      const chipTexts = async () => {
+        inst.drawOps.length = 0;
+        await act(async () => {
+          inst.fire("draw");
+        });
+        return inst.drawOps.filter((o) => o.op === "fillText").map((o) => String(o.args[0]));
+      };
+      expect(await chipTexts()).toContain(label);
+      fireEvent.click(screen.getByRole("button", { name: "Events" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Diagnostics" }));
+      expect(await chipTexts()).not.toContain(label);
+    });
+  });
+});
+
 describe("where the event marker labels sit", () => {
   const sig = (signalName: string, unit: string) => ({
     busId: null,
