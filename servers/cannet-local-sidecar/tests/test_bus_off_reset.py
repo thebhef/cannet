@@ -1,11 +1,10 @@
 """Bringing a bus-off controller back, per backend.
 
 A bus-off controller transmits nothing, so its error counters cannot
-fall and it stays bus-off until something resets it. PEAK's driver does
-that itself when asked at open (``auto_reset``, covered with the open
-kwargs); for the rest the state poll calls ``PythonCanChannel.reset``,
-which resets in place where the backend can and answers ``False`` where
-the channel can only be reopened. Kvaser additionally needed its state
+fall and it stays bus-off until something resets it. The state poll
+calls ``PythonCanChannel.reset``, which resets in place where the
+backend can and answers ``False`` where the channel can only be
+reopened -- PEAK among them. Kvaser additionally needed its state
 read at all: python-can's ``KvaserBus.state`` answers active
 unconditionally, so a Kvaser controller that went bus-off was never
 seen to.

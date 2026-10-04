@@ -66,6 +66,16 @@ _STATE_POLL_INTERVAL_S = 0.5
 #: cannot trigger a reset on its own.
 _BUS_OFF_RESET_AFTER_S = 1.0
 
+#: How long a channel whose driver is refusing sends with a full transmit
+#: queue may go without receiving anything -- no data frame, no error
+#: frame -- before the state poll reopens it (ADR 0039). A controller
+#: that is retransmitting into a fault reports every attempt as an error
+#: frame, so silence on top of a full queue means the controller is not
+#: transmitting at all and nothing on the wire will restart it. Four
+#: poll intervals: a refusal is judged against a run of silence, never
+#: one quiet pass.
+_QUEUE_FULL_SILENCE_REOPEN_AFTER_S = 2.0
+
 #: How often the reader thread logs its driver-read rate and rx-queue
 #: depth. Diagnostic only: comparing the read rate here against the
 #: host's append rate localises frame loss to *before* Python (driver RX
@@ -163,6 +173,19 @@ class _SharedInterface:
         # Whether the current bus-off run has already had a reset fail,
         # so a reset that keeps failing warns once per run, not per pass.
         self._bus_off_reset_failing = False
+        # When the rx pump last read anything off the channel (monotonic
+        # seconds), and the channel and time of the latest send its
+        # driver refused with a full transmit queue. Written by the rx
+        # and tx pumps, read by the state poll, each a single reference
+        # assignment. ``_last_rx_s`` starts at open and is not reset by
+        # a reopen: a fresh channel that is still receiving nothing is
+        # the same silence. The refusal carries its channel so that one
+        # from a channel already reopened never condemns the fresh one.
+        self._last_rx_s = 0.0
+        self._queue_full_refused: Optional[tuple[drv.OpenChannel, float]] = None
+        # Whether the current run of queue-full reopens has already had
+        # one fail, so a failure that repeats warns once per run.
+        self._queue_full_reopen_failing = False
         # Transmit-side counters, emitted alongside the rx stats on the
         # rx pump's periodic tick. `transmit` runs on gRPC handler
         # threads while the tick reads/resets on the rx thread, so a
@@ -309,6 +332,7 @@ class _SharedInterface:
             try:
                 ch.send(frame)
             except drv.TxRejected as e:
+                self._note_tx_refused(ch, e, now_s=time.monotonic())
                 outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, str(e)))
                 continue
             except Exception as e:  # noqa: BLE001 - worker must survive
@@ -402,6 +426,8 @@ class _SharedInterface:
         _log.debug("opened %s", self._channel_id)
         self._stop.clear()
         self._reset_state_baseline_locked()
+        self._last_rx_s = time.monotonic()
+        self._queue_full_refused = None
         # Fresh handoff queues per open — a previous session's residue
         # would otherwise prepend stale frames to the next one's first
         # batch / first send.
@@ -547,6 +573,7 @@ class _SharedInterface:
                 read_failing = False
                 if frame is not None:
                     self._rx_queue.put(frame)
+                    self._note_rx(now_s=time.monotonic())
                     read += 1
                     read_total += 1
                 # Periodic stats. Checked every loop iteration (recv
@@ -739,6 +766,7 @@ class _SharedInterface:
         if st.state != drv.STATE_BUS_OFF:
             self._bus_off_since = None
             self._bus_off_reset_failing = False
+            self._reopen_if_queue_full_in_silence(ch, now_s)
             return
         if self._bus_off_since is None:
             self._bus_off_since = now_s
@@ -755,29 +783,16 @@ class _SharedInterface:
         moment whatever drove the controller off it is gone -- but a
         controller that is bus-off transmits nothing, so its error
         counters cannot fall and nothing on the wire brings it back.
-        PEAK's driver resets its own (``PCAN_BUSOFF_AUTORESET``); this
-        is the backstop for every backend, and the only mechanism for
-        those whose driver has no such setting.
         """
         cid = self._channel_id
         try:
             reset = getattr(ch, "reset", None)
             in_place = bool(reset()) if callable(reset) else False
-            if not in_place:
-                with self._lock:
-                    if self._channel is not ch:
-                        # Swapped or closed since this pass read it;
-                        # the fresh channel gets its own count.
-                        self._bus_off_since = None
-                        return
-                    old = self._swap_channel_locked()
-                    # Counts restart with the fresh channel. The
-                    # published state deliberately does not: subscribers
-                    # were told bus-off, and the next pass has to be
-                    # able to tell them otherwise.
-                    self._last_rx_overruns = None
-                    self._reported_timer_wraps = 0
-                self._close_swapped(old)
+            if not in_place and not self._reopen(ch):
+                # Swapped or closed since this pass read it; the fresh
+                # channel gets its own count.
+                self._bus_off_since = None
+                return
         except Exception as e:  # noqa: BLE001
             # Retried on the next pass that still reads bus-off -- the
             # poll's own cadence, never a tighter loop. One warning per
@@ -796,6 +811,84 @@ class _SharedInterface:
         )
         self._bus_off_since = None
         self._bus_off_reset_failing = False
+
+    def _reopen(self, ch: drv.OpenChannel) -> bool:
+        """Close ``ch`` and open a fresh channel with the current config,
+        through the swap a bus configuration change uses. ``False`` when
+        ``ch`` is no longer the current channel, so there was nothing to
+        reopen. Raises whatever the open raises, with ``ch`` still
+        current."""
+        with self._lock:
+            if self._channel is not ch:
+                return False
+            old = self._swap_channel_locked()
+            # Counts restart with the fresh channel. The published state
+            # deliberately does not: subscribers were told what the old
+            # channel read, and the next pass has to be able to tell
+            # them otherwise.
+            self._last_rx_overruns = None
+            self._reported_timer_wraps = 0
+        self._close_swapped(old)
+        return True
+
+    def _note_rx(self, *, now_s: float) -> None:
+        """The rx pump read a frame -- data, echo or error frame -- at
+        monotonic ``now_s``."""
+        self._last_rx_s = now_s
+
+    def _note_tx_refused(
+        self, ch: drv.OpenChannel, error: drv.TxRejected, *, now_s: float
+    ) -> None:
+        """The driver refused a send on ``ch`` at monotonic ``now_s``.
+        Only a full transmit queue is remembered, by the driver's own
+        classification (:attr:`~cannet_local_sidecar.driver.TxRejected
+        .queue_full`)."""
+        if error.queue_full:
+            self._queue_full_refused = (ch, now_s)
+
+    def _reopen_if_queue_full_in_silence(
+        self, ch: drv.OpenChannel, now_s: float
+    ) -> None:
+        """Reopen a channel whose controller has stopped transmitting
+        without saying so (ADR 0039): its driver has refused a send with
+        a full transmit queue within the last
+        :data:`_QUEUE_FULL_SILENCE_REOPEN_AFTER_S`, and nothing at all
+        has been received for that long.
+
+        Either half alone is no reason. A full queue while error frames
+        arrive is a live fault the controller is reporting; silence
+        without refusals is an idle bus. Together they are a controller
+        that is neither sending nor erroring -- the shape a PEAK channel
+        took when its driver reset it from bus-off behind a full
+        transmit queue -- and only a re-initialisation empties the
+        queue. Checked once per state-poll pass, so a shape that
+        persists is reopened at most once a pass.
+        """
+        refused = self._queue_full_refused
+        if refused is None or refused[0] is not ch:
+            return
+        window = _QUEUE_FULL_SILENCE_REOPEN_AFTER_S
+        silent_s = now_s - self._last_rx_s
+        if silent_s < window or now_s - refused[1] >= window:
+            return
+        cid = self._channel_id
+        try:
+            if not self._reopen(ch):
+                return
+        except Exception as e:  # noqa: BLE001
+            if not self._queue_full_reopen_failing:
+                self._queue_full_reopen_failing = True
+                _log.warning("queue-full reopen of %s failed: %s", cid, e)
+            else:
+                _log.debug("queue-full reopen of %s failed again: %s", cid, e)
+            return
+        self._queue_full_reopen_failing = False
+        _log.info(
+            "%s refused sends with its transmit queue full and received "
+            "nothing for %.1f s; reopened the channel",
+            cid,
+            silent_s,
+        )
 
     def _report_timer_wraps(self, ch: drv.OpenChannel) -> None:
         """Emit one WARNING ``LogMessage`` per rollover of the channel's
