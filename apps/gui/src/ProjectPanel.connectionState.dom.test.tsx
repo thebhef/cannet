@@ -240,6 +240,32 @@ describe("logical-bus row marker", () => {
     );
   });
 
+  it("reads a bus explicitly set to no interface as unbound too, not 'not connected'", async () => {
+    // Distinct from the case above (no binding row at all) in the
+    // model, but the same display: the host never opens a session for
+    // either, so both read "unbound" rather than the row falling back
+    // to "not connected" because it technically carries a binding.
+    seedHost({ b1: { kind: "connected", applied: null } });
+    renderPanel({
+      buses: [
+        { id: "b1", name: "Powertrain" },
+        { id: "b2", name: "Body" },
+      ],
+      bindings: [
+        { server: "local", interface: "can0", bus_id: "b1" },
+        { kind: "no-interface", server: "", interface: "", bus_id: "b2" },
+      ],
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("bus-conn-state-b1")).toHaveTextContent(
+        "connected",
+      ),
+    );
+    expect(screen.getByTestId("bus-conn-state-b2")).toHaveTextContent(
+      "unbound",
+    );
+  });
+
   it("shows the failure reason inline on the bus that failed", async () => {
     seedHost({
       b1: { kind: "error", reason: "open vector:VN1780(ch:1) failed" },

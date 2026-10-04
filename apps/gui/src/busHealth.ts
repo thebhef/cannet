@@ -18,6 +18,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { describeAppliedConfig } from "./connectionStates";
 import { useHostMirror } from "./useHostMirror";
 import type { BusHealthConcern } from "./BusHealthLauncher";
+import { bindingKind } from "./types";
 import type {
   Bus,
   BusConnStates,
@@ -220,7 +221,9 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
         ? (CONTROLLER_STATE_TEXT[controller.state] ?? controller.state)
         : connected
           ? "Connected"
-          : "Not connected",
+          : binding !== undefined && bindingKind(binding) === "no-interface"
+            ? "Unbound"
+            : "Not connected",
       stateTitle: controller ? (CONTROLLER_STATE_TITLE[controller.state] ?? null) : null,
       tone: controller
         ? (CONTROLLER_STATE_TONE[controller.state] ?? "active")

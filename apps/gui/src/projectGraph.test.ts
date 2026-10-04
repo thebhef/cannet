@@ -88,6 +88,32 @@ describe("deriveGraph", () => {
     expect(g.edges).toEqual([]);
   });
 
+  it("a no-interface binding does not produce a gateway node (there is nothing to gateway to)", () => {
+    // Before this, every `no-interface` binding (empty server/interface)
+    // collapsed onto the *same* gateway node id — every deliberately
+    // unbound bus in a project drew an edge to one shared, near-blank
+    // phantom node.
+    const b: InterfaceBinding = {
+      kind: "no-interface",
+      server: "",
+      interface: "",
+      bus_id: "v",
+    };
+    const g = deriveGraph([bus("v", "Body")], [b], []);
+    expect(g.nodes).toHaveLength(1);
+    expect(g.nodes[0].kind).toBe("bus");
+    expect(g.edges).toEqual([]);
+  });
+
+  it("two no-interface bindings each skip their own gateway, not one shared one", () => {
+    const a: InterfaceBinding = { kind: "no-interface", server: "", interface: "", bus_id: "p" };
+    const b: InterfaceBinding = { kind: "no-interface", server: "", interface: "", bus_id: "c" };
+    const g = deriveGraph([bus("p"), bus("c")], [a, b], []);
+    expect(g.nodes).toHaveLength(2);
+    expect(g.nodes.every((n) => n.kind === "bus")).toBe(true);
+    expect(g.edges).toEqual([]);
+  });
+
   it("a remote-virtual-bus binding renders as a gateway with a vbus label", () => {
     const b: InterfaceBinding = {
       kind: "remote-virtual-bus",

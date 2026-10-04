@@ -26,6 +26,7 @@ import { useUndoGesture } from "./undoGesture";
 import type { Bus, ProjectElement, ProjectElementKind, RbsView } from "./types";
 import { elementKindLabel, elementLabel } from "./elementLabel";
 import {
+  bindingKind,
   isLocalBinding,
   localVbusBinding,
   localVbusId,
@@ -275,16 +276,17 @@ export function ProjectPanel(props: IDockviewPanelProps) {
     });
   };
 
-  // Switch (or clear) the binding for `bus`. Bindings are keyed by
-  // `bus_id` (each project bus has at most one binding), so changing
-  // a bus's source is "remove the bus's current binding, then add
-  // the new one." A `null` pick clears the binding.
+  // Switch the binding for `bus`. Bindings are keyed by `bus_id` (each
+  // project bus has at most one binding), so changing a bus's source
+  // is "remove the bus's current binding, then add the new one." The
+  // "— no interface —" pick is not a clear: it writes a `no-interface`
+  // row, the persisted record of a deliberate choice (owner ruling —
+  // distinct from the bus carrying no binding row at all).
   const setBusInterface = useCallback(
-    (bus: Bus, pick: ComboPick | null) => {
+    (bus: Bus, pick: ComboPick) => {
       const current = p.interfaceBindings.find((b) => b.bus_id === bus.id);
-      if (pick && current && samePick(pick, current)) return;
+      if (current && samePick(pick, current)) return;
       if (current) p.onRemoveBinding(current.bus_id);
-      if (!pick) return;
       if (pick.kind === "remote") {
         p.onAddBinding({
           kind: "remote",
@@ -292,8 +294,15 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           interface: pick.iface,
           bus_id: bus.id,
         });
-      } else {
+      } else if (pick.kind === "local-virtual-bus") {
         p.onAddBinding(localVbusBinding(pick.virtual_bus_id, bus.id));
+      } else {
+        p.onAddBinding({
+          kind: "no-interface",
+          server: "",
+          interface: "",
+          bus_id: bus.id,
+        });
       }
     },
     [p],
@@ -364,8 +373,14 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           const isLocalVbus = binding != null && localVbusId(binding) !== null;
           // The bus row's marker mirrors its single binding's state —
           // at most one binding per bus (ADR 0023), so there is nothing
-          // to aggregate.
-          const conn = describeBusConnState(connStates[bus.id], binding != null);
+          // to aggregate. A `no-interface` binding reads the same as
+          // no binding row at all here: the host never opens a
+          // session for either, so both are "unbound" — only the
+          // connect refusal tells them apart.
+          const conn = describeBusConnState(
+            connStates[bus.id],
+            binding != null && bindingKind(binding) !== "no-interface",
+          );
           const connState = connStates[bus.id];
           const appliedText =
             connState?.kind === "connected"

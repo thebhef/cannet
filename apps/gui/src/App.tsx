@@ -3809,20 +3809,26 @@ export function App() {
   const importingTracePath = state.kind === "loading" ? capturePath(state.result) : null;
 
   // The connection chip's state: the host's per-bus map, folded over
-  // the project buses that carry a binding. The chip both reports the
-  // aggregate and is the control, so nothing says "connected" from two
-  // places.
-  const connectionSummary = useMemo(
-    () =>
-      summarizeConnection(
-        buses
-          .filter((b) => interfaceBindings.some((binding) => binding.bus_id === b.id))
-          .map((b) => ({ id: b.id, name: b.name })),
-        connStates,
-        remoteConnected,
-      ),
-    [buses, interfaceBindings, connStates, remoteConnected],
-  );
+  // the project buses that carry a binding to a real interface. The
+  // chip both reports the aggregate and is the control, so nothing
+  // says "connected" from two places. Buses explicitly set to no
+  // interface are named separately — they're unbound by choice, never
+  // sessioned, and don't belong in the `connected / bound` count.
+  const connectionSummary = useMemo(() => {
+    const named = (binding: InterfaceBinding) =>
+      buses.find((b) => b.id === binding.bus_id);
+    const bound: { id: string; name: string }[] = [];
+    const noInterface: { id: string; name: string }[] = [];
+    for (const binding of interfaceBindings) {
+      const bus = named(binding);
+      if (!bus) continue;
+      (bindingKind(binding) === "no-interface" ? noInterface : bound).push({
+        id: bus.id,
+        name: bus.name,
+      });
+    }
+    return summarizeConnection(bound, connStates, remoteConnected, noInterface);
+  }, [buses, interfaceBindings, connStates, remoteConnected]);
   // The status bar's bus-health launcher. It stays neutral while every
   // reporting controller is error-active and tints with a count when one
   // is not; pressing it opens the panel, which is where "which bus" is

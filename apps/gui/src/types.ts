@@ -255,7 +255,7 @@ export interface Bus {
   color?: string | null;
 }
 
-/// One of the three binding kinds (ADR 0021 / 0022):
+/// One of the four binding kinds (ADR 0021 / 0022 / 0023):
 ///
 /// - **`"remote"`** — a `(server, interface)` pair on a remote
 ///   `cannet-server` (or the local sidecar via the
@@ -267,10 +267,17 @@ export interface Bus {
 ///   {@link Project.local_virtual_buses}. `server` carries the
 ///   `local-vbus://<vbus_id>` URL; `interface` is the canonical
 ///   {@link LOCAL_VBUS_INTERFACE}.
+/// - **`"no-interface"`** — the bus is explicitly connected to
+///   nothing. A persisted choice, distinct from carrying no binding
+///   row at all: that absence still refuses a connect attempt (ADR
+///   0023), where a `no-interface` row connects along with the rest
+///   of the project and reads as unbound. `server` and `interface`
+///   are both empty.
 export type BindingKind =
   | "remote"
   | "remote-virtual-bus"
-  | "local-virtual-bus";
+  | "local-virtual-bus"
+  | "no-interface";
 
 /// URL scheme stored in {@link InterfaceBinding.server} for
 /// `local-virtual-bus` bindings. The id following the scheme
@@ -340,6 +347,8 @@ export interface LocalVirtualBusDef {
 ///   (`kind: "remote"` or `"remote-virtual-bus"`).
 /// - `local-vbus://<vbus_id>` → in-process virtual bus
 ///   ({@link LocalVirtualBusDef}; `kind: "local-virtual-bus"`).
+/// - empty `server` / `interface` → `kind: "no-interface"`; a
+///   deliberate absence, not an address to dispatch on.
 export interface InterfaceBinding {
   /// Discriminator. Always written by the current build; defaults to
   /// `"remote"` when absent.

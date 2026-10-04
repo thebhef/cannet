@@ -351,7 +351,7 @@ describe("BusInterfaceCombo", () => {
     expect(onPick).not.toHaveBeenCalled();
   });
 
-  it("calls onPick(null) when '— no interface —' is chosen", async () => {
+  it("calls onPick with kind: no-interface — a row, not a clear — when '— no interface —' is chosen", async () => {
     const onPick = vi.fn();
     render(
       <BusInterfaceCombo
@@ -371,7 +371,24 @@ describe("BusInterfaceCombo", () => {
       />,
     );
     await pickCombobox(screen.getByLabelText("bus b1 interface"), "");
-    expect(onPick).toHaveBeenCalledWith(null);
+    expect(onPick).toHaveBeenCalledWith({ kind: "no-interface" });
+  });
+
+  it("shows a no-interface binding as the selected '— no interface —' option on reopen", () => {
+    render(
+      <BusInterfaceCombo
+        bus={BUS1}
+        binding={{ kind: "no-interface", server: "", interface: "", bus_id: "b1" }}
+        sidecarAddress={LIVE_LOCAL}
+        discoveries={{}}
+        servers={[]}
+        localVirtualBuses={[]}
+        {...NO_OPS}
+      />,
+    );
+    const combo = screen.getByLabelText("bus b1 interface");
+    expect(comboboxValue(combo)).toBe("");
+    expect(combo.textContent).toContain("— no interface —");
   });
 
   it("shows a (discovering…) placeholder when a trusted server has no discovery yet", () => {
