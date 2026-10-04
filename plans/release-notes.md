@@ -466,6 +466,12 @@ repaired something broken.
   bus-off for a second (Vector and Kvaser in place, anything else by
   reopening the channel), then publishes the recovery to the bus-health
   panel. The Vector and Kvaser paths have not met hardware yet.
+- **Fixed:** the bus-health panel no longer stays at error-passive after
+  a PEAK bus recovers. PEAK reports its error counters only inside
+  error frames, so when the errors stopped the last fault reading stood
+  forever; the counters now count down with every frame received and
+  every frame echoed, as the controller's own do, until the next error
+  frame resyncs them.
 - **New:** a bus can be set to **no interface** on purpose. Picking
   "— no interface —" in the project panel now records that choice
   with the project instead of deleting the binding, and a project with

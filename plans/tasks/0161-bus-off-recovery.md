@@ -65,6 +65,18 @@ Branch sits in the stack **beside the last driver change**
    recovers on its own.
 3. Owner confirms on the PEAK bench.
 
+## Blockers / side effects
+
+- 2026-10-03 (owner bench, tip build): **after recovery there is a period
+  of faster, irregular frames.** Root cause: the PEAK driver's transmit
+  queue — `CAN_Write` keeps accepting frames during the open circuit
+  (refusing only when full), the controller retries the head frame, and
+  on reconnect the backlog drains at the bus's maximum rate; nothing
+  below the host scheduler has a deadline. **Ruled accepted** ("if it's
+  in the peak driver or python-can I accept it"). A sidecar-side bound
+  (frames handed to the driver minus echoes received, capped, with
+  `flush_tx_buffer()` past the cap) would remove it; not work.
+
 ## Status log
 
 - 2026-10-03 — opened; root cause from code (above).
@@ -112,3 +124,15 @@ Branch sits in the stack **beside the last driver change**
   - While the fault persists (CAN side unplugged), the backstop resets about every 1-1.5 s. That is one INFO line per reset, as specified. On PEAK, AUTORESET should get there first.
   - The reopen fallback, like `reconfigure`, opens the new channel before closing the old one. Whether PCAN-Basic accepts a second initialize of a channel that is still initialized, and whether closing the old one then uninitializes the new one, has never been checked on the bench. This already applies to `reconfigure`. It matters for the PEAK backstop only if AUTORESET fails. Worth watching during the phase-2 bench check.
   - The Vector and Kvaser in-place resets are hardware-unverified. If a reset races an rx thread blocked in recv on the same handle, the result could be one "rx failed" warning plus a short `unavailable` reading.
+- 2026-10-03 — **fix: the PEAK state read stayed error-passive after
+  recovery** (owner bench). `_note_pcan_counters` took (REC, TEC) only
+  from error frames, so once the wire was restored the last fault
+  reading froze and `worse_state` kept answering passive. Fix on
+  `fix-pcan-counters-decay` (`95431bd0`, on this task's branch): between
+  error frames each received data frame lowers REC by 1 and each echo
+  lowers TEC by 1 (ISO 11898-1's decrements), floor 0; an error frame
+  re-syncs. Red before: `assert ('passive', 135) == ('warning', 127)`;
+  7 tests (`test_counter_derived_state.py`), sidecar 264 passed at the
+  restacked tip. Vector and Kvaser read live counters each poll — not
+  affected. TEC count-down needs the echoes 121 turns on, which sit
+  above this branch.

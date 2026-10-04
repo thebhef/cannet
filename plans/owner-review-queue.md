@@ -155,10 +155,19 @@ Owner rulings 2026-10-03 (new-build walk):
   `task155-kvaser-unwrap`, Kvaser and Vector alike — **landed**
   (`task161-bus-off-recovery` `18a99527`; Kvaser bus-off detection added
   along the way, since python-can's Kvaser bus reports no state; Vector
-  and Kvaser resets unverified on hardware).
+  and Kvaser resets unverified on hardware). Bench follow-ups the same
+  evening: the stale error-passive reading **fixed**
+  (`fix-pcan-counters-decay` `95431bd0`); the post-recovery burst is the
+  PEAK driver's transmit queue draining — **accepted** as driver
+  behaviour, not fixed.
 
 ## 3. Fix later
 
+- Post-bus-off burst: a sidecar-side bound on the driver's transmit
+  queue (frames handed to the driver − echoes received, capped;
+  `flush_tx_buffer()` past the cap) would stop the drain burst the owner
+  accepted on 2026-10-03. Only if the acceptance is revisited.
+  (0161 § Blockers)
 - A vbus bridge counts as a recipient: a local participant is echoed
   even when the physical bus behind the bridge carried nothing (ADR 0021
   model; 0121 § Blockers 2026-10-03).
