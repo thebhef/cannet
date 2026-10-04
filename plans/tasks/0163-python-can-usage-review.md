@@ -1,0 +1,276 @@
+# 0163 — python-can usage review and a fault model that holds
+
+## Why
+
+Five fixes in a week, one symptom each (synthesised `Tx` row → task 121;
+"bus-off recovers on its own" → ADR 0039 amendment; stale error-passive →
+`fix-pcan-counters-decay`; PEAK echo ≠ ACK → same; PCAN auto-reset hiding
+bus-off → `fix-pcan-busoff-visible`). The 2026-10-04 retest showed the
+remaining defect is structural, not another symptom:
+
+- four cable pulls totalling ≈ 45 s (sidecar rx 1 611/s → ~3 600/s error
+  frames per channel each time); the sidecar transmitted again the moment
+  the cable returned (`queued_to_driver` never moved);
+- the host saw the **first** refusal 35 s after the wire had recovered and
+  the **last** 3 min 15 s after it — 80 547 refusals (≈ 50 s of sends)
+  spread over 2 min 40 s of display;
+- the GUI showed a live frames/s figure with the bus disconnected, error
+  counts still climbing a minute after reconnection, and "recovery" 45 s
+  later — all a replay of the backlog.
+
+Cause: every error frame is shipped as a row through an unbounded
+per-session outbox (`service.py`), against a host ceiling of ~3.6 k f/s.
+The same stale stream carried the clock-probe replies that split one
+error blast into several events (recorded in 0161, 2026-10-04).
+
+Owner, 2026-10-04: "I have seen other tools basically just handle this
+case and cannet is totally choking on it every single time. I think we
+need to do a comprehensive review of our usage of python-can."
+
+## Scope
+
+1. **Review (read-only).** Every python-can call site in
+   `servers/cannet-local-sidecar` — `driver_python_can.py`,
+   `server/shared_interface.py`, `server/service.py`, enumeration — against
+   the backend contracts (python-can `pcan`, `kvaser`, `vector` source and
+   vendor docs) and against how established tools treat error frames,
+   controller state, queue-full and echo. Each divergence named with its
+   user-visible consequence.
+2. **Design.** One ADR superseding ADR 0039's fault model: error frames
+   counted per episode at the sidecar, never rows; a bounded sidecar→host
+   outbox that drops loud; state/counter publication cadence; per-vendor
+   recovery; what the GUI shows during a fault. Phase list for the
+   implementation.
+3. **Implementation** per the design, after the owner's ruling on it.
+
+Folds in: the clock-probe δ guard (0161 status, 2026-10-04 — a probe round
+whose best δ exceeds the step threshold is discarded).
+
+## Phases
+
+| # | Phase | Shape | Status |
+|---|---|---|---|
+| 1 | Review | investigation, no code, no branch (owner: "no new branches right now", 2026-10-04) | done 2026-10-04 — report below |
+| 2 | Design (ADR draft + phase list) | design | after 1 |
+| 3+ | Implementation | per the design | after the owner's ruling |
+
+## Exit criteria
+
+- [ ] Review report: call-site inventory, divergence table with
+      consequences, comparison with at least three established tools.
+- [ ] ADR accepted by the owner; ADR 0039's fault model superseded where
+      the two disagree; `docs/CONTEXT.md` terms added.
+- [ ] A cable pull of any length shows: one event per bus per blast, the
+      fault within ~1 s of the wire, recovery within ~2 s of the wire, no
+      frames/s figure from error frames, and a bounded host-side backlog.
+- [ ] Bench-confirmed by the owner.
+
+## Status
+
+- 2026-10-04 — task opened from the retest findings above; phase 1 launched
+  and reported the same day (Opus, read-only; nothing in the tree touched).
+  Two corrections to the premise in *Why*: (a) the host ingest is not a
+  constant ~3.6 k f/s ceiling — the `fps=` health field is the frame-time
+  rate readout; measured ingest (Δ`trace_len`) was 1.3–1.6 k f/s while
+  refusals flowed and 6.3–7.7 k f/s while draining afterwards, so the
+  stream looks bound by *envelope* count (H1, unproven); (b) the sidecar
+  did not "transmit again the moment the cable returned" everywhere:
+  `queued_to_driver` was 0 on both channels 10:30:49–10:32:01 while each
+  still read ~1 500/s — the host had stopped sending on the stale
+  refusals/state it was still receiving, while the wire carried the PEAK
+  tx-queue drain. Nothing was refused in that window (the refusal total
+  covers only the pulls). The park trigger is not yet traced; phase 2
+  names it. Queue § 3 items "clock accepts an uninformative round" and
+  "sidecar→host stream buffers without bound" fold into this task (D12,
+  D2/D4).
+
+## Phase 1 review (2026-10-04)
+
+Read-only review, 2026-10-04. Repo at `1186cfcf` (branch `doc-closeout-2`). python-can 4.6.1 (sidecar `.venv`). All times in the log excerpts are UTC (PDT + 7 h). Logs read: `%LOCALAPPDATA%/dev.cannet.app/logs/cannet.log{,.1}` (host and sidecar stats, bridged).
+
+---
+
+### 1. Verdict
+
+- **What is structurally wrong:** cannet treats a bus fault as **data**. Every error frame becomes a `FrameBatch` row. Every refused send becomes its own `Error` envelope, which carries no interface id. Both travel through the same **unbounded, FIFO, per-session outbox** (`service.py:112`) as the control messages: `InterfaceState`, `ClockReply` and `Log`. When the stream falls behind, the state, the recovery and the clock all fall behind with it. Nothing is dropped, and nothing reports that it is late.
+- **What python-can provides:** a per-frame `is_error_frame` flag. That is all; it gives no error kind and no counters. It also gives a `send()` that raises per frame with backend text, a `BusABC.state` that cannot be used (always ACTIVE; PEAK's is a stored config value), and backend-specific echo semantics behind one `is_rx` flag.
+- **What python-can does not provide:** error-frame aggregation, fault-state events, queue-full classification, recovery, or backpressure. Every established tool builds those above the driver.
+- **The reference design is SocketCAN.**
+  - Per-bus-error frames are opt-in (`berr-reporting` off by default, because bus-error interrupts flood at about 10 kHz).
+  - State changes are single events (`CAN_ERR_CRTL`, `CAN_ERR_BUSOFF`, `CAN_ERR_RESTARTED`).
+  - Counters are statistics (`ip -s -d link`: `berr-counter`, `bus-errors`, `error-pass`, `bus-off`, `restarts`).
+  - Drops are counted and reported (`SO_RXQ_OVFL`).
+  - Linux's `peak_usb` consumes PEAK bus-error reports **inside the driver** to track counters, which is exactly why cannet needs them, and does not forward them unless asked.
+- **Most expensive divergences:**
+  1. D1, error frames as rows.
+  2. D2, control and data sharing one FIFO.
+  3. D3, one envelope per refusal.
+  4. D4, no bound anywhere on the stream path.
+  5. D12, the clock probe accepting stale replies.
+- **Corrected bench premise:** the "~3.6 k f/s host ingest ceiling" is not a constant. The host `fps=` health field is the frame-time rate readout, not ingest. Ingest measured from `trace_len` growth ran at 1.3–7.7 k f/s depending on the envelope mix (§5).
+
+### 2. Call-site inventory
+
+Paths are relative to `servers/cannet-local-sidecar/cannet_local_sidecar/` unless prefixed. "Div" means a divergence, keyed to §3.
+
+| # | file:line | python-can API | What we assume | pcan | kvaser | vector | socketcan (reference) | Div |
+|---|---|---|---|---|---|---|---|---|
+| 1 | driver_python_can.py:64 | `import can` | optional | – | – | – | – | N |
+| 2 | :496 | `can.interface.Bus(interface=…, **kw)` | opens a channel | `PcanBus.__init__` forces `PCAN_ALLOW_ERROR_FRAMES` ON (pcan.py:313), ECHO on request (:329), AUTORESET only on `auto_reset` (:335) | `canOpenChannel` ×2 handles; `LOCAL_TXECHO`/`LOCAL_TXACK` = `receive_own_messages` (canlib.py:551-568) | n/a (we build `VectorBus` directly, #4) | err frames only when the `ignore_rx_error_frames=False` filter is set | N |
+| 3 | :1466 | `receive_own_messages=True` | an echo is a frame the bus carried | echo when the controller **puts it on the wire**, not on ACK (bench) | `canMSG_LOCAL_TXACK`: sent "every time a message is successfully transmitted" | `XL_CAN_EV_TAG_TX_OK` / `TX_COMPLETED`: "transmitted by the CAN chip" (ACK unspecified) | loopback "right after a successful transmission" | D8 (mitigated) |
+| 4 | :392-466 | `VectorBus` subclass, `handle_can_event` / `handle_canfd_event`, `xldriver.xlCanRequestChipState` | the documented seam for non-message events | – | – | FD error events (`XL_CAN_EV_TAG_RX_ERROR` 1025 / `TX_ERROR` 1026, with `errorCode` such as `ACK_ERROR` 6) also arrive here and **we ignore them** | – | **D6** |
+| 5 | :578 | `bus.recv(timeout)` | `None` on timeout; raises only on device loss | raises `PcanCanOperationError` on any Read result except OK, QRCVEMPTY, ILLDATA and `BUSLIGHT\|BUSHEAVY` (pcan.py:521-563), so a `BUSPASSIVE` (0x40000) or `BUSOFF` (0x10) result would raise | `canReadWait`; raises on non-OK except NOMSG | raises except `XL_ERR_QUEUE_IS_EMPTY` | – | **D10** (risk) |
+| 6 | libs/cannet-python-wire/…/python_can.py:56-76 | `Message.is_error_frame`, `.is_rx`, `.timestamp`, `.arbitration_id`, `.data` | error frame = row; `arbitration_id` = id | error frame `ID` = **error type** (0 counter-only update, 1 bit, 2 form, 4 stuff, 8 other); `DATA[0]` direction, `DATA[1]` bit position, `DATA[2]`/`DATA[3]` REC/TEC | `canMSGERR_*` kind flags (`BIT0/1`, `STUFF`, `FORM`, `CRC`, `OVERRUN`) are **dropped by python-can** (canlib.py:685 reads only `canMSG_ERROR_FRAME`) | classic: `XL_CAN_MSG_FLAG_ERROR_FRAME` row, no kind; FD: never reaches `Message` (#4) | `can_id` class bits plus `data[1..7]`; `data[6]`/`data[7]` = TEC/REC | **D1, D6** |
+| 7 | :588-590, :701-727 | error frame payload bytes 2/3 | REC/TEC | matches PEAK docs (1-based DATA[3]/DATA[4]); **comment :119-120 says byte 1 is "an error-type code"; per PEAK it is the bit position** | – | – | – | D6 (doc) |
+| 8 | :737-739 | `bus.send(msg)`; `str(e)` | raises `TxRejected`; queue-full is read from the text | `PcanCanOperationError`, text only, **no `error_code`**; QXMTFULL 0x80 "The transmit queue is full" matches; XMTFULL 0x1 ("Transmit buffer in CAN controller is full") does **not** | `CANLIBOperationError(error_code=-13)` `canERR_TXBUFOFL`, text from `canGetErrorText` (not matched) | `VectorOperationError(error_code=11)` `XL_ERR_QUEUE_IS_FULL`; text "xlCanTransmit failed (XL_ERR_QUEUE_IS_FULL)" (not matched) | `ENOBUFS` | **D5** |
+| 9 | :807 | `bus.state` (fallback only) | live state | stored config echo (pcan.py:695) | `BusABC` → always ACTIVE | not implemented → ACTIVE | n/a | N (bypassed) |
+| 10 | :866-870 | `PcanBus.status()` = `CAN_GetStatus` | floor for state; source of overrun bits | status word, bus-error flags | – | – | – | N |
+| 11 | :273-330 | `kv.__canlib` (private), `canReadStatus`, `canReadErrorCounters`, `canIoCtl`, `canBusOff/On`, `bus._write_handle`, `_read_handle`, `single_handle` | private python-can internals are stable | – | private names: fragile across python-can versions | – | – | D9 (risk) |
+| 12 | :1030 | `VectorBus.reset()` | in-place bus-off recovery | – | – | `xlDeactivateChannel` + `xlActivateChannel` (canlib.py:978) | `ip link … restart` / `restart-ms` | N |
+| 13 | :1006-1041 (PEAK `False`) → reopen (shared_interface.py:817) | `PcanBus.reset()` deliberately not used | `CAN_Reset` clears queues only | per vendor doc | – | – | – | N |
+| 14 | :1483-1488 | `auto_reset` omitted | bus-off visible to the poll | matches ADR 0039 amendment | – | – | `restart-ms` 0 = manual | N |
+| 15 | :1538 | `SetValue(PCAN_ALLOW_STATUS_FRAMES, OFF)` | python-can would make status frames look like id 1 | correct | – | – | – | N |
+| 16 | :1048 | `bus.shutdown()` | idempotent close | ok | `canWriteSync(100 ms)` then off/close | deactivate/close | – | N |
+| 17 | :1114-1208, :1234, :1335, :1278 | `vector.canlib.get_channel_configs`, `_get_xl_driver_config` (private), `can.detect_available_configs`, `PCANBasic().GetValue` | enumeration | `PCAN_ATTACHED_CHANNELS` contends with Write (handled: no timer) | python-can detector | private `_get_xl_driver_config` | – | N (private-API note) |
+| 18 | :1557 | `BitTimingFd.from_sample_point(f_clock=80 MHz)` | uniform FD timing | ok | ok | ok | – | N |
+| 19 | not called anywhere | `flush_tx_buffer()` | – | not implemented (BusABC no-op) | `canIOCTL_FLUSH_TX_BUFFER` | `xlCanFlushTransmitQueue` | qdisc | N (post-recovery burst ruled accepted, b081cf2f) |
+| 20 | server/shared_interface.py:149, 436 / service.py:112 | (ours) `queue.Queue()` unbounded rx handoff and outbox | the downstream keeps up | – | – | – | bounded socket rcvbuf + `SO_RXQ_OVFL` count | **D4** |
+| 21 | shared_interface.py:336-338; service.py:271-273 | (ours) per-refusal `_error_envelope(CODE_TX_REJECTED)` | rare | at a fault: ~800/s per channel | same | same | `ENOBUFS` to the writer only | **D3** |
+| 22 | shared_interface.py:687-727 | (ours) `InterfaceState` publish-on-change into the same outbox | arrives promptly | – | – | – | error frame on transitions only (dev.c `can_change_state`) | **D2** |
+| 23 | service.py:149-156 | (ours) `ClockReply` into the same outbox | arrives promptly | – | – | – | – | **D2, D12** |
+
+### 3. Divergence table
+
+| ID | Divergence | User-visible consequence | Bench evidence |
+|---|---|---|---|
+| **D1** | Every error frame is a row end to end: sidecar → `FrameBatch` → host trace store (`trace_store/mod.rs:572-612` feeds per-bus, aggregate, by-direction and bit-load rate tracks), the by-id table, and the signal-cache error series that episodes are folded from (`bus_error_episodes.rs`). | A frames/s figure and bus load built from error frames on a disconnected bus. Error counts still climbing after reconnection, because the backlog is being replayed. 3.6 k rows/s per channel fill the trace. | Pull: sidecar `read=` 1 611 → 3 500–3 990/s per channel (17:29:35–17:30:07Z); host `fps=7975/7303` (17:29:49–17:30:49Z) with the wire faulted. |
+| **D2** | Control (`InterfaceState`, `Error`, `ClockReply`, `Log`) shares the bulk FIFO outbox. | Fault state, "recovery" and refusals are shown late by however far behind the stream is. | First refusal on the host 35 s after the wire recovered, last 3 min 15 s after. Host refusal reports run 17:30:44Z–17:33:25Z while the sidecar–host frame backlog grows from ≈0 (17:30:49Z) to **≈228 k frames (17:33:10Z)**. |
+| **D3** | One `Error` envelope per refused frame, with **no `interface_id`** (proto `Error`: code + message only) and no count. | Refusals cannot be attributed to a bus (the host logs per session: "127.0.0.1:51299: transmit rejected ×N"). 80 547 envelopes compete with frames for the stream. | Host tally arrived at 326–522/s; 80 547 refusals over 2 min 40 s of display. Host ingest fell to **1.3–1.6 k f/s** exactly while refusals flowed (17:30:49–17:33:10Z), then rose to **7.7 k f/s** once they stopped (17:33:30–17:34:30Z). Supports, without yet proving, that the stream is bounded by envelope count (§5 H1). |
+| **D4** | No bound and no loss signal anywhere on the path: `_rx_queue`, outbox, and the client's `mpsc::channel` (`crates/cannet-client/src/lib.rs:673`). | Minutes of replay. Memory grows. "Live" views show the past with no marker saying so. | 228 k-frame peak (≈ 70 s at normal ingest); 0161: host kept receiving 45 min after the wire went silent. |
+| **D5** | Queue-full is classified only by PEAK's English QXMTFULL text (`_QUEUE_FULL_TEXTS`, :133). Kvaser `canERR_TXBUFOFL` (-13), Vector `XL_ERR_QUEUE_IS_FULL` (11) and PEAK `XMTFULL` (0x1) are all missed. | ADR 0039's "full queue + 2 s silence → reopen" never fires on Kvaser or Vector, so a silent stuck controller there never recovers. | Not yet seen (no Kvaser/Vector bench). |
+| **D6** | Error kind is discarded. PEAK gives type, direction and bit position; Vector FD error events are dropped entirely (Vector FD shows **no** errors); Kvaser kind flags are lost inside python-can. PEAK ID-0 "counter-only" frames are counted as errors. The comment at :119-120 is wrong about byte 1. | The GUI cannot say "ACK error: no other node is acknowledging", which is the one-line diagnosis of a pulled cable. Error counts on PEAK are inflated by counter-update frames. Vector FD faults are invisible except through chip state. | Not yet seen (kind never decoded); Vector FD unverified. |
+| D7 | Vendor suppression knobs are unused (`PCAN_ALLOW_ERROR_FRAMES` forced on by python-can, Vector `xlCanSetReceiveMode`, SocketCAN err-mask). | None directly. PEAK needs error frames for TEC/REC; the fix is to consume them at the sidecar (as Linux `peak_usb` does), not to switch them off. | n/a |
+| D8 | `is_rx=False` means different things per backend (PEAK: on wire; Kvaser: acknowledged; Vector: unspecified). | Already mitigated by the TEC > 127 echo gate (fix-pcan-counters-decay `e782e3df`). It stays sidecar-local, so the design below keeps it working. | 0161 bench confirmation. |
+| D9 | Private python-can internals: `kv.__canlib`, `_write_handle`, `_read_handle`, `_timestamp_offset`, `vector.canlib._get_xl_driver_config`. | A python-can upgrade can silently break Kvaser state or the Vector version. | Not seen. |
+| D10 | python-can's PEAK `recv` raises on a Read result of `BUSPASSIVE` or `BUSOFF`. We would then set `_unreachable` → `UNAVAILABLE` → the host **parks** periodics (ADR 0039 rule 3). | A bus fault could masquerade as an unplugged adapter. | Not seen: no "rx for … failed" anywhere in the 10-03/10-04 logs. |
+| D11 | State poll 500 ms, publish on change only, no heartbeat. | The host cannot tell "unchanged" from "stale". | Indirect (D2). |
+| **D12** | Clock probe: any `ClockReply` arriving while a round is open is accepted (no round correlation). `settle_round` takes the min-δ sample with **no δ bound**, and `OffsetSlew::retarget` steps above 1 s (`clock.rs:458, 510`). | The whole timeline jumps; one blast becomes several episodes. | 0161: θ −48.4 s, δ ≈ 97 s. Today: "clock offset … +16735.3 ms" at 17:38:00Z, recovered 17:43:16Z. |
+| D13 | Frame-time rate windows (`RATE_WINDOW` 1 s, `rate.rs:19`) are correct for replay but show the replayed past as live. | "Live frames/s" during backlog drain. | Same as D1/D4. |
+
+### 4. How established tools do it
+
+| Tool | Error frames | State display | Queue-full | Recovery | Echo/ACK |
+|---|---|---|---|---|---|
+| **SocketCAN** (`candump`, `ip`) | Per-bus-error frames (`CAN_ERR_BUSERROR`) only with `berr-reporting on`; the doc for that mode calls bus-error interrupts something that "can really hammer the CPU" (~10 kHz). `candump` shows error frames only with an explicit err-mask (`#…`, candump.c:606-614); `-e` decodes them. Class bits in `can_id`; TEC/REC in `data[6]`/`data[7]`. | **Events on transitions only** (`can_change_state` returns early when the state did not change, dev.c). `ip -d -s link`: `state ERROR-ACTIVE (berr-counter tx 0 rx 0)`, plus `re-started bus-errors arbit-lost error-warn error-pass bus-off` counters. | `ENOBUFS` to the writer; bounded rx socket with `SO_RXQ_OVFL` drop count (candump `-d`, candump.c:692-837). | `restart-ms` N → automatic restart N ms after bus-off; `ip link set canX type can restart` manually; `CAN_ERR_RESTARTED` event. | Loopback "right after a successful transmission". |
+| **Linux `peak_usb`** | Always requests BERR from PCAN-USB, because "the management of the transition to the ERROR_WARNING or ERROR_PASSIVE state is done according to the error counters". It consumes them in the driver and forwards `CAN_ERR_BUSERROR` only if userspace asked. | as above | as above | as above | – |
+| **PCAN-View** (PEAK) | Error frames recorded in the Tracer only when tracing of error frames is activated (v3.0.6); error position decoded (v4.1.3). | Status bar bus status "OK", "Bus Warning", "Error Passive" (v4.0.28), plus bus-off. | Status-bar **counters** for "Overrun" and "QXmtFull" (v3.1.0): a count, not a row per refusal. | Manual reset (Receive "Rst" / Transmit "Reset" per PEAK manuals); auto-reset optional. | n/a |
+| **Vector CANalyzer/CANoe** | The Trace can show error frames; the **Statistics / Bus Statistics** window shows "counters/rates for frames and errors", "total frequencies of data, remote, error and overload frames, bus loading and CAN controller status", and TEC/REC. XL API: `xlCanSetReceiveMode` suppresses error frames and chip-state events. | Chip state (active/warning/passive/bus-off) in statistics. | XL `XL_ERR_QUEUE_IS_FULL` returned to the caller. | `xlDeactivateChannel`/`xlActivateChannel`. | TX receipt event. |
+| **SavvyCAN** | Error frames become rows (`frameId + 0x20000000`, serialbusconnection.cpp:196-201). | – | – | – | `hasLocalEcho()` → not Rx (:211). |
+| SavvyCAN, backpressure | Fixed-size lock-free queue (`LFQueue`, `setSize(pQueueLen)`, canconnection.cpp:33). When it is full, `getQueue().get()` returns null and the frame is **dropped** ("can't get a frame, ERROR", :224). | | | | |
+
+Common pattern: error **counts, rates and state** are first-class and cheap. Per-error rows are opt-in or diagnostic, and every buffer between driver and view is bounded. cannet inverts this.
+
+Sources:
+- [docs.kernel.org/networking/can.html](https://docs.kernel.org/networking/can.html)
+- [linux error.h](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/can/error.h)
+- [linux dev.c](https://raw.githubusercontent.com/torvalds/linux/master/drivers/net/can/dev/dev.c)
+- [peak_usb BERR patch](https://www.spinics.net/lists/linux-can/msg08636.html)
+- [berr-reporting / flood discussion (xilinx_can patch)](https://www.spinics.net/lists/linux-can/msg02359.html)
+- [can-utils candump.c](https://github.com/linux-can/can-utils/blob/master/candump.c)
+- [PCAN-View version history](https://www.peak-system.com/support/software-information/software/pcan-view/)
+- [PCAN-Basic Error Frames](https://www.peak-system.com/documentation/API/PCAN-Basic.Net/html/d8b8c576-cc90-4757-a914-4a503f9553d1.htm)
+- [PCAN-USB Pro manual](https://www.peak-system.com/produktcd/Pdf/English/PCAN-USB-Pro_UserMan_eng.pdf)
+- [Vector CANalyzer/CANoe (ESA)](https://indico.esa.int/event/162/contributions/1184/attachments/1162/1375/Analysis_and_Test_of_CAN_Applications.pdf)
+- [XL Driver Library manual](https://cdn.vector.com/cms/content/products/XL_Driver_Library/Docs/XL_Driver_Library_Manual_EN.pdf)
+- [SavvyCAN source](https://github.com/collin80/SavvyCAN/tree/master/connections)
+
+### 5. Pipeline accounting
+
+| Stage | Location | Bound | Observed (10-04) |
+|---|---|---|---|
+| Driver rx queue | PEAK / XL (`rx_queue_size` 2^14 events) / CANlib | vendor; overrun reported (PEAK bits, XL flag) | no overrun |
+| rx thread `ch.recv` | shared_interface.py:521 | CPU; one ctypes read per frame | kept up: `read=` up to 3 990/s per channel |
+| `_rx_queue` | shared_interface.py:149/436 | **unbounded** | `queue=` ≤ 5 throughout, so the pack thread keeps up |
+| pack → `FrameBatch` | :623; 5 ms flush, ≤ 2 048 frames | ~200 envelopes/s per interface | – |
+| tx worker refusals | :336-338 | **1 envelope per refused frame** | ≈ 1 600/s produced at a fault (2 × ~800/s sends) |
+| per-session `outbox` | service.py:112 | **unbounded**, FIFO, carries control too | peak backlog **≈ 228 k frames** at 17:33:10Z (sidecar `read` totals − host `trace_len`), plus the refusal envelopes |
+| gRPC yield + transport | service.py:173-177, sync server, 16-thread pool | **envelope-count-bound (H1, unproven)** | — |
+| client worker | cannet-client lib.rs:1350-1530; per-refusal `tracing::warn!` + tally | per envelope | refusals arrived at 326–522/s |
+| client → host | lib.rs:673 `mpsc::channel` | **unbounded** | – |
+| host `run_pump` | session.rs:922; per-frame append + verifier + health | measured ingest (Δ`trace_len`/20 s) | **1.3–1.6 k f/s** while refusals flowed; **6.3–7.7 k f/s** while draining after; 2.4–4.0 k f/s on the night of 10-03 (14 M refusals). The `fps=` field (3 623 etc.) is the frame-time **rate readout**, not ingest. |
+| rate windows | rate.rs:19,26 | 1 s window, 20 ms samples | counts error frames (D1/D13) |
+| bus-health tally | bus_health.rs:63 | 1 s burst gap, 1 s poll | fed by backlogged frames |
+| episodes | bus_error_episodes.rs | `bus_error_episode_gap_s` 5 s (min 1 s), bounded by capture time ÷ gap | split by clock steps (D12) |
+| clock probe | lib.rs:111-142; clock.rs:445,458 | 4 probes, 20 ms apart, 2 s deadline, 30 s re-probe; slew 5 ms/s; step > 1 s; **no δ bound, no round correlation** | +16.7 s step, 17:38:00Z |
+| state poll | shared_interface.py:59,67,77 | 500 ms; bus-off reset after 1 s; queue-full + silence reopen after 2 s | no reopen or bus-off in the 10-04 window |
+| tx queue | :43-45 | bounded 256, 0.25 s grace | – |
+
+**H1 (hypothesis, not proven):** the sidecar→host stream is bound by **envelope count**, not frame count. Two candidate mechanisms that the logs cannot separate:
+- a GIL convoy, where the session generator thread re-acquires the GIL against 8 busy pump threads, costing up to the 5 ms switch interval per hand-off;
+- per-envelope cost in the client worker.
+
+The per-refusal envelopes are what the counts point at. **Falsifying experiment** (phase 2, no hardware): a fake driver at a fixed 7.2 k error frames/s plus 1.6 k refusals/s through the real service and an in-process client. Measure delivered frames/s with refusals sent per frame versus coalesced. If coalescing does not lift frames/s, H1 is wrong and the bottleneck is per-frame. The design below is right either way: it removes both per-error rows and per-refusal envelopes.
+
+### 6. Design sketch for phase 2 (not the ADR)
+
+1. **Error frames are counted per episode at the sidecar and never become rows.**
+   - Consumed in `PythonCanChannel.recv`, which already decodes PEAK counters. Vector FD `RX_ERROR`/`TX_ERROR` events are consumed in `handle_canfd_event`.
+   - New control message `BusErrorEpisode` (additive in `cannet.v1`, ADR 0059):
+     - `interface_id`, `episode_seq`
+     - `first_ns`, `last_ns` (hardware stamps, same clock as frames)
+     - `count`
+     - `count_by_kind` {ack, bit, form, stuff, crc, other, unknown}
+     - `count_tx_dir` / `count_rx_dir` (PEAK `DATA[0]`)
+     - `tec`, `rec` at `last_ns`
+     - `open` (bool)
+   - Kind per vendor: PEAK from the frame ID (ID 0 = counter-only: updates TEC/REC, **not counted**), with "ACK" recognised from the bit position (ACK slot/delimiter). Vector FD from `errorCode`. Vector classic and Kvaser: `unknown` (python-can drops Kvaser's flags).
+   - The episode closes after **1 s** without an error (= `RATE_BURST_GAP_NS`). The host merges episodes at the reader's gap (ADR 0035) for display.
+2. **A bounded outbox that drops loud.** Each session gets two lanes:
+   - **Control lane:** `InterfaceState`, `BusErrorEpisode`, refusal summaries, `ClockReply`, `Log`, `Error`. Coalesced latest-wins per (kind, interface), always drained first, bounded by key count.
+   - **Data lane:** `FrameBatch` only, bounded at ~1 s of frames per interface (≈ 10 k; Q2). On overflow, drop the **oldest whole batches** and emit control `FramesDropped{interface_id, count, first_ns, last_ns}`. The host records a gap marker (ADR 0010-compatible: a timeline event, not a sidecar file).
+   - Refusals become `TxRefusals{interface_id, reason: queue_full|closed|listen_only|incompatible|other, count, first_ns, last_ns, last_message}` at ≤ 4 Hz. No more per-frame `Error` for transmit.
+3. **State and counter cadence.** Poll every 250 ms. Publish on change, plus a 1 s heartbeat (`InterfaceState` carries `as_of_ns`) so the host can show staleness. An open episode republishes every 250 ms on the control lane. Fault reaches the screen in ≤ ~0.75 s; recovery (state active, episode closed) in ≤ ~1.5 s, within the exit criteria.
+4. **Per-vendor recovery.** Keep ADR 0039's bus-off reset (PEAK reopen; Kvaser off/on; Vector deactivate/activate) and the queue-full + silence reopen. Fix D5: classify by `error_code` where python-can gives one (Kvaser -13, Vector 11), and by text for PEAK (QXMTFULL **and** XMTFULL). Fix D10: treat a `recv` raising a PEAK bus-status result as a fault reading, not as `unreachable`.
+5. **What the GUI shows during a fault.**
+   - Bus-health row: state, TEC/REC, "errors: N (rate/s), mostly ACK: no other node acknowledging", "sends refused: N (transmit queue full)", per **bus**.
+   - Events panel: one live "ongoing" episode row per bus per blast, finalised at close.
+   - frames/s and bus load **exclude** error frames, so they drop to the true data rate (≈ 0 when the cable is pulled).
+   - A dropped-frames gap marker if the data lane overflowed.
+6. **Clock-probe δ guard.**
+   - Client side (`crates/cannet-client/src/clock.rs`): discard a round whose best δ > `STEP_THRESHOLD_NS` (1 s) as a silent round, keeping the last measurement and logging one coalesced line.
+   - Also ignore replies whose `t1` precedes the current round's first probe (round correlation).
+   - With replies on the control lane, δ stays small anyway; the guard is the backstop.
+
+Open questions for the owner:
+- **Q1. Capture fidelity.** Live captures stop storing individual error frames. Recommended: store episodes as timeline events, plus the **first and last error frame of each episode** as real rows, so BLF exports and external tools still see the fault.
+- **Q2. Data-lane overflow policy.** Recommended: drop **oldest**, cap ≈ 1 s of frames per interface, loud `FramesDropped` with a gap marker. Dropping newest keeps continuity but reintroduces minutes of latency.
+- **Q3. Imports.** BLF/MDF files carrying error frames: recommended to keep them as rows (files are bounded and faithful) and fold them through the **same** episode builder on the host. Live never has error rows.
+- **Q4. Sidecar episode gap.** Recommended: fixed 1 s at the sidecar; the host's reader-chosen gap (default 5 s) merges for display.
+- **Q5. Kvaser error kind.** Recommended: `unknown` until a Kvaser bench exists, rather than overriding python-can's `_recv_internal`.
+- **Q6. Run H1's falsifying load experiment** (fake driver at a fixed rate, no CAN hardware, not CPU-pegging) as phase 2's first step. Recommended: yes, about 2 h.
+- **Q7. Raw error-frame mode** (like `berr-reporting on`) for diagnostics. Recommended: not now; record it in `plans/backlog.md`.
+- **Q8. Does the Rust `cannet-server` hardware path need the same messages?** Recommended: yes, for the proto, so the host has one fault model. Implementation in that server is scoped separately if it carries hardware.
+
+### 7. Phase list (layer, then consumers)
+
+| # | Phase | Est. (h) |
+|---|---|---|
+| 2a | H1 load experiment (Q6), fake driver; numbers into the ADR | 2 |
+| 2b | ADR (supersedes ADR 0039 rule 3's echo/refusal row parts and ADR 0035's "error frames are rows"), CONTEXT.md terms (bus-error episode reported by the sidecar; control lane; dropped-frames gap) | 3 |
+| 3 | Proto: `BusErrorEpisode`, `TxRefusals`, `FramesDropped`, `InterfaceState.as_of_ns` (additive, `cannet.v1`) + python-wire | 2 |
+| 4 | Sidecar: episode accumulator with PEAK/Vector-FD kind decode, control lane + bounded data lane, refusal coalescing, heartbeat, D5/D10 fixes, tests | 9 |
+| 5 | cannet-client: decode the new messages into the controller/rejection maps per interface; δ guard + round correlation; tests | 3 |
+| 6 | Host: health + episodes from the summaries; frames/s and load exclude error frames; gap marker; per-bus refusals; import fold (Q3); capture first/last rows (Q1) | 8 |
+| 7 | Frontend: bus-health row, ongoing episode, refusal and drop display | 4 |
+| 8 | Docs (README, sidecar README, rustdoc) + checks | 2 |
+| 9 | Owner bench: cable pull of 5 s / 60 s / 10 min; replug; bus-off | owner |
+|  | **Total (agent)** | **≈ 33** |
+
+### 8. What this review did not cover
+
+- **Kvaser and Vector hardware behaviour.** Neither library is installed ("Vector XL library not found", "Kvaser canlib is unavailable" in the 17:27:49Z log). Every Kvaser/Vector claim here is from python-can source and vendor docs.
+- **Which side of the gRPC stream is the envelope bottleneck** (H1). The logs cannot separate the sidecar yield, the transport and the client worker. I ran no experiment: the phase is read-only and no CAN hardware may be opened.
+- **The exact wire timeline of the four pulls.** I relied on the stated bench facts. The log is consistent with them (wire recovered ≈ 17:30:07Z; first host refusal 17:30:44Z, i.e. +37 s), but the 17:30:47–17:32:01Z window has `queued_to_driver=0` on both channels with rx ≈ 1 500/s, which I did not resolve.
+- **Out of scope:** the Rust `cannet-server` / virtual-bus path, the python client `CannetBus`, the BLF writer, frontend code, and the `examples/` project.
+- **Not read:** python-can `notifier.py` beyond its header. The sidecar does not use `Notifier`.
+

@@ -184,16 +184,15 @@ Owner rulings 2026-10-03 (new-build walk):
   threshold cannot bound the offset and is discarded (last measurement
   kept, counted as a silent round, one coalesced log line). Awaiting the
   owner's scope ruling (with or without the backlog item below).
-- **The sidecar→host stream buffers frames without bound** (same bench):
-  the per-session `outbox` (`service.py`) is an unbounded `queue.Queue`;
-  under 4.8 k f/s of error frames the host ingested at a flat 3 623 f/s
-  and kept receiving for **45 minutes after the wire went silent** (bus 2
-  quiet 23:10, host fps 0 at 00:07; final `trace_len` 31 975 243 = the
-  two channels' read totals exactly). During the fault the live edge was
-  tens of minutes stale while looking live. Same class as task 155's
-  "drops loud": a bounded outbox with a counted, surfaced loss — or a
-  higher ceiling. Needs a design and a measurement; proposed as its own
-  task.
+- **Folded into task 163 (2026-10-04):** the clock-step item above and the
+  sidecar→host backlog (unbounded per-session `outbox`, control messages
+  behind the data, no loss signal) are divergences D12 and D2/D4 of the
+  0163 phase-1 review; the premise "flat ~3.6 k f/s ceiling" was wrong
+  (`fps=` is the rate readout; ingest measured 1.3–7.7 k f/s). The
+  2026-10-04 retest added: the host **parked sends for 72 s**
+  (10:30:49–10:32:01) on stale refusals while the wire was already
+  healthy. Design and fix in 0163; these two items leave the queue with
+  its phase 2.
 - **Queue-full is recognised by PEAK's text only** ("transmit queue is
   full"); Kvaser ("Transmit buffer overflow") and Vector
   (`XL_ERR_QUEUE_IS_FULL`) are each one entry in `_QUEUE_FULL_TEXTS`
