@@ -230,7 +230,15 @@ export function fitTileLabel(
 /** The centered vertical extent a value tile draws within its lane
  * `band`. The tile is `tileFraction` of the lane height, floored at
  * `minPx` (given the lane's on-screen pixel height `lanePx`) and capped
- * at the full lane band. */
+ * at the full lane band.
+ *
+ * `lanePx = 0` asks for the **nominal** band — `tileFraction` of the
+ * lane with no pixel floor, which is the smallest tile that can be
+ * drawn at any lane height. That is the band an enum's codes are
+ * normalised into, so the plotted value (and the markers on it) land
+ * inside the tile that will be drawn over them however short the lane
+ * gets (ADR 0026). Normalising into the full lane band instead put a
+ * table's extreme codes in the gap between lanes. */
 export function laneTileBand(
   band: Band,
   lanePx: number,

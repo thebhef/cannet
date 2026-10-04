@@ -204,6 +204,120 @@ without a canvas so it can pin data, not ink.
 
 ## Status log
 
+### 2026-09-20 — phase 2: markers
+
+Two branches off `task146-lane-investigation`, one squashed commit each:
+`task146-markers-host` (the serve) then `task146-markers` (the
+frontend). Split because the phase-1 estimate held — the host half alone
+is −885 / +234 over five files — and the two halves review as different
+questions.
+
+#### Host: one serve for every render mode
+
+`decimate_min_max` keeps each bucket's **first and last sample beside
+its min and max**, in index order, deduplicated. `reduce_transitions`,
+`SignalCache::window_categorical`, the `Reduction` enum,
+`slice_many`'s reduction argument and `sample_signals`' `categorical`
+flag are deleted. The fold in `SignalCache::fold` is **unchanged** —
+phase 1 measured putting first/last there too as *worse* (4.78 columns
+lost against 1.49) for 2.3x the pyramid.
+
+Phase 1's guarantee, pinned at two levels:
+
+| test | where |
+| --- | --- |
+| `a_run_spanning_two_buckets_survives_at_every_alignment` | `signal_sampler.rs` — the reducer, every hold 2..=bucket+1 at every offset |
+| `a_held_code_two_pixel_columns_wide_survives_the_serve_at_every_alignment` | `signal_cache.rs` — end to end at the `61379f88` width (301.3 s, 2248 points, 134 ms column), holds 21/28/43/44 samples × 48 offsets |
+
+The second is phase 1's fixture rewritten: the case it asserted was
+*lost* (43 samples at offset 41, 3.21 columns) is now asserted served at
+every alignment.
+
+**Served-point bound.** `2 · max_points + 2` → **`4 · max_points`**.
+Tighter than the `4 · max_points + 2` phase 1 predicted, because the old
+`+2` was the endpoint-forcing rule and keeping every bucket's endpoints
+subsumes it. On the V2 scenario that is 3768 → 5651 points measured
+(+50 %), against a bound of 8992.
+
+#### Frontend: all points, and the lane as an ordinary series
+
+- **`MAX_POINT_MARKERS` and the uniform stride are gone** from
+  `sampleMarkerColumns`. `Points: On` marks every served sample. Nothing
+  is unbounded by it: the serve is bounded to `4 · max_points` and
+  `max_points` is one point per canvas pixel column.
+- **Finding 1's secondary — `splitExtrapolatedRows` blanking a marker —
+  does not reproduce**, and needed no code change. A span runs between
+  two *consecutive served points* (`extrapolated_spans` skips a pair
+  with more than one raw sample between), and the blanking runs strictly
+  between the columns that bound it, so no sample column of the series
+  is ever inside it. Pinned rather than assumed, over all three ruled
+  shapes at once (stall, dashed tail, one-sample hline's two wings):
+  `PlotArea.draw.test.ts` :: *keeps every marker off the cells the
+  extrapolation blanking takes*.
+- **The lane's private marker pass is deleted** and the tiles now draw
+  in uPlot's `drawAxes` hook, **under** the series layer. That is the
+  one structural decision in this half, and it is forced: the exit
+  criterion says a lane's markers are uPlot's *and* legible over the
+  tile, and a marker painted under a tile cannot be made legible by ink.
+  Measured — a black marker under the light theme's `laneFillDefault`
+  (alpha 0.75) reads **1.8:1** against the tile it sits under, where the
+  project's own bar (`LANE_LABEL_MIN_CONTRAST`) is 3. Only 25 % of the
+  dynamic range survives the tile, so no ink clears it. Drawn over the
+  tile the same marker is the label's problem exactly, and
+  `laneLabelInk` already answers it.
+- **The tile labels are held back for the `draw` hook.** Consequence of
+  the above: with the whole tile under the series layer, the stepped
+  line would cross its own label — for a table with an odd number of
+  codes the middle code plots exactly at the label's baseline.
+  `drawEnumTiles` now returns its labels and `drawEnumTileLabels` paints
+  them after the series layer. The held-back set is small (only tiles
+  wide enough to hold a label), so this is not a second pass over the
+  segments.
+- **A code is normalised into the tile band** (`laneTileBand(band, 0)`
+  — the nominal centred 60 %, no pixel floor) instead of the whole lane
+  band, so the plotted value and its marker land on the tile. Finding
+  5 (c): for a two-code enum, code 0 sat below its own tile entirely.
+- **A lane's marker ink is `laneLabelInk` against the tile** — one ink
+  per lane, measured against the fill the lane's own accent makes
+  (`colorMapLaneFill(accent)` where a colormap targets it, the theme's
+  default lane fill otherwise). One per lane and not one per tile
+  because uPlot styles a series' point layer once, and because whether
+  the accent survives a tinted tile is a property of the theme (dark
+  3.23–5.89:1, light 1.03–1.80:1) rather than of the value. The
+  single-enum ribbon keeps the plain accent: its line plots the real
+  code against a real y scale, so its markers are as often off the
+  ribbon as on it.
+- The `categorical` request field is gone from `DecimatedRequest` and
+  from the fetch memo key; `PlotPanel.dom.test.tsx`'s mock run reducer
+  with it.
+
+Exit-criteria tests added: *marks every served sample of a long series,
+uncapped* (2001 samples, 2001 markers); *marks a lane's own samples, not
+the columns a dense sibling contributes* (through the shared
+`points.filter`, not a lane pass); *draws one tile, spanning the run* at
+the V2 width and budget; *draws no markers of its own: the point layer
+is uPlot's*.
+
+#### Perf: deferred to the stack-tip run
+
+No ADR 0031 harness run and no release build this phase, per the owner's
+economy rule — the reading is the overseer's single end-of-day run on
+the stack tip, and the exit criterion's "harness reading recorded" is
+satisfied by it. Two numbers to read it against, both of which move the
+same way:
+
+- **markers**: 5651 per series where there were 500, on the V2
+  scenario — the all-points change and the serve change compound;
+- **lane tiles**: a lane's tile count is now the count of runs in a
+  `4 · max_points` serve rather than the count of *transitions* in a
+  run-reduced one. On a rapidly-cycling enum at a wide zoom that is up
+  to ~4 tiles per canvas pixel column, each costing a `fillRect`, a
+  `strokeRect` and a memoised label fit.
+
+The pair-preserving fallback the all-points ruling names is **not**
+implemented; per the ruling it lands only if the tip reading says so,
+and it should be sized against 5651, not 3768.
+
 ### 2026-09-20 — phase 1: lane serve investigation (no product code)
 
 Branch `task146-lane-investigation` off `task142-trace-filter-panel`.
