@@ -27,6 +27,11 @@ export interface FilteredTrace {
   version: number;
   getFrame: (matchIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
+  /// The page envelope's `fuzzy_winner` (ADR 0044): what the settled
+  /// fuzzy leaf matched best, or `null` when the predicate carries none
+  /// or nothing cleared the floor. The panel reads it to decide whether
+  /// to force a row's signal disclosure open onto `matching_signals`.
+  fuzzyWinner: FuzzyWinner | null;
 }
 
 /// Page the host-side filtered view of the trace window
@@ -59,6 +64,13 @@ export function useFilteredTrace(
   // inside the single-flighted `fetchPage`, so reads and writes never
   // overlap.
   const cursor = useRef({ countedEnd: winStart, total: 0 });
+  // The query's winner, set synchronously inside `fetchPage` before the
+  // window state it rides in updates — so by the time that update
+  // re-renders the caller, the ref already reads fresh. Reset alongside
+  // the incremental cursor: a new descriptor's first page is what
+  // resolves the new winner, and until it lands there is nothing to
+  // force open.
+  const winnerRef = useRef<FuzzyWinner | null>(null);
 
   // The model's re-anchor epoch leads the descriptor, as it does on the
   // chronological window (`trace.ts`) and the plot's decimated source:
@@ -78,6 +90,7 @@ export function useFilteredTrace(
   // runs before the one that issues that first fetch.
   useEffect(() => {
     cursor.current = { countedEnd: winStart, total: 0 };
+    winnerRef.current = null;
   }, [descriptor, winStart]);
 
   const fetchPage = useCallback(
@@ -107,6 +120,7 @@ export function useFilteredTrace(
       // The host returns the full total either way; advance the cursor
       // so the next checkpoint-using fetch resumes from here.
       cursor.current = { countedEnd: winEnd, total: res.count };
+      winnerRef.current = res.fuzzy_winner ?? null;
       return { total: res.count, start: res.start, rows: res.rows };
     },
     [filter, winStart, winEnd],
@@ -122,5 +136,5 @@ export function useFilteredTrace(
       extentSignal: winEnd + (running ? 0 : 1),
     });
 
-  return { count, version, getFrame: getRow, ensureVisible };
+  return { count, version, getFrame: getRow, ensureVisible, fuzzyWinner: winnerRef.current };
 }
