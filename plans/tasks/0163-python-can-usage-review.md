@@ -84,6 +84,64 @@ whose best δ exceeds the step threshold is discarded).
   "sidecar→host stream buffers without bound" fold into this task (D12,
   D2/D4).
 
+## Grooming (2026-10-04)
+
+Rulings from the owner (Q1–Q3) and answers taken from the codebase
+(Q4, Q5, Q7, Q8). Q6 and the phase list are presented when grooming
+resumes.
+
+**Precedent (researched 2026-10-04).** Vector CANoe/CANalyzer does not
+log an acknowledge-error storm: once the channel's transmit error counter
+reaches 128 (error-passive, 16 frames) the driver's **NACK error-frame
+filter** suppresses further error frames, CANoe posts one system message
+("The filter for the NACK error frames has been enabled!") and the Trace —
+and the BLF it logs — show exactly 16 error frames until the bus recovers
+(Vector KB0023696, KB0012204). SocketCAN reports bus errors only with
+`berr-reporting on`; the `at91_can` driver disables the ACK-error interrupt
+in error-passive state for the same reason. PCAN-View traces error frames
+only on request and shows counters. A `CAN_ERROR_EXT` record costs 56 B,
+the same as a classic 8-byte `CAN_MESSAGE2`; today a 10-minute pull at
+~3 600/s per channel writes ≈ 240 MB of them.
+
+- **Q1 — error-frame rows are capped per episode, and the fault is an
+  event.** The sidecar forwards the **first N error frames of an episode
+  as rows** (N configurable, **default 16**; an app-level setting passed
+  to the sidecar per interface at open and on change — assumption, not
+  yet ruled) and only counts the rest. The counter **resets when the
+  episode closes** (1 s without an error — the bus has recovered), so the
+  next blast gets N rows again. Every episode is also a `busError`
+  **timeline event** per bus (ADR 0035 category, ADR 0056 subject = the
+  bus, ADR 0057 text) with **start and end** = `first_ns`/`last_ns`,
+  counts by kind and direction, TEC/REC. Export needs nothing new: the
+  ≤ N rows are written as `CAN_ERROR_EXT` as today, so ADR 0035's "the
+  error frames are what a save writes" stands and events stay unexported.
+  frames/s and bus load still exclude error frames.
+- **Q2 — drop oldest.** On data-lane overflow (cap ≈ 1 s of frames per
+  interface) the sidecar evicts the oldest whole batches and emits
+  `FramesDropped{interface_id, count, first_ns, last_ns}`; the host records
+  a **dropped-frames gap** event on the timeline. Dropping newest was
+  rejected (it recreates the minutes-late "live" display); blocking the
+  rx thread was rejected (loss moves into the vendor queue, unmarked).
+- **Q3 — imports behave identically to live.** Error records in a BLF/MDF
+  feed the same episode builder; the first N per episode become rows and
+  the rest are counted. A legacy cannet file with per-frame errors imports
+  as episodes plus ≤ N rows each.
+- **Q4 — 1 s fixed at the sidecar** (= `RATE_BURST_GAP_NS`); the host's
+  reader gap (default 5 s) merges for display per ADR 0035 ("episodes at
+  `2g` are the gap-`g` episodes merged").
+- **Q5 — `unknown`** for Kvaser until a bench exists; overriding
+  python-can's `_recv_internal` is the D9 pattern this task removes.
+- **Q7 — backlog.** Raw error-frame mode is not this task.
+- **Q8 — nothing to design.** `cannet-server` is a 1:1 relay to the
+  sidecar (ADR 0040); the new `cannet.v1` control messages pass through.
+  `replay` and `vbus` never produce error frames.
+- **Added to phase 2a:** trace the **72 s host park** (`queued_to_driver=0`
+  on both channels 10:30:49–10:32:01 local while rx ≈ 1 500/s). Suspect:
+  the ADR 0039 emission gate on a stale fault reading; the park ended 83 s
+  before the last stale refusal reached the host, so the gate alone does
+  not explain the release. Falsify from `session.rs` and the two logs
+  before the ADR states what the host does with a stale reading.
+
 ## Phase 1 review (2026-10-04)
 
 Read-only review, 2026-10-04. Repo at `1186cfcf` (branch `doc-closeout-2`). python-can 4.6.1 (sidecar `.venv`). All times in the log excerpts are UTC (PDT + 7 h). Logs read: `%LOCALAPPDATA%/dev.cannet.app/logs/cannet.log{,.1}` (host and sidecar stats, bridged).
@@ -213,7 +271,7 @@ The per-refusal envelopes are what the counts point at. **Falsifying experiment*
 
 ### 6. Design sketch for phase 2 (not the ADR)
 
-1. **Error frames are counted per episode at the sidecar and never become rows.**
+1. **Error frames are counted per episode at the sidecar; at most N per episode become rows** (owner ruling 2026-10-04, see *Grooming*; N configurable, default 16 — Vector's NACK filter precedent).
    - Consumed in `PythonCanChannel.recv`, which already decodes PEAK counters. Vector FD `RX_ERROR`/`TX_ERROR` events are consumed in `handle_canfd_event`.
    - New control message `BusErrorEpisode` (additive in `cannet.v1`, ADR 0059):
      - `interface_id`, `episode_seq`
@@ -241,15 +299,15 @@ The per-refusal envelopes are what the counts point at. **Falsifying experiment*
    - Also ignore replies whose `t1` precedes the current round's first probe (round correlation).
    - With replies on the control lane, δ stays small anyway; the guard is the backstop.
 
-Open questions for the owner:
-- **Q1. Capture fidelity.** Live captures stop storing individual error frames. Recommended: store episodes as timeline events, plus the **first and last error frame of each episode** as real rows, so BLF exports and external tools still see the fault.
-- **Q2. Data-lane overflow policy.** Recommended: drop **oldest**, cap ≈ 1 s of frames per interface, loud `FramesDropped` with a gap marker. Dropping newest keeps continuity but reintroduces minutes of latency.
-- **Q3. Imports.** BLF/MDF files carrying error frames: recommended to keep them as rows (files are bounded and faithful) and fold them through the **same** episode builder on the host. Live never has error rows.
-- **Q4. Sidecar episode gap.** Recommended: fixed 1 s at the sidecar; the host's reader-chosen gap (default 5 s) merges for display.
-- **Q5. Kvaser error kind.** Recommended: `unknown` until a Kvaser bench exists, rather than overriding python-can's `_recv_internal`.
-- **Q6. Run H1's falsifying load experiment** (fake driver at a fixed rate, no CAN hardware, not CPU-pegging) as phase 2's first step. Recommended: yes, about 2 h.
-- **Q7. Raw error-frame mode** (like `berr-reporting on`) for diagnostics. Recommended: not now; record it in `plans/backlog.md`.
-- **Q8. Does the Rust `cannet-server` hardware path need the same messages?** Recommended: yes, for the proto, so the host has one fault model. Implementation in that server is scoped separately if it carries hardware.
+Open questions raised by the review (rulings in *Grooming* below):
+- **Q1. Capture fidelity** — what a live capture keeps of an error frame.
+- **Q2. Data-lane overflow policy.**
+- **Q3. Imports** carrying error frames.
+- **Q4. Sidecar episode gap.**
+- **Q5. Kvaser error kind.**
+- **Q6. Run H1's falsifying load experiment** (fake driver at a fixed rate, no CAN hardware, not CPU-pegging) as phase 2's first step; ≈ 2 h.
+- **Q7. Raw error-frame mode** (like `berr-reporting on`) for diagnostics.
+- **Q8. Does the Rust `cannet-server` need the same messages?**
 
 ### 7. Phase list (layer, then consumers)
 
