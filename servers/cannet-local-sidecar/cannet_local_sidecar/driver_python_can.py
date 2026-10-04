@@ -35,8 +35,9 @@ still enumerate. The wire-level surface stays vendor-agnostic.
 
 from __future__ import annotations
 
+import ctypes
 import logging
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 
 from cannet_python_wire import frame_to_message, message_to_frame
 
@@ -169,6 +170,16 @@ _XL_EVENT_TAG_CHIP_STATE = 4
 #: union member.
 _XL_CANFD_EVENT_TAG_CHIP_STATE = 1033
 
+#: Kvaser CANlib circuit-status flags, as ``canReadStatus`` reports them
+#: (``canstat.h``: ``canSTAT_ERROR_PASSIVE`` 0x1, ``canSTAT_BUS_OFF``
+#: 0x2, ``canSTAT_ERROR_WARNING`` 0x4). python-can's Kvaser backend
+#: never reads the circuit status and defines none of them, so they are
+#: spelled out here. Flags, like PEAK's and Vector's: masked, not
+#: compared for equality.
+_KV_STAT_ERROR_PASSIVE = 0x01
+_KV_STAT_BUS_OFF = 0x02
+_KV_STAT_ERROR_WARNING = 0x04
+
 
 #: What the ``driver_name`` identity field reports for each backend.
 #: These name the vendor API the sidecar enumerated and opened the
@@ -217,6 +228,107 @@ def _xl_chip_state_state(bus_status: int) -> str:
     if bus_status & _XL_CHIPSTAT_ERROR_WARNING:
         return STATE_WARNING
     return STATE_ACTIVE
+
+
+def _kvaser_status_state(status: int) -> str:
+    """The worst fault-confinement state a Kvaser ``canReadStatus`` word
+    admits to. Same shape as :func:`_xl_chip_state_state`, same reason:
+    one bit per state, and nothing set reads as active."""
+    if status & _KV_STAT_BUS_OFF:
+        return STATE_BUS_OFF
+    if status & _KV_STAT_ERROR_PASSIVE:
+        return STATE_PASSIVE
+    if status & _KV_STAT_ERROR_WARNING:
+        return STATE_WARNING
+    return STATE_ACTIVE
+
+
+class _KvaserApi:
+    """The CANlib calls the Kvaser state read and bus-off reset need.
+
+    **Unverified against hardware**, like the Vector path: no Kvaser
+    adapter was on the bench where this was written, so it follows
+    Kvaser's CANlib reference and is exercised against a fake.
+
+    python-can's Kvaser backend binds ``canBusOn``, ``canBusOff`` and
+    ``canIoCtl`` but neither ``canReadStatus`` nor
+    ``canReadErrorCounters`` -- its ``Bus.state`` is ``BusABC``'s, which
+    answers active unconditionally, so a Kvaser controller that went
+    bus-off was invisible. The two reads are bound here against the
+    same library python-can already loaded, rather than loading it a
+    second time.
+    """
+
+    def __init__(self) -> None:
+        from can.interfaces.kvaser import canlib as kv  # type: ignore[import-untyped]
+        from can.interfaces.kvaser import constants as kvc  # type: ignore[import-untyped]
+
+        lib = getattr(kv, "__canlib", None)
+        if lib is None:
+            raise OSError("Kvaser CANlib is not loaded")
+        self._kv = kv
+        self._buson_time_auto_reset = kvc.canIOCTL_SET_BUSON_TIME_AUTO_RESET
+        self._read_status = lib.canReadStatus
+        self._read_status.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_ulong)]
+        self._read_status.restype = ctypes.c_int
+        self._read_counters = lib.canReadErrorCounters
+        self._read_counters.argtypes = [
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        self._read_counters.restype = ctypes.c_int
+
+    def read_status(self, handle: object) -> int:
+        flags = ctypes.c_ulong(0)
+        rc = self._read_status(handle, ctypes.byref(flags))
+        if rc < 0:
+            raise OSError(f"canReadStatus failed ({rc})")
+        return int(flags.value)
+
+    def read_error_counters(self, handle: object) -> tuple[int, int]:
+        """``(tec, rec)``."""
+        tx, rx, ov = ctypes.c_uint(0), ctypes.c_uint(0), ctypes.c_uint(0)
+        rc = self._read_counters(
+            handle, ctypes.byref(tx), ctypes.byref(rx), ctypes.byref(ov)
+        )
+        if rc < 0:
+            raise OSError(f"canReadErrorCounters failed ({rc})")
+        return int(tx.value), int(rx.value)
+
+    def reset(self, handles: Sequence[object]) -> None:
+        """Take every handle off bus, then on again -- what CANlib's own
+        ``canResetBus`` does, and the order python-can's ``KvaserBus``
+        goes on and off bus in. A circuit stays on bus while any handle
+        on it is, so all of them go off before any comes back.
+
+        Bus-on resets the receive timer by default, which would
+        invalidate the timestamp offset python-can computed at open
+        (and the rollover count this driver keeps against it), so the
+        timer reset is switched off first.
+        """
+        off = ctypes.c_uint32(0)
+        for h in handles:
+            self._kv.canIoCtl(
+                h, self._buson_time_auto_reset, ctypes.byref(off), ctypes.sizeof(off)
+            )
+        for h in handles:
+            self._kv.canBusOff(h)
+        for h in handles:
+            self._kv.canBusOn(h)
+
+
+_kvaser_api_instance: Optional[_KvaserApi] = None
+
+
+def _kvaser_api() -> _KvaserApi:
+    """The process's :class:`_KvaserApi`, built on first use -- only a
+    Kvaser channel that is already open ever asks for it."""
+    global _kvaser_api_instance
+    if _kvaser_api_instance is None:
+        _kvaser_api_instance = _KvaserApi()
+    return _kvaser_api_instance
 
 
 def _xl_chip_state_reading(chip_state: object) -> tuple[int, int, int]:
@@ -581,7 +693,8 @@ class PythonCanChannel:
         boundary (see :attr:`_unreachable`) settles it: there is nothing
         to ask. Otherwise the backend is asked — PCAN through its error
         counters and its live channel status, Vector through the chip
-        state its XL driver reports, everything else through python-can's
+        state its XL driver reports, Kvaser through CANlib's circuit
+        status and error counters, everything else through python-can's
         ``Bus.state`` (``BusState.ACTIVE`` / ``PASSIVE`` / ``ERROR``, with
         ``ERROR`` mapped to ``bus_off`` as the closest analog of an ISO
         11898-1 fault state in that three-value enum). A read that raises
@@ -589,7 +702,7 @@ class PythonCanChannel:
         cannot reach it" must not render as "it is fine".
 
         TEC / REC are reported where the backend exposes them and 0
-        where it does not; today that means PCAN and Vector.
+        where it does not; today that means PCAN, Vector and Kvaser.
         """
         if self._closed or can is None:
             return ControllerState()
@@ -599,6 +712,8 @@ class PythonCanChannel:
             return self._pcan_state()
         if self._is_vector:
             return self._vector_state()
+        if self._is_kvaser:
+            return self._kvaser_state()
         try:
             raw = self._bus.state  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
@@ -756,6 +871,62 @@ class PythonCanChannel:
             _xl_chip_state_state(bus_status), state_from_counters(tec, rec)
         )
         return ControllerState(state=state, tec=tec, rec=rec)
+
+    def _kvaser_state(self) -> ControllerState:
+        """Kvaser's controller state, from ``canReadStatus`` floored by
+        the error counters ``canReadErrorCounters`` reports -- the same
+        derivation as PEAK's and Vector's, through
+        :func:`~cannet_local_sidecar.driver.worse_state`. Unverified
+        against hardware; see :class:`_KvaserApi`."""
+        handle = self._bus._write_handle  # type: ignore[attr-defined]
+        try:
+            api = _kvaser_api()
+            status = api.read_status(handle)
+            tec, rec = api.read_error_counters(handle)
+        except Exception:  # noqa: BLE001
+            self._unreachable = True
+            return ControllerState(state=STATE_UNAVAILABLE)
+        self._unreachable = False
+        state = worse_state(_kvaser_status_state(status), state_from_counters(tec, rec))
+        return ControllerState(state=state, tec=tec, rec=rec)
+
+    def reset(self) -> bool:
+        """Bring a bus-off controller back on bus, in place where the
+        backend can; ``False`` where it can only be reopened.
+
+        - **Vector**: python-can's own ``VectorBus.reset`` --
+          ``xlDeactivateChannel`` then ``xlActivateChannel`` on the same
+          port. The remembered chip state is dropped with it, so the
+          stale bus-off answer cannot outlive the reset; the next
+          request's answer replaces it.
+        - **Kvaser**: every handle off bus and on again
+          (:meth:`_KvaserApi.reset`). Reopening would not do: a new
+          handle opened while the old ones are still on bus never takes
+          the circuit off it.
+        - **PEAK** and anything else: ``False``. python-can's
+          ``PcanBus.reset`` is ``CAN_Reset``, which clears the queues and
+          -- in PCAN-Basic's own words -- performs no reset of the CAN
+          controller. PEAK's in-driver recovery is the
+          ``PCAN_BUSOFF_AUTORESET`` the channel is opened with; past
+          that, the caller reopens it.
+
+        Raises whatever the backend raises; the caller retries.
+        """
+        if self._closed:
+            return False
+        if self._is_vector:
+            self._bus.reset()  # type: ignore[attr-defined]
+            self._bus.chip_state = None  # type: ignore[attr-defined]
+            return True
+        if self._is_kvaser:
+            bus = self._bus
+            if getattr(bus, "single_handle", False):
+                handles = [bus._write_handle]  # type: ignore[attr-defined]
+            else:
+                handles = [bus._read_handle, bus._write_handle]  # type: ignore[attr-defined]
+            _kvaser_api().reset(handles)
+            return True
+        return False
 
     def close(self) -> None:
         if self._closed:
@@ -1194,6 +1365,14 @@ def _bus_kwargs_for(channel_id: str, config: OpenConfig):
     if vendor == "kvaser":
         return ("kvaser", {"channel": int(body), **common})
     if vendor == "pcan":
+        # PCAN-Basic holds a bus-off controller bus-off until something
+        # resets it. ``auto_reset`` sets ``PCAN_BUSOFF_AUTORESET``, so
+        # the driver resets it itself the next time a status read, send
+        # or receive sees bus-off -- and the state poll reads the status
+        # every half second. Neither python-can's Kvaser nor its Vector
+        # backend has an equivalent setting; the sidecar's state poll
+        # resets those (``PythonCanChannel.reset``).
+        common["auto_reset"] = True
         # Known handle constants (PCAN_USBBUS1, etc.) go through as
         # strings — python-can looks them up. The ``handle=0xNN``
         # fallback (used when the enumerator can't reverse-map the

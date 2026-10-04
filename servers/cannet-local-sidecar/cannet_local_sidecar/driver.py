@@ -164,9 +164,12 @@ def state_from_counters(tec: int, rec: int) -> str:
 
     The counters *are* the state machine: the standard defines
     error-passive as either counter above 127 and bus-off as the
-    transmit counter above 255, and both fall again on every successful
-    transmission or reception, so recovery needs no separate signal. 96
-    is the standard's warning limit.
+    transmit counter above 255. Short of bus-off both fall again on
+    every successful transmission or reception, so recovery from
+    warning or error-passive needs no separate signal. Bus-off is the
+    exception: a bus-off controller transmits nothing, so its counters
+    cannot fall, and it comes back only when it is reset -- see
+    :meth:`OpenChannel.reset`. 96 is the standard's warning limit.
 
     The receive counter cannot take a controller bus-off -- only a
     transmitter removes itself from the wire -- which is why the two are
@@ -273,6 +276,24 @@ class OpenChannel(Protocol):
         this method entirely; the poll treats the missing attribute as
         "no rollovers", which is what it means. Only the default
         driver's Kvaser path ever returns anything but zero.
+        """
+
+    def reset(self) -> bool:
+        """Bring a bus-off controller back on bus.
+
+        Called by the state poll once :meth:`state` has read
+        :data:`STATE_BUS_OFF` for longer than the controller's own
+        recovery could take: a controller still bus-off by then is
+        latched, waiting for a reset nobody else will give it.
+
+        Returns ``True`` when the controller was reset in place, and
+        ``False`` when this backend has no in-place reset -- the poll
+        then closes the channel and opens a fresh one, the way a bus
+        configuration change does. May raise; the poll logs the failure
+        and tries again on its next pass that still reads bus-off.
+
+        **Optional**, like :meth:`timer_wraps`: a driver that omits it is
+        reopened.
         """
 
     def close(self) -> None:
