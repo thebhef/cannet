@@ -994,8 +994,8 @@ def test_a_reopened_channel_rearms_the_rollover_report() -> None:
 
 
 class _LatchingChannel(_FakeChannel):
-    """A controller that, like PCAN-Basic without its auto-reset or a
-    Kvaser circuit, stays bus-off until something resets it. ``reset``
+    """A controller that, like PCAN-Basic or a Kvaser circuit, stays
+    bus-off until something resets it. ``reset``
     is the driver hook the state poll calls; ``fail_resets`` makes the
     next that many calls raise, and ``in_place`` False makes it answer
     that this backend can only be reopened."""
@@ -1181,6 +1181,160 @@ def test_a_backend_without_the_hook_is_reopened(
         shared._poll_state(ch, now_s=0.0)
         shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
         assert len(driver.opened) == 2
+    finally:
+        reg.unsubscribe("fake:0", outbox)
+
+
+# ---- a controller refusing queue-full in silence is reopened ----------------
+
+
+_QUEUE_FULL = drv.TxRejected(
+    "Failed to send: The transmit queue is full", queue_full=True
+)
+
+
+@pytest.fixture
+def silent(monkeypatch: "pytest.MonkeyPatch"):
+    """A subscribed interface on a plain fake channel, its state poll and
+    its rx/refusal notes driven by hand against an injected clock."""
+    monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    outbox: "queue.Queue" = queue.Queue()
+    shared = reg.subscribe("fake:0", outbox)
+    shared._note_rx(now_s=100.0)
+    try:
+        yield driver, shared
+    finally:
+        reg.unsubscribe("fake:0", outbox)
+
+
+def test_queue_full_refusals_with_two_seconds_of_silence_reopen_the_channel(
+    silent, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    """A controller PEAK's driver reset behind our back sits idle with
+    its transmit queue full: no error frames, no data, every send
+    refused. Nothing on the wire will move it; a reopen restarts it."""
+    caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
+    driver, shared = silent
+    ch = driver.opened[0]
+    after = si._QUEUE_FULL_SILENCE_REOPEN_AFTER_S
+
+    shared._note_tx_refused(ch, _QUEUE_FULL, now_s=100.5)
+    shared._poll_state(ch, now_s=100.0 + after * 0.9)
+    assert len(driver.opened) == 1
+    shared._note_tx_refused(ch, _QUEUE_FULL, now_s=100.0 + after * 0.95)
+    shared._poll_state(ch, now_s=100.0 + after)
+    assert len(driver.opened) == 2
+    assert ch.closed.is_set()
+    assert shared._current_channel() is driver.opened[1]
+
+    infos = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.INFO and "queue full" in r.getMessage()
+    ]
+    assert len(infos) == 1, [r.getMessage() for r in caplog.records]
+    assert "fake:0" in infos[0] and "reopened" in infos[0]
+
+
+def test_the_reopen_is_retried_on_the_next_poll_while_the_shape_persists(
+    silent,
+) -> None:
+    driver, shared = silent
+    after = si._QUEUE_FULL_SILENCE_REOPEN_AFTER_S
+    t = 100.0 + after
+    first = driver.opened[0]
+    shared._note_tx_refused(first, _QUEUE_FULL, now_s=t - 0.1)
+    shared._poll_state(first, now_s=t)
+    assert len(driver.opened) == 2
+
+    # The fresh channel refuses queue-full too and still nothing arrives:
+    # the next pass reopens again -- once per pass, never tighter.
+    fresh = driver.opened[1]
+    shared._note_tx_refused(fresh, _QUEUE_FULL, now_s=t + 0.2)
+    shared._poll_state(fresh, now_s=t + 0.5)
+    assert len(driver.opened) == 3
+
+    # The previous channel's refusals are not the fresh one's: a pass
+    # with no refusal from the current channel leaves it alone.
+    shared._poll_state(driver.opened[2], now_s=t + 1.0)
+    assert len(driver.opened) == 3
+
+
+def test_queue_full_while_error_frames_arrive_is_a_live_fault_not_a_reopen(
+    silent,
+) -> None:
+    """Cable out, controller retransmitting: the queue fills, but error
+    frames keep arriving. That controller is alive and reporting the
+    fault; reopening it would only hide it."""
+    driver, shared = silent
+    ch = driver.opened[0]
+    t = 100.0
+    while t < 110.0:
+        shared._note_tx_refused(ch, _QUEUE_FULL, now_s=t + 0.1)
+        shared._note_rx(now_s=t + 0.2)
+        t += 0.5
+        shared._poll_state(ch, now_s=t)
+    assert len(driver.opened) == 1
+
+
+def test_silence_without_queue_full_refusals_is_an_idle_bus(silent) -> None:
+    driver, shared = silent
+    ch = driver.opened[0]
+    after = si._QUEUE_FULL_SILENCE_REOPEN_AFTER_S
+    for k in range(1, 20):
+        shared._poll_state(ch, now_s=100.0 + after * k)
+    assert len(driver.opened) == 1
+
+
+def test_refusals_that_have_stopped_do_not_reopen_an_idle_bus(silent) -> None:
+    """Sends refused queue-full once, then nobody sends any more: a bus
+    that has gone quiet since is idle, not stuck."""
+    driver, shared = silent
+    ch = driver.opened[0]
+    after = si._QUEUE_FULL_SILENCE_REOPEN_AFTER_S
+    shared._note_tx_refused(ch, _QUEUE_FULL, now_s=100.1)
+    shared._poll_state(ch, now_s=100.1 + after * 1.5)
+    assert len(driver.opened) == 1
+
+
+def test_other_refusals_in_silence_do_not_reopen(silent) -> None:
+    driver, shared = silent
+    ch = driver.opened[0]
+    after = si._QUEUE_FULL_SILENCE_REOPEN_AFTER_S
+    other = drv.TxRejected("listen-only configuration")
+    shared._note_tx_refused(ch, other, now_s=100.0 + after - 0.1)
+    shared._poll_state(ch, now_s=100.0 + after)
+    assert len(driver.opened) == 1
+
+
+class _QueueFullChannel(_FakeChannel):
+    def send(self, frame: drv.Frame) -> None:
+        raise _QUEUE_FULL
+
+
+def test_the_pumps_feed_the_rule(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """The tx pump records a queue-full refusal from the current channel
+    and the rx pump records each frame it reads, on the monotonic clock
+    the state pump passes to the poll."""
+    monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
+    driver = _ChannelDriver(_QueueFullChannel)
+    reg = srv._InterfaceRegistry(driver)
+    outbox: "queue.Queue" = queue.Queue()
+    shared = reg.subscribe("fake:0", outbox)
+    try:
+        ch = driver.opened[0]
+        before = time.monotonic()
+        shared.transmit(_frame(1), outbox)
+        _wait_for(lambda: shared._queue_full_refused is not None)
+        refused_ch, refused_at = shared._queue_full_refused
+        assert refused_ch is ch and refused_at >= before
+
+        ch.enqueue(_frame(2))
+        _wait_for(lambda: shared._last_rx_s >= refused_at)
+        shared._poll_state(ch, now_s=shared._last_rx_s + 0.1)
+        assert len(driver.opened) == 1
     finally:
         reg.unsubscribe("fake:0", outbox)
 

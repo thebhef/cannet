@@ -191,7 +191,18 @@ class TxRejected(Exception):
     The sidecar's wire layer maps this onto ``Error.CODE_TX_REJECTED``
     (read-only / listen-only / bus-off / vendor-specific). The
     accompanying message is forwarded verbatim.
+
+    ``queue_full`` is ``True`` when the driver refused the frame because
+    its own transmit queue is full -- the controller is not taking
+    frames off it. The wire layer reads only this flag, never the
+    message text: a channel refusing queue-full while receiving nothing
+    at all is reopened (ADR 0039). A driver that cannot tell leaves it
+    ``False``, which disables that rule and nothing else.
     """
+
+    def __init__(self, message: str = "", *, queue_full: bool = False) -> None:
+        super().__init__(message)
+        self.queue_full = queue_full
 
 
 class Driver(Protocol):
