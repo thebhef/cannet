@@ -107,7 +107,12 @@ describe("the project cache list", () => {
     await waitFor(() => expect(calls).toEqual([{ cmd: "clear_project_cache", root: "/work/bodyctl" }]));
     expect(screen.getByText("/work/bodyctl")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    // Delete is the shared two-stage trash control: the first click only
+    // arms it.
+    const del = screen.getByRole("button", { name: "Delete" });
+    fireEvent.click(del);
+    expect(calls).toHaveLength(1);
+    fireEvent.click(del);
     await waitFor(() => expect(calls).toHaveLength(2));
     expect(calls[1]).toEqual({ cmd: "delete_project_cache", root: "/work/bodyctl" });
   });
@@ -185,12 +190,61 @@ describe("the project cache list", () => {
     await renderList();
     failWith = "permission denied";
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const del = screen.getByRole("button", { name: "Delete" });
+    fireEvent.click(del);
+    fireEvent.click(del);
 
     await waitFor(() =>
       expect(screen.getByText(/permission denied/)).toBeInTheDocument(),
     );
     expect(screen.getByText("/work/locked")).toBeInTheDocument();
+  });
+
+  // Observation 1 of the owner's 2026-09-21 report: the row said nothing
+  // about which project a cache-space directory belonged to. The project
+  // file has no `name` field, so the row's name is the file stem
+  // (`projectName`, the same one the window title and export templates
+  // use), and the directory path — which is what actually named the row
+  // before — becomes a secondary line and stays in the tooltip.
+  it("leads a row with its project's name and keeps the path as a secondary line and tooltip", async () => {
+    rows = [row({ root: "/work/rig", project_file: "/work/rig/rig.cannet_prj" })];
+    await renderList();
+
+    expect(screen.getByText("rig")).toBeInTheDocument();
+    const path = screen.getByText("/work/rig");
+    expect(path.closest(".project-cache-info")).toHaveAttribute("title", "/work/rig");
+  });
+
+  it("reads unsaved for the entry with no project file", async () => {
+    rows = [row({ root: "/cache/projects/scratch", project_file: null })];
+    await renderList();
+    expect(screen.getByText("unsaved")).toBeInTheDocument();
+  });
+
+  // Owner ruling 2026-09-21: just the name and why — no further
+  // affordance on an auto-located row beyond the existing Save as….
+  it("explains in the auto-located badge's tooltip why the directory is in cache space", async () => {
+    rows = [row({ root: "/cache/projects/bbb", state: "auto-located", auto_located: true })];
+    await renderList();
+
+    const badge = screen.getByText("auto-located");
+    expect(badge).toHaveAttribute("title", expect.stringContaining(".cannet/"));
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Save as…"));
+  });
+
+  // Owner ruling 2026-09-21: Delete is the shared two-stage trash
+  // control, since removing a cache directory has no way back.
+  it("arms Delete on the first click and only acts on the second", async () => {
+    rows = [row({ root: "/work/armed" })];
+    await renderList();
+
+    const del = screen.getByRole("button", { name: "Delete" });
+    fireEvent.click(del);
+    expect(calls).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "click again to confirm" })).toBeInTheDocument();
+
+    fireEvent.click(del);
+    await waitFor(() => expect(calls).toEqual([{ cmd: "delete_project_cache", root: "/work/armed" }]));
   });
 
   it("says so when nothing is recorded", async () => {
