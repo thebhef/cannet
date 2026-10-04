@@ -129,12 +129,24 @@ The sidecar implements the **hardware-server wire model** described in
   rx_overruns? }` is pushed: a snapshot on each `Subscribe`, plus a
   fresh push whenever any of them changes. The controller is read at
   ~2 Hz. On PEAK the state comes from the error counters its error
-  frames carry, on Vector from the chip-state events its XL driver
-  reports (both floored by the vendor's own status word, neither able
+  frames carry (cleared to 0/0 when a whole poll passes with no error
+  frame and a status word reporting no bus error), on Vector from the
+  chip-state events its XL driver reports (both floored by the vendor's own status word, neither able
   to talk the other down); everything else falls back to python-can's
   `Bus.state`, which most backends do not implement. TEC / REC are
   reported as 0 wherever they are not exposed. The Vector path has
   not been run against Vector hardware.
+- **An echo from an error-passive transmitter is withheld.** PEAK's
+  echo of our own frame fires when the frame goes onto the wire, not
+  when a node acknowledges it, so with the cable pulled a PEAK
+  transmitter retransmits forever and echoes every attempt. While the
+  channel's TEC is above 127 (error-passive, which 16 consecutive
+  failed transmissions reach) an echo (`is_rx` false) is dropped in
+  `recv` and produces no `Tx` frame. Vector gets the same gate as a
+  precaution — its documentation does not say whether a transmit
+  receipt waits for the acknowledge; Kvaser does not, because CANlib
+  documents its echo as a successful transmission. The running total
+  is the `echoes_dropped=` field of the periodic `rx stats` line.
 
   `rx_overruns` counts occasions on which the driver reported that
   received frames were lost before reaching the sidecar — **reports,
@@ -179,10 +191,11 @@ The sidecar implements the **hardware-server wire model** described in
 ## Swap the driver library
 
 `driver.py` defines a small adapter protocol (`list_channels`,
-`open`, `recv`, `send`, `state`, `rx_loss`, `timer_wraps`, `close`);
-`rx_loss` and `timer_wraps` are optional — a driver that omits them is
-read as one that does not watch for receive loss and one whose
-backends' timestamps never roll over. The default
+`open`, `recv`, `send`, `state`, `rx_loss`, `timer_wraps`,
+`echoes_dropped`, `close`); `rx_loss`, `timer_wraps` and
+`echoes_dropped` are optional — a driver that omits them is read as one
+that does not watch for receive loss, one whose backends' timestamps
+never roll over, and one that withholds no echoes. The default
 implementation in `driver_python_can.py` wraps `python-can`. To use
 something else:
 

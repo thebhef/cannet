@@ -164,3 +164,19 @@ The poll then reads the controller active and publishes it, which is
 what the bus-health panel shows. Parking is still not the mechanism —
 the route stays up through the reset, and a periodic's counter keeps
 stepping across it as it does across any other dropped frame.
+
+**PEAK's echo is "on the wire", not "acknowledged".** With the CAN
+cable pulled, a lone PEAK transmitter retransmits the unacknowledged
+frame indefinitely and PCAN-Basic echoes every attempt
+(`PCAN_MESSAGE_ECHO`) at the normal cadence. On PEAK a `Tx` row
+therefore additionally requires the controller not to be error-passive:
+the sidecar drops an echo that arrives while the transmit error counter
+is above 127, which ISO 11898-1's fault confinement reaches after 16
+consecutive failed transmissions. The counters arrive in PEAK's error
+frames, one per retransmission, so the gate closes within about 16
+frames of the fault and stays closed for as long as it lasts; once the
+wire is restored the error frames stop, the next half-second status
+poll without one reads the counters as 0, and echoes flow again. Vector
+carries the same gate as a precaution (its documentation does not say
+whether a transmit receipt waits for the acknowledge); Kvaser does not,
+because CANlib documents its echo as a successful transmission.

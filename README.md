@@ -480,9 +480,14 @@ receive error registers. That is deliberate: PCAN-Basic's channel-status
 query stops at its bus-warning bit on a channel transmitting into an
 open circuit, so a state read from the status word alone under-reports a
 broken wire as a healthy bus. The counters climb 8 per failed
-transmission, cross the standard's thresholds, and fall again on every
-success, so recovery from warning and error-passive needs no separate
-signal.
+transmission and cross the standard's thresholds. Error frames arrive
+with every failed attempt and stop when the fault does, so a half-second
+poll with no error frame — and a status word reporting no bus error —
+reads the counters as 0. Recovery from warning and error-passive
+therefore needs no separate signal. PEAK's echo of a sent frame proves
+only that it went onto the wire, not that a node took it, so while a
+PEAK transmitter is error-passive its echoes are withheld and it shows
+no `Tx` rows.
 
 On a Vector adapter the same two counters arrive as **chip-state
 events**: the XL driver reports `busStatus`, `txErrorCounter` and
@@ -2212,7 +2217,11 @@ Where a sent frame goes:
   wire at all — no session carried its bus, or the session refused it —
   reads `Tx ✗` in the direction column and says why on hover. That order
   is the point: a row appended before the attempt made a frame nothing
-  carried indistinguishable from one a bus took.
+  carried indistinguishable from one a bus took. On a PEAK adapter, whose
+  echo fires when a frame goes onto the wire rather than when a node
+  acknowledges it, the sidecar withholds the echoes of an error-passive
+  transmitter, so a frame retransmitted into a pulled cable is not
+  reported back as sent.
 - The far end can still refuse a frame it accepted from us. `TX_REJECTED`
   and its two siblings (`NOT_SUBSCRIBED`, `NO_ACKNOWLEDGER`) arrive later
   on the receive stream and belong to no single row, so they are tallied
