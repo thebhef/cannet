@@ -19,7 +19,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use cannet_core::{CanFramePayload, Direction};
-use cannet_gui_lib::filter::{resolve_candidates, CandidateInputs, FilterPredicate};
+use cannet_gui_lib::filter::{
+    resolve_candidates, CandidateInputs, FilterPredicate, EMPTY_MATCH_CONTEXT,
+};
 use cannet_gui_lib::trace_store::{RawTraceFrame, TraceStore};
 use cannet_spill::FilterIndex;
 
@@ -101,6 +103,7 @@ pub fn run(ex: &LoadedExample, cfg: &FilterBenchConfig) -> FilterBenchReport {
         seen_on_bus: &seen_on_bus,
         regex_ids: &none,
         signal_ids: &none,
+        fuzzy: &EMPTY_MATCH_CONTEXT,
     };
     let candidates =
         resolve_candidates(&predicate, &inputs).expect("predicate must be id-narrowable");
@@ -114,7 +117,7 @@ pub fn run(ex: &LoadedExample, cfg: &FilterBenchConfig) -> FilterBenchReport {
     // (2) Filter index: a one-time build, then (3) the per-fetch page.
     let idx_dir = tempfile::TempDir::new().expect("index tempdir");
     let mut index = FilterIndex::new(idx_dir.path()).expect("open filter index");
-    let keep = |f: &RawTraceFrame| predicate.matches(f, None);
+    let keep = |f: &RawTraceFrame| predicate.matches(&EMPTY_MATCH_CONTEXT, f, None);
     let t = Instant::now();
     store.refresh_filter_index(&mut index, &candidates, &keep);
     let index_build_ms = ms(t);
@@ -183,7 +186,9 @@ fn scan_positional(
     let mut pos = 0;
     while pos < len {
         let hi = (pos + CHUNK).min(len);
-        for idx in store.scan_chunk(pos, hi, |f| predicate.matches(f, None)) {
+        for idx in store.scan_chunk(pos, hi, |f| {
+            predicate.matches(&EMPTY_MATCH_CONTEXT, f, None)
+        }) {
             if count >= offset && count < offset + limit {
                 page.push(idx);
             }

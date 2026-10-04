@@ -59,6 +59,7 @@ mod trace_query;
 // `#[tauri::command]` fns reference the crate-private `AppState`); the
 // harness only needs their file-model types, re-exported below.
 pub mod filter;
+pub mod fuzzy;
 mod interfaces;
 // trace_store's `pub mod` (below) exposes its accessors as crate-public
 // API for the harness; they `.expect` on an internally-upheld mutex

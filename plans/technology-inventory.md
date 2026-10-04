@@ -89,6 +89,28 @@ and the license / platform constraints we need to be aware of.
   (only ships as part of `kbar`'s command-palette package and would
   drag `kbar` in for the search-matcher use). See
   [`../docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md).
+- **In-repo Rust port of fzf's scoring** (`apps/gui/src-tauri/src/fuzzy.rs`)
+  — `adopted` by owner ruling 2026-09-20 (task 142, the trace panel's
+  fuzzy filter). **No new crate**: the chronological trace is host-paged,
+  so its rows cannot legally be fuzzy-filtered in JS (ADR 0044), and the
+  host therefore has to rank. It has to rank the *same way* the frontend
+  does or the app grows a second dialect, so the port transcribes the
+  `fzf` package's v2 algorithm, its v1 slab fallback and its
+  `casing: "case-insensitive"` path, and the npm package is kept as the
+  **oracle**: `apps/gui/scripts/fzf-golden.mjs` runs it over a fixture of
+  real ev-zonal DBC names and writes
+  `apps/gui/src-tauri/fixtures/fzf-golden.json`, which a Rust test
+  replays for identical order *and* identical scores.
+  **Rejected alternatives:** the `fuzzy-matcher` / `nucleo-matcher`
+  crates (both are fzf-derived but neither reproduces this package's
+  scores, so the two halves of one query would rank differently and no
+  golden-vector test could pass); a simpler host-side substring or
+  subsequence match (would make the host-paged trace feel unlike every
+  other search box in the app). The relative floor is stated once —
+  `MIN_RELATIVE_SCORE`, in `fuzzy.rs` and mirrored by
+  `gridviewFilter.tsx`. Not ported: the package's `normalize: true`
+  diacritic folding, which the haystack (DBC identifiers, id spellings,
+  bus names) does not reach.
 - **`react-jsonschema-form`** (@rjsf, Apache-2.0) — `rejected` (Task 18
   Step 6). Schema-driven settings form generator; the obvious "VS Code-like
   settings" candidate. Rejected as premature: the frontend stack is
