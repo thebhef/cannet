@@ -120,3 +120,44 @@ def test_listen_only_still_rejects_first() -> None:
     ch = _channel(fd=False, listen_only=True)
     with pytest.raises(TxRejected, match="listen-only"):
         ch.send(_frame(data=b"\x01"))
+
+
+class _RefusingBus:
+    """A bus whose send fails the way python-can's backend raised it."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def send(self, msg) -> None:
+        raise self._error
+
+
+def _refused_by(error: Exception) -> TxRejected:
+    ch = PythonCanChannel(
+        channel_id="test:0", bus=_RefusingBus(error), listen_only=False, fd=False
+    )
+    with pytest.raises(TxRejected) as info:
+        ch.send(_frame(data=b"\x01"))
+    return info.value
+
+
+def test_a_driver_reported_full_transmit_queue_is_marked_queue_full() -> None:
+    # The text python-can's PcanBus raises for PCAN_ERROR_QXMTFULL:
+    # "Failed to send: " + PCAN-Basic's own error text.
+    refused = _refused_by(RuntimeError("Failed to send: The transmit queue is full"))
+    assert refused.queue_full is True
+    assert "transmit queue is full" in str(refused)
+
+
+def test_any_other_send_failure_is_not_queue_full() -> None:
+    refused = _refused_by(
+        RuntimeError("Failed to send: The CAN controller is in bus-off state")
+    )
+    assert refused.queue_full is False
+
+
+def test_the_wrappers_own_refusals_are_not_queue_full() -> None:
+    ch = _channel(fd=False, listen_only=True)
+    with pytest.raises(TxRejected) as info:
+        ch.send(_frame(data=b"\x01"))
+    assert info.value.queue_full is False

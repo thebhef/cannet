@@ -1,7 +1,9 @@
 # ADR 0039 — Periodic emission timing: phase stagger, drop-and-realign, park on route loss
 
 Status: accepted (2026-07-25); amended (2026-10-03) — a bus-off
-controller is brought back by a reset, not by its counters
+controller is brought back by a reset, not by its counters; amended
+(2026-10-04) — PEAK's driver-side auto-reset rejected, and a controller
+refusing sends in silence is reopened
 
 ## Decision
 
@@ -144,26 +146,50 @@ channel whose CAN side was disconnected and reconnected stayed bus-off
 for good.
 
 Bus-off is transient, and the bus comes back without user action, the
-same on every vendor:
-
-- **PEAK**: the channel is opened with `PCAN_BUSOFF_AUTORESET`, so
-  PCAN-Basic resets the controller itself when a status read, send or
-  receive sees bus-off; the sidecar reads the status every half second.
-- **Every backend**: the sidecar's state poll resets a controller it
-  has read bus-off for a second — far longer than the controller's
-  own recovery — through the driver's `reset` hook: Vector in place
-  (`xlDeactivateChannel` then `xlActivateChannel`, python-can's
-  `VectorBus.reset`), Kvaser in place (every handle off bus and on
-  again, as CANlib's `canResetBus` does), and anything without an
-  in-place reset — PEAK included, whose `CAN_Reset` clears queues and
-  does not reset the controller — by reopening the channel with its
-  current configuration. A reset that fails is retried on the next
-  poll that still reads bus-off.
+same on every vendor: the sidecar's state poll resets a controller it
+has read bus-off for a second — far longer than the controller's
+own recovery — through the driver's `reset` hook: Vector in place
+(`xlDeactivateChannel` then `xlActivateChannel`, python-can's
+`VectorBus.reset`), Kvaser in place (every handle off bus and on
+again, as CANlib's `canResetBus` does), and anything without an
+in-place reset — PEAK included, whose `CAN_Reset` clears queues and
+does not reset the controller — by reopening the channel with its
+current configuration. A reset that fails is retried on the next
+poll that still reads bus-off.
 
 The poll then reads the controller active and publishes it, which is
 what the bus-health panel shows. Parking is still not the mechanism —
 the route stays up through the reset, and a periodic's counter keeps
 stepping across it as it does across any other dropped frame.
+
+## Amendment (2026-10-04) — no driver-side auto-reset; a silent, full transmit queue is reopened
+
+**PCAN-Basic's `PCAN_BUSOFF_AUTORESET` is not used.** It resets a
+bus-off controller inside the next `CAN_GetStatus`, read or write —
+including the status read the state poll itself makes — so the poll
+never reads bus-off and the bus-health panel never shows it. And it
+does not restart a full transmit queue: on the bench, with the CAN
+cable pulled for hours and sends refused "transmit queue is full", the
+controller went bus-off, was auto-reset unseen, and then sat idle — no
+error frames, the status word stale, every send still refused — and
+transmitted nothing when the cable came back. Without it, PEAK's status
+word reports bus-off, the state poll publishes it and reopens the
+channel after a second (re-initialising the controller and emptying its
+transmit queue), and publishes the recovered state — each step
+visible, however often a disconnected bus repeats it.
+
+**A channel refusing sends with a full transmit queue that has received
+nothing for two seconds is reopened**, through the same swap. Received
+means anything: a data frame, an echo, an error frame. A controller
+retransmitting into a fault reports every attempt as an error frame, so
+a full queue *with* error frames arriving is a live fault and is left
+alone; silence *without* queue-full refusals is an idle bus and is left
+alone. Both together are a controller that is neither transmitting nor
+erroring, whatever its status word says, and nothing on the wire will
+restart it. The driver classifies the refusal (`TxRejected.queue_full`);
+the rule itself is vendor-neutral. It is checked once per state-poll
+pass, logs one line per reopen, and repeats on a later pass only if the
+fresh channel refuses queue-full too.
 
 **PEAK's echo is "on the wire", not "acknowledged".** With the CAN
 cable pulled, a lone PEAK transmitter retransmits the unacknowledged

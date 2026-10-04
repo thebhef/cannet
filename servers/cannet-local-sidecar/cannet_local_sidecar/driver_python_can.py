@@ -126,6 +126,12 @@ _PCAN_ERR_TEC_OFFSET = 3
 #: arriving above it is withheld; see ``PythonCanChannel._echo_unproven``.
 _ERROR_PASSIVE_TEC = 127
 
+#: How a backend says its transmit queue is full, lower-cased. python-can
+#: raises PEAK's ``PCAN_ERROR_QXMTFULL`` as a ``PcanCanOperationError``
+#: carrying only PCAN-Basic's error text -- no code -- so the text is
+#: all there is to match. See ``_send_refused_queue_full``.
+_QUEUE_FULL_TEXTS = ("transmit queue is full",)
+
 #: Kvaser's receive timer, and why the sidecar has to unwrap it.
 #:
 #: ``canReadWait`` reports a frame's arrival as a 32-bit count of
@@ -730,7 +736,7 @@ class PythonCanChannel:
         try:
             self._bus.send(msg)  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
-            raise TxRejected(str(e)) from e
+            raise TxRejected(str(e), queue_full=_send_refused_queue_full(e)) from e
 
     def _reject_if_incompatible(self, frame: Frame) -> None:
         """Refuse frame shapes that would make python-can raise inside a
@@ -1013,9 +1019,8 @@ class PythonCanChannel:
         - **PEAK** and anything else: ``False``. python-can's
           ``PcanBus.reset`` is ``CAN_Reset``, which clears the queues and
           -- in PCAN-Basic's own words -- performs no reset of the CAN
-          controller. PEAK's in-driver recovery is the
-          ``PCAN_BUSOFF_AUTORESET`` the channel is opened with; past
-          that, the caller reopens it.
+          controller. The caller reopens it, which re-initialises the
+          controller and empties its transmit queue.
 
         Raises whatever the backend raises; the caller retries.
         """
@@ -1472,14 +1477,12 @@ def _bus_kwargs_for(channel_id: str, config: OpenConfig):
     if vendor == "kvaser":
         return ("kvaser", {"channel": int(body), **common})
     if vendor == "pcan":
-        # PCAN-Basic holds a bus-off controller bus-off until something
-        # resets it. ``auto_reset`` sets ``PCAN_BUSOFF_AUTORESET``, so
-        # the driver resets it itself the next time a status read, send
-        # or receive sees bus-off -- and the state poll reads the status
-        # every half second. Neither python-can's Kvaser nor its Vector
-        # backend has an equivalent setting; the sidecar's state poll
-        # resets those (``PythonCanChannel.reset``).
-        common["auto_reset"] = True
+        # No ``auto_reset``: ``PCAN_BUSOFF_AUTORESET`` resets a bus-off
+        # controller inside the very ``CAN_GetStatus`` the state poll
+        # makes, so the poll never reads bus-off, and it does not restart
+        # a full transmit queue, so the controller can come back idle
+        # with every send refused. Left bus-off, the status word says so
+        # and the state poll reopens the channel (ADR 0039).
         # Known handle constants (PCAN_USBBUS1, etc.) go through as
         # strings — python-can looks them up. The ``handle=0xNN``
         # fallback (used when the enumerator can't reverse-map the
@@ -1492,6 +1495,16 @@ def _bus_kwargs_for(channel_id: str, config: OpenConfig):
             )
         return ("pcan", {"channel": body, **common})
     raise KeyError(channel_id)
+
+
+def _send_refused_queue_full(error: Exception) -> bool:
+    """Whether a backend's send failure says its transmit queue is full.
+
+    The one place backend error text is read for this; the wire layer
+    sees only :attr:`TxRejected.queue_full`.
+    """
+    text = str(error).lower()
+    return any(t in text for t in _QUEUE_FULL_TEXTS)
 
 
 def _disable_pcan_status_frames(bus) -> None:

@@ -160,6 +160,18 @@ The sidecar implements the **hardware-server wire model** described in
   backend that does not watch for receive loss, which is a different
   answer from zero: zero is the reading that says a capture is the
   whole of what the bus sent.
+- **A stuck controller is brought back by the state poll.** A
+  controller read bus-off for a second is reset — in place on Vector
+  and Kvaser, by closing and reopening the channel with its current
+  config elsewhere, PEAK included (the channel is opened without
+  `PCAN_BUSOFF_AUTORESET`, which would reset it unseen inside the
+  poll's own status read and leave a full transmit queue stalled). A
+  channel whose driver refuses sends because its transmit queue is
+  full (`TxRejected.queue_full`) while nothing at all — data, echo or
+  error frame — has been received for two seconds is reopened the same
+  way: a controller retransmitting into a fault reports error frames,
+  so that silence means it has stopped transmitting. Each reset or
+  reopen logs one INFO line; ADR 0039 has the rules.
 - **Receive timestamps are the backend's, with one correction.** A
   frame's `timestamp_ns` is whatever the vendor driver stamped it
   with, converted to Unix-epoch nanoseconds — except on **Kvaser**,
@@ -192,10 +204,14 @@ The sidecar implements the **hardware-server wire model** described in
 
 `driver.py` defines a small adapter protocol (`list_channels`,
 `open`, `recv`, `send`, `state`, `rx_loss`, `timer_wraps`,
-`echoes_dropped`, `close`); `rx_loss`, `timer_wraps` and
-`echoes_dropped` are optional — a driver that omits them is read as one
-that does not watch for receive loss, one whose backends' timestamps
-never roll over, and one that withholds no echoes. The default
+`echoes_dropped`, `reset`, `close`); `rx_loss`, `timer_wraps`,
+`echoes_dropped` and `reset` are optional — a driver that omits them is
+read as one that does not watch for receive loss, one whose backends'
+timestamps never roll over, one that withholds no echoes, and one whose
+bus-off controllers are reopened rather than reset in place. A `send`
+that fails because the driver's transmit queue is full should raise
+`TxRejected(..., queue_full=True)`; without it the queue-full reopen
+never fires. The default
 implementation in `driver_python_can.py` wraps `python-can`. To use
 something else:
 
