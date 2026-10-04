@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { FilterPredicate, TraceFrameRecord } from "./types";
+import type { FilterPredicate, FuzzyWinner, TraceFrameRecord } from "./types";
 import { useTraceModel } from "./traceData";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
@@ -11,6 +11,10 @@ interface FilteredTracePage {
   count: number;
   start: number;
   rows: TraceFrameRecord[];
+  /// What the fuzzy query matched best, absent when the predicate
+  /// carries none. The panel opens the admitted rows' signal
+  /// disclosure when this is "signal" or "value".
+  fuzzy_winner?: FuzzyWinner | null;
 }
 
 /// A paged view of one trace's *filtered* chronological rows. It holds
