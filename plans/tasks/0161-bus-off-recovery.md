@@ -134,5 +134,19 @@ Branch sits in the stack **beside the last driver change**
   re-syncs. Red before: `assert ('passive', 135) == ('warning', 127)`;
   7 tests (`test_counter_derived_state.py`), sidecar 264 passed at the
   restacked tip. Vector and Kvaser read live counters each poll — not
-  affected. TEC count-down needs the echoes 121 turns on, which sit
-  above this branch.
+  affected.
+- 2026-10-03 — **the per-echo decay was wrong on PEAK and is replaced**
+  (owner bench: PEAK echoes unacknowledged frames, so an echo is not a
+  success). `fix-pcan-counters-decay` amended to `e782e3df`: an error
+  frame still re-syncs both counters; a 500 ms status poll that saw no
+  error frame and a clean status word clears them to (0, 0) (a poll
+  interval without an error frame is hundreds of error-free frames or a
+  silent bus; during a fault error frames arrive with every retransmit,
+  so nothing clears). Plus the **PEAK echo gate** (121 § Blockers): an
+  echo arriving while TEC > 127 is dropped and counted
+  (`echoes_dropped=` in the rx stats line); Vector gated as a
+  precaution, Kvaser not. Red before: `AttributeError: … echoes_dropped`,
+  `assert (95, 125) == (100, 130)`, `passive, tec=134` where active was
+  expected. Sidecar 272 passed at the restacked tip; freeze smoke ok.
+  ADR 0039's bus-off amendment carries the PEAK paragraph; README's
+  transmit and bus-health passages carry the caveat.

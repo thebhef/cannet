@@ -157,9 +157,13 @@ Owner rulings 2026-10-03 (new-build walk):
   along the way, since python-can's Kvaser bus reports no state; Vector
   and Kvaser resets unverified on hardware). Bench follow-ups the same
   evening: the stale error-passive reading **fixed**
-  (`fix-pcan-counters-decay` `95431bd0`); the post-recovery burst is the
-  PEAK driver's transmit queue draining — **accepted** as driver
-  behaviour, not fixed.
+  (`fix-pcan-counters-decay`, now `e782e3df`); the post-recovery burst is
+  the PEAK driver's transmit queue draining — **accepted** as driver
+  behaviour, not fixed. **PEAK's echo is not an acknowledge** (owner
+  bench, same evening): ruled — withhold PEAK echoes while the controller
+  is error-passive, Vector likewise as a precaution, Kvaser not; the
+  per-echo counter decay replaced by a per-poll clear; absorbed into the
+  same branch.
 
 ## 3. Fix later
 

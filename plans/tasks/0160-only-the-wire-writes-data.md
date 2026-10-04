@@ -135,3 +135,8 @@ come from an intent.
   bridge's `Tx` drop (121 § Blockers); the plot closing raw gaps at
   decimated zoom (queue § 3); the durable rule (ADR, CONTEXT.md,
   CLAUDE.md).
+- 2026-10-03 — bench: PEAK's echo turned out to be "on the wire", not
+  "acknowledged" (121 § Blockers). The rule stands; on PEAK the wire's
+  own account of a failed transmission is the controller's TEC, carried
+  in every error frame, so an echo from an error-passive transmitter is
+  withheld. Phase 2's durable rule must state the PEAK caveat.

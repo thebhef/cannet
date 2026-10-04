@@ -295,7 +295,12 @@ repaired something broken.
   it, and a frame the bus never carries leaves nothing behind. The one
   row the host still writes itself is `Tx ✗`: a transmit the session
   refused outright (no interface, not connected). Hardware the driver
-  cannot echo shows no `Tx` rows at all.
+  cannot echo shows no `Tx` rows at all. PEAK adapters echo a frame when
+  it goes onto the wire, acknowledged or not, so on PEAK (and Vector, as
+  a precaution) an echo from a controller that has gone error-passive —
+  sixteen failed transmissions in a row — is withheld: a frame
+  retransmitted into a pulled cable is not reported as sent, and the
+  rows resume within a second of the cable coming back.
 - **Changed:** the manual send no longer answers with a row index, and
   its wire status reads `accepted` rather than `sent` — the session
   took the frame; the bus has not spoken yet.
@@ -469,9 +474,8 @@ repaired something broken.
 - **Fixed:** the bus-health panel no longer stays at error-passive after
   a PEAK bus recovers. PEAK reports its error counters only inside
   error frames, so when the errors stopped the last fault reading stood
-  forever; the counters now count down with every frame received and
-  every frame echoed, as the controller's own do, until the next error
-  frame resyncs them.
+  forever; a status poll that sees no error frame and a clean status
+  word now clears them.
 - **New:** a bus can be set to **no interface** on purpose. Picking
   "— no interface —" in the project panel now records that choice
   with the project instead of deleting the binding, and a project with

@@ -142,6 +142,19 @@ bench.
   sidecar and the release binary were rebuilt after the reinstall.
 - 2026-10-03: python-can backends without `receive_own_messages` show no
   `Tx` rows at all — accepted (the row is the wire's).
+- 2026-10-03 (owner bench, confirmed): **PEAK's echo is "on the wire",
+  not "acknowledged".** With the CAN cable pulled a lone PEAK transmitter
+  retransmits forever and PCAN-Basic echoes at the normal cadence, so the
+  phase 1 shape alone still showed `Tx` rows into a dead bus on PEAK.
+  Owner ruling: the sidecar withholds a PEAK echo while the controller is
+  error-passive (TEC > 127 — ISO 11898-1 reaches it after 16 consecutive
+  failed transmissions; PEAK's error frames carry TEC live at the error
+  rate), Vector gated the same way as a precaution (its receipt is not
+  documented as post-ACK), Kvaser not gated (`LOCAL_TXACK` is documented
+  as the on-bus acknowledge). Landed in `fix-pcan-counters-decay`
+  `e782e3df` (beside 161). This is state-gating, accepted here because
+  PCAN-Basic offers no acknowledge-aware confirmation; the gate is on the
+  observed echo, not a synthesised row.
 
 ## Status log
 
