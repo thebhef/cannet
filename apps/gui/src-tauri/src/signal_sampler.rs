@@ -22,21 +22,14 @@
 //! then throws away every value but one.
 //!
 //! [`decimate_min_max`] reduces a (possibly enormous) series to roughly
-//! a requested number of time buckets, keeping each bucket's min- and
-//! max-value point so spikes survive — what the plot panel applies
-//! before handing the data to uPlot, since a window can hold far more
-//! frames than the canvas has pixels.
-//!
-//! [`reduce_transitions`] is the same reduction for a **categorical**
-//! series (one rendered as held states rather than as a line): it keeps
-//! the run boundaries, which is the whole of the *shape* such a
-//! renderer draws. It is what an over-budget window reduces to; a
-//! window that already fits is served whole either way, since the
-//! sample positions inside a run are information the renderer shows
-//! (markers, and where a hovering cursor snaps to).
-//! Which reducer a serve applies is the caller's declared render mode,
-//! not a property of the signal — see
-//! [`SignalCacheStore::slice_many`](crate::signal_cache::SignalCacheStore::slice_many).
+//! a requested number of time buckets, keeping each bucket's first,
+//! last, min- and max-value point so both spikes and held runs survive
+//! — what the plot panel applies before handing the data to uPlot,
+//! since a window can hold far more frames than the canvas has pixels.
+//! It is the **one** reduction every serve applies, whatever the
+//! requesting view draws: an enum lane's held states survive it for the
+//! same reason a stepped line's steps do (ADR 0026), so the host needs
+//! no render-mode flag from the caller.
 
 use cannet_core::CanId;
 use cannet_dbc::Database;
@@ -174,26 +167,46 @@ fn make_id(raw: u32, extended: bool) -> Option<CanId> {
     }
 }
 
-/// Reduce `points` to roughly `max_buckets` time buckets, keeping the
-/// min- and max-value point in each bucket (in timestamp order) so peaks
-/// and troughs survive — the standard "min/max decimation" a plot uses
-/// when there are far more samples than pixels.
+/// Reduce `points` to roughly `max_buckets` time buckets, keeping each
+/// bucket's **first, last, min- and max-value** point (in timestamp
+/// order, deduplicated where they coincide) — min/max decimation with
+/// the bucket's endpoints kept beside its extremes, so both spikes and
+/// held runs survive.
 ///
 /// Bucketing is by point index, not by time: the trace store's samples
 /// are roughly time-ordered and roughly uniformly spaced, so index
 /// buckets approximate time buckets closely enough, and an index walk is
-/// O(n) with no search. Returns at most `2 * max_buckets + 2` points (the
-/// "+ 2" comes from forcing the very first and very last input points
-/// into the output — see below); a `max_buckets` of 0 is treated as "no
-/// decimation". If the series already fits in `max_buckets` points it's
-/// returned unchanged.
+/// O(n) with no search. Returns at most `4 * max_buckets` points; a
+/// `max_buckets` of 0 is treated as "no decimation". If the series
+/// already fits in `max_buckets` points it's returned unchanged.
 ///
-/// The first/last forcing matters for plots: a plot panel passes a slice
-/// `[from, to)` plus one boundary sample on each side so the rendered
-/// line spans the full visible x range. Without the forcing, the
-/// boundary sample can lose the bucket's argmin/argmax race and get
-/// dropped — visible as the line "ending one bin early" inside the
-/// canvas.
+/// **Why the endpoints, and not only the extremes.** A min/max envelope
+/// keeps each bucket's argmin and argmax *by value*, which summarises a
+/// measurement well and loses a held state: a value held across the
+/// middle of a bucket whose neighbours carry both a lower and a higher
+/// one is neither the argmin nor the argmax, so it is dropped outright.
+/// On a 100 Hz enum series that lost a state held for up to 3.21 canvas
+/// pixel columns — not drawn coarsely, absent, so no renderer
+/// downstream could put it back. Keeping the bucket's first and last
+/// sample closes it by construction, and gives this guarantee:
+///
+/// > every run of equal consecutive samples that spans two buckets
+/// > contributes at least one kept sample carrying its value, at every
+/// > alignment of the run against the bucket grid
+///
+/// — because such a run owns the last sample of the bucket it leaves
+/// and the first of the one it enters. It is also what a **stepped**
+/// line needs: a step renderer holds a value to the next sample, so a
+/// bucket's last sample is where its step ends. That is why this is the
+/// one shared reduction rather than a second, categorical one (ADR
+/// 0026).
+///
+/// The endpoints also keep the rendered line touching both ends of the
+/// input series, which matters for plots: a plot panel passes a slice
+/// `[from, to)` plus one boundary sample on each side so the line spans
+/// the full visible x range. Without them the boundary sample can lose
+/// its bucket's argmin/argmax race and get dropped — visible as the line
+/// "ending one bin early" inside the canvas.
 #[must_use]
 pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<SamplePoint> {
     let n = points.len();
@@ -201,7 +214,7 @@ pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<Sampl
         return points.to_vec();
     }
     let bucket = n.div_ceil(max_buckets);
-    let mut out = Vec::with_capacity(2 * max_buckets + 2);
+    let mut out = Vec::with_capacity(4 * max_buckets);
     let mut start = 0;
     while start < n {
         let end = (start + bucket).min(n);
@@ -217,79 +230,19 @@ pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<Sampl
                 hi = i;
             }
         }
-        // Force the first sample of the first bucket and the last sample
-        // of the last bucket into the bucket's "kept" set, so the
-        // rendered line touches both ends of the input series. (See
-        // function-level rustdoc.) Otherwise emit min/max in index order
-        // (collapsing to one when they coincide).
-        let is_first_bucket = start == 0;
-        let is_last_bucket = end == n;
-        let first_idx = 0;
-        let last_idx = slice.len() - 1;
-        let mut keep: [Option<usize>; 4] = [None; 4];
-        if is_first_bucket {
-            keep[0] = Some(first_idx);
-        }
-        keep[1] = Some(lo.min(hi));
-        if lo != hi {
-            keep[2] = Some(lo.max(hi));
-        }
-        if is_last_bucket {
-            keep[3] = Some(last_idx);
-        }
-        // Emit in index order, deduplicating.
+        // The bucket's four kept indices, emitted in index order and
+        // deduplicated: a flat bucket collapses to its first and last,
+        // and a one-sample bucket to that sample.
+        let mut keep = [0, lo.min(hi), lo.max(hi), slice.len() - 1];
+        keep.sort_unstable();
         let mut prev: Option<usize> = None;
-        let mut sorted: Vec<usize> = keep.iter().filter_map(|&i| i).collect();
-        sorted.sort_unstable();
-        for i in sorted {
+        for i in keep {
             if Some(i) != prev {
                 out.push(slice[i]);
                 prev = Some(i);
             }
         }
         start = end;
-    }
-    out
-}
-
-/// Reduce `points` to its **runs**: the first point of every maximal run
-/// of equal values, plus the series' own last point.
-///
-/// This is the categorical counterpart of [`decimate_min_max`], and the
-/// two are not interchangeable. A min/max envelope keeps each bucket's
-/// argmin and argmax *by value*, which is the right summary for a
-/// measurement (a spike survives) and a category error for a code: once a
-/// bucket spans more than one held state, the two extreme codes in it are
-/// kept and every intermediate one is discarded, so the series stops
-/// showing the state that was held and shows a per-bucket envelope
-/// instead. Runs discard nothing a categorical renderer draws — a step
-/// series is exactly its transitions — and cost `O(transitions)` rather
-/// than `O(2 · buckets)`.
-///
-/// Equality is exact: the values are decoded codes, so two samples of the
-/// same state are bit-identical f64s and a tolerance would merge
-/// neighbouring codes.
-///
-/// The last point is always emitted (deduplicated when the final run is a
-/// single sample) because a stepped renderer holds a value forward to the
-/// *next* sample's time: without it the final tile has no end.
-#[must_use]
-#[allow(clippy::float_cmp)]
-pub fn reduce_transitions(points: &[SamplePoint]) -> Vec<SamplePoint> {
-    let Some(first) = points.first() else {
-        return Vec::new();
-    };
-    let mut out = vec![*first];
-    let mut held = first.value;
-    for p in &points[1..] {
-        if p.value != held {
-            out.push(*p);
-            held = p.value;
-        }
-    }
-    let last = points[points.len() - 1];
-    if out[out.len() - 1].t_seconds != last.t_seconds {
-        out.push(last);
     }
     out
 }
@@ -528,11 +481,12 @@ BO_ 256 EngineData: 2 ECU
 
     #[test]
     #[allow(clippy::float_cmp)]
-    fn decimate_keeps_bucket_extrema_in_time_order_with_endpoints_forced() {
-        // 6 points, 2 buckets of 3. Bucket 0 = [10, 1, 5] → first
-        // (forced) = 10@t0, min=1@t1, max=10@t0 → emit [10@t0, 1@t1].
-        // Bucket 1 = [3, 9, 4] → min=3@t3, max=9@t4, last (forced) =
-        // 4@t5 → emit [3@t3, 9@t4, 4@t5].
+    fn decimate_keeps_bucket_extrema_in_time_order_with_endpoints() {
+        // 6 points, 2 buckets of 3. Bucket 0 = [10, 1, 5]: first =
+        // 10@t0, min = 1@t1, max = 10@t0, last = 5@t2 → emit
+        // [10@t0, 1@t1, 5@t2]. Bucket 1 = [3, 9, 4]: first = 3@t3,
+        // min = 3@t3, max = 9@t4, last = 4@t5 → emit
+        // [3@t3, 9@t4, 4@t5].
         let pts = vec![
             pt(0.0, 10.0),
             pt(1.0, 1.0),
@@ -547,6 +501,7 @@ BO_ 256 EngineData: 2 ECU
             vec![
                 pt(0.0, 10.0),
                 pt(1.0, 1.0),
+                pt(2.0, 5.0),
                 pt(3.0, 3.0),
                 pt(4.0, 9.0),
                 pt(5.0, 4.0),
@@ -562,92 +517,68 @@ BO_ 256 EngineData: 2 ECU
 
     #[test]
     #[allow(clippy::float_cmp)]
-    fn decimate_collapses_flat_bucket_to_one_point_keeping_endpoints() {
+    fn decimate_collapses_flat_bucket_to_its_endpoints() {
         let pts = vec![pt(0.0, 7.0), pt(1.0, 7.0), pt(2.0, 7.0), pt(3.0, 7.0)];
-        // Bucket 0 (first): forced first (0) + min/max (both 0 since
-        // values flat) → just [0]. Bucket 1 (last): min/max (both 2)
-        // + forced last (3) → [2, 3]. Endpoints come through.
+        // A flat bucket's min and max are both its first sample, so
+        // each bucket collapses to its own first and last — which is
+        // also what a stepped renderer needs to know where the held
+        // run starts and where it ends.
         assert_eq!(
             decimate_min_max(&pts, 2),
-            vec![pt(0.0, 7.0), pt(2.0, 7.0), pt(3.0, 7.0)],
+            vec![pt(0.0, 7.0), pt(1.0, 7.0), pt(2.0, 7.0), pt(3.0, 7.0)],
         );
     }
 
-    /// The categorical reducer's reason to exist, stated as a contrast.
+    /// The guarantee a stepped renderer rests on: **a run of equal
+    /// consecutive samples that spans two buckets contributes at least
+    /// one kept sample carrying its value, at every alignment of the run
+    /// against the bucket grid.**
     ///
-    /// A series cycling `0..=5`, each code held for many samples, over a
-    /// point budget far below the sample count. `reduce_transitions`
-    /// must still carry **every code** and **every transition time**;
-    /// `decimate_min_max` cannot, by construction — once a bucket spans
-    /// more than one hold it keeps that bucket's argmin and argmax by
-    /// value and discards every intermediate code.
+    /// A min/max envelope alone cannot promise that. It keeps a bucket's
+    /// argmin and argmax *by value*, so a code held across the middle of
+    /// a bucket whose neighbours carry both a lower and a higher code is
+    /// neither, and vanishes — measured at up to 3.21 canvas pixel
+    /// columns wide on a 100 Hz enum series. Keeping each bucket's first
+    /// and last sample closes it: a run that crosses a bucket boundary
+    /// owns the last sample of the bucket it leaves and the first of the
+    /// one it enters.
+    ///
+    /// The held code is `3` against a background cycling `0..=5`, which
+    /// is the adversarial case — strictly between the codes its bucket
+    /// neighbours carry, so neither the bucket's argmin nor its argmax.
     #[test]
     #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
-    fn runs_survive_a_budget_that_min_max_decimation_would_flatten() {
-        const CODES: usize = 6;
-        const HOLD: usize = 50;
-        let mut pts = Vec::new();
-        for _cycle in 0..4 {
-            for code in 0..CODES {
-                for _ in 0..HOLD {
-                    let i = pts.len();
-                    pts.push(pt(i as f64, code as f64));
+    fn a_run_spanning_two_buckets_survives_at_every_alignment() {
+        const N: usize = 600;
+        const MAX_BUCKETS: usize = 100;
+        const HELD: f64 = 3.0;
+        let bucket = N.div_ceil(MAX_BUCKETS);
+        for hold in 2..=bucket + 1 {
+            for start in 0..3 * bucket {
+                let pts: Vec<SamplePoint> = (0..N)
+                    .map(|i| {
+                        let v = if i >= start && i < start + hold {
+                            HELD
+                        } else {
+                            (i % 6) as f64
+                        };
+                        pt(i as f64, v)
+                    })
+                    .collect();
+                let out = decimate_min_max(&pts, MAX_BUCKETS);
+                let carried = out.iter().any(|p| {
+                    p.value == HELD
+                        && p.t_seconds >= start as f64
+                        && p.t_seconds < (start + hold) as f64
+                });
+                if start / bucket != (start + hold - 1) / bucket {
+                    assert!(
+                        carried,
+                        "hold {hold} at {start} spans two buckets but no kept sample carries it",
+                    );
                 }
             }
         }
-        // Where each held run starts — the transitions the lane draws.
-        let starts: Vec<f64> = (0..pts.len())
-            .step_by(HOLD)
-            .map(|i| pts[i].t_seconds)
-            .collect();
-
-        let runs = reduce_transitions(&pts);
-        // Every run start, in order, plus the series' last point so the
-        // final tile has an end.
-        assert_eq!(
-            runs.iter().map(|p| p.t_seconds).collect::<Vec<_>>(),
-            starts
-                .iter()
-                .copied()
-                .chain(std::iter::once(pts.last().unwrap().t_seconds))
-                .collect::<Vec<_>>(),
-        );
-        for code in 0..CODES {
-            assert!(
-                runs.iter().any(|p| p.value == code as f64),
-                "code {code} missing from the run reduction",
-            );
-        }
-
-        // The envelope reducer at a budget of 4 buckets — each bucket
-        // spans a whole 0..=5 cycle, so its argmin is code 0 and its
-        // argmax code 5 and the four codes in between are gone. This is
-        // the reported symptom in miniature: not a late lane, a lane
-        // showing an alternating stripe of the two extreme codes.
-        let envelope = decimate_min_max(&pts, 4);
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let kept: std::collections::BTreeSet<u64> =
-            envelope.iter().map(|p| p.value as u64).collect();
-        assert_eq!(
-            kept,
-            [0, 5].into_iter().collect(),
-            "min/max decimation keeps only each bucket's extreme codes",
-        );
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn reduce_transitions_edges() {
-        assert_eq!(reduce_transitions(&[]), Vec::<SamplePoint>::new());
-        // One point is its own run and its own end.
-        assert_eq!(reduce_transitions(&[pt(1.0, 3.0)]), vec![pt(1.0, 3.0)]);
-        // A held series collapses to its first and last point — the tile
-        // needs both to know where it starts and where it ends.
-        let flat = vec![pt(0.0, 7.0), pt(1.0, 7.0), pt(2.0, 7.0)];
-        assert_eq!(reduce_transitions(&flat), vec![pt(0.0, 7.0), pt(2.0, 7.0)]);
-        // A transition on the very last sample is emitted once, not twice.
-        let late = vec![pt(0.0, 1.0), pt(1.0, 1.0), pt(2.0, 2.0)];
-        assert_eq!(reduce_transitions(&late), vec![pt(0.0, 1.0), pt(2.0, 2.0)]);
     }
 
     #[test]
@@ -656,9 +587,9 @@ BO_ 256 EngineData: 2 ECU
             .map(|i| pt(f64::from(i), f64::from((i * 7) % 13)))
             .collect();
         let out = decimate_min_max(&pts, 50);
-        // Bound is `2 * max_buckets + 2` after the endpoint-forcing
-        // rule (the +2 covers the forced first / last input points).
-        assert!(out.len() <= 102, "got {}", out.len());
+        // Bound is `4 * max_buckets`: each bucket keeps its first,
+        // last, min and max.
+        assert!(out.len() <= 200, "got {}", out.len());
         assert!(out.len() >= 50);
         // Endpoints make it through.
         assert_eq!(out.first().map(|p| p.t_seconds), Some(0.0));

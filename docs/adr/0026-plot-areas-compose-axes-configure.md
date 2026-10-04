@@ -382,10 +382,34 @@ with [ADR 0007](0007-uplot-plot-renderer.md):
 - unified: one uPlot instance carrying several *scales* (one per unit)
   with only the primary's axis ticks shown.
 
-The host still min/max-decimates each series; the frontend merge now
-targets a per-axis scale set instead of a single shared y scale. ADR
-0007's data pipeline is unchanged; this is a usage decision on top of
-it.
+The host still decimates each series; the frontend merge now targets a
+per-axis scale set instead of a single shared y scale. ADR 0007's data
+pipeline is unchanged; this is a usage decision on top of it.
+
+**One serve summarises a window for every render mode: each bucket's
+first, last, min and max sample.** A plain min/max envelope keeps a
+bucket's argmin and argmax *by value*, which summarises a measurement
+well and loses a held state — a code held across the middle of a bucket
+whose neighbours carry both a lower and a higher one is neither, so it
+is dropped outright. Measured on a 100 Hz enum series at one bucket per
+canvas pixel column, a state held for up to **3.21 columns** was served
+with no sample carrying its code at all: absent, not coarse, so nothing
+a renderer did downstream could put it back. Keeping the bucket's first
+and last sample beside its extremes closes that by construction —
+a run that crosses a bucket boundary owns the last sample of the bucket
+it leaves and the first of the one it enters — and it is what a
+**stepped** line needs anyway, since a step renderer holds a value to
+the next sample and a bucket's last sample is where its step ends. The
+answer is bounded by `4 × max_points` instead of `2 × max_points`,
+which is what that costs.
+
+So the host is told a window and a point budget, never a render mode.
+The alternative — a second, categorical reduction the caller asks for
+when it is drawing held states — shipped and was removed: it put a
+view fact into the serve, gave a lane a different set of sample
+positions from the line beside it, and placed every marker on a tile
+edge at a coarse zoom, which is precisely the density information
+markers exist to show.
 
 ## Why
 

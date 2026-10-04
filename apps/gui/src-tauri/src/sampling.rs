@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
 use crate::ipc::{DecimatedRange, SampledPoints, SignalExtent, SignalQuery};
-use crate::signal_cache::{CacheQuery, Reduction};
+use crate::signal_cache::CacheQuery;
 use crate::signal_sampler;
 
 /// Sample a batch of DBC signals over a slice `[from_index, window_end)`
@@ -37,17 +37,10 @@ use crate::signal_sampler;
 /// that fetch is min/max-decimated rather than shipping a point per
 /// frame; on an incremental tick it passes `0` (the slice is already
 /// small, and the caller re-decimates its own accumulated series).
-/// Min/max decimation preserves per-bucket extrema, so spikes survive.
-///
-/// `categorical` (absent ⇒ `false`) picks the *reduction* that budget is
-/// spent on: a caller drawing held states rather than a line asks for
-/// [`Reduction::Runs`], which keeps the window's transitions instead of
-/// each bucket's extreme values. A min/max envelope over a code series
-/// keeps only the lowest and highest code of each bucket, so every state
-/// held in between disappears from the answer once the window holds more
-/// samples than the budget. The flag comes from the caller because render
-/// mode is view state: the same signal is a line on one axis and a lane
-/// on another, and one fetch batches exactly one axis.
+/// The reduction keeps each bucket's first, last, min and max sample, so
+/// a spike survives for a line and a held run survives for an enum lane
+/// — one serve for every render mode, and no flag from the caller
+/// saying which it is (ADR 0026).
 ///
 /// The returned `from_seconds` / `last_seconds` are facts about the
 /// *window*, read off the store's anchors — they do not depend on which
@@ -75,7 +68,6 @@ pub(crate) async fn sample_signals(
     to_seconds: Option<f64>,
     signals: Vec<SignalQuery>,
     max_points: u32,
-    categorical: Option<bool>,
 ) -> tauri::ipc::Response {
     let encoded = off_async_workers(move || {
         let sample = sample_signals_inner(
@@ -86,7 +78,6 @@ pub(crate) async fn sample_signals(
             to_seconds,
             &signals,
             max_points,
-            categorical.unwrap_or(false),
         );
         encode_signals_sample(&sample)
     })
@@ -198,7 +189,6 @@ fn sample_signals_inner(
     to_seconds: Option<f64>,
     signals: &[SignalQuery],
     max_points: u32,
-    categorical: bool,
 ) -> DecimatedRange {
     let state: State<'_, AppState> = app.state();
 
@@ -261,11 +251,6 @@ fn sample_signals_inner(
         slice_from,
         slice_to,
         max_points as usize,
-        if categorical {
-            Reduction::Runs
-        } else {
-            Reduction::MinMax
-        },
         &state.trace_store,
         &db_refs,
     );
