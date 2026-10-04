@@ -1361,30 +1361,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [],
   );
-  /** Set a series' color after it's been added (per ADR 0026). A
-   * manual pick updates in place; a pattern-derived row (no manual
-   * entry) is materialized as a manual pick carrying the new color —
-   * that's what makes a per-signal color override stick across
-   * pattern re-evaluations and project reloads. */
-  const setSignalColor = useCallback((areaId: string, ref: SignalRef, color: string) => {
-    const key = signalRefKey(ref);
-    setAreas((prev) =>
-      prev.map((a) => {
-        if (a.id !== areaId) return a;
-        if (a.signals.some((s) => signalRefKey(s) === key)) {
-          return {
-            ...a,
-            signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, colorPick: color } : s)),
-          };
-        }
-        return { ...a, signals: [...a.signals, { ...ref, colorPick: color, viaPattern: true }] };
-      }),
-    );
-  }, []);
   /** Toggle a series' hidden flag. Same materialization rule as
-   * `setSignalColor`: hiding a pattern-derived row pins it as a manual
-   * pick (hidden), so the choice persists instead of being rebuilt
-   * away on the next catalog re-evaluation. */
+   * `setSelectionColor` below: hiding a pattern-derived row pins it as
+   * a manual pick (hidden), so the choice persists instead of being
+   * rebuilt away on the next catalog re-evaluation. */
   const toggleSignalHidden = useCallback((areaId: string, ref: SignalRef) => {
     const key = signalRefKey(ref);
     setAreas((prev) =>
@@ -2061,6 +2041,38 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [selectedRefsFor],
   );
 
+  /// Bulk-set the parent area's current selection's colour pick — the
+  /// selection-scoped sibling of the swatch's right-click picker (ADR
+  /// 0026), applied to every selected row in **one** `setAreas` call
+  /// instead of one pick per row. Same per-row materialization rule as
+  /// `setSelectionHidden` above (a pattern-derived row in the
+  /// selection is pinned as a manual pick carrying the new
+  /// `colorPick`). A no-op if the parent area's selection is empty —
+  /// `PlotArea` resolves the unselected-row case to a sole selection
+  /// before this ever fires, so in practice it always has at least the
+  /// clicked row.
+  const setSelectionColor = useCallback(
+    (areaId: string, color: string) => {
+      const refs = selectedRefsFor(areaId);
+      if (refs.length === 0) return;
+      const keys = new Set(refs.map(signalRefKey));
+      setAreas((prev) =>
+        prev.map((a) => {
+          if (a.id !== areaId) return a;
+          const existingKeys = new Set(a.signals.map(signalRefKey));
+          const updated = a.signals.map((s) =>
+            keys.has(signalRefKey(s)) ? { ...s, colorPick: color } : s,
+          );
+          const toAppend = refs
+            .filter((r) => !existingKeys.has(signalRefKey(r)))
+            .map((r) => ({ ...r, colorPick: color, viaPattern: true }));
+          return { ...a, signals: [...updated, ...toAppend] };
+        }),
+      );
+    },
+    [selectedRefsFor],
+  );
+
   /// A selected row started a drag: fan the whole selection into the
   /// drag payload (DatabasePanel precedent, ADR 0045) instead of just the
   /// grabbed row. A no-op when the parent area's selection is empty or
@@ -2466,11 +2478,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
             removeSignal,
             placeSignal,
             toggleSignalHidden,
-            setSignalColor,
             setDisplayUnit,
             setAreaPatterns,
             materializePatterns,
             setSelectionHidden,
+            setSelectionColor,
             dragSelection,
             sortArea,
           ],
@@ -2489,12 +2501,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
             onDropSignal: (ref, beforeKey, isInternalMove) =>
               placeSignal(ref, parent.id, beforeKey, isInternalMove),
             onToggleHidden: (ref) => toggleSignalHidden(parent.id, ref),
-            onSetSignalColor: (ref, color) => setSignalColor(parent.id, ref, color),
             onSetDisplayUnit: (ref, unit) => setDisplayUnit(parent.id, ref, unit),
             onSetPatterns: (ps) => setAreaPatterns(parent.id, ps),
             onMaterializePatterns: () => materializePatterns(parent.id, parent.signals),
             onSetYScale: (patch) => setAxisScales((prev) => setAxisScale(prev, axisId, patch)),
             onSetSelectionHidden: (hidden) => setSelectionHidden(parent.id, hidden),
+            onSetSelectionColor: (color) => setSelectionColor(parent.id, color),
             onDragSelection: (dataTransfer) => dragSelection(parent.id, dataTransfer),
             onSortArea: () => sortArea(parent.id),
           }),
@@ -2518,11 +2530,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
     removeSignal,
     placeSignal,
     toggleSignalHidden,
-    setSignalColor,
     setDisplayUnit,
     setAreaPatterns,
     materializePatterns,
     setSelectionHidden,
+    setSelectionColor,
     dragSelection,
     sortArea,
   ]);

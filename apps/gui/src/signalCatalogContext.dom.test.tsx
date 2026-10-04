@@ -82,6 +82,7 @@ function baseProjectCtx(over: Partial<ProjectContextValue> = {}): ProjectContext
     onUpdateVirtualBus: () => {},
     signalColors: {},
     onSetSignalColor: () => {},
+    onSetSignalColors: () => {},
     ...over,
   };
 }

@@ -211,6 +211,7 @@ const projectCtx: ProjectContextValue = {
   onUpdateVirtualBus: () => {},
   signalColors: {},
   onSetSignalColor: () => {},
+  onSetSignalColors: () => {},
 };
 
 /// The slice of dockview's panel API the Database panel touches:

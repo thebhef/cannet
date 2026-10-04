@@ -188,6 +188,7 @@ const projectCtx: ProjectContextValue = {
   onUpdateVirtualBus: () => {},
   signalColors: {},
   onSetSignalColor: () => {},
+  onSetSignalColors: () => {},
 };
 
 function renderPanel(opts?: {
