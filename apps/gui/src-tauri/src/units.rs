@@ -11,7 +11,7 @@
 //! and interpreting units means owning a table of multipliers nobody
 //! wants to hand-curate (5/9 for °F, 0.44704 for mph, 6894.757 for psi,
 //! 2π/60 for rpm). The library supplies those numbers. What it does not
-//! supply is a *policy*, and the two policies below are ours:
+//! supply is a *policy*, and the policies below are ours:
 //!
 //! - **Dimensions are our grouping, not the library's base units.** The
 //!   library compares SI base dimensions, under which `rpm` converts to
@@ -21,10 +21,38 @@
 //!   **within one [`Dimension`]**, and every unit in a dimension is one
 //!   library quantity's (`every_dimension_is_one_convertible_family`).
 //! - **Offsets are ours.** The library's `UnitDefinition` carries a
-//!   multiplier and nothing else, and its absolute-temperature quantity
-//!   is not built in this release — so the constants that make °C and °F
-//!   absolute readings rather than intervals live in this module's unit
-//!   table, over the library's temperature-interval multipliers.
+//!   multiplier and nothing else, and it builds no absolute-temperature
+//!   quantity — so the constants that make °C and °F absolute readings
+//!   rather than intervals are this module's
+//!   (`ABSOLUTE_TEMPERATURES`), laid over the library's
+//!   temperature-*interval* multipliers. The intervals themselves are a
+//!   dimension of their own beside them.
+//! - **A proportion takes a scale, not an SI ladder.** The ratio family
+//!   is one picker row whose second column is every ratio unit the
+//!   library carries, largest scale first; a millipercent is not a unit
+//!   anybody means.
+//! - **A count is not a proportion.** The library's one dimensionless
+//!   `scalar` is a dimension of its own here — the no-unit placeholder
+//!   a bare count of packets carries, which converts to nothing at all
+//!   where a percentage converts to a 0–1 ratio.
+//!
+//! ## Where the table comes from
+//!
+//! **Every unit of every quantity the library builds is offered**, and
+//! nothing here chooses between them. [`Dimension`] names the library's
+//! quantities — that list is the only hand-written part — and the rows
+//! are read back out of the library: its own enumeration of a
+//! quantity's units, each one's multiplier, and its symbol, singular and
+//! plural. A unit is a **prefixed rung** of another where the library's
+//! name for it says so *and* its multiplier agrees with the prefix
+//! (`prefix_rung`); everything else is a base unit, which is the
+//! footing `bar`, `psi` and every imperial unit ride on.
+//!
+//! Two spellings are derived rather than taken verbatim: a unit reads as
+//! its symbol with the library's ` · ` product separator closed up (`A
+//! · h` is `Ah`, which is what a database writes and what a
+//! composition contracts to), and the library's one unit with no symbol
+//! at all — the bare 0–1 ratio — reads as its id.
 //!
 //! ## Identity: base unit × SI prefix
 //!
@@ -87,14 +115,9 @@
 //! `C` is a guess between coulomb and Celsius that this module refuses
 //! to make.
 
-use std::collections::BTreeMap;
-use std::sync::{PoisonError, RwLock};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{LazyLock, PoisonError, RwLock};
 
-use runtime_units::units::{
-    AngularVelocityUnit, DimensionlessUnit, ElectricChargeUnit, ElectricCurrentUnit,
-    ElectricPotentialUnit, EnergyUnit, FrequencyUnit, LengthUnit, PowerUnit, PressureUnit,
-    RatioUnit, TemperatureIntervalUnit, TimeUnit, TorqueUnit, VelocityUnit,
-};
 use runtime_units::units_base::UnitDefinition;
 use runtime_units::Units;
 use serde::{Deserialize, Serialize};
@@ -158,58 +181,303 @@ impl Affine {
     }
 }
 
-/// The physical quantity a unit measures — the facade's own grouping,
-/// and the only thing that decides whether two units convert.
-///
-/// One dimension is one library quantity (`ratio` is the exception:
-/// dimensionless scalars and percentages are one family to a user), so
-/// the multipliers within a dimension share a base and composing them is
-/// sound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Dimension {
-    Voltage,
-    Current,
-    Charge,
-    Power,
-    Energy,
-    Torque,
-    AngularVelocity,
-    Pressure,
-    Frequency,
-    Ratio,
-    Temperature,
-    Speed,
-    Time,
-    Length,
-    /// The no-unit placeholder — a bare count. Told apart from
-    /// [`Self::Ratio`] by kind: a percentage is a *proportion* and
-    /// converts to a bare 0–1 ratio, where a count of packets converts
-    /// to nothing at all.
-    Scalar,
+/// One unit as the **library** hands it over, before this module has
+/// decided what to call it or whether it is a rung of a ladder.
+struct Row {
+    /// The library's own name for the unit, which is what
+    /// [`prefix_rung`] reads and what the id is spelled from.
+    variant: String,
+    symbol: &'static str,
+    singular: &'static str,
+    plural: &'static str,
+    multiplier: f64,
+    unit: Units,
 }
 
+fn library_rows(
+    spellings: &'static [&'static str],
+    read: impl Fn(&'static str) -> Option<Row>,
+) -> Vec<Row> {
+    spellings.iter().copied().filter_map(read).collect()
+}
+
+/// Declares [`Dimension`] over the library's quantities: one variant per
+/// quantity, and the reading of that quantity's units that every lookup
+/// in this module goes through.
+macro_rules! dimensions {
+    ($($variant:ident => $unit:ident),+ $(,)?) => {
+        /// The physical quantity a unit measures — the facade's own
+        /// grouping, and the only thing that decides whether two units
+        /// convert.
+        ///
+        /// One dimension is one library quantity, so the multipliers
+        /// within a dimension share a base and composing them is sound
+        /// (`every_dimension_is_one_convertible_family`). The exception
+        /// is [`Self::Temperature`]: the library builds no absolute
+        /// temperature, so this module lays its own offsets over the
+        /// library's temperature intervals, which stay a dimension of
+        /// their own.
+        ///
+        /// The serialized name is the variant in kebab-case, and it is a
+        /// math signal's `kind` in a project file — so a spelling here
+        /// is a contract, not a label.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        pub enum Dimension {
+            $($variant,)+
+        }
+
+        /// Every dimension, in the order composition resolves them.
+        static DIMENSIONS: &[Dimension] = &[$(Dimension::$variant,)+];
+
+        impl Dimension {
+            /// The variant's own spelling — what [`Dimension::kebab`]
+            /// and [`Dimension::label`] are both derived from, so
+            /// neither can drift from the name in the source.
+            fn spelled(self) -> &'static str {
+                match self {
+                    $(Self::$variant => stringify!($variant),)+
+                }
+            }
+
+            /// Every unit the library enumerates for this dimension's
+            /// quantity.
+            ///
+            /// The library lists a quantity's units by their singular
+            /// name and reads a unit back from a spelling; a name two
+            /// units of one quantity share reaches only the first of
+            /// them, so the round-trip is checked rather than assumed.
+            fn rows(self) -> Vec<Row> {
+                match self {
+                    $(Self::$variant => library_rows(
+                        runtime_units::units::$unit::units(),
+                        |spelling| {
+                            let unit =
+                                runtime_units::units::$unit::try_from(spelling).ok()?;
+                            (unit.singular() == spelling).then(|| Row {
+                                variant: format!("{unit:?}"),
+                                symbol: unit.abbreviation(),
+                                singular: unit.singular(),
+                                plural: unit.plural(),
+                                multiplier: unit.multiplier(),
+                                unit: Units::from(unit),
+                            })
+                        },
+                    ),)+
+                }
+            }
+
+            /// What the **library** makes of a spelling inside this
+            /// dimension's quantity — the independent answer the prefix
+            /// cross-check holds this module's composed factors against.
+            #[cfg(test)]
+            fn library_definition(self, spelling: &str) -> Option<UnitDefinition> {
+                match self {
+                    $(Self::$variant => runtime_units::units::$unit::try_from(spelling)
+                        .ok()
+                        .map(|unit| UnitDefinition::from(Units::from(unit))),)+
+                }
+            }
+        }
+    };
+}
+
+// The head of this list is the fifteen dimensions this facade named
+// before the table came from the library, **in the order composition has
+// always resolved them**: a product landing on base dimensions two
+// families share reads as the first of them, so an amp times an hour is
+// a charge rather than a duration of current. Everything after it is
+// alphabetical — an order nobody has to maintain, and one that leaves
+// every automotive family ahead of the quantities that merely share its
+// exponents.
+dimensions! {
+    Charge => ElectricChargeUnit,
+    Energy => EnergyUnit,
+    Power => PowerUnit,
+    Voltage => ElectricPotentialUnit,
+    Current => ElectricCurrentUnit,
+    Frequency => FrequencyUnit,
+    Pressure => PressureUnit,
+    Speed => VelocityUnit,
+    Length => LengthUnit,
+    Time => TimeUnit,
+    Temperature => TemperatureIntervalUnit,
+    Torque => TorqueUnit,
+    AngularVelocity => AngularVelocityUnit,
+    Ratio => RatioUnit,
+    Scalar => DimensionlessUnit,
+
+    Absement => AbsementUnit,
+    AbsorbedDose => AbsorbedDoseUnit,
+    Acceleration => AccelerationUnit,
+    Action => ActionUnit,
+    AmountOfSubstance => AmountOfSubstanceUnit,
+    Angle => AngleUnit,
+    AngularAcceleration => AngularAccelerationUnit,
+    AngularJerk => AngularJerkUnit,
+    Area => AreaUnit,
+    ArealDensityOfStates => ArealDensityOfStatesUnit,
+    ArealMassDensity => ArealMassDensityUnit,
+    ArealNumberDensity => ArealNumberDensityUnit,
+    ArealNumberRate => ArealNumberRateUnit,
+    Capacitance => CapacitanceUnit,
+    CatalyticActivity => CatalyticActivityUnit,
+    CatalyticActivityConcentration => CatalyticActivityConcentrationUnit,
+    CubeRootScaledLength => CubeRootScaledLengthUnit,
+    Curvature => CurvatureUnit,
+    DiffusionCoefficient => DiffusionCoefficientUnit,
+    DoseEquivalent => DoseEquivalentUnit,
+    DynamicViscosity => DynamicViscosityUnit,
+    ElectricChargeArealDensity => ElectricChargeArealDensityUnit,
+    ElectricChargeLinearDensity => ElectricChargeLinearDensityUnit,
+    ElectricChargeVolumetricDensity => ElectricChargeVolumetricDensityUnit,
+    ElectricCurrentDensity => ElectricCurrentDensityUnit,
+    ElectricDipoleMoment => ElectricDipoleMomentUnit,
+    ElectricDisplacementField => ElectricDisplacementFieldUnit,
+    ElectricField => ElectricFieldUnit,
+    ElectricFlux => ElectricFluxUnit,
+    ElectricPermittivity => ElectricPermittivityUnit,
+    ElectricQuadrupoleMoment => ElectricQuadrupoleMomentUnit,
+    ElectricalConductance => ElectricalConductanceUnit,
+    ElectricalConductivity => ElectricalConductivityUnit,
+    ElectricalMobility => ElectricalMobilityUnit,
+    ElectricalResistance => ElectricalResistanceUnit,
+    ElectricalResistivity => ElectricalResistivityUnit,
+    Force => ForceUnit,
+    FrequencyDrift => FrequencyDriftUnit,
+    HeatCapacity => HeatCapacityUnit,
+    HeatFluxDensity => HeatFluxDensityUnit,
+    HeatTransfer => HeatTransferUnit,
+    Inductance => InductanceUnit,
+    Information => InformationUnit,
+    InformationRate => InformationRateUnit,
+    Jerk => JerkUnit,
+    LinearDensityOfStates => LinearDensityOfStatesUnit,
+    LinearMassDensity => LinearMassDensityUnit,
+    LinearNumberDensity => LinearNumberDensityUnit,
+    LinearNumberRate => LinearNumberRateUnit,
+    LinearPowerDensity => LinearPowerDensityUnit,
+    Luminance => LuminanceUnit,
+    LuminousIntensity => LuminousIntensityUnit,
+    MagneticFieldStrength => MagneticFieldStrengthUnit,
+    MagneticFlux => MagneticFluxUnit,
+    MagneticFluxDensity => MagneticFluxDensityUnit,
+    MagneticMoment => MagneticMomentUnit,
+    MagneticPermeability => MagneticPermeabilityUnit,
+    Mass => MassUnit,
+    MassConcentration => MassConcentrationUnit,
+    MassDensity => MassDensityUnit,
+    MassFlux => MassFluxUnit,
+    MassRate => MassRateUnit,
+    Molality => MolalityUnit,
+    MolarConcentration => MolarConcentrationUnit,
+    MolarEnergy => MolarEnergyUnit,
+    MolarFlux => MolarFluxUnit,
+    MolarHeatCapacity => MolarHeatCapacityUnit,
+    MolarMass => MolarMassUnit,
+    MolarRadioactivity => MolarRadioactivityUnit,
+    MolarVolume => MolarVolumeUnit,
+    MomentOfInertia => MomentOfInertiaUnit,
+    Momentum => MomentumUnit,
+    PressureImpulse => PressureImpulseUnit,
+    RadiantExposure => RadiantExposureUnit,
+    Radioactivity => RadioactivityUnit,
+    ReciprocalLength => ReciprocalLengthUnit,
+    SolidAngle => SolidAngleUnit,
+    SpecificArea => SpecificAreaUnit,
+    SpecificEnergy => SpecificEnergyUnit,
+    SpecificHeatCapacity => SpecificHeatCapacityUnit,
+    SpecificRadioactivity => SpecificRadioactivityUnit,
+    SpecificVolume => SpecificVolumeUnit,
+    SurfaceElectricCurrentDensity => SurfaceElectricCurrentDensityUnit,
+    TemperatureCoefficient => TemperatureCoefficientUnit,
+    TemperatureGradient => TemperatureGradientUnit,
+    TemperatureInterval => TemperatureIntervalUnit,
+    ThermalConductivity => ThermalConductivityUnit,
+    Volume => VolumeUnit,
+    VolumeRate => VolumeRateUnit,
+    VolumetricDensityOfStates => VolumetricDensityOfStatesUnit,
+    VolumetricHeatCapacity => VolumetricHeatCapacityUnit,
+    VolumetricNumberDensity => VolumetricNumberDensityUnit,
+    VolumetricNumberRate => VolumetricNumberRateUnit,
+    VolumetricPowerDensity => VolumetricPowerDensityUnit,
+}
+
+/// The absolute temperature scales, and the constant that makes each a
+/// reading rather than an interval.
+///
+/// **This is the facade's own contribution**, and the reason
+/// [`Dimension::Temperature`] exists at all: the library carries
+/// temperature *intervals* (a °C step is a K step) and builds no
+/// absolute-temperature quantity, so a 0 °C that is 273.15 K comes from
+/// here. Each names a library interval unit; the multipliers are still
+/// the library's.
+static ABSOLUTE_TEMPERATURES: &[(&str, f64)] = &[
+    ("kelvin", 0.0),
+    ("degree_celsius", 273.15),
+    ("degree_fahrenheit", 459.67),
+    // Rankine is Fahrenheit-sized and absolute already, so its offset is
+    // nothing — it is here because the library carries it and this
+    // module does not pick among the scales it finds.
+    ("degree_rankine", 0.0),
+];
+
+fn absolute_constant(variant: &str) -> Option<f64> {
+    ABSOLUTE_TEMPERATURES
+        .iter()
+        .find(|(name, _)| *name == variant)
+        .map(|(_, constant)| *constant)
+}
+
+/// `AngularVelocity` → `angular-velocity`: serde's own kebab rule,
+/// spelled out so the picker label and the id qualifier read the same
+/// name the project file does.
+fn kebab_case(camel: &str) -> String {
+    let mut out = String::with_capacity(camel.len() + 8);
+    for (at, ch) in camel.char_indices() {
+        if at != 0 && ch.is_ascii_uppercase() {
+            out.push('-');
+        }
+        out.extend(ch.to_lowercase());
+    }
+    out
+}
+
+/// The serialized name and the picker label of every dimension, both
+/// derived from the variant's spelling.
+static NAMES: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::new(|| {
+    DIMENSIONS
+        .iter()
+        .map(|dimension| {
+            let kebab: &'static str = String::leak(kebab_case(dimension.spelled()));
+            let label: &'static str = String::leak(kebab.replace('-', " "));
+            (kebab, label)
+        })
+        .collect()
+});
+
 impl Dimension {
+    /// Every dimension, in the order composition resolves them.
+    #[must_use]
+    pub fn all() -> &'static [Self] {
+        DIMENSIONS
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The **serialized** name — a math signal's `kind` in a project
+    /// file.
+    #[must_use]
+    pub fn kebab(self) -> &'static str {
+        NAMES[self.index()].0
+    }
+
     /// The label a picker groups by.
     #[must_use]
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Voltage => "voltage",
-            Self::Current => "current",
-            Self::Charge => "charge",
-            Self::Power => "power",
-            Self::Energy => "energy",
-            Self::Torque => "torque",
-            Self::AngularVelocity => "angular velocity",
-            Self::Pressure => "pressure",
-            Self::Frequency => "frequency",
-            Self::Ratio => "ratio",
-            Self::Temperature => "temperature",
-            Self::Speed => "speed",
-            Self::Time => "time",
-            Self::Length => "length",
-            Self::Scalar => "scalar",
-        }
+        NAMES[self.index()].1
     }
 }
 
@@ -219,7 +487,9 @@ impl Dimension {
 /// enumerate: a picker offers a base unit and a prefix, so an exponent
 /// the crate has no variant for is composed rather than missing (design
 /// ruling — enumeration gaps do not dictate the model).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Prefix {
     Yocto,
@@ -490,11 +760,11 @@ impl UnitReading {
 ///
 /// `id` is the stable name everything else keys on — a project file's
 /// source-unit override, the customization dict's value, a definition's
-/// target unit. It is kebab-case ASCII so it is a safe JSON key and
-/// survives a library swap; `display` is what a label shows.
+/// target unit. It is the library's own name for the unit in kebab-case,
+/// so it is a safe JSON key; `display` is what a label shows.
 struct Entry {
-    id: &'static str,
-    display: &'static str,
+    id: String,
+    display: String,
     dimension: Dimension,
     unit: Units,
     /// The constant added **before** the library's multiplier when
@@ -503,15 +773,16 @@ struct Entry {
     /// than an interval.
     constant: f64,
     /// The **base unit** this entry is a prefixed form of, or its own id
-    /// where it is one. A `millivolt` row is the crate's enumerated
+    /// where it is one. A `millivolt` row is the library's enumerated
     /// variant of `{base: "volt", prefix: Milli}`, which is the identity
     /// the model actually carries.
-    base: &'static str,
+    base: String,
     prefix: Prefix,
-    /// Whether the SI ladder applies to this base unit. False for the
-    /// absolute temperatures (a milli-°C has no offset that means
-    /// anything), the ratio family (which takes a scale choice instead)
-    /// and the composite spellings — `km/h` is not prefixable, `km` is.
+    /// Whether the SI ladder applies to this base unit — true exactly
+    /// where the library tabulates a rung of it, after which the whole
+    /// range is in the model whatever it happens to carry (`kbar` from
+    /// `mbar` alone). False for a unit with no rung at all: an absolute
+    /// temperature, a member of the ratio family, `min`, `psi`, `km/h`.
     /// Read only on a base entry.
     prefixable: bool,
 }
@@ -556,465 +827,232 @@ pub struct UnitListing {
     pub spelling: String,
 }
 
-/// Every unit the app offers, grouped by hand for reading.
+/// **Every unit the library carries**, plus the absolute temperature
+/// scales this module lays over its temperature intervals.
 ///
-/// This order is **not** the order anything is listed in: every list
-/// surface sorts by [`list_order`] on its way out, so a row can be added
-/// beside the ones it belongs with without moving anything a user sees.
-///
-/// Deliberately a **curated subset** of what the library carries: the
-/// library has the whole SI prefix ladder for each quantity, and a
-/// picker listing yoctovolts is worse than one listing the four voltages
-/// anyone puts on a bus. Adding one is a line here.
-static UNITS: &[Entry] = &[
-    // Voltage
-    entry(
-        "volt",
-        "V",
-        Dimension::Voltage,
-        Units::ElectricPotential(ElectricPotentialUnit::volt),
-    ),
-    prefixed(
-        "millivolt",
-        "mV",
-        Dimension::Voltage,
-        Units::ElectricPotential(ElectricPotentialUnit::millivolt),
-        "volt",
-        Prefix::Milli,
-    ),
-    prefixed(
-        "kilovolt",
-        "kV",
-        Dimension::Voltage,
-        Units::ElectricPotential(ElectricPotentialUnit::kilovolt),
-        "volt",
-        Prefix::Kilo,
-    ),
-    prefixed(
-        "megavolt",
-        "MV",
-        Dimension::Voltage,
-        Units::ElectricPotential(ElectricPotentialUnit::megavolt),
-        "volt",
-        Prefix::Mega,
-    ),
-    // Current
-    entry(
-        "ampere",
-        "A",
-        Dimension::Current,
-        Units::ElectricCurrent(ElectricCurrentUnit::ampere),
-    ),
-    prefixed(
-        "milliampere",
-        "mA",
-        Dimension::Current,
-        Units::ElectricCurrent(ElectricCurrentUnit::milliampere),
-        "ampere",
-        Prefix::Milli,
-    ),
-    prefixed(
-        "kiloampere",
-        "kA",
-        Dimension::Current,
-        Units::ElectricCurrent(ElectricCurrentUnit::kiloampere),
-        "ampere",
-        Prefix::Kilo,
-    ),
-    // Charge
-    entry(
-        "coulomb",
-        "C",
-        Dimension::Charge,
-        Units::ElectricCharge(ElectricChargeUnit::coulomb),
-    ),
-    entry(
-        "ampere-hour",
-        "Ah",
-        Dimension::Charge,
-        Units::ElectricCharge(ElectricChargeUnit::ampere_hour),
-    ),
-    prefixed(
-        "milliampere-hour",
-        "mAh",
-        Dimension::Charge,
-        Units::ElectricCharge(ElectricChargeUnit::milliampere_hour),
-        "ampere-hour",
-        Prefix::Milli,
-    ),
-    // Power
-    entry("watt", "W", Dimension::Power, Units::Power(PowerUnit::watt)),
-    prefixed(
-        "milliwatt",
-        "mW",
-        Dimension::Power,
-        Units::Power(PowerUnit::milliwatt),
-        "watt",
-        Prefix::Milli,
-    ),
-    prefixed(
-        "kilowatt",
-        "kW",
-        Dimension::Power,
-        Units::Power(PowerUnit::kilowatt),
-        "watt",
-        Prefix::Kilo,
-    ),
-    prefixed(
-        "megawatt",
-        "MW",
-        Dimension::Power,
-        Units::Power(PowerUnit::megawatt),
-        "watt",
-        Prefix::Mega,
-    ),
-    // Energy
-    entry(
-        "joule",
-        "J",
-        Dimension::Energy,
-        Units::Energy(EnergyUnit::joule),
-    ),
-    prefixed(
-        "kilojoule",
-        "kJ",
-        Dimension::Energy,
-        Units::Energy(EnergyUnit::kilojoule),
-        "joule",
-        Prefix::Kilo,
-    ),
-    entry(
-        "watt-hour",
-        "Wh",
-        Dimension::Energy,
-        Units::Energy(EnergyUnit::watt_hour),
-    ),
-    prefixed(
-        "kilowatt-hour",
-        "kWh",
-        Dimension::Energy,
-        Units::Energy(EnergyUnit::kilowatt_hour),
-        "watt-hour",
-        Prefix::Kilo,
-    ),
-    // Torque
-    entry(
-        "newton-meter",
-        "Nm",
-        Dimension::Torque,
-        Units::Torque(TorqueUnit::newton_meter),
-    ),
-    prefixed(
-        "newton-millimeter",
-        "Nmm",
-        Dimension::Torque,
-        Units::Torque(TorqueUnit::newton_millimeter),
-        "newton-meter",
-        Prefix::Milli,
-    ),
-    // Angular velocity
-    fixed(
-        "revolution-per-minute",
-        "rpm",
-        Dimension::AngularVelocity,
-        Units::AngularVelocity(AngularVelocityUnit::revolution_per_minute),
-    ),
-    fixed(
-        "radian-per-second",
-        "rad/s",
-        Dimension::AngularVelocity,
-        Units::AngularVelocity(AngularVelocityUnit::radian_per_second),
-    ),
-    fixed(
-        "degree-per-second",
-        "°/s",
-        Dimension::AngularVelocity,
-        Units::AngularVelocity(AngularVelocityUnit::degree_per_second),
-    ),
-    // Pressure
-    entry(
-        "pascal",
-        "Pa",
-        Dimension::Pressure,
-        Units::Pressure(PressureUnit::pascal),
-    ),
-    prefixed(
-        "kilopascal",
-        "kPa",
-        Dimension::Pressure,
-        Units::Pressure(PressureUnit::kilopascal),
-        "pascal",
-        Prefix::Kilo,
-    ),
-    prefixed(
-        "megapascal",
-        "MPa",
-        Dimension::Pressure,
-        Units::Pressure(PressureUnit::megapascal),
-        "pascal",
-        Prefix::Mega,
-    ),
-    // `bar` is prefixable even though the crate enumerates only the
-    // millibar: the identity is base x prefix, and an enumeration gap
-    // is a composition rather than a missing unit.
-    entry(
-        "bar",
-        "bar",
-        Dimension::Pressure,
-        Units::Pressure(PressureUnit::bar),
-    ),
-    prefixed(
-        "millibar",
-        "mbar",
-        Dimension::Pressure,
-        Units::Pressure(PressureUnit::millibar),
-        "bar",
-        Prefix::Milli,
-    ),
-    fixed(
-        "psi",
-        "psi",
-        Dimension::Pressure,
-        Units::Pressure(PressureUnit::pound_force_per_square_inch),
-    ),
-    // Frequency
-    entry(
-        "hertz",
-        "Hz",
-        Dimension::Frequency,
-        Units::Frequency(FrequencyUnit::hertz),
-    ),
-    prefixed(
-        "kilohertz",
-        "kHz",
-        Dimension::Frequency,
-        Units::Frequency(FrequencyUnit::kilohertz),
-        "hertz",
-        Prefix::Kilo,
-    ),
-    prefixed(
-        "megahertz",
-        "MHz",
-        Dimension::Frequency,
-        Units::Frequency(FrequencyUnit::megahertz),
-        "hertz",
-        Prefix::Mega,
-    ),
-    // Ratio: a scale choice, not an SI ladder, so none of the three
-    // takes a prefix.
-    fixed(
-        "percent",
-        "%",
-        Dimension::Ratio,
-        Units::Ratio(RatioUnit::percent),
-    ),
-    fixed(
-        "part-per-million",
-        "ppm",
-        Dimension::Ratio,
-        Units::Ratio(RatioUnit::part_per_million),
-    ),
-    // The bare 0–1 scale reads as `ratio`, which is also how a DBC
-    // spells it — so the string this unit renders is one [`recognize`]
-    // carries straight back to it. Every surface that reports a
-    // signal's unit hands on a *string*, and a string nothing places
-    // converts nothing, so a scale whose display did not round-trip
-    // would silently defeat its own conversions.
-    fixed(
-        "ratio",
-        "ratio",
-        Dimension::Ratio,
-        Units::Dimensionless(DimensionlessUnit::scalar),
-    ),
-    // The no-unit placeholder: the library's lone Dimensionless unit
-    // under its own name, in a kind of its own so a count never
-    // converts into a proportion.
-    fixed(
-        "scalar",
-        "scalar",
-        Dimension::Scalar,
-        Units::Dimensionless(DimensionlessUnit::scalar),
-    ),
-    // Temperature: the three that carry a constant. The library's
-    // absolute-temperature quantity is not built in this release, so
-    // these ride its temperature-*interval* multipliers (K: 1, C: 1,
-    // F: 5/9) with the offset supplied here. None takes a prefix.
-    Entry {
-        id: "kelvin",
-        display: "K",
-        dimension: Dimension::Temperature,
-        unit: Units::TemperatureInterval(TemperatureIntervalUnit::kelvin),
-        constant: 0.0,
-        base: "kelvin",
-        prefix: Prefix::None,
-        prefixable: false,
-    },
-    Entry {
-        id: "degree-celsius",
-        display: "°C",
-        dimension: Dimension::Temperature,
-        unit: Units::TemperatureInterval(TemperatureIntervalUnit::degree_celsius),
-        constant: 273.15,
-        base: "degree-celsius",
-        prefix: Prefix::None,
-        prefixable: false,
-    },
-    Entry {
-        id: "degree-fahrenheit",
-        display: "°F",
-        dimension: Dimension::Temperature,
-        unit: Units::TemperatureInterval(TemperatureIntervalUnit::degree_fahrenheit),
-        constant: 459.67,
-        base: "degree-fahrenheit",
-        prefix: Prefix::None,
-        prefixable: false,
-    },
-    // Speed
-    fixed(
-        "meter-per-second",
-        "m/s",
-        Dimension::Speed,
-        Units::Velocity(VelocityUnit::meter_per_second),
-    ),
-    fixed(
-        "kilometer-per-hour",
-        "km/h",
-        Dimension::Speed,
-        Units::Velocity(VelocityUnit::kilometer_per_hour),
-    ),
-    fixed(
-        "mile-per-hour",
-        "mph",
-        Dimension::Speed,
-        Units::Velocity(VelocityUnit::mile_per_hour),
-    ),
-    // Time
-    entry(
-        "second",
-        "s",
-        Dimension::Time,
-        Units::Time(TimeUnit::second),
-    ),
-    prefixed(
-        "millisecond",
-        "ms",
-        Dimension::Time,
-        Units::Time(TimeUnit::millisecond),
-        "second",
-        Prefix::Milli,
-    ),
-    prefixed(
-        "microsecond",
-        "µs",
-        Dimension::Time,
-        Units::Time(TimeUnit::microsecond),
-        "second",
-        Prefix::Micro,
-    ),
-    fixed(
-        "minute",
-        "min",
-        Dimension::Time,
-        Units::Time(TimeUnit::minute),
-    ),
-    fixed("hour", "h", Dimension::Time, Units::Time(TimeUnit::hour)),
-    fixed("day", "d", Dimension::Time, Units::Time(TimeUnit::day)),
-    // Length
-    entry(
-        "meter",
-        "m",
-        Dimension::Length,
-        Units::Length(LengthUnit::meter),
-    ),
-    prefixed(
-        "millimeter",
-        "mm",
-        Dimension::Length,
-        Units::Length(LengthUnit::millimeter),
-        "meter",
-        Prefix::Milli,
-    ),
-    prefixed(
-        "centimeter",
-        "cm",
-        Dimension::Length,
-        Units::Length(LengthUnit::centimeter),
-        "meter",
-        Prefix::Centi,
-    ),
-    prefixed(
-        "kilometer",
-        "km",
-        Dimension::Length,
-        Units::Length(LengthUnit::kilometer),
-        "meter",
-        Prefix::Kilo,
-    ),
-];
+/// Nothing here is written by hand: [`Dimension`] names the library's
+/// quantities and the rows are read back out of it, so a unit the
+/// library gains is a unit this app offers. [`Table`] is the built form
+/// — the rows plus the indexes every lookup goes through, since a
+/// linear scan of two thousand rows is not a lookup.
+static UNITS: LazyLock<Table> = LazyLock::new(build);
 
-/// A **base unit** the SI prefix ladder applies to.
-const fn entry(
-    id: &'static str,
-    display: &'static str,
-    dimension: Dimension,
-    unit: Units,
-) -> Entry {
-    Entry {
-        id,
-        display,
-        dimension,
-        unit,
-        constant: 0.0,
-        base: id,
-        prefix: Prefix::None,
-        prefixable: true,
+/// The built unit table and the indexes onto it.
+struct Table {
+    entries: Vec<Entry>,
+    /// Stable id → row. Ids are unique, which is what makes one a safe
+    /// JSON key.
+    by_id: HashMap<String, usize>,
+    /// `(base, prefix)` → the row the library **enumerates** for that
+    /// pair, where it has one. The holes are what composition fills.
+    by_typed: HashMap<(String, Prefix), usize>,
+    /// The base rows of each dimension, indexed by
+    /// [`Dimension::index`] — what composition walks.
+    bases: Vec<Vec<usize>>,
+    /// Every spelling the library gives a unit — symbol, singular and
+    /// plural — mapped to the unit it names, or to `None` where two
+    /// units spell themselves the same way. Ambiguity is refused, never
+    /// resolved by order.
+    spellings: HashMap<String, Option<UnitId>>,
+}
+
+impl Table {
+    fn iter(&self) -> std::slice::Iter<'_, Entry> {
+        self.entries.iter()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 
-/// A base unit that takes **no** prefix: a composite spelling (`km/h`),
-/// a non-decimal time (`min`), or a member of the ratio family.
-const fn fixed(
-    id: &'static str,
-    display: &'static str,
-    dimension: Dimension,
-    unit: Units,
-) -> Entry {
-    Entry {
-        id,
-        display,
-        dimension,
-        unit,
-        constant: 0.0,
-        base: id,
-        prefix: Prefix::None,
-        prefixable: false,
+/// Whether `row` is a **prefixed rung** of another unit in the same
+/// quantity, and of which one.
+///
+/// Both halves of the rule are load-bearing. The library's **name** has
+/// to say so — `millivolt` is `volt` with `milli` spliced in, and so is
+/// `newton_millimeter` from `newton_meter`, which is why the prefix is
+/// looked for at every word of the name and not only at its head. And
+/// the **number** has to agree: `ampere per micrometer` reads as a micro
+/// rung of `ampere per meter` and is a million of them, so the ladder
+/// only holds where the multiplier really is the prefix's power of ten.
+/// Where the two disagree the unit is a base of its own, which is also
+/// the footing every imperial and US customary unit rides on.
+fn prefix_rung(row: &Row, rows: &[Row]) -> Option<(usize, Prefix)> {
+    let mut best: Option<(usize, usize, usize, Prefix)> = None;
+    for prefix in Prefix::all().iter().filter(|p| !p.is_none()) {
+        let name = prefix.name();
+        for (at, _) in row.variant.match_indices(name) {
+            // A prefix splices in at a word of the library's name, so
+            // `newton_millimeter` strips to `newton_meter` and
+            // `abvolt` strips to nothing at all.
+            if at != 0 && !row.variant[..at].ends_with('_') {
+                continue;
+            }
+            let stripped = format!("{}{}", &row.variant[..at], &row.variant[at + name.len()..]);
+            let stripped = stripped.trim_matches('_').replace("__", "_");
+            if stripped == row.variant {
+                continue;
+            }
+            let Some(index) = rows.iter().position(|r| r.variant == stripped) else {
+                continue;
+            };
+            let base = rows[index].multiplier;
+            if base == 0.0 || (row.multiplier / base / prefix.factor() - 1.0).abs() > 1e-9 {
+                continue;
+            }
+            // Earliest splice point first, and the longest prefix there
+            // — so `daV` is a decavolt and never a deci-`aV`.
+            let key = (at, usize::MAX - name.len(), index, *prefix);
+            if best.is_none_or(|current| key < current) {
+                best = Some(key);
+            }
+        }
     }
+    best.map(|(_, _, index, prefix)| (index, prefix))
 }
 
-/// The crate's **enumerated** variant of `base` at `prefix`.
+/// The base a rung really sits on, once a rung **of a rung** is walked
+/// down to it.
 ///
-/// Listing these is not a second model — the identity is still
-/// `(base, prefix)` — it is how the facade takes the library's own
-/// tabulated constant where it has one, and composes only for the holes
-/// (`every_prefixed_variant_the_crate_enumerates_matches_the_composed_factor`
-/// is what keeps the two answers the same number).
-const fn prefixed(
-    id: &'static str,
-    display: &'static str,
-    dimension: Dimension,
-    unit: Units,
-    base: &'static str,
-    prefix: Prefix,
-) -> Entry {
-    Entry {
-        id,
-        display,
-        dimension,
-        unit,
-        constant: 0.0,
-        base,
-        prefix,
-        prefixable: true,
+/// The library names a `kilogram yottameter per second` off the
+/// `kilogram meter per second` that is itself a kilo-rung of the
+/// `gram meter per second` — so the ladder it is on is the gram's, at
+/// 10²⁷, which is no SI prefix at all. A rung whose prefixes do not
+/// add up to one is a base unit of its own.
+fn settled_rung(index: usize, rungs: &[Option<(usize, Prefix)>]) -> Option<(usize, Prefix)> {
+    let (mut base, first) = rungs[index]?;
+    let mut exponent = first.exponent();
+    let mut steps = 0;
+    while let Some((next, prefix)) = rungs[base] {
+        exponent += prefix.exponent();
+        base = next;
+        steps += 1;
+        assert!(steps <= rungs.len(), "a unit is a prefixed form of itself");
+    }
+    Prefix::all()
+        .iter()
+        .copied()
+        .find(|p| !p.is_none() && p.exponent() == exponent)
+        .map(|prefix| (base, prefix))
+}
+
+fn build() -> Table {
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut spelled: Vec<(&'static str, UnitId)> = Vec::new();
+    // An id is a JSON key and a project file's stored unit, so it has to
+    // be unique across the whole table. Where two quantities carry the
+    // same unit — a minute is a time and an angle — the dimension that
+    // resolves first keeps the plain spelling and the later one wears
+    // its dimension's name.
+    let mut taken: HashSet<String> = HashSet::new();
+    for dimension in Dimension::all().iter().copied() {
+        let absolute = dimension == Dimension::Temperature;
+        let mut rows = dimension.rows();
+        if absolute {
+            rows.retain(|row| absolute_constant(&row.variant).is_some());
+        }
+        let ids: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                let plain = row.variant.replace('_', "-");
+                let id = if taken.contains(&plain) {
+                    format!("{}-{plain}", dimension.kebab())
+                } else {
+                    plain
+                };
+                taken.insert(id.clone());
+                id
+            })
+            .collect();
+        // An absolute scale is not a rung of anything: a
+        // millidegree-celsius has no offset that means a temperature.
+        //
+        // The library sometimes names one rung twice — a `kilonewton
+        // meter` and a `newton kilometer` are the same unit — and both
+        // rows then carry the same identity, because the rule only
+        // places a rung where the multiplier really is the prefix's: two
+        // names for one number are one unit.
+        let direct: Vec<Option<(usize, Prefix)>> = rows
+            .iter()
+            .map(|row| (!absolute).then(|| prefix_rung(row, &rows)).flatten())
+            .collect();
+        for (index, (row, id)) in rows.iter().zip(&ids).enumerate() {
+            let rung = settled_rung(index, &direct);
+            let (base, prefix) = rung.map_or_else(
+                || (id.clone(), Prefix::None),
+                |(index, prefix)| (ids[index].clone(), prefix),
+            );
+            let unit = UnitId::new(&base, prefix);
+            for spelling in [row.symbol, row.singular, row.plural] {
+                if !spelling.trim().is_empty() {
+                    spelled.push((spelling, unit.clone()));
+                }
+            }
+            // The library spells a product `A · h`; a database writes
+            // `Ah`, and a composition of an amp and an hour contracts to
+            // it. Its one unit with no symbol at all is the bare 0–1
+            // ratio, which reads as its own name.
+            let display = row.symbol.replace(" · ", "");
+            entries.push(Entry {
+                display: if display.is_empty() {
+                    id.clone()
+                } else {
+                    display
+                },
+                id: id.clone(),
+                dimension,
+                unit: row.unit,
+                constant: if absolute {
+                    absolute_constant(&row.variant).unwrap_or_default()
+                } else {
+                    0.0
+                },
+                base,
+                prefix,
+                prefixable: false,
+            });
+        }
+    }
+    // A base takes the SI ladder exactly where the library gave it a
+    // rung: the whole range is then in the model whatever the library
+    // happens to tabulate, which is how `kbar` works from `mbar` alone.
+    let ladders: HashSet<String> = entries
+        .iter()
+        .filter(|e| !e.is_base())
+        .map(|e| e.base.clone())
+        .collect();
+    let mut bases: Vec<Vec<usize>> = vec![Vec::new(); Dimension::all().len()];
+    let mut by_id = HashMap::with_capacity(entries.len());
+    let mut by_typed = HashMap::with_capacity(entries.len());
+    for entry in &mut entries {
+        entry.prefixable = ladders.contains(&entry.id);
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        by_id.insert(entry.id.clone(), index);
+        by_typed.insert((entry.base.clone(), entry.prefix), index);
+        if entry.is_base() {
+            bases[entry.dimension.index()].push(index);
+        }
+    }
+    let mut spellings: HashMap<String, Option<UnitId>> = HashMap::with_capacity(spelled.len());
+    for (spelling, unit) in spelled {
+        spellings
+            .entry(spelling.to_string())
+            .and_modify(|held| {
+                if held.as_ref() != Some(&unit) {
+                    *held = None;
+                }
+            })
+            .or_insert(Some(unit));
+    }
+    Table {
+        entries,
+        by_id,
+        by_typed,
+        bases,
+        spellings,
     }
 }
 
@@ -1109,33 +1147,21 @@ static RECOGNITIONS: &[(&str, &str)] = &[
 ];
 
 /// The order composition resolves a set of SI base dimensions to a
-/// **named** family.
+/// **named** family: [`Dimension::all`], which is declared in exactly
+/// that order.
 ///
-/// Two of this table's families can share base dimensions — torque and
-/// energy are both kg·m²·s⁻², revolutions-per-minute and hertz both s⁻¹
+/// Families share base dimensions — torque and energy are both
+/// kg·m²·s⁻², revolutions-per-minute and hertz and becquerels all s⁻¹
 /// — so a composition landing on one of those has to be told which is
 /// meant. An engineer who multiplies a current by an hour means a
 /// charge; one who divides an amp-hour by a second means a current; and
-/// nobody composing anything means revolutions. The scalar families sit
-/// last for the same reason: a dimensionless composition is a number,
-/// not a proportion.
-static COMPOSITION_ORDER: &[Dimension] = &[
-    Dimension::Charge,
-    Dimension::Energy,
-    Dimension::Power,
-    Dimension::Voltage,
-    Dimension::Current,
-    Dimension::Frequency,
-    Dimension::Pressure,
-    Dimension::Speed,
-    Dimension::Length,
-    Dimension::Time,
-    Dimension::Temperature,
-    Dimension::Torque,
-    Dimension::AngularVelocity,
-    Dimension::Ratio,
-    Dimension::Scalar,
-];
+/// nobody composing anything means revolutions. The resolution is the
+/// **first** match and the user may override it with any dimension of
+/// the same exponents (owner ruling), which is what
+/// [`Composed::dimensions`] serves.
+fn composition_order() -> &'static [Dimension] {
+    Dimension::all()
+}
 
 /// **A unit built by dimensional analysis**: a product of units over a
 /// product of units.
@@ -1220,13 +1246,10 @@ impl Composed {
             })
         };
         for prefixes in [&[Prefix::None][..], PREFIXES] {
-            for dimension in COMPOSITION_ORDER {
-                for entry in UNITS
-                    .iter()
-                    .filter(|e| e.is_base() && e.dimension == *dimension && e.constant == 0.0)
-                {
+            for dimension in composition_order() {
+                for entry in base_entries(*dimension).filter(|e| e.constant == 0.0) {
                     for prefix in prefixes {
-                        let candidate = UnitId::new(entry.base, *prefix);
+                        let candidate = UnitId::new(&entry.base, *prefix);
                         if matches(&candidate) {
                             return Some(candidate);
                         }
@@ -1238,16 +1261,33 @@ impl Composed {
     }
 
     /// The family a kind-locked picker offers against — the composed
-    /// base dimensions read back as one of this facade's own.
+    /// base dimensions read back as **the first** of this facade's own
+    /// that shares them.
     #[must_use]
     pub fn dimension(&self) -> Option<Dimension> {
-        let ours = self.definition()?;
-        COMPOSITION_ORDER.iter().copied().find(|dimension| {
-            UNITS
-                .iter()
-                .filter(|e| e.is_base() && e.dimension == *dimension)
-                .any(|e| UnitDefinition::from(e.unit).is_convertible(ours))
-        })
+        self.dimensions().first().copied()
+    }
+
+    /// **Every** dimension the composition's base dimensions place it
+    /// in, in composition order — the first is [`Self::dimension`] and
+    /// the rest are what a user may override it with (owner ruling: the
+    /// first resolution stands and the user may name any dimension of
+    /// the same exponents).
+    ///
+    /// Empty where the analysis places it nowhere, which is a
+    /// composition no picker can offer against at all.
+    #[must_use]
+    pub fn dimensions(&self) -> Vec<Dimension> {
+        let Some(ours) = self.definition() else {
+            return Vec::new();
+        };
+        composition_order()
+            .iter()
+            .copied()
+            .filter(|dimension| {
+                base_entries(*dimension).any(|e| UnitDefinition::from(e.unit).is_convertible(ours))
+            })
+            .collect()
     }
 
     /// How this composition reads: the name where it has one, and the
@@ -1592,12 +1632,13 @@ fn family(unit: &UnitId) -> Option<(Dimension, f64)> {
 /// picker's base column, the settings view's units table, the flat
 /// source-unit list.
 ///
-/// [`UNITS`] is grouped by hand and a reader cannot predict where a unit
-/// sits in it, so no surface inherits that order: they are all sorted by
-/// this one rule, and a unit is looked for in the same place wherever it
-/// is offered. Dimension label alphabetically, then the **base** unit's
-/// display, then up the prefix ladder — so `mV` sits under `V` on the
-/// voltage rung rather than in a tail of prefixed rows after every base.
+/// [`UNITS`] runs in composition order and a reader cannot predict
+/// where a unit sits in it, so no surface inherits that order: they are
+/// all sorted by this one rule, and a unit is looked for in the same
+/// place wherever it is offered. Dimension label alphabetically, then
+/// the **base** unit's display, then up the prefix ladder — so `mV`
+/// sits under `V` on the voltage rung rather than in a tail of prefixed
+/// rows after every base.
 fn list_order(unit: &UnitId) -> (&'static str, String, i32) {
     (
         dimension_of(unit).map_or("", Dimension::label),
@@ -1620,14 +1661,14 @@ fn ordered_rows<T>(
 ) -> Vec<T> {
     let mut rows: Vec<(UnitId, T)> = UNITS
         .iter()
-        .map(|e| (UnitId::new(e.base, e.prefix), of_entry(e)))
+        .map(|e| (UnitId::new(&e.base, e.prefix), of_entry(e)))
         .chain(
             custom_units()
                 .iter()
                 .map(|c| (UnitId::base(&c.name), of_custom(c))),
         )
         .collect();
-    rows.sort_by(|a, b| list_order(&a.0).cmp(&list_order(&b.0)));
+    rows.sort_by_cached_key(|(unit, _)| list_order(unit));
     rows.into_iter().map(|(_, row)| row).collect()
 }
 
@@ -1676,8 +1717,8 @@ pub struct UnitScale {
     /// What picking this commits.
     pub unit: UnitId,
     /// What the column shows — a prefix symbol, or a ratio scale's own
-    /// words.
-    pub label: &'static str,
+    /// spelling.
+    pub label: String,
     /// How the composed unit reads — `mV`, `nAh`, `%`. Spelled here so
     /// a picker never composes a unit string of its own.
     pub display: String,
@@ -1687,14 +1728,24 @@ pub struct UnitScale {
     pub exponent: Option<i32>,
 }
 
-/// The ratio family as the picker offers it: one row, three scales
-/// (design ruling — a proportion takes a scale choice, not an SI
-/// ladder). The first is the row's own identity.
-static RATIO_SCALES: &[(&str, &str)] = &[
-    ("ratio", "0–1"),
-    ("percent", "%"),
-    ("part-per-million", "ppm"),
-];
+/// The ratio family as the picker offers it: **one row whose second
+/// column is every ratio unit the library carries**, largest scale
+/// first (owner ruling — a proportion takes a scale choice, not an SI
+/// ladder, and the scale column is not curated either).
+///
+/// Largest first is what makes the list readable and what makes the
+/// row's identity the bare 0–1 ratio rather than whichever unit the
+/// library happens to declare first.
+fn ratio_scales() -> Vec<&'static Entry> {
+    let mut scales: Vec<&'static Entry> = base_entries(Dimension::Ratio).collect();
+    scales.sort_by(|a, b| {
+        UnitDefinition::from(b.unit)
+            .multiplier()
+            .total_cmp(&UnitDefinition::from(a.unit).multiplier())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    scales
+}
 
 /// The base × prefix picker's whole model.
 ///
@@ -1705,20 +1756,21 @@ static RATIO_SCALES: &[(&str, &str)] = &[
 #[must_use]
 pub fn list_unit_picker() -> Vec<UnitPickerEntry> {
     let mut out = Vec::new();
+    let ratios = ratio_scales();
     for entry in UNITS.iter().filter(|e| e.is_base()) {
         if entry.dimension == Dimension::Ratio {
-            // One row for the whole family, minted at its own id.
-            if entry.id != RATIO_SCALES[0].0 {
+            // One row for the whole family, minted at the largest scale.
+            if Some(&entry.id) != ratios.first().map(|e| &e.id) {
                 continue;
             }
             out.push(UnitPickerEntry {
-                id: entry.id.to_string(),
-                display: entry.display.to_string(),
+                id: entry.id.clone(),
+                display: entry.display.clone(),
                 dimension: entry.dimension,
                 dimension_label: entry.dimension.label(),
-                scales: RATIO_SCALES
+                scales: ratios
                     .iter()
-                    .map(|(id, label)| scale_of(UnitId::base(*id), label, None))
+                    .map(|scale| scale_of(UnitId::base(&scale.id), scale.display.clone(), None))
                     .collect(),
             });
             continue;
@@ -1726,14 +1778,20 @@ pub fn list_unit_picker() -> Vec<UnitPickerEntry> {
         let scales = if entry.prefixable {
             PREFIXES
                 .iter()
-                .map(|p| scale_of(UnitId::new(entry.base, *p), p.symbol(), Some(p.exponent())))
+                .map(|p| {
+                    scale_of(
+                        UnitId::new(&entry.base, *p),
+                        p.symbol().to_string(),
+                        Some(p.exponent()),
+                    )
+                })
                 .collect()
         } else {
-            vec![scale_of(UnitId::base(entry.base), "", None)]
+            vec![scale_of(UnitId::base(&entry.base), String::new(), None)]
         };
         out.push(UnitPickerEntry {
-            id: entry.id.to_string(),
-            display: entry.display.to_string(),
+            id: entry.id.clone(),
+            display: entry.display.clone(),
             dimension: entry.dimension,
             dimension_label: entry.dimension.label(),
             scales,
@@ -1751,18 +1809,18 @@ pub fn list_unit_picker() -> Vec<UnitPickerEntry> {
             scales: vec![UnitScale {
                 display: custom.name.clone(),
                 exponent: None,
-                label: "",
+                label: String::new(),
                 unit,
             }],
         });
     }
-    out.sort_by(|a, b| list_order(&UnitId::base(&a.id)).cmp(&list_order(&UnitId::base(&b.id))));
+    out.sort_by_cached_key(|entry| list_order(&UnitId::base(&entry.id)));
     out
 }
 
 /// One scale row: the unit, how it reads, and its power of ten where it
 /// is one rung of the SI ladder.
-fn scale_of(unit: UnitId, label: &'static str, exponent: Option<i32>) -> UnitScale {
+fn scale_of(unit: UnitId, label: String, exponent: Option<i32>) -> UnitScale {
     UnitScale {
         display: display_of(&unit),
         exponent,
@@ -1943,7 +2001,7 @@ pub fn mappings(
     let mut order: Vec<UnitId> = UNITS
         .iter()
         .filter(|e| e.is_base())
-        .map(|e| UnitId::base(e.base))
+        .map(|e| UnitId::base(&e.base))
         .collect();
     order.extend(defined.iter().map(|d| UnitId::base(d.name.trim())));
     let mut rows: BTreeMap<UnitId, Vec<UnitMapping>> =
@@ -2008,15 +2066,24 @@ pub fn get(id: &str) -> Option<UnitInfo> {
 }
 
 fn find(id: &str) -> Option<&'static Entry> {
-    UNITS.iter().find(|e| e.id == id)
+    UNITS.by_id.get(id).map(|index| &UNITS.entries[*index])
 }
 
-/// The row the crate enumerates for this exact `(base, prefix)` pair,
+/// The row the library enumerates for this exact `(base, prefix)` pair,
 /// where it has one.
 fn find_typed(unit: &UnitId) -> Option<&'static Entry> {
     UNITS
+        .by_typed
+        .get(&(unit.base.clone(), unit.prefix))
+        .map(|index| &UNITS.entries[*index])
+}
+
+/// The **base** rows of one dimension — what composition walks and what
+/// the picker's first column lists.
+fn base_entries(dimension: Dimension) -> impl Iterator<Item = &'static Entry> {
+    UNITS.bases[dimension.index()]
         .iter()
-        .find(|e| e.base == unit.base && e.prefix == unit.prefix)
+        .map(|index| &UNITS.entries[*index])
 }
 
 /// An SI prefix as a dimensionless [`UnitDefinition`] — the right-hand
@@ -2061,7 +2128,7 @@ fn definition_of(unit: &UnitId) -> Option<UnitDefinition> {
 #[must_use]
 pub fn typed(id: &str) -> Option<UnitId> {
     find(id)
-        .map(|e| UnitId::new(e.base, e.prefix))
+        .map(|e| UnitId::new(&e.base, e.prefix))
         .or_else(|| with_custom(id, |c| UnitId::base(&c.name)))
 }
 
@@ -2073,7 +2140,7 @@ pub fn typed(id: &str) -> Option<UnitId> {
 #[must_use]
 pub fn stored_id(unit: &UnitId) -> Option<String> {
     if let Some(entry) = find_typed(unit) {
-        return Some(entry.id.to_string());
+        return Some(entry.id.clone());
     }
     unit.prefix
         .is_none()
@@ -2087,7 +2154,7 @@ pub fn stored_id(unit: &UnitId) -> Option<String> {
 #[must_use]
 pub fn display_of(unit: &UnitId) -> String {
     if let Some(enumerated) = find_typed(unit) {
-        return enumerated.display.to_string();
+        return enumerated.display.clone();
     }
     if let Some(base) = find(&unit.base) {
         return format!("{}{}", unit.prefix.symbol(), base.display);
@@ -2129,8 +2196,8 @@ pub fn convert_units(from: &UnitId, to: &UnitId) -> Option<Affine> {
 impl Entry {
     fn info(&self) -> UnitInfo {
         UnitInfo {
-            id: self.id.to_string(),
-            display: self.display.to_string(),
+            id: self.id.clone(),
+            display: self.display.clone(),
             dimension: self.dimension,
         }
     }
@@ -2139,10 +2206,10 @@ impl Entry {
         UnitListing {
             info: self.info(),
             dimension_label: self.dimension.label(),
-            spelling: if recognize(self.display, &Customizations::new()) == typed(self.id) {
-                self.display.to_string()
+            spelling: if recognize(&self.display, &Customizations::new()) == typed(&self.id) {
+                self.display.clone()
             } else {
-                self.id.to_string()
+                self.id.clone()
             },
         }
     }
@@ -2178,14 +2245,34 @@ pub fn convert(from: &str, to: &str) -> Option<Affine> {
     convert_units(&typed(from)?, &typed(to)?)
 }
 
+/// Spellings the **library** resolves that this module will not.
+///
+/// `C` is the library's symbol for the coulomb and is unambiguous inside
+/// it, because it spells Celsius `°C`. A database is not so careful: a
+/// DBC that writes `C` means Celsius about as often as charge, and a
+/// wrong conversion is worse than no conversion (owner ruling: unknown
+/// means nothing, never a guess). The user's customization dict is where
+/// a project says which it means.
+static REFUSED: &[&str] = &["C"];
+
 /// The unit a DBC's free-text unit string names, or `None`.
 ///
 /// The user's `customizations` win — that is the point of them — and are
 /// consulted on the raw string and on its trimmed form, since a DBC
 /// commonly carries padding the user did not type. Then the built-in
-/// recognitions exactly, then a unit's **own id** exactly, then the
-/// built-in recognitions case-insensitively where exactly one of them
-/// matches.
+/// recognitions exactly, then a unit's **own id** exactly, then every
+/// spelling the library gives a unit — its symbol, singular and plural
+/// — where exactly one unit spells itself that way, then
+/// `[prefix][base]` exact-case (`nAh`), then the built-in recognitions
+/// case-insensitively where exactly one of them matches.
+///
+/// The library pass is what makes the whole table reachable from a
+/// database (`L`, `lbf/in²`, `liters per minute`) without anyone
+/// tabulating two thousand spellings here. It is **unique or nothing**:
+/// `kg/m³` is a mass density and a mass concentration, and neither is
+/// the answer. The passes ahead of it are what keep a spelling meaning
+/// what it always meant — `K` is the absolute kelvin rather than the
+/// interval, `h` an hour rather than the Planck constant.
 ///
 /// The id pass is what lets a picker offer a unit the recognition table
 /// has no conventional spelling for (`coulomb`, whose display `C` would
@@ -2210,6 +2297,11 @@ pub fn recognize(raw: &str, customizations: &Customizations) -> Option<UnitId> {
     }
     if let Some(unit) = typed(trimmed) {
         return Some(unit);
+    }
+    if !REFUSED.contains(&trimmed) {
+        if let Some(unit) = UNITS.spellings.get(trimmed) {
+            return unit.clone();
+        }
     }
     if let Some(unit) = prefixed_spelling(trimmed) {
         return Some(unit);
@@ -2267,19 +2359,28 @@ fn prefix_symbols(prefix: Prefix) -> &'static [&'static str] {
 /// `mV` and `MV` stay three orders of magnitude apart and `NAH` is
 /// nothing. This pass runs **after** the exact recognitions and the unit
 /// ids, so no spelling that already meant something changes meaning.
+///
+/// Unique or nothing, like every other pass: two dimensions carry a
+/// `g/m³`, so `kg/m³` composes onto both and neither is the answer.
 fn prefixed_spelling(spelling: &str) -> Option<UnitId> {
+    let mut hit: Option<UnitId> = None;
     for entry in UNITS.iter().filter(|e| e.is_base() && e.prefixable) {
         for prefix in PREFIXES.iter().filter(|p| !p.is_none()) {
             for symbol in prefix_symbols(*prefix) {
-                if spelling.len() > entry.display.len()
-                    && spelling.strip_prefix(symbol) == Some(entry.display)
+                if spelling.len() <= entry.display.len()
+                    || spelling.strip_prefix(symbol) != Some(entry.display.as_str())
                 {
-                    return Some(UnitId::new(entry.base, *prefix));
+                    continue;
+                }
+                let composed = UnitId::new(&entry.base, *prefix);
+                match &hit {
+                    Some(other) if *other != composed => return None,
+                    _ => hit = Some(composed),
                 }
             }
         }
     }
-    None
+    hit
 }
 
 #[cfg(test)]
@@ -2335,16 +2436,29 @@ mod tests {
         let labels: Vec<&str> = picker.iter().map(|e| e.dimension_label).collect();
         assert!(grouped_alphabetically(&labels), "{labels:?}");
 
-        let shown = |dimension: &str| -> Vec<&str> {
+        // Inside a group, by the base unit's display, case-folded —
+        // asserted as the rule rather than as a list, because the list
+        // is every unit the library carries.
+        let shown = |dimension: &str| -> Vec<String> {
             picker
                 .iter()
                 .filter(|e| e.dimension_label == dimension)
-                .map(|e| e.display.as_str())
+                .map(|e| e.display.to_lowercase())
                 .collect()
         };
-        assert_eq!(shown("charge"), vec!["Ah", "C"]);
-        assert_eq!(shown("time"), vec!["d", "h", "min", "s"]);
-        assert_eq!(shown("pressure"), vec!["bar", "Pa", "psi"]);
+        for dimension in ["charge", "time", "pressure", "volume"] {
+            let displays = shown(dimension);
+            assert!(!displays.is_empty(), "{dimension} lists nothing");
+            assert!(
+                displays.windows(2).all(|w| w[0] <= w[1]),
+                "{dimension}: {displays:?}"
+            );
+        }
+        // The units that were hand-typed before the table came from the
+        // library are still where they were.
+        assert!(shown("charge").contains(&"ah".to_string()));
+        assert!(shown("pressure").contains(&"bar".to_string()));
+        assert!(shown("volume").contains(&"l".to_string()), "litres");
 
         // The flat list the source-unit combobox reads groups the same
         // way — it is the same table, so it cannot answer differently.
@@ -2362,15 +2476,30 @@ mod tests {
         let labels: Vec<&str> = rows.iter().map(|r| r.dimension_label).collect();
         assert!(grouped_alphabetically(&labels), "{labels:?}");
 
-        let shown = |dimension: &str| -> Vec<&str> {
+        // A prefixed row sits on its base's rung, in exponent order,
+        // rather than in a tail after every base — asserted over the
+        // rows the table actually has, which is every base unit plus
+        // whatever a recognition earned a row.
+        let ladder = |base: &str| -> Vec<i32> {
             rows.iter()
-                .filter(|r| r.dimension_label == dimension)
-                .map(|r| r.display.as_str())
+                .filter(|r| r.unit.base == base)
+                .map(|r| r.unit.prefix.exponent())
                 .collect()
         };
-        assert_eq!(shown("voltage"), vec!["mV", "V", "kV", "MV"]);
-        assert_eq!(shown("charge"), vec!["mAh", "Ah", "C"]);
-        assert_eq!(shown("length"), vec!["mm", "cm", "m", "km"]);
+        for base in ["volt", "meter", "ampere-hour"] {
+            let rungs = ladder(base);
+            assert!(!rungs.is_empty(), "no rows for {base}");
+            assert!(rungs.windows(2).all(|w| w[0] < w[1]), "{base}: {rungs:?}");
+        }
+        let voltage: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.dimension_label == "voltage")
+            .map(|r| r.display.as_str())
+            .collect();
+        assert!(
+            voltage.contains(&"mV") && voltage.contains(&"V"),
+            "{voltage:?}"
+        );
     }
 
     /// The second column is the whole SI ladder, exponent-ordered, each
@@ -2395,31 +2524,51 @@ mod tests {
         assert_eq!(milli.unit, UnitId::new("volt", Prefix::Milli));
     }
 
-    /// The ratio family is **one** row taking a scale choice, not three
-    /// rows of its own: `0–1`, `%` and `ppm` are the same quantity read
-    /// at three scales (design ruling).
+    /// The ratio family is **one** row taking a scale choice, and the
+    /// column is every ratio unit the library carries, largest scale
+    /// first (owner ruling — the scale column is not curated either).
     #[test]
-    fn the_ratio_family_is_one_row_with_three_scale_choices() {
+    fn the_ratio_family_is_one_row_carrying_every_scale_the_library_has() {
         let _shared = listing();
         let entries = list_unit_picker();
         let ratios: Vec<&UnitPickerEntry> = entries
             .iter()
             .filter(|e| e.dimension == Dimension::Ratio)
             .collect();
-        assert_eq!(ratios.len(), 1, "{ratios:?}");
-        let scales: Vec<(&str, &str)> = ratios[0]
+        assert_eq!(ratios.len(), 1, "one row for the family");
+        let scales: Vec<&str> = ratios[0]
             .scales
             .iter()
-            .map(|s| (s.unit.base.as_str(), s.label))
+            .map(|s| s.unit.base.as_str())
             .collect();
-        assert_eq!(
-            scales,
-            [
-                ("ratio", "0–1"),
-                ("percent", "%"),
-                ("part-per-million", "ppm")
-            ]
-        );
+        let carried: Vec<&str> = Dimension::Ratio
+            .rows()
+            .iter()
+            .map(|r| r.variant.replace('_', "-"))
+            .map(|id| Box::leak(id.into_boxed_str()) as &str)
+            .collect();
+        for id in &carried {
+            assert!(scales.contains(id), "{id} is not offered: {scales:?}");
+        }
+        assert_eq!(scales.len(), carried.len());
+        // Largest scale first, and the row is minted at it.
+        assert_eq!(scales.first(), Some(&"ratio"));
+        assert_eq!(ratios[0].id, "ratio");
+        let factors: Vec<f64> = ratios[0]
+            .scales
+            .iter()
+            .map(|s| definition_of(&s.unit).expect("a scale").multiplier())
+            .collect();
+        assert!(factors.windows(2).all(|w| w[0] >= w[1]), "{factors:?}");
+        // The label is the scale's own spelling, so a view composes
+        // nothing.
+        let percent = ratios[0]
+            .scales
+            .iter()
+            .find(|s| s.unit.base == "percent")
+            .expect("percent");
+        assert_eq!(percent.label, "%");
+        assert_eq!(percent.exponent, None, "a scale is not a power of ten");
     }
 
     /// A base that takes no ladder still offers exactly one choice, so
@@ -2663,16 +2812,17 @@ mod tests {
     #[test]
     fn every_unit_has_a_unique_id_and_is_findable_by_it() {
         let _shared = listing();
-        let mut ids: Vec<&str> = UNITS.iter().map(|e| e.id).collect();
+        let mut ids: Vec<&str> = UNITS.iter().map(|e| e.id.as_str()).collect();
         let count = ids.len();
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), count, "duplicate unit id");
-        for entry in UNITS {
-            let info = get(entry.id).expect(entry.id);
+        for entry in UNITS.iter() {
+            let info = get(&entry.id).unwrap_or_else(|| panic!("{}", entry.id));
             assert_eq!(info.display, entry.display);
         }
         assert_eq!(all().len(), count);
+        assert_eq!(UNITS.len(), count);
         assert!(get("no-such-unit").is_none());
     }
 
@@ -2684,7 +2834,7 @@ mod tests {
     #[test]
     fn every_dimension_is_one_convertible_family() {
         let _shared = listing();
-        for a in UNITS {
+        for a in UNITS.iter() {
             for b in UNITS.iter().filter(|b| b.dimension == a.dimension) {
                 let (da, db) = (UnitDefinition::from(a.unit), UnitDefinition::from(b.unit));
                 assert!(
@@ -2852,11 +3002,12 @@ mod tests {
                 .named(),
             Some(UnitId::new("coulomb", Prefix::Milli))
         );
-        // A quantity that is not a rate composes into something nothing
-        // names, and says so rather than guessing.
+        // A product the table names outside the automotive families is
+        // still named — volt-seconds are webers — because the table is
+        // now every quantity the library carries.
         assert_eq!(
             Composed::of(UnitId::base("volt")).times(seconds).named(),
-            None
+            Some(UnitId::base("weber"))
         );
     }
 
@@ -2989,10 +3140,10 @@ mod tests {
     #[test]
     fn a_units_own_id_names_it() {
         let _shared = listing();
-        for entry in UNITS {
+        for entry in UNITS.iter() {
             assert_eq!(
-                recognize(entry.id, &none()),
-                typed(entry.id),
+                recognize(&entry.id, &none()),
+                typed(&entry.id),
                 "{}",
                 entry.id
             );
@@ -3058,39 +3209,11 @@ mod tests {
         UnitId::new(base, prefix)
     }
 
-    /// The crate's own enumerated variant for `abbreviation`, within the
-    /// quantity `entry` belongs to — the comparand the composed factors
-    /// are cross-checked against.
-    fn enumerated(quantity: Units, abbreviation: &str) -> Option<UnitDefinition> {
-        macro_rules! lookup {
-            ($($variant:ident => $unit_enum:ident),+ $(,)?) => {
-                match quantity {
-                    $(Units::$variant(_) => $unit_enum::try_from(abbreviation)
-                        .ok()
-                        .map(|u| UnitDefinition::from(Units::$variant(u))),)+
-                    // Quantities pulled in by a feature dependency that
-                    // no entry of this table is stated in.
-                    _ => None,
-                }
-            };
-        }
-        lookup!(
-            Dimensionless => DimensionlessUnit,
-            ElectricPotential => ElectricPotentialUnit,
-            ElectricCurrent => ElectricCurrentUnit,
-            ElectricCharge => ElectricChargeUnit,
-            Power => PowerUnit,
-            Energy => EnergyUnit,
-            Torque => TorqueUnit,
-            AngularVelocity => AngularVelocityUnit,
-            Pressure => PressureUnit,
-            Frequency => FrequencyUnit,
-            Ratio => RatioUnit,
-            TemperatureInterval => TemperatureIntervalUnit,
-            Velocity => VelocityUnit,
-            Time => TimeUnit,
-            Length => LengthUnit,
-        )
+    /// The **library's** own answer for a spelling, inside one
+    /// dimension's quantity — the comparand the composed factors are
+    /// cross-checked against.
+    fn enumerated(dimension: Dimension, abbreviation: &str) -> Option<UnitDefinition> {
+        dimension.library_definition(abbreviation)
     }
 
     /// **The composition cross-check.** Wherever the crate enumerates a
@@ -3109,12 +3232,20 @@ mod tests {
         for entry in UNITS.iter().filter(|e| e.is_base() && e.prefixable) {
             for prefix in Prefix::all().iter().filter(|p| !p.is_none()) {
                 let spelling = format!("{}{}", prefix.symbol(), entry.display);
-                let Some(theirs) = enumerated(entry.unit, &spelling) else {
+                let Some(theirs) = enumerated(entry.dimension, &spelling) else {
                     continue;
                 };
+                // A spelling the library tabulates at a number its own
+                // name contradicts is not this rung at all: 0.6.3 has a
+                // `daSv` worth a tenth of a sievert, which the table
+                // holds as a unit of its own (see
+                // `a_library_unit_whose_number_contradicts_its_name_is_a_base_of_its_own`).
+                if find_typed(&unit(&entry.base, *prefix)).is_none() {
+                    continue;
+                }
                 // Same quantity only: `try_from` is asked within the
                 // base's own enum, so a hit is always convertible.
-                let ours = definition_of(&unit(entry.base, *prefix)).expect(&spelling);
+                let ours = UnitDefinition::from(entry.unit) * prefix_definition(*prefix);
                 assert!(
                     (1.0 - ours.multiplier() / theirs.multiplier()).abs() < 1e-12,
                     "{spelling}: composed {} vs enumerated {}",
@@ -3125,9 +3256,9 @@ mod tests {
             }
         }
         // A cross-check that checked nothing would pass silently. The
-        // crate enumerates the whole ladder for the SI base quantities,
-        // so this is in the hundreds.
-        assert!(checked > 100, "only {checked} pairs cross-checked");
+        // library enumerates the whole ladder for the SI base
+        // quantities, so this is in the thousands.
+        assert!(checked > 1000, "only {checked} pairs cross-checked");
     }
 
     /// The hole the composition exists for: the crate stops enumerating
@@ -3136,11 +3267,7 @@ mod tests {
     #[test]
     fn a_prefix_the_crate_does_not_enumerate_is_composed_and_converts() {
         let _shared = listing();
-        assert!(enumerated(
-            Units::ElectricCharge(ElectricChargeUnit::ampere_hour),
-            "nAh"
-        )
-        .is_none());
+        assert!(enumerated(Dimension::Charge, "nAh").is_none());
         let nah = unit("ampere-hour", Prefix::Nano);
         let ah = unit("ampere-hour", Prefix::None);
         let to_ah = convert_units(&nah, &ah).expect("nAh to Ah");
@@ -3242,9 +3369,12 @@ mod tests {
     #[test]
     fn a_composition_with_no_name_renders_its_factors_and_keeps_its_kind() {
         let _shared = listing();
+        // A name is used only where it spells what the factors spell:
+        // volt-seconds *are* webers, and nobody reading a product of
+        // volts and seconds expects `Wb`.
         let volt_second =
             Composed::of(unit("volt", Prefix::None)).times(unit("second", Prefix::None));
-        assert_eq!(volt_second.named(), None);
+        assert_eq!(volt_second.named(), Some(UnitId::base("weber")));
         assert_eq!(volt_second.display(), "V·s");
 
         // The design's division case: an amp-hour counter differentiated
@@ -3306,6 +3436,306 @@ mod tests {
         assert_eq!(get("scalar").expect("scalar").dimension, Dimension::Scalar);
         // A ratio is a different kind, so nothing converts between them.
         assert!(convert("scalar", "percent").is_none());
+    }
+
+    // ---- the table is the library's -----------------------------------
+
+    /// **Every unit the library enumerates is offered**, as a base unit
+    /// of its own or as one rung of a base's ladder — enumerated from
+    /// the library here, never from a list kept in this file.
+    ///
+    /// This is the whole no-curation policy in one assertion: a unit the
+    /// library carries and this app does not offer would be a choice
+    /// nobody made on purpose.
+    #[test]
+    fn every_unit_the_library_enumerates_is_offered_as_a_base_or_a_rung_of_one() {
+        let _shared = listing();
+        let picker = list_unit_picker();
+        // What a pick can commit: a base row's own identity, and every
+        // scale under it.
+        let offered: std::collections::BTreeSet<UnitId> = picker
+            .iter()
+            .flat_map(|entry| entry.scales.iter().map(|s| s.unit.clone()))
+            .collect();
+        let mut seen = 0usize;
+        for dimension in Dimension::all().iter().copied() {
+            // The absolute scales are this module's reading of the
+            // library's intervals, which are offered under their own
+            // dimension.
+            if dimension == Dimension::Temperature {
+                continue;
+            }
+            for row in dimension.rows() {
+                seen += 1;
+                let id = row.variant.replace('_', "-");
+                let unit = typed(&id)
+                    .or_else(|| typed(&format!("{}-{id}", dimension.kebab())))
+                    .unwrap_or_else(|| panic!("{} {id} is not in the table", dimension.kebab()));
+                assert!(
+                    offered.contains(&unit),
+                    "{} {id} is in the table but not offered: {unit:?}",
+                    dimension.kebab()
+                );
+            }
+        }
+        // A coverage check that covered nothing would pass silently.
+        assert!(seen > 2000, "only {seen} library units enumerated");
+    }
+
+    /// The **serialized** dimension name is the variant in kebab-case,
+    /// and the fifteen a project file has always carried are unchanged
+    /// — a math signal written as `kind: voltage` reads back as one.
+    #[test]
+    fn the_dimension_a_project_file_names_reads_back_as_the_same_dimension() {
+        let _shared = listing();
+        let legacy = [
+            ("voltage", Dimension::Voltage),
+            ("current", Dimension::Current),
+            ("charge", Dimension::Charge),
+            ("power", Dimension::Power),
+            ("energy", Dimension::Energy),
+            ("torque", Dimension::Torque),
+            ("angular-velocity", Dimension::AngularVelocity),
+            ("pressure", Dimension::Pressure),
+            ("frequency", Dimension::Frequency),
+            ("ratio", Dimension::Ratio),
+            ("temperature", Dimension::Temperature),
+            ("speed", Dimension::Speed),
+            ("time", Dimension::Time),
+            ("length", Dimension::Length),
+            ("scalar", Dimension::Scalar),
+        ];
+        for (name, dimension) in legacy {
+            assert_eq!(
+                serde_json::to_string(&dimension).expect("serialize"),
+                format!("\"{name}\""),
+                "{name}"
+            );
+            let read: Dimension =
+                serde_json::from_str(&format!("\"{name}\"")).expect("deserialize");
+            assert_eq!(read, dimension, "{name}");
+        }
+        // And the rule the other ninety-four follow, so the label and
+        // the serialized name cannot drift from the variant.
+        for dimension in Dimension::all().iter().copied() {
+            assert_eq!(
+                serde_json::to_string(&dimension).expect("serialize"),
+                format!("\"{}\"", dimension.kebab()),
+                "{dimension:?}"
+            );
+            assert_eq!(dimension.label(), dimension.kebab().replace('-', " "));
+        }
+        assert_eq!(Dimension::VolumeRate.kebab(), "volume-rate");
+        assert_eq!(Dimension::VolumeRate.label(), "volume rate");
+    }
+
+    /// **The first resolution of every composition this module's tests
+    /// name**, pinned.
+    ///
+    /// A product lands on the first dimension of [`Dimension::all`]
+    /// whose base is convertible with it, and many of the library's
+    /// quantities share exponents — so what a composed unit is *called*
+    /// is decided by that order and nothing else. Pinning it is what
+    /// makes widening the order a visible change.
+    #[test]
+    fn every_composition_resolves_to_the_dimension_the_order_gives_it() {
+        let _shared = listing();
+        let of = |unit: &str| Composed::of(UnitId::base(unit));
+        let cases: Vec<(&str, Composed, Dimension)> = vec![
+            (
+                "A·s",
+                of("ampere").times(UnitId::base("second")),
+                Dimension::Charge,
+            ),
+            (
+                "A·h",
+                of("ampere").times(UnitId::base("hour")),
+                Dimension::Charge,
+            ),
+            (
+                "W·s",
+                of("watt").times(UnitId::base("second")),
+                Dimension::Energy,
+            ),
+            (
+                "V·A",
+                of("volt").times(UnitId::base("ampere")),
+                Dimension::Power,
+            ),
+            (
+                "Ah/s",
+                of("ampere-hour").over(UnitId::base("second")),
+                Dimension::Current,
+            ),
+            (
+                "1/s",
+                Composed::default().over(UnitId::base("second")),
+                Dimension::Frequency,
+            ),
+            (
+                "V·s",
+                of("volt").times(UnitId::base("second")),
+                Dimension::MagneticFlux,
+            ),
+            // `N · m` is kg·m²·s⁻², which energy and torque share; the
+            // order puts energy first, so that is what a product of a
+            // newton and a metre is called and torque is what the user
+            // overrides it with.
+            (
+                "N·m",
+                of("newton").times(UnitId::base("meter")),
+                Dimension::Energy,
+            ),
+        ];
+        for (spelling, composed, expected) in cases {
+            assert_eq!(composed.dimension(), Some(expected), "{spelling}");
+            assert_eq!(
+                composed.dimensions().first().copied(),
+                Some(expected),
+                "{spelling}: the first of the equivalents is the resolution"
+            );
+        }
+    }
+
+    /// **Every dimension of the same exponents**, which is what a
+    /// kind-locked picker widens to (owner ruling: the first resolution
+    /// stands and the user overrides it).
+    #[test]
+    fn a_composition_offers_every_dimension_of_its_exponents() {
+        let _shared = listing();
+        let newton_meter = Composed::of(UnitId::base("newton")).times(UnitId::base("meter"));
+        let equivalents = newton_meter.dimensions();
+        assert!(equivalents.contains(&Dimension::Energy), "{equivalents:?}");
+        assert!(equivalents.contains(&Dimension::Torque), "{equivalents:?}");
+        assert_eq!(
+            equivalents.first().copied(),
+            newton_meter.dimension(),
+            "the first equivalent is the resolution"
+        );
+        // In composition order, and never repeating a dimension.
+        let order: Vec<usize> = equivalents.iter().map(|d| d.index()).collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+        // A composition the analysis places nowhere offers nothing.
+        assert!(Composed::of(UnitId::base("furlong"))
+            .dimensions()
+            .is_empty());
+    }
+
+    /// Where the library's own name and number disagree, the unit is a
+    /// base of its own rather than a rung of a ladder it does not sit
+    /// on.
+    ///
+    /// `runtime_units` 0.6.3 tabulates every sievert above the sievert
+    /// with an extra ×10⁻², so its `decasievert` is a *tenth* of a
+    /// sievert and collides with its `decisievert`. The classification
+    /// rule refuses it — the name says deca and the number does not —
+    /// so it is offered under its own name and the ladder is composed
+    /// from the sievert instead.
+    #[test]
+    fn a_library_unit_whose_number_contradicts_its_name_is_a_base_of_its_own() {
+        let _shared = listing();
+        assert_eq!(typed("millisievert"), Some(unit("sievert", Prefix::Milli)));
+        assert_eq!(typed("decasievert"), Some(UnitId::base("decasievert")));
+        close(
+            convert("decasievert", "sievert").expect("daSv to Sv").gain,
+            0.1,
+        );
+    }
+
+    /// **A spelling the library gives a unit names it**, where exactly
+    /// one unit spells itself that way — which is what makes `L`,
+    /// `lbf/in²` and `liters per minute` readable from a database
+    /// without anyone tabulating them here.
+    #[test]
+    fn a_library_spelling_names_its_unit_where_exactly_one_unit_spells_it() {
+        let _shared = listing();
+        assert_eq!(recognize("L", &none()), typed("liter"));
+        assert_eq!(recognize("liters", &none()), typed("liter"));
+        assert_eq!(
+            recognize("pound-force per square inch", &none()),
+            typed("pound-force-per-square-inch")
+        );
+        assert_eq!(
+            recognize("liters per second", &none()),
+            typed("liter-per-second")
+        );
+        // Unique or nothing. Two dimensions carry a `kg/m³`, and a mass
+        // density is not a mass concentration; 0.6.3 also gives a
+        // pressure impulse the pressure's own `lbf/in²`, so neither
+        // answers to it and the singular names still do.
+        assert_eq!(recognize("kg/m³", &none()), None);
+        assert_eq!(recognize("lbf/in²", &none()), None);
+        // And a spelling the library resolves but a database does not
+        // mean unambiguously stays refused.
+        assert_eq!(recognize("C", &none()), None, "coulomb or Celsius");
+    }
+
+    /// The spellings an automotive database actually writes still place
+    /// the units they always did — the passes ahead of the library's own
+    /// spellings are what keeps `K` the absolute kelvin rather than the
+    /// interval, and `h` an hour rather than the Planck constant.
+    #[test]
+    fn the_spellings_an_automotive_database_writes_still_place_their_units() {
+        let _shared = listing();
+        let cases = [
+            ("V", "volt"),
+            ("A", "ampere"),
+            ("rpm", "revolution-per-minute"),
+            ("km/h", "kilometer-per-hour"),
+            ("bar", "bar"),
+            ("°C", "degree-celsius"),
+            ("°F", "degree-fahrenheit"),
+            ("K", "kelvin"),
+            ("%", "percent"),
+            ("psi", "psi"),
+            ("h", "hour"),
+            ("Ah", "ampere-hour"),
+            ("Nm", "newton-meter"),
+            ("mph", "mile-per-hour"),
+        ];
+        for (raw, id) in cases {
+            assert_eq!(recognize(raw, &none()), typed(id), "{raw}");
+        }
+        // The absolute temperature wins over the interval of the same
+        // name, and the interval is still reachable by its own id.
+        assert_eq!(
+            dimension_of(&recognize("°C", &none()).expect("°C")),
+            Some(Dimension::Temperature)
+        );
+        assert_eq!(
+            typed("temperature-interval-degree-celsius").and_then(|u| dimension_of(&u)),
+            Some(Dimension::TemperatureInterval)
+        );
+    }
+
+    /// The quantity the whole task came from: litres and litres per
+    /// minute are units of dimensions this app names, so a composition
+    /// can land on one.
+    #[test]
+    fn volume_and_volume_rate_are_dimensions_with_the_library_units_in_them() {
+        let _shared = listing();
+        assert_eq!(
+            get("liter").map(|u| u.dimension),
+            Some(Dimension::Volume),
+            "litres"
+        );
+        assert_eq!(
+            get("liter-per-second").map(|u| u.dimension),
+            Some(Dimension::VolumeRate)
+        );
+        // The library has no litre-per-minute, which is the whole reason
+        // a project composes one — and a composition of a litre over a
+        // minute now lands on a dimension this app names.
+        assert!(get("liter-per-minute").is_none());
+        let per_minute = Composed::of(UnitId::base("liter")).over(UnitId::base("minute"));
+        assert_eq!(per_minute.dimension(), Some(Dimension::VolumeRate));
+        close(
+            per_minute
+                .convert_to(&UnitId::base("cubic-meter-per-second"))
+                .expect("L/min to m³/s")
+                .gain,
+            1.0 / 60_000.0,
+        );
     }
 
     // ---- Units the user composes ------------------------------------
