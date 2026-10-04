@@ -23,24 +23,26 @@ The development path for the 0.10.x releases: correctness, rework,
 stability, project health. In order of work, first at the top. None
 started.
 
-1. [Task 121 — The Trace Tells the Truth About the Wire](0121-the-trace-tells-the-truth-about-the-wire.md)
+1. [Task 121 — The Trace Tells the Truth About the Wire](pending-closeout/0121-the-trace-tells-the-truth-about-the-wire.md)
    — five reports (last 2026-10-03, the plot): the host synthesises a
    `Tx` row for every frame the session accepted, and every view, count,
    logger and export reads it. Groomed 2026-10-03: the wire writes the
    row — the driver's echo (`receive_own_messages`) arrives as
-   `DIRECTION_TX`; an accepted send appends nothing. First in the
-   development sequence.
+   `DIRECTION_TX`; an accepted send appends nothing; on PEAK an echo
+   from an error-passive transmitter is withheld. **Bench-confirmed
+   2026-10-03; awaiting acceptance.**
 2. [Task 160 — Only the Wire Writes Data](0160-only-the-wire-writes-data.md)
    — opened 2026-10-03 by owner order after the fifth report of 121's
    defect: audit every place a transmit intent is recorded as a bus
    fact (done — one writer, all consumers read its rows), then make the
    rule durable (ADR, CONTEXT.md, CLAUDE.md) and confirm on the bench
    with 121.
-3. [Task 161 — A Bus-Off Controller Comes Back](0161-bus-off-recovery.md)
+3. [Task 161 — A Bus-Off Controller Comes Back](pending-closeout/0161-bus-off-recovery.md)
    — opened 2026-10-03 from the PEAK bench: PCAN opens without
    `auto_reset`, nothing resets a bus-off controller, and ADR 0039's
    "recovers on its own" is false. Auto-recovery on every vendor plus a
-   sidecar backstop; lands beside `task155-kvaser-unwrap`.
+   sidecar backstop; beside `task155-kvaser-unwrap`. **Bench-confirmed
+   on PEAK 2026-10-03; awaiting acceptance.**
 4. [Task 128 — Shared-Layer Holdouts](0128-shared-layer-holdouts.md)
    — the last cleanup items the 2026-08-27 run surfaced, opened at the
    owner's instruction while walking its open items: `serverList.ts`'s

@@ -140,3 +140,7 @@ come from an intent.
   own account of a failed transmission is the controller's TEC, carried
   in every error frame, so an echo from an error-passive transmitter is
   withheld. Phase 2's durable rule must state the PEAK caveat.
+- 2026-10-03 — phase 3 (bench) **met** with 121/161's confirmation. Open:
+  phase 2 — the durable rule (ADR, CONTEXT.md, CLAUDE.md, with the PEAK
+  caveat), the refused `Tx ✗` row's reach (queue § 1), the bridge `Tx`
+  drop (queue § 1), the plot's closed gaps (queue § 3).

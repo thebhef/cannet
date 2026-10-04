@@ -214,3 +214,8 @@ bench.
     per-session matching. Implemented as ruled (the sidecar fans out every
     received frame, echoes included); pinned by
     `test_the_drivers_echo_reaches_every_subscriber_as_a_transmitted_frame`.
+- 2026-10-03 — **owner bench confirmation** ("that all seems like it's
+  working pretty well now"): cable pulled → `Tx` rows, plot and counts
+  stop and bus-health reads error-passive; replugged → the accepted
+  driver-queue burst, then active and rows at rate. Phase 2 met; every
+  exit criterion met → **pending closeout**.

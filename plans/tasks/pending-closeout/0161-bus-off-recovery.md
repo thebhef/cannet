@@ -150,3 +150,8 @@ Branch sits in the stack **beside the last driver change**
   expected. Sidecar 272 passed at the restacked tip; freeze smoke ok.
   ADR 0039's bus-off amendment carries the PEAK paragraph; README's
   transmit and bus-health passages carry the caveat.
+- 2026-10-03 — **owner bench confirmation** ("that all seems like it's
+  working pretty well now"): cable pulled → `Tx` rows, plot and counts
+  stop and bus-health reads error-passive; replugged → the accepted
+  driver-queue burst, then active and rows at rate. Vector/Kvaser paths still unverified on hardware (no bench). Phase 2 met on PEAK; every
+  exit criterion met → **pending closeout**.

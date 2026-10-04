@@ -248,6 +248,13 @@ committed verbatim as 5ef108dd, triaged by the overseer):
 
 ## 4. Finished tasks awaiting acceptance
 
+- **Task 121 — The Trace Tells the Truth About the Wire** — `task121-echo-row`
+  + the PEAK echo gate in `fix-pcan-counters-decay`; bench-confirmed
+  2026-10-03. Open § 1 items (refused row's reach, bridge `Tx` drop) are
+  160's, not blockers to acceptance.
+- **Task 161 — A Bus-Off Controller Comes Back** — `task161-bus-off-recovery`
+  + `fix-pcan-counters-decay`; bench-confirmed on PEAK 2026-10-03; Vector
+  and Kvaser paths unverified on hardware.
 - **142 — trace fzf filter**, reopened 2026-10-02 for owner feedback
   (the box gave no feedback while the host walked the index); phase 3
   landed 2026-10-03 on `fix-trace-filter-feedback` (`82693c13`):
