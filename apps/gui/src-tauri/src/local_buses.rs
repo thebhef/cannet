@@ -301,7 +301,7 @@ impl CanFrameSink for SessionSink {
     }
 }
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
 use crate::project;
@@ -319,30 +319,37 @@ use crate::{sys_debug, sys_info, sys_warn};
 /// definitions, and attach observers for each
 /// `local-virtual-bus` binding (ADR 0021). Existing instances are
 /// dropped first.
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// each bridge in the replayed set opens a `cannet-client` session and
+/// **blocks until the remote handshake answers or its connect deadline
+/// expires**, exactly as [`attach_local_bus_bridge`] does (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 // Returns `Result` for IPC-command uniformity even though replay only
 // logs per-bus errors and always succeeds overall.
 #[allow(clippy::unnecessary_wraps)]
-pub(crate) fn replay_local_virtual_buses(
+pub(crate) async fn replay_local_virtual_buses(
     app: AppHandle,
-    state: State<'_, AppState>,
     defs: Vec<project::LocalVirtualBusDef>,
 ) -> Result<Vec<String>, String> {
-    let errors = replay(&state.local_buses, &defs, &|address| {
-        crate::connect_flow::config_for(&app, address)
-    });
-    for err in &errors {
-        sys_warn!(&app, "virtual-bus", "{err}");
-    }
-    let ids = state.local_buses.bus_ids();
-    sys_debug!(
-        &app,
-        "virtual-bus",
-        "replayed {} local virtual bus(es)",
-        ids.len(),
-    );
-    Ok(ids)
+    crate::sampling::off_async_workers(move || {
+        let state = app.state::<AppState>();
+        let errors = replay(&state.local_buses, &defs, &|address| {
+            crate::connect_flow::config_for(&app, address)
+        });
+        for err in &errors {
+            sys_warn!(&app, "virtual-bus", "{err}");
+        }
+        let ids = state.local_buses.bus_ids();
+        sys_debug!(
+            &app,
+            "virtual-bus",
+            "replayed {} local virtual bus(es)",
+            ids.len(),
+        );
+        Ok(ids)
+    })
+    .await
 }
 
 /// Create a virtual bus. The GUI calls this from the project
@@ -385,26 +392,37 @@ pub(crate) fn drop_local_virtual_bus(
 /// `cannet-client` session against `spec.remote_address`. `allocates`
 /// signals that the bridged interface is a virtual-bus factory id
 /// (the client will wait for `InterfaceAllocated`).
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// attaching spawns the session thread and **blocks on the handshake**
+/// until the remote answers or the connect deadline expires, which is
+/// the network's latency on the IPC thread (ADR 0048). The remote
+/// connect command is `async` for the same reason.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn attach_local_bus_bridge(
+pub(crate) async fn attach_local_bus_bridge(
     app: AppHandle,
-    state: State<'_, AppState>,
     virtual_bus_id: String,
     spec: project::BridgeSpec,
     allocates: Option<bool>,
 ) -> Result<(), String> {
-    let config = crate::connect_flow::config_for(&app, &spec.remote_address)?;
-    state
-        .local_buses
-        .attach_bridge(&virtual_bus_id, &spec, allocates.unwrap_or(false), &config)?;
-    sys_info!(
-        &app,
-        "virtual-bus",
-        "attached bridge {} on vbus {virtual_bus_id}",
-        spec.name,
-    );
-    Ok(())
+    crate::sampling::off_async_workers(move || {
+        let state = app.state::<AppState>();
+        let config = crate::connect_flow::config_for(&app, &spec.remote_address)?;
+        state.local_buses.attach_bridge(
+            &virtual_bus_id,
+            &spec,
+            allocates.unwrap_or(false),
+            &config,
+        )?;
+        sys_info!(
+            &app,
+            "virtual-bus",
+            "attached bridge {} on vbus {virtual_bus_id}",
+            spec.name,
+        );
+        Ok(())
+    })
+    .await
 }
 
 /// Detach a bridge from a virtual bus.

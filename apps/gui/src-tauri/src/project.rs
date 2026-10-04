@@ -334,18 +334,25 @@ pub(crate) fn parse_project(text: &str) -> Result<Project, String> {
 ///
 /// Emits `project`-tagged messages on the system log — `info` on
 /// success, `error` on any failure.
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// opening re-roots the session (flushing and reopening the raw store,
+/// re-reading the destination's pyramid directory) and stops the
+/// project's loggers, which **joins every writer thread** so each file
+/// is finished before it returns. On a cloud-synced destination that is
+/// seconds, and none of it may run on the IPC thread (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn open_project(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, crate::app_state::AppState>,
-    path: String,
-) -> Result<Project, String> {
-    let text = match std::fs::read_to_string(&path) {
+pub async fn open_project(app: tauri::AppHandle, path: String) -> Result<Project, String> {
+    crate::sampling::off_async_workers(move || open_project_blocking(&app, &path)).await
+}
+
+fn open_project_blocking(app: &tauri::AppHandle, path: &str) -> Result<Project, String> {
+    let state = app.state::<crate::app_state::AppState>();
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
             let msg = format!("failed to read project at {path}: {e}");
-            crate::sys_error!(&app, "project", "{msg}");
+            crate::sys_error!(app, "project", "{msg}");
             return Err(msg);
         }
     };
@@ -363,9 +370,9 @@ pub fn open_project(
                 .state::<crate::project_dir::ActiveProjectDir>()
                 .cache_root()
                 .to_path_buf();
-            let dir = crate::project_dir::resolve(Some(Path::new(&path)), &cache_root);
-            crate::remember_project_dir(&app, &dir, Some(Path::new(&path)));
-            crate::reroot_session(&app, &dir, crate::trace_store::Carry::Nothing);
+            let dir = crate::project_dir::resolve(Some(Path::new(path)), &cache_root);
+            crate::remember_project_dir(app, &dir, Some(Path::new(path)));
+            crate::reroot_session(app, &dir, crate::trace_store::Carry::Nothing);
             // Record the open project's identity (ADR 0002 DS-7). A prior
             // capture belonging to this project is reloaded *separately* by
             // `restore_scratch_capture`, which the frontend calls after it
@@ -382,7 +389,7 @@ pub fn open_project(
             // closing, and their files are finished with it. The
             // frontend pushes this project's set next, and a logger it
             // left enabled starts again on connect.
-            crate::logger::stop_all(&app);
+            crate::logger::stop_all(app);
             // Load the host TX-message registry from
             // the project's pool. All periodics start stopped — reopen
             // never fires traffic onto a bus the user hasn't
@@ -408,17 +415,17 @@ pub fn open_project(
             // `crate::project_watch`). Registered here rather than in
             // the frontend so a reload — which is this same command —
             // re-records without a second round trip.
-            crate::project_watch::set_open_project(&app, Path::new(&path), text);
+            crate::project_watch::set_open_project(app, Path::new(path), text);
             // Usually a no-op here (the frontend re-adds the project's
             // DBCs after open, each add re-resolving), but covers a
             // load into an already-populated DBC set.
-            crate::app_state::refresh_calc_resolutions(&app);
-            crate::sys_info!(&app, "project", "opened project {path}");
+            crate::app_state::refresh_calc_resolutions(app);
+            crate::sys_info!(app, "project", "opened project {path}");
             Ok(p)
         }
         Err(e) => {
             let msg = format!("project at {path}: {e}");
-            crate::sys_error!(&app, "project", "{msg}");
+            crate::sys_error!(app, "project", "{msg}");
             Err(msg)
         }
     }
@@ -439,21 +446,30 @@ pub fn open_project(
 /// `Nothing`): a new project starts empty, and the project being left
 /// keeps its own capture where it belongs — the same rule as opening a
 /// different project.
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers)
+/// for the same reason as [`open_project`]: the re-root and the logger
+/// stop (which joins every writer thread) are filesystem work, not a
+/// state read (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_state::AppState>) {
+pub async fn close_project(app: tauri::AppHandle) {
+    crate::sampling::off_async_workers(move || close_project_blocking(&app)).await;
+}
+
+fn close_project_blocking(app: &tauri::AppHandle) {
+    let state = app.state::<crate::app_state::AppState>();
     let cache_root = app
         .state::<crate::project_dir::ActiveProjectDir>()
         .cache_root()
         .to_path_buf();
     let dir = crate::project_dir::resolve(None, &cache_root);
-    crate::remember_project_dir(&app, &dir, None);
-    crate::reroot_session(&app, &dir, crate::trace_store::Carry::Nothing);
+    crate::remember_project_dir(app, &dir, None);
+    crate::reroot_session(app, &dir, crate::trace_store::Carry::Nothing);
     // Leaving the project leaves its simulation: Run is session state
     // and a fresh project starts stopped.
     crate::rbs::stop_all_elements(&state);
     // …and its loggers, whose files belong to the project being left.
-    crate::logger::stop_all(&app);
+    crate::logger::stop_all(app);
     // No project file, so no project identity to stamp a capture with,
     // and nothing on disk left to watch.
     *state.active_project_id() = None;
@@ -466,8 +482,8 @@ pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_s
     state.math.replace(Vec::new());
     *state.math_model_cache() = None;
     state.set_project_bus_names(Vec::new());
-    crate::project_watch::clear_open_project(&app);
-    crate::sys_info!(&app, "project", "closed the open project");
+    crate::project_watch::clear_open_project(app);
+    crate::sys_info!(app, "project", "closed the open project");
 }
 
 /// Serialize `project` (pretty-printed) and write it to `path`. Returns
@@ -483,13 +499,26 @@ pub fn save_project(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::app_state::AppState>,
     path: String,
+    project: Project,
+) -> Result<String, String> {
+    save_project_inner(&app, &state, &path, project)
+}
+
+/// [`save_project`]'s body without its command signature, so
+/// [`save_project_as`] — which runs off the IPC thread and therefore
+/// cannot hold a [`tauri::State`] borrow across its `await` — reaches
+/// the same write.
+fn save_project_inner(
+    app: &tauri::AppHandle,
+    state: &crate::app_state::AppState,
+    path: &str,
     mut project: Project,
 ) -> Result<String, String> {
     // Anchor the project identity to the target file: keep the id already
     // on disk, so it stays stable across saves even though the frontend's
     // save payload omits it (the serde default would otherwise mint a new
     // one each time). A brand-new file keeps the freshly generated id.
-    if let Some(id) = existing_project_id(&path) {
+    if let Some(id) = existing_project_id(path) {
         project.project_id = id;
     }
     // The host registry is the source of truth for TX
@@ -511,21 +540,21 @@ pub fn save_project(
     // project file, and the watch has to know that this write was
     // cannet's own rather than announce a change on every Save
     // (ADR 0053 §1, `crate::project_watch`).
-    match crate::project_watch::record_own_write(&app, Path::new(&path), || {
-        write_project_file(&path, &project)
+    match crate::project_watch::record_own_write(app, Path::new(path), || {
+        write_project_file(path, &project)
     }) {
         Ok(()) => {
-            crate::sys_info!(&app, "project", "saved project to {path}");
+            crate::sys_info!(app, "project", "saved project to {path}");
             Ok(project.project_id.to_string())
         }
         Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
             let msg = format!("failed to serialize project: {e}");
-            crate::sys_error!(&app, "project", "{msg}");
+            crate::sys_error!(app, "project", "{msg}");
             Err(msg)
         }
         Err(e) => {
             let msg = format!("failed to write project to {path}: {e}");
-            crate::sys_error!(&app, "project", "{msg}");
+            crate::sys_error!(app, "project", "{msg}");
             Err(msg)
         }
     }
@@ -550,19 +579,31 @@ pub fn save_project(
 /// every directory alone.
 ///
 /// Returns the saved file's `project_id`, as [`save_project`] does.
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// carrying the contents across is a rename when the destination is on
+/// the same volume and a **copy of the whole capture** when it is not,
+/// so this command's duration is the session's size (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn save_project_as(
+pub async fn save_project_as(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::app_state::AppState>,
     path: String,
     project: Project,
 ) -> Result<String, String> {
-    let id = save_project(app.clone(), state, path.clone(), project)?;
+    crate::sampling::off_async_workers(move || save_project_as_blocking(&app, &path, project)).await
+}
+
+fn save_project_as_blocking(
+    app: &tauri::AppHandle,
+    path: &str,
+    project: Project,
+) -> Result<String, String> {
+    let state = app.state::<crate::app_state::AppState>();
+    let id = save_project_inner(app, &state, path, project)?;
     // A project file with no parent directory is not a path anything can
     // be rooted in; the file is saved, which is the part the user asked
     // for.
-    let Some(root) = Path::new(&path)
+    let Some(root) = Path::new(path)
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
     else {
@@ -578,8 +619,8 @@ pub fn save_project_as(
     // carries the capture but deliberately leaves the derived caches
     // behind (they may still be mapped, and they rebuild), and the cache
     // list is how those bytes are reclaimed.
-    crate::remember_project_dir(&app, &dest, Some(Path::new(&path)));
-    crate::reroot_session(&app, &dest, crate::trace_store::Carry::Contents);
+    crate::remember_project_dir(app, &dest, Some(Path::new(path)));
+    crate::reroot_session(app, &dest, crate::trace_store::Carry::Contents);
     Ok(id)
 }
 

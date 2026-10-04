@@ -2782,9 +2782,24 @@ pub(crate) fn restamp_scratch_for_capture(state: &AppState) {
     state.notes.wipe_scratch();
 }
 
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// the clear drops every decoded pyramid, which unlinks its level files,
+/// and re-stamps the scratch — filesystem work whose size is the session
+/// that is being discarded, so it must not run on the IPC thread
+/// (ADR 0048).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
+pub(crate) async fn clear_trace_store(app: AppHandle) {
+    crate::sampling::off_async_workers(move || {
+        clear_trace_store_now(&app, &app.state::<AppState>());
+    })
+    .await;
+}
+
+/// [`clear_trace_store`]'s body, callable from a thread that is already
+/// off the IPC thread — the exit path
+/// (`clear_scratch_on_exit`) and the project-cache commands both reach
+/// the clear this way.
+pub(crate) fn clear_trace_store_now(app: &AppHandle, state: &AppState) {
     let now_ns = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
@@ -2792,7 +2807,7 @@ pub(crate) fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     // Drops the decoded-sample caches along with the rest of the scratch's
     // capture-scoped state. The verification runtime (violation indices +
     // counter continuity) holds frame indices too and goes the same way.
-    restamp_scratch_for_capture(&state);
+    restamp_scratch_for_capture(state);
     state.verifier.clear_runtime();
     // Same reason: the undelivered-transmit marks address rows by
     // index, so the new capture's row 0 would inherit the last one's.
