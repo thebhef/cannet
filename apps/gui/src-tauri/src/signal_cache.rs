@@ -5110,7 +5110,14 @@ mod tests {
         let db = load_dbc();
         let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
-        let cache = SignalCacheStore::new(tmp.path());
+        // Unbounded: under the default `CATCH_UP_SERVE_BUDGET` (150 ms)
+        // this serve races the catch-up decode, so the point count — and
+        // whether the assertion below holds — depends on how much of the
+        // 50,000 samples the runner managed to decode before the deadline
+        // rather than on the code. Serving with no deadline makes the
+        // catch-up run to completion before answering, so the count is a
+        // deterministic function of the data.
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
 
         let max_points = 200;
         let fit = cache.slice(
@@ -5124,12 +5131,14 @@ mod tests {
             &store,
             dbs,
         );
-        // decimate_min_max bounds output to 2*max_points + 2.
+        // decimate_min_max keeps up to four points per bucket (first,
+        // min, max, last — see its rustdoc), bounding output to
+        // 4*max_buckets, not 2*max_buckets + 2.
         assert!(
-            fit.len() <= 2 * max_points + 2,
+            fit.len() <= 4 * max_points,
             "fit returned {} points, expected ≤ {}",
             fit.len(),
-            2 * max_points + 2,
+            4 * max_points,
         );
         // And far fewer than the raw series — the whole point.
         assert!(fit.len() < n as usize / 10);
