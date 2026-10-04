@@ -255,6 +255,26 @@ class OpenChannel(Protocol):
         than making a second one.
         """
 
+    def timer_wraps(self) -> int:
+        """How many times the backend's own receive-timestamp counter
+        has rolled over since this channel was opened.
+
+        A driver that corrects rolled-over timestamps must say so: the
+        corrected frames are indistinguishable from frames that never
+        wrapped, so the count is the only evidence the operator can be
+        shown. The state poll reads it on its own cadence and emits one
+        warning per increment.
+
+        Monotonic for the life of the channel, and back to zero on the
+        next open — a reopened channel is a fresh reading of the
+        hardware's timer, not a continuation.
+
+        **Optional.** A driver whose backends do not roll over may omit
+        this method entirely; the poll treats the missing attribute as
+        "no rollovers", which is what it means. Only the default
+        driver's Kvaser path ever returns anything but zero.
+        """
+
     def close(self) -> None:
         """Idempotent. Cleans up any vendor resources."""
 

@@ -901,3 +901,90 @@ def test_a_count_already_reported_survives_the_adapter_going_away() -> None:
         assert gone.interface_state.rx_overruns == 12
     finally:
         reg.unsubscribe("fake:0", a)
+
+
+# ---- receive-timer rollover reporting --------------------------------------
+
+
+class _WrappingChannel(_FakeChannel):
+    """A backend whose receive timer rolls over, like Kvaser's 32-bit
+    one does. The driver corrects the stamps itself; what reaches the
+    interface is the count, which is the only thing that can become an
+    operator-visible line."""
+
+    def __init__(self, channel_id: str = "fake:0") -> None:
+        super().__init__(channel_id=channel_id)
+        self.wraps = 0
+
+    def timer_wraps(self) -> int:
+        return self.wraps
+
+
+def _wrap_warnings(outbox: "queue.Queue", *, timeout_s: float = 3.0) -> list:
+    """Every WARNING ``LogMessage`` about a timer rollover seen on
+    ``outbox`` within ``timeout_s``. Drains for the whole window rather
+    than stopping at the first, so "exactly one" is testable."""
+    out: list = []
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            env = outbox.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if env.WhichOneof("body") != "log":
+            continue
+        if env.log.level == pb.LOG_LEVEL_WARN and "timer wrapped" in env.log.message:
+            out.append(env)
+    return out
+
+
+def test_each_timer_rollover_produces_exactly_one_warning_naming_the_channel() -> None:
+    driver = _ChannelDriver(_WrappingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        driver.opened[0].wraps = 1
+        [first] = _wrap_warnings(a, timeout_s=2.0)
+        assert "fake:0" in first.log.message
+        driver.opened[0].wraps = 2
+        [second] = _wrap_warnings(a, timeout_s=2.0)
+        assert "fake:0" in second.log.message
+        assert first.log.message != second.log.message
+    finally:
+        reg.unsubscribe("fake:0", a)
+
+
+def test_a_backend_with_no_wrapping_timer_never_warns() -> None:
+    # The control: the plain fake has no ``timer_wraps`` at all, which
+    # is every backend but Kvaser. Polling it must stay silent rather
+    # than reporting the missing method as a fault.
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        assert _wrap_warnings(a, timeout_s=1.5) == []
+    finally:
+        reg.unsubscribe("fake:0", a)
+
+
+def test_a_reopened_channel_rearms_the_rollover_report() -> None:
+    """``reconfigure`` opens a fresh channel whose count starts at zero
+    -- python-can re-derives the Kvaser offset from the live timer, so
+    the new channel's stamps need no correction until it rolls over
+    itself. The report has to start from zero with it, or the first
+    rollover after a bus-speed change would go unannounced."""
+    driver = _ChannelDriver(_WrappingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        driver.opened[0].wraps = 1
+        assert len(_wrap_warnings(a, timeout_s=2.0)) == 1
+        reg.reconfigure("fake:0", drv.OpenConfig(bitrate_bps=250_000))
+        _wait_for(lambda: len(driver.opened) == 2)
+        driver.opened[1].wraps = 1
+        assert len(_wrap_warnings(a, timeout_s=2.0)) == 1
+    finally:
+        reg.unsubscribe("fake:0", a)

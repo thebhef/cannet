@@ -521,6 +521,27 @@ without reshaping callers.
   LGPL-3.0 §4. See [`../docs/adr/0008-python-can-sidecar.md`](../docs/adr/0008-python-can-sidecar.md),
   [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md), and
   [`../servers/cannet-local-sidecar/LICENSING.md`](../servers/cannet-local-sidecar/LICENSING.md).
+
+  **Known defect, worked around: the Kvaser backend's receive
+  timestamps roll over.** `can/interfaces/kvaser/canlib.py` reads the
+  stamp `canReadWait` writes into a 32-bit `c_ulong` — a count of
+  `TIMESTAMP_RESOLUTION` = 10 µs ticks — and returns
+  `timestamp.value * TIMESTAMP_FACTOR + self._timestamp_offset` with
+  no rollover handling. 4.6.1 (the pinned version) and `main` as of
+  2026-09-23 both do this, so every stamp after `2**32` ticks —
+  42,949.67296 s — is 11 h 56 m earlier than the one before it. Seen
+  in the field on a Leaf v3: the host dropped 4 h 46 m of receive as
+  pre-session and then carried on 11.93 h stale.
+
+  **Workaround:** `driver_python_can.py` counts rollovers per open
+  channel (a stamp more than half a period behind its predecessor)
+  and adds one period per rollover before the frame reaches the wire,
+  with one WARNING `LogMessage` per rollover. Kvaser only, keyed on
+  the backend's own `_timestamp_offset` attribute; every other
+  backend's hardware stamps are passed through untouched. Restamping
+  receive with the host clock was **rejected** — it throws away the
+  hardware stamps Vector and PEAK get right. An upstream issue is
+  drafted; remove the workaround if and when a release fixes it.
 - **PyInstaller** (GPL-2.0-or-later **with** the bootloader exception)
   — `adopted` in Task 31 as the freeze tool that builds the sidecar
   onedir. A build tool only: its terms do not attach to our shipped
