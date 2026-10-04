@@ -353,6 +353,10 @@ section with implementation underway.
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else
     in that audit shipped.
+51. [Task 162 — System Dimension](0162-system-dimension.md) — signals
+    carry a system dimension (e.g. string- vs cell-level vs LV supply
+    voltage); the per-unit view groups each dimension separately.
+    Ungroomed.
 
 ## Notes
 
