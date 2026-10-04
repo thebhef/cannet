@@ -187,22 +187,14 @@ Owner rulings 2026-10-03 (new-build walk):
 **Owner's 2026-10-02 dongle-unplug test** (notes taken in this file,
 committed verbatim as 5ef108dd, triaged by the overseer):
 
-- **158: episodes join the Events panel's one list** — owner ruling
-  2026-10-02 ("totally fine for the error events to live in the same
-  view as other events, so long as they get summarized properly and
-  stably"); the separate section goes. Phase 7 to groom.
-- **Bus health after an outage, on PEAK: the bus stays error-passive
-  after re-plug while messages flow on the other adapter, and its load
-  reading jumps between 36 % and 100 %.** The state is the sidecar's
-  PCAN status reading (`driver_python_can.py`); whether it is re-read or
-  latched, and what the load counts during error-passive, is the
-  investigation. Needs the owner's adapters; no task yet.
-- **Message TX counts still increment when TX fails** — the owner's
-  fourth report (109 item 2, 2026-08-26, 2026-08-30, 2026-10-02). This
-  is **task 121's open defect**, roadmap item 1, ungroomed: both landed
-  signals (`Tx ✗` on enqueue refusal, `TX_REJECTED` from a remote peer)
-  sit upstream of the wire, and a pulled bus refuses neither. Recorded
-  in 0121; needs scheduling.
+- **Bus load reading jumps between 36 % and 100 % during/after a PEAK
+  outage** (owner, 2026-10-02; the sticky error-passive half of that
+  report is fixed by `fix-pcan-counters-decay`). `bits_per_second_by_bus`
+  (`bus_health.rs`) sums the trace store's per-bus bits; during a pull
+  the store took synthesised `Tx` rows (gone with 121) *and* ~2 000/s
+  PEAK error frames — whether error frames count as bus bits, and what
+  the reading does now, is unmeasured since 121. Needs one bench look
+  on the new build; no task yet.
 
 - **`--app-data-dir` leaves the project cache shared with the
   operator's unsaved session** (`resolve_project_dir` roots under

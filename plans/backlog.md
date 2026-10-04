@@ -1092,3 +1092,9 @@ next planning pass.
   does not modify or petition its dependencies on its own — the first
   candidate is python-can's Kvaser 32-bit receive-timer wrap, whose
   issue draft sits in task 155's status log.
+
+- `[gui]` **`GridviewFilterBox` is bound to `useGridviewFilter`'s hook
+  object** (`.input`/`.setInput`, no `list` prop), so the Events panel's
+  tag filter (2026-10-03) had to rebuild the chip-field shape by hand
+  instead of reusing it. One shared filter-box component that takes
+  value/onChange and an optional datalist would remove the copy.

@@ -76,6 +76,12 @@ Branch sits in the stack **beside the last driver change**
   in the peak driver or python-can I accept it"). A sidecar-side bound
   (frames handed to the driver minus echoes received, capped, with
   `flush_tx_buffer()` past the cap) would remove it; not work.
+- 2026-10-03: **The reopen backstop opens the new channel before closing
+  the old one** (the `reconfigure` swap it shares). Whether PCAN-Basic
+  accepts initialising a channel that is still open, and whether closing
+  the old handle then disturbs the new one, is untested — on PEAK the
+  driver's auto-reset recovers first, so the backstop's reopen path has
+  not run on hardware. `reconfigure` carries the same exposure today.
 
 ## Status log
 
