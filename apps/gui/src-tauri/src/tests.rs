@@ -8732,3 +8732,70 @@ fn a_math_redefinition_rebuilds_what_the_host_serves() {
         "gain 2 doubles every sample the serve returns",
     );
 }
+
+// ------------------------------------------------------------------
+// The re-root announcement (ADR 0042 §1).
+
+/// A loose `.cannet_prj` in a folder the user made — no `.cannet/`
+/// beside it, so it auto-locates (ADR 0042 §2).
+fn loose_project_file(dir: &std::path::Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let file = dir.join("rig.cannet_prj");
+    std::fs::write(&file, "{}").unwrap();
+    file
+}
+
+#[test]
+fn a_save_as_onto_the_open_project_file_is_still_a_re_root() {
+    // The defect behind the announcement: the settings view's project
+    // caches list reloaded on the open project's *file* path, and a Save
+    // As onto that same file path leaves the string unchanged — while
+    // the session moves out of its auto-located directory and into the
+    // user's folder. The move, not the path, is what `reroot_session`
+    // acts on, and so is what it announces.
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_root = tmp.path().join("cache-root");
+    let theirs = tmp.path().join("their-folder");
+    let file = loose_project_file(&theirs);
+
+    let opened = project_dir::resolve(Some(&file), &cache_root);
+    assert!(
+        opened.is_auto_located(),
+        "a loose project file auto-locates"
+    );
+
+    // Save As onto the very same path the project was opened from.
+    let saved = project_dir::create_at(&theirs, &cache_root);
+
+    assert!(
+        is_reroot(&opened, &saved),
+        "the session moved, so it announces"
+    );
+    assert!(
+        !is_reroot(&saved, &saved),
+        "landing where the session already is announces nothing"
+    );
+}
+
+#[test]
+fn the_re_root_announcement_names_the_directory_and_whether_cannet_chose_it() {
+    // The payload is what a listener re-reads against: the row it should
+    // now find `active`, and whether that directory lives in cache space
+    // — the two facts the project caches list draws a row from.
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_root = tmp.path().join("cache-root");
+    let theirs = tmp.path().join("their-folder");
+    let file = loose_project_file(&theirs);
+
+    let opened = ProjectDirChangedPayload::of(&project_dir::resolve(Some(&file), &cache_root));
+    assert!(opened.auto_located);
+    assert!(
+        std::path::Path::new(&opened.root).starts_with(&cache_root),
+        "an auto-located project roots in cache space: {}",
+        opened.root
+    );
+
+    let saved = ProjectDirChangedPayload::of(&project_dir::create_at(&theirs, &cache_root));
+    assert!(!saved.auto_located);
+    assert_eq!(std::path::Path::new(&saved.root), theirs);
+}

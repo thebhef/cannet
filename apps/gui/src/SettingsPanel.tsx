@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { SETTINGS_PANEL_ID } from "./dockLayout";
 import { usePanelCommands } from "./panelCommands";
+import { SettingsShownContext } from "./settingsShown";
 import { SettingControl } from "./settingControls";
 import {
   DEVELOPER_GROUP,
@@ -55,8 +56,16 @@ const FILTER_DEBOUNCE_MS = 150;
  * changes any other consumer makes, and writes through `updateSettings`,
  * which merges each edit over a fresh read. A singleton panel (one
  * instance, fixed dockview id), opened from the command palette.
+ *
+ * **Nothing here is owned, and nothing here polls.** Every value on the
+ * view is a read of the host — the settings file, the open project's
+ * overrides, the project registry — and each can move while the user is
+ * looking at another panel. A cache size comes from a directory walk,
+ * far too expensive to put on a timer (ADR 0002 DS-8), so the view
+ * re-reads at the one moment that is both cheap and exactly when it
+ * matters: coming back on screen.
  */
-export function SettingsPanel(_props: IDockviewPanelProps) {
+export function SettingsPanel({ api }: IDockviewPanelProps) {
   const [settings, setSettings] = useState<Settings>(hostSettings);
   const [schema, setSchema] = useState<SettingsSchema>(EMPTY_SCHEMA);
   /// Keys the open project's `.cannet/settings.json` declares, so an
@@ -79,23 +88,55 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
     },
   });
 
+  /// How many times this view has been on screen, counting its first
+  /// render. Every increment is a re-read; the count is published so the
+  /// project caches list — reached only through the custom-renderer
+  /// table, which passes a renderer nothing — hears about it too.
+  const [shownCount, setShownCount] = useState(1);
+  useEffect(() => {
+    const d = api.onDidVisibilityChange((e) => {
+      if (e.isVisible) setShownCount((n) => n + 1);
+    });
+    return () => d.dispose();
+  }, [api]);
+
+  // The descriptor table is generated at build time and the settings
+  // subscription is standing, so both are mount-only.
   useEffect(() => {
     const unsubscribe = subscribeSettings(setSettings);
-    // The file may have been hand-edited since boot; a panel opening is
-    // exactly when to find out.
-    void hydrateSettings();
     let live = true;
     void loadSettingDescriptors().then((s) => {
       if (live) setSchema(s);
-    });
-    void loadSettingsOverrides().then((o) => {
-      if (live) setOverrides(o);
     });
     return () => {
       live = false;
       unsubscribe();
     };
   }, []);
+
+  // The file may have been hand-edited, and another project — with its
+  // own overrides — may have been opened, since this view was last on
+  // screen. Coming back is exactly when to find out.
+  useEffect(() => {
+    let live = true;
+    void hydrateSettings();
+    void loadSettingsOverrides().then((o) => {
+      if (live) setOverrides(o);
+    });
+    return () => {
+      live = false;
+    };
+  }, [shownCount]);
+
+  /// Where the user had scrolled to. dockview's default renderer removes
+  /// a hidden panel's element from the document, and a box with no
+  /// layout keeps no scroll offset, so the view puts its own back. View
+  /// state, held in a ref: it drives no render.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const scrollTopRef = useRef(0);
+  useLayoutEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = scrollTopRef.current;
+  }, [shownCount]);
 
   // Debounced, so typing re-renders the input and nothing else.
   useEffect(() => {
@@ -160,7 +201,9 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
       />
     ));
 
-  return (
+  // Bound to a name rather than returned inline, so the provider below
+  // wraps it without re-indenting the whole view.
+  const body = (
     <div className="settings-view">
       <div className="settings-header">
         <input
@@ -211,7 +254,13 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
             );
           })}
         </div>
-        <div className="settings-list">
+        <div
+          className="settings-list"
+          ref={listRef}
+          onScroll={(e) => {
+            scrollTopRef.current = e.currentTarget.scrollTop;
+          }}
+        >
           {shown.length === 0 && (
             <p className="settings-empty">
               {query === "" ? "No settings." : `No settings match “${query}”.`}
@@ -242,6 +291,13 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
         </span>
       </div>
     </div>
+  );
+
+  // Published to what the view renders: the project caches list is
+  // reached through the custom-renderer table, which passes a renderer
+  // nothing about the panel hosting it.
+  return (
+    <SettingsShownContext.Provider value={shownCount}>{body}</SettingsShownContext.Provider>
   );
 }
 

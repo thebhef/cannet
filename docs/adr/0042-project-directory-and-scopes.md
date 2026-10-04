@@ -115,6 +115,14 @@ two distinct actions:
 | Clear | emptied | kept | kept | untouched |
 | Delete | gone | removed | forgotten | untouched |
 
+**The list follows the session's root**, which the host announces on
+every re-root. A Save As onto the project file the session was opened
+from moves the session out of its auto-located directory and into the
+user's folder while leaving the file path exactly as it was, so the file
+path is not something a view can follow; the announcement is. The view
+shows the new project directory as active and the one left behind as
+reclaimable without being reopened.
+
 Clear means "free the disk, keep working here"; Delete means "stop
 tracking this project". **Neither can touch a directory the user owns.**
 That is decision 2 applied to the reclaim path: if the app may not
