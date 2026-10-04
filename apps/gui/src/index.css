@@ -2639,6 +2639,17 @@ ul.status-bar-menu .status-chip {
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* The trace panel's fzf filter box (ADR 0044): narrows both view modes,
+   so it sits beside the mode toggle rather than under the
+   chronological-only chips. */
+.trace-panel-search {
+  flex: 0 1 200px;
+  min-width: 100px;
+}
+.trace-panel-search-input {
+  flex: 1 1 0;
+}
+
 /* Start / Stop / Pause / Resume / Clear chips in a trace panel's
    toolbar (the shared `TraceControls` component): a `ChipSegment` for
    the run controls, an optional "All Data" chip, and the status

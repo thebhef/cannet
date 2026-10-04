@@ -19,6 +19,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Fzf } from "fzf";
 
+import { MIN_RELATIVE_SCORE } from "./gridviewFilter";
+
 /// Which part of the app a setting governs — the host's `Surface`, in
 /// its serialized (kebab-case) form. The tree groups by it.
 export type SurfaceId = string;
@@ -169,11 +171,6 @@ interface SearchEntry {
   descriptor: SettingDescriptor;
   haystack: string;
 }
-
-/// Score floor, as a fraction of the best match's score — the same rule
-/// and the same number the Database panel's tree filter uses. Everything
-/// below it is scattered-subsequence noise.
-const MIN_RELATIVE_SCORE = 0.7;
 
 /// A matcher over one schema: an empty query yields the schema's own
 /// order, anything else yields `fzf`'s ranking. Build it once per schema

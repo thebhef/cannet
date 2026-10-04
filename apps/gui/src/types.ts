@@ -690,7 +690,8 @@ export type FilterPredicate =
   | { id_list: number[] }
   | { name_regex: string }
   | { signal_equals: { name: string; value: number } }
-  | { error_frame: boolean };
+  | { error_frame: boolean }
+  | { fuzzy: string };
 
 /// The discriminant of a {@link ProjectElement}.
 export type ProjectElementKind = ProjectElement["kind"];
