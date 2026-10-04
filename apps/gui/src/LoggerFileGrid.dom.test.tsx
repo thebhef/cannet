@@ -22,7 +22,21 @@ const invoke = vi.hoisted(() =>
   }),
 );
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+type Handler = (e: { payload: unknown }) => void;
+const handlers = vi.hoisted(() => ({ byEvent: new Map<string, Handler[]>() }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, handler: Handler) => {
+    const list = handlers.byEvent.get(name) ?? [];
+    list.push(handler);
+    handlers.byEvent.set(name, list);
+    return () => {};
+  }),
+}));
+
+/// Fire a host event at every listener registered for it.
+function emit(name: string, payload: unknown) {
+  for (const h of handlers.byEvent.get(name) ?? []) h({ payload });
+}
 
 import { LoggerFileGrid } from "./LoggerFileGrid";
 
@@ -35,6 +49,22 @@ const FILE: LogFileNode = {
   endNs: 1_700_000_010_000_000_000,
   messageCount: 42,
   modifiedMs: 1_700_000_010_000,
+  scanPending: false,
+  writing: false,
+};
+
+/// A file the host has listed but not yet read the header of: stat data
+/// is there, the trace columns are not (ADR 0049).
+const UNSCANNED: LogFileNode = {
+  kind: "file",
+  id: "C:\\logs\\fresh.blf",
+  name: "fresh.blf",
+  sizeBytes: 2_097_152,
+  startNs: null,
+  endNs: null,
+  messageCount: 0,
+  modifiedMs: 1_700_000_030_000,
+  scanPending: true,
   writing: false,
 };
 
@@ -47,6 +77,7 @@ const WRITING: LogFileNode = {
   endNs: null,
   messageCount: 3,
   modifiedMs: 1_700_000_020_000,
+  scanPending: false,
   writing: true,
 };
 
@@ -60,6 +91,7 @@ const SUB: LogFileNode = {
 beforeEach(() => {
   vi.clearAllMocks();
   listing.value = [];
+  handlers.byEvent.clear();
 });
 afterEach(cleanup);
 
@@ -221,6 +253,10 @@ describe("LoggerFileGrid", () => {
       await vi.waitFor(() =>
         expect(invoke).toHaveBeenCalledWith("list_logger_files", { folder: "C:\\logs" }),
       );
+      // Let the snapshot pair around listener registration settle first:
+      // the mirror coalesces the post-listener refetch behind the mount
+      // fetch, so it lands a round trip later than the mount render.
+      await vi.advanceTimersByTimeAsync(10_000);
       const callsIdle = invoke.mock.calls.length;
       await vi.advanceTimersByTimeAsync(10_000);
       expect(invoke.mock.calls.length).toBe(callsIdle);
@@ -231,5 +267,42 @@ describe("LoggerFileGrid", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("shows the trace columns as pending while the host is still reading the header", async () => {
+    // The listing answers with stat data and says the rest is not read
+    // yet (ADR 0049). Zeros would read as measurements — "no frames" and
+    // "not looked at" are different answers.
+    listing.value = [UNSCANNED];
+    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    const row = (await screen.findByText("fresh.blf")).closest(
+      ".logger-file-row",
+    ) as HTMLElement;
+    // Stat data is served at once.
+    expect(within(row).getByText("2.0 MB")).toBeInTheDocument();
+    // Start, end, duration and messages are pending, not zero.
+    expect(within(row).queryByText("0")).not.toBeInTheDocument();
+    expect(within(row).getAllByText("\u2026")).toHaveLength(4);
+    expect(row.querySelectorAll(".logger-file-cell.pending")).toHaveLength(4);
+  });
+
+  it("re-asks for the listing when the host announces a finished scan", async () => {
+    listing.value = [UNSCANNED];
+    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    await screen.findByText("fresh.blf");
+    await waitFor(() =>
+      expect(handlers.byEvent.get("logger-files-scanned")?.length).toBeGreaterThan(0),
+    );
+
+    // The scan lands host-side and announces itself; the grid asks again
+    // and the columns fill in.
+    listing.value = [{ ...UNSCANNED, scanPending: false, startNs: 1, endNs: 2, messageCount: 9 }];
+    emit("logger-files-scanned", "C:\\logs\\fresh.blf");
+    const row = await waitFor(() => {
+      const el = screen.getByText("fresh.blf").closest(".logger-file-row") as HTMLElement;
+      expect(within(el).getByText("9")).toBeInTheDocument();
+      return el;
+    });
+    expect(row.querySelectorAll(".logger-file-cell.pending")).toHaveLength(0);
   });
 });

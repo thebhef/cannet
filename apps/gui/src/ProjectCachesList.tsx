@@ -39,6 +39,7 @@ import {
   loadProjectCaches,
   locationLabel,
   offersSaveAs,
+  PROJECT_CACHES_MEASURED_EVENT,
   type ProjectCacheRow,
 } from "./projectCaches";
 
@@ -64,6 +65,17 @@ export function ProjectCachesList() {
   useEffect(() => {
     void refresh();
   }, [refresh, projectPath, shown]);
+
+  // The host answers the listing before it has walked anything and
+  // measures in the background (ADR 0049); this is what asks again once
+  // it has. Still not a poll — the walk is triggered by the listing, not
+  // by a timer (ADR 0002 DS-8).
+  useEffect(() => {
+    const unlisten = listen(PROJECT_CACHES_MEASURED_EVENT, () => void refresh());
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [refresh]);
 
   // The open project's *file* path is not enough to follow. A Save As
   // onto that same `.cannet_prj` promotes the project out of its
@@ -135,7 +147,12 @@ export function ProjectCachesList() {
             <span className="project-cache-name">{projectName(row.project_file) ?? "unsaved"}</span>
             <span className="project-cache-path">{row.root}</span>
           </span>
-          <span className="project-cache-size">{formatBytes(row.bytes)}</span>
+          <span
+            className={`project-cache-size${row.bytes == null ? " pending" : ""}`}
+            title={row.bytes == null ? "Measuring this cache…" : undefined}
+          >
+            {row.bytes == null ? "…" : formatBytes(row.bytes)}
+          </span>
           {offersSaveAs(row) && (
             <button
               type="button"
