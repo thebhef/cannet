@@ -161,3 +161,32 @@ Branch sits in the stack **beside the last driver change**
   stop and bus-health reads error-passive; replugged → the accepted
   driver-queue burst, then active and rows at rate. Vector/Kvaser paths still unverified on hardware (no bench). Phase 2 met on PEAK; every
   exit criterion met → **pending closeout**.
+- 2026-10-04 — **a long disconnect did not recover** (owner bench, the
+  evening after the confirmation above): CAN cable out ~21:03 with USB
+  left in; both PEAK channels flooded error frames (2–4 k/s) while every
+  send was refused `The transmit queue is full` (14 M refusals). Channel
+  1's error frames stopped after ~50 min, channel 2's after ~2 h — the
+  controller went bus-off and PCAN's `PCAN_BUSOFF_AUTORESET` reset it
+  inside the next `CAN_GetStatus`, so the 0.5 s poll never read bus-off,
+  the 1 s backstop never fired, and the reset left the full transmit
+  queue unrestarted: the controller sat idle, status word stale at
+  error-passive, and when the cable came back at 00:23 nothing was
+  transmitted. (The sidecar's rx stats line was silent throughout: it
+  logs only when `read > 0 or tx > 0`.) Fix on `fix-pcan-busoff-visible`
+  (`6b66ab2f`, on `fix-pcan-counters-decay`): PEAK opens without
+  `auto_reset`, so bus-off reaches the status word and the existing
+  backstop reopens the channel (re-initialise = queue emptied,
+  controller restarted); and, vendor-neutrally, a channel whose driver
+  refused a send queue-full within 2 s *and* received nothing — no data,
+  no error frame — for 2 s is reopened through the same swap, one INFO
+  line per reopen, retried per poll. `TxRejected(queue_full=)` is set in
+  one place (`_send_refused_queue_full`; PEAK's text only so far). Red
+  before: collection error (`TxRejected` took no keyword) and five
+  asserts; 7 shared-interface tests + 3 send-validation tests; sidecar
+  282 passed at the restacked tip, freeze smoke ok. ADR 0039 dated
+  amendment; README and sidecar README updated. **Retest expectation
+  corrected**: a lone error-passive transmitter does not count ACK
+  errors toward bus-off (ISO 11898-1), so with the cable out expect a
+  long error-passive phase with error frames, then — if bus-off comes —
+  a reopen within about a second; with the cable back, transmit resumes
+  within ~2 s either way. Pending the owner's retest on a fresh build.

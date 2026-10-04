@@ -466,11 +466,18 @@ repaired something broken.
   the CAN side of a PEAK dongle and reconnect it and the controller
   stayed bus-off for good — opened without PCAN's auto-reset, and
   nothing in cannet ever reset it, while every transmit into it was
-  refused. PEAK channels now open with the driver's bus-off auto-reset,
-  and for every vendor the sidecar resets a controller it has read
-  bus-off for a second (Vector and Kvaser in place, anything else by
-  reopening the channel), then publishes the recovery to the bus-health
-  panel. The Vector and Kvaser paths have not met hardware yet.
+  refused. For every vendor the sidecar now resets a controller it has
+  read bus-off for a second (Vector and Kvaser in place, anything else
+  by reopening the channel), then publishes the recovery to the
+  bus-health panel. PEAK channels deliberately open *without* PCAN's
+  own bus-off auto-reset: it fires inside the very status read the
+  sidecar polls, so bus-off was never seen, and it leaves the full
+  transmit queue stuck — a cable left out for hours came back to a
+  controller that sat silent with every send refused. As a safety net
+  for any vendor, a channel whose driver refuses sends with a full
+  transmit queue while nothing at all arrives for two seconds — not
+  even an error frame — is reopened, with one line in the system log.
+  The Vector and Kvaser paths have not met hardware yet.
 - **Fixed:** the bus-health panel no longer stays at error-passive after
   a PEAK bus recovers. PEAK reports its error counters only inside
   error frames, so when the errors stopped the last fault reading stood

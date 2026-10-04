@@ -164,9 +164,47 @@ Owner rulings 2026-10-03 (new-build walk):
   is error-passive, Vector likewise as a precaution, Kvaser not; the
   per-echo counter decay replaced by a per-poll clear; absorbed into the
   same branch.
+- **A long disconnect did not recover** (owner bench 2026-10-03/04;
+  "it must be in bus-off state"): ruled 2026-10-04 — drop PCAN's
+  `auto_reset` (it hid bus-off from the poll and left the transmit queue
+  stuck) and add the vendor-neutral queue-full + 2 s silence reopen.
+  **Landed**: `fix-pcan-busoff-visible` `6b66ab2f` (0161 § Status
+  2026-10-04). Awaiting the owner's retest on a fresh build.
 
 ## 3. Fix later
 
+- **Error events split during one continuous error blast** (owner,
+  2026-10-04): root-caused, not yet fixed — the wire streams were
+  continuous; the host's clock-offset probe rode a sidecar→host stream
+  that was minutes behind, measured θ = −48.4 s with δ ≈ 97 s, and the
+  slew **stepped** every frame's time by 48 s (`settle_round` keeps the
+  min-δ sample with no δ bound; `OffsetSlew::retarget` steps above 1 s),
+  so `EpisodeList::push` saw a ≥ gap jump and opened a new episode at
+  each step. Fix proposed: a round whose best δ exceeds the step
+  threshold cannot bound the offset and is discarded (last measurement
+  kept, counted as a silent round, one coalesced log line). Awaiting the
+  owner's scope ruling (with or without the backlog item below).
+- **The sidecar→host stream buffers frames without bound** (same bench):
+  the per-session `outbox` (`service.py`) is an unbounded `queue.Queue`;
+  under 4.8 k f/s of error frames the host ingested at a flat 3 623 f/s
+  and kept receiving for **45 minutes after the wire went silent** (bus 2
+  quiet 23:10, host fps 0 at 00:07; final `trace_len` 31 975 243 = the
+  two channels' read totals exactly). During the fault the live edge was
+  tens of minutes stale while looking live. Same class as task 155's
+  "drops loud": a bounded outbox with a counted, surfaced loss — or a
+  higher ceiling. Needs a design and a measurement; proposed as its own
+  task.
+- **Queue-full is recognised by PEAK's text only** ("transmit queue is
+  full"); Kvaser ("Transmit buffer overflow") and Vector
+  (`XL_ERR_QUEUE_IS_FULL`) are each one entry in `_QUEUE_FULL_TEXTS`
+  once seen on hardware (0161, 2026-10-04).
+- **The rx stats line stays silent on a dead channel** (`read > 0 or
+  tx > 0`; refused sends are not sends), so a stuck controller leaves no
+  periodic trace in the sidecar log — the new reopen INFO line is the
+  only evidence (0161, 2026-10-04).
+- **A reopen does not reset the published state** (bus-off backstop and
+  queue-full reopen alike): a stale error-passive stays shown until the
+  fresh channel's first poll (0161, 2026-10-04).
 - Post-bus-off burst: a sidecar-side bound on the driver's transmit
   queue (frames handed to the driver − echoes received, capped;
   `flush_tx_buffer()` past the cap) would stop the drain burst the owner
@@ -245,8 +283,10 @@ committed verbatim as 5ef108dd, triaged by the overseer):
   2026-10-03. Open § 1 items (refused row's reach, bridge `Tx` drop) are
   160's, not blockers to acceptance.
 - **Task 161 — A Bus-Off Controller Comes Back** — `task161-bus-off-recovery`
-  + `fix-pcan-counters-decay`; bench-confirmed on PEAK 2026-10-03; Vector
-  and Kvaser paths unverified on hardware.
+  + `fix-pcan-counters-decay` + `fix-pcan-busoff-visible`; bench-confirmed
+  on PEAK 2026-10-03 for a short pull, then a long pull did not recover
+  (fixed 2026-10-04, retest pending); Vector and Kvaser paths unverified
+  on hardware.
 - **142 — trace fzf filter**, reopened 2026-10-02 for owner feedback
   (the box gave no feedback while the host walked the index); phase 3
   landed 2026-10-03 on `fix-trace-filter-feedback` (`82693c13`):
