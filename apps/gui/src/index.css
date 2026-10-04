@@ -6724,13 +6724,22 @@ input.unit-customization-add {
   color: var(--danger-text-muted);
   background: var(--danger-surface-dim);
 }
+.project-cache-location {
+  font-size: 0.65rem;
+  padding: 0 0.3rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-default);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.project-cache-location.auto-located {
+  border-color: var(--border-badge-info);
+  color: var(--text-badge-info);
+  background: var(--surface-badge-info);
+}
 .project-caches button {
   font-size: 0.72rem;
   padding: 0.05rem 0.4rem;
-}
-.project-caches button.danger:not(:disabled) {
-  border-color: var(--danger-border-soft);
-  color: var(--danger-text-muted);
 }
 
 /* The older shared panel shell — the About and Shortcuts panels. */
