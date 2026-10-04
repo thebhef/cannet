@@ -98,10 +98,18 @@
 //! [`recognize`] answers a [`UnitId`] or **nothing**; it never guesses.
 //! The order is: the user's customization dict (which is what makes an
 //! arbitrary in-house spelling work at all), then the built-in
-//! recognitions exactly, then a unit's own id exactly, then
-//! `[prefix][base]` exact-case (`nAh`), then the built-in recognitions
-//! case-insensitively — that last only where exactly one recognition
-//! matches, so `mV` and `MV` cannot silently collapse into each other.
+//! recognitions exactly, then a unit's own id exactly, then **every
+//! spelling the library gives a unit** — its symbol, singular and
+//! plural — then `[prefix][base]` exact-case (`nAh`), then the built-in
+//! recognitions case-insensitively. The last three passes are each
+//! *unique or nothing*: `kg/m³` is a mass density and a mass
+//! concentration alike, and `mV` and `MV` cannot silently collapse into
+//! each other, so an ambiguous spelling reaches no unit at all.
+//!
+//! The library pass is what makes the whole table reachable from a
+//! database (`L`, `psi`, `liters per minute`) without anyone tabulating
+//! two thousand spellings here; the passes ahead of it are what keep a
+//! spelling meaning what it always meant.
 //!
 //! ## Listing the units for a picker
 //!
@@ -1704,7 +1712,7 @@ pub struct UnitPickerEntry {
     /// [`Dimension::label`] — the group heading.
     pub dimension_label: &'static str,
     /// The second column, in the order it renders: the whole SI ladder
-    /// for a prefixable base, the ratio family's three scale choices for
+    /// for a prefixable base, every scale the library carries for
     /// `ratio`, and the base alone for anything that takes neither.
     /// Never empty, so a pick is always a whole unit.
     pub scales: Vec<UnitScale>,
@@ -3852,6 +3860,40 @@ mod tests {
                 .expect("per-sec→Hz")
                 .gain,
             1.0,
+        );
+    }
+
+    /// The unit this whole change came from: a project that writes
+    /// `LPM` composes it out of a litre over a minute, because the
+    /// library carries no litre-per-minute of its own. Once defined it
+    /// is a unit like any other — it lands on volume rate, a database
+    /// that spells it gets it back, and it converts to the library's
+    /// own volume rates by the factors the arithmetic implies.
+    #[test]
+    fn a_litre_per_minute_composed_in_the_settings_entry_reads_and_converts() {
+        // Nothing recognises it before it is defined; that is the gap.
+        assert_eq!(recognize("LPM", &none()), None);
+        // The settings entry asks this before it persists the pair.
+        {
+            let _shared = listing();
+            check_definition("LPM", "L / min", &none()).expect("`L / min` composes");
+        }
+        let (_guard, defined) = install(&[("LPM", "L / min")]);
+        assert_eq!(refusals(&defined), Vec::<String>::new());
+        let lpm = UnitId::base("LPM");
+        assert_eq!(dimension_of(&lpm), Some(Dimension::VolumeRate));
+        assert_eq!(recognize("LPM", &none()), Some(lpm.clone()));
+        close(
+            convert_units(&lpm, &UnitId::base("liter-per-second"))
+                .expect("LPM→L/s")
+                .gain,
+            1.0 / 60.0,
+        );
+        close(
+            convert_units(&lpm, &UnitId::base("cubic-meter-per-second"))
+                .expect("LPM→m³/s")
+                .gain,
+            1.0 / 60_000.0,
         );
     }
 

@@ -102,6 +102,14 @@ pub(crate) struct MathSignalRecord {
     /// against; `None` where nothing places it. Deliberately not called
     /// `kind`: that is already the function's discriminant.
     pub unit_kind: Option<crate::units::Dimension>,
+    /// **Every dimension that picker may offer**, in composition order,
+    /// with `unit_kind` at its head — the ISQ-equivalence class of the
+    /// composition, since a newton-metre is an energy and a torque
+    /// alike and only the user knows which was meant (owner ruling: the
+    /// first resolution stands and any dimension of the same exponents
+    /// overrides it). The editor groups the picker by these; empty
+    /// where nothing places the unit.
+    pub unit_kinds: Vec<crate::units::Dimension>,
     /// What the host made of each operand's unit string,
     /// index-parallel with `resolved_operands` — the parse state the
     /// editor shows at edit time, which `unconverted` does not say
@@ -180,6 +188,7 @@ pub(crate) fn list_math_signals(state: State<'_, AppState>) -> Vec<MathSignalRec
                     .or_else(|| resolved.composed.clone()),
                 unit_conversion: resolved.target_conversion,
                 unit_kind: resolved.kind,
+                unit_kinds: resolved.kinds.clone(),
                 recognition: resolved.recognition.clone(),
                 bus_ids: resolved.bus_ids.clone(),
                 invalid: candidate.validate().err().map(|e| e.to_string()),
@@ -326,6 +335,7 @@ mod tests {
             unit_typed: Some(crate::units::UnitId::base("volt")),
             unit_conversion: None,
             unit_kind: Some(crate::units::Dimension::Voltage),
+            unit_kinds: vec![crate::units::Dimension::Voltage],
             recognition: vec![math_signals::UnitRecognition::Recognized {
                 unit: crate::units::UnitId::base("volt"),
                 display: "V".to_string(),
@@ -368,6 +378,7 @@ mod tests {
         // The kind a unit picker locks to, and the parse state the
         // operand chip shows — both the model's, neither re-derived.
         assert_eq!(json["unitKind"], "voltage");
+        assert_eq!(json["unitKinds"][0], "voltage");
         assert_eq!(json["recognition"][0]["state"], "recognized");
         assert_eq!(json["recognition"][0]["unit"]["base"], "volt");
         assert_eq!(json["recognition"][0]["display"], "V");
