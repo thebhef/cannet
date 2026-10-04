@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Reaching the Servers panel from the project view.
+// Reaching the Servers section from the project view.
 //
 // The bus rows already offer "Manage servers…", but only from inside a
 // logical bus's interface combo or its trust notice — affordances that
@@ -9,9 +9,10 @@
 // still has a way in.
 //
 // Asserted through the dock API the launcher drives, not through a
-// spy on the launcher: what matters is that the Servers panel opens,
-// and that a second press focuses the open one rather than adding a
-// second copy of a singleton.
+// spy on the launcher: what matters is that the settings view opens
+// carrying the request to scroll to its Servers section, and that a
+// second press re-asks the open one rather than adding a second copy
+// of a singleton.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -33,7 +34,7 @@ import {
   type ElementRegistry,
 } from "./projectElements";
 import { hydrateSettings } from "./hostSettings";
-import { SERVERS_PANEL_ID } from "./dockLayout";
+import { SERVERS_SETTING_KEY, SETTINGS_PANEL_ID } from "./dockLayout";
 import type { Bus, InterfaceBinding } from "./types";
 
 const REMOTE = "10.0.0.5:50051";
@@ -42,7 +43,11 @@ function renderPanel(
   opts: {
     buses?: readonly Bus[];
     bindings?: readonly InterfaceBinding[];
-    openPanels?: readonly { id: string; setActive: () => void }[];
+    openPanels?: readonly {
+      id: string;
+      setActive: () => void;
+      updateParameters?: (p: Record<string, unknown>) => void;
+    }[];
   } = {},
 ) {
   const ctx = {
@@ -78,7 +83,7 @@ function renderPanel(
     containerApi: {
       panels: (opts.openPanels ?? []).map((p) => ({
         id: p.id,
-        api: { setActive: p.setActive },
+        api: { setActive: p.setActive, updateParameters: p.updateParameters ?? (() => {}) },
       })),
       onDidLayoutChange: () => ({ dispose: () => {} }),
       addPanel,
@@ -101,7 +106,7 @@ function launcher(): HTMLElement {
   return screen.getByTestId("manage-servers");
 }
 
-describe("reaching the Servers panel from the project view", () => {
+describe("reaching the Servers section from the project view", () => {
   beforeEach(async () => {
     invokeMock.mockClear();
     invokeMock.mockImplementation((async () => []) as never);
@@ -125,20 +130,28 @@ describe("reaching the Servers panel from the project view", () => {
     expect(screen.queryByRole("button", { name: "Disconnect all" })).not.toBeInTheDocument();
   });
 
-  it("opens the Servers panel", () => {
+  it("opens the settings view at the Servers section", () => {
     const { addPanel } = renderPanel();
     fireEvent.click(launcher());
     expect(addPanel).toHaveBeenCalledTimes(1);
-    expect(addPanel.mock.calls[0][0]).toMatchObject({ id: SERVERS_PANEL_ID });
+    expect(addPanel.mock.calls[0][0]).toMatchObject({
+      id: SETTINGS_PANEL_ID,
+      params: { reveal: SERVERS_SETTING_KEY },
+    });
   });
 
-  it("focuses the Servers panel it already opened instead of adding a second", () => {
+  it("re-asks the settings view it already opened instead of adding a second", () => {
     const setActive = vi.fn();
+    const updateParameters = vi.fn();
     const { addPanel } = renderPanel({
-      openPanels: [{ id: SERVERS_PANEL_ID, setActive }],
+      openPanels: [{ id: SETTINGS_PANEL_ID, setActive, updateParameters }],
     });
     fireEvent.click(launcher());
-    expect(setActive).toHaveBeenCalledTimes(1);
     expect(addPanel).not.toHaveBeenCalled();
+    expect(setActive).toHaveBeenCalledTimes(1);
+    // The scroll request goes to the open view too — a second press of
+    // the same launcher must land on the section, not merely focus a
+    // view already scrolled somewhere else.
+    expect(updateParameters).toHaveBeenCalledWith({ reveal: SERVERS_SETTING_KEY });
   });
 });

@@ -123,7 +123,7 @@ describe("what an empty list is allowed to mean", () => {
 describe("which servers a bus can be bound to", () => {
   it("offers the trusted ones and nothing else", () => {
     // A merely-advertising server is not a source: it is accepted in
-    // the Servers panel first, which is where that decision lives.
+    // the Servers section first, which is where that decision lives.
     expect(trustedServers(ROWS).map((r) => r.address)).toEqual([
       "bench.example.com:50051",
     ]);

@@ -14,6 +14,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { ColumnDefaultsEditor } from "./ColumnDefaultsEditor";
 import { ProjectCachesList } from "./ProjectCachesList";
+import { ServersSection } from "./ServersSection";
 import { UnitCustomizations } from "./UnitCustomizations";
 import type { SettingDescriptor } from "./settingDescriptors";
 
@@ -30,6 +31,10 @@ export interface CustomRendererProps {
 ///
 /// `project-caches` is a management surface with no other home, whose
 /// descriptor is a `view` row rather than a field (ADR 0042 §5).
+/// `servers` is the other one: this machine's trust decisions
+/// (ADR 0041) are stored per machine, not in `settings.json`, and the
+/// list over them is a section of the settings view rather than a
+/// view of its own.
 ///
 /// `column-defaults` is a real editor, because a table header adjusts
 /// the panel in front of you and there is nowhere else to say what the
@@ -44,6 +49,7 @@ export const CUSTOM_SETTING_RENDERERS: Record<
   (props: CustomRendererProps) => ReactNode
 > = {
   "project-caches": () => <ProjectCachesList />,
+  servers: () => <ServersSection />,
   "column-defaults": ({ descriptor, value, onCommit }) => (
     <ColumnDefaultsEditor descriptor={descriptor} value={value} onCommit={onCommit} />
   ),

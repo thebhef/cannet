@@ -249,7 +249,7 @@ fn stored_watchable(
 /// any that no longer can. Called at startup and after every trust
 /// write, so a row's online state and interface list are live before
 /// any panel asks — the project view's interface picker included, not
-/// just the Servers panel. The host's subscription is one refcount
+/// just the Servers section. The host's subscription is one refcount
 /// like any other, so panels stack on top of it safely.
 pub(crate) fn sync_stored_watches(app: &AppHandle) {
     let Ok(dir) = crate::persisted_json::config_dir(app) else {
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn a_watch_survives_until_its_last_subscriber_unsubscribes() {
         // Two panels can watch one address — Connection Management for
-        // a bus bound to it, the Servers panel for its row. Without
+        // a bus bound to it, the Servers section for its row. Without
         // the refcount, whichever unmounts first silently kills the
         // other's live feed.
         let mut inner = InterfacesInner::default();

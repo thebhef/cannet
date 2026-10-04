@@ -58,6 +58,14 @@ const FILTER_DEBOUNCE_MS = 150;
  * which merges each edit over a fresh read. A singleton panel (one
  * instance, fixed dockview id), opened from the command palette.
  *
+ * A `reveal` parameter names a setting key the view scrolls to on
+ * arrival — how the *Servers* entry in the command palette's view list
+ * and the project panel's *Manage servers…* reach the Servers section
+ * (ADR 0041). The view **consumes** the request and clears the
+ * parameter, so a layout persisted while it was set does not re-scroll
+ * on every later open, and so a second press of the same launcher on
+ * an already-open view scrolls again rather than doing nothing.
+ *
  * **Nothing here is owned, and nothing here polls.** Every value on the
  * view is a read of the host — the settings file, the open project's
  * overrides, the project registry — and each can move while the user is
@@ -66,7 +74,14 @@ const FILTER_DEBOUNCE_MS = 150;
  * re-reads at the one moment that is both cheap and exactly when it
  * matters: coming back on screen.
  */
-export function SettingsPanel({ api }: IDockviewPanelProps) {
+/// The dom id of one setting's row, so a reveal request can find it.
+/// Prefixed rather than the bare key: an id is document-wide, and a
+/// setting key is only unique among settings.
+export function settingRowDomId(key: string): string {
+  return `setting-row-${key}`;
+}
+
+export function SettingsPanel({ api, params }: IDockviewPanelProps) {
   const [settings, setSettings] = useState<Settings>(hostSettings);
   const [schema, setSchema] = useState<SettingsSchema>(EMPTY_SCHEMA);
   /// Keys the open project's `.cannet/settings.json` declares, so an
@@ -137,6 +152,25 @@ export function SettingsPanel({ api }: IDockviewPanelProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
   const onListScroll = useScrollRestore(listRef, shownCount);
 
+  /// A reveal request, taken in two steps. Accepting it clears
+  /// whatever is filtering the list — a query or a group selection
+  /// would hide the very row being asked for — and consumes the
+  /// parameter, so the request cannot outlive the arrival it belongs
+  /// to. Acting on it waits for a render in which the row is actually
+  /// in the document: the clear above is a state update, and the
+  /// descriptor table arrives from the host asynchronously, so the row
+  /// is often one render away.
+  const reveal = (params as { reveal?: unknown } | undefined)?.reveal;
+  const [revealing, setRevealing] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof reveal !== "string" || reveal === "") return;
+    setTyped("");
+    setQuery("");
+    setGroup(null);
+    setRevealing(reveal);
+    api.updateParameters({ reveal: undefined });
+  }, [api, reveal]);
+
   // Debounced, so typing re-renders the input and nothing else.
   useEffect(() => {
     const timer = setTimeout(() => setQuery(typed.trim()), FILTER_DEBOUNCE_MS);
@@ -172,6 +206,18 @@ export function SettingsPanel({ api }: IDockviewPanelProps) {
     () => visibleSettings(inScope, showDeveloper, selected),
     [inScope, showDeveloper, selected],
   );
+  // The second half of a reveal (above): scroll once the row exists.
+  // Keyed on `shown` as well, so a request that arrives before the
+  // host has served its descriptors is acted on when they land rather
+  // than dropped.
+  useEffect(() => {
+    if (revealing === null) return;
+    const el = document.getElementById(settingRowDomId(revealing));
+    if (el === null) return;
+    el.scrollIntoView?.({ block: "start" });
+    setRevealing(null);
+  }, [revealing, shown]);
+
   const counts = useMemo(() => countsByGroup(inScope), [inScope]);
   // The denominator counts only what the user can see, so the footer
   // never hints at a hidden setting.
@@ -322,6 +368,7 @@ function SettingRow({
   const field = descriptor.backing !== "view";
   return (
     <div
+      id={settingRowDomId(descriptor.key)}
       className={`setting${overridden ? " overridden" : isDefault ? "" : " modified"}`}
     >
       <div className="setting-top">

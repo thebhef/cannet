@@ -6,9 +6,10 @@
 // sibling module so ProjectPanel.tsx stays the panel shell.
 //
 // Servers are not managed from here. Which servers this machine talks
-// to — and on what terms — is decided once in the Servers panel
-// (ADR 0041); a bus row only picks among the interfaces those servers
-// already offer, and its one server affordance is a jump to that panel.
+// to — and on what terms — is decided once in the settings view's
+// Servers section (ADR 0041); a bus row only picks among the interfaces
+// those servers already offer, and its one server affordance is a jump
+// to that section.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -60,7 +61,7 @@ const INTERFACES_CHANGED_EVENT = "interfaces-changed";
 /// picks encode `${server}\x00${interface}`; these two are control
 /// values the onChange handler intercepts.
 const COMBO_NONE = "";
-/// Leaves the bus alone and opens the Servers panel. A bus row has no
+/// Leaves the bus alone and opens the Servers section. A bus row has no
 /// server affordance of its own: which servers this machine talks to is
 /// a decision it makes once, not a per-bus detail (ADR 0041).
 const COMBO_MANAGE_SERVERS = "__manage_servers__";
@@ -348,7 +349,7 @@ interface BusInterfaceComboProps {
   discoveries: Record<string, DiscoveryState>;
   /// The trusted servers, in the order the host sorted them. Only
   /// these: a server that is merely advertising is not a source until
-  /// this machine has accepted it in the Servers panel.
+  /// this machine has accepted it in the settings view's Servers section.
   servers: readonly ServerRow[];
   localVirtualBuses: readonly LocalVirtualBusDef[];
   onPick: (pick: ComboPick) => void;
@@ -361,7 +362,7 @@ interface BusInterfaceComboProps {
 /// interface on one of this machine's trusted servers (grouped under
 /// the server), or one of the project's in-process virtual buses
 /// (ADR 0021). "+ Add virtual bus" creates one inline; the only server
-/// affordance is "Manage servers…", which opens the Servers panel —
+/// affordance is "Manage servers…", which opens the Servers section —
 /// trusting a server is a decision the machine makes once, not part of
 /// wiring a bus. The combo does not disable an option because another
 /// bus already references it: multi-client fan-out makes sharing fine.
@@ -622,7 +623,7 @@ export function busServerTrust(
 }
 
 /// The notice's wording. Each says what is wrong and where it is fixed;
-/// the Servers panel is the only place any of them is answered.
+/// the Servers section is the only place any of them is answered.
 ///
 /// `unknown` and `untrusted` state the *same fact* — this machine will
 /// not reach that server without an answer — and differ only in the
@@ -634,13 +635,13 @@ export function busServerTrustMessage(state: BusServerTrust): string | null {
     case "ok":
       return null;
     case "unknown":
-      return `${state.address} is not trusted on this machine — add it in the Servers panel`;
+      return `${state.address} is not trusted on this machine — add it in Settings → Servers`;
     case "untrusted":
-      return `${state.address} is not trusted on this machine — trust it in the Servers panel`;
+      return `${state.address} is not trusted on this machine — trust it in Settings → Servers`;
     case "changed":
-      return `${state.address} presented a different identity — review it in the Servers panel`;
+      return `${state.address} presented a different identity — review it in Settings → Servers`;
     case "tokenRefused":
-      return `${state.address} refused the access token stored for it — review it in the Servers panel`;
+      return `${state.address} refused the access token stored for it — review it in Settings → Servers`;
   }
 }
 

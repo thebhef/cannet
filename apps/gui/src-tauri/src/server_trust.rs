@@ -53,7 +53,7 @@ pub struct TrustEntry {
     /// from a failure — only a stored answer to the dialog.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub insecure: bool,
-    /// The operator added this address by hand in the Servers panel.
+    /// The operator added this address by hand in the Servers section.
     /// It carries no connection decision at all: it is what keeps a
     /// server that nothing advertises, and that is reached without ever
     /// being asked about — a loopback proxy — in the list.

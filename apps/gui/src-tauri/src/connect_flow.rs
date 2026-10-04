@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn a_token_stored_against_an_address_reached_in_the_clear_is_never_carried() {
-        // The Servers panel offers the token field on every row, so a
+        // The Servers section offers the token field on every row, so a
         // token can be stored for an address this plans as plaintext —
         // a loopback proxy, or a server accepted without protection.
         // ADR 0041's rule that a credential never rides an unencrypted
