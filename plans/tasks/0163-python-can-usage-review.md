@@ -141,6 +141,32 @@ stays at the top of the stack (owner, 2026-10-04).
   remote `cannet-server`) — its error rows would show no episodes;
   ADR 0056 has no bus subject kind, so the ADR names the bus by the
   episode id as today rather than "subject = the bus".
+- 2026-10-04 — **phase 3 reported** (`task163-proto` `5793adc5` on
+  `task163-fault-model-adr`; proto + regenerated gencode + tests only,
+  no behaviour change). `cannet.proto` additive changes inside
+  `cannet.v1` (ADR 0059): `Envelope.body` tags 14–16
+  (`BusErrorEpisode`, `TxRefusals`, `FramesDropped`, with a new
+  `ErrorKindCounts` message and `TxRefusalReason` enum);
+  `InterfaceState.as_of_ns` (tag 6); `ConfigureBus.error_row_cap`
+  (tag 5, `optional uint32`) — landed on `ConfigureBus` rather than
+  `Subscribe` because it already carries per-interface session
+  configuration a client resends on change (speed, FD), for both
+  virtual-bus and physical interfaces, while `Subscribe` carries only
+  an interface id. `buf breaking` against `v0.10.0` passes clean.
+  Python gencode regenerated (`scripts/regen-proto-gencode.sh`); one
+  round-trip test per new message added to `libs/cannet-python-wire`
+  (`tests/test_fault_report_envelopes.py`) and to `cannet-wire`
+  (`tests/round_trip.rs`). `cannet-client`'s and `cannet-server`'s
+  exhaustive `Envelope::Body` matches needed one new arm each: the two
+  servers (BLF replay, virtual bus) fold the three new
+  server-only-direction variants into their existing "flows the other
+  way" ignore group; `cannet-client`'s receive loop gets a dedicated
+  log-only arm (decoding into per-interface state is phase 5).
+  `cannet-wire`/`cannet-client`/`cannet-server`/`cannet-gui` all build;
+  `python-wire` and the sidecar's ruff/mypy/pytest stay green against
+  the regenerated stubs. Released binary built
+  (`target/release/cannet-gui.exe`) via `tauri build --no-bundle`; no
+  bench run (no behaviour change to measure).
 
 ### Phase 2a report (2026-10-04)
 
