@@ -35,10 +35,6 @@ const PARKED_ROUTE_PROBE: Duration = Duration::from_secs(1);
 /// per frame.
 type WireDestination = (String, u8, String);
 
-/// One due frame plus the request that composed it, carried together so
-/// a refused batch's rows can be appended once the wire has answered.
-type DueFrame<'a> = (&'a ipc::TransmitRequest, cannet_core::CanFrame);
-
 /// Ceiling on the number of undelivered runs [`UndeliveredTx`] holds.
 /// A bus that is down stays down, so an outage is one run however long
 /// it lasts and the realistic driver of growth is a bus that flaps.
@@ -614,13 +610,14 @@ impl SchedDiag {
 /// frozen), no trace rows, no per-period wakes — until the route
 /// returns (`RoutesChanged` hint, [`PARKED_ROUTE_PROBE`] backstop).
 ///
-/// On each due entry it checks the route, then asks the registry
-/// [`fire_info`] what to emit (re-read every tick, so live payload /
-/// period edits land on the next emission — property 4), and
-/// reschedules on a fixed-rate grid via [`next_tick_deadline`] (work
-/// time absorbed, no catch-up burst). A `fire_info` of `None`
-/// (stopped, parked to Manual, or removed) drops the entry from the
-/// schedule. The thread exits when every
+/// Each tick's due entries go through [`fire_due`]: route, then room in
+/// the session's request channel, then the registry's
+/// [`fire_info`] (re-read every tick, so live payload / period edits land
+/// on the next emission — property 4), rescheduling on a fixed-rate grid
+/// via [`next_tick_deadline`] (work time absorbed, no catch-up burst). A
+/// period that finds no room is missed, never waited for (ADR 0060 rule
+/// 6), so one stalled session cannot stall every other bus's schedule.
+/// The thread exits when every
 /// [`transmit_scheduler::TransmitScheduler`] sender is dropped
 /// (app shutdown).
 pub(crate) fn run_transmit_scheduler(
@@ -684,77 +681,13 @@ pub(crate) fn run_transmit_scheduler(
         }
 
         let fire_start = std::time::Instant::now();
-        // Pass 1 — route-gate, prep, reschedule. The route check comes
-        // *before* `fire_info` so a route-down message parks with its
-        // counter untouched and no trace row (ADR 0039).
         let due_entries = schedule.take_due(now);
-        let mut due: Vec<ipc::TransmitRequest> = Vec::new();
-        if !due_entries.is_empty() {
-            let routed = routes_up(&state, &due_entries);
-            for ((id, fired_at), has_route) in due_entries.into_iter().zip(routed) {
-                if !has_route {
-                    schedule.park(&id);
-                    continue;
-                }
-                let Some((request, cycle_ms)) = state.transmit_frames().fire_info(&id) else {
-                    // Stopped, parked to Manual, or removed — drop it.
-                    schedule.unschedule(&id);
-                    continue;
-                };
-                due.push(request);
-                let period = Duration::from_millis(u64::from(cycle_ms));
-                let next = next_tick_deadline(fired_at, std::time::Instant::now(), period);
-                schedule.reschedule(&id, next);
+        let health = app.try_state::<crate::bus_health::BusHealth>();
+        let fired = fire_due(&state, &mut schedule, due_entries, now, &|bus, kind, n| {
+            if let Some(health) = health.as_ref() {
+                health.record_missed(bus, kind, n);
             }
-        }
-        let fired = due.len();
-        // Pass 2 — emit the tick's frames, one `FrameBatch` per
-        // `(session, channel, interface)` instead of one envelope per
-        // frame: per-envelope channel + proto overhead is paid once per
-        // tick per destination. A request whose bus route is down is
-        // skipped entirely — no emission and no row — matching the
-        // single-frame path's connected gate. An accepted batch appends
-        // nothing (its rows are the bus's echoes); a refused one appends
-        // its marked `Tx ✗` rows, as the single-frame path does.
-        if !due.is_empty() {
-            let sessions = state.remote_sessions();
-            let mut routed: Vec<(WireDestination, DueFrame<'_>)> = Vec::new();
-            for request in &due {
-                let Some(route) = resolve_bus_route(&sessions, &request.bus_id) else {
-                    continue;
-                };
-                // A malformed request (invalid id / frame) is dropped,
-                // as the single-frame path's discarded error did.
-                let Ok(frame) = build_frame(request, route.channel) else {
-                    continue;
-                };
-                routed.push((
-                    (route.address, route.channel, route.interface_id),
-                    (request, frame),
-                ));
-            }
-            // Batch order is the refused-row order: `group_wire_batches`
-            // preserves per-destination frame order, and the batches
-            // are offered in that order.
-            for ((address, channel, interface_id), pairs) in group_wire_batches(routed) {
-                let frames: Vec<cannet_core::CanFrame> =
-                    pairs.iter().map(|(_, f)| f.clone()).collect();
-                let delivered = match sessions.get(&address) {
-                    Some(session) => session
-                        .tx
-                        .transmit_batch(channel, &interface_id, &frames)
-                        .is_ok(),
-                    // The route resolved a moment ago and the session
-                    // has since gone: nothing carried these frames.
-                    None => false,
-                };
-                if !delivered {
-                    for (request, frame) in &pairs {
-                        append_refused_tx_row(state.inner(), request, frame);
-                    }
-                }
-            }
-        }
+        });
         if fired > 0 {
             diag.record_fire(fire_start.elapsed(), fired);
         }
@@ -762,21 +695,169 @@ pub(crate) fn run_transmit_scheduler(
     }
 }
 
-/// Whether each due entry's target bus currently has a live route —
-/// checked *before* `fire_info` so a route-down message parks with its
-/// counter untouched and nothing offered to the wire (ADR 0039). An id with no
-/// registry row reports `true`: it falls through to `fire_info`'s
-/// None, which drops it from the schedule.
-fn routes_up(state: &AppState, due: &[(String, std::time::Instant)]) -> Vec<bool> {
-    // Lock order: `transmit_frames` before `remote_sessions`.
-    let registry = state.transmit_frames();
-    let sessions = state.remote_sessions();
-    due.iter()
-        .map(|(id, _)| match registry.bus_id(id) {
-            Some(bus) => resolve_bus_route(&sessions, &bus).is_some(),
-            None => true,
-        })
-        .collect()
+/// How many whole periods a tick that fired `fired_at`'s period at `now`
+/// skipped (ADR 0039 rule 2): every grid deadline up to `now` beyond the
+/// one firing now and the one [`next_tick_deadline`] realigns to `now` —
+/// dropped rather than burst, and counted as missed (ADR 0060 rule 6).
+pub(crate) fn periods_skipped(
+    fired_at: std::time::Instant,
+    now: std::time::Instant,
+    period: Duration,
+) -> u64 {
+    if period.is_zero() {
+        return 0;
+    }
+    let late = now.saturating_duration_since(fired_at);
+    let due = late.as_nanos() / period.as_nanos();
+    u64::try_from(due.saturating_sub(1)).unwrap_or(u64::MAX)
+}
+
+/// Where one due periodic goes, resolved under the registry and session
+/// locks and carried out of them.
+struct DueEntry {
+    id: String,
+    fired_at: std::time::Instant,
+    bus: String,
+    cycle_ms: u32,
+}
+
+/// One scheduler tick's emission of the `due` entries (ADR 0039, ADR 0060
+/// rule 6). Returns how many periods it fired.
+///
+/// 1. **Route.** Each entry's bus is resolved to a wire destination. One
+///    with no route is *parked* — no preparation, counter frozen (ADR
+///    0039); one whose registry row is gone leaves the schedule.
+/// 2. **Room, then preparation.** Per destination — one session's
+///    interface — the tick **reserves room** in the session's request
+///    channel before it prepares anything. With no room, every period
+///    due there is **missed**: not prepared, its counters not stepped,
+///    rescheduled on its grid, and counted through `missed` as
+///    [`MissedPeriod::NoRoom`](crate::bus_health::MissedPeriod). A session
+///    whose far end has stopped draining therefore costs its own buses
+///    their periods and nobody else anything: the tick never waits on
+///    it. With room, each period is prepared (`fire_info`, which steps
+///    its counters) and the destination's frames go out as one batch.
+///    A session that has gone refuses the batch, and its frames are
+///    the marked `Tx ✗` rows the single-frame path leaves.
+/// 3. **Lateness.** A tick that ran past one or more whole periods drops
+///    them rather than bursting (ADR 0039 rule 2), and counts them as
+///    [`MissedPeriod::Late`](crate::bus_health::MissedPeriod).
+///
+/// The session map is held only to copy each destination's transmit
+/// handle out of it; nothing is offered to a wire under it.
+pub(crate) fn fire_due(
+    state: &AppState,
+    schedule: &mut transmit_scheduler::PeriodicSchedule,
+    due: Vec<(String, std::time::Instant)>,
+    now: std::time::Instant,
+    missed: &dyn Fn(&str, crate::bus_health::MissedPeriod, u64),
+) -> usize {
+    use crate::bus_health::MissedPeriod;
+    if due.is_empty() {
+        return 0;
+    }
+    // Pass 1 — route every entry, under the locks, and copy each
+    // destination's transmit handle out. Lock order: `transmit_frames`
+    // before `remote_sessions`.
+    let mut routed: Vec<(WireDestination, DueEntry)> = Vec::new();
+    let mut handles: Vec<(String, crate::session::SessionTx)> = Vec::new();
+    {
+        let registry = state.transmit_frames();
+        let sessions = state.remote_sessions();
+        for (id, fired_at) in due {
+            let (Some(bus), Some(cycle_ms)) = (registry.bus_id(&id), registry.cycle_ms(&id)) else {
+                // Removed — drop it.
+                schedule.unschedule(&id);
+                continue;
+            };
+            if !registry.is_running(&id) || cycle_ms == 0 {
+                // Stopped, or parked to Manual — drop it.
+                schedule.unschedule(&id);
+                continue;
+            }
+            let Some(route) = resolve_bus_route(&sessions, &bus) else {
+                schedule.park(&id);
+                continue;
+            };
+            if !handles.iter().any(|(a, _)| *a == route.address) {
+                if let Some(session) = sessions.get(&route.address) {
+                    handles.push((route.address.clone(), session.tx.clone()));
+                }
+            }
+            routed.push((
+                (route.address, route.channel, route.interface_id),
+                DueEntry {
+                    id,
+                    fired_at,
+                    bus,
+                    cycle_ms,
+                },
+            ));
+        }
+    }
+    // Pass 2 — per destination: room first, then preparation and the
+    // batch. Batch order is the refused-row order: `group_wire_batches`
+    // preserves per-destination order, and the batches are offered in it.
+    let mut fired = 0;
+    for ((address, channel, interface_id), entries) in group_wire_batches(routed) {
+        let tx = handles.iter().find(|(a, _)| *a == address).map(|(_, t)| t);
+        let reserved = match tx.map(crate::session::SessionTx::try_reserve) {
+            Some(Err(cannet_client::TransmitRefused::QueueFull)) => {
+                for entry in &entries {
+                    let period = Duration::from_millis(u64::from(entry.cycle_ms));
+                    missed(&entry.bus, MissedPeriod::NoRoom, 1);
+                    missed(
+                        &entry.bus,
+                        MissedPeriod::Late,
+                        periods_skipped(entry.fired_at, now, period),
+                    );
+                    let next =
+                        next_tick_deadline(entry.fired_at, std::time::Instant::now(), period);
+                    schedule.reschedule(&entry.id, next);
+                }
+                continue;
+            }
+            Some(Ok(reserved)) => Some(reserved),
+            // The session has gone since the route resolved: the frames
+            // are prepared and refused, as before.
+            Some(Err(cannet_client::TransmitRefused::Closed)) | None => None,
+        };
+        let mut prepared: Vec<(ipc::TransmitRequest, cannet_core::CanFrame)> = Vec::new();
+        for entry in &entries {
+            let Some((request, cycle_ms)) = state.transmit_frames().fire_info(&entry.id) else {
+                // Stopped, parked to Manual, or removed — drop it.
+                schedule.unschedule(&entry.id);
+                continue;
+            };
+            let period = Duration::from_millis(u64::from(cycle_ms));
+            missed(
+                &entry.bus,
+                MissedPeriod::Late,
+                periods_skipped(entry.fired_at, now, period),
+            );
+            let next = next_tick_deadline(entry.fired_at, std::time::Instant::now(), period);
+            schedule.reschedule(&entry.id, next);
+            fired += 1;
+            // A malformed request (invalid id / frame) is dropped, as
+            // the single-frame path's discarded error did.
+            if let Ok(frame) = build_frame(&request, channel) {
+                prepared.push((request, frame));
+            }
+        }
+        let frames: Vec<cannet_core::CanFrame> = prepared.iter().map(|(_, f)| f.clone()).collect();
+        let delivered = match (tx, reserved) {
+            (Some(tx), Some(reserved)) => tx
+                .send_reserved(reserved, channel, &interface_id, &frames)
+                .is_ok(),
+            _ => false,
+        };
+        if !delivered {
+            for (request, frame) in &prepared {
+                append_refused_tx_row(state, request, frame);
+            }
+        }
+    }
+    fired
 }
 
 /// Re-check routes for every parked periodic (ADR 0039). A recovered

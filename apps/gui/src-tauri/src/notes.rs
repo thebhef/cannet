@@ -19,14 +19,16 @@
 //! and the frontend is `{ id, timestamp_ns, label }` per note, so
 //! the path from a plot click to a saved BLF is direct.
 //!
-//! **This store holds authored events only** ([`EventCategory`], ADR
-//! 0035). A host-derived kind is refused by it: a detector's output grows
-//! with the capture, so it is a windowed series family the signal cache
-//! serves and a view pages through — a bus's error series is one
+//! **This store holds durable events only** ([`EventCategory`], ADR
+//! 0035): the ones the user authored, and the ones the host recorded from
+//! a peer's report that nothing could recompute — a dropped-frames gap
+//! (ADR 0060). A host-derived kind is refused by it: a detector's output
+//! grows with the capture, so it is a windowed series family the signal
+//! cache serves and a view pages through — a bus's error series is one
 //! ([`crate::signal_cache::SignalCacheStore::bus_error_windows`]) — never
 //! a list held here whole. Frontend-derived events (the truncation
 //! marker) never reach the host at all. So `notes-changed` fires only on
-//! an authored change.
+//! a durable change.
 //!
 //! **An event may also say what it is about** ([`EventSubject`], ADR 0056):
 //! a list of structural references to messages, signals and other events.
@@ -248,6 +250,11 @@ pub fn linked_event_ids(events: &[Note], id: &str) -> Vec<String> {
 pub enum EventCategory {
     /// The user placed it. Editable, persisted to the scratch, exported.
     UserAuthored,
+    /// The host placed it from what a peer reported, and nothing can
+    /// recompute it from the frames — a dropped-frames gap (ADR 0060).
+    /// Durable like an authored event: held in this store, persisted to
+    /// the scratch, exported.
+    HostRecorded,
     /// The host computed it from the frame stream. Not editable, not
     /// persisted, not exported, and not held in this store: it is a
     /// windowed series the signal cache serves, and the data it summarises
@@ -288,6 +295,12 @@ pub enum EventKind {
     /// the error frames it stands for stay in the capture and are what a
     /// save writes.
     BusError,
+    /// A dropped-frames gap (ADR 0060): a span of a bus's timeline whose
+    /// frames the peer dropped rather than deliver late, and how many.
+    /// Host-recorded: nothing can recompute it from the frames, so it is
+    /// held in this store, persisted to the scratch and exported as a
+    /// `GLOBAL_MARKER`, like the authored kinds.
+    DroppedFrames,
 }
 
 impl EventKind {
@@ -296,6 +309,7 @@ impl EventKind {
     pub fn category(self) -> EventCategory {
         match self {
             Self::Note | Self::MessageBound => EventCategory::UserAuthored,
+            Self::DroppedFrames => EventCategory::HostRecorded,
             Self::BusError => EventCategory::HostDerived,
         }
     }
@@ -303,7 +317,7 @@ impl EventKind {
     /// The BLF annotation record this kind is written as, if any.
     pub fn blf_record(self) -> Option<BlfRecord> {
         match self {
-            Self::Note => Some(BlfRecord::GlobalMarker),
+            Self::Note | Self::DroppedFrames => Some(BlfRecord::GlobalMarker),
             Self::MessageBound => Some(BlfRecord::EventComment),
             Self::BusError => None,
         }
@@ -312,7 +326,10 @@ impl EventKind {
     /// Does an event of this kind belong in the durable store — the one that
     /// rides the disk-spill scratch (ADR 0002 DS-7)?
     pub fn persisted(self) -> bool {
-        matches!(self.category(), EventCategory::UserAuthored)
+        matches!(
+            self.category(),
+            EventCategory::UserAuthored | EventCategory::HostRecorded
+        )
     }
 
     /// Is an event of this kind written out on Save Capture? Host-derived
@@ -424,7 +441,7 @@ impl NotesStore {
         self.snapshot()
     }
 
-    /// The events Save Capture writes out: user-authored only. Host-derived
+    /// The events Save Capture writes out: the durable ones. Host-derived
     /// events summarise data the file already carries, so exporting them
     /// would add a lossy restatement of what is already there (ADR 0035).
     pub fn exportable(&self) -> Vec<Note> {
@@ -463,8 +480,8 @@ impl NotesStore {
     /// `timestamp_ns`.
     pub fn add(&self, note: Note) -> Option<Applied> {
         if !note.kind.persisted() {
-            // The store holds user-authored events only; a host-derived
-            // one is a windowed series the signal cache serves (ADR 0035).
+            // The store holds durable events only; a host-derived one is
+            // a windowed series the signal cache serves (ADR 0035).
             tracing::warn!(kind = ?note.kind, "refusing a non-durable event in the notes store");
             return None;
         }

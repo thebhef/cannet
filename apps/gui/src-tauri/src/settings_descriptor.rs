@@ -484,6 +484,23 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "error_row_cap",
+        backing: Backing::Field,
+        label: "Error frames kept per bus-error episode",
+        help: "How many error frames of each bus-error episode are kept as trace rows; \
+               the rest are only counted in the episode, which starts over once the bus \
+               has been free of errors for a second. Applies to live sessions and to \
+               imported captures alike. 0 keeps none.",
+        surfaces: &[Surface::Trace, Surface::Connection],
+        kind: Kind::Behaviour,
+        control: Control::Int {
+            unit: None,
+            scale: 1,
+            min: None,
+            unset: None,
+        },
+    },
+    Spec {
         key: "plot_y_axis_mode",
         backing: Backing::Field,
         label: "Default y-axis layout",

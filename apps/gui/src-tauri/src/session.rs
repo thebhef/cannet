@@ -16,12 +16,15 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_client::{
-    clock::SessionClock, controller::ControllerStates, rejections::PerFrameErrors, ConnectionError,
-    PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription,
+    clock::SessionClock, controller::ControllerStates, dropped_frames::FramesDropped,
+    episodes::BusErrorEpisodes, ingest::IngestStats, rejections::PerFrameErrors,
+    rejections::TxRefusals, ConnectionError, PreSubscribeConfig, SessionHandle, SessionTransmitter,
+    Subscription, TransmitRefused,
 };
 use cannet_core::CanFrameSource;
 
 use crate::app_state::AppState;
+use crate::bus_error_episodes::{EpisodeBuilder, DEFAULT_ERROR_ROW_CAP};
 use crate::capture::{restamp_scratch_for_capture, ImportProgress};
 use crate::connect_flow::{self, Attempt, Outcome};
 use crate::connection_state::{self, AppliedBusConfig, BusConnState};
@@ -80,14 +83,46 @@ pub(crate) struct RemoteSession {
     /// in-process backend, which has no peer to refuse anything.
     /// Polled by [`crate::bus_health`] alongside the controller states,
     /// and reported coalesced: a peer refusing at bus rate produces
-    /// thousands a second.
+    /// thousands a second. Only a peer that predates ADR 0060's refusal
+    /// summaries still sends these; a newer one reports through
+    /// [`RemotePeer::tx_refusals`].
     pub(crate) rejections: Option<PerFrameErrors>,
+    /// Everything else a remote peer reports about its buses (ADR 0060),
+    /// and what the host configured on it. `None` for the in-process
+    /// backend.
+    pub(crate) peer: Option<RemotePeer>,
+}
+
+/// What a remote session's peer reports beside its frames (ADR 0060),
+/// as the client decodes it — each a cheap-to-clone handle the session
+/// worker writes and [`crate::bus_health`] polls — and the hardware
+/// configuration the host sent each of its interfaces.
+pub(crate) struct RemotePeer {
+    /// This session's own number, unique for the process: an episode's
+    /// seq is only meaningful within the session that reported it, so a
+    /// reconnect to the same address is a new source of reports.
+    pub(crate) session_id: u64,
+    /// Bus-error episodes per interface.
+    pub(crate) episodes: BusErrorEpisodes,
+    /// Refused-send summaries per interface and reason, with the flushes.
+    pub(crate) tx_refusals: TxRefusals,
+    /// Spans the peer's data lane dropped, drained into durable events.
+    pub(crate) dropped_frames: FramesDropped,
+    /// The worker's frame read count and frame-channel depth.
+    pub(crate) ingest: IngestStats,
+    /// `(interface, the binding's pinned configuration)` per subscribed
+    /// interface — what [`apply_error_row_cap`] resends a new cap with,
+    /// so a cap change never moves anything else.
+    pub(crate) configs: Vec<(String, Option<PreSubscribeConfig>)>,
 }
 
 /// Backend-specific transmit machinery for a [`RemoteSession`].
 /// Both arms expose the same `transmit(channel, interface_id, frame)`
 /// surface so the upstream transmit path (`transmit_frame_inner`,
-/// `resolve_bus_route`) is uniform.
+/// `resolve_bus_route`) is uniform. Cheap to clone — both arms are
+/// handles — so the periodic scheduler takes a copy and offers frames
+/// without holding the session map.
+#[derive(Clone)]
 pub(crate) enum SessionTx {
     /// Remote backend — `transmit` hands off to the `cannet-client`
     /// session's `SessionTransmitter`, addressed by `interface_id`.
@@ -98,6 +133,18 @@ pub(crate) enum SessionTx {
     /// the frame out to every other participant on the bus, who
     /// receive it as `Direction::Rx`.
     Vbus(Vec<(u8, std::sync::Arc<std::sync::Mutex<cannet_core::LocalSink>>)>),
+    /// A remote session whose request channel never has room — the far
+    /// end that has stopped draining, for tests of what that must not
+    /// stall.
+    #[cfg(test)]
+    Stalled,
+}
+
+/// Room reserved on a session for one batch ([`SessionTx::try_reserve`]).
+pub(crate) enum Reserved<'a> {
+    Remote(cannet_client::TransmitPermit<'a>),
+    /// The in-process bus has no request channel to be full.
+    Vbus,
 }
 
 impl SessionTx {
@@ -107,9 +154,9 @@ impl SessionTx {
     /// from a command a view is waiting on, and a full queue means the
     /// far end has stopped draining — so waiting would stall the caller
     /// for as long as the server stays behind without making the frame
-    /// any more sent (ADR 0048). The scheduler's batched tick, which
-    /// runs on a thread of its own, keeps the waiting form
-    /// ([`Self::transmit_batch`]).
+    /// any more sent (ADR 0048). The scheduler's batched tick never waits
+    /// either: it reserves room before it prepares a period
+    /// ([`Self::try_reserve`], ADR 0060 rule 6).
     pub(crate) fn transmit(
         &self,
         channel: u8,
@@ -131,24 +178,42 @@ impl SessionTx {
                 let mut guard = sink.lock().expect("vbus participant sink mutex poisoned");
                 guard.submit(frame.clone()).map_err(|e| e.to_string())
             }
+            #[cfg(test)]
+            SessionTx::Stalled => Err(TransmitRefused::QueueFull.to_string()),
         }
     }
 
-    /// Send several frames to one interface. Remote sessions ride a
-    /// single `FrameBatch` envelope (per-envelope overhead paid once
-    /// per tick, not per frame); the in-process vbus has no envelope
-    /// concept, so it submits per frame.
-    pub(crate) fn transmit_batch(
+    /// Reserve room for one batch **without waiting** (ADR 0060 rule 6):
+    /// the periodic scheduler asks before it prepares a period, so a
+    /// session whose far end has stopped draining costs a missed period
+    /// rather than a stalled scheduler. [`TransmitRefused::QueueFull`]
+    /// is no room; [`TransmitRefused::Closed`] is a session that has
+    /// gone.
+    pub(crate) fn try_reserve(&self) -> Result<Reserved<'_>, TransmitRefused> {
+        match self {
+            SessionTx::Remote(t) => t.try_reserve().map(Reserved::Remote),
+            SessionTx::Vbus(_) => Ok(Reserved::Vbus),
+            #[cfg(test)]
+            SessionTx::Stalled => Err(TransmitRefused::QueueFull),
+        }
+    }
+
+    /// Send `frames` to one interface into room [`Self::try_reserve`]
+    /// reserved: one `FrameBatch` on a remote session, a submit per
+    /// frame on the in-process bus.
+    pub(crate) fn send_reserved(
         &self,
+        reserved: Reserved<'_>,
         channel: u8,
         interface_id: &str,
         frames: &[cannet_core::CanFrame],
     ) -> Result<(), String> {
-        match self {
-            SessionTx::Remote(t) => t
-                .transmit_batch(interface_id, frames)
-                .map_err(|e| e.to_string()),
-            SessionTx::Vbus(_) => {
+        match reserved {
+            Reserved::Remote(permit) => {
+                permit.send_batch(interface_id, frames);
+                Ok(())
+            }
+            Reserved::Vbus => {
                 for frame in frames {
                     self.transmit(channel, interface_id, frame)?;
                 }
@@ -210,6 +275,8 @@ impl AppState {
         let session_dead = guard.get(address).is_none_or(|s| match &s.tx {
             SessionTx::Vbus(sinks) => sinks.is_empty(),
             SessionTx::Remote(_) => false,
+            #[cfg(test)]
+            SessionTx::Stalled => false,
         });
         if session_dead {
             guard.remove(address);
@@ -241,10 +308,11 @@ pub struct InterfaceBusBinding {
     pub fd_data_speed_bps: Option<u32>,
 }
 
-/// Build a [`PreSubscribeConfig`] from a binding's bus hints, or
-/// `None` if neither speed nor FD mode is pinned (the project hasn't
-/// configured this bus, so the sidecar uses its driver default).
-fn presubscribe_config_from(b: &InterfaceBusBinding) -> Option<PreSubscribeConfig> {
+/// The configuration a binding pins — its bus speed and FD mode — or
+/// `None` if neither is pinned (the project hasn't configured this bus,
+/// so the sidecar uses its driver default). The error-row cap is not a
+/// binding's to pin; [`presubscribe_config_from`] adds it.
+fn pinned_config(b: &InterfaceBusBinding) -> Option<PreSubscribeConfig> {
     if b.speed_bps.is_none() && b.fd.is_none() {
         return None;
     }
@@ -252,10 +320,91 @@ fn presubscribe_config_from(b: &InterfaceBusBinding) -> Option<PreSubscribeConfi
         speed_bps: u64::from(b.speed_bps.unwrap_or(0)),
         fd_enabled: b.fd.unwrap_or(false),
         fd_data_speed_bps: u64::from(b.fd_data_speed_bps.unwrap_or(0)),
-        // No project setting for the error-row cap exists yet
-        // (ADR 0060 rule 2); unset keeps the server's default (16).
         error_row_cap: None,
     })
+}
+
+/// The `ConfigureBus` the host sends ahead of `b`'s subscribe: its
+/// pinned configuration with `error_row_cap` (the app setting, ADR 0060
+/// rule 2), or `None` when nothing is pinned and the cap is the server's
+/// own default — then nothing need be sent at all. An unpinned bus with
+/// a cap of its own is sent the cap with an unset speed (`0`), which the
+/// server reads as its driver default.
+fn presubscribe_config_from(
+    b: &InterfaceBusBinding,
+    error_row_cap: u32,
+) -> Option<PreSubscribeConfig> {
+    let pinned = pinned_config(b);
+    if pinned.is_none() && error_row_cap == DEFAULT_ERROR_ROW_CAP {
+        return None;
+    }
+    Some(PreSubscribeConfig {
+        error_row_cap: Some(error_row_cap),
+        ..pinned.unwrap_or(PreSubscribeConfig {
+            speed_bps: 0,
+            fd_enabled: false,
+            fd_data_speed_bps: 0,
+            error_row_cap: None,
+        })
+    })
+}
+
+/// A process-unique number for a newly connected session
+/// ([`RemotePeer::session_id`]).
+pub(crate) fn next_session_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Send `cap` as the error-row cap to every interface of every open
+/// remote session (ADR 0060 rule 2) — a `ConfigureBus` carrying the
+/// interface's pinned configuration unchanged, which the server applies
+/// as a cap change without reopening the bus. Returns how many
+/// interfaces it is being sent to.
+///
+/// The sends run on a thread of their own: a `ConfigureBus` waits for
+/// room in the session's request channel, and a settings save must not
+/// wait on a session whose far end has stopped draining (ADR 0048). The
+/// session map is not held while sending.
+pub(crate) fn apply_error_row_cap(state: &AppState, cap: u32) -> usize {
+    let targets: Vec<(SessionTransmitter, String, Option<PreSubscribeConfig>)> = state
+        .remote_sessions()
+        .values()
+        .filter_map(|s| match (&s.tx, s.peer.as_ref()) {
+            (SessionTx::Remote(t), Some(peer)) => Some((t.clone(), peer)),
+            _ => None,
+        })
+        .flat_map(|(t, peer)| {
+            peer.configs
+                .iter()
+                .map(move |(iface, cfg)| (t.clone(), iface.clone(), *cfg))
+        })
+        .collect();
+    let count = targets.len();
+    if count > 0 {
+        let _ = std::thread::Builder::new()
+            .name("cannet-error-row-cap".into())
+            .spawn(move || {
+                for (t, iface, cfg) in targets {
+                    let cfg = cfg.unwrap_or(PreSubscribeConfig {
+                        speed_bps: 0,
+                        fd_enabled: false,
+                        fd_data_speed_bps: 0,
+                        error_row_cap: None,
+                    });
+                    // A session that has closed meanwhile has nothing
+                    // left to configure.
+                    let _ = t.configure_bus(
+                        &iface,
+                        cfg.speed_bps,
+                        cfg.fd_enabled,
+                        cfg.fd_data_speed_bps,
+                        Some(cap),
+                    );
+                }
+            });
+    }
+    count
 }
 
 /// What the host will actually put on the wire for `b`, as the UI
@@ -269,7 +418,7 @@ fn presubscribe_config_from(b: &InterfaceBusBinding) -> Option<PreSubscribeConfi
 /// stands), and an FD bus with no data rate rides the nominal rate
 /// (a wire `0`, which the sidecar resolves that way).
 fn applied_config_from(b: &InterfaceBusBinding) -> AppliedBusConfig {
-    match presubscribe_config_from(b) {
+    match pinned_config(b) {
         None => AppliedBusConfig {
             speed_bps: None,
             fd_enabled: false,
@@ -487,10 +636,12 @@ pub(crate) async fn connect_remote_server(
                 return None;
             }
             let sub = Subscription::new(b.interface.clone(), u8::try_from(i).unwrap_or(u8::MAX));
-            Some(match presubscribe_config_from(b) {
-                Some(cfg) => sub.with_config(cfg),
-                None => sub,
-            })
+            Some(
+                match presubscribe_config_from(b, crate::settings::error_row_cap()) {
+                    Some(cfg) => sub.with_config(cfg),
+                    None => sub,
+                },
+            )
         })
         .collect();
 
@@ -535,6 +686,22 @@ pub(crate) async fn connect_remote_server(
     let clock = receiver.clock().clone();
     let controllers = receiver.controllers().clone();
     let rejections = receiver.rejections().clone();
+    let peer = RemotePeer {
+        session_id: next_session_id(),
+        episodes: receiver.episodes().clone(),
+        tx_refusals: receiver.tx_refusals().clone(),
+        dropped_frames: receiver.dropped_frames().clone(),
+        ingest: receiver.ingest().clone(),
+        configs: subscriptions
+            .iter()
+            .filter_map(|sub| {
+                binding_lookup
+                    .iter()
+                    .find(|b| b.interface == sub.interface_id)
+                    .map(|b| (sub.interface_id.clone(), pinned_config(b)))
+            })
+            .collect(),
+    };
     let stop = Arc::new(AtomicBool::new(false));
 
     // Build the channel-to-bus mapping from the per-server
@@ -573,6 +740,7 @@ pub(crate) async fn connect_remote_server(
             clock: Some(clock),
             controllers: Some(controllers),
             rejections: Some(rejections),
+            peer: Some(peer),
         },
     )
     .inspect_err(|e| fail_subscribed(&app, e))?;
@@ -729,6 +897,7 @@ fn connect_local_vbus(
             clock: None,
             controllers: None,
             rejections: None,
+            peer: None,
         },
     )?;
 
@@ -935,11 +1104,20 @@ where
     S::Error: fmt::Display,
 {
     let state: State<'_, AppState> = app.state();
-    // Bus errors are tallied per bus for the health panel as they arrive.
-    // The frames still go into the store below like any other frame, so a
-    // saved capture keeps every error frame that was received — and the
-    // timeline's bus-error markers are read back out of them (ADR 0035).
     let health = app.try_state::<crate::bus_health::BusHealth>();
+    // A live session's bus errors arrive as the sidecar's episode
+    // reports, which the bus-health poll folds in; its error rows are
+    // already capped at the source (ADR 0060). An import has no sidecar,
+    // so its error records go through the same episode rule here: the
+    // first N of each episode are rows, the rest only counted, and every
+    // episode is reported through the same path the live ones take.
+    let mut import_fold =
+        replay_origin.then(|| EpisodeBuilder::new(crate::settings::error_row_cap()));
+    let finish_fold = |fold: Option<EpisodeBuilder>| {
+        if let Some(fold) = fold {
+            finish_import_fold(&state, health.as_deref(), fold);
+        }
+    };
     let mut total: u64 = 0;
     // For replay sources (BLF, MDF) the session timeline is the file's
     // own; `anchor` tracks the earliest timestamp seen so far, which is
@@ -979,9 +1157,9 @@ where
                         health.clear();
                     }
                 }
-                if is_bus_fault(&raw) {
-                    if let (Some(health), Some(bus_id)) = (health.as_ref(), raw.bus_id.as_deref()) {
-                        health.observe_error(bus_id, raw.timestamp_ns);
+                if let Some(fold) = import_fold.as_mut() {
+                    if !import_keeps_row(&state, health.as_deref(), fold, &raw) {
+                        continue; // past the error-row cap: counted, not a row
                     }
                 }
                 // Ingest-time verification (ADR 0027): ids with a
@@ -998,6 +1176,7 @@ where
             }
             Ok(None) => break,
             Err(e) => {
+                finish_fold(import_fold);
                 let msg = e.to_string();
                 sys_error!(app, "connection", "frame source ended with error: {msg}");
                 let _ = app.emit("log-finished", LogFinished::Error { message: msg });
@@ -1005,6 +1184,7 @@ where
             }
         }
     }
+    finish_fold(import_fold);
 
     sys_info!(
         app,
@@ -1019,10 +1199,50 @@ where
     anchor
 }
 
-/// Whether an ingested frame counts toward the bus-health error tally:
-/// an error frame the bus reported. The echo of an error frame we sent
-/// ourselves (`Direction::Tx`) is a stimulus, not a fault the bus
-/// suffered; it is stored like any frame but not tallied.
+/// The report-store source an import's episodes are folded under.
+const IMPORT_SOURCE: &str = "import";
+
+/// The import's episode fold for one frame (ADR 0060 rule 2, "imports
+/// behave as live"): a bus fault is folded into its bus's episode, whose
+/// reports go to `health` and the bus's error series exactly as a live
+/// session's do, and is a row only while it is among the first N of its
+/// episode. Every other frame is a row. Returns whether `raw` is a row.
+pub(crate) fn import_keeps_row(
+    state: &AppState,
+    health: Option<&crate::bus_health::BusHealth>,
+    fold: &mut EpisodeBuilder,
+    raw: &RawTraceFrame,
+) -> bool {
+    if !is_bus_fault(raw) {
+        return true;
+    }
+    let bus_id = raw.bus_id.as_deref().unwrap_or_default();
+    let seen = fold.observe(bus_id, raw.timestamp_ns);
+    if let Some(health) = health {
+        for report in &seen.reports {
+            crate::bus_health::record_episode(state, health, bus_id, IMPORT_SOURCE, report);
+        }
+    }
+    seen.keep_row
+}
+
+/// The end of an import, however it ended: every episode still open is
+/// as long as it will get, so each is reported closed.
+pub(crate) fn finish_import_fold(
+    state: &AppState,
+    health: Option<&crate::bus_health::BusHealth>,
+    fold: EpisodeBuilder,
+) {
+    let Some(health) = health else { return };
+    for (bus, report) in fold.finish() {
+        crate::bus_health::record_episode(state, health, &bus, IMPORT_SOURCE, &report);
+    }
+}
+
+/// Whether an imported frame is a bus fault the import's episode fold
+/// counts: an error frame the bus reported. The echo of an error frame we
+/// sent ourselves (`Direction::Tx`) is a stimulus, not a fault the bus
+/// suffered; it is stored like any frame, uncapped and uncounted.
 pub(crate) fn is_bus_fault(raw: &RawTraceFrame) -> bool {
     matches!(raw.payload, cannet_core::CanFramePayload::Error)
         && raw.direction == cannet_core::Direction::Rx
@@ -1197,12 +1417,12 @@ mod connect_outcome_tests {
 
     #[test]
     fn an_unpinned_bus_reports_that_nothing_was_sent() {
-        // Neither speed nor FD pinned => `presubscribe_config_from` is
-        // `None` => no `ConfigureBus` on the wire at all. The row must
-        // say "driver default", not echo the placeholder the input
-        // showed.
+        // Neither speed nor FD pinned, and the error-row cap at the
+        // server's own default => `presubscribe_config_from` is `None`
+        // => no `ConfigureBus` on the wire at all. The row must say
+        // "driver default", not echo the placeholder the input showed.
         let b = binding("a", "b1");
-        assert!(presubscribe_config_from(&b).is_none());
+        assert!(presubscribe_config_from(&b, DEFAULT_ERROR_ROW_CAP).is_none());
         assert_eq!(
             applied_config_from(&b),
             AppliedBusConfig {
@@ -1210,6 +1430,35 @@ mod connect_outcome_tests {
                 fd_enabled: false,
                 fd_data_speed_bps: None,
             },
+        );
+    }
+
+    #[test]
+    fn a_cap_of_its_own_is_sent_to_an_unpinned_bus_without_pinning_anything() {
+        // ADR 0060 rule 2: the cap rides `ConfigureBus`. An unpinned bus
+        // with a non-default cap is sent the cap and an unset (0) speed,
+        // which the server reads as its driver default — and the row
+        // still says "driver default", because nothing about the wire
+        // timing was sent.
+        let b = binding("a", "b1");
+        let cfg = presubscribe_config_from(&b, 4).expect("the cap must reach the server");
+        assert_eq!(
+            (
+                cfg.speed_bps,
+                cfg.fd_enabled,
+                cfg.fd_data_speed_bps,
+                cfg.error_row_cap
+            ),
+            (0, false, 0, Some(4)),
+        );
+        assert_eq!(applied_config_from(&b).speed_bps, None);
+        // A pinned bus carries its pins and the cap together.
+        let mut pinned = binding("a", "b1");
+        pinned.speed_bps = Some(250_000);
+        let cfg = presubscribe_config_from(&pinned, DEFAULT_ERROR_ROW_CAP).unwrap();
+        assert_eq!(
+            (cfg.speed_bps, cfg.error_row_cap),
+            (250_000, Some(DEFAULT_ERROR_ROW_CAP))
         );
     }
 
