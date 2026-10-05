@@ -43,6 +43,7 @@ _ensure_on_path()
 from cannet_local_sidecar import driver as drv  # noqa: E402
 from cannet_local_sidecar import server as srv  # noqa: E402
 from cannet_local_sidecar.server import shared_interface as si  # noqa: E402
+from cannet_local_sidecar.server.outbox import SessionOutbox  # noqa: E402
 from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
 
 
@@ -159,7 +160,7 @@ def _drain(
 def test_first_subscribe_opens_underlying_bus() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     reg.subscribe("fake:0", outbox)
     assert len(driver.opened) == 1
     assert not driver.opened[0].closed.is_set()
@@ -168,8 +169,8 @@ def test_first_subscribe_opens_underlying_bus() -> None:
 def test_second_subscribe_does_not_reopen() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
     assert len(driver.opened) == 1
@@ -178,8 +179,8 @@ def test_second_subscribe_does_not_reopen() -> None:
 def test_last_unsubscribe_closes_underlying_bus() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
     reg.unsubscribe("fake:0", a)
@@ -196,8 +197,8 @@ def test_last_unsubscribe_closes_underlying_bus() -> None:
 def test_received_frame_fans_out_to_every_subscriber() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
     driver.opened[0].enqueue(_frame(7))
@@ -211,8 +212,8 @@ def test_received_frame_fans_out_to_every_subscriber() -> None:
 def test_transmit_from_any_subscriber_reaches_the_shared_bus() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
 
@@ -233,8 +234,8 @@ def test_the_drivers_echo_reaches_every_subscriber_as_a_transmitted_frame() -> N
     node on the bus)."""
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
 
@@ -250,7 +251,7 @@ def test_the_drivers_echo_reaches_every_subscriber_as_a_transmitted_frame() -> N
 def test_a_received_frame_is_forwarded_as_received() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     driver.opened[0].enqueue(_frame(6))
     [env] = _drain(a, kind="frame_batch")
@@ -264,7 +265,7 @@ def test_transmit_does_not_block_on_a_slow_send() -> None:
     every other interface's traffic."""
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     ch = driver.opened[0]
 
@@ -295,8 +296,8 @@ def test_worker_tx_rejected_routes_to_the_submitting_outbox() -> None:
     the send happens on the worker thread."""
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
     ch = driver.opened[0]
@@ -307,17 +308,18 @@ def test_worker_tx_rejected_routes_to_the_submitting_outbox() -> None:
     ch.send = rejecting_send  # type: ignore[method-assign]
     reg.transmit("fake:0", _frame(1), a)
 
-    def a_got_error() -> bool:
+    def a_got_refusal() -> bool:
         try:
             env = a.get_nowait()
         except queue.Empty:
             return False
         return (
-            env.WhichOneof("body") == "error"
-            and env.error.code == pb.Error.CODE_TX_REJECTED
+            env.WhichOneof("body") == "tx_refusals"
+            and env.tx_refusals.interface_id == "fake:0"
+            and env.tx_refusals.count == 1
         )
 
-    _wait_for(a_got_error)
+    _wait_for(a_got_refusal)
     # The other session saw nothing (its queue holds only its
     # subscribe-time InterfaceState snapshot).
     leftovers = []
@@ -326,13 +328,13 @@ def test_worker_tx_rejected_routes_to_the_submitting_outbox() -> None:
             leftovers.append(b.get_nowait())
         except queue.Empty:
             break
-    assert all(e.WhichOneof("body") != "error" for e in leftovers)
+    assert all(e.WhichOneof("body") != "tx_refusals" for e in leftovers)
 
 
 def test_transmit_after_close_raises_at_enqueue() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.unsubscribe("fake:0", a)
     shared = srv._SharedInterface(
@@ -357,7 +359,7 @@ def test_configure_bus_before_subscribe_applied_at_next_open() -> None:
         "fake:0",
         drv.OpenConfig(bitrate_bps=500_000, fd=True, data_bitrate_bps=2_000_000),
     )
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     reg.subscribe("fake:0", outbox)
 
     assert len(driver.configs) == 1
@@ -370,7 +372,7 @@ def test_configure_bus_before_subscribe_applied_at_next_open() -> None:
 def test_configure_bus_while_open_close_and_reopens() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     reg.subscribe("fake:0", outbox)
     first_channel = driver.opened[0]
 
@@ -381,6 +383,23 @@ def test_configure_bus_while_open_close_and_reopens() -> None:
     _wait_for(lambda: first_channel.closed.is_set())
     assert not second_channel.closed.is_set()
     assert driver.configs[1].bitrate_bps == 250_000
+
+
+def test_configure_bus_with_unchanged_open_config_does_not_reopen() -> None:
+    """A ``ConfigureBus`` whose open-configuration fields (bitrate, FD,
+    listen-only) are unchanged from the live config -- e.g. one that
+    only carries a new ``error_row_cap`` -- applies without reopening
+    the channel (ADR 0060, queued cap-change reopen)."""
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    outbox = SessionOutbox()
+    reg.subscribe("fake:0", outbox)
+    first_channel = driver.opened[0]
+
+    reg.reconfigure("fake:0", drv.OpenConfig())
+
+    assert len(driver.opened) == 1
+    assert not first_channel.closed.is_set()
 
 
 def test_configure_bus_speed_zero_treated_as_unset() -> None:
@@ -402,7 +421,7 @@ def test_configure_bus_speed_zero_treated_as_unset() -> None:
 def test_subscribe_pushes_state_snapshot() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     reg.subscribe("fake:0", outbox)
 
     [env] = _drain(outbox, kind="interface_state")
@@ -415,8 +434,8 @@ def test_subscribe_pushes_state_snapshot() -> None:
 def test_state_transition_pushes_to_every_subscriber() -> None:
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
     # Drain the initial snapshots so we only count transitions below.
@@ -439,7 +458,7 @@ def test_bus_off_state_maps_to_proto_bus_off() -> None:
     forwards it as ``CONTROLLER_STATE_BUS_OFF``."""
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     reg.subscribe("fake:0", outbox)
     _drain(outbox, kind="interface_state")
 
@@ -460,7 +479,7 @@ def test_warning_state_maps_to_proto_warning() -> None:
     cable produced."""
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     reg.subscribe("fake:0", outbox)
     _drain(outbox, kind="interface_state")
 
@@ -486,7 +505,7 @@ def test_a_pinned_controller_publishes_once_however_long_the_fault_lasts() -> No
     """
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     reg.subscribe("fake:0", outbox)
     _drain(outbox, kind="interface_state")
 
@@ -540,8 +559,8 @@ def _new_shared() -> "srv._SharedInterface":
 
 def test_broadcast_error_fans_out_to_all_outboxes() -> None:
     shared = _new_shared()
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     shared._outboxes = [a, b]
 
     shared._broadcast_error(pb.LOG_LEVEL_ERROR, "boom")
@@ -561,7 +580,7 @@ def test_broadcast_error_under_held_lock_does_not_deadlock() -> None:
     timeout so a regression fails the test cleanly instead of hanging the
     whole suite."""
     shared = _new_shared()
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     shared._outboxes = [a]
 
     def _run() -> None:
@@ -582,8 +601,8 @@ def test_reconfigure_failure_broadcasts_to_all_subscribers() -> None:
     the one broadcast site that runs under ``self._lock``."""
     driver = _ReopenFailsDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
-    b: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
+    b = SessionOutbox()
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
     _drain(a, kind="interface_state")
@@ -667,7 +686,7 @@ def test_nominal_close_does_not_warn_about_the_read_it_interrupted(
     caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
     driver = _ChannelDriver(_CloseRacingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     _drain(a, kind="interface_state")
     _wait_for(lambda: driver.opened[0].in_recv.is_set())
@@ -692,7 +711,7 @@ def test_reconfigure_swap_does_not_warn_about_the_read_it_interrupted(
     caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
     driver = _ChannelDriver(_CloseRacingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     _drain(a, kind="interface_state")
     _wait_for(lambda: driver.opened[0].in_recv.is_set())
@@ -717,7 +736,7 @@ def test_a_read_failure_outside_a_close_still_warns(
     caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
     driver = _ChannelDriver(_AlwaysFailingRecvChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         _wait_for(
@@ -765,7 +784,7 @@ def test_an_interface_whose_device_disappears_is_reported_unavailable() -> None:
     went on believing the controller was error-active."""
     driver = _ChannelDriver(_DyingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         [snapshot] = _drain(a, kind="interface_state")
@@ -786,7 +805,7 @@ def test_an_interface_that_comes_back_is_reported_active_again() -> None:
     after the adapter returned would keep its bus parked all session."""
     driver = _ChannelDriver(_DyingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         _drain(a, kind="interface_state")
@@ -812,7 +831,7 @@ def test_a_persistent_read_failure_is_logged_once_not_at_the_retry_rate(
     caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
     driver = _ChannelDriver(_DyingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         _drain(a, kind="interface_state")
@@ -881,7 +900,7 @@ def test_a_backend_that_watches_for_loss_reports_zero_from_the_first_snapshot() 
     # silence.
     driver = _ChannelDriver(_CountingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         [snapshot] = _drain(a, kind="interface_state")
@@ -905,7 +924,7 @@ def test_a_backend_that_does_not_watch_sends_no_count_at_all() -> None:
     authority of a backend that never looked."""
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         [snapshot] = _drain(a, kind="interface_state")
@@ -928,7 +947,7 @@ def test_a_count_already_reported_survives_the_adapter_going_away() -> None:
     un-lose them."""
     driver = _ChannelDriver(_CountingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         _drain(a, kind="interface_state")
@@ -982,7 +1001,7 @@ def _wrap_warnings(outbox: "queue.Queue", *, timeout_s: float = 3.0) -> list:
 def test_each_timer_rollover_produces_exactly_one_warning_naming_the_channel() -> None:
     driver = _ChannelDriver(_WrappingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         driver.opened[0].wraps = 1
@@ -1002,7 +1021,7 @@ def test_a_backend_with_no_wrapping_timer_never_warns() -> None:
     # than reporting the missing method as a fault.
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         assert _wrap_warnings(a, timeout_s=1.5) == []
@@ -1018,7 +1037,7 @@ def test_a_reopened_channel_rearms_the_rollover_report() -> None:
     rollover after a bus-speed change would go unannounced."""
     driver = _ChannelDriver(_WrappingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         driver.opened[0].wraps = 1
@@ -1069,7 +1088,7 @@ def latched(monkeypatch: "pytest.MonkeyPatch"):
     monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
     driver = _ChannelDriver(_LatchingChannel)
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     shared = reg.subscribe("fake:0", outbox)
     _drain(outbox, kind="interface_state")
     try:
@@ -1078,7 +1097,7 @@ def latched(monkeypatch: "pytest.MonkeyPatch"):
         reg.unsubscribe("fake:0", outbox)
 
 
-def _states(outbox: "queue.Queue") -> list[int]:
+def _states(outbox: "SessionOutbox") -> list[int]:
     out = []
     while True:
         try:
@@ -1087,6 +1106,12 @@ def _states(outbox: "queue.Queue") -> list[int]:
             return out
         if env.WhichOneof("body") == "interface_state":
             out.append(env.interface_state.state)
+
+
+def _transitions(states: list[int]) -> list[int]:
+    """``states`` without repeats: the heartbeat republishes an unchanged
+    reading every second (ADR 0060 rule 5), which is not a transition."""
+    return [s for i, s in enumerate(states) if i == 0 or states[i - 1] != s]
 
 
 def test_a_bus_off_controller_is_reset_once_the_threshold_passes_and_not_before(
@@ -1131,10 +1156,16 @@ def test_the_recovery_is_published_so_bus_health_shows_it(latched) -> None:
     driver, shared, outbox = latched
     ch = driver.opened[0]
     ch.set_state(_BUS_OFF)
+    # Read after each pass, as a session that keeps up does: the control
+    # lane keeps only the latest state per interface (ADR 0060 rule 3).
+    seen = []
     shared._poll_state(ch, now_s=0.0)
+    seen += _states(outbox)
     shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
+    seen += _states(outbox)
     shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S + 0.5)
-    assert _states(outbox) == [
+    seen += _states(outbox)
+    assert _transitions(seen) == [
         pb.CONTROLLER_STATE_BUS_OFF,
         pb.CONTROLLER_STATE_ACTIVE,
     ]
@@ -1192,15 +1223,19 @@ def test_a_backend_with_no_in_place_reset_is_reopened(latched) -> None:
     ch = driver.opened[0]
     ch.in_place = False
     ch.set_state(_BUS_OFF)
+    seen = []
     shared._poll_state(ch, now_s=0.0)
+    seen += _states(outbox)
     shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
+    seen += _states(outbox)
 
     assert len(driver.opened) == 2
     assert ch.closed.is_set()
     fresh = shared._current_channel()
     assert fresh is driver.opened[1]
     shared._poll_state(fresh, now_s=si._BUS_OFF_RESET_AFTER_S + 0.5)
-    assert _states(outbox) == [
+    seen += _states(outbox)
+    assert _transitions(seen) == [
         pb.CONTROLLER_STATE_BUS_OFF,
         pb.CONTROLLER_STATE_ACTIVE,
     ]
@@ -1214,7 +1249,7 @@ def test_a_backend_without_the_hook_is_reopened(
     monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     shared = reg.subscribe("fake:0", outbox)
     try:
         ch = driver.opened[0]
@@ -1241,7 +1276,7 @@ def silent(monkeypatch: "pytest.MonkeyPatch"):
     monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     shared = reg.subscribe("fake:0", outbox)
     shared._note_rx(now_s=100.0)
     try:
@@ -1303,14 +1338,17 @@ def test_the_reopen_is_retried_on_the_next_poll_while_the_shape_persists(
     assert len(driver.opened) == 3
 
 
-def test_queue_full_while_error_frames_arrive_is_a_live_fault_not_a_reopen(
+def test_queue_full_while_error_frames_arrive_is_flushed_not_reopened(
     silent,
 ) -> None:
     """Cable out, controller retransmitting: the queue fills, but error
     frames keep arriving. That controller is alive and reporting the
-    fault; reopening it would only hide it."""
+    fault, so it is not re-initialised; its stale queue is flushed
+    instead (ADR 0060 rule 7)."""
     driver, shared = silent
     ch = driver.opened[0]
+    flushes = []
+    ch.flush_tx = lambda: flushes.append(1) or True  # type: ignore[attr-defined]
     t = 100.0
     while t < 110.0:
         shared._note_tx_refused(ch, _QUEUE_FULL, now_s=t + 0.1)
@@ -1318,6 +1356,7 @@ def test_queue_full_while_error_frames_arrive_is_a_live_fault_not_a_reopen(
         t += 0.5
         shared._poll_state(ch, now_s=t)
     assert len(driver.opened) == 1
+    assert flushes
 
 
 def test_silence_without_queue_full_refusals_is_an_idle_bus(silent) -> None:
@@ -1362,7 +1401,7 @@ def test_the_pumps_feed_the_rule(monkeypatch: "pytest.MonkeyPatch") -> None:
     monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
     driver = _ChannelDriver(_QueueFullChannel)
     reg = srv._InterfaceRegistry(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     shared = reg.subscribe("fake:0", outbox)
     try:
         ch = driver.opened[0]
@@ -1398,7 +1437,7 @@ def test_the_rx_stats_line_reports_dropped_echoes(
     caplog.set_level(logging.INFO, logger="cannet_local_sidecar")
     driver = _ChannelDriver(_EchoGatingChannel)
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         _wait_for(lambda: bool(driver.opened))
@@ -1422,7 +1461,7 @@ def test_the_rx_stats_line_omits_the_field_where_nothing_is_gated(
     caplog.set_level(logging.INFO, logger="cannet_local_sidecar")
     driver = _FakeDriver()
     reg = srv._InterfaceRegistry(driver)
-    a: "queue.Queue" = queue.Queue()
+    a = SessionOutbox()
     reg.subscribe("fake:0", a)
     try:
         _wait_for(lambda: bool(driver.opened))

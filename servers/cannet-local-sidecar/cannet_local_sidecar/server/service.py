@@ -21,7 +21,6 @@ and the streaming boundary.
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 from typing import Iterator, Optional
 
@@ -39,6 +38,7 @@ from .enumeration import (
 )
 from .helpers import (
     _clock_reply_envelope,
+    _configure_error_row_cap,
     _configure_to_open_config,
     _error_envelope,
     _log_envelope,
@@ -46,6 +46,7 @@ from .helpers import (
     load_driver,
 )
 from .info import ServerInfoService
+from .outbox import SessionOutbox
 from .shared_interface import _InterfaceRegistry
 
 _log = logging.getLogger(__name__)
@@ -109,7 +110,10 @@ class CannetServerService(pb_grpc.CannetServerServicer):
     ) -> Iterator[pb.Envelope]:
         """Bidirectional stream. See `cannet.proto`'s `Session` rpc."""
 
-        outbox: "queue.Queue[Optional[pb.Envelope]]" = queue.Queue()
+        # Two lanes, control drained before data (ADR 0060 rule 3): a
+        # fault, a refusal or a recovery reaches the host however far
+        # behind the frames are.
+        outbox = SessionOutbox()
         # Per-session set of subscribed interface ids — needed to
         # 1) gate `FrameBatch` (CODE_NOT_SUBSCRIBED if absent) and
         # 2) clean up on session end.
@@ -180,7 +184,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         self,
         sub: pb.Subscribe,
         subscribed: set[str],
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
+        outbox: SessionOutbox,
     ) -> None:
         cid = sub.interface_id
         _log.debug("Subscribe interface_id=%s", cid)
@@ -217,7 +221,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         self,
         unsub: pb.Unsubscribe,
         subscribed: set[str],
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
+        outbox: SessionOutbox,
     ) -> None:
         cid = unsub.interface_id
         _log.debug("Unsubscribe interface_id=%s", cid)
@@ -232,60 +236,60 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         self,
         batch: pb.FrameBatch,
         subscribed: set[str],
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
+        outbox: SessionOutbox,
     ) -> None:
         """Transmit a wire ``FrameBatch``.
 
         **Not logged**, deliberately — not per frame, not per batch. A
         saturated bus reaches this method thousands of times a second,
         so a record here would rotate the whole logfile budget away in
-        seconds and put a logging call on the hot path. Transmit
-        failures already reach the client as ``TX_REJECTED`` envelopes,
-        and the interface's lifecycle (open / reconfigure / close, with
-        tracebacks) is logged where it happens.
+        seconds and put a logging call on the hot path. The interface's
+        lifecycle (open / reconfigure / close, with tracebacks) is
+        logged where it happens.
+
+        **Never waits on an interface** (ADR 0060 rule 6): this runs on
+        the session's one request thread, so a wait here would hold
+        every other interface on the session to the slowest one's pace.
+
+        Every refusal -- here or on the interface's transmit worker -- is
+        counted into the session's ``TxRefusals`` summary for the
+        interface, with its reason (ADR 0060 rule 4); none is an
+        envelope of its own.
         """
         cid = batch.interface_id
         if cid not in subscribed:
-            outbox.put(
-                _error_envelope(
-                    pb.Error.CODE_NOT_SUBSCRIBED,
-                    f"transmit on unsubscribed {cid}",
+            for _ in batch.frames:
+                outbox.refuse(
+                    cid, drv.REFUSAL_CLOSED, f"transmit on unsubscribed {cid}"
                 )
-            )
             return
         for proto_frame in batch.frames:
             try:
                 frame = proto_to_frame(proto_frame)
             except ValueError as e:
                 # A frame the wire model can't decode (unspecified /
-                # unrecognised kind) can't be transmitted — reject it
+                # unrecognised kind) can't be transmitted — refuse it
                 # rather than silently sending it as classic.
-                outbox.put(
-                    _error_envelope(
-                        pb.Error.CODE_TX_REJECTED,
-                        f"undecodable frame on {cid}: {e}",
-                    )
+                outbox.refuse(
+                    cid,
+                    drv.REFUSAL_INCOMPATIBLE,
+                    f"undecodable frame on {cid}: {e}",
                 )
                 continue
             try:
                 self._registry.transmit(cid, frame, outbox)
             except drv.TxRejected as e:
-                outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, str(e)))
+                outbox.refuse(cid, e.reason, str(e))
             except KeyError:
                 # Interface was closed between the subscribed-check
                 # and the transmit — race with another session's last
-                # unsubscribe. Surface as TX_REJECTED.
-                outbox.put(
-                    _error_envelope(
-                        pb.Error.CODE_TX_REJECTED,
-                        f"interface {cid} closed",
-                    )
-                )
+                # unsubscribe.
+                outbox.refuse(cid, drv.REFUSAL_CLOSED, f"interface {cid} closed")
 
     def _handle_configure(
         self,
         cfg: pb.ConfigureBus,
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
+        outbox: SessionOutbox,
     ) -> None:
         """Apply a wire ``ConfigureBus``.
 
@@ -295,16 +299,21 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         """
         cid = cfg.interface_id
         config = _configure_to_open_config(cfg)
+        # Applied before the reopen, so the reopened channel's first
+        # episode already has it (ADR 0060 rule 2). Unset is the
+        # server's default.
+        self._registry.set_error_row_cap(cid, _configure_error_row_cap(cfg))
         # Requested (as it came off the wire) alongside applied (what the
         # driver is handed): a bitrate that silently doesn't take is
         # otherwise indistinguishable from one that was never asked for.
         _log.debug(
             "ConfigureBus interface_id=%s requested=speed_bps=%d "
-            "fd_data_speed_bps=%d fd_enabled=%s applied=%r",
+            "fd_data_speed_bps=%d fd_enabled=%s error_row_cap=%s applied=%r",
             cid,
             cfg.speed_bps,
             cfg.fd_data_speed_bps,
             bool(cfg.fd_enabled),
+            _configure_error_row_cap(cfg),
             config,
         )
         try:

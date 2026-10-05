@@ -805,7 +805,7 @@ def test_open_pcan_disables_status_frames() -> None:
     status-frame queue immediately after open via
     ``PCAN_ALLOW_STATUS_FRAMES`` → ``PCAN_PARAMETER_OFF``. Bus state
     transitions (passive / bus-off) are still observable through the
-    sidecar's 500 ms ``GetStatus`` poll, so no information is lost."""
+    sidecar's 250 ms ``GetStatus`` poll, so no information is lost."""
     orig_detect = _install_fake_pcan({0x51: {}})
     fake_param = object()
     fake_off = object()
@@ -941,7 +941,10 @@ def test_pcan_leaves_identity_absent_where_the_driver_answers_nothing() -> None:
 def _install_fake_driver_config(dll_version: int) -> None:
     """Give the fake Vector canlib the ``xlGetDriverConfig`` wrapper
     python-can offers, answering with one packed ``dllVersion``."""
-    import can.interfaces.vector.canlib as canlib  # noqa: WPS433
+    # Through `sys.modules`, not `import ... as`: that form resolves via
+    # the parent package's attribute, which still names the real module
+    # if any earlier test imported python-can's Vector backend.
+    canlib = sys.modules["can.interfaces.vector.canlib"]
 
     class _DriverConfig:
         dllVersion = dll_version  # noqa: N815 - the XL field's own name

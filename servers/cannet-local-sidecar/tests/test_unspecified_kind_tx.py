@@ -4,13 +4,13 @@ The decode itself is the shared wire package's and is tested there
 (``cannet_python_wire.proto_to_frame`` raises on
 ``FRAME_KIND_UNSPECIFIED`` and on an unrecognised tag, mirroring
 ``crates/cannet-wire/src/convert.rs``). What this test holds is the
-sidecar's end of it: that the raise becomes a ``CODE_TX_REJECTED`` for
-the submitting session rather than a frame silently sent as classic.
+sidecar's end of it: that the raise becomes an ``incompatible`` refusal
+in the submitting session's ``TxRefusals`` summary (ADR 0060 rule 4)
+rather than a frame silently sent as classic.
 """
 
 from __future__ import annotations
 
-import queue
 import sys
 from pathlib import Path
 
@@ -24,6 +24,7 @@ _ensure_on_path()
 
 
 from cannet_local_sidecar import server as srv  # noqa: E402
+from cannet_local_sidecar.server.outbox import SessionOutbox  # noqa: E402
 from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
 
 
@@ -32,7 +33,7 @@ def test_handle_tx_rejects_unspecified_kind_frame() -> None:
 
     driver = _FakeDriver()
     svc = srv.CannetServerService(driver)
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     svc._registry.subscribe("fake:0", outbox)
     # Drain the InterfaceState snapshot the subscribe pushed.
     while True:
@@ -47,5 +48,6 @@ def test_handle_tx_rejects_unspecified_kind_frame() -> None:
     svc._handle_tx(batch, {"fake:0"}, outbox)
 
     env = outbox.get(timeout=1.0)
-    assert env.WhichOneof("body") == "error"
-    assert env.error.code == pb.Error.CODE_TX_REJECTED
+    assert env.WhichOneof("body") == "tx_refusals"
+    assert env.tx_refusals.reason == pb.TX_REFUSAL_REASON_INCOMPATIBLE
+    assert env.tx_refusals.count == 1
