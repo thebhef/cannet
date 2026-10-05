@@ -94,6 +94,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("health_sample_interval_ms", Scope::UserOverridable),
     ("sidecar_restart_budget", Scope::UserOverridable),
     ("bus_error_episode_gap_s", Scope::UserOverridable),
+    ("error_row_cap", Scope::UserOverridable),
     ("reconnect_backoff_ms", Scope::UserOverridable),
     ("default_server_address", Scope::UserOverridable),
     ("sidecar_dir", Scope::UserOverridable),
@@ -301,6 +302,15 @@ pub struct Settings {
     /// [`MAX_BUS_ERROR_EPISODE_GAP_S`]: the episode list is bounded by
     /// capture time ÷ gap, so the floor is what keeps it small.
     pub bus_error_episode_gap_s: u64,
+    /// The **error-row cap** (ADR 0060 rule 2): how many error frames of
+    /// each bus-error episode become trace rows; the rest are only
+    /// counted in the episode. Default 16, Vector's precedent; `0` keeps
+    /// none. Sent to the server for every interface at connect and again
+    /// when it changes — the server applies a cap change without
+    /// reopening the bus — and applied by the import to a file's error
+    /// records, so an import reads as the live session did. At most
+    /// [`MAX_ERROR_ROW_CAP`], the wire's own width.
+    pub error_row_cap: u64,
     /// How long the interface watcher waits before reconnecting to a
     /// `cannet-server` after the stream ends or a connect fails.
     /// Default 2000 ms: fine on a LAN, short for a flaky VPN to a
@@ -674,6 +684,10 @@ pub const MIN_BUS_ERROR_EPISODE_GAP_S: u64 = 1;
 /// and says nothing a longer one would not.
 pub const MAX_BUS_ERROR_EPISODE_GAP_S: u64 = 3_600;
 
+/// The largest [`Settings::error_row_cap`]: the wire carries the cap as a
+/// 32-bit count.
+pub const MAX_ERROR_ROW_CAP: u64 = u32::MAX as u64;
+
 /// The renderings [`Settings::can_id_format`] accepts for a trace-style
 /// table's `id` column. The names are the frontend's `CanIdFormat`
 /// spellings, since the value crosses the IPC verbatim.
@@ -712,6 +726,7 @@ impl Default for Settings {
             health_sample_interval_ms: 20_000,
             sidecar_restart_budget: 3,
             bus_error_episode_gap_s: 5,
+            error_row_cap: u64::from(crate::bus_error_episodes::DEFAULT_ERROR_ROW_CAP),
             reconnect_backoff_ms: 2_000,
             default_server_address: "127.0.0.1:50051".to_string(),
             sidecar_dir: String::new(),
@@ -1026,6 +1041,20 @@ fn refuse_below_minimums(settings: &mut Settings, complaints: &mut Vec<String>) 
         ));
         settings.bus_error_episode_gap_s = d.bus_error_episode_gap_s;
     }
+    if settings.error_row_cap > MAX_ERROR_ROW_CAP {
+        complaints.push(format!(
+            "error_row_cap {} is above the maximum of {MAX_ERROR_ROW_CAP}; \
+             ignoring it — using the default ({})",
+            settings.error_row_cap, d.error_row_cap
+        ));
+        settings.error_row_cap = d.error_row_cap;
+    }
+}
+
+/// The error-row cap in effect ([`Settings::error_row_cap`]), as the
+/// wire carries it.
+pub(crate) fn error_row_cap() -> u32 {
+    u32::try_from(effective().error_row_cap).unwrap_or(u32::MAX)
 }
 
 /// Refuse `value` if it is below `min`, reporting the field by name and
@@ -1196,6 +1225,7 @@ fn set_settings_blocking(app: &tauri::AppHandle, settings: Settings) -> Result<S
     // Read before the write installs the new values: the comparison
     // below is what keeps a save that touches no unit quiet.
     let units_before = unit_inputs();
+    let cap_before = error_row_cap();
     let (settings, complaints) = validate(settings);
     cache(&settings);
     warn_refused(app, &complaints);
@@ -1207,6 +1237,18 @@ fn set_settings_blocking(app: &tauri::AppHandle, settings: Settings) -> Result<S
     // Apply the windowed-ring scratch cap (ADR 0002 DS-8) to the live store
     // so a changed cap takes effect on the next flush, not just next launch.
     crate::apply_cache_caps(app);
+    // A changed error-row cap reaches every open session now (ADR 0060
+    // rule 2), not at its next connect.
+    let cap = error_row_cap();
+    if cap != cap_before {
+        let sent =
+            crate::session::apply_error_row_cap(&app.state::<crate::app_state::AppState>(), cap);
+        crate::sys_info!(
+            app,
+            "settings",
+            "error-row cap is now {cap}; sent to {sent} interface(s)"
+        );
+    }
     apply_unit_change(
         app,
         &app.state::<crate::app_state::AppState>(),
@@ -1350,6 +1392,7 @@ mod tests {
             health_sample_interval_ms: 0,
             sidecar_restart_budget: 1,
             bus_error_episode_gap_s: 30,
+            error_row_cap: 4,
             reconnect_backoff_ms: 10_000,
             default_server_address: "10.0.0.5:50051".to_string(),
             sidecar_dir: "sidecar-source-tree".to_string(),

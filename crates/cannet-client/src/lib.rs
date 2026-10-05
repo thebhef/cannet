@@ -93,6 +93,7 @@ pub mod clock;
 pub mod controller;
 pub mod dropped_frames;
 pub mod episodes;
+pub mod ingest;
 pub mod rejections;
 pub mod tls;
 
@@ -119,6 +120,7 @@ use crate::clock::{ClockSample, OffsetSlew, RoundOutcome, SessionClock};
 use crate::controller::ControllerStates;
 use crate::dropped_frames::FramesDropped;
 use crate::episodes::BusErrorEpisodes;
+use crate::ingest::IngestStats;
 use crate::tls::{CertPin, ObservedPin};
 
 /// Outgoing-envelope channel depth for the per-session request stream.
@@ -701,6 +703,8 @@ pub fn connect_and_subscribe(
     let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<SessionReady, ConnectionError>>(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let (done_tx, done_rx) = mpsc::channel::<()>();
+    let ingest = IngestStats::new();
+    let worker_ingest = ingest.clone();
 
     let thread = thread::Builder::new()
         .name("cannet-client".into())
@@ -710,7 +714,14 @@ pub fn connect_and_subscribe(
             // its runtime is gone — wakes
             // `SessionHandle::shutdown_timeout`.
             let _done = done_tx;
-            run_worker(&config, subscriptions, frame_tx, ready_tx, shutdown_rx);
+            run_worker(
+                &config,
+                subscriptions,
+                frame_tx,
+                &worker_ingest,
+                ready_tx,
+                shutdown_rx,
+            );
         })
         .map_err(|e| ConnectionError::Thread(e.to_string()))?;
 
@@ -725,6 +736,7 @@ pub fn connect_and_subscribe(
                 episodes: ready.episodes,
                 tx_refusals: ready.tx_refusals,
                 dropped_frames: ready.dropped_frames,
+                ingest,
             },
             handle: SessionHandle {
                 shutdown_tx: Some(shutdown_tx),
@@ -879,6 +891,7 @@ pub struct FrameReceiver {
     episodes: BusErrorEpisodes,
     tx_refusals: rejections::TxRefusals,
     dropped_frames: FramesDropped,
+    ingest: IngestStats,
 }
 
 impl FrameReceiver {
@@ -977,6 +990,17 @@ impl FrameReceiver {
     pub fn dropped_frames(&self) -> &FramesDropped {
         &self.dropped_frames
     }
+
+    /// How many frames the session worker has read off the wire, and how
+    /// many of them are still queued for [`CanFrameSource::next_frame`]
+    /// (see [`crate::ingest`]) -- what says whether a slow capture is
+    /// behind on the wire or behind on this side of it.
+    ///
+    /// Read-only and non-blocking, like [`Self::controllers`].
+    #[must_use]
+    pub fn ingest(&self) -> &IngestStats {
+        &self.ingest
+    }
 }
 
 impl CanFrameSource for FrameReceiver {
@@ -984,7 +1008,10 @@ impl CanFrameSource for FrameReceiver {
 
     fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
         match self.rx.recv() {
-            Ok(Ok(frame)) => Ok(Some(frame)),
+            Ok(Ok(frame)) => {
+                self.ingest.record_taken();
+                Ok(Some(frame))
+            }
             Ok(Err(e)) => Err(e),
             Err(_) => Ok(None),
         }
@@ -1046,6 +1073,26 @@ impl SessionTransmitter {
             tokio_mpsc::error::TrySendError::Full(_) => TransmitRefused::QueueFull,
             tokio_mpsc::error::TrySendError::Closed(_) => TransmitRefused::Closed,
         })
+    }
+
+    /// Reserve room for **one** envelope in the outgoing channel without
+    /// waiting, before the caller has prepared what goes in it.
+    ///
+    /// This is the periodic scheduler's form (ADR 0060 rule 6): it asks
+    /// for room first and prepares a period's frames only once it has
+    /// some, so a session whose far end has stopped draining costs the
+    /// scheduler a refusal rather than a stall -- and a period that finds
+    /// no room is never prepared, its counters never stepped. A full
+    /// channel is [`TransmitRefused::QueueFull`]; a session that has gone
+    /// is [`TransmitRefused::Closed`].
+    pub fn try_reserve(&self) -> Result<TransmitPermit<'_>, TransmitRefused> {
+        self.req_tx
+            .try_reserve()
+            .map(TransmitPermit)
+            .map_err(|e| match e {
+                tokio_mpsc::error::TrySendError::Full(()) => TransmitRefused::QueueFull,
+                tokio_mpsc::error::TrySendError::Closed(()) => TransmitRefused::Closed,
+            })
     }
 
     /// Send `frames` over the session as **one** `FrameBatch` envelope,
@@ -1118,7 +1165,31 @@ impl SessionTransmitter {
     }
 }
 
-/// Why [`SessionTransmitter::try_transmit`] did not enqueue a frame.
+/// Room for one envelope in a session's outgoing channel, held by the
+/// caller of [`SessionTransmitter::try_reserve`]. Sending through it
+/// cannot wait and cannot fail for want of room; dropping it unused
+/// gives the room back.
+pub struct TransmitPermit<'a>(tokio_mpsc::Permit<'a, Envelope>);
+
+impl TransmitPermit<'_> {
+    /// Send `frames` as one `FrameBatch` envelope addressed to
+    /// `interface_id`, in order, into the reserved room. An empty slice
+    /// sends nothing and gives the room back.
+    pub fn send_batch(self, interface_id: &str, frames: &[CanFrame]) {
+        if frames.is_empty() {
+            return;
+        }
+        self.0.send(Envelope {
+            body: Some(Body::FrameBatch(FrameBatch {
+                interface_id: interface_id.to_string(),
+                frames: frames.iter().map(frame_to_proto).collect(),
+            })),
+        });
+    }
+}
+
+/// Why [`SessionTransmitter::try_transmit`] (or
+/// [`SessionTransmitter::try_reserve`]) did not enqueue a frame.
 /// The two cases read differently to a user: one says the session is
 /// gone, the other says it is alive but not draining.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1235,6 +1306,7 @@ fn run_worker(
     config: &ConnectConfig,
     subscriptions: Vec<Subscription>,
     frame_tx: mpsc::Sender<Result<CanFrame, ConnectionError>>,
+    ingest: &IngestStats,
     ready_tx: mpsc::SyncSender<Result<SessionReady, ConnectionError>>,
     shutdown_rx: oneshot::Receiver<()>,
 ) {
@@ -1249,7 +1321,15 @@ fn run_worker(
         }
     };
     runtime.block_on(async move {
-        run_session(config, subscriptions, frame_tx, ready_tx, shutdown_rx).await;
+        run_session(
+            config,
+            subscriptions,
+            frame_tx,
+            ingest,
+            ready_tx,
+            shutdown_rx,
+        )
+        .await;
     });
 }
 
@@ -1258,6 +1338,7 @@ async fn run_session(
     config: &ConnectConfig,
     subscriptions: Vec<Subscription>,
     frame_tx: mpsc::Sender<Result<CanFrame, ConnectionError>>,
+    ingest: &IngestStats,
     ready_tx: mpsc::SyncSender<Result<SessionReady, ConnectionError>>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
@@ -1528,6 +1609,7 @@ async fn run_session(
                                     if frame_tx.send(Ok(frame)).is_err() {
                                         return;
                                     }
+                                    ingest.record_read();
                                 }
                                 Err(e) => {
                                     let _ = frame_tx.send(Err(ConnectionError::Decode(e)));
@@ -2016,6 +2098,42 @@ mod tests {
             TransmitRefused::Closed.to_string(),
             SessionClosed.to_string(),
         );
+    }
+
+    #[test]
+    fn a_reservation_on_a_full_queue_is_refused_at_once_and_one_with_room_sends_a_batch() {
+        // The periodic scheduler reserves before it prepares a period
+        // (ADR 0060 rule 6): a full channel must answer at once, never
+        // park the caller, and the reserved room must carry the batch.
+        let (tx, mut rx) = tokio_mpsc::channel::<Envelope>(1);
+        let t = SessionTransmitter { req_tx: tx };
+        let frame = CanFrame::classic(
+            0,
+            0,
+            cannet_core::CanId::standard(0x100).unwrap(),
+            cannet_core::Direction::Tx,
+            vec![1],
+        )
+        .unwrap();
+        let permit = t.try_reserve().expect("room for one");
+        assert!(
+            matches!(t.try_reserve(), Err(TransmitRefused::QueueFull)),
+            "the only slot is held",
+        );
+        permit.send_batch("if0", &[frame.clone(), frame]);
+        let env = rx.try_recv().expect("the reserved envelope");
+        let Some(Body::FrameBatch(batch)) = env.body else {
+            panic!("expected FrameBatch");
+        };
+        assert_eq!(
+            (batch.interface_id.as_str(), batch.frames.len()),
+            ("if0", 2)
+        );
+        // An unused reservation gives the room back.
+        drop(t.try_reserve().expect("room again"));
+        assert!(t.try_reserve().is_ok());
+        drop(rx);
+        assert!(matches!(t.try_reserve(), Err(TransmitRefused::Closed)));
     }
 
     #[test]
