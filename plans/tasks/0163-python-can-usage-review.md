@@ -107,6 +107,40 @@ stays at the top of the stack (owner, 2026-10-04).
   slowest tx worker. Why the driver refused everything for 77.6 s while
   reading ≈ 1 500 f/s is not decidable from the surviving logs (window
   rotated out). Detail: *Phase 2a report* below.
+- 2026-10-04 — **phase 2b reported** (Opus; `task163-fault-model-adr`
+  `efffcef8` on `task163-fault-measure`; docs only). ADR 0060
+  `docs/adr/0060-a-bus-fault-is-an-episode-the-sidecar-reports.md`,
+  Status **proposed** — flip to accepted on the owner's ruling. Rules
+  1–8 as groomed; one figure-free rationale for T. ADR 0039 and 0035
+  carry amendment notes at the affected clauses; CONTEXT.md gains
+  *control lane / data lane*, *dropped-frames gap*, *error-row cap* and
+  a revised *bus-error episode*. Decided beyond the rulings (owner to
+  confirm):
+  - **T = 1 s** for the stuck-queue flush (full + zero accepted, not
+    bus-off, regardless of rx); repeats ≤ 1/s while it persists.
+  - Flush per vendor: PEAK `CAN_Reset` (also empties the rx queue —
+    small unmarked loss), Kvaser `canIOCTL_FLUSH_TX_BUFFER`, Vector
+    `xlCanFlushTransmitQueue` else reopen; **never** python-can's
+    `VectorBus.flush_tx_buffer` (it transmits a high-priority frame).
+  - The flush is reported as a flush count + last time on
+    `TxRefusals` (phase 3 proto gains two fields), one info line per run.
+  - The silent-queue reopen (2 s) **stays** as the escalation for a
+    controller that neither transmits nor errors.
+  - Missed periods: the host scheduler reserves a request-channel slot
+    (`try_reserve`) before preparing; no slot → missed period, counter
+    not stepped; both missed kinds (no slot, late tick) counted per bus
+    beside refusals.
+  - Lane keys: `BusErrorEpisode` keyed (interface, seq), backed-up
+    closed episodes fold exactly into their successor; `Log`/`Error` a
+    bounded FIFO with a dropped-count note; `ClockReply` latest-wins
+    per session.
+  - The dropped-frames gap is a host-derived kind that **persists with
+    the scratch** (cannot be recomputed); not exported.
+  - A reopened save's episodes count only the ≤ N rows it holds.
+  Not decided (open): a peer that predates episode reports (older
+  remote `cannet-server`) — its error rows would show no episodes;
+  ADR 0056 has no bus subject kind, so the ADR names the bus by the
+  episode id as today rather than "subject = the bus".
 
 ### Phase 2a report (2026-10-04)
 
