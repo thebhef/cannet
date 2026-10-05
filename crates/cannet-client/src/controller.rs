@@ -126,6 +126,13 @@ pub struct ControllerStatus {
     /// **reports, not lost frames**: no vendor says how many frames an
     /// overrun swallowed.
     pub rx_overruns: Option<u64>,
+    /// When this reading was taken, nanoseconds since the Unix epoch on
+    /// the peer's wall clock (ADR 0060 rule 5). The peer republishes
+    /// `InterfaceState` every second even when nothing else has
+    /// changed, so this is what lets a reader tell a reading that has
+    /// stopped arriving from one that is simply unchanged: the same
+    /// state with the same `as_of_ns` is not a fresh report at all.
+    pub as_of_ns: u64,
 }
 
 /// Per-interface controller state for one session. Cheap to clone; the
@@ -149,6 +156,7 @@ impl ControllerStates {
         tec: u32,
         rec: u32,
         rx_overruns: Option<u64>,
+        as_of_ns: u64,
     ) {
         let Some(state) = ControllerState::from_wire(state) else {
             return;
@@ -161,6 +169,7 @@ impl ControllerStates {
                     tec,
                     rec,
                     rx_overruns,
+                    as_of_ns,
                 },
             );
         }
@@ -192,7 +201,7 @@ mod tests {
         let writer = ControllerStates::new();
         let reader = writer.clone();
         assert_eq!(reader.get("PCAN_USBBUS1"), None);
-        writer.record("PCAN_USBBUS1", 2, 142, 9, None);
+        writer.record("PCAN_USBBUS1", 2, 142, 9, None, 1_000);
         assert_eq!(
             reader.get("PCAN_USBBUS1"),
             Some(ControllerStatus {
@@ -200,15 +209,42 @@ mod tests {
                 tec: 142,
                 rec: 9,
                 rx_overruns: None,
+                as_of_ns: 1_000,
             }),
         );
     }
 
     #[test]
+    fn a_heartbeat_with_the_same_as_of_ns_is_simply_the_same_reading() {
+        // ADR 0060 rule 5: the peer republishes `InterfaceState` every
+        // second even when nothing changed, so `as_of_ns` is what lets
+        // a reader tell a fresh report from a heartbeat repeating the
+        // last one. Recording the identical report twice must leave the
+        // stored reading exactly as it was -- a state whose `as_of_ns`
+        // is unchanged is not a change.
+        let states = ControllerStates::new();
+        states.record("PCAN_USBBUS1", 1, 0, 0, None, 1_000);
+        let first = states.get("PCAN_USBBUS1").unwrap();
+        states.record("PCAN_USBBUS1", 1, 0, 0, None, 1_000);
+        assert_eq!(states.get("PCAN_USBBUS1").unwrap(), first);
+    }
+
+    #[test]
+    fn a_fresh_heartbeat_advances_as_of_ns_with_no_other_change() {
+        // The control for the test above: a genuinely new heartbeat --
+        // same state, same counters, later `as_of_ns` -- is what proves
+        // the reading is still arriving rather than stale.
+        let states = ControllerStates::new();
+        states.record("PCAN_USBBUS1", 1, 0, 0, None, 1_000);
+        states.record("PCAN_USBBUS1", 1, 0, 0, None, 2_000);
+        assert_eq!(states.get("PCAN_USBBUS1").unwrap().as_of_ns, 2_000);
+    }
+
+    #[test]
     fn the_newest_report_replaces_the_last_one() {
         let states = ControllerStates::new();
-        states.record("i1", 1, 0, 0, None);
-        states.record("i1", 3, 256, 0, None);
+        states.record("i1", 1, 0, 0, None, 1_000);
+        states.record("i1", 3, 256, 0, None, 2_000);
         assert_eq!(states.get("i1").unwrap().state, ControllerState::BusOff);
         assert_eq!(states.get("i1").unwrap().tec, 256);
     }
@@ -219,10 +255,10 @@ mod tests {
         // state must leave the map untouched rather than land as a
         // guess, and must not wipe what a real report put there.
         let states = ControllerStates::new();
-        states.record("i1", 0, 7, 7, None);
+        states.record("i1", 0, 7, 7, None, 1_000);
         assert_eq!(states.get("i1"), None, "unspecified reports nothing");
-        states.record("i1", 2, 130, 4, None);
-        states.record("i1", 99, 0, 0, None);
+        states.record("i1", 2, 130, 4, None, 2_000);
+        states.record("i1", 99, 0, 0, None, 3_000);
         assert_eq!(
             states.get("i1").unwrap().state,
             ControllerState::Passive,
@@ -233,8 +269,8 @@ mod tests {
     #[test]
     fn interfaces_are_reported_independently() {
         let states = ControllerStates::new();
-        states.record("i1", 3, 256, 0, None);
-        states.record("i2", 1, 0, 0, None);
+        states.record("i1", 3, 256, 0, None, 1_000);
+        states.record("i2", 1, 0, 0, None, 1_000);
         assert_eq!(states.get("i1").unwrap().state, ControllerState::BusOff);
         assert_eq!(states.get("i2").unwrap().state, ControllerState::Active);
         assert_eq!(states.snapshot().len(), 2);
@@ -257,7 +293,7 @@ mod tests {
         // them — and flattening it into active is what made an
         // unplugged cable look like a healthy bus.
         let states = ControllerStates::new();
-        states.record("PCAN_USBBUS1", 5, 104, 0, None);
+        states.record("PCAN_USBBUS1", 5, 104, 0, None, 1_000);
         let got = states.get("PCAN_USBBUS1").unwrap();
         assert_eq!(got.state, ControllerState::Warning);
         assert_ne!(got.state, ControllerState::Active);
@@ -272,8 +308,8 @@ mod tests {
         // Collapsing them would have every backend python-can offers
         // vouch for a completeness it never measured.
         let states = ControllerStates::new();
-        states.record("virtual", 1, 0, 0, None);
-        states.record("PCAN_USBBUS1", 1, 0, 0, Some(0));
+        states.record("virtual", 1, 0, 0, None, 1_000);
+        states.record("PCAN_USBBUS1", 1, 0, 0, Some(0), 1_000);
         assert_eq!(states.get("virtual").unwrap().rx_overruns, None);
         assert_eq!(states.get("PCAN_USBBUS1").unwrap().rx_overruns, Some(0));
     }
@@ -283,8 +319,8 @@ mod tests {
         // The count is cumulative at the peer, so what is stored is the
         // newest total rather than a sum of the reports.
         let states = ControllerStates::new();
-        states.record("PCAN_USBBUS1", 1, 0, 0, Some(1));
-        states.record("PCAN_USBBUS1", 5, 104, 0, Some(4));
+        states.record("PCAN_USBBUS1", 1, 0, 0, Some(1), 1_000);
+        states.record("PCAN_USBBUS1", 5, 104, 0, Some(4), 2_000);
         let got = states.get("PCAN_USBBUS1").unwrap();
         assert_eq!(got.rx_overruns, Some(4));
         assert_eq!(got.state, ControllerState::Warning);
@@ -297,7 +333,7 @@ mod tests {
         // come back, and reporting one as the other would have the
         // panel promise a recovery that cannot happen.
         let states = ControllerStates::new();
-        states.record("PCAN_USBBUS1", 4, 0, 0, None);
+        states.record("PCAN_USBBUS1", 4, 0, 0, None, 1_000);
         assert_eq!(
             states.get("PCAN_USBBUS1").unwrap().state,
             ControllerState::Unavailable,

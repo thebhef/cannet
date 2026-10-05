@@ -106,6 +106,9 @@ pub fn run(
         speed_bps: cfg.speed_bps,
         fd_enabled: false,
         fd_data_speed_bps: 0,
+        // No error-row-cap setting in this harness (ADR 0060 rule 2);
+        // unset keeps the server's default (16).
+        error_row_cap: None,
     };
     let mut subs = vec![Subscription::new(&rx_iface, 0).with_config(pre)];
     if rx_iface != tx_iface {

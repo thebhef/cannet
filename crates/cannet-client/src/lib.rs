@@ -30,7 +30,25 @@
 //!   **corrects the frames it delivers by it** — so a `CanFrame` that
 //!   leaves this crate is stamped on the local host's clock whatever
 //!   the server's was doing. The measurement, and the correction
-//!   actually in force, are published on [`FrameReceiver::clock`].
+//!   actually in force, are published on [`FrameReceiver::clock`]. A
+//!   round whose best round-trip delay cannot be trusted, or a reply
+//!   that answers an earlier round than the one open now, is discarded
+//!   rather than applied (ADR 0060 rule 8).
+//! - [`controller`] / [`FrameReceiver::controllers`]: per-interface
+//!   ISO 11898-1 fault-confinement state and error counters, as the
+//!   peer's `InterfaceState` reports them, heartbeat timestamp
+//!   included so staleness is visible rather than silent.
+//! - [`episodes`] / [`FrameReceiver::episodes`]: per-interface
+//!   bus-error episodes, as the peer's sidecar reports them (ADR 0060
+//!   rule 1) — a bus fault is an event with a start, an end and
+//!   counts, not a row per error frame.
+//! - [`rejections`] / [`FrameReceiver::rejections`] and
+//!   [`FrameReceiver::tx_refusals`]: what the peer said about frames it
+//!   would not carry. The old per-frame path stays live for a peer that
+//!   predates ADR 0060's summarised `TxRefusals`.
+//! - [`dropped_frames`] / [`FrameReceiver::dropped_frames`]: spans of
+//!   frames the peer's bounded data lane evicted (ADR 0060 rule 3),
+//!   drained by whoever turns them into a durable record.
 //!
 //! Dropping the source aborts the worker thread's runtime, which cancels
 //! the gRPC stream and closes the connection.
@@ -73,6 +91,8 @@
 
 pub mod clock;
 pub mod controller;
+pub mod dropped_frames;
+pub mod episodes;
 pub mod rejections;
 pub mod tls;
 
@@ -95,8 +115,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::transport::{Channel, Endpoint};
 
-use crate::clock::{ClockSample, OffsetSlew, SessionClock};
+use crate::clock::{ClockSample, OffsetSlew, RoundOutcome, SessionClock};
 use crate::controller::ControllerStates;
+use crate::dropped_frames::FramesDropped;
+use crate::episodes::BusErrorEpisodes;
 use crate::tls::{CertPin, ObservedPin};
 
 /// Outgoing-envelope channel depth for the per-session request stream.
@@ -451,6 +473,11 @@ pub struct PreSubscribeConfig {
     /// FD data-phase bitrate in bits/s (only meaningful when
     /// `fd_enabled`). `0` means "same as `speed_bps`".
     pub fd_data_speed_bps: u64,
+    /// The error-row cap for this interface's session (ADR 0060 rule
+    /// 2): the sidecar forwards at most this many error frames of each
+    /// bus-error episode as trace rows and only counts the rest. `None`
+    /// means the server's default (16).
+    pub error_row_cap: Option<u32>,
 }
 
 /// One entry in a [`connect_and_subscribe`] subscription request.
@@ -695,6 +722,9 @@ pub fn connect_and_subscribe(
                 clock: ready.clock,
                 controllers: ready.controllers,
                 rejections: ready.rejections,
+                episodes: ready.episodes,
+                tx_refusals: ready.tx_refusals,
+                dropped_frames: ready.dropped_frames,
             },
             handle: SessionHandle {
                 shutdown_tx: Some(shutdown_tx),
@@ -730,6 +760,15 @@ struct SessionReady {
     /// Per-frame server errors, tallied by the worker as `Error`
     /// envelopes with a per-frame code arrive.
     rejections: rejections::PerFrameErrors,
+    /// Per-interface bus-error episodes, filled in as `BusErrorEpisode`
+    /// envelopes arrive (ADR 0060 rule 1).
+    episodes: BusErrorEpisodes,
+    /// Per-(interface, reason) refused-transmit tallies, filled in as
+    /// `TxRefusals` envelopes arrive (ADR 0060 rule 4).
+    tx_refusals: rejections::TxRefusals,
+    /// Per-interface dropped-frame spans, filled in as `FramesDropped`
+    /// envelopes arrive (ADR 0060 rule 3).
+    dropped_frames: FramesDropped,
 }
 
 /// The combined receive + shutdown handle returned by
@@ -779,6 +818,27 @@ impl RemoteCanFrameSource {
         self.receiver.rejections()
     }
 
+    /// Bus-error episodes the peer reported. See
+    /// [`FrameReceiver::episodes`].
+    #[must_use]
+    pub fn episodes(&self) -> &BusErrorEpisodes {
+        self.receiver.episodes()
+    }
+
+    /// Refused-transmit summaries the peer reported. See
+    /// [`FrameReceiver::tx_refusals`].
+    #[must_use]
+    pub fn tx_refusals(&self) -> &rejections::TxRefusals {
+        self.receiver.tx_refusals()
+    }
+
+    /// Dropped-frame spans the peer reported. See
+    /// [`FrameReceiver::dropped_frames`].
+    #[must_use]
+    pub fn dropped_frames(&self) -> &FramesDropped {
+        self.receiver.dropped_frames()
+    }
+
     /// Split into the shutdown handle, the receive half, and the
     /// transmit half. Drop the [`SessionHandle`] to disconnect; the
     /// [`FrameReceiver`] will observe end-of-stream on its next
@@ -816,6 +876,9 @@ pub struct FrameReceiver {
     clock: SessionClock,
     controllers: ControllerStates,
     rejections: rejections::PerFrameErrors,
+    episodes: BusErrorEpisodes,
+    tx_refusals: rejections::TxRefusals,
+    dropped_frames: FramesDropped,
 }
 
 impl FrameReceiver {
@@ -877,6 +940,42 @@ impl FrameReceiver {
     #[must_use]
     pub fn rejections(&self) -> &rejections::PerFrameErrors {
         &self.rejections
+    }
+
+    /// Bus-error episodes reported on this session (ADR 0060 rule 1):
+    /// the sidecar's own account of a fault, as an event with a start,
+    /// an end and counts rather than a row per error frame.
+    ///
+    /// Read-only and non-blocking, like [`Self::controllers`].
+    #[must_use]
+    pub fn episodes(&self) -> &BusErrorEpisodes {
+        &self.episodes
+    }
+
+    /// Refused-transmit summaries reported on this session (ADR 0060
+    /// rule 4): a peer new enough to batch refusals sends these instead
+    /// of one per-frame `Error{TX_REJECTED}`. See [`Self::rejections`]
+    /// for the older per-frame path, which stays live alongside this
+    /// one for a peer that predates it.
+    ///
+    /// Read-only and non-blocking, like [`Self::controllers`].
+    #[must_use]
+    pub fn tx_refusals(&self) -> &rejections::TxRefusals {
+        &self.tx_refusals
+    }
+
+    /// Dropped-frame spans reported on this session (ADR 0060 rule 3):
+    /// the peer's bounded data lane evicted these whole batches rather
+    /// than block or silently fall behind. Whoever reads this is
+    /// responsible for turning each span into a durable record --
+    /// [`FramesDropped::drain`](crate::dropped_frames::FramesDropped::drain)
+    /// is the consuming read that keeps a slow poller from seeing the
+    /// same span twice.
+    ///
+    /// Read-only and non-blocking, like [`Self::controllers`].
+    #[must_use]
+    pub fn dropped_frames(&self) -> &FramesDropped {
+        &self.dropped_frames
     }
 }
 
@@ -983,9 +1082,13 @@ impl SessionTransmitter {
     /// `speed_bps` is the nominal (arbitration-phase) bitrate.
     /// `fd_enabled` flips the interface into CAN-FD mode; when set,
     /// `fd_data_speed_bps` is the data-phase bitrate (a value of `0`
-    /// means "same as nominal"). The sidecar reconfigures the channel
-    /// by close+reopen, so live `FrameBatch` flow on this interface
-    /// resumes within a few hundred milliseconds.
+    /// means "same as nominal"). `error_row_cap` is the error-row cap
+    /// (ADR 0060 rule 2): at most this many error frames of each
+    /// bus-error episode become trace rows, with `None` meaning the
+    /// server's default (16). The sidecar reconfigures the channel by
+    /// close+reopen only when something other than the cap actually
+    /// changed, so live `FrameBatch` flow on this interface resumes
+    /// within a few hundred milliseconds.
     ///
     /// Conflict semantics across concurrent clients are whatever the
     /// underlying driver does on reopen (ADR 0022). Errors come back
@@ -998,6 +1101,7 @@ impl SessionTransmitter {
         speed_bps: u64,
         fd_enabled: bool,
         fd_data_speed_bps: u64,
+        error_row_cap: Option<u32>,
     ) -> Result<(), SessionClosed> {
         let envelope = Envelope {
             body: Some(Body::ConfigureBus(ConfigureBus {
@@ -1005,10 +1109,7 @@ impl SessionTransmitter {
                 speed_bps,
                 fd_data_speed_bps,
                 fd_enabled,
-                // Error-row cap (ADR 0060 rule 2): not exposed by this
-                // method yet, so unset — the server's default (16)
-                // applies. Exposing it is a later phase.
-                error_row_cap: None,
+                error_row_cap,
             })),
         };
         self.req_tx
@@ -1177,11 +1278,9 @@ async fn run_session(
                     speed_bps: cfg.speed_bps,
                     fd_data_speed_bps: cfg.fd_data_speed_bps,
                     fd_enabled: cfg.fd_enabled,
-                    // Error-row cap (ADR 0060 rule 2): no caller of
-                    // this crate sets one yet, so unset — the
-                    // server's default (16) applies. Exposing it is
-                    // a later phase.
-                    error_row_cap: None,
+                    // Error-row cap (ADR 0060 rule 2): the caller's
+                    // choice, unset meaning the server's default (16).
+                    error_row_cap: cfg.error_row_cap,
                 })),
             };
             if req_tx.send(envelope).await.is_err() {
@@ -1275,10 +1374,19 @@ async fn run_session(
     // Same shape, same reason: written by the `Error` arm below, read
     // through the session handle by whatever reports it.
     let rejections = rejections::PerFrameErrors::new();
+    // Same shape again (ADR 0060): written by the `BusErrorEpisode`,
+    // `TxRefusals` and `FramesDropped` arms below.
+    let episodes = BusErrorEpisodes::new();
+    let tx_refusals = rejections::TxRefusals::new();
+    let dropped_frames = FramesDropped::new();
     let mut slew = OffsetSlew::default();
     let mut clock_samples: Vec<ClockSample> = Vec::with_capacity(CLOCK_PROBE_COUNT);
     let mut probes_sent = 0usize;
     let mut rounds = clock::ProbeRounds::new();
+    // How many consecutive rounds in a row have been discarded for an
+    // untrustworthy δ (ADR 0060 rule 8): logged once per run, at
+    // `warn`, rather than once per round.
+    let mut discarded_delay_rounds: u32 = 0;
     let mut probe_spacing = tokio::time::interval(CLOCK_PROBE_SPACING);
     // Ticks accumulated while the branch is disabled between rounds
     // must not fire the next round's burst all at once with no spacing
@@ -1303,6 +1411,9 @@ async fn run_session(
                 clock: clock.clone(),
                 controllers: controllers.clone(),
                 rejections: rejections.clone(),
+                episodes: episodes.clone(),
+                tx_refusals: tx_refusals.clone(),
+                dropped_frames: dropped_frames.clone(),
             }));
         }
         ready_sent = true;
@@ -1326,6 +1437,7 @@ async fn run_session(
                     })
                     .is_ok()
                 {
+                    rounds.record_probe_sent(t1);
                     probes_sent += 1;
                 }
             }
@@ -1335,13 +1447,38 @@ async fn run_session(
             () = &mut probe_timer, if rounds.armed() => {
                 if rounds.in_round() {
                     // Whatever arrived is what the measurement rests
-                    // on; nothing at all is a silent round, which is
-                    // `Unsupported` only if the peer has never spoken.
-                    if let Some(measured) =
-                        clock.settle_round(&clock_samples, wall_clock_ns())
-                    {
-                        slew.retarget(measured.offset_ns);
-                        clock.publish_applied(slew.applied_ns());
+                    // on. `Measured` is the only outcome that retargets
+                    // the slew; `NoReplies` and `DelayExceeded` both
+                    // leave the last offset standing (ADR 0060 rule 8).
+                    // A run of delay-discarded rounds logs once, not
+                    // once per round.
+                    match clock.settle_round(&clock_samples, wall_clock_ns()) {
+                        RoundOutcome::Measured(measured) => {
+                            slew.retarget(measured.offset_ns);
+                            clock.publish_applied(slew.applied_ns());
+                            discarded_delay_rounds = 0;
+                        }
+                        RoundOutcome::NoReplies => {
+                            discarded_delay_rounds = 0;
+                        }
+                        RoundOutcome::DelayExceeded { delay_ns } => {
+                            discarded_delay_rounds += 1;
+                            if discarded_delay_rounds == 1 {
+                                tracing::warn!(
+                                    target: "cannet_client",
+                                    delay_ns,
+                                    "clock probe round discarded: round-trip delay \
+                                     exceeded the step threshold, last offset kept",
+                                );
+                            } else {
+                                tracing::debug!(
+                                    target: "cannet_client",
+                                    delay_ns,
+                                    discarded_delay_rounds,
+                                    "clock probe round discarded again (delay)",
+                                );
+                            }
+                        }
                     }
                 } else {
                     clock_samples.clear();
@@ -1415,6 +1552,9 @@ async fn run_session(
                                         clock: clock.clone(),
                                         controllers: controllers.clone(),
                                         rejections: rejections.clone(),
+                                        episodes: episodes.clone(),
+                                        tx_refusals: tx_refusals.clone(),
+                                        dropped_frames: dropped_frames.clone(),
                                     }));
                                 }
                                 ready_sent = true;
@@ -1468,7 +1608,11 @@ async fn run_session(
                         // t4 first: anything done before sampling it
                         // lands in the measured delay.
                         let t4 = wall_clock_ns();
-                        if rounds.in_round() {
+                        // Round correlation (ADR 0060 rule 8): a reply
+                        // whose t1 precedes this round's first probe
+                        // belongs to an earlier, already-closed round
+                        // and must not join this one's sample set.
+                        if rounds.reply_in_round(reply.t1) {
                             clock_samples.push(clock::sample(
                                 reply.t1, reply.t2, reply.t3, t4,
                             ));
@@ -1495,21 +1639,58 @@ async fn run_session(
                             state.tec,
                             state.rec,
                             state.rx_overruns,
+                            state.as_of_ns,
                         );
                     }
                     // Bus-fault reports (ADR 0060): the sidecar's
                     // episode, refusal-summary and dropped-frames
-                    // control-lane messages. Decoding these into the
-                    // per-interface state this crate exposes is not
-                    // implemented yet, so log-only rather than a silent
-                    // drop, since dropping a bus fault unremarked is
-                    // exactly what this ADR exists to stop.
-                    Some(
-                        Body::BusErrorEpisode(_) | Body::TxRefusals(_) | Body::FramesDropped(_),
-                    ) => {
-                        tracing::debug!(
-                            target: "cannet_client",
-                            "received a bus-fault report envelope with no consumer yet (ADR 0060)",
+                    // control-lane messages, folded into the
+                    // per-interface state `FrameReceiver::episodes`,
+                    // `::tx_refusals` and `::dropped_frames` read.
+                    Some(Body::BusErrorEpisode(episode)) => {
+                        let kind = episode.count_by_kind.unwrap_or_default();
+                        episodes.record(
+                            &episode.interface_id,
+                            episodes::BusErrorEpisode {
+                                seq: episode.seq,
+                                first_ns: episode.first_ns,
+                                last_ns: episode.last_ns,
+                                count: episode.count,
+                                count_by_kind: episodes::ErrorKindCounts {
+                                    ack: kind.ack,
+                                    bit: kind.bit,
+                                    form: kind.form,
+                                    stuff: kind.stuff,
+                                    crc: kind.crc,
+                                    other: kind.other,
+                                    unknown: kind.unknown,
+                                },
+                                tx_count: episode.tx_count,
+                                rx_count: episode.rx_count,
+                                tec: episode.tec,
+                                rec: episode.rec,
+                                open: episode.open,
+                            },
+                        );
+                    }
+                    Some(Body::TxRefusals(refusal)) => {
+                        tx_refusals.record(
+                            &refusal.interface_id,
+                            refusal.reason,
+                            refusal.count,
+                            refusal.first_ns,
+                            refusal.last_ns,
+                            &refusal.last_message,
+                            refusal.flush_count,
+                            refusal.last_flush_ns,
+                        );
+                    }
+                    Some(Body::FramesDropped(dropped)) => {
+                        dropped_frames.record(
+                            &dropped.interface_id,
+                            dropped.count,
+                            dropped.first_ns,
+                            dropped.last_ns,
                         );
                     }
                     // Subscribe / Unsubscribe round-trips (a peer
