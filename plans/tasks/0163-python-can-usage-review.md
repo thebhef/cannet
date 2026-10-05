@@ -167,6 +167,80 @@ stays at the top of the stack (owner, 2026-10-04).
   the regenerated stubs. Released binary built
   (`target/release/cannet-gui.exe`) via `tauri build --no-bundle`; no
   bench run (no behaviour change to measure).
+- 2026-10-04 — **phase 4 reported** (`task163-sidecar` `cc8c7b85` on
+  `task163-proto`; one commit, no pre-squash history). ADR 0060 rules
+  1–7 on the sidecar, no deviation from the ADR. Paths under
+  `servers/cannet-local-sidecar/cannet_local_sidecar/`.
+
+  | Item | Where |
+  |---|---|
+  | 1 episodes | new `server/episodes.py` (`EpisodeAccumulator`); fed by `_SharedInterface._note_error_frame` from `_rx_pump`, ticked in `_poll_state`; PEAK `_pcan_bus_error`, Vector FD via `handle_canfd_event` → `PythonCanChannel._pending_fd_error` / `classify_error` (`driver_python_can.py`); `drv.BusError` + optional `OpenChannel.classify_error` (`driver.py`) |
+  | 2 row cap | `EpisodeAccumulator.on_error`; `ConfigureBus.error_row_cap` → `helpers._configure_error_row_cap` → `_InterfaceRegistry.set_error_row_cap` (kept like configs, applied at next open) |
+  | 3 lanes | new `server/outbox.py` (`SessionOutbox`), used by `service.Session` (old `service.py:112` queue gone) |
+  | 4 refusals | `SessionOutbox.refuse` / `_report_due_locked`; `service._handle_tx`, `_SharedInterface._tx_pump`; `TxRejected.reason` (`driver.py`); D5 `_send_refusal_reason` |
+  | 5 cadence | `_STATE_POLL_INTERVAL_S` 0.25, `_STATE_HEARTBEAT_S` 1.0 in `_publish_state`; `as_of_ns` in `helpers._interface_state`; D10 `PythonCanChannel._pcan_recv_fault` (+ floor in `_pcan_state`) |
+  | 6 isolation | `_SharedInterface.transmit` → `put_nowait` (old `:300` 0.25 s blocking put gone) |
+  | 7 flush | `_SharedInterface._flush_if_queue_stuck` (after the silent-queue reopen, which now returns whether it acted); `PythonCanChannel.flush_tx` |
+  | 8 stats | `_rx_pump` stats tick: `errors=` `echoes=` / `offered=` `refused=` |
+
+  Constants: `_DATA_LANE_FRAMES_PER_INTERFACE` 10 000 (2a's figure);
+  `_LOG_LANE_MAX` 64 (4× the worst lifecycle burst: 8 interfaces × 2
+  lines); `_REFUSAL_REPORT_PERIOD_S` 0.25 **per interface** (all pending
+  reasons of an interface go out in one burst; the first refusal after
+  a quiet period goes at once); `_EPISODE_REPORTS_PER_INTERFACE` 2
+  (close of one + open of the next; a third folds the oldest);
+  `_EPISODE_CLOSE_AFTER_NS` 1 s (frames' clock, or 1 s monotonic since
+  the last error was read); `_DEFAULT_ERROR_ROW_CAP` 16;
+  `_STUCK_QUEUE_FLUSH_AFTER_S` 1.0 (also needs a queue-full refusal
+  inside the window, so stopped refusals are not flushed);
+  `_PCAN_RECV_FAULT_PAUSE_S` 0.01 (a latched bus-off answers every Read
+  at once; without it the rx loop would spin).
+
+  Measurements: lockstep (`tests/test_tx_isolation.py`, in-process,
+  A refusing after 5 ms, 800/s offered each) — **B 182/s before, 800/s
+  after**; over gRPC (slow harness) 800/s. Fault-load harness (slow,
+  2 interfaces, one run each):
+
+  | load | refusals | counted err f/s | rows | env/s | refusal env/s/if | ctl peak | data peak | sidecar CPU |
+  |---|---|---|---|---|---|---|---|---|
+  | 2×3.6 k | none | 7 134 | 32 | 10 | 0 | 2 | 16 | 25 % |
+  | 2×3.6 k | 1 602/s | 7 135 | 32 | 18 | 4.0 | 2 | 16 | 98 % |
+  | 2×7.2 k | none | 14 273 | 32 | 10 | 0 | 2 | 16 | 37 % |
+  | 2×7.2 k | 1 603/s | 14 275 | 32 | 18 | 4.0 | 2 | 16 | 110 % |
+
+  Reader paused 10 s with data frames (2×3.6 k f/s): sends reached the
+  channel at 1 572–1 628/s every second; data lane peaked at exactly
+  10 000/interface, 49 959 frames dropped and the same number reported
+  in `FramesDropped`; control peak 4; drained at once on resume.
+
+  Test changes that encode ADR 0060 rather than the old shape:
+  per-refusal `TX_REJECTED` → `TxRefusals`; "every clock probe gets its
+  own reply" → latest-wins when replies back up; bus-off/recovery
+  sequences now read the outbox between polls (state is latest-wins)
+  and collapse heartbeat repeats; "queue full while errors arrive is
+  left alone" → flushed, not reopened. `test_enumeration`'s
+  `_install_fake_driver_config` reached the real Vector `canlib` when an
+  earlier test had imported it (exposed by the new test file sorting
+  first) — now via `sys.modules`.
+  Checks (phase tier): ruff check / format --check / mypy / pytest
+  347 passed (sidecar); `pytest -m slow tests/test_fault_load.py` 3
+  passed (79 s); `cargo build -p cannet-gui` ok; comment-references
+  grep clean. Frontend, MDF oracle, sidecar freeze: skipped — the diff
+  touches only the sidecar's python, which none of them build or run
+  (freeze skipped also because its smoke step enumerates the PEAK
+  channels the owner is using). No release binary built (sidecar-only;
+  the frozen sidecar is not rebuilt without the freeze lane).
+
+  **Side effects for later phases:** (a) until phase 5 decodes the new
+  messages the host shows **no refusal tally** (refusals were `Error`
+  envelopes) and **no episodes**, and the trace holds ≤ 16 error rows
+  per episode — the bench should not be pointed at this branch alone;
+  (b) a backed-up closed episode folds into its successor, so the host
+  may never see seq N's closing report: phase 5/6 must treat a report
+  for seq M as closing every open seq < M on that interface;
+  (c) `ConfigureBus` still reopens the channel on every receipt, so a
+  host that resends it just to change `error_row_cap` (phase 6/7)
+  reopens a live bus — see the queue item.
 
 ### Phase 2a report (2026-10-04)
 
