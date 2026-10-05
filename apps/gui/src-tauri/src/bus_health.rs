@@ -1,28 +1,34 @@
 //! Bus health — the low-level state of each logical bus, which the app
 //! surfaced nowhere before.
 //!
-//! Three things live here, all of them host-side because they are
-//! computation over the frame stream and over the session's own state:
+//! Everything here is host-side because it is computation over what the
+//! peer reports and over the session's own state:
 //!
-//! - **Error tallies.** An error frame aborts the frame in flight, which
-//!   is then retransmitted, so a persistent physical fault yields error
-//!   → retransmit → error at roughly the bus's whole frame rate.
-//!   [`ErrorTallies`] counts them per bus as they arrive — the total, the
-//!   rate over the latest burst and the last error's instant the panel
-//!   shows — in state bounded by the bus count. **The frames themselves
-//!   are stored like any other frame**, and the timeline's bus-error
-//!   markers are read from them: each bus's error series is a
-//!   signal-cache pyramid, paged per window like any other series (ADR
-//!   0035, [`crate::signal_cache::SignalCacheStore::bus_error_windows`]).
-//!   Nothing here produces a timeline event.
+//! - **Bus-error episodes.** The sidecar counts a bus's error frames into
+//!   episodes and reports each one on the session's control lane (ADR
+//!   0060 rule 1); only the first few error frames of an episode are
+//!   rows. [`ingest_peer_reports`] reads the session's latest episode
+//!   reports on a 250 ms poll and folds them into the bus's
+//!   [`BusErrorReports`] — the total, the newest episode, its counts by
+//!   kind and its counters, which the panel shows — and into the bus's
+//!   error series in the signal cache, which the timeline's bus-error
+//!   events are read from (ADR 0035,
+//!   [`crate::signal_cache::SignalCacheStore::bus_error_windows`]). An
+//!   imported capture feeds the same store through the import builder
+//!   (`crate::session::run_pump`).
 //! - **Controller state.** `InterfaceState` — the ISO 11898-1
 //!   fault-confinement state, the transmit and receive error counters,
 //!   and the driver's count of receive overruns — arrives on the
-//!   session stream and is cached here per interface. The overrun count
-//!   is not a fault-confinement reading; it is the one number that says
+//!   session stream and is cached per interface. The overrun count is
+//!   not a fault-confinement reading; it is the one number that says
 //!   whether the capture is the whole of what the bus sent, and it is
 //!   optional because a backend that does not watch for receive loss
-//!   must not be read as one that watched and saw none.
+//!   must not be read as one that watched and saw none. The peer
+//!   republishes the reading every second with the instant it was taken
+//!   (ADR 0060 rule 5), so a reading that has stopped arriving reads as
+//!   **stale** rather than as unchanged ([`STALE_AFTER_NS`]); a
+//!   republish that moves nothing but that instant is not a change, and
+//!   does not repaint anything.
 //!   One reported state is not a fault-confinement state:
 //!   `unavailable`, which says the peer's driver can no longer reach
 //!   the interface. It is also the one that takes the bus's transmit
@@ -30,12 +36,23 @@
 //!   adapter fills the trace with frames no wire carried.
 //! - **Bus load.** Computed where the bitrate is known and reported as
 //!   absent where it is not; see [`load_percent`].
-//! - **Per-frame rejections.** What the peer said about frames it would
-//!   not carry (`TX_REJECTED` and its two siblings). The session tallies
-//!   them by code; this polls the tally and reports the movement as one
-//!   system message per session per poll, because a peer refusing at bus
-//!   rate produces thousands a second and a message each would be the
-//!   flood rather than the report of it. See [`rejection_reports`].
+//! - **Refused sends.** What the peer refused to put on the wire, per bus
+//!   and per reason — counts, the first and last refusal, the driver's
+//!   last words, and how often a stuck transmit queue was flushed (ADR
+//!   0060 rules 4 and 7). A peer that predates those summaries still
+//!   refuses with one per-frame `TX_REJECTED` each, which name no
+//!   interface; those are tallied per session and shown on every bus of
+//!   it, marked as such. Both are also reported to the System Messages
+//!   as one line per session per second ([`rejection_reports`]) — a
+//!   peer refusing at bus rate refuses thousands a second, and a message
+//!   each would be the flood rather than the report of it.
+//! - **Missed periods.** The periodic scheduler's count, per bus, of the
+//!   periods it did not offer — those that found no room in the
+//!   session's request channel and those a late tick skipped (ADR 0060
+//!   rule 6, ADR 0039 rule 2) — shown beside the refusals.
+//! - **Dropped-frames gaps.** The spans the peer's data lane dropped
+//!   rather than deliver late (ADR 0060 rule 3) become durable events in
+//!   the notes store ([`dropped_frames_note`]).
 //!
 //! The frontend joins these rows against the project's buses, which it
 //! owns: a bus the host has nothing to say about is absent from the map
@@ -45,121 +62,53 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use cannet_client::episodes::BusErrorEpisode;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
+use crate::bus_error_episodes::{BusErrorReports, ReportedEpisode};
 use crate::connection_state::AppliedBusConfig;
+use crate::ipc::ErrorKindTally;
+use crate::notes::{EventKind, Note};
 
-/// How often the host republishes the health rows. A fault at bus frame
-/// rate moves the count thousands of times a second, so the cadence is
-/// the readout's, not the bus's — the same once-a-second poll the clock
-/// status uses.
-const BUS_HEALTH_POLL: Duration = Duration::from_secs(1);
+/// How often the host reads what the peers reported and republishes the
+/// health rows. The sidecar republishes an open episode and the
+/// controller state every 250 ms (ADR 0060 rule 5); polling at the same
+/// cadence keeps a fault on screen within about a second of the wire.
+/// The rows are only emitted when they have moved.
+const FAULT_POLL: Duration = Duration::from_millis(250);
 
-/// Errors closer together than this — in **frame time**, so an import
-/// reads the same as a live session — are one burst for the panel's
-/// **error rate**, which is the rate over the bus's most recent burst: a
-/// fault at bus frame rate produces thousands per second, and a rate
-/// averaged across a quiet hour between two faults would say nothing
-/// about either.
-///
-/// This is the panel's readout and nothing else. The timeline's bus-error
-/// markers are not bursts: they are the bus's error series, served by the
-/// signal cache and thinned by pyramid level
-/// ([`crate::signal_cache::SignalCacheStore::bus_error_windows`]).
-pub(crate) const RATE_BURST_GAP_NS: u64 = 1_000_000_000;
+/// How many [`FAULT_POLL`]s between two refusal reports to the System
+/// Messages — once a second, the readout's cadence rather than the bus's.
+const REFUSAL_REPORT_EVERY: u32 = 4;
 
-/// One bus's error tally: every error frame seen on it, and the burst the
-/// panel's rate and "last error" read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BusErrorTally {
-    /// Every error frame seen on the bus this session.
-    pub(crate) total: u64,
-    /// Frame time of the current burst's first error.
-    pub(crate) burst_first_ts_ns: u64,
-    /// Frame time of the most recent error.
-    pub(crate) last_ts_ns: u64,
-    /// Errors in the current burst.
-    pub(crate) burst_count: u64,
+/// A controller reading older than this has stopped arriving: the peer
+/// republishes it every second (ADR 0060 rule 5), so three missed
+/// heartbeats is a reading nobody is refreshing.
+pub(crate) const STALE_AFTER_NS: u64 = 3_000_000_000;
+
+/// A peer timestamp on this host's clock: the session's applied clock
+/// offset taken off, exactly as the client corrects a frame's timestamp
+/// (ADR 0046), so a report and the frames it describes share one
+/// timeline.
+pub(crate) fn to_host_ns(peer_ns: u64, applied_offset_ns: i64) -> u64 {
+    u64::try_from(
+        (i128::from(peer_ns) - i128::from(applied_offset_ns)).clamp(0, i128::from(u64::MAX)),
+    )
+    .unwrap_or(u64::MAX)
 }
 
-impl BusErrorTally {
-    /// Errors per second averaged over the current burst's own span.
-    /// `0.0` for a burst that has not yet spanned any time — one error
-    /// carries a count, not a rate.
-    #[allow(clippy::cast_precision_loss)]
-    pub(crate) fn rate(&self) -> f64 {
-        let span = self.last_ts_ns.saturating_sub(self.burst_first_ts_ns) as f64 / 1e9;
-        if span <= 0.0 {
-            return 0.0;
-        }
-        self.burst_count as f64 / span
-    }
+/// One kind of refusal, counted for the System Messages report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RefusalCount {
+    /// The reason, worded for a reader.
+    pub(crate) what: &'static str,
+    pub(crate) count: u64,
+    pub(crate) last_message: String,
 }
 
-/// Every error frame the ingest path sees, tallied per bus. Bounded by
-/// the number of buses, whatever the capture holds. Pure — no clock, no
-/// locks, no Tauri — so the tallying rule is testable on its own.
-#[derive(Debug, Default)]
-pub(crate) struct ErrorTallies {
-    buses: BTreeMap<String, BusErrorTally>,
-}
-
-impl ErrorTallies {
-    /// Count one error frame on `bus_id`, stamped `ts_ns`.
-    pub(crate) fn observe(&mut self, bus_id: &str, ts_ns: u64) {
-        match self.buses.get_mut(bus_id) {
-            Some(tally) => {
-                tally.total += 1;
-                if ts_ns.saturating_sub(tally.last_ts_ns) <= RATE_BURST_GAP_NS {
-                    tally.burst_count += 1;
-                } else {
-                    tally.burst_first_ts_ns = ts_ns;
-                    tally.burst_count = 1;
-                }
-                tally.last_ts_ns = tally.last_ts_ns.max(ts_ns);
-            }
-            None => {
-                self.buses.insert(
-                    bus_id.to_string(),
-                    BusErrorTally {
-                        total: 1,
-                        burst_first_ts_ns: ts_ns,
-                        last_ts_ns: ts_ns,
-                        burst_count: 1,
-                    },
-                );
-            }
-        }
-    }
-
-    /// `bus_id`'s tally, or `None` for a bus that has seen no error.
-    pub(crate) fn get(&self, bus_id: &str) -> Option<&BusErrorTally> {
-        self.buses.get(bus_id)
-    }
-
-    /// Every error seen on `bus_id` this session.
-    pub(crate) fn total(&self, bus_id: &str) -> u64 {
-        self.get(bus_id).map_or(0, |t| t.total)
-    }
-
-    /// The buses that have seen an error, in order.
-    pub(crate) fn buses(&self) -> impl Iterator<Item = &str> {
-        self.buses.keys().map(String::as_str)
-    }
-
-    #[allow(dead_code)] // read by tests
-    pub(crate) fn is_empty(&self) -> bool {
-        self.buses.is_empty()
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.buses.clear();
-    }
-}
-
-/// One coalesced report of what a peer refused since the last poll.
+/// One coalesced report of what a peer refused since the last report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RejectionReport {
     /// The session's address, so a reader knows which peer refused.
@@ -168,7 +117,7 @@ pub(crate) struct RejectionReport {
     pub(crate) since_last: u64,
     /// How many this session has seen in total.
     pub(crate) total: u64,
-    /// The codes and the newest message each carried, already worded.
+    /// The reasons and the newest message each carried, already worded.
     pub(crate) detail: String,
 }
 
@@ -185,8 +134,8 @@ impl RejectionReport {
     }
 }
 
-/// Coalesce each session's per-frame-error tally into at most one
-/// report, and remember what has been reported.
+/// Coalesce each session's refusal counts into at most one report, and
+/// remember what has been reported.
 ///
 /// `reported` is the caller's running record of each session's last
 /// reported total; it is updated in place, and sessions that have gone
@@ -195,7 +144,7 @@ impl RejectionReport {
 /// has not moved produces nothing — silence means the peer is carrying
 /// what it is given, which is the case that must not generate traffic.
 pub(crate) fn rejection_reports(
-    current: &BTreeMap<String, Vec<cannet_client::rejections::RejectionTally>>,
+    current: &BTreeMap<String, Vec<RefusalCount>>,
     reported: &mut BTreeMap<String, u64>,
 ) -> Vec<RejectionReport> {
     reported.retain(|address, _| current.contains_key(address));
@@ -222,17 +171,17 @@ pub(crate) fn rejection_reports(
     out
 }
 
-/// The codes a session reported, worded for a reader: each code named
-/// as it means rather than as the proto spells it, with its count and
-/// the newest message the peer sent with it.
-fn describe_tallies(tallies: &[cannet_client::rejections::RejectionTally]) -> String {
+/// The reasons a session reported, worded for a reader: each named as it
+/// means rather than as the proto spells it, with its count and the
+/// newest message the peer sent with it.
+fn describe_tallies(tallies: &[RefusalCount]) -> String {
     tallies
         .iter()
         .map(|t| {
             if t.last_message.is_empty() {
-                format!("{} ×{}", t.code.as_str(), t.count)
+                format!("{} ×{}", t.what, t.count)
             } else {
-                format!("{} ×{} ({})", t.code.as_str(), t.count, t.last_message)
+                format!("{} ×{} ({})", t.what, t.count, t.last_message)
             }
         })
         .collect::<Vec<_>>()
@@ -266,6 +215,95 @@ pub(crate) struct ControllerHealth {
     /// many an overrun swallowed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) rx_overruns: Option<u64>,
+    /// When the peer took this reading, on this host's clock (ADR 0060
+    /// rule 5). `None` for a peer that does not stamp its readings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) as_of_ns: Option<u64>,
+    /// The reading is older than [`STALE_AFTER_NS`]: the peer has stopped
+    /// refreshing it, so it says what the controller *was*. Never set for
+    /// a reading with no `as_of_ns`.
+    pub(crate) stale: bool,
+}
+
+/// A bus's newest bus-error episode, as the health row shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ErrorEpisodeHealth {
+    /// No closing report has arrived for it: the fault is on now.
+    pub(crate) ongoing: bool,
+    pub(crate) first_ts_ns: u64,
+    pub(crate) last_ts_ns: u64,
+    pub(crate) count: u64,
+    /// What each vendor can tell apart; `ack` names a pulled cable.
+    pub(crate) count_by_kind: ErrorKindTally,
+    /// Errors seen while transmitting / while receiving, where the
+    /// vendor says.
+    pub(crate) tx_count: u64,
+    pub(crate) rx_count: u64,
+    /// The error counters as of its latest error.
+    pub(crate) tec: u32,
+    pub(crate) rec: u32,
+}
+
+impl From<&ReportedEpisode> for ErrorEpisodeHealth {
+    fn from(e: &ReportedEpisode) -> Self {
+        Self {
+            ongoing: e.open,
+            first_ts_ns: e.first_ns,
+            last_ts_ns: e.last_ns,
+            count: e.count,
+            count_by_kind: e.count_by_kind.into(),
+            tx_count: e.tx_count,
+            rx_count: e.rx_count,
+            tec: e.tec,
+            rec: e.rec,
+        }
+    }
+}
+
+/// One reason a bus's sends were refused, summed over the session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BusRefusal {
+    /// `"queueFull"`, `"closed"`, `"listenOnly"`, `"incompatible"`,
+    /// `"other"` (ADR 0060 rule 4) — or, from a peer that predates those
+    /// summaries, `"txRejected"`, `"notSubscribed"`, `"noAcknowledger"`.
+    pub(crate) reason: &'static str,
+    /// The reason worded for a reader.
+    pub(crate) reason_text: &'static str,
+    pub(crate) count: u64,
+    /// The first and latest refusal, on this host's clock. Absent for a
+    /// per-frame refusal, which carries no time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_ns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_ns: Option<u64>,
+    /// The driver's own words for the latest refusal, where it gave any.
+    pub(crate) last_message: String,
+    /// Counted for the whole session rather than for this bus: a
+    /// per-frame refusal names no interface, so it is shown on every bus
+    /// the session carries.
+    pub(crate) session_wide: bool,
+}
+
+/// The periods the periodic scheduler did not offer on a bus (ADR 0060
+/// rule 6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MissedPeriods {
+    /// No room in the session's request channel: the period was not
+    /// prepared and its counters were not stepped.
+    pub(crate) no_room: u64,
+    /// A tick ran late past one or more whole periods, which are dropped
+    /// rather than burst (ADR 0039 rule 2).
+    pub(crate) late: u64,
+}
+
+/// Which way a period was missed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MissedPeriod {
+    NoRoom,
+    Late,
 }
 
 /// What one bus's row in the health panel is built from. Only buses the
@@ -281,18 +319,31 @@ pub(crate) struct BusHealthRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) controller: Option<ControllerHealth>,
     /// Percentage of the wire in use, or `None` where the bitrate is
-    /// not known — never estimated from an unknown one.
+    /// not known — never estimated from an unknown one. Error frames are
+    /// not in it (ADR 0060 rule 2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) load_percent: Option<f64>,
-    /// Every error frame seen on this bus this session.
+    /// Every error frame the bus's episodes have counted this session.
     pub(crate) error_count: u64,
-    /// Errors per second over the most recent burst's own span
-    /// ([`RATE_BURST_GAP_NS`]).
+    /// Errors per second over the newest episode's own span.
     pub(crate) error_rate: f64,
     /// Frame-time instant of the most recent error, or `None` for a bus
     /// that has seen none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) last_error_ts_ns: Option<u64>,
+    /// The newest bus-error episode, ongoing or not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) error_episode: Option<ErrorEpisodeHealth>,
+    /// What the peer refused to send on this bus, one entry per reason.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) refusals: Vec<BusRefusal>,
+    /// Transmit-queue flushes the peer reported for this bus (ADR 0060
+    /// rule 7), and when the latest was, on this host's clock.
+    pub(crate) flush_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_flush_ns: Option<u64>,
+    /// Periods the scheduler did not offer on this bus.
+    pub(crate) missed_periods: MissedPeriods,
 }
 
 /// Bus load as a percentage of the wire, or `None` where it cannot be
@@ -332,53 +383,280 @@ pub(crate) fn load_percent(
 /// `ConnectionStates` is: it is the session's low-level status, not part
 /// of the trace model.
 ///
-/// The **controller** side of bus health is deliberately not held here:
-/// it lives on the session that reported it
-/// (`RemoteSession::controllers`), so a disconnect takes it with the
-/// session rather than leaving a stale reading behind that looks like a
-/// live one.
+/// The **controller** and **refusal** sides of bus health are
+/// deliberately not held here: they live on the session that reported
+/// them (`RemoteSession`), so a disconnect takes them with the session
+/// rather than leaving a stale reading behind that looks like a live one.
 #[derive(Default)]
 pub struct BusHealth {
-    errors: Mutex<ErrorTallies>,
+    reports: Mutex<BusErrorReports>,
+    missed: Mutex<BTreeMap<String, MissedPeriods>>,
 }
 
 impl BusHealth {
-    /// Count one error frame.
-    pub(crate) fn observe_error(&self, bus_id: &str, ts_ns: u64) {
-        self.errors().observe(bus_id, ts_ns);
+    pub(crate) fn reports(&self) -> std::sync::MutexGuard<'_, BusErrorReports> {
+        self.reports
+            .lock()
+            .expect("bus health reports mutex poisoned")
     }
 
-    pub(crate) fn errors(&self) -> std::sync::MutexGuard<'_, ErrorTallies> {
-        self.errors
+    /// Count `n` periods the scheduler did not offer on `bus_id`.
+    pub(crate) fn record_missed(&self, bus_id: &str, kind: MissedPeriod, n: u64) {
+        if n == 0 {
+            return;
+        }
+        let mut missed = self.missed.lock().expect("missed periods mutex poisoned");
+        let entry = missed.entry(bus_id.to_string()).or_default();
+        match kind {
+            MissedPeriod::NoRoom => entry.no_room += n,
+            MissedPeriod::Late => entry.late += n,
+        }
+    }
+
+    /// Every bus's missed periods so far.
+    pub(crate) fn missed(&self) -> BTreeMap<String, MissedPeriods> {
+        self.missed
             .lock()
-            .expect("bus health errors mutex poisoned")
+            .expect("missed periods mutex poisoned")
+            .clone()
     }
 
     /// Drop everything — a capture clear or an Open Capture starts a new
     /// session, and a tally of the previous one has nothing to count any
     /// more.
     pub(crate) fn clear(&self) {
-        self.errors().clear();
+        self.reports().clear();
+        self.missed
+            .lock()
+            .expect("missed periods mutex poisoned")
+            .clear();
     }
 }
 
-/// Which logical bus each wire interface with a reported controller
-/// state belongs to, folded across every open session.
+/// Fold one bus-error episode report into `bus`'s record and its error
+/// series — the one path the live poll and the import builder share
+/// (ADR 0060). A bus the reports have not seen yet starts from the total
+/// its series already holds, so a capture restored with its series
+/// counts on rather than stepping back.
+pub(crate) fn record_episode(
+    state: &AppState,
+    health: &BusHealth,
+    bus: &str,
+    source: &str,
+    report: &BusErrorEpisode,
+) {
+    let mut reports = health.reports();
+    reports.seed(bus, || state.signal_caches.bus_error_total(bus));
+    let points = reports.apply(bus, source, report);
+    drop(reports);
+    state.signal_caches.record_bus_errors(bus, &points);
+}
+
+/// The report-store source a live session's interface reports under:
+/// the session's own number as well as its address, since an episode's
+/// seq means something only within the session that reported it.
+/// Prefixed so a source that has gone can be told from an import's.
+pub(crate) fn live_source(session_id: u64, address: &str, interface_id: &str) -> String {
+    format!("{LIVE_SOURCE_PREFIX}{session_id}:{address}#{interface_id}")
+}
+
+const LIVE_SOURCE_PREFIX: &str = "live:";
+
+/// The poll's memory of what it has folded in, per live source: the
+/// newest episode it applied, by seq and count — so an unchanged
+/// snapshot costs nothing.
+pub(crate) type AppliedEpisodes = BTreeMap<String, (u64, u64, u64, bool)>;
+
+/// The one durable event a dropped-frames span becomes (ADR 0060 rule 3):
+/// a `droppedFrames` event at the span's first frame on `bus`, saying how
+/// many frames and over what span. Its id is stable in the bus and the
+/// span's start, so the same span is never recorded twice.
+pub(crate) fn dropped_frames_note(bus: &str, count: u64, first_ns: u64, last_ns: u64) -> Note {
+    #[allow(clippy::cast_precision_loss)]
+    let span_s = last_ns.saturating_sub(first_ns) as f64 / 1e9;
+    Note {
+        id: format!("dropped-frames:{bus}:{first_ns}"),
+        timestamp_ns: first_ns,
+        label: format!("{count} frames dropped on {bus}"),
+        kind: EventKind::DroppedFrames,
+        color: None,
+        description: Some(format!(
+            "The server dropped {count} frames on {bus} over {span_s:.3} s rather than \
+             deliver them late: this capture holds none of them."
+        )),
+        tag: None,
+        commented_event_type: None,
+        subjects: Vec::new(),
+        unknown_block_lines: Vec::new(),
+    }
+}
+
+/// Read every open session's peer reports once: fold new bus-error
+/// episode reports into `health` and the error series, and drain new
+/// dropped-frame spans into durable events. Returns the events added,
+/// so the caller can announce them.
+///
+/// Interface → bus by the session's own mapping, read now, as every
+/// other bus-health reading is. A session that has gone closes whatever
+/// episode it still held open.
+pub(crate) fn ingest_peer_reports(
+    state: &AppState,
+    health: &BusHealth,
+    applied: &mut AppliedEpisodes,
+) -> Vec<Note> {
+    let mut episodes: Vec<(String, String, BusErrorEpisode)> = Vec::new();
+    let mut gaps: Vec<Note> = Vec::new();
+    let mut live: Vec<String> = Vec::new();
+    {
+        let sessions = state.remote_sessions();
+        for (address, session) in sessions.iter() {
+            let Some(peer) = session.peer.as_ref() else {
+                continue;
+            };
+            let offset = session
+                .clock
+                .as_ref()
+                .map_or(0, cannet_client::clock::SessionClock::applied_offset_ns);
+            let mut drained = peer.dropped_frames.drain();
+            for (channel, bus) in &session.channel_to_bus {
+                let Some((_, interface_id)) = session
+                    .channel_to_interface
+                    .iter()
+                    .find(|(c, _)| c == channel)
+                else {
+                    continue;
+                };
+                let source = live_source(peer.session_id, address, interface_id);
+                live.push(source.clone());
+                if let Some(snapshot) = peer.episodes.get(interface_id) {
+                    let mut reports: Vec<BusErrorEpisode> = snapshot.recent_closed;
+                    reports.extend(snapshot.open);
+                    reports.sort_by_key(|r| r.seq);
+                    for mut report in fresh_reports(applied, &source, reports) {
+                        report.first_ns = to_host_ns(report.first_ns, offset);
+                        report.last_ns = to_host_ns(report.last_ns, offset);
+                        episodes.push((bus.clone(), source.clone(), report));
+                    }
+                }
+                for span in drained.remove(interface_id).unwrap_or_default() {
+                    gaps.push(dropped_frames_note(
+                        bus,
+                        span.count,
+                        to_host_ns(span.first_ns, offset),
+                        to_host_ns(span.last_ns, offset),
+                    ));
+                }
+            }
+        }
+    }
+    applied.retain(|source, _| live.contains(source));
+    for (bus, source, report) in &episodes {
+        record_episode(state, health, bus, source, report);
+    }
+    {
+        let mut reports = health.reports();
+        for source in reports.open_sources() {
+            if source.starts_with(LIVE_SOURCE_PREFIX) && !live.contains(&source) {
+                reports.close_source(&source);
+            }
+        }
+    }
+    gaps.into_iter()
+        .filter(|note| state.notes.add(note.clone()).is_some())
+        .collect()
+}
+
+/// The reports in `snapshot` (ascending seq) that `source` has not yet
+/// had folded in, updating `applied` to the newest.
+fn fresh_reports(
+    applied: &mut AppliedEpisodes,
+    source: &str,
+    snapshot: Vec<BusErrorEpisode>,
+) -> Vec<BusErrorEpisode> {
+    let Some(newest) = snapshot.last().copied() else {
+        return Vec::new();
+    };
+    let held = applied.get(source).copied();
+    let fresh: Vec<BusErrorEpisode> = snapshot
+        .into_iter()
+        .filter(|r| match held {
+            Some((seq, count, last_ns, open)) => {
+                r.seq > seq
+                    || (r.seq == seq && (r.count, r.last_ns, r.open) != (count, last_ns, open))
+            }
+            None => true,
+        })
+        .collect();
+    applied.insert(
+        source.to_string(),
+        (newest.seq, newest.count, newest.last_ns, newest.open),
+    );
+    fresh
+}
+
+/// What the open sessions say about each bus they carry: the
+/// controllers' readings and what the peers refused.
+#[derive(Debug, Default)]
+pub(crate) struct SessionReadings {
+    pub(crate) controllers: BTreeMap<String, ControllerHealth>,
+    pub(crate) refusals: BTreeMap<String, Vec<BusRefusal>>,
+    /// `(flushes, latest flush)` per bus.
+    pub(crate) flushes: BTreeMap<String, (u64, Option<u64>)>,
+}
+
+/// The machine key and the words for a refusal reason.
+fn refusal_reason(reason: cannet_client::rejections::TxRefusalReason) -> &'static str {
+    use cannet_client::rejections::TxRefusalReason as R;
+    match reason {
+        R::QueueFull => "queueFull",
+        R::Closed => "closed",
+        R::ListenOnly => "listenOnly",
+        R::Incompatible => "incompatible",
+        R::Other => "other",
+    }
+}
+
+/// The machine key for a per-frame code from a peer that predates the
+/// refusal summaries.
+fn per_frame_reason(code: cannet_client::rejections::PerFrameError) -> &'static str {
+    use cannet_client::rejections::PerFrameError as E;
+    match code {
+        E::TxRejected => "txRejected",
+        E::NotSubscribed => "notSubscribed",
+        E::NoAcknowledger => "noAcknowledger",
+    }
+}
+
+/// Read every open session's controller reports and refusal tallies,
+/// attributed to the buses they carry, as of `now_ns` on this host's
+/// clock.
 ///
 /// The mapping is the session's own (`channel -> interface`, `channel ->
 /// bus`), read at the moment the row is built rather than cached, so a
-/// rebinding cannot leave a controller attributed to the bus it used to
+/// rebinding cannot leave a reading attributed to the bus it used to
 /// serve. A session with no controller map at all — the in-process
 /// virtual bus — contributes nothing, which is the honest answer for a
 /// bus that has no controller.
-pub(crate) fn controllers_by_bus(
+pub(crate) fn session_readings(
     sessions: &std::collections::HashMap<String, crate::session::RemoteSession>,
-) -> BTreeMap<String, ControllerHealth> {
-    let mut out = BTreeMap::new();
+    now_ns: u64,
+) -> SessionReadings {
+    let mut out = SessionReadings::default();
     for session in sessions.values() {
-        let Some(states) = session.controllers.as_ref() else {
-            continue;
-        };
+        let offset = session
+            .clock
+            .as_ref()
+            .map_or(0, cannet_client::clock::SessionClock::applied_offset_ns);
+        let tx_refusals = session
+            .peer
+            .as_ref()
+            .map(|p| p.tx_refusals.snapshot())
+            .unwrap_or_default();
+        let per_frame = session
+            .rejections
+            .as_ref()
+            .map(cannet_client::rejections::PerFrameErrors::snapshot)
+            .unwrap_or_default();
         for (channel, bus_id) in &session.channel_to_bus {
             let Some((_, interface_id)) = session
                 .channel_to_interface
@@ -387,68 +665,161 @@ pub(crate) fn controllers_by_bus(
             else {
                 continue;
             };
-            if let Some(status) = states.get(interface_id) {
-                out.insert(
+            if let Some(status) = session
+                .controllers
+                .as_ref()
+                .and_then(|s| s.get(interface_id))
+            {
+                let as_of_ns = (status.as_of_ns > 0).then(|| to_host_ns(status.as_of_ns, offset));
+                out.controllers.insert(
                     bus_id.clone(),
                     ControllerHealth {
                         state: status.state.as_str(),
                         tec: status.tec,
                         rec: status.rec,
                         rx_overruns: status.rx_overruns,
+                        as_of_ns,
+                        stale: as_of_ns.is_some_and(|t| now_ns.saturating_sub(t) > STALE_AFTER_NS),
                     },
                 );
+            }
+            let mut refusals: Vec<BusRefusal> = Vec::new();
+            let mut flushes = (0u64, None::<u64>);
+            for t in tx_refusals
+                .iter()
+                .filter(|t| &t.interface_id == interface_id)
+            {
+                refusals.push(BusRefusal {
+                    reason: refusal_reason(t.reason),
+                    reason_text: t.reason.as_str(),
+                    count: t.count,
+                    first_ns: Some(to_host_ns(t.first_ns, offset)),
+                    last_ns: Some(to_host_ns(t.last_ns, offset)),
+                    last_message: t.last_message.clone(),
+                    session_wide: false,
+                });
+                flushes.0 += t.flush_count;
+                if t.flush_count > 0 {
+                    let at = to_host_ns(t.last_flush_ns, offset);
+                    flushes.1 = Some(flushes.1.map_or(at, |f| f.max(at)));
+                }
+            }
+            for t in per_frame.iter().filter(|t| t.count > 0) {
+                refusals.push(BusRefusal {
+                    reason: per_frame_reason(t.code),
+                    reason_text: t.code.as_str(),
+                    count: t.count,
+                    first_ns: None,
+                    last_ns: None,
+                    last_message: t.last_message.clone(),
+                    session_wide: true,
+                });
+            }
+            if !refusals.is_empty() {
+                out.refusals.insert(bus_id.clone(), refusals);
+            }
+            if flushes.0 > 0 {
+                out.flushes.insert(bus_id.clone(), flushes);
             }
         }
     }
     out
 }
 
+/// Everything [`health_rows`] builds the rows from, read at one instant.
+pub(crate) struct HealthInputs<'a> {
+    pub(crate) readings: &'a SessionReadings,
+    pub(crate) applied: &'a BTreeMap<String, AppliedBusConfig>,
+    /// `(bus, arbitration bits/s, data bits/s)`, error frames excluded.
+    pub(crate) bits_by_bus: &'a [(String, f64, f64)],
+    pub(crate) mapped_buses: &'a [String],
+    pub(crate) reports: &'a BusErrorReports,
+    pub(crate) missed: &'a BTreeMap<String, MissedPeriods>,
+}
+
 /// Build the per-bus rows the health panel renders, for every bus the
 /// host has something to say about.
 ///
-/// A bus is included when a session maps it *or* when it has seen an
-/// error. Everything else is left out on purpose: the frontend walks the
-/// project's own bus list and renders an em dash for a bus with no row,
-/// which is what keeps "we cannot know" distinct from a zero.
-pub(crate) fn health_rows(
-    controllers: &BTreeMap<String, ControllerHealth>,
-    applied: &BTreeMap<String, AppliedBusConfig>,
-    bits_by_bus: &[(String, f64, f64)],
-    mapped_buses: &[String],
-    errors: &ErrorTallies,
-) -> BTreeMap<String, BusHealthRecord> {
-    let mut buses: Vec<&str> = mapped_buses.iter().map(String::as_str).collect();
-    buses.extend(errors.buses());
-    buses.extend(applied.keys().map(String::as_str));
+/// A bus is included when a session maps it, when it has reported an
+/// error episode, when the host configured it, or when the scheduler
+/// missed a period on it. Everything else is left out on purpose: the
+/// frontend walks the project's own bus list and renders an em dash for
+/// a bus with no row, which is what keeps "we cannot know" distinct from
+/// a zero.
+pub(crate) fn health_rows(inputs: &HealthInputs<'_>) -> BTreeMap<String, BusHealthRecord> {
+    let mut buses: Vec<&str> = inputs.mapped_buses.iter().map(String::as_str).collect();
+    buses.extend(inputs.reports.buses());
+    buses.extend(inputs.applied.keys().map(String::as_str));
+    buses.extend(inputs.missed.keys().map(String::as_str));
     buses.sort_unstable();
     buses.dedup();
     buses
         .into_iter()
         .map(|bus_id| {
-            let tally = errors.get(bus_id);
+            let latest = inputs.reports.latest(bus_id);
             // Absent bits are a genuine zero, not a missing reading: the
             // bus is configured, so the denominator is known and nothing
             // going over the wire *is* the answer. That is what makes a
             // bus-off row read 0 % where an unconfigurable one reads
             // nothing at all.
-            let (arb_bits, data_bits) = bits_by_bus
+            let (arb_bits, data_bits) = inputs
+                .bits_by_bus
                 .iter()
                 .find(|(b, _, _)| b == bus_id)
                 .map_or((0.0, 0.0), |(_, a, d)| (*a, *d));
+            let (flush_count, last_flush_ns) = inputs
+                .readings
+                .flushes
+                .get(bus_id)
+                .copied()
+                .unwrap_or((0, None));
             (
                 bus_id.to_string(),
                 BusHealthRecord {
-                    controller: controllers.get(bus_id).copied(),
-                    load_percent: applied.get(bus_id).and_then(|cfg| {
+                    controller: inputs.readings.controllers.get(bus_id).copied(),
+                    load_percent: inputs.applied.get(bus_id).and_then(|cfg| {
                         load_percent(arb_bits, data_bits, cfg.speed_bps, cfg.fd_data_speed_bps)
                     }),
-                    error_count: errors.total(bus_id),
-                    error_rate: tally.map_or(0.0, BusErrorTally::rate),
-                    last_error_ts_ns: tally.map(|t| t.last_ts_ns),
+                    error_count: inputs.reports.total(bus_id),
+                    error_rate: latest.map_or(0.0, ReportedEpisode::rate),
+                    last_error_ts_ns: latest.map(|e| e.last_ns),
+                    error_episode: latest.map(ErrorEpisodeHealth::from),
+                    refusals: inputs
+                        .readings
+                        .refusals
+                        .get(bus_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    flush_count,
+                    last_flush_ns,
+                    missed_periods: inputs.missed.get(bus_id).copied().unwrap_or_default(),
                 },
             )
         })
         .collect()
+}
+
+/// Whether two sets of rows differ in anything but the instant their
+/// controller readings were taken. The peer republishes an unchanged
+/// reading every second (ADR 0060 rule 5); that heartbeat is what makes
+/// staleness visible, and a reading going stale *is* a change, but a
+/// fresh copy of the same reading is not one worth a repaint.
+pub(crate) fn rows_changed(
+    a: &BTreeMap<String, BusHealthRecord>,
+    b: &BTreeMap<String, BusHealthRecord>,
+) -> bool {
+    let strip = |rows: &BTreeMap<String, BusHealthRecord>| {
+        rows.iter()
+            .map(|(bus, row)| {
+                let mut row = row.clone();
+                if let Some(c) = row.controller.as_mut() {
+                    c.as_of_ns = None;
+                }
+                (bus.clone(), row)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    strip(a) != strip(b)
 }
 
 /// The status bar's one bus-load figure: the **worst** load across every
@@ -503,37 +874,48 @@ fn applied_configs(
         .collect()
 }
 
-/// Republish the bus-health rows on [`BUS_HEALTH_POLL`], and only when
-/// they have actually moved; report what peers refused on the same tick.
+/// Read the peers' reports on [`FAULT_POLL`], republish the bus-health
+/// rows when they have moved, and report what peers refused once a
+/// second.
 ///
 /// A poll rather than a callback for the same reason the clock status is
-/// one: the producer is the ingest path, which runs at bus rate on a
-/// worker thread and must not be the thing that decides when a `WebView`
-/// repaints.
+/// one: the producer is the session worker, which runs at bus rate on a
+/// thread of its own and must not be the thing that decides when a
+/// `WebView` repaints.
 pub(crate) fn spawn_bus_health_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(BUS_HEALTH_POLL);
+        let mut interval = tokio::time::interval(FAULT_POLL);
         let mut published_rows: BTreeMap<String, BusHealthRecord> = BTreeMap::new();
         let mut reported_rejections: BTreeMap<String, u64> = BTreeMap::new();
+        let mut applied: AppliedEpisodes = BTreeMap::new();
+        let mut polls: u32 = 0;
         loop {
             interval.tick().await;
-            let state_for_rejections: State<'_, AppState> = app.state();
-            for report in rejection_reports(
-                &rejections_by_session(&state_for_rejections),
-                &mut reported_rejections,
-            ) {
-                crate::sys_warn!(&app, "transmit", "{}", report.message());
+            polls = polls.wrapping_add(1);
+            let state: State<'_, AppState> = app.state();
+            if polls.is_multiple_of(REFUSAL_REPORT_EVERY) {
+                for report in
+                    rejection_reports(&refusal_counts_by_session(&state), &mut reported_rejections)
+                {
+                    crate::sys_warn!(&app, "transmit", "{}", report.message());
+                }
             }
             let Some(health) = app.try_state::<BusHealth>() else {
                 continue;
             };
-            let state: State<'_, AppState> = app.state();
+            let gaps = ingest_peer_reports(&state, &health, &mut applied);
+            if !gaps.is_empty() {
+                for gap in &gaps {
+                    crate::sys_warn!(&app, "connection", "{}", gap.label);
+                }
+                let _ = app.emit("notes-changed", state.notes.events());
+            }
             let bits = state.trace_store.status_snapshot().bits_per_second_by_bus;
             let rows = collect_health_rows(&app, &state, &health, &bits);
-            if rows != published_rows {
-                published_rows.clone_from(&rows);
-                let _ = app.emit(BUS_HEALTH_CHANGED_EVENT, rows);
+            if rows_changed(&rows, &published_rows) {
+                let _ = app.emit(BUS_HEALTH_CHANGED_EVENT, &rows);
             }
+            published_rows = rows;
         }
     });
 }
@@ -556,25 +938,60 @@ pub(crate) fn get_bus_health(
     collect_health_rows(&app, &state, &health, &bits)
 }
 
-/// One read of every open session's per-frame-error tally, by address.
-/// A session with no peer (the in-process virtual bus) contributes
-/// nothing — there is nobody there to refuse anything.
-fn rejections_by_session(
-    state: &AppState,
-) -> BTreeMap<String, Vec<cannet_client::rejections::RejectionTally>> {
+/// One read of every open session's refusals, by address, for the System
+/// Messages report: the per-frame codes of a peer that predates the
+/// refusal summaries, and the summaries of one that sends them, summed
+/// over the session's interfaces per reason. A session with no peer (the
+/// in-process virtual bus) contributes nothing — there is nobody there to
+/// refuse anything.
+fn refusal_counts_by_session(state: &AppState) -> BTreeMap<String, Vec<RefusalCount>> {
     state
         .remote_sessions()
         .iter()
         .filter_map(|(address, session)| {
-            let tallies = session.rejections.as_ref()?.snapshot();
-            Some((address.clone(), tallies))
+            let mut counts: Vec<RefusalCount> = session
+                .rejections
+                .as_ref()?
+                .snapshot()
+                .into_iter()
+                .map(|t| RefusalCount {
+                    what: t.code.as_str(),
+                    count: t.count,
+                    last_message: t.last_message,
+                })
+                .collect();
+            if let Some(peer) = session.peer.as_ref() {
+                let mut by_reason: BTreeMap<_, RefusalCount> = BTreeMap::new();
+                for t in peer.tx_refusals.snapshot() {
+                    let entry = by_reason.entry(t.reason).or_insert_with(|| RefusalCount {
+                        what: t.reason.as_str(),
+                        count: 0,
+                        last_message: String::new(),
+                    });
+                    entry.count += t.count;
+                    if !t.last_message.is_empty() {
+                        entry.last_message = t.last_message;
+                    }
+                }
+                counts.extend(by_reason.into_values());
+            }
+            Some((address.clone(), counts))
         })
         .collect()
 }
 
+/// Now, in ns since the Unix epoch — the clock a corrected peer reading
+/// is compared against.
+fn now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
 /// Gather one instant's worth of every input the rows are built from —
-/// the sessions' controller reports and bus mapping, the connection
-/// states' applied bitrates, and the store's per-bus bit rates.
+/// the sessions' reports and bus mapping, the connection states' applied
+/// bitrates, the store's per-bus bit rates, the episode reports and the
+/// scheduler's missed periods.
 fn collect_health_rows(
     app: &AppHandle,
     state: &AppState,
@@ -582,7 +999,7 @@ fn collect_health_rows(
     bits_by_bus: &[(String, f64, f64)],
 ) -> BTreeMap<String, BusHealthRecord> {
     let sessions = state.remote_sessions();
-    let controllers = controllers_by_bus(&sessions);
+    let readings = session_readings(&sessions, now_ns());
     let mapped: Vec<String> = sessions
         .values()
         .flat_map(|s| s.channel_to_bus.iter().map(|(_, b)| b.clone()))
@@ -592,49 +1009,82 @@ fn collect_health_rows(
         .try_state::<crate::connection_state::ConnectionStates>()
         .map(|states| applied_configs(&states))
         .unwrap_or_default();
-    health_rows(
-        &controllers,
-        &applied,
+    let missed = health.missed();
+    health_rows(&HealthInputs {
+        readings: &readings,
+        applied: &applied,
         bits_by_bus,
-        &mapped,
-        &health.errors(),
-    )
+        mapped_buses: &mapped,
+        reports: &health.reports(),
+        missed: &missed,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cannet_client::episodes::ErrorKindCounts;
 
-    /// Frame time in ns, for readability.
-    fn ms(n: u64) -> u64 {
-        n * 1_000_000
-    }
+    const S: u64 = 1_000_000_000;
 
-    fn tally(
-        code: cannet_client::rejections::PerFrameError,
-        count: u64,
-        last: &str,
-    ) -> cannet_client::rejections::RejectionTally {
-        cannet_client::rejections::RejectionTally {
-            code,
+    fn count(what: &'static str, count: u64, last: &str) -> RefusalCount {
+        RefusalCount {
+            what,
             count,
             last_message: last.to_string(),
         }
     }
 
+    fn episode(seq: u64, first_ns: u64, last_ns: u64, n: u64, open: bool) -> BusErrorEpisode {
+        BusErrorEpisode {
+            seq,
+            first_ns,
+            last_ns,
+            count: n,
+            count_by_kind: ErrorKindCounts {
+                ack: n,
+                ..ErrorKindCounts::default()
+            },
+            tx_count: n,
+            rx_count: 0,
+            tec: 128,
+            rec: 0,
+            open,
+        }
+    }
+
+    fn rows(inputs: &HealthInputs<'_>) -> BTreeMap<String, BusHealthRecord> {
+        health_rows(inputs)
+    }
+
+    fn empty_inputs<'a>(
+        readings: &'a SessionReadings,
+        reports: &'a BusErrorReports,
+        missed: &'a BTreeMap<String, MissedPeriods>,
+        applied: &'a BTreeMap<String, AppliedBusConfig>,
+    ) -> HealthInputs<'a> {
+        HealthInputs {
+            readings,
+            applied,
+            bits_by_bus: &[],
+            mapped_buses: &[],
+            reports,
+            missed,
+        }
+    }
+
     #[test]
     fn a_peer_refusing_at_bus_rate_reports_once_a_poll() {
-        // The defect this pins: `TX_REJECTED` was logged to `tracing`
-        // and discarded, so a peer refusing every transmit told the
-        // user nothing. It reaches them now — and as a count, because
-        // the owner's bench regime produces thousands a second and a
+        // The defect this pins: refusals were logged to `tracing` and
+        // discarded, so a peer refusing every transmit told the user
+        // nothing. It reaches them now — and as a count, because the
+        // owner's bench regime produces thousands a second and a
         // message each would be the flood, not the report of it.
-        use cannet_client::rejections::PerFrameError::TxRejected;
         let mut reported = BTreeMap::new();
         let mut current = BTreeMap::new();
         current.insert(
             "tcp://host:1".to_string(),
-            vec![tally(TxRejected, 5_120, "bus is listen-only")],
+            vec![count("transmit rejected", 5_120, "bus is listen-only")],
         );
         let reports = rejection_reports(&current, &mut reported);
         assert_eq!(reports.len(), 1);
@@ -648,7 +1098,7 @@ mod tests {
         // The next poll reports only what moved since.
         current.insert(
             "tcp://host:1".to_string(),
-            vec![tally(TxRejected, 9_000, "bus is listen-only")],
+            vec![count("transmit rejected", 9_000, "bus is listen-only")],
         );
         let reports = rejection_reports(&current, &mut reported);
         assert_eq!(reports[0].since_last, 3_880);
@@ -657,16 +1107,15 @@ mod tests {
 
     #[test]
     fn a_peer_carrying_what_it_is_given_says_nothing() {
-        // The control. A session with no rejections, and one whose
-        // count has not moved since the last poll, must both be silent
-        // — a readout that repeated itself every second would be worse
-        // than the discarded log line it replaces.
-        use cannet_client::rejections::PerFrameError::TxRejected;
+        // The control. A session with no refusals, and one whose count
+        // has not moved since the last poll, must both be silent — a
+        // readout that repeated itself every second would be worse than
+        // the discarded log line it replaces.
         let mut reported = BTreeMap::new();
         let mut current = BTreeMap::new();
         current.insert("tcp://host:1".to_string(), Vec::new());
         assert!(rejection_reports(&current, &mut reported).is_empty());
-        current.insert("tcp://host:1".to_string(), vec![tally(TxRejected, 3, "x")]);
+        current.insert("tcp://host:1".to_string(), vec![count("x", 3, "x")]);
         assert_eq!(rejection_reports(&current, &mut reported).len(), 1);
         assert!(
             rejection_reports(&current, &mut reported).is_empty(),
@@ -680,15 +1129,11 @@ mod tests {
         // the difference would underflow, and reporting nothing until
         // it passed the old total would hide the new session's first
         // few thousand refusals.
-        use cannet_client::rejections::PerFrameError::TxRejected;
         let mut reported = BTreeMap::new();
         let mut current = BTreeMap::new();
-        current.insert(
-            "tcp://host:1".to_string(),
-            vec![tally(TxRejected, 900, "x")],
-        );
+        current.insert("tcp://host:1".to_string(), vec![count("x", 900, "x")]);
         rejection_reports(&current, &mut reported);
-        current.insert("tcp://host:1".to_string(), vec![tally(TxRejected, 4, "x")]);
+        current.insert("tcp://host:1".to_string(), vec![count("x", 4, "x")]);
         let reports = rejection_reports(&current, &mut reported);
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].total, 4);
@@ -699,11 +1144,10 @@ mod tests {
         // The record of what has been reported is keyed by address, so
         // it has to shrink with the session map rather than grow with
         // every connection the app has ever opened.
-        use cannet_client::rejections::PerFrameError::TxRejected;
         let mut reported = BTreeMap::new();
         let mut current = BTreeMap::new();
-        current.insert("tcp://a:1".to_string(), vec![tally(TxRejected, 5, "x")]);
-        current.insert("tcp://b:1".to_string(), vec![tally(TxRejected, 5, "x")]);
+        current.insert("tcp://a:1".to_string(), vec![count("x", 5, "x")]);
+        current.insert("tcp://b:1".to_string(), vec![count("x", 5, "x")]);
         rejection_reports(&current, &mut reported);
         assert_eq!(reported.len(), 2);
         current.remove("tcp://b:1");
@@ -712,87 +1156,248 @@ mod tests {
     }
 
     #[test]
-    fn each_code_keeps_its_own_words_in_the_report() {
-        // The three per-frame codes mean different things, and a report
-        // that summed them would name the wrong fault.
-        use cannet_client::rejections::PerFrameError::{NoAcknowledger, TxRejected};
+    fn each_reason_keeps_its_own_words_in_the_report() {
+        // The reasons mean different things, and a report that summed
+        // them would name the wrong fault.
         let mut reported = BTreeMap::new();
         let mut current = BTreeMap::new();
         current.insert(
             "tcp://host:1".to_string(),
             vec![
-                tally(TxRejected, 2, "listen-only"),
-                tally(NoAcknowledger, 7, "nobody on the bus"),
+                count("transmit queue full", 2, "QXMTFULL"),
+                count("no listener on the bus", 7, "nobody on the bus"),
             ],
         );
         let text = rejection_reports(&current, &mut reported)[0].message();
-        assert!(text.contains("transmit rejected ×2"), "{text}");
+        assert!(text.contains("transmit queue full ×2"), "{text}");
         assert!(text.contains("no listener on the bus ×7"), "{text}");
     }
 
     #[test]
+    fn a_peer_timestamp_is_corrected_onto_this_hosts_clock() {
+        assert_eq!(to_host_ns(10 * S, 2_000_000_000), 8 * S);
+        assert_eq!(to_host_ns(10 * S, -1_000_000_000), 11 * S);
+        assert_eq!(to_host_ns(1, i64::MAX), 0, "clamped, not wrapped");
+    }
+
+    #[test]
     #[allow(clippy::float_cmp)] // the rate is exact on these round numbers
-    fn a_storm_at_bus_frame_rate_reads_as_its_count_over_its_span() {
-        // 10 000 errors, 100 µs apart — the retransmit cadence of a
-        // persistent fault at 500 kbit/s. One burst: the whole storm.
-        let mut errors = ErrorTallies::default();
-        for i in 0..10_000u64 {
-            errors.observe("b1", i * 100_000);
+    fn a_row_reads_the_newest_episode_and_the_running_total() {
+        // ADR 0060: the panel's count is every error the episodes counted
+        // — not the few rows the capture holds — and its rate and "last
+        // error" read the newest episode.
+        let mut reports = BusErrorReports::default();
+        let _ = reports.apply("b1", "s", &episode(1, 10 * S, 11 * S, 10_000, false));
+        let _ = reports.apply("b1", "s", &episode(2, 20 * S, 22 * S, 3_000, true));
+        let readings = SessionReadings::default();
+        let missed = BTreeMap::new();
+        let applied = BTreeMap::new();
+        let rows = rows(&empty_inputs(&readings, &reports, &missed, &applied));
+        let row = &rows["b1"];
+        assert_eq!(row.error_count, 13_000);
+        assert_eq!(row.error_rate, 1_500.0);
+        assert_eq!(row.last_error_ts_ns, Some(22 * S));
+        let ep = row.error_episode.unwrap();
+        assert!(ep.ongoing);
+        assert_eq!(
+            (ep.count, ep.count_by_kind.ack, ep.tec),
+            (3_000, 3_000, 128)
+        );
+        let json = serde_json::to_value(row).unwrap();
+        assert_eq!(json["errorEpisode"]["countByKind"]["ack"], 3_000);
+        assert_eq!(json["errorEpisode"]["ongoing"], true);
+        assert_eq!(json["missedPeriods"]["noRoom"], 0);
+    }
+
+    #[test]
+    fn the_bar_shows_the_worst_load_and_nothing_at_all_when_no_bus_reports_one() {
+        let row = |load: Option<f64>| BusHealthRecord {
+            controller: None,
+            load_percent: load,
+            error_count: 0,
+            error_rate: 0.0,
+            last_error_ts_ns: None,
+            error_episode: None,
+            refusals: Vec::new(),
+            flush_count: 0,
+            last_flush_ns: None,
+            missed_periods: MissedPeriods::default(),
+        };
+        assert_eq!(
+            worst_load_percent(&BTreeMap::from([
+                ("b1".to_string(), row(Some(12.0))),
+                ("b2".to_string(), row(Some(71.0))),
+                ("b3".to_string(), row(None)),
+            ])),
+            Some(71.0),
+            "the saturating bus is the one worth the bar's single slot",
+        );
+        // The control: a bus with no knowable load must not read as 0 %
+        // and drag the summary down, and a bar with nothing to report
+        // shows no metric rather than a zero.
+        assert_eq!(
+            worst_load_percent(&BTreeMap::from([("b3".to_string(), row(None))])),
+            None,
+        );
+        assert_eq!(worst_load_percent(&BTreeMap::new()), None);
+    }
+
+    fn controller(as_of_ns: Option<u64>, stale: bool) -> ControllerHealth {
+        ControllerHealth {
+            state: "passive",
+            tec: 142,
+            rec: 9,
+            rx_overruns: None,
+            as_of_ns,
+            stale,
         }
-        let tally = errors.get("b1").unwrap();
-        assert_eq!(tally.total, 10_000);
-        assert_eq!(tally.burst_count, 10_000);
-        assert_eq!(tally.burst_first_ts_ns, 0);
-        assert_eq!(tally.last_ts_ns, 9_999 * 100_000);
-        assert_eq!(tally.rate(), 10_000.0 / 0.9999);
     }
 
     #[test]
-    fn a_quiet_gap_starts_a_new_burst_for_the_rate_and_not_for_the_count() {
-        // The control for the test above: without it, "one burst" would
-        // also pass on a tally that merged everything forever.
-        let mut errors = ErrorTallies::default();
-        errors.observe("b1", ms(0));
-        errors.observe("b1", ms(10));
-        errors.observe("b1", ms(10) + RATE_BURST_GAP_NS + 1);
-        let tally = errors.get("b1").unwrap();
-        assert_eq!(tally.burst_count, 1, "the rate reads the latest burst");
-        assert_eq!(tally.burst_first_ts_ns, ms(10) + RATE_BURST_GAP_NS + 1);
-        assert_eq!(tally.total, 3, "the count reads them all");
+    fn a_driver_that_does_not_watch_for_receive_loss_sends_no_count_to_the_panel() {
+        // The panel's whole discipline: absent is not zero. A driver
+        // that watches and has seen none serialises `rxOverruns: 0`,
+        // which is what says the capture is the whole of what the bus
+        // sent; one that does not watch omits the key, and the panel
+        // renders an em dash for it.
+        let watched = ControllerHealth {
+            rx_overruns: Some(0),
+            ..controller(None, false)
+        };
+        let unwatched = controller(None, false);
+        let json = |h: &ControllerHealth| serde_json::to_string(h).unwrap();
+        assert!(json(&watched).contains("\"rxOverruns\":0"));
+        assert!(!json(&unwatched).contains("rxOverruns"));
+        assert!(!json(&unwatched).contains("asOfNs"), "an unstamped reading");
     }
 
     #[test]
-    fn two_buses_faulting_at_once_are_tallied_apart() {
-        let mut errors = ErrorTallies::default();
-        for i in 0..100u64 {
-            errors.observe("b1", i * 100_000);
-            errors.observe("b2", i * 100_000);
-        }
-        assert_eq!(errors.buses().collect::<Vec<_>>(), vec!["b1", "b2"]);
-        assert_eq!(errors.total("b1"), 100);
-        assert_eq!(errors.total("b2"), 100);
+    fn a_heartbeat_alone_is_not_a_change_but_going_stale_is() {
+        // ADR 0060 rule 5: the peer republishes an unchanged reading every
+        // second so a stopped one is visible. A fresh copy of the same
+        // reading repaints nothing; a reading that has gone stale does.
+        let row = |c: ControllerHealth| {
+            BTreeMap::from([(
+                "b1".to_string(),
+                BusHealthRecord {
+                    controller: Some(c),
+                    load_percent: None,
+                    error_count: 0,
+                    error_rate: 0.0,
+                    last_error_ts_ns: None,
+                    error_episode: None,
+                    refusals: Vec::new(),
+                    flush_count: 0,
+                    last_flush_ns: None,
+                    missed_periods: MissedPeriods::default(),
+                },
+            )])
+        };
+        let first = row(controller(Some(10 * S), false));
+        assert!(!rows_changed(&first, &row(controller(Some(11 * S), false))));
+        assert!(rows_changed(&first, &row(controller(Some(11 * S), true))));
+        assert!(rows_changed(
+            &first,
+            &row(ControllerHealth {
+                tec: 200,
+                ..controller(Some(10 * S), false)
+            })
+        ));
     }
 
     #[test]
-    fn ten_thousand_bursts_keep_every_error_on_the_count() {
-        // Alternating fault-and-quiet is the shape that once grew an
-        // event set until it had to evict. The tally is bounded by the
-        // bus count, so nothing is ever dropped from it.
-        let mut errors = ErrorTallies::default();
-        for i in 0..10_000u64 {
-            errors.observe("b1", i * (RATE_BURST_GAP_NS + 1));
-        }
-        assert_eq!(errors.total("b1"), 10_000);
-        assert_eq!(errors.buses().count(), 1);
+    fn a_cleared_session_forgets_its_errors_and_missed_periods() {
+        let health = BusHealth::default();
+        let _ = health
+            .reports()
+            .apply("b1", "s", &episode(1, S, S, 1, true));
+        health.record_missed("b1", MissedPeriod::NoRoom, 3);
+        health.clear();
+        assert_eq!(health.reports().total("b1"), 0);
+        assert!(health.missed().is_empty());
     }
 
     #[test]
-    #[allow(clippy::float_cmp)] // 0.0 is the exact "no rate yet" sentinel.
-    fn a_lone_error_claims_no_rate() {
-        let mut errors = ErrorTallies::default();
-        errors.observe("b1", ms(5));
-        assert_eq!(errors.get("b1").unwrap().rate(), 0.0);
-        assert_eq!(errors.total("b1"), 1);
+    fn missed_periods_are_counted_per_bus_and_per_kind() {
+        let health = BusHealth::default();
+        health.record_missed("b1", MissedPeriod::NoRoom, 2);
+        health.record_missed("b1", MissedPeriod::Late, 5);
+        health.record_missed("b2", MissedPeriod::Late, 0);
+        assert_eq!(
+            health.missed(),
+            BTreeMap::from([(
+                "b1".to_string(),
+                MissedPeriods {
+                    no_room: 2,
+                    late: 5
+                }
+            )]),
+        );
+    }
+
+    #[test]
+    fn a_row_is_built_for_a_mapped_bus_and_for_a_bus_that_only_faulted() {
+        let mut reports = BusErrorReports::default();
+        let _ = reports.apply("b9", "s", &episode(1, S, 2 * S, 2, false));
+        let readings = SessionReadings {
+            controllers: BTreeMap::from([("b1".to_string(), controller(None, false))]),
+            ..SessionReadings::default()
+        };
+        let missed = BTreeMap::from([(
+            "b7".to_string(),
+            MissedPeriods {
+                no_room: 1,
+                late: 0,
+            },
+        )]);
+        let applied = BTreeMap::new();
+        let mapped = vec!["b1".to_string()];
+        let rows = rows(&HealthInputs {
+            mapped_buses: &mapped,
+            ..empty_inputs(&readings, &reports, &missed, &applied)
+        });
+        assert_eq!(
+            rows.keys().collect::<Vec<_>>(),
+            vec!["b1", "b7", "b9"],
+            "a mapped bus, a bus the scheduler missed on and a faulting one",
+        );
+        assert_eq!(rows["b1"].controller.unwrap().tec, 142);
+        assert_eq!(rows["b1"].error_count, 0);
+        // The control: a bus the host has nothing to say about gets no
+        // row at all, so the panel renders an em dash rather than a zero.
+        assert!(!rows.contains_key("b2"));
+        assert_eq!(rows["b9"].controller, None);
+        assert_eq!(rows["b9"].error_count, 2);
+        assert_eq!(rows["b9"].last_error_ts_ns, Some(2 * S));
+        assert!(rows["b9"].error_rate > 0.0);
+        assert_eq!(rows["b7"].missed_periods.no_room, 1);
+    }
+
+    #[test]
+    fn a_row_carries_no_load_where_the_host_has_no_bitrate_for_the_bus() {
+        let reports = BusErrorReports::default();
+        let readings = SessionReadings::default();
+        let missed = BTreeMap::new();
+        let applied = BTreeMap::new();
+        let mapped = vec!["b1".to_string()];
+        let bits = [("b1".to_string(), 170_000.0, 0.0)];
+        let rows = rows(&HealthInputs {
+            mapped_buses: &mapped,
+            bits_by_bus: &bits,
+            ..empty_inputs(&readings, &reports, &missed, &applied)
+        });
+        assert_eq!(
+            rows["b1"].load_percent, None,
+            "bits on the wire with no bitrate to divide by is still not a load",
+        );
+        let json = serde_json::to_value(&rows["b1"]).unwrap();
+        assert!(
+            json.get("loadPercent").is_none(),
+            "absent, not zero: {json}",
+        );
+        assert!(json.get("controller").is_none());
+        assert!(json.get("refusals").is_none());
+        assert_eq!(json["errorCount"], 0);
     }
 
     #[test]
@@ -822,171 +1427,80 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_shows_the_worst_load_and_nothing_at_all_when_no_bus_reports_one() {
-        let row = |load: Option<f64>| BusHealthRecord {
-            controller: None,
-            load_percent: load,
-            error_count: 0,
-            error_rate: 0.0,
-            last_error_ts_ns: None,
-        };
-        assert_eq!(
-            worst_load_percent(&BTreeMap::from([
-                ("b1".to_string(), row(Some(12.0))),
-                ("b2".to_string(), row(Some(71.0))),
-                ("b3".to_string(), row(None)),
-            ])),
-            Some(71.0),
-            "the saturating bus is the one worth the bar's single slot",
-        );
-        // The control: a bus with no knowable load must not read as 0 %
-        // and drag the summary down, and a bar with nothing to report
-        // shows no metric rather than a zero.
-        assert_eq!(
-            worst_load_percent(&BTreeMap::from([("b3".to_string(), row(None))])),
-            None,
-        );
-        assert_eq!(worst_load_percent(&BTreeMap::new()), None);
-    }
-
-    #[test]
-    fn a_driver_that_does_not_watch_for_receive_loss_sends_no_count_to_the_panel() {
-        // The panel's whole discipline: absent is not zero. A driver
-        // that watches and has seen none serialises `rxOverruns: 0`,
-        // which is what says the capture is the whole of what the bus
-        // sent; one that does not watch omits the key, and the panel
-        // renders an em dash for it. Serialising the second as 0 would
-        // have every backend without an overrun signal vouch for a
-        // completeness it never measured.
-        let watched = ControllerHealth {
-            state: "active",
-            tec: 0,
-            rec: 0,
-            rx_overruns: Some(0),
-        };
-        let unwatched = ControllerHealth {
-            rx_overruns: None,
-            ..watched
-        };
-        let json = |h: &ControllerHealth| serde_json::to_string(h).unwrap();
-        assert!(json(&watched).contains("\"rxOverruns\":0"));
-        assert!(!json(&unwatched).contains("rxOverruns"));
-    }
-
-    #[test]
-    fn a_cleared_session_forgets_its_errors() {
-        let health = BusHealth::default();
-        health.observe_error("b1", 0);
-        health.clear();
-        assert!(health.errors().is_empty());
-        assert_eq!(health.errors().total("b1"), 0);
-    }
-
-    #[test]
-    fn a_row_is_built_for_a_mapped_bus_and_for_a_bus_that_only_faulted() {
-        let mut errors = ErrorTallies::default();
-        errors.observe("b9", ms(1));
-        errors.observe("b9", ms(1001));
-        let controllers = BTreeMap::from([(
-            "b1".to_string(),
-            ControllerHealth {
-                state: "passive",
-                tec: 142,
-                rec: 9,
-                rx_overruns: None,
-            },
-        )]);
-        let rows = health_rows(
-            &controllers,
-            &BTreeMap::new(),
-            &[],
-            &["b1".to_string()],
-            &errors,
-        );
-
-        assert_eq!(
-            rows.keys().collect::<Vec<_>>(),
-            vec!["b1", "b9"],
-            "a mapped bus and a faulting one both get a row",
-        );
-        assert_eq!(rows["b1"].controller.unwrap().tec, 142);
-        assert_eq!(rows["b1"].error_count, 0);
-        // The control: a bus the host has nothing to say about gets no
-        // row at all, so the panel renders an em dash rather than a zero.
-        assert!(!rows.contains_key("b2"));
-        assert_eq!(rows["b9"].controller, None);
-        assert_eq!(rows["b9"].error_count, 2);
-        assert_eq!(rows["b9"].last_error_ts_ns, Some(ms(1001)));
-        assert!(rows["b9"].error_rate > 0.0);
-    }
-
-    #[test]
-    fn a_row_carries_no_load_where_the_host_has_no_bitrate_for_the_bus() {
-        let errors = ErrorTallies::default();
-        let rows = health_rows(
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &[("b1".to_string(), 170_000.0, 0.0)],
-            &["b1".to_string()],
-            &errors,
-        );
-        assert_eq!(
-            rows["b1"].load_percent, None,
-            "bits on the wire with no bitrate to divide by is still not a load",
-        );
-        let json = serde_json::to_value(&rows["b1"]).unwrap();
-        assert!(
-            json.get("loadPercent").is_none(),
-            "absent, not zero: {json}",
-        );
-        assert!(json.get("controller").is_none());
-        assert_eq!(json["errorCount"], 0);
-    }
-
-    #[test]
     fn a_configured_bus_reports_a_load_and_a_silent_one_reports_zero() {
         // The pair the panel exists to distinguish. Both buses are
         // configured at 500k; one is carrying traffic and one has gone
         // quiet (a bus-off controller is exactly this), and the quiet one
         // reads 0 % rather than reading absent.
+        let cfg = |speed: Option<u64>| AppliedBusConfig {
+            speed_bps: speed,
+            fd_enabled: false,
+            fd_data_speed_bps: None,
+        };
         let applied = BTreeMap::from([
-            (
-                "busy".to_string(),
-                AppliedBusConfig {
-                    speed_bps: Some(500_000),
-                    fd_enabled: false,
-                    fd_data_speed_bps: None,
-                },
-            ),
-            (
-                "quiet".to_string(),
-                AppliedBusConfig {
-                    speed_bps: Some(500_000),
-                    fd_enabled: false,
-                    fd_data_speed_bps: None,
-                },
-            ),
-            (
-                "defaulted".to_string(),
-                AppliedBusConfig {
-                    speed_bps: None,
-                    fd_enabled: false,
-                    fd_data_speed_bps: None,
-                },
-            ),
+            ("busy".to_string(), cfg(Some(500_000))),
+            ("quiet".to_string(), cfg(Some(500_000))),
+            ("defaulted".to_string(), cfg(None)),
         ]);
-        let rows = health_rows(
-            &BTreeMap::new(),
-            &applied,
-            &[("busy".to_string(), 170_000.0, 0.0)],
-            &[],
-            &ErrorTallies::default(),
-        );
+        let reports = BusErrorReports::default();
+        let readings = SessionReadings::default();
+        let missed = BTreeMap::new();
+        let bits = [("busy".to_string(), 170_000.0, 0.0)];
+        let rows = rows(&HealthInputs {
+            bits_by_bus: &bits,
+            ..empty_inputs(&readings, &reports, &missed, &applied)
+        });
         assert_eq!(rows["busy"].load_percent, Some(34.0));
         assert_eq!(rows["quiet"].load_percent, Some(0.0));
         assert_eq!(
             rows["defaulted"].load_percent, None,
             "no ConfigureBus was sent, so the host does not know the wire's rate",
         );
+    }
+
+    #[test]
+    fn a_snapshot_is_folded_once_and_only_what_moved_is_read_again() {
+        let mut applied = AppliedEpisodes::new();
+        let snap = vec![
+            episode(1, S, 2 * S, 5, false),
+            episode(2, 5 * S, 5 * S, 1, true),
+        ];
+        assert_eq!(fresh_reports(&mut applied, "s", snap.clone()).len(), 2);
+        assert!(
+            fresh_reports(&mut applied, "s", snap).is_empty(),
+            "an unchanged snapshot costs nothing",
+        );
+        // The open one grew.
+        let grown = vec![
+            episode(1, S, 2 * S, 5, false),
+            episode(2, 5 * S, 6 * S, 9, true),
+        ];
+        let fresh = fresh_reports(&mut applied, "s", grown);
+        assert_eq!(
+            fresh.iter().map(|r| (r.seq, r.count)).collect::<Vec<_>>(),
+            vec![(2, 9)]
+        );
+        // A reconnect is a new session, so a new source, read whole.
+        let reconnected = vec![episode(1, 30 * S, 30 * S, 1, true)];
+        assert_eq!(fresh_reports(&mut applied, "s2", reconnected).len(), 1);
+        assert_ne!(
+            live_source(1, "tcp://a:1", "if"),
+            live_source(2, "tcp://a:1", "if")
+        );
+    }
+
+    #[test]
+    fn a_dropped_frames_span_is_one_durable_event_with_a_stable_id() {
+        let note = dropped_frames_note("powertrain", 49_959, 100 * S, 110 * S);
+        assert_eq!(note.kind, EventKind::DroppedFrames);
+        assert!(note.kind.persisted() && note.kind.exported());
+        assert_eq!(note.timestamp_ns, 100 * S);
+        assert_eq!(note.id, format!("dropped-frames:powertrain:{}", 100 * S));
+        assert!(note.label.contains("49959"), "{}", note.label);
+        assert!(note.description.as_deref().unwrap().contains("10.000 s"));
+        // The store takes it once.
+        let store = crate::notes::NotesStore::new();
+        assert!(store.add(note.clone()).is_some());
+        assert!(store.add(note).is_none());
     }
 }

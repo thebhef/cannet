@@ -1278,13 +1278,62 @@ pub struct SampledPoints {
     pub extrapolated: Vec<[f64; 2]>,
 }
 
+/// A bus-error episode's error frames by kind (ADR 0060 rule 1): what
+/// each vendor can tell apart. `ack` is the acknowledge slot going
+/// unanswered — a pulled cable. Vendors that cannot tell count
+/// `unknown`.
+#[derive(serde::Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ErrorKindTally {
+    pub ack: u64,
+    pub bit: u64,
+    pub form: u64,
+    pub stuff: u64,
+    pub crc: u64,
+    pub other: u64,
+    pub unknown: u64,
+}
+
+impl From<cannet_client::episodes::ErrorKindCounts> for ErrorKindTally {
+    fn from(k: cannet_client::episodes::ErrorKindCounts) -> Self {
+        Self {
+            ack: k.ack,
+            bit: k.bit,
+            form: k.form,
+            stuff: k.stuff,
+            crc: k.crc,
+            other: k.other,
+            unknown: k.unknown,
+        }
+    }
+}
+
+/// What a bus-error episode says beyond its count and span, from the
+/// reports it was built from: its errors by kind and by direction, and
+/// the error counters as of its last error. Absent for an episode no
+/// report covers (a series restored with a capture whose reports were
+/// not kept).
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BusErrorDetail {
+    pub count_by_kind: ErrorKindTally,
+    pub tx_count: u64,
+    pub rx_count: u64,
+    pub tec: u32,
+    pub rec: u32,
+}
+
 /// One bus-error **episode** as `events_page` and
 /// `bus_error_episodes_in_window` serve it: a burst of
 /// errors on `bus` in which each followed the last by less than the
 /// episode gap (`crate::bus_error_episodes`). Times are absolute seconds;
 /// `rate` is errors per second over the span, absent for a zero span.
 /// `last_ordinal` is the last error's ordinal on the bus — a real sample
-/// of the bus's error series, and so the episode's id.
+/// of the bus's error series, and so the episode's id. `ongoing` says the
+/// fault has not ended: the episode's last report is still open (ADR
+/// 0060), so its end and counts are still moving. `detail` carries the
+/// kinds, directions and counters, and `text` the whole of it as the
+/// event's one text block (ADR 0057) — the reader's words first, then
+/// the `cannet-event/1` block naming its id and kind.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BusErrorEpisode {
@@ -1295,6 +1344,10 @@ pub struct BusErrorEpisode {
     pub span: f64,
     pub rate: Option<f64>,
     pub last_ordinal: u64,
+    pub ongoing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<BusErrorDetail>,
+    pub text: String,
 }
 
 /// One row of the Events panel's list, tagged by `row`: an authored

@@ -1303,6 +1303,7 @@ BO_ 1280 AuxFrame: 8 AUX
                     clock: None,
                     controllers: None,
                     rejections: None,
+                    peer: None,
                 },
             )
             .unwrap();

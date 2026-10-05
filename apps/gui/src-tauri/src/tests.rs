@@ -806,6 +806,7 @@ fn seam_session(
         clock: None,
         controllers: None,
         rejections: None,
+        peer: None,
     }
 }
 
@@ -2531,6 +2532,7 @@ fn an_accepted_send_appends_no_row() {
             clock: None,
             controllers: None,
             rejections: None,
+            peer: None,
         },
     );
     let req = ipc::TransmitRequest {
@@ -2642,6 +2644,7 @@ fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
         clock: None,
         controllers: None,
         rejections: None,
+        peer: None,
     };
     state
         .remote_sessions
@@ -2803,6 +2806,7 @@ fn the_tx_rate_is_fed_by_ingested_echoes() {
             clock: None,
             controllers: None,
             rejections: None,
+            peer: None,
         },
     );
     let req = ipc::TransmitRequest {
@@ -2909,6 +2913,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
         clock: None,
         controllers: None,
         rejections: None,
+        peer: None,
     };
     state
         .remote_sessions
@@ -6665,6 +6670,7 @@ fn bench_tx_vbus_real_path() {
         clock: None,
         controllers: None,
         rejections: None,
+        peer: None,
     };
     state
         .remote_sessions
@@ -8718,6 +8724,7 @@ fn session_with_controller(bus: &str, interface: &str, state: Option<i32>) -> Re
         clock: None,
         controllers: Some(controllers),
         rejections: None,
+        peer: None,
     }
 }
 
@@ -8817,6 +8824,7 @@ fn an_interface_that_comes_back_gets_its_route_back() {
             clock: None,
             controllers: Some(controllers.clone()),
             rejections: None,
+            peer: None,
         },
     );
     assert!(crate::session::resolve_bus_route(&sessions, "p").is_none());
@@ -9494,4 +9502,461 @@ fn the_re_root_announcement_names_the_directory_and_whether_cannet_chose_it() {
     let saved = ProjectDirChangedPayload::of(&project_dir::create_at(&theirs, &cache_root));
     assert!(!saved.auto_located);
     assert_eq!(std::path::Path::new(&saved.root), theirs);
+}
+
+// ---- ADR 0060 on the host: episodes, gaps, refusals, missed periods --
+
+/// A remote-shaped session for `bus` on interface `iface` whose peer
+/// handles the test writes into directly, as the client's worker would.
+fn peer_session(iface: &str, bus: &str, tx: SessionTx) -> (RemoteSession, session::RemotePeer) {
+    let peer = || session::RemotePeer {
+        session_id: session::next_session_id(),
+        episodes: cannet_client::episodes::BusErrorEpisodes::new(),
+        tx_refusals: cannet_client::rejections::TxRefusals::new(),
+        dropped_frames: cannet_client::dropped_frames::FramesDropped::new(),
+        ingest: cannet_client::ingest::IngestStats::new(),
+        configs: vec![(iface.to_string(), None)],
+    };
+    let kept = peer();
+    let handles = session::RemotePeer {
+        session_id: kept.session_id,
+        episodes: kept.episodes.clone(),
+        tx_refusals: kept.tx_refusals.clone(),
+        dropped_frames: kept.dropped_frames.clone(),
+        ingest: kept.ingest.clone(),
+        configs: kept.configs.clone(),
+    };
+    (
+        RemoteSession {
+            handle: None,
+            tx,
+            channel_to_interface: vec![(0, iface.to_string())],
+            channel_to_bus: vec![(0, bus.to_string())],
+            stop: Arc::new(AtomicBool::new(false)),
+            clock: None,
+            controllers: None,
+            rejections: None,
+            peer: Some(kept),
+        },
+        handles,
+    )
+}
+
+fn reported_episode(
+    seq: u64,
+    first_ns: u64,
+    last_ns: u64,
+    count: u64,
+    open: bool,
+) -> cannet_client::episodes::BusErrorEpisode {
+    cannet_client::episodes::BusErrorEpisode {
+        seq,
+        first_ns,
+        last_ns,
+        count,
+        count_by_kind: cannet_client::episodes::ErrorKindCounts {
+            ack: count,
+            ..Default::default()
+        },
+        tx_count: count,
+        rx_count: 0,
+        tec: 128,
+        rec: 0,
+        open,
+    }
+}
+
+/// The episodes the Events panel lists for `bus` at `gap`, with what
+/// their reports say, as the `events_page` command serves them.
+fn listed_episodes(
+    state: &AppState,
+    health: &bus_health::BusHealth,
+    bus: &str,
+    gap: f64,
+) -> Vec<ipc::BusErrorEpisode> {
+    let page = crate::events_page::events_page(
+        &state.notes,
+        &state.signal_caches,
+        &state.trace_store,
+        &crate::events_page::EventsQuery {
+            buses: &[bus],
+            gap_seconds: gap,
+            kinds: &[crate::events_page::ListedKind::BusError],
+            tag_query: "",
+            offset: 0,
+            limit: 100,
+            from_end: false,
+        },
+    );
+    page.rows
+        .into_iter()
+        .filter_map(|row| match row {
+            crate::events_page::EventsRow::BusError(_, e) => {
+                Some(crate::sampling::wire_episode(bus, &e, Some(health)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_reported_episode_is_one_ongoing_event_with_its_kinds_until_the_next_closes_it() {
+    // ADR 0060 rules 1-2, live: the episode reports — not the error rows,
+    // of which the capture holds at most N — make the bus's busError
+    // event, ongoing while open, with start and end, counts by kind and
+    // the counters; a report for a later seq closes it even when its own
+    // close never came (the sidecar folds a backed-up close into its
+    // successor).
+    const S: u64 = 1_000_000_000;
+    let state = test_state();
+    let health = bus_health::BusHealth::default();
+    let (session, peer) = peer_session("peak:0", "pt", SessionTx::Stalled);
+    state
+        .remote_sessions()
+        .insert("tcp://bench:1".into(), session);
+    let mut applied = bus_health::AppliedEpisodes::new();
+
+    peer.episodes.record(
+        "peak:0",
+        reported_episode(1, 100 * S, 100 * S + S / 4, 900, true),
+    );
+    let _ = bus_health::ingest_peer_reports(&state, &health, &mut applied);
+    let listed = listed_episodes(&state, &health, "pt", 5.0);
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].ongoing, "shown live while the fault is on");
+    assert_eq!(listed[0].count, 900);
+    let detail = listed[0].detail.expect("the report's detail");
+    assert_eq!((detail.count_by_kind.ack, detail.tec), (900, 128));
+    assert!(listed[0].text.contains("ack 900"), "{}", listed[0].text);
+
+    // Republished at the state cadence: the same event, grown.
+    peer.episodes
+        .record("peak:0", reported_episode(1, 100 * S, 101 * S, 3_600, true));
+    let _ = bus_health::ingest_peer_reports(&state, &health, &mut applied);
+    let listed = listed_episodes(&state, &health, "pt", 5.0);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].count, 3_600);
+    assert!((listed[0].first_t - 100.0).abs() < 1e-9);
+    assert!((listed[0].last_t - 101.0).abs() < 1e-9);
+
+    // The next blast's report arrives without seq 1's close.
+    peer.episodes
+        .record("peak:0", reported_episode(2, 120 * S, 120 * S, 1, true));
+    let _ = bus_health::ingest_peer_reports(&state, &health, &mut applied);
+    let listed = listed_episodes(&state, &health, "pt", 5.0);
+    assert_eq!(listed.len(), 2, "one event per blast");
+    assert!(!listed[0].ongoing, "seq 2's report closed seq 1");
+    assert_eq!(listed[0].count, 3_600);
+    assert!(listed[1].ongoing);
+    assert_eq!(health.reports().total("pt"), 3_601);
+    assert!(
+        state.trace_store.len() == 0,
+        "the reports add no rows: the rows are the sidecar's capped error frames"
+    );
+
+    // The session goes: what it held open is finalised.
+    drop(state.unregister_sessions(None));
+    let _ = bus_health::ingest_peer_reports(&state, &health, &mut applied);
+    assert!(!listed_episodes(&state, &health, "pt", 5.0)[1].ongoing);
+}
+
+#[test]
+fn an_old_capture_with_a_row_per_error_frame_imports_as_episodes_and_at_most_n_rows_each() {
+    // ADR 0060 rule 2, "imports behave as live": the import's error
+    // records go through the same 1 s episode rule, the first N of each
+    // episode are rows and the rest only counted, and the episodes reach
+    // the events through the same report path the live ones take.
+    const S: u64 = 1_000_000_000;
+    let state = test_state();
+    let health = bus_health::BusHealth::default();
+    let mut fold = crate::bus_error_episodes::EpisodeBuilder::new(16);
+    let error = |ts| RawTraceFrame {
+        payload: CanFramePayload::Error,
+        bus_id: Some("pt".into()),
+        ..dummy_frame(ts, 0)
+    };
+    let mut frames: Vec<RawTraceFrame> = Vec::new();
+    // Two blasts of 3 600 error frames (a pulled cable for one second at
+    // ~3.6 k/s) 10 s apart, with traffic around them.
+    for blast in [10 * S, 20 * S] {
+        frames.push(RawTraceFrame {
+            bus_id: Some("pt".into()),
+            ..dummy_frame(blast - S / 2, 0x100)
+        });
+        for i in 0..3_600u64 {
+            frames.push(error(blast + i * 277_000));
+        }
+    }
+    for raw in frames {
+        if session::import_keeps_row(&state, Some(&health), &mut fold, &raw) {
+            state.trace_store.append(raw);
+        }
+    }
+    session::finish_import_fold(&state, Some(&health), fold);
+
+    let rows = state.trace_store.slice(0, state.trace_store.len());
+    let error_rows = rows
+        .iter()
+        .filter(|f| matches!(f.payload, CanFramePayload::Error))
+        .count();
+    assert_eq!(error_rows, 2 * 16, "the first 16 of each episode are rows");
+    assert_eq!(rows.len(), 2 * 16 + 2, "and every data frame");
+    let listed = listed_episodes(&state, &health, "pt", 5.0);
+    assert_eq!(
+        listed.iter().map(|e| e.count).collect::<Vec<_>>(),
+        vec![3_600, 3_600],
+        "every error is counted in its episode",
+    );
+    assert!(listed.iter().all(|e| !e.ongoing), "the file has ended");
+    assert_eq!(health.reports().total("pt"), 7_200);
+}
+
+#[test]
+fn a_window_of_only_error_rows_reads_no_frame_rate_and_no_load() {
+    // ADR 0060 rule 2: frames/s and bus load exclude error frames, so a
+    // disconnected bus reads its true data rate — none — however many
+    // error rows it holds.
+    let state = test_state();
+    for i in 0..400u64 {
+        state.trace_store.append(RawTraceFrame {
+            payload: CanFramePayload::Error,
+            ..dummy_frame(1_000_000_000 + i * 277_000, 0)
+        });
+        // Spread over wall time too, so the rate window has samples to
+        // read if anything were counted.
+        if i % 100 == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    assert_eq!(state.trace_store.len(), 400, "the rows are kept");
+    assert!(state.trace_store.frames_per_second().abs() < f64::EPSILON);
+    let snap = state.trace_store.status_snapshot();
+    assert!(
+        snap.bits_per_second_by_bus
+            .iter()
+            .all(|(_, a, d)| a.abs() < f64::EPSILON && d.abs() < f64::EPSILON),
+        "{:?}",
+        snap.bits_per_second_by_bus
+    );
+    let (rx, tx) = state.trace_store.frames_per_second_by_direction();
+    assert!(rx.abs() < f64::EPSILON && tx.abs() < f64::EPSILON);
+}
+
+#[test]
+fn a_dropped_frames_span_becomes_one_durable_event_that_survives_a_blf_round_trip() {
+    // The owner's ruling on ADR 0060: a dropped-frames gap is durable —
+    // held in the event store, persisted with the capture, exported as a
+    // GLOBAL_MARKER and read back as the same kind.
+    const S: u64 = 1_000_000_000;
+    let state = test_state();
+    let health = bus_health::BusHealth::default();
+    let (session, peer) = peer_session("peak:0", "pt", SessionTx::Stalled);
+    state
+        .remote_sessions()
+        .insert("tcp://bench:1".into(), session);
+    let mut applied = bus_health::AppliedEpisodes::new();
+    peer.dropped_frames.record("peak:0", 49_959, 50 * S, 60 * S);
+
+    let added = bus_health::ingest_peer_reports(&state, &health, &mut applied);
+    assert_eq!(added.len(), 1);
+    assert!(
+        bus_health::ingest_peer_reports(&state, &health, &mut applied).is_empty(),
+        "a drained span is recorded once",
+    );
+    let events = state.notes.exportable();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, crate::notes::EventKind::DroppedFrames);
+    assert_eq!(events[0].timestamp_ns, 50 * S);
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("gap.blf");
+    let frames = vec![RawTraceFrame {
+        bus_id: Some("pt".into()),
+        ..dummy_frame(40 * S, 0x100)
+    }];
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        &events,
+        &[],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap();
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].kind, crate::notes::EventKind::DroppedFrames);
+    assert_eq!(back[0].id, events[0].id);
+    assert_eq!(back[0].label, events[0].label);
+}
+
+#[test]
+fn refusals_and_flushes_are_shown_per_bus_with_a_legacy_peers_per_frame_ones_beside_them() {
+    // ADR 0060 rules 4 and 7: a peer's refusal summaries, per bus and
+    // reason, with the flush count; an older peer's per-frame
+    // TX_REJECTED names no interface, so it is shown on every bus of its
+    // session, marked session-wide.
+    let (mut session, peer) = peer_session("peak:0", "pt", SessionTx::Stalled);
+    peer.tx_refusals.record(
+        "peak:0",
+        cannet_wire::proto::TxRefusalReason::QueueFull as i32,
+        80_547,
+        10,
+        20,
+        "The transmit queue is full",
+        3,
+        19,
+    );
+    let legacy = cannet_client::rejections::PerFrameErrors::new();
+    legacy.record(
+        cannet_wire::proto::error::Code::TxRejected as i32,
+        "listen-only",
+    );
+    session.rejections = Some(legacy);
+    let sessions = HashMap::from([("tcp://bench:1".to_string(), session)]);
+    let readings = bus_health::session_readings(&sessions, 0);
+    let refusals = &readings.refusals["pt"];
+    assert_eq!(refusals.len(), 2);
+    assert_eq!(
+        (
+            refusals[0].reason,
+            refusals[0].count,
+            refusals[0].session_wide
+        ),
+        ("queueFull", 80_547, false)
+    );
+    assert_eq!(
+        (refusals[0].first_ns, refusals[0].last_ns),
+        (Some(10), Some(20))
+    );
+    assert_eq!(
+        (
+            refusals[1].reason,
+            refusals[1].count,
+            refusals[1].session_wide
+        ),
+        ("txRejected", 1, true)
+    );
+    assert_eq!(readings.flushes["pt"], (3, Some(19)));
+}
+
+#[test]
+fn a_controller_reading_that_stops_arriving_reads_stale() {
+    // ADR 0060 rule 5: the peer stamps every reading and republishes it
+    // each second, so one older than three heartbeats is stale.
+    const S: u64 = 1_000_000_000;
+    let (mut session, _peer) = peer_session("peak:0", "pt", SessionTx::Stalled);
+    let controllers = cannet_client::controller::ControllerStates::new();
+    controllers.record(
+        "peak:0",
+        2, // error-passive
+        130,
+        0,
+        None,
+        100 * S,
+    );
+    session.controllers = Some(controllers);
+    let sessions = HashMap::from([("tcp://bench:1".to_string(), session)]);
+    let fresh = bus_health::session_readings(&sessions, 101 * S).controllers["pt"];
+    assert_eq!((fresh.as_of_ns, fresh.stale), (Some(100 * S), false));
+    let stale = bus_health::session_readings(&sessions, 104 * S).controllers["pt"];
+    assert!(stale.stale);
+}
+
+#[test]
+fn a_full_request_channel_misses_its_buses_periods_and_stalls_no_other_bus() {
+    // ADR 0060 rule 6: the scheduler reserves room before it prepares a
+    // period. A session whose far end has stopped draining costs its own
+    // bus its periods — not prepared, counted as missed — and every
+    // other bus's schedule carries on in the same tick.
+    let state = test_state();
+    state
+        .local_buses
+        .create("vbus", "v", cannet_core::BusConfig::classic_500k())
+        .unwrap();
+    let (sink_q, _source_q) = state.local_buses.attach_participant("vbus").unwrap();
+    let (_sink_r, mut source_r) = state.local_buses.attach_participant("vbus").unwrap();
+    let (stalled, _peer) = peer_session("peak:0", "stuck", SessionTx::Stalled);
+    state
+        .remote_sessions()
+        .insert("tcp://stalled:1".into(), stalled);
+    state.remote_sessions().insert(
+        format!("{}vbus", project::LOCAL_VBUS_URL_SCHEME),
+        RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(vec![(0, Arc::new(Mutex::new(sink_q)))]),
+            channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
+            channel_to_bus: vec![(0, "free".into())],
+            stop: Arc::new(AtomicBool::new(false)),
+            clock: None,
+            controllers: None,
+            rejections: None,
+            peer: None,
+        },
+    );
+    running_row(&state, "on-stuck", "stuck", 0x100);
+    running_row(&state, "on-free", "free", 0x200);
+
+    let mut schedule = transmit_scheduler::PeriodicSchedule::new();
+    let start = std::time::Instant::now();
+    schedule.schedule("on-stuck".into(), start);
+    schedule.schedule("on-free".into(), start);
+    let missed: Mutex<Vec<(String, bus_health::MissedPeriod, u64)>> = Mutex::new(Vec::new());
+    let record = |bus: &str, kind, n| {
+        if n > 0 {
+            missed.lock().unwrap().push((bus.to_string(), kind, n));
+        }
+    };
+    let due = schedule.take_due(start);
+    let fired = transmit_commands::fire_due(&state, &mut schedule, due, start, &record);
+
+    assert_eq!(fired, 1, "only the free bus's period was prepared");
+    assert_eq!(
+        *missed.lock().unwrap(),
+        vec![("stuck".to_string(), bus_health::MissedPeriod::NoRoom, 1)],
+    );
+    // The free bus's frame reached its wire: the other participant sees it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let got = loop {
+        match source_r.try_next() {
+            Ok(Some(event)) => break Some(event),
+            _ if std::time::Instant::now() >= deadline => break None,
+            _ => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    };
+    assert!(
+        matches!(got, Some(cannet_core::ParticipantEvent::Frame { ref frame, .. }) if frame.id.raw() == 0x200),
+        "{got:?}",
+    );
+    // The missed period wrote nothing: no row, no refusal mark.
+    assert_eq!(state.trace_store.len(), 0);
+    // Both stay on the schedule, one period on.
+    let next = schedule.next_deadline().unwrap();
+    assert!(next >= start + std::time::Duration::from_millis(99));
+    assert_eq!(
+        schedule
+            .take_due(next + std::time::Duration::from_millis(1))
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn a_late_tick_counts_the_whole_periods_it_skipped() {
+    let base = std::time::Instant::now();
+    let p = std::time::Duration::from_millis(10);
+    assert_eq!(transmit_commands::periods_skipped(base, base, p), 0);
+    assert_eq!(
+        transmit_commands::periods_skipped(base, base + p * 3 / 2, p),
+        0
+    );
+    // 2.5 periods late: this tick fires one, the realigned next fires
+    // one, and one is dropped.
+    assert_eq!(
+        transmit_commands::periods_skipped(base, base + p * 5 / 2, p),
+        1
+    );
+    assert_eq!(
+        transmit_commands::periods_skipped(base, base + p * 10, p),
+        9
+    );
 }

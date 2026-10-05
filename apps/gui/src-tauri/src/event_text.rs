@@ -40,6 +40,8 @@
 //! - A line whose key this version does not understand, or that does not
 //!   parse, is **kept verbatim** and does not invalidate the block.
 
+use std::fmt::Write as _;
+
 use crate::notes::{EventKind, EventSubject, Note};
 
 /// The header line: the block's name and its schema version in one token,
@@ -238,6 +240,66 @@ fn split_at_header(raw: &str) -> Option<(&str, &str)> {
     Some((description, &raw[end..]))
 }
 
+/// A bus-error episode's text, as one block (ADR 0057): what it was in a
+/// reader's words — how many errors over how long, the kinds most common
+/// first (so a pulled cable leads with `ack`), which way they went and
+/// the counters at the end, and whether it is still going — then the
+/// block naming its id (`bus-error:{bus}:{last ordinal}`, as everywhere
+/// else) and its kind. `detail` is what the episode reports said
+/// (ADR 0060); without it the text says only the count and the span.
+pub(crate) fn bus_error_text(
+    bus: &str,
+    episode: &crate::bus_error_episodes::Episode,
+    detail: Option<&crate::bus_error_episodes::EpisodeDetail>,
+) -> String {
+    let mut prose = format!(
+        "{} error frames on {bus} over {:.3} s",
+        episode.count(),
+        episode.span()
+    );
+    if let Some(d) = detail {
+        let k = d.count_by_kind;
+        let mut kinds = [
+            ("ack", k.ack),
+            ("bit", k.bit),
+            ("form", k.form),
+            ("stuff", k.stuff),
+            ("crc", k.crc),
+            ("other", k.other),
+            ("unknown", k.unknown),
+        ];
+        // Most common first; ties keep the list's order.
+        kinds.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let named: Vec<String> = kinds
+            .iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(kind, n)| format!("{kind} {n}"))
+            .collect();
+        if !named.is_empty() {
+            prose.push_str(": ");
+            prose.push_str(&named.join(", "));
+        }
+        if d.tx_count + d.rx_count > 0 {
+            let _ = write!(
+                prose,
+                "; {} while transmitting, {} while receiving",
+                d.tx_count, d.rx_count
+            );
+        }
+        let _ = write!(prose, "; TEC {}, REC {}", d.tec, d.rec);
+        if d.ongoing {
+            prose.push_str("; ongoing");
+        }
+    }
+    prose.push('.');
+    encode(&EventText {
+        description: Some(prose),
+        id: Some(format!("bus-error:{bus}:{}", episode.last_n)),
+        kind: Some(EventKind::BusError),
+        ..EventText::default()
+    })
+}
+
 /// A subject as one line of the block.
 fn subject_line(subject: &EventSubject) -> String {
     match subject {
@@ -318,6 +380,7 @@ fn kind_key(kind: EventKind) -> &'static str {
         EventKind::Note => "note",
         EventKind::MessageBound => "messageBound",
         EventKind::BusError => "busError",
+        EventKind::DroppedFrames => "droppedFrames",
     }
 }
 
@@ -328,6 +391,7 @@ fn kind_from_key(key: &str) -> Option<EventKind> {
         "note" => Some(EventKind::Note),
         "messageBound" => Some(EventKind::MessageBound),
         "busError" => Some(EventKind::BusError),
+        "droppedFrames" => Some(EventKind::DroppedFrames),
         _ => None,
     }
 }
@@ -537,6 +601,52 @@ mod tests {
         assert_eq!(decode(&encode(&text)).description, text.description);
     }
 
+    #[test]
+    fn a_bus_error_episodes_text_leads_with_its_commonest_kind_and_carries_its_id() {
+        use crate::bus_error_episodes::{Episode, EpisodeDetail};
+        let episode = Episode {
+            first_t: 10.0,
+            last_t: 12.5,
+            first_n: 1,
+            last_n: 3_412,
+        };
+        let detail = EpisodeDetail {
+            count_by_kind: cannet_client::episodes::ErrorKindCounts {
+                ack: 3_410,
+                bit: 2,
+                ..Default::default()
+            },
+            tx_count: 3_400,
+            rx_count: 12,
+            tec: 128,
+            rec: 0,
+            ongoing: true,
+        };
+        let text = bus_error_text("powertrain", &episode, Some(&detail));
+        let parsed = decode(&text);
+        let prose = parsed.description.unwrap();
+        assert!(
+            prose.starts_with("3412 error frames on powertrain over 2.500 s: ack 3410, bit 2"),
+            "{prose}"
+        );
+        assert!(
+            prose.contains("3400 while transmitting, 12 while receiving"),
+            "{prose}"
+        );
+        assert!(
+            prose.contains("TEC 128, REC 0") && prose.ends_with("ongoing."),
+            "{prose}"
+        );
+        assert_eq!(parsed.id.as_deref(), Some("bus-error:powertrain:3412"));
+        assert_eq!(parsed.kind, Some(EventKind::BusError));
+        // With no report behind it, only what the series says.
+        let bare = decode(&bus_error_text("powertrain", &episode, None));
+        assert_eq!(
+            bare.description.as_deref(),
+            Some("3412 error frames on powertrain over 2.500 s.")
+        );
+    }
+
     /// Every kind the host can hold spells itself the way the wire does,
     /// so one vocabulary covers the IPC and the file.
     #[test]
@@ -545,6 +655,7 @@ mod tests {
             EventKind::Note,
             EventKind::MessageBound,
             EventKind::BusError,
+            EventKind::DroppedFrames,
         ] {
             assert_eq!(kind_from_key(kind_key(kind)), Some(kind));
             let json = serde_json::to_string(&kind).unwrap();
