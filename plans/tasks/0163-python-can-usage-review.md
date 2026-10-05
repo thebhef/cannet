@@ -324,6 +324,80 @@ stays at the top of the stack (owner, 2026-10-04).
   would have skipped it (at the cost of no embedded frontend, which
   this phase does not need). Flagging per owner ruling on escalating
   blockers rather than silently noting success.
+- 2026-10-05 — **phase 6 reported** (`task163-host` `23370d03` on
+  `task163-client`; one commit, no pre-squash history). ADR 0060 on the
+  host, items 1–9 as groomed; paths under `apps/gui/src-tauri/src/`.
+
+  | Item | Where |
+  |---|---|
+  | 1 episodes → `busError` | `bus_error_episodes.rs` `BusErrorReports::apply` (running total at first/last error; later seq closes the open one; stale seq ignored); `bus_health.rs` `ingest_peer_reports` / `fresh_reports` (250 ms poll, `FAULT_POLL`; times corrected by `SessionClock::applied_offset_ns`; source = session id + address + interface, so a reconnect is a new source), `record_episode` (seeds from the restored series' total); `signal_cache.rs` `record_bus_errors` / `bus_error_total`; row catch-up for error series removed (`ScanUnit::BusErrors`, `scan_error_chunk`, the count path in `advance_group`); bus-error rows restore like file rows (same capture); `with_episodes` / `bus_error_episodes_in_window` lost their `TraceStore` arg. Wire: `ipc::BusErrorEpisode` + `ongoing`, `detail`, `text` (`event_text::bus_error_text`, commonest kind first) |
+  | 2 import fold | builder `bus_error_episodes::EpisodeBuilder` (host module — the only Rust consumer; the live builder is the sidecar's), driven by `session::import_keeps_row` / `finish_import_fold` from `run_pump` (replay only); same `record_episode` path as live |
+  | 3 rates | `trace_store/mod.rs` `append` returns before every `RateTrack` for error rows (frames/s, per-bus/direction, bit windows → bus load); per-id rate kept |
+  | 4 gap event | `notes.rs` `EventKind::DroppedFrames` (`droppedFrames`, new `EventCategory::HostRecorded`: persisted + `GLOBAL_MARKER`); `bus_health::dropped_frames_note` (id `dropped-frames:{bus}:{first_ns}`), drained in `ingest_peer_reports`, `notes-changed` emitted; `events_page::ListedKind::DroppedFrames`; `event_text` kind key |
+  | 5 refusals/flushes | `bus_health::session_readings` (per bus, per reason from `TxRefusals`; legacy `PerFrameErrors` on every bus of its session, `sessionWide: true`); System-Messages report now sums both (`refusal_counts_by_session`, once a second) |
+  | 6 staleness | `ControllerHealth.as_of_ns` (host clock) + `stale` (> `STALE_AFTER_NS` 3 s); `rows_changed` ignores `asOfNs`, so a heartbeat alone does not re-emit |
+  | 7 periodic never blocks | `transmit_commands::fire_due` (route → `SessionTx::try_reserve` per destination → `fire_info` only with room → `send_reserved`), `periods_skipped`; `BusHealth::record_missed`; client `SessionTransmitter::try_reserve` / `TransmitPermit` (+ test); `SessionTx::transmit_batch` removed (unused) |
+  | 8 cap setting | `settings.rs` `error_row_cap` (default 16, ≤ `u32::MAX`, no published minimum since 0 is valid), `settings_descriptor.rs` (Trace + Connection); `session::presubscribe_config_from(b, cap)` (unpinned + default cap sends nothing), `apply_error_row_cap` (resends pinned config + cap on its own thread) from `set_settings_blocking` on change; import reads the same setting |
+  | 9 logging | client `ingest.rs` `IngestStats` / `FrameReceiver::ingest`; `crash.rs` `ingest_lines` → `ingest session=… read_fps=… read=… queued=…` (debug, health cadence) |
+
+  Payload fields added for phase 7 (camelCase): bus-health row
+  `errorEpisode { ongoing, firstTsNs, lastTsNs, count, countByKind
+  { ack, bit, form, stuff, crc, other, unknown }, txCount, rxCount, tec,
+  rec }`, `refusals [{ reason, reasonText, count, firstNs?, lastNs?,
+  lastMessage, sessionWide }]`, `flushCount`, `lastFlushNs?`,
+  `missedPeriods { noRoom, late }`, `controller.asOfNs?`,
+  `controller.stale`; episode rows `ongoing`, `detail? { countByKind,
+  txCount, rxCount, tec, rec }`, `text`; event kind `droppedFrames`
+  (notes payload, Events filter kind); setting `error_row_cap`. The
+  frontend tolerates the unknown kind (filtered out by its visible-kind
+  sets, not editable) until phase 7 adds it.
+
+  Missed-period test: `tests.rs`
+  `a_full_request_channel_misses_its_buses_periods_and_stalls_no_other_bus`
+  — a `#[cfg(test)] SessionTx::Stalled` session on bus `stuck` and a
+  vbus session on `free`, both due in one tick: `fired == 1`, missed
+  = `[("stuck", NoRoom, 1)]`, the free bus's frame reaches the other
+  participant, no row written, both rescheduled one period on. Plus
+  `a_late_tick_counts_the_whole_periods_it_skipped`.
+
+  Perf reading: **skipped** — the ADR-0031 render-tier harness runs the
+  GUI against the PEAK dongles (ev-zonal load); the host modes that need
+  no hardware (`grpc`, `tracebuffer`) do not exercise the host pump /
+  rate / episode path this phase changed. The owner is on the bench.
+
+  Checks (phase tier):
+
+  | Check | Command | Result |
+  |---|---|---|
+  | tests | `cargo test -p cannet-gui` | 1435 passed, 7 ignored |
+  | tests | `cargo test -p cannet-client` | 93 + 13 + 8 + 5 passed |
+  | clippy | `cargo clippy -p cannet-gui -p cannet-client --all-targets -- -D warnings` | clean |
+  | clippy (dependent) | `cargo clippy -p cannet-perf-measurement --all-targets -- -D warnings` | clean |
+  | fmt | `cargo fmt --all -- --check` | clean |
+  | rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc -p cannet-gui -p cannet-client --no-deps` | clean |
+  | build | `cargo build -p cannet-gui` | ok |
+  | frontend | `pnpm --dir apps/gui build` (payloads grew additively) | ok |
+  | path hooks | `scripts/check_local_paths.py`, `relativize_project_paths.py` on the changed files | clean |
+  | comment refs | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/` | clean |
+  | python / MDF oracle / sidecar freeze | — | skipped: no python, MDF writer or sidecar touched; freeze also enumerates PEAK |
+
+  Committed `--no-verify` (shared tree); fmt and the two path hooks run
+  by hand. No release binary: `tauri build` is off-limits this phase and
+  a plain `cargo build --release` has no frontend.
+
+  **Side effects / for later phases:** (a) a capture restored from the
+  scratch (relaunch) brings its error series back but not the episode
+  reports, so its episodes show count/span/rate with no `detail`, and
+  `errorCount` on the health row restarts from the series' total only
+  when a new report arrives (queue § 3); (b) a peer that predates
+  episode reports (older remote `cannet-server`) still yields error
+  rows but no episodes, as 2b left open; (c) README's sidecar paragraph
+  on the stuck transmit queue still describes only the 2 s silent-queue
+  reopen, not phase 4's 1 s flush — phase 8's; (d) an open episode's id
+  (`bus-error:{bus}:{lastOrdinal}`) moves as it grows, so phase 7 should
+  not key a selection on it until `ongoing` clears; (e) a capture clear
+  during a live fault restarts that bus's episode reports, so the
+  ongoing episode reappears with its whole count from its first error.
 
 ### Phase 2a report (2026-10-04)
 

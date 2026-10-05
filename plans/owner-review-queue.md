@@ -174,6 +174,13 @@ Owner rulings 2026-10-03 (new-build walk):
 
 ## 3. Fix later
 
+- **A capture restored from the scratch loses its bus-error episodes'
+  detail** (task 163 phase 6, 2026-10-05): the error series persists,
+  the per-episode reports (kinds, TEC/REC, ongoing) do not, so a
+  relaunched capture's episodes show count/span/rate only. Persisting
+  them with the scratch, or accepting the loss — see 0163 Status,
+  phase 6 side effect (a).
+
 - **Error events split during one continuous error blast** (owner,
   2026-10-04): root-caused, not yet fixed — the wire streams were
   continuous; the host's clock-offset probe rode a sidecar→host stream
