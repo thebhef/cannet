@@ -51,8 +51,18 @@ whose best δ exceeds the step threshold is discarded).
 | # | Phase | Shape | Status |
 |---|---|---|---|
 | 1 | Review | investigation, no code, no branch (owner: "no new branches right now", 2026-10-04) | done 2026-10-04 — report below |
-| 2 | Design (ADR draft + phase list) | design | after 1 |
-| 3+ | Implementation | per the design | after the owner's ruling |
+| 2a | Investigate: H1 load experiment (fake driver, fixed modest rate, in-process client; harness kept as a slow-marked sidecar test) + trace the 72 s host park | investigation; branch `task163-fault-measure` | approved 2026-10-04 |
+| 2b | ADR superseding ADR 0039's fault-model parts and amending ADR 0035; `docs/CONTEXT.md` terms (bus-error episode, control lane, dropped-frames gap, error-row cap) | design; `task163-fault-model-adr` | after 2a; **owner accepts the ADR before 3** |
+| 3 | Proto (`cannet.v1`, additive): `BusErrorEpisode`, `TxRefusals`, `FramesDropped`, `InterfaceState.as_of_ns`, error-row cap on open/configure; python-wire regenerated | `task163-proto` | after the ADR |
+| 4 | Sidecar: episode accumulator (PEAK / Vector-FD kind decode), row cap + reset, control lane + bounded data lane (drop oldest), refusal coalescing ≤ 4 Hz, 250 ms poll + 1 s heartbeat, D5/D10 fixes; tests | `task163-sidecar` | after 3 |
+| 5 | cannet-client: decode the new messages into per-interface controller/rejection state; clock δ guard + round correlation; tests | `task163-client` | after 4 |
+| 6 | Host: episodes → `busError` events with start/end; frames/s + load exclude error frames; gap event; per-bus refusals; import fold through the same builder; cap setting; park fix per 2a | `task163-host` | after 5 |
+| 7 | Frontend: bus-health row (state, TEC/REC, episode summary, refusals), ongoing-episode row, gap marker, cap setting UI | `task163-frontend` | after 6 |
+| 8 | Docs + checks: README, sidecar README, rustdoc, release notes | `task163-docs` | after 7 |
+| 9 | Owner bench: pulls of 5 s / 60 s / 10 min, replug, PEAK bus-off | owner | exit criteria 3–4 |
+
+Agent estimate ≈ 34 h. Every branch sits beneath `doc-closeout-2`, which
+stays at the top of the stack (owner, 2026-10-04).
 
 ## Exit criteria
 
@@ -87,8 +97,7 @@ whose best δ exceeds the step threshold is discarded).
 ## Grooming (2026-10-04)
 
 Rulings from the owner (Q1–Q3) and answers taken from the codebase
-(Q4, Q5, Q7, Q8). Q6 and the phase list are presented when grooming
-resumes.
+(Q4, Q5, Q7, Q8). Q6 ruled and the phase list approved the same day.
 
 **Precedent (researched 2026-10-04).** Vector CANoe/CANalyzer does not
 log an acknowledge-error storm: once the channel's transmit error counter
@@ -131,6 +140,12 @@ the same as a classic 8-byte `CAN_MESSAGE2`; today a 10-minute pull at
   `2g` are the gap-`g` episodes merged").
 - **Q5 — `unknown`** for Kvaser until a bench exists; overriding
   python-can's `_recv_internal` is the D9 pattern this task removes.
+- **Q6 — run it (A).** Folded into phase 2a. The ADR records
+  **decisions** (episode event, capped rows reset on recovery, two lanes,
+  drop oldest and loud, cadence + heartbeat, rates exclude error frames);
+  the measured numbers (envelope vs frame bound, cap sizes, H1 verdict)
+  are implementation detail and live in the 2a report and as named
+  constants — the ADR cites at most one figure as rationale.
 - **Q7 — backlog.** Raw error-frame mode is not this task.
 - **Q8 — nothing to design.** `cannet-server` is a 1:1 relay to the
   sidecar (ADR 0040); the new `cannet.v1` control messages pass through.
