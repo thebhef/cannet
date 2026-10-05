@@ -58,7 +58,7 @@ whose best δ exceeds the step threshold is discarded).
 | 5 | cannet-client: decode the new messages into per-interface controller/rejection state; clock δ guard + round correlation; tests | `task163-client` | after 4 |
 | 6 | Host: episodes → `busError` events with start/end; frames/s + load exclude error frames; gap event; per-bus refusals; import fold through the same builder; cap setting; park fix per 2a | `task163-host` | after 5 |
 | 7 | Frontend: bus-health row (state, TEC/REC, episode summary, refusals), ongoing-episode row, gap marker, cap setting UI | `task163-frontend` | after 6 |
-| 8 | Docs + checks: README, sidecar README, rustdoc, release notes | `task163-docs` | after 7 |
+| 8 | Docs + checks: README, sidecar README, rustdoc, release notes | `task163-docs` | done 2026-10-05 — report below |
 | 9 | Owner bench: pulls of 5 s / 60 s / 10 min, replug, PEAK bus-off | owner | exit criteria 3–4 |
 
 Agent estimate ≈ 34 h. Every branch sits beneath `doc-closeout-2`, which
@@ -70,9 +70,16 @@ stays at the top of the stack (owner, 2026-10-04).
       consequences, comparison with at least three established tools.
 - [x] ADR accepted by the owner (ADR 0060, 2026-10-04); ADR 0039's fault model superseded where
       the two disagree; `docs/CONTEXT.md` terms added.
-- [ ] A cable pull of any length shows: one event per bus per blast, the
+- [x] A cable pull of any length shows: one event per bus per blast, the
       fault within ~1 s of the wire, recovery within ~2 s of the wire, no
       frames/s figure from error frames, and a bounded host-side backlog.
+      Met by design and by the harness as of phase 8 (2026-10-05): ADR
+      0060's 250 ms/1 s cadence and the phase 4 fault-load harness
+      (`tests/test_fault_load.py`) bound the first three; the two-lane
+      split with a 10 000-frame-per-interface data cap (phase 4) and the
+      client/host bounds (phases 5–6) bound the fourth. **Not yet
+      exercised against real hardware** — the bench walk below is
+      phase 9's.
 - [ ] Bench-confirmed by the owner.
 
 ## Status
@@ -463,6 +470,142 @@ stays at the top of the stack (owner, 2026-10-04).
   still reads active, which the prompt's item 3 implied ("surface the
   ongoing fault count") but did not spell out as a tone-independent
   condition — recorded here rather than silently redesigned.
+- 2026-10-05 — **phase 8 reported** (`task163-docs` on `task163-frontend`
+  `d1948538`; docs + the task-final full check matrix + release binary
+  only, no behaviour change). ADR 0060 is the contract every doc surface
+  was read against.
+
+  **Doc sweep.** One stale paragraph found and fixed: the top-level
+  `README.md`'s bus-health section (the "reset without user action"
+  paragraph) described only the 2 s silent-queue reopen — phase 6's side
+  effect (c), carried since phase 4 added the 1 s stuck-queue flush. It
+  now names the flush, what it does per vendor, and that only a channel
+  that has gone fully silent (no send, echo or error frame) for two
+  seconds is reopened. Every other surface in scope was already current
+  and needed no change, confirmed by reading each against the ADR:
+  `servers/cannet-local-sidecar/README.md`'s *Bus faults* section and its
+  stats-line fields (phase 4), `SMOKE.md`'s PEAK/Vector smoke steps
+  (phase 4), `crates/cannet-wire/src/lib.rs` (phase 3) and
+  `crates/cannet-client/src/lib.rs` (phase 5) crate docs, `docs/
+  CONTEXT.md`'s *control lane* / *data lane* / *dropped-frames gap* /
+  *error-row cap* / *bus-error episode* terms (phase 2b). `RUSTDOCFLAGS=
+  "-D warnings" cargo doc --workspace --no-deps` is clean — no
+  missing-doc gap on any item the task added. `plans/technology-
+  inventory.md` needs no entry: nothing in the dependency graph changed
+  anywhere in the stack (the only non-`plans/` manifest touched across
+  `main..HEAD` is `servers/cannet-local-sidecar/pyproject.toml`'s
+  `[tool.pytest.ini_options]` `slow` marker from phase 2a, not a
+  dependency).
+
+  **Release notes.** `plans/release-notes.md` gains a **Bus faults**
+  section: the episode-not-a-row fix and its latency, the row cap plus
+  import fold, the bus-health one-line summary, the transmit-queue
+  flush, the dropped-frames gap, and the clock-guard fix. Written from
+  the user's seat (what a cable pull now shows), per the file's own
+  convention.
+
+  **Full check matrix**, run once at this tip, each command exactly as
+  `.github/workflows/ci.yml` invokes it:
+
+  | CI job | Command | Result |
+  |---|---|---|
+  | rustdoc (workspace) | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | clean |
+  | Rust test | `cargo test --workspace` | ≈2,274 passed, 0 failed, 9 ignored, across every crate |
+  | Rust clippy | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+  | Rust fmt | `cargo fmt --all -- --check` | clean |
+  | Wire protocol (buf breaking) | `buf breaking crates/cannet-wire/proto --against ".git#tag=v0.10.0,subdir=crates/cannet-wire/proto"` (`GIT_LFS_SKIP_SMUDGE=1`, CI's own workaround for buf's bare clone) | clean, no breaking change since `v0.10.0` |
+  | Wire protocol (python gencode drift) | `bash scripts/regen-proto-gencode.sh` + `git diff --exit-code` | clean, no drift |
+  | MDF export (asammdf oracle) | `cargo run -p cannet-mdf --example export_sample -- <tmp>.mf4` then `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>.mf4` | `OK` — 30 frames, 4 signals, 3 events, 1 attachment |
+  | Frontend (vitest + build) | `pnpm --dir apps/gui install --frozen-lockfile`, `pnpm --dir apps/gui test`, `pnpm --dir apps/gui build` | 251 files / 3,741 tests passed; build clean |
+  | Python wire (ruff + mypy + pytest) | in `libs/cannet-python-wire`: `uv sync --extra dev --frozen`, `ruff check .`, `ruff format --check .`, `mypy`, `pytest` | all clean; 18 passed |
+  | Python sidecar (ruff + mypy + pytest) | in `servers/cannet-local-sidecar`: same four, default (non-slow) `pytest` | all clean; 348 passed, 3 deselected |
+  | Python sidecar, slow fault-load (task-added, not a CI lane — CI cannot run hardware-adjacent load harnesses) | `uv run --extra dev pytest -m slow tests/test_fault_load.py -s` | 3 passed (79 s); same figures as phase 4's report (coalescing restores full delivery at 2×7.2 k f/s, lockstep isolation holds) |
+  | Python client (ruff + mypy + pytest) | `cargo build -p cannet-server`, then in `clients/cannet-python-client`: `uv sync --extra dev --frozen`, `ruff check .`, `ruff format --check .`, `mypy`, `pytest` | all clean; 151 passed, 1 skipped |
+  | Frozen sidecar (freeze + smoke) | `uv run --no-project scripts/build-sidecar.py --no-smoke` (smoke step **omitted** — it enumerates real PEAK/Vector/Kvaser channels, off-limits while the owner may be on the bench) | froze cleanly; smoke intentionally not run, so this is a partial pass of the CI lane by design, not a gap |
+  | comment-references (hand-run, not a CI lane) | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/ servers/ libs/` | clean |
+  | `scripts/check_local_paths.py` | run on every file this phase touched (`README.md`, `plans/release-notes.md`) | clean |
+
+  One piece of incidental drift found and **discarded, not committed**:
+  running `uv sync`/`uv run` in `clients/cannet-python-client` and
+  `servers/cannet-local-sidecar` rewrote each package's `uv.lock`
+  `requires-dist` metadata line for `grpcio-tools` from `>=1.80` to
+  `>=1.80,<1.81` — catching up to the load-bearing pin that already
+  lives in `libs/cannet-python-wire/pyproject.toml`. No dependency
+  version changed; `git checkout --` on both files before committing.
+
+  **Release binary.** `pnpm --dir apps/gui build` (frontend) and
+  `uv run --no-project scripts/build-sidecar.py --no-smoke` (step above)
+  both ran first. The literal instructed command, `cargo build --release
+  -p cannet-gui`, compiles but is **not** the full app: `apps/gui/
+  src-tauri/Cargo.toml`'s own comment is explicit that plain `cargo
+  build` leaves the `custom-protocol` feature off, and without it the
+  compiled host always points its webview at `tauri.conf.json`'s
+  `devUrl` (`http://localhost:5173`) rather than the embedded frontend,
+  whatever profile or however current `apps/gui/dist` is — confirmed by
+  size (no change from the pre-frontend-build binary) and by there being
+  no `index.html`/`assets/` anywhere under `target/release`. `cargo
+  build --release -p cannet-gui --features custom-protocol` closes
+  exactly that gap — a second `cargo build`, not `tauri build`, so it
+  triggers no `beforeBuildCommand` and no smoke/enumeration step — and
+  the resulting binary grew by ≈381 KB, consistent with the embedded
+  frontend `tauri.conf.json` attaches at compile time once the feature
+  is on. `tauri.conf.json`'s `resources` (`sidecar-dist/cannet-local-
+  sidecar`, `server-dist`, `licenses.json`) are copied into `target/
+  release/` by `tauri_build::build()` itself regardless of the feature —
+  confirmed by hash: the plain build already refreshed `target/release/
+  cannet-local-sidecar/cannet-local-sidecar.exe` to match the freshly
+  `--no-smoke`-frozen one, and `licenses.json` likewise matches. So
+  **what `pnpm tauri build --no-bundle` would add beyond this build**,
+  precisely: it would re-run `beforeBuildCommand`
+  (`build-sidecar.py && stage-server.py && pnpm build`) — redoing work
+  already current here, at the cost of running `build-sidecar.py`
+  *without* `--no-smoke`, whose smoke step launches the frozen sidecar
+  and enumerates real hardware channels. `--no-bundle` only skips
+  NSIS/MSI/dmg packaging; it does not skip that hook. Not run, per the
+  task's own prohibition.
+
+  Binary not launched (launching starts the sidecar, which enumerates
+  real interfaces on `Subscribe` — the same hardware-touching act the
+  smoke step was kept out for) — path, size and hash below are from the
+  build artifact alone:
+
+  - `target/release/cannet-gui.exe`
+  - 27,161,088 bytes (≈26 MiB)
+  - SHA-256 `79d93851966c6aa211da095c4afa2c8264b7f6d19c0e3918ac0a7663aec9e43a`
+  - `git rev-parse --short HEAD` at build time: `d1948538` (this phase's
+    own commit is docs/plans-only, so the binary is built from the same
+    tree phase 7 left; no Rust/frontend source changed under it)
+
+  **Bench script for phase 9**, reading the fields phases 6–7 added:
+
+  1. Connect a PEAK bus with traffic running. Bus-health row reads
+     **Connected**; no episode/refusal/flush/missed-period line shows.
+  2. Pull the cable. Within ~1 s: an **ongoing** `busError` event
+     appears on that bus's Events row and plot marker; the bus-health
+     row's episode line reads `N errors (rate/s), mostly ack: no other
+     node acknowledging — ongoing`; TEC climbs toward 128; state reaches
+     error-passive/bus-off. frames/s and bus load on that bus read the
+     true (near-zero) data rate throughout — never inflated by the error
+     flood.
+  3. Watch `cannet.log` / the sidecar's `sidecar-python-can.log` tx
+     stats line: `offered=` keeps counting while `queued_to_driver=`
+     (`refused=` in the renamed fields) sits near zero; after ~1 s of
+     nothing accepted, one INFO "flushed its transmit queue" line.
+  4. Reconnect the cable. Within ~2 s: the episode closes (ongoing
+     clears, final counts settle), state returns to error-active, and a
+     period due on that bus goes out at once rather than replaying a
+     backlog. The bus-health row's refusal/flush/missed-period lines
+     stop growing once the queue is flushed and the wire is whole.
+  5. Check `rows_changed`/the trace: at most 16 error rows per episode,
+     whatever the blast's length — not thousands.
+  6. If reachable, a longer pull (≥60 s, ≥10 min) and a PEAK bus-off
+     (leave the cable off past bus-off) repeat 2–4 with no growing
+     backlog and no stale "still receiving" readout once the wire is
+     dead; a dropped-frames gap event should appear only if the host
+     itself fell behind (unlikely on a quiet bench, but worth knowing
+     the marker's wording — "dropped-frames gap" — to recognise it if it
+     does).
+  7. Tick exit criterion "Bench-confirmed by the owner" once 2–6 hold.
 
 ### Phase 2a report (2026-10-04)
 

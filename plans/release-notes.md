@@ -256,6 +256,46 @@ repaired something broken.
   subdirectory on Windows and on macOS alike and a project written on
   either opens correctly on the other.
 
+## Bus faults
+
+- **Fixed:** pulling a cable no longer plays back minutes later. A fault
+  used to turn into a row for every error frame — thousands a second —
+  queued behind everything else bound for the host, so a frames/s figure
+  kept reading on a disconnected bus, error counts went on climbing after
+  the wire was back, and "recovery" showed up minutes after the fact. The
+  sidecar now counts a fault as one **bus-error episode** per blast,
+  opened at the first error frame and closed a second after the last, and
+  reports it directly: the fault reaches the screen within about a second
+  of the wire and recovery within about two.
+- **Changed:** only the first 16 error frames of each episode become
+  trace rows — the rest are counted, not shown — and both the count and
+  the cap are configurable (**Settings → Trace → Error frames kept per
+  bus-error episode**). An import behaves exactly like a live session: an
+  older capture's error rows, one per frame, fold into the same rule on
+  the way in and open as episodes plus at most 16 rows each. frames/s and
+  bus load leave error frames out entirely, so a disconnected bus reads
+  its true data rate — none — instead of an inflated one.
+- **New:** the bus-health row says what happened, in a reader's words:
+  an episode's count, rate and dominant kind (`3,412 errors (1.4k/s),
+  mostly ack: no other node acknowledging` on a pulled cable, `—
+  ongoing` while it hasn't closed), refused sends summarised by reason
+  instead of one row per refusal (`sends refused: N (transmit queue
+  full)`), a transmit-queue flush count, and periods the scheduler
+  couldn't offer that bus.
+- **New:** a transmit queue that has accepted nothing for a second is now
+  flushed rather than left to retransmit stale frames into a live fault —
+  the next period gets through the moment the wire can carry it, instead
+  of a channel that could refuse every send for a minute or more with
+  nothing recovering it.
+- **New:** if the sidecar ever falls more than about a second behind and
+  has to drop the oldest frames rather than deliver them late, a
+  **dropped-frames gap** marks the span on that bus's timeline. It is
+  saved with the capture and exported to BLF as a `GLOBAL_MARKER`.
+- **Fixed:** the clock-offset measurement no longer mistakes a backed-up
+  reply for a real clock error. A round whose reply took far longer than
+  a normal step is now discarded instead of applied — it used to step the
+  whole timeline and split one fault into several, misdated episodes.
+
 ## Project panel
 
 - **Changed:** the Elements, logical-bus and DBC rows trade text buttons
