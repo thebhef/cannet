@@ -259,6 +259,7 @@ async fn configure_bus_is_silently_ignored() {
                 speed_bps: 1_000_000,
                 fd_data_speed_bps: 0,
                 fd_enabled: false,
+                error_row_cap: None,
             })),
         })
         .await

@@ -254,15 +254,20 @@ async fn run_session(
             // `Log` messages likewise have no log destination here.
             // `ConfigureBus` is a no-op on a read-only BLF replay
             // (ADR 0021); the server→client envelopes
-            // (`InterfaceAllocated`, `InterfaceState`, `ClockReply`)
-            // only flow the other way but the match must stay
-            // exhaustive.
+            // (`InterfaceAllocated`, `InterfaceState`, `ClockReply`,
+            // and the ADR 0060 bus-fault reports `BusErrorEpisode`,
+            // `TxRefusals`, `FramesDropped`) only flow the other way —
+            // a BLF replay has no bus to fault — but the match must
+            // stay exhaustive.
             Body::Error(_)
             | Body::Log(_)
             | Body::ConfigureBus(_)
             | Body::InterfaceAllocated(_)
             | Body::InterfaceState(_)
-            | Body::ClockReply(_) => {}
+            | Body::ClockReply(_)
+            | Body::BusErrorEpisode(_)
+            | Body::TxRefusals(_)
+            | Body::FramesDropped(_) => {}
             // Bridges are a virtual-bus server feature; the replay
             // server doesn't host them, so installing or detaching a
             // bridge through this session is rejected (ADR 0021).

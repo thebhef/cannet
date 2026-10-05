@@ -372,13 +372,19 @@ async fn run_session(
             // are silently ignored — those concerns belong to the
             // hardware server (ADR 0021 § "Server roles"). The
             // server→client envelopes a peer might echo
-            // (`InterfaceAllocated`, `ClockReply`) are dropped.
+            // (`InterfaceAllocated`, `ClockReply`, and the ADR 0060
+            // bus-fault reports `BusErrorEpisode`, `TxRefusals`,
+            // `FramesDropped` — a virtual bus has no controller to
+            // fault) are dropped.
             Body::Error(_)
             | Body::Log(_)
             | Body::ConfigureBus(_)
             | Body::InterfaceAllocated(_)
             | Body::InterfaceState(_)
-            | Body::ClockReply(_) => {}
+            | Body::ClockReply(_)
+            | Body::BusErrorEpisode(_)
+            | Body::TxRefusals(_)
+            | Body::FramesDropped(_) => {}
         }
     }
 
