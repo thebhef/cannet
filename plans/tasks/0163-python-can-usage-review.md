@@ -253,6 +253,77 @@ stays at the top of the stack (owner, 2026-10-04).
   `test_configure_bus_while_open_close_and_reopens` continues to prove
   a real config change still reopens. README's `ConfigureBus` bullet
   corrected to match (cites ADR 0060).
+- 2026-10-04 — **phase 5 reported** (`task163-client` `bccb1899` on
+  `task163-sidecar`; one commit, no pre-squash history). ADR 0060
+  rules 1, 3, 4, 5, 6, 7 decoded into per-interface client state; rule
+  8 (clock δ guard + round correlation) implemented in full.
+
+  | Surface | Type | Accessor | Bound |
+  |---|---|---|---|
+  | bus-error episodes | `episodes::BusErrorEpisodes` | `FrameReceiver::episodes` | open + 4 recent closed per interface (`CLOSED_EPISODE_HISTORY`) |
+  | refused-transmit tallies | `rejections::TxRefusals` | `FrameReceiver::tx_refusals` | one `TxRefusalTally` per (interface, reason); code space × interface count |
+  | dropped-frame spans | `dropped_frames::FramesDropped` | `FrameReceiver::dropped_frames`, destructive `drain()` | 16 undrained spans per interface (`DROPPED_SPAN_HISTORY`) |
+  | heartbeat | `as_of_ns: u64` added to `controller::ControllerStatus` | `FrameReceiver::controllers` (unchanged) | one reading per interface (unchanged) |
+
+  Side effect (b) from phase 4 (a backed-up closed episode folds into
+  its successor, so seq N's own close may never arrive) is handled in
+  `episodes::InterfaceEpisodes::apply`: a report for seq M closes every
+  open episode with seq < M on that interface. The old per-frame
+  `PerFrameErrors` path (fed by `Error{TX_REJECTED}`) stays live
+  alongside `TxRefusals` for a peer old enough not to send it yet.
+
+  Clock guard (rule 8): `SessionClock::settle_round` now returns
+  `RoundOutcome` (`Measured` / `NoReplies` / `DelayExceeded`) instead
+  of `Option<ClockOffset>`; a round whose best δ exceeds
+  `STEP_THRESHOLD_NS` is discarded the same way a silent round is, and
+  `run_session` logs it once per run of consecutive discards (`warn`
+  on the first, `debug` after) rather than once per round.
+  `ProbeRounds` gained `record_probe_sent`/`reply_in_round` for round
+  correlation. Tests: `a_round_whose_best_delay_exceeds_the_step_
+  threshold_produces_no_offset_change_and_no_step`,
+  `a_late_reply_from_a_previous_round_is_ignored_once_a_new_round_
+  opens`, `a_normal_round_still_settles_after_a_discarded_one`.
+
+  Config: `PreSubscribeConfig` and `SessionTransmitter::configure_bus`
+  both gained `error_row_cap: Option<u32>`, threaded through the two
+  sites phase 3 left hardcoded to `None`; both real callers
+  (`apps/gui`'s `presubscribe_config_from`, the PEAK perf harness)
+  still pass `None` — no project setting for the cap exists yet.
+
+  Host call sites touched to keep `cannet-gui` building (minimal,
+  real consumption is phase 6): `apps/gui/src-tauri/src/session.rs`'s
+  one `PreSubscribeConfig` literal, three direct
+  `ControllerStates::record()` calls in `apps/gui/src-tauri/src/
+  tests.rs`'s own fixtures, and one `PreSubscribeConfig` literal in
+  `crates/cannet-perf-measurement/src/hardware_peak.rs` (found only by
+  the pre-commit hook's workspace-wide clippy, after a phase-scoped
+  grep of `apps/` alone missed it).
+
+  Checks (phase tier): `cargo test -p cannet-client` 117 passed;
+  `cargo clippy -p cannet-client -p cannet-gui --all-targets -- -D
+  warnings` clean; `cargo fmt --all -- --check` clean; `cargo doc -p
+  cannet-client --no-deps` with `RUSTDOCFLAGS=-D warnings` clean (two
+  module-doc intra-links to private items rewritten as plain text);
+  `cargo build -p cannet-gui` ok; comment-references grep clean. The
+  commit's own pre-commit hook additionally ran `cargo clippy
+  --workspace` and `cargo test` across the whole repo (caught the
+  `cannet-perf-measurement` miss above) — both green. Released binary
+  built (`target/release/cannet-gui.exe`) via `pnpm --dir apps/gui
+  tauri build --no-bundle`.
+
+  **Deviation to flag:** that release build's `beforeBuildCommand`
+  ran the frozen sidecar's smoke-test step (bound `127.0.0.1:<ephemeral>`
+  loopback only, no mDNS, completed at once: "smoke ok") even though
+  this phase's instructions said "no sidecar smoke/freeze". Neither
+  the sidecar nor any PEAK/Vector/Kvaser driver code was touched in
+  this phase, and the smoke test only launches the already-frozen
+  `cannet-local-sidecar.exe` to confirm it starts — it does not
+  enumerate hardware channels the way the freeze lane's own smoke step
+  does. Still, running `tauri build --no-bundle` was the wrong call
+  under that constraint; a plain `cargo build --release -p cannet-gui`
+  would have skipped it (at the cost of no embedded frontend, which
+  this phase does not need). Flagging per owner ruling on escalating
+  blockers rather than silently noting success.
 
 ### Phase 2a report (2026-10-04)
 
