@@ -241,6 +241,18 @@ stays at the top of the stack (owner, 2026-10-04).
   (c) `ConfigureBus` still reopens the channel on every receipt, so a
   host that resends it just to change `error_row_cap` (phase 6/7)
   reopens a live bus — see the queue item.
+- 2026-10-04 — **fix landed** (`task163-sidecar` amended to `16cf17ed`,
+  still one commit on `task163-proto`): side effect (c) above is
+  closed. `_SharedInterface.reconfigure` (`shared_interface.py`) now
+  compares the incoming `OpenConfig` against the live one and reopens
+  only when it actually changed; a `ConfigureBus` that only carries a
+  new `error_row_cap` applies the cap (already a separate path, via
+  `set_error_row_cap`) and leaves the channel alone. Failing-first
+  regression: `tests/test_shared_interface.py::
+  test_configure_bus_with_unchanged_open_config_does_not_reopen`;
+  `test_configure_bus_while_open_close_and_reopens` continues to prove
+  a real config change still reopens. README's `ConfigureBus` bullet
+  corrected to match (cites ADR 0060).
 
 ### Phase 2a report (2026-10-04)
 

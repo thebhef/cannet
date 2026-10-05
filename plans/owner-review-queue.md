@@ -7,12 +7,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-- **163 phase 4: changing the error-row cap reopens the bus.** The cap
-  rides `ConfigureBus` (phase 3), and the sidecar reopens the channel
-  on every `ConfigureBus`, so a cap change from the GUI would drop and
-  re-initialise a live bus. Skip the reopen when the open config is
-  unchanged (sidecar, small), or have the host send the cap only at
-  open? Detail: 0163 § Status, phase 4, side effect (c).
 
 - **158 phase 7: an episode row can be selected but not linked** — a
   selected episode lights its extent on the plot (the phase 6 extent
