@@ -58,6 +58,11 @@ export interface ThemeColors {
   /// A host-derived bus-error event (ADR 0035) — a red distinct from both
   /// the note blue and the truncation amber, because it reports a fault.
   eventBusError: string;
+  /// A host-recorded dropped-frames gap (ADR 0060) — an orange distinct
+  /// from the bus-error red (a fault being reported) and the truncation
+  /// amber (old history evicted): this is live data the server dropped
+  /// rather than deliver late.
+  eventDroppedFrames: string;
   /// Fill behind a canvas label chip (cursor labels, event labels, the
   /// Δ readouts) so the text reads over the series underneath.
   canvasChipFill: string;
@@ -146,6 +151,7 @@ const DARK: Theme = {
   eventMarker: "#4ecbff",
   eventTruncation: "#e0a030",
   eventBusError: "#ff5a52",
+  eventDroppedFrames: "#ff8a3d",
   canvasChipFill: "#0a0d0f",
   laneFillDefault: "rgba(10, 13, 15, 0.65)",
   busUnknown: "#94a3b8",
@@ -204,6 +210,7 @@ const LIGHT: Theme = {
   eventMarker: "#0369a1",
   eventTruncation: "#9a6410",
   eventBusError: "#b91c1c",
+  eventDroppedFrames: "#b45f09",
   // Effectively the canvas color, same as dark's: a chip is a backing
   // that hides the series behind the label, not a visible plate.
   canvasChipFill: "#ffffff",
@@ -262,6 +269,7 @@ const LIGHTHK: Theme = {
   eventMarker: "#bd0f7d",
   eventTruncation: "#9e6205",
   eventBusError: "#c81e3c",
+  eventDroppedFrames: "#c2650c",
   canvasChipFill: "#feeaf0",
   laneFillDefault: "rgba(252, 204, 218, 0.75)",
   busUnknown: "#be2d58",
@@ -374,6 +382,7 @@ export const TOKEN_MIRROR: Partial<Record<keyof ThemeColors, string>> = {
   eventMarker: "--accent-marker",
   eventTruncation: "--warn-text-truncation",
   eventBusError: "--error-text-bus",
+  eventDroppedFrames: "--error-text-dropped",
   busUnknown: "--text-muted",
   busUnset: "--text-dim",
   graphNeutralEdge: "--text-muted",

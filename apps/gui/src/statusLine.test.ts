@@ -191,6 +191,17 @@ describe("statusMetrics", () => {
     expect(metrics.map((m) => m.id)).toEqual(["fps", "frames"]);
   });
 
+  it("shows a disconnected bus's frames/s exactly as the host sent it, with error frames already excluded there (ADR 0060)", () => {
+    // Nothing here recomputes a rate from rows the frontend can see —
+    // the figure is the host's own, formatted and shown unmodified. A
+    // genuinely disconnected bus reads 0 and the metric is omitted (see
+    // "shows a figure only when there is one" below); this is the
+    // companion check that a *reported* figure is never filtered or
+    // rescaled on the way to the bar.
+    const metrics = statusMetrics(metricInputs({ framesPerSecond: 7.4 }));
+    expect(metrics.find((m) => m.id === "fps")?.value).toBe("7.4");
+  });
+
   it("shows a figure only when there is one", () => {
     expect(statusMetrics(metricInputs({})).map((m) => m.id)).toEqual(["frames"]);
     expect(

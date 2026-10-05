@@ -10,9 +10,21 @@ import {
   anyBusHasErrors,
   busHealthConcerns,
   busHealthRows,
+  formatRate,
   type BusHealthInputs,
 } from "./busHealth";
-import type { Bus, BusConnStates, BusHealthMap, InterfaceBinding } from "./types";
+import type {
+  Bus,
+  BusConnStates,
+  BusErrorKindTally,
+  BusHealthMap,
+  InterfaceBinding,
+} from "./types";
+
+/// A kind breakdown with everything at zero except the kinds given.
+function kindTally(over: Partial<BusErrorKindTally> = {}): BusErrorKindTally {
+  return { ack: 0, bit: 0, form: 0, stuff: 0, crc: 0, other: 0, unknown: 0, ...over };
+}
 
 const buses: Bus[] = [
   { id: "b1", name: "Powertrain" },
@@ -407,5 +419,242 @@ describe("busHealthRows receive overruns", () => {
     // host has said nothing about at all: both `null`, both an em dash.
     expect(by.b3.rxOverruns).toBeNull();
     expect(by.b4.rxOverruns).toBeNull();
+  });
+});
+
+describe("busHealthRows controller staleness", () => {
+  it("reads the heartbeat's staleness onto the row", () => {
+    const r = row("b1", {
+      health: {
+        ...health,
+        b1: { controller: { state: "active", tec: 0, rec: 0, stale: true }, errorCount: 0, errorRate: 0 },
+      },
+    });
+    expect(r.controllerStale).toBe(true);
+  });
+
+  it("reads a fresh or heartbeat-less controller as not stale", () => {
+    // `b1`'s fixture carries no `stale` at all — the peer-too-old case —
+    // and must not read as stale by the field's mere absence.
+    expect(row("b1").controllerStale).toBe(false);
+    expect(row("b3").controllerStale).toBe(false);
+  });
+});
+
+describe("busHealthRows bus-error episode line", () => {
+  it("reads nothing for a bus with no episode to report", () => {
+    expect(row("b1").errorEpisodeLine).toBeNull();
+    expect(row("b1").errorEpisodeOngoing).toBe(false);
+  });
+
+  it("words an ongoing ack episode as the pulled-cable diagnosis", () => {
+    const r = row("b2", {
+      health: {
+        ...health,
+        b2: {
+          controller: { state: "warning", tec: 104, rec: 0 },
+          errorCount: 3412,
+          errorRate: 1364.8,
+          errorEpisode: {
+            ongoing: true,
+            firstTsNs: 0,
+            lastTsNs: 2_500_000_000,
+            count: 3412,
+            countByKind: kindTally({ ack: 3410, bit: 2 }),
+            txCount: 3412,
+            rxCount: 0,
+            tec: 104,
+            rec: 0,
+          },
+        },
+      },
+    });
+    // The rate comes straight off the row's own `errorRate` — the
+    // host's figure over this episode's span — not recomputed from the
+    // timestamps carried alongside it.
+    expect(r.errorEpisodeLine).toBe(
+      `3,412 errors (${formatRate(1364.8)}/s), mostly ack: no other node acknowledging`,
+    );
+    expect(r.errorEpisodeOngoing).toBe(true);
+  });
+
+  it("names a non-ack dominant kind by itself, and a single error as singular", () => {
+    const r = row("b2", {
+      health: {
+        ...health,
+        b2: {
+          controller: { state: "active", tec: 0, rec: 0 },
+          errorCount: 1,
+          errorRate: 0,
+          errorEpisode: {
+            ongoing: false,
+            firstTsNs: 0,
+            lastTsNs: 0,
+            count: 1,
+            countByKind: kindTally({ bit: 1 }),
+            txCount: 0,
+            rxCount: 1,
+            tec: 0,
+            rec: 1,
+          },
+        },
+      },
+    });
+    expect(r.errorEpisodeLine).toBe("1 error (0.0/s), mostly bit");
+    expect(r.errorEpisodeOngoing).toBe(false);
+  });
+});
+
+describe("busHealthRows refusals, flushes and missed periods", () => {
+  it("reads nothing when the session has refused, flushed or missed nothing", () => {
+    const r = row("b1");
+    expect(r.refusalLines).toEqual([]);
+    expect(r.flushLine).toBeNull();
+    expect(r.missedPeriodsLine).toBeNull();
+  });
+
+  it("words a per-bus refusal, and marks a session-wide one as such", () => {
+    const r = row("b1", {
+      health: {
+        ...health,
+        b1: {
+          controller: { state: "active", tec: 0, rec: 0 },
+          errorCount: 0,
+          errorRate: 0,
+          refusals: [
+            {
+              reason: "queueFull",
+              reasonText: "transmit queue full",
+              count: 1234,
+              lastMessage: "",
+              sessionWide: false,
+            },
+            {
+              reason: "txRejected",
+              reasonText: "transmit rejected",
+              count: 7,
+              lastMessage: "",
+              sessionWide: true,
+            },
+          ],
+        },
+      },
+    });
+    expect(r.refusalLines).toEqual([
+      "sends refused: 1,234 (transmit queue full)",
+      "sends refused: 7 (transmit rejected, across every bus this session)",
+    ]);
+  });
+
+  it("words a flush count only once something has been flushed", () => {
+    const r = row("b1", {
+      health: {
+        ...health,
+        b1: { controller: { state: "active", tec: 0, rec: 0 }, errorCount: 0, errorRate: 0, flushCount: 3 },
+      },
+    });
+    expect(r.flushLine).toBe("transmit queue flushed 3×");
+  });
+
+  it("words missed periods by kind, omitting a kind that was not missed", () => {
+    const r = row("b1", {
+      health: {
+        ...health,
+        b1: {
+          controller: { state: "active", tec: 0, rec: 0 },
+          errorCount: 0,
+          errorRate: 0,
+          missedPeriods: { noRoom: 5, late: 0 },
+        },
+      },
+    });
+    expect(r.missedPeriodsLine).toBe("missed periods: 5 no room");
+  });
+});
+
+describe("busHealthConcerns ongoing episodes", () => {
+  it("counts a bus with an ongoing episode even while its controller still reads active", () => {
+    // A receive-only fault climbs REC by one per error, so a sparse
+    // episode can run for seconds below the warning limit while errors
+    // are genuinely landing (ADR 0060) — the launcher must not stay
+    // dark through that just because the tone hasn't moved yet.
+    const concerns = busHealthConcerns(
+      busHealthRows({
+        ...inputs,
+        health: {
+          b1: {
+            controller: { state: "active", tec: 0, rec: 4 },
+            errorCount: 4,
+            errorRate: 1,
+            errorEpisode: {
+              ongoing: true,
+              firstTsNs: 0,
+              lastTsNs: 4_000_000_000,
+              count: 4,
+              countByKind: kindTally({ bit: 4 }),
+              txCount: 0,
+              rxCount: 4,
+              tec: 0,
+              rec: 4,
+            },
+          },
+        },
+      }),
+    );
+    expect(concerns).toEqual([{ bus: "Powertrain", state: "an ongoing error episode", busOff: false }]);
+  });
+
+  it("does not double-count a bus already flagged by its tone", () => {
+    const concerns = busHealthConcerns(
+      busHealthRows({
+        ...inputs,
+        health: {
+          b1: {
+            controller: { state: "busOff", tec: 256, rec: 0 },
+            errorCount: 9000,
+            errorRate: 200,
+            errorEpisode: {
+              ongoing: true,
+              firstTsNs: 0,
+              lastTsNs: 1_000_000_000,
+              count: 9000,
+              countByKind: kindTally({ ack: 9000 }),
+              txCount: 9000,
+              rxCount: 0,
+              tec: 256,
+              rec: 0,
+            },
+          },
+        },
+      }),
+    );
+    expect(concerns).toEqual([{ bus: "Powertrain", state: "bus-off", busOff: true }]);
+  });
+
+  it("leaves a finished episode with no concern of its own once the controller clears", () => {
+    const concerns = busHealthConcerns(
+      busHealthRows({
+        ...inputs,
+        health: {
+          b1: {
+            controller: { state: "active", tec: 0, rec: 0 },
+            errorCount: 12,
+            errorRate: 0,
+            errorEpisode: {
+              ongoing: false,
+              firstTsNs: 0,
+              lastTsNs: 1_000_000_000,
+              count: 12,
+              countByKind: kindTally({ bit: 12 }),
+              txCount: 0,
+              rxCount: 12,
+              tec: 0,
+              rec: 0,
+            },
+          },
+        },
+      }),
+    );
+    expect(concerns).toEqual([]);
   });
 });

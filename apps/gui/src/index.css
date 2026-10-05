@@ -117,6 +117,7 @@
   --warn-text-em: #eab308;
   --warn-text-truncation: #e0a030;
   --error-text-bus: #ff5a52;
+  --error-text-dropped: #ff8a3d;
 
   /* Project-graph node identities (fill + outline per kind) */
   --node-bus-bar: #60a5fa;
@@ -284,6 +285,7 @@
   --warn-text-em: #8a5c08;
   --warn-text-truncation: #9a6410;
   --error-text-bus: #b91c1c;
+  --error-text-dropped: #b45f09;
 
   /* Project-graph node identities (fill + outline per kind) */
   --node-bus-bar: #1d4ed8;
@@ -452,6 +454,7 @@
   --warn-text-em: #8d5b00;
   --warn-text-truncation: #9e6205;
   --error-text-bus: #c81e3c;
+  --error-text-dropped: #c2650c;
 
   /* Project-graph node identities (fill + outline per kind) */
   --node-bus-bar: #0f48e9;
@@ -820,6 +823,21 @@ ul.status-bar-menu .status-chip {
 }
 .bus-health-rate {
   color: var(--text-faint);
+}
+/* An ongoing episode's line, a refusal summary, a flush count, a
+   missed-periods count: each its own quiet line under the error figure,
+   same treatment as the adapter identity block below. */
+.bus-health-note {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--text-faint);
+  font-size: 0.85em;
+}
+.bus-health-stale {
+  margin-left: 0.35rem;
+  color: var(--text-dim);
+  font-size: 0.85em;
+  font-style: italic;
 }
 /* The adapter's identity sits under its name as a second, quieter line,
    so the column still reads as "which adapter" at a glance and the

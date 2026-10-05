@@ -433,12 +433,18 @@ Between the connection button and the notices sits the **bus health
 launcher** — an icon, not a labelled button, because a single summary across
 several buses cannot name the one that is off, which is the only thing
 worth knowing when one is. It stays neutral while every controller that
-reports is healthy, and tints with a count when one is not, naming
-the bus in its tooltip. Pressing it opens the **Bus health** panel: one
-row per logical bus with its ISO 11898-1 fault-confinement state, the
-transmit and receive error counters, the bus load, the receive-overrun
-count, the error-frame tally and rate, and the adapter with the
-configuration the host actually put on the wire for it.
+reports is healthy, and tints with a count when one is not — including a
+bus whose controller still reads active but has an **ongoing bus-error
+episode**, since a receive-only fault can run for seconds below the
+warning limit while errors are genuinely landing — naming the bus in its
+tooltip. Pressing it opens the **Bus health** panel: one row per logical
+bus with its ISO 11898-1 fault-confinement state, the transmit and
+receive error counters, the bus load, the receive-overrun count, the
+error-frame tally and rate, and the adapter with the configuration the
+host actually put on the wire for it. A controller reading is stamped
+with when the peer last took it; one that has gone more than three
+seconds without a refresh shows **stale** beside the state, so a reading
+that has stopped arriving looks different from one that has not changed.
 
 **Overruns** is the column that says whether the rest of the panel — and
 the trace behind it — is the whole story. It counts occasions on which
@@ -580,6 +586,23 @@ visible window than fit across the plot at one chip's width each, the
 gap doubles until they fit — so a fault that produces a hundred thousand
 error frames is one marker, and a long window reads as fewer, longer
 episodes rather than hitting a cap.
+
+**The bus-health row carries its own episode, refusal, flush and
+missed-period lines, worded for a reader.** Under the error tally, a bus
+with an episode to report shows its count, rate and dominant kind —
+`3,412 errors (1.4k/s), mostly ack: no other node acknowledging` on a
+pulled cable, `— ongoing` appended while the fault has not closed; any
+other kind just names itself. A bus the peer has refused sends on shows
+`sends refused: N (<reason>)` per reason — `transmit queue full`,
+`interface closed`, `bus is listen-only`, `frame incompatible with the
+bus mode`, or a peer old enough to report only per-frame — with a
+refusal that names no interface marked "across every bus this session".
+A transmit-queue flush (the bus accepted nothing for a second, so the
+sidecar emptied it rather than let stale frames sit ahead of the next
+period) shows as a count; periods the host's own scheduler could not
+offer that bus — no room in the session's request channel, or a tick
+running late — show as a **missed periods** count. Each line appears
+only once there is something to say.
 
 **frames/s and bus load leave error frames out**, so a disconnected bus
 reads its true data rate — none — rather than its error rate. The
@@ -3458,12 +3481,19 @@ lifecycle:
 | Category | Example | Editable | Saved with the capture | Written to BLF |
 |---|---|---|---|---|
 | user-authored | a note | yes | yes | yes |
+| host-recorded | a dropped-frames gap | no | yes | yes |
 | host-derived | a bus-error marker (one per episode in view) | no | no | no |
 | frontend-derived | the history-truncated marker | no | no | no |
 
 A host-derived event summarises data the capture already holds, so it
 is never written out — the records it stands for are what a save
-records, and the summary is display only.
+records, and the summary is display only. A host-recorded event is the
+opposite: nothing in the capture can rebuild it (a span of frames the
+peer dropped rather than deliver late — [ADR
+0060](docs/adr/0060-a-bus-fault-is-an-episode-the-sidecar-reports.md)),
+so it is durable like a note — held in the store, saved with the
+capture, written to BLF as a `GLOBAL_MARKER` — but not something you
+authored, so it takes no edits.
 
 **Each kind declares whether it shows by default**; every kind,
 including bus errors, is visible everywhere from the start — a fault is
@@ -3476,24 +3506,34 @@ nothing is hidden and unfindable. Switching a kind on is per view.
 The **Events** panel (command palette → *Show events*) is the browsing
 home: **one list, oldest first**, like every trace-like view — your own
 notes, any message-bound comments read from a capture file, the
-history-truncated marker and the **bus-error episodes**, interleaved by
-time. Each row opens to disclose what it is **about**, its **tag** and
-its **description** — the last two editable in place on your own
-events; a derived event (the history-truncated marker, an episode)
-shows what was computed and takes no edits. The tag and description
-ride the saved file too — inside the BLF marker, no sidecar, and as
-`cannet.tag` / `cannet.description` properties on an MDF `##EV`.
+host-recorded dropped-frames gaps, the history-truncated marker and the
+**bus-error episodes**, interleaved by time. Each row opens to disclose
+what it is **about**, its **tag** and its **description** — the last
+two editable in place on your own events; a derived event (the
+history-truncated marker, an episode) shows what was computed and takes
+no edits. The tag and description ride the saved file too — inside the
+BLF marker, no sidecar, and as `cannet.tag` / `cannet.description`
+properties on an MDF `##EV`.
 
 **A bus-error episode** is a burst of errors on one bus, ended once the
 bus has been silent for the **episode gap** (**Trace → Bus-error
 episode gap**, `bus_error_episode_gap_s`: 5 s by default, 1 s at the
 least; the **Diagnostics** row's tooltip says the gap in use). Its row
 sits at the first error and reads `<bus>: N bus errors over S (R/s)` —
-the same label as its marker on the plot. Individual error frames are
-not listed; they are trace rows. An episode row takes no edits, but it
-is **selectable** like any other row: selecting it lights the episode
-on the plot, extent and all. A link between two of your own events is
-made here as before; an episode cannot be one end of a new link.
+the same label as its marker on the plot, with `— ongoing` appended
+while the fault has not closed. Individual error frames are not listed;
+they are trace rows. Disclosing an episode's row shows its own text
+block verbatim — the same prose the row's label is drawn from, followed
+by the hidden `cannet-event/1` block every event's text carries ([ADR
+0057](docs/adr/0057-one-text-block-carries-an-event.md)) — composed by
+the host, never recomposed in the view. An episode row takes no edits,
+but it is **selectable** like any other row: selecting it lights the
+episode on the plot, extent and all. An **ongoing** episode's id moves
+as it grows (it is keyed on its last error until the fault closes), so
+the view keys its selection on the bus and first error instead while
+the fault is open, settling onto the stable id once it closes. A link
+between two of your own events is made here as before; an episode
+cannot be one end of a new link.
 
 **The list is the host's.** It merges the notes with each bus's episode
 list — the same one the plot's markers are drawn from — and applies

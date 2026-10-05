@@ -50,32 +50,49 @@ export function plotEventsFromTimeline(
     }));
 }
 
-/// The count, span and rate a bus-error marker's label carries.
-/// `spanSeconds` is `0` for a single error, or for errors at one instant,
-/// in which case rate has nothing to divide by.
-export function busErrorMarkerLabel(count: number, spanSeconds: number): string {
+/// The count, span and rate a bus-error marker's label carries. `rate`
+/// is the host's own figure — errors per second over the episode's span
+/// (`BusErrorEpisode.rate`, `null` for a zero span) — never recomputed
+/// from `count` and `spanSeconds` here: the host already divides, and
+/// redoing it in JS is exactly the re-derivation CLAUDE.md's GUI rules
+/// forbid.
+export function busErrorMarkerLabel(
+  count: number,
+  spanSeconds: number,
+  rate: number | null,
+): string {
   const countText = count === 1 ? "1 bus error" : `${count} bus errors`;
-  const rate = count / spanSeconds;
-  const rateText = spanSeconds > 0 ? `${rate.toFixed(rate >= 10 ? 0 : 1)}/s` : "—";
+  const rateText = rate != null ? `${rate.toFixed(rate >= 10 ? 0 : 1)}/s` : "—";
   return `${countText} over ${formatDurationSeconds(spanSeconds)} (${rateText})`;
 }
 
-/// A bus-error episode's id: `bus-error:{bus}:{n}`, `n` the ordinal of
-/// its last error on the bus — a real sample of the bus's error series,
-/// so the same id the Events panel's row for it carries and a link to it
-/// resolves through (ADR 0056).
+/// A bus-error episode's id. A **finalised** episode is keyed
+/// `bus-error:{bus}:{n}`, `n` the ordinal of its last error on the bus —
+/// a real sample of the bus's error series, so the same id the Events
+/// panel's row for it carries and a link to it resolves through (ADR
+/// 0056). That ordinal is unstable while the episode is still growing —
+/// every new report bumps it — so an **ongoing** one is keyed by its
+/// bus and first error instead, which does not move until it closes
+/// (0163 phase 6 side effect (d): don't key a selection on the moving
+/// id while `ongoing`).
 function busErrorEpisodeId(e: BusErrorEpisodeWire): string {
-  return `bus-error:${e.bus}:${e.lastOrdinal}`;
+  return e.ongoing ? `bus-error:${e.bus}:open:${e.firstT}` : `bus-error:${e.bus}:${e.lastOrdinal}`;
 }
 
 /// The plot's bus-error markers (ADR 0035 amended) — and the Events
 /// panel's rows for them: one `TimelineEvent`
 /// of kind `busError` per **episode** the host served, at its first
 /// error, labelled `<bus>: N bus errors over S (R/s)` with the bus's
-/// project name. They draw through {@link plotEventsFromTimeline}, the
-/// authored events' path, and nothing about them is styled apart but
-/// their kind's colour. The host has already folded the episodes at the
+/// project name, `— ongoing` appended while the fault is still open.
+/// They draw through {@link plotEventsFromTimeline}, the authored
+/// events' path, and nothing about them is styled apart but their
+/// kind's colour. The host has already folded the episodes at the
 /// window's gap; this only shapes them (CLAUDE.md § GUI architecture).
+///
+/// `description` is the episode's own `text` (ADR 0057), passed
+/// through verbatim for the Events panel's disclosure — the way every
+/// other kind shows its text block — never recomposed from `detail`
+/// here.
 export function busErrorEpisodeEvents(
   episodes: readonly BusErrorEpisodeWire[],
   busName: (bus: string) => string,
@@ -83,10 +100,10 @@ export function busErrorEpisodeEvents(
   return episodes.map((e) => ({
     id: busErrorEpisodeId(e),
     timestampNs: Math.round(e.firstT * 1e9),
-    label: `${busName(e.bus)}: ${busErrorMarkerLabel(e.count, e.span)}`,
+    label: `${busName(e.bus)}: ${busErrorMarkerLabel(e.count, e.span, e.rate)}${e.ongoing ? " — ongoing" : ""}`,
     kind: "busError",
     color: null,
-    description: null,
+    description: e.text ?? null,
     tag: null,
     editable: false,
     subjects: [],
