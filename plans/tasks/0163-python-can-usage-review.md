@@ -398,6 +398,71 @@ stays at the top of the stack (owner, 2026-10-04).
   not key a selection on it until `ongoing` clears; (e) a capture clear
   during a live fault restarts that bus's episode reports, so the
   ongoing episode reappears with its whole count from its first error.
+- 2026-10-05 — **phase 7 reported** (`task163-frontend` `d1948538` on
+  `task163-host`; one commit, no pre-squash history — composed directly,
+  no WIP squash needed). Side effect (d) closed in
+  `plotEvents.ts::busErrorEpisodeId`: a finalised episode keeps the
+  `bus-error:{bus}:{lastOrdinal}` id; an `ongoing` one is keyed
+  `bus-error:{bus}:open:{firstT}` instead, stable across every re-poll
+  until it closes, when the row settles onto the ordinal id. Both the
+  plot's marker/extent path and the Events panel's rows go through this
+  one function, so neither can disagree.
+
+  | Panel | Now shows |
+  |---|---|
+  | Bus-health row (`busHealth.ts`, `BusHealthPanel.tsx`) | `stale` beside the state when `controller.asOfNs` is over 3 s old; under the error tally, the newest episode as one line — `3,412 errors (1.4k/s), mostly ack: no other node acknowledging` on a pulled cable, any other dominant kind just named, `— ongoing` appended while open; `sends refused: N (<reasonText>)` per reason, a session-wide (no-interface) one marked "across every bus this session"; `transmit queue flushed N×`; `missed periods: N no room, N late` — each line only when there is something to report |
+  | Status-bar launcher (`busHealthConcerns`) | now also tints for a bus whose controller still reads active but has an ongoing episode (a receive-only fault climbs REC by one per error, so it can sit below the warning limit for seconds) — tooltip reads "an ongoing error episode" for that case, the ISO state name otherwise |
+  | Events panel (`EventsPanel.tsx`, `plotEvents.ts`, `notes.ts`) | a busError episode's label gets `— ongoing` while open; its disclosure shows the host's `text` field verbatim (never recomposed); new `droppedFrames` kind (host-recorded, durable, `GLOBAL_MARKER`) in the Diagnostics filter row, its own theme color (`eventDroppedFrames` / `--error-text-dropped`), rendered through the existing authored-note row path since the host carries it as a `Note` |
+  | Settings | `error_row_cap` added to `hostSettings.ts`'s `Settings` mirror (default 16) — it was carried by the host since phase 6 but never mirrored on this side; the descriptor-driven settings view already renders and saves a bare `Control::Int` with no minimum, so no bespoke UI was needed |
+  | frames/s on a disconnected bus | unchanged, by design — `statusMetrics` already shows the host's own `framesPerSecond` verbatim and omits the metric at 0; added a named test (`statusLine.test.ts`) pinning the pass-through so a future change that started filtering it would fail here |
+  | Trace row kind style | no change — `TraceFrameRecord.kind` carries only `{kind: "error"}`, no per-row kind breakdown exists on the wire to style by; the kind breakdown lives solely on the episode, which the row above already covers |
+
+  **Removed under item 6 (CLAUDE.md drift):** `plotEvents.ts::busErrorMarkerLabel`
+  recomputed a bus-error marker's rate as `count / spanSeconds` in JS
+  even though the host already sends `BusErrorEpisode.rate` over that
+  same span. It now takes the host's `rate` as a parameter and no
+  longer divides. No other re-derivation found (checked `PlotArea.tsx`,
+  `PlotPanel.tsx`, `useBusErrorMarkers.ts` — all plumbing, no math).
+
+  Test names added (one file per area; full list in the diff):
+  `busHealth.test.ts` — `busHealthRows controller staleness`,
+  `busHealthRows bus-error episode line`, `busHealthRows refusals,
+  flushes and missed periods`, `busHealthConcerns ongoing episodes`;
+  `plotEvents.test.ts` — the ongoing-id and verbatim-text cases added to
+  `busErrorEpisodeEvents` and `busErrorEpisodeExtents`, and
+  `busErrorMarkerLabel`'s cases updated to pass a rate rather than let
+  it divide; `EventsPanel.dom.test.tsx` — "marks an ongoing episode's
+  row and shows its text block in the disclosure, verbatim";
+  `BusHealthPanel.dom.test.tsx` — "shows the stale marker, the ongoing
+  episode's own line, refusals, flushes and missed periods";
+  `hostSettings.test.ts` — "defaults the error-row cap to the sidecar's
+  own default"; `notes.test.ts` — the `droppedFrames` kind's category,
+  group membership and BLF record.
+
+  CRLF trap hit and fixed before committing: the Edit tool flipped
+  `theme.ts`, `notes.test.ts`, `statusLine.test.ts`, `BusHealthPanel.tsx`
+  and `BusHealthPanel.dom.test.tsx` from LF to CRLF; `sed -i 's/\r$//'`
+  on each brought `git diff --stat` back from ~2,300 changed lines to
+  the ~870 the edits actually made, confirmed unchanged by a full
+  test+build rerun afterward.
+
+  Checks (phase tier): `pnpm --dir apps/gui test` 251 files / 3,741
+  tests passed; `pnpm --dir apps/gui build` (tsc -b + vite build) clean;
+  `git grep --untracked -Ein "task [0-9]|plans/" -- apps/ crates/` clean.
+  No lint/format lane exists for the frontend in CI or the pre-commit
+  hook (`scripts/frontend-gate.sh` is build+test only), so none was run.
+  Rust lanes: skipped — no `src-tauri` or other crate touched. Python /
+  MDF oracle / sidecar freeze: skipped — no python, MDF writer or
+  sidecar touched. No release binary: this phase is frontend-only and
+  `tauri build` wasn't needed to verify it (`pnpm build` is the
+  type-check + bundle gate for this surface).
+
+  **Deviation:** none from the groomed scope. One judgment call beyond
+  it, within "views only, no new frontend state": `busHealthConcerns`
+  now also flags a bus with an ongoing episode while its controller
+  still reads active, which the prompt's item 3 implied ("surface the
+  ongoing fault count") but did not spell out as a tone-independent
+  condition — recorded here rather than silently redesigned.
 
 ### Phase 2a report (2026-10-04)
 
