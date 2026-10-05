@@ -93,6 +93,196 @@ stays at the top of the stack (owner, 2026-10-04).
   names it. Queue § 3 items "clock accepts an uninformative round" and
   "sidecar→host stream buffers without bound" fold into this task (D12,
   D2/D4).
+- 2026-10-04 — **phase 2a reported** (Opus; `task163-fault-measure`
+  `8ad6a5ea` on `fix-events-checklist-inline`; harness only, no product
+  change). **H1 refuted at the retest's load:** sidecar + gRPC deliver
+  7.2 k error f/s + 1.6 k refusals/s in full in every mode (outbox peak
+  28–60); the 1.3–1.6 k f/s ingest was bound downstream of the
+  transport. At 2× the error rate per-frame refusals cost 0–14 % of
+  frames; 4 Hz coalescing restores full delivery. **The "72 s park" was
+  not a park:** `queued_to_driver` counts accepted sends only; the host
+  kept offering, throttled to ≈ 330–520 sends/s across both channels,
+  and PEAK refused all of them, fresh. The throttle mechanism is
+  reproduced: one session's interfaces move in lockstep with the
+  slowest tx worker. Why the driver refused everything for 77.6 s while
+  reading ≈ 1 500 f/s is not decidable from the surviving logs (window
+  rotated out). Detail: *Phase 2a report* below.
+
+### Phase 2a report (2026-10-04)
+
+**Method.** `servers/cannet-local-sidecar/tests/test_fault_load.py`
+(slow-marked; `uv run --extra dev pytest -m slow
+tests/test_fault_load.py -s`, ≈ 90 s). It runs the real `service.py` /
+`shared_interface.py` behind `serve("127.0.0.1:0")` with a fake channel.
+The channel paces error frames by sleeping until each is due and
+refuses every send `queue_full`. A **python grpc client runs in a child
+process**, so it does not share the sidecar's GIL. The Rust
+`cannet-client` was not used: it has no entry point that subscribes
+outside the GUI host, so driving it would take a new example binary
+plus pytest→cargo plumbing. Coalescing is modelled in the test by an
+instrumented outbox that folds `TX_REJECTED` envelopes into one per
+250 ms; it also records peak depth. No hardware, loopback only, no
+mDNS.
+
+**H1 runs** (10 s window after 2 s warm-up; three runs, band shown
+where runs differed). CPU is process CPU ÷ wall time, so >100 % means
+more than one core.
+
+| load (2 interfaces) | refusals | delivered f/s | env/s | refusals/s | outbox peak | sidecar CPU | client CPU |
+|---|---|---|---|---|---|---|---|
+| 3.6 k err f/s each (bench) | none | 7 199–7 201 | 371 | 0 | 2 | 48–54 % | 18–19 % |
+| same | per frame (today) | 7 196–7 203 | 1 965 | 1 600 | 28–60 | 131–137 % | 91–99 % |
+| same | coalesced 4 Hz | 7 199–7 201 | 369 | 1 603 | 2 | 89–100 % | 55–67 % |
+| 7.2 k err f/s each | none | 14 396–14 400 | 372 | 0 | 2–3 | 52–58 % | 16–19 % |
+| same | per frame | **12 456 / 13 027 / 14 399** | 1 700–1 967 | 1 384–1 600 | **85–3 166** | 142–145 % | 80–99 % |
+| same | coalesced 4 Hz | 14 397–14 400 | 370 | 1 603 | 2 | 102–107 % | 58–64 % |
+
+- **Verdict: H1 is refuted for the sidecar and the transport at the
+  retest's load.** Nothing is lost and coalescing changes nothing.
+  Whatever held the host to 1.3–1.6 k f/s sits after the transport, in
+  the `cannet-client` worker or the host's `run_pump`.
+- **The envelope cost is real but has headroom.** At 2× the error rate,
+  per-frame refusals lost 14 % and 10 % of frames in two of three runs.
+  The outbox grew to 2.5–3.2 k envelopes, so the session's yield loop
+  was the slow stage. Client CPU was 80 % in the worst run, so the
+  sidecar's yield path (GIL shared with 8 pump threads and 2 tx workers)
+  is the likelier cost. The harness cannot split yield from transport
+  further. Coalescing restored 14.4 k f/s in 3 of 3 runs.
+- **Caveats.** The fake `recv` is cheaper than PEAK's ctypes read, so
+  the real sidecar has less than the 2× headroom measured here. The
+  client sends single-frame batches; the host batches per scheduler
+  tick.
+- **Where the retest backlog sat (inference).** The `cannet-client`
+  worker tallies refusals when it reads them (`lib.rs:1437–1449`),
+  before the unbounded frame channel to the host (`lib.rs:673`).
+  - Host refusals stopped at 17:33:24Z. Bus 1's accepted sends were
+    back to 826 of 841/s at 17:33:19Z.
+  - The summed backlog was ≈ 0–2 s at 17:30:49Z. Phase 1 computed it as
+    sidecar read totals − `trace_len`, which spans every queue.
+  - So the refusals were fresh at both ends, and the 228 k-frame
+    backlog sat after the client worker, in the host's channel and
+    pump, not in the sidecar outbox.
+  - Bus 2's lines are lost, so this rests on bus 1 alone.
+- **Request side under a backed-up response stream.** The client's
+  reader was paused for 10 s with BDP probing off, so the transport
+  stopped taking bytes; the client kept sending 1 600 sends/s.
+  - The outbox reached 3 540 envelopes.
+  - Sends reached the channel at 1 597–1 603/s in every second.
+  - A backlogged response stream does not stall the request side.
+
+**The 72 s "park".** All times are UTC.
+
+The raw window has rotated out of every log file. The oldest kept
+lines are `cannet.log.1` from 20:55Z and `sidecar-python-can.log.4`
+from 16:30 local. The evidence below is the phase-1 agent's verbatim
+excerpts, recovered from its transcript: bus 1's sidecar rx/tx stats
+from 17:29:21 to 17:33:19Z, the host's per-second refusal tallies and
+the host's health lines. Bus 2's stats and the sidecar's debug lines
+for the window are gone.
+
+| Time | Bus 1 sidecar (`queued_to_driver`, `read`) | Host |
+|---|---|---|
+| 17:28:59–17:30:07 (pulls) | **841/s accepted** throughout; error frames, read 3.5–4.0 k/s | no refusals |
+| 17:30:07.9 (wire back) | accepted falls to 528–677/s; read ≈ 2.1 k/s; max_send 2–3.7 ms (pulls: 1.0–1.8) | no refusals |
+| 17:30:44.2 | last accepted send (from `max_gap=77702.06 ms` at 17:32:01.918) | 17:30:44.373 first tally: ×100 "The transmit queue is full" |
+| 17:30:45.9–17:32:01 | **0 accepted**, total frozen at 101 717; read 1.4–2.0 k/s | refusals arrive at **326–522/s** every second |
+| 17:32:01.9 | 36/s, 34/s, then 0 until 17:32:11 | refusals continue |
+| 17:32:11.9–17:33:19 | 208, then 600 → 720 → 826/s | refusals continue |
+| 17:33:24 | — | last tally (+424, ×80 547 total) |
+
+Hypotheses and how each was tested:
+
+1. **H-gate: the ADR 0039 emission gate parked periodics on a stale
+   fault reading.** **Refuted by code.**
+   - The scheduler parks only when `resolve_bus_route` fails
+     (`transmit_commands.rs:694–697`).
+   - That happens only for a session gone or an interface reading
+     `unavailable` (`session.rs:1080–1087`).
+   - Warning, error-passive and bus-off keep their route
+     (`tests.rs:8741` `a_bus_off_controller_still_has_a_route`).
+   - Refusals feed only a tally (`rejections.rs`); no gate reads it.
+   - The sidecar's "full queue with error frames is a live fault and is
+     left" rule (`shared_interface.py:851–893`) decides a *reopen*. It
+     never withholds a send.
+   - `unavailable` cannot hold for 72 s while `recv` succeeds 1 500
+     times a second: every successful read clears `_unreachable`
+     (`driver_python_can.py:582`).
+2. **H-park: the host stopped offering sends.** **Refuted.**
+   `queued_to_driver` counts accepted sends only: a refused send
+   `continue`s before the counter (`shared_interface.py:336–339` vs
+   `:347–349`). Refusals arrived every second of the window. The first
+   arrived within 0.2 s of the last accepted send, with the stream's
+   summed lag ≈ 0–2 s. So sends were being offered and refused. The
+   premise in *Status* 2026-10-04 ("nothing was refused in that window;
+   the refusal total covers only the pulls") is wrong: during the pulls
+   bus 1 accepted every send, so no refusal came from them.
+3. **H-throttle: the offered rate collapsed to the slowest tx worker's
+   pace.** **Mechanism reproduced; consistent with the window.**
+   - A session's transmits are read by one thread
+     (`service.py:128–146` → `_handle_tx` :256–283), which blocks in
+     the per-interface `_tx_queue.put` (`shared_interface.py:300`)
+     while that interface's worker is busy.
+   - On the host, the backpressure reaches the single scheduler thread
+     through the depth-16 request channel (`lib.rs:105`) and
+     `transmit_batch`'s `blocking_send` (`lib.rs:976`). The scheduler
+     drops the periods it misses (ADR 0039 rule 2).
+   - Experiment (ad hoc, same fake; not committed because it asserts a
+     defect): the refused sends on interface A take a slept 1 ms or
+     5 ms; interface B accepts at once; 800 sends/s offered on each.
+     **B received 630/s and 182/s**, locked to A's refusal throughput
+     (630/s and 182/s). The 0.25 s put timeout never fired.
+   - On 10-04 this fits the drop to ≈ 620/s at wire recovery, when
+     sends slowed to 2–3.7 ms. It also fits the ≈ 165–260/s per
+     channel in the window, where refusal arrivals equal the offered
+     rate because all were refused.
+4. **What made PEAK refuse every send for 77.6 s, and what released
+   it.** **Open.**
+   - The release (17:32:01.9) is the driver accepting again. Nothing on
+     the host changed.
+   - Unexplained: zero acceptance while each channel read ≈ 1 500 f/s.
+     If those were our queue draining (echoes), slots would free and
+     some sends would be accepted. So either the reads were error
+     frames from a fault still present, or PCAN's queue-full has
+     hysteresis.
+   - The stats lines cannot tell these apart. Missing, cheapest first:
+     - `refused=` and `offered=` per channel on the sidecar's tx stats
+       line.
+     - `errors=` and `echoes=` on the rx stats line.
+     - Bus 2's lines for the window.
+     - A file-sink line when a periodic parks or resumes.
+   - The first two belong to phase 4. The last belongs to phase 6.
+
+**Recommendations (numbers for phases 2b / 4 / 6).**
+
+- **Refusal coalescing: 4 Hz per interface (as ruled).**
+  - Measured effect: refusal envelopes drop from 1 600/s to ≈ 8/s
+    across two interfaces.
+  - Sidecar CPU falls ≈ 30–45 points and client CPU 30 points.
+  - It removes the only loss seen (2× load).
+- **Data-lane cap: 10 000 frames per interface**, evicting whole oldest
+  batches (Q2's "≈ 1 s").
+  - That is ≈ 1.4 s at 7.2 k f/s and ≈ 2.8 s at 3.6 k f/s.
+  - A client that keeps up never exceeded 85 envelopes (≤ 1 batch per
+    interface plus refusals), so the cap touches only a stalled
+    reader.
+- **Phase 4 (sidecar):** one interface's transmit queue must not
+  throttle the session.
+  - A full per-interface `_tx_queue` refuses at once into the coalesced
+    refusal count instead of blocking the request thread.
+  - Test: the lockstep experiment above, asserting B keeps ≥ 90 % of
+    its offered rate.
+  - Add the stats fields listed under 4.
+- **Phase 6 (host):** there is no park to fix.
+  - The single periodic scheduler blocks in `blocking_send`
+    (`lib.rs:976`) when any session's request channel is full, so one
+    slow session drops periods on every bus of every session.
+  - Use the non-blocking `try_send` path the single-frame transmit
+    already uses (`lib.rs:946`); a full channel counts as refused.
+  - Add a debug-sink line per park and resume.
+- **Phase 5/6 measurement:** H1's bound now sits after the transport.
+  Log the client worker's envelopes and frames read per second and the
+  frame-channel depth next to `trace_len`. That separates the worker
+  from `run_pump` on the next bench pull.
 
 ## Grooming (2026-10-04)
 

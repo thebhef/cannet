@@ -193,6 +193,18 @@ Owner rulings 2026-10-03 (new-build walk):
   (10:30:49–10:32:01) on stale refusals while the wire was already
   healthy. Design and fix in 0163; these two items leave the queue with
   its phase 2.
+- **Correction from 0163 phase 2a (2026-10-04):** the "72 s park" was
+  not a park. `queued_to_driver` counts accepted sends only. The host
+  kept sending, slowed to ≈ 330–520/s, and PEAK refused every send for
+  77.6 s. The host received those refusals within seconds (inferred
+  from the stream's lag at both ends of the window).
+  - The slowdown is a defect the phase reproduced: all interfaces on a
+    session send in lockstep with the slowest transmit worker.
+  - On the host, one full request channel stalls the single periodic
+    scheduler for every bus.
+  - The H1 envelope bound is refuted for the sidecar and transport at
+    the retest's load.
+  - Detail and proposed fixes: 0163 *Phase 2a report*, phases 4 and 6.
 - **Queue-full is recognised by PEAK's text only** ("transmit queue is
   full"); Kvaser ("Transmit buffer overflow") and Vector
   (`XL_ERR_QUEUE_IS_FULL`) are each one entry in `_QUEUE_FULL_TEXTS`
