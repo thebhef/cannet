@@ -5,7 +5,11 @@ controller is brought back by a reset, not by its counters; amended
 (2026-10-03) — a `Tx` row is a frame the bus carried: an accepted send
 appends nothing, and only a refused enqueue writes a row of its own;
 amended (2026-10-04) — PEAK's driver-side auto-reset rejected, and a
-controller refusing sends in silence is reopened
+controller refusing sends in silence is reopened; partly superseded
+(2026-10-04) by [ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md)
+— a full transmit queue that accepts nothing is flushed whatever is
+received, missed periods are counted, and the state poll runs every
+250 ms
 
 ## Decision
 
@@ -25,6 +29,11 @@ The transmit scheduler's periodic-emission semantics, in four rules:
    messages: a dropped period is never *prepared*, so the counter does
    not step (ADR 0027) and the receiver sees sequential counters with
    a longer gap — no manufactured end-to-end violation.
+
+   *Amended by [ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md)
+   rule 6:* a dropped period is counted per bus and shown, and a period
+   the session's request channel has no room for is dropped the same
+   way rather than waited for.
 3. **Route down: park.** A periodic whose bus has no live route is
    parked: no preparation (counter frozen), nothing offered to the
    wire, no per-period wakes. It resumes promptly when the route returns —
@@ -184,8 +193,10 @@ nothing for two seconds is reopened**, through the same swap. Received
 means anything: a data frame, an echo, an error frame. A controller
 retransmitting into a fault reports every attempt as an error frame, so
 a full queue *with* error frames arriving is a live fault and is left
-alone; silence *without* queue-full refusals is an idle bus and is left
-alone. Both together are a controller that is neither transmitting nor
+alone (*superseded by [ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md)
+rule 7: a queue that has accepted nothing for a second is flushed,
+whatever is received*); silence *without* queue-full refusals is an
+idle bus and is left alone. Both together are a controller that is neither transmitting nor
 erroring, whatever its status word says, and nothing on the wire will
 restart it. The driver classifies the refusal (`TxRejected.queue_full`);
 the rule itself is vendor-neutral. It is checked once per state-poll
@@ -202,8 +213,9 @@ is above 127, which ISO 11898-1's fault confinement reaches after 16
 consecutive failed transmissions. The counters arrive in PEAK's error
 frames, one per retransmission, so the gate closes within about 16
 frames of the fault and stays closed for as long as it lasts; once the
-wire is restored the error frames stop, the next half-second status
-poll without one reads the counters as 0, and echoes flow again. Vector
+wire is restored the error frames stop, the next status poll without
+one (every 250 ms, [ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md)
+rule 5) reads the counters as 0, and echoes flow again. Vector
 carries the same gate as a precaution (its documentation does not say
 whether a transmit receipt waits for the acknowledge); Kvaser does not,
 because CANlib documents its echo as a successful transmission.
