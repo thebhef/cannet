@@ -253,12 +253,18 @@ def test_a_clock_probe_is_not_logged_per_probe(
     assert "clock" not in debug_log.text.lower()
 
 
-def test_every_clock_probe_gets_its_own_reply() -> None:
-    """Minimum-delay sampling needs several exchanges to choose between."""
+def test_clock_replies_are_latest_wins_when_they_back_up() -> None:
+    """Every probe is answered, but a reply still waiting when the next
+    one is made is replaced by it: ``ClockReply`` is latest-wins per
+    session on the control lane (ADR 0060 rule 3), because a reply that
+    queued behind others measures the queue, not the clock. A client
+    probing 20 ms apart, against a reader that keeps up, gets each one;
+    four probes answered before anything is read leave only the last."""
     driver = _Driver()
     out = _run_session(
         driver,
         [pb.Envelope(clock_probe=pb.ClockProbe(t1=t)) for t in (7, 8, 9, 10)],
     )
     echoed = [e.clock_reply.t1 for e in out if e.WhichOneof("body") == "clock_reply"]
-    assert echoed == [7, 8, 9, 10]
+    assert echoed and echoed[-1] == 10
+    assert echoed == sorted(echoed) and set(echoed) <= {7, 8, 9, 10}

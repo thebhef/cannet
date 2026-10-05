@@ -231,7 +231,9 @@ def test_a_classic_event_that_is_not_a_chip_state_is_left_alone(tag: int) -> Non
     assert bus.chip_state == (0x02, 128, 0)
 
 
-@pytest.mark.parametrize("tag", [1025, 1026, 1027])  # RX_ERROR, TX_ERROR, TX_REQUEST
+# RX_ERROR (1025) and TX_ERROR (1026) are consumed as bus errors; see
+# test_bus_error_episodes.py.
+@pytest.mark.parametrize("tag", [1027])  # TX_REQUEST
 def test_an_fd_event_that_is_not_a_chip_state_is_left_alone(tag: int) -> None:
     bus = _hooked_bus()
     bus.handle_canfd_event(_FdEvent(1033, _ChipState(0x04, 100, 0)))

@@ -34,6 +34,7 @@ _ensure_on_path()
 from cannet_local_sidecar import server as srv  # noqa: E402
 from cannet_local_sidecar import driver as drv  # noqa: E402
 from cannet_local_sidecar.driver import Frame  # noqa: E402
+from cannet_local_sidecar.server.outbox import SessionOutbox  # noqa: E402
 
 
 def _frame(i: int) -> Frame:
@@ -152,7 +153,7 @@ def _attach_with_frames(
         channel_id=channel_id,
         initial_config=drv.OpenConfig(),
     )
-    outbox: "queue.Queue" = queue.Queue()
+    outbox = SessionOutbox()
     # Open the channel up front, queue frames, then attach. ``attach``
     # is what triggers the pump-start path; queueing first guarantees
     # the burst is already buffered when the pump enters its drain

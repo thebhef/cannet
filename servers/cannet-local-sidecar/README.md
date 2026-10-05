@@ -16,7 +16,11 @@ cannet-local-sidecar/
 ├── cannet_local_sidecar/
 │   ├── __init__.py
 │   ├── __main__.py             # `uv run cannet-local-sidecar` entry
-│   ├── server.py               # gRPC service implementation
+│   ├── server/                 # gRPC service implementation
+│   │   ├── service.py          #   the servicer, the Session stream
+│   │   ├── shared_interface.py #   one shared channel + its pump threads
+│   │   ├── outbox.py           #   a session's control and data lanes
+│   │   └── episodes.py         #   bus-error episodes and the row cap
 │   ├── driver.py               # internal driver-adapter interface
 │   └── driver_python_can.py    # default python-can-backed adapter
 ├── tests/                      # pytest, hardware-free
@@ -120,15 +124,26 @@ The sidecar implements the **hardware-server wire model** described in
   concurrently; rx fans out to every subscriber, and any subscriber
   can tx.
 - `Body::ConfigureBus { interface_id, speed_bps,
-  fd_data_speed_bps?, fd_enabled }` updates the interface's open
-  config. If the interface is currently open the underlying bus is
-  closed and reopened with the new config. Conflict semantics under
-  concurrent clients are deliberately whatever python-can does
-  (ADR 0022 § Known unknowns).
+  fd_data_speed_bps?, fd_enabled, error_row_cap? }` updates the
+  interface's open config. If the interface is currently open **and**
+  the open-configuration fields (bitrate, FD, listen-only) actually
+  change, the underlying bus is closed and reopened with the new
+  config; a `ConfigureBus` that leaves them unchanged — e.g. one that
+  only carries a new `error_row_cap` — applies without reopening a
+  live bus (ADR 0060). Conflict semantics under concurrent clients are
+  deliberately whatever python-can does (ADR 0022 § Known unknowns).
+  `error_row_cap` sets the error-row cap (see *Bus faults*); unset is
+  the default, 16.
 - `Body::InterfaceState { interface_id, state, tec, rec,
-  rx_overruns? }` is pushed: a snapshot on each `Subscribe`, plus a
-  fresh push whenever any of them changes. The controller is read at
-  ~2 Hz. On PEAK the state comes from the error counters its error
+  rx_overruns?, as_of_ns }` is pushed: a snapshot on each `Subscribe`,
+  a fresh push whenever any of them changes, and a heartbeat every
+  second regardless, each stamped with when it was read (`as_of_ns`,
+  the frames' wall clock) so a reading that stopped arriving is
+  visibly stale. The controller is read every 250 ms. A PEAK `recv`
+  that fails because PCAN-Basic answered the read with bus-off or
+  error-passive is a fault reading, published as that state — never
+  `unavailable`, which is for an adapter that has gone. On PEAK the
+  state comes from the error counters its error
   frames carry (cleared to 0/0 when a whole poll passes with no error
   frame and a status word reporting no bus error), on Vector from the
   chip-state events its XL driver reports (both floored by the vendor's own status word, neither able
@@ -166,12 +181,21 @@ The sidecar implements the **hardware-server wire model** described in
   config elsewhere, PEAK included (the channel is opened without
   `PCAN_BUSOFF_AUTORESET`, which would reset it unseen inside the
   poll's own status read and leave a full transmit queue stalled). A
-  channel whose driver refuses sends because its transmit queue is
-  full (`TxRejected.queue_full`) while nothing at all — data, echo or
-  error frame — has been received for two seconds is reopened the same
-  way: a controller retransmitting into a fault reports error frames,
-  so that silence means it has stopped transmitting. Each reset or
-  reopen logs one INFO line; ADR 0039 has the rules.
+  channel that is not bus-off and whose driver has refused every send
+  as queue-full for a second, with none accepted, has its **transmit
+  queue flushed**, whether or not frames are arriving — PEAK through
+  `CAN_Reset` (python-can's `PcanBus.reset`, which also empties the
+  receive queue), Kvaser through `canIOCTL_FLUSH_TX_BUFFER`, Vector
+  through `xlCanFlushTransmitQueue` (never python-can's
+  `VectorBus.flush_tx_buffer`, which transmits a frame of its own),
+  and by a reopen where the device or driver has no such flush. The
+  check repeats at most once a second while the queue stays stuck. A
+  channel refusing queue-full while nothing at all — data, echo or
+  error frame — has been received for two seconds is reopened: a
+  controller that neither transmits nor errors needs re-initialising,
+  which a flush does not do. Each reset or reopen logs one INFO line,
+  as does the first flush of a run (the rest go to the debug sink);
+  ADR 0039 and ADR 0060 have the rules.
 - **Receive timestamps are the backend's, with one correction.** A
   frame's `timestamp_ns` is whatever the vendor driver stamped it
   with, converted to Unix-epoch nanoseconds — except on **Kvaser**,
@@ -202,18 +226,86 @@ The sidecar implements the **hardware-server wire model** described in
   one that stamps the frames. Neither the probe nor the reply is
   logged (they recur for the life of a session).
 
+## Bus faults
+
+The sidecar reports a bus fault as **counts, episodes and state**, not
+as a row per error frame or an envelope per refused send
+([ADR 0060](../../docs/adr/0060-a-bus-fault-is-an-episode-the-sidecar-reports.md)).
+
+- **Bus-error episodes.** Every error frame is folded into its
+  interface's episode: it opens at an error frame and closes after one
+  second without one (by the frames' own hardware stamps, or a second
+  since the last error was read, whichever comes first). The sidecar
+  publishes `BusErrorEpisode { interface_id, seq, first_ns, last_ns,
+  count, count_by_kind, tx_count, rx_count, tec, rec, open }` when an
+  episode opens, at every 250 ms state poll while it is open, and once
+  when it closes. The kind is the vendor's: PEAK decodes it from the
+  error frame's ID (bit, form, stuff, other) and bit position (an error
+  in the acknowledge slot or delimiter is `ack`), with the direction
+  from payload byte 0 and REC/TEC from bytes 2/3 — an ID-0 frame is a
+  counter update, which updates the counters and is not counted. Vector
+  CAN FD error events (`XL_CAN_EV_TAG_RX_ERROR` / `TX_ERROR`, which
+  python-can turns into no message of its own) are consumed through the
+  `handle_canfd_event` hook and classified by `errorCode`. Vector
+  classic and Kvaser report no kind, so their errors count as
+  `unknown`, with the counters the state poll reads.
+- **Error-row cap.** Only the first N error frames of each episode go
+  on to the host as trace rows; the rest are counted. N is per
+  interface, `ConfigureBus.error_row_cap`, default 16 (Vector's NACK
+  error-frame filter keeps the same number). A new cap applies from the
+  next episode, and every episode gets its own first N.
+- **Two lanes per session, control first.** A session's stream is a
+  **control lane** — `InterfaceState`, `BusErrorEpisode`, `TxRefusals`,
+  `FramesDropped`, `ClockReply`, `Log`, `Error` — bounded by key, latest
+  wins (a backed-up closed episode folds into its successor; refusal
+  and drop counts are summed; `Log`/`Error` are a 64-entry FIFO whose
+  overflow the next log line reports), and a **data lane** of
+  `FrameBatch` only, bounded at 10 000 frames per interface. The
+  session drains control before data, so a fault, a refusal or a
+  recovery reaches the host however far behind the frames are. On data
+  overflow the **oldest whole batches** are dropped and `FramesDropped
+  { interface_id, count, first_ns, last_ns }` says which.
+- **Refusals are summarised.** A refused transmit is counted into
+  `TxRefusals { interface_id, reason, count, first_ns, last_ns,
+  last_message, flush_count, last_flush_ns }` for the session that
+  sent it — published at once for the first refusal, then at most
+  every 250 ms per (interface, reason) while refusals continue, and
+  once more after they stop. `reason` is `queue_full` (PEAK by
+  PCAN-Basic's text for `QXMTFULL` and `XMTFULL`, Kvaser by
+  `canERR_TXBUFOFL` -13, Vector by `XL_ERR_QUEUE_IS_FULL` 11, and the
+  sidecar's own per-interface queue), `closed`, `listen_only`,
+  `incompatible` (an undecodable frame, FD on a classic bus, a payload
+  or DLC the bus cannot carry) or `other`. No refused transmit
+  produces an `Error` envelope; `Error` is left for a failed subscribe.
+  Flushes ride the `queue_full` summary as `flush_count` and
+  `last_flush_ns`.
+- **One interface never holds back another.** A send for an interface
+  whose transmit queue is full is refused at once, so the one thread
+  that reads a session's transmit requests never waits on any single
+  interface.
+- **The stats lines say what the fault looked like.** Every two
+  seconds per active interface: `rx stats <id>: read=…/s total=…
+  queue=… errors=…/s echoes=…/s [echoes_dropped=…]` and `tx stats
+  <id>: queued_to_driver=…/s total=… offered=…/s refused=…/s
+  max_send=… ms max_gap=… ms` — `offered` is every send the host
+  asked for, `queued_to_driver` the ones the driver accepted.
+
 ## Swap the driver library
 
 `driver.py` defines a small adapter protocol (`list_channels`,
 `open`, `recv`, `send`, `state`, `rx_loss`, `timer_wraps`,
-`echoes_dropped`, `reset`, `close`); `rx_loss`, `timer_wraps`,
-`echoes_dropped` and `reset` are optional — a driver that omits them is
-read as one that does not watch for receive loss, one whose backends'
-timestamps never roll over, one that withholds no echoes, and one whose
-bus-off controllers are reopened rather than reset in place. A `send`
-that fails because the driver's transmit queue is full should raise
-`TxRejected(..., queue_full=True)`; without it the queue-full reopen
-never fires. The default
+`echoes_dropped`, `reset`, `classify_error`, `flush_tx`, `close`);
+`rx_loss`, `timer_wraps`, `echoes_dropped`, `reset`, `classify_error`
+and `flush_tx` are optional — a driver that omits them is read as one
+that does not watch for receive loss, one whose backends' timestamps
+never roll over, one that withholds no echoes, one whose bus-off
+controllers are reopened rather than reset in place, one whose error
+frames are all of kind `unknown`, and one whose stuck transmit queue is
+reopened rather than flushed. A `send` that fails should raise
+`TxRejected(..., reason=...)` with one of the `REFUSAL_*` reasons
+(`queue_full=True` is still accepted for `queue_full`); without
+`queue_full` the stuck-queue flush and the silent-queue reopen never
+fire. The default
 implementation in `driver_python_can.py` wraps `python-can`. To use
 something else:
 
@@ -226,7 +318,7 @@ something else:
    thing: the host forwards it as this variable, and a variable already
    in the environment wins for that run.
 
-The wire-level code (`server.py`) does not change. See
+The wire-level code (`server/`) does not change. See
 [`LICENSING.md`](LICENSING.md) for the LGPL analysis that motivates
 this layout.
 
