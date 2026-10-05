@@ -66,9 +66,9 @@ stays at the top of the stack (owner, 2026-10-04).
 
 ## Exit criteria
 
-- [ ] Review report: call-site inventory, divergence table with
+- [x] Review report (phase 1, 2026-10-04): call-site inventory, divergence table with
       consequences, comparison with at least three established tools.
-- [ ] ADR accepted by the owner; ADR 0039's fault model superseded where
+- [x] ADR accepted by the owner (ADR 0060, 2026-10-04); ADR 0039's fault model superseded where
       the two disagree; `docs/CONTEXT.md` terms added.
 - [ ] A cable pull of any length shows: one event per bus per blast, the
       fault within ~1 s of the wire, recovery within ~2 s of the wire, no
@@ -380,6 +380,15 @@ the same as a classic 8-byte `CAN_MESSAGE2`; today a 10-minute pull at
   before the last stale refusal reached the host, so the gate alone does
   not explain the release. Falsify from `session.rs` and the two logs
   before the ADR states what the host does with a stale reading.
+- **ADR 0060 accepted (2026-10-04)** with two rulings on the points the
+  2b agent decided: (6) missed periods counted and shown — ok; (7) the
+  dropped-frames gap is a **durable event** (ADR 0035's durable kind,
+  like the truncation marker): event store, saved with the capture,
+  exported as a `GLOBAL_MARKER` — bare BLF has no record for frames a
+  logging tool lost; if one turns up the export may use it. The other
+  decided-here points (T = 1 s flush, per-vendor flush, flush count in
+  `TxRefusals`, silent-queue reopen stays, control-lane keys, reopened
+  saves read ≤ N) stand as written. Branch amended to 80608c02.
 
 ## Phase 1 review (2026-10-04)
 
