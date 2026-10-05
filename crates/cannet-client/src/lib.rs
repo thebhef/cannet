@@ -1005,6 +1005,10 @@ impl SessionTransmitter {
                 speed_bps,
                 fd_data_speed_bps,
                 fd_enabled,
+                // Error-row cap (ADR 0060 rule 2): not exposed by this
+                // method yet, so unset — the server's default (16)
+                // applies. Exposing it is a later phase.
+                error_row_cap: None,
             })),
         };
         self.req_tx
@@ -1173,6 +1177,11 @@ async fn run_session(
                     speed_bps: cfg.speed_bps,
                     fd_data_speed_bps: cfg.fd_data_speed_bps,
                     fd_enabled: cfg.fd_enabled,
+                    // Error-row cap (ADR 0060 rule 2): no caller of
+                    // this crate sets one yet, so unset — the
+                    // server's default (16) applies. Exposing it is
+                    // a later phase.
+                    error_row_cap: None,
                 })),
             };
             if req_tx.send(envelope).await.is_err() {
@@ -1486,6 +1495,21 @@ async fn run_session(
                             state.tec,
                             state.rec,
                             state.rx_overruns,
+                        );
+                    }
+                    // Bus-fault reports (ADR 0060): the sidecar's
+                    // episode, refusal-summary and dropped-frames
+                    // control-lane messages. Decoding these into the
+                    // per-interface state this crate exposes is not
+                    // implemented yet, so log-only rather than a silent
+                    // drop, since dropping a bus fault unremarked is
+                    // exactly what this ADR exists to stop.
+                    Some(
+                        Body::BusErrorEpisode(_) | Body::TxRefusals(_) | Body::FramesDropped(_),
+                    ) => {
+                        tracing::debug!(
+                            target: "cannet_client",
+                            "received a bus-fault report envelope with no consumer yet (ADR 0060)",
                         );
                     }
                     // Subscribe / Unsubscribe round-trips (a peer

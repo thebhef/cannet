@@ -175,6 +175,20 @@ message Envelope {
     ClockProbe clock_probe = 12;
     // server → client, one per ClockProbe.
     ClockReply clock_reply = 13;
+
+    // ---- Bus-fault reporting (ADR 0060) ----
+    //
+    // A bus fault is an episode the sidecar reports on the control
+    // lane, not a stream of error-frame rows; a refused transmit is
+    // summarised, not sent one envelope per frame; a lost frame batch
+    // is named. All three are server → client.
+
+    // server → client. One bus-error episode, open or closed.
+    BusErrorEpisode bus_error_episode = 14;
+    // server → client. Refused-transmit summary for one interface.
+    TxRefusals tx_refusals = 15;
+    // server → client. Frames evicted from the bounded data lane.
+    FramesDropped frames_dropped = 16;
   }
 }
 
@@ -307,6 +321,15 @@ message ConfigureBus {
   uint64 fd_data_speed_bps = 3;
   // Whether the interface accepts CAN FD frames.
   bool fd_enabled = 4;
+  // The error-row cap for this interface's session (ADR 0060 rule 2):
+  // the sidecar forwards at most this many error frames of each
+  // bus-error episode as trace rows and only counts the rest, resetting
+  // when the episode closes. Chosen over `Subscribe` because that
+  // message carries nothing but the interface id, while `ConfigureBus`
+  // already is the per-interface session configuration a client
+  // resends on change — exactly the lifecycle the cap needs ("at open
+  // and on change"). Unset means the server's default (16).
+  optional uint32 error_row_cap = 5;
 }
 
 // Server's response to a Subscribe against a virtual-bus factory: the
@@ -343,6 +366,12 @@ message InterfaceState {
   // field; a reader that rendered that as 0 would claim a completeness
   // nobody measured.
   optional uint64 rx_overruns = 5;
+  // When this reading was taken, nanoseconds since the Unix epoch on
+  // the producer's wall clock (the same scale as `Frame.timestamp_ns`).
+  // Published every second even when nothing has changed (ADR 0060
+  // rule 5), so a receiver can tell a reading that has stopped arriving
+  // from one that is simply unchanged.
+  uint64 as_of_ns = 6;
 }
 
 enum ControllerState {
@@ -364,6 +393,93 @@ enum ControllerState {
   // word reports it. Without it a fault that never gets past the
   // warning limit is indistinguishable from a healthy bus.
   CONTROLLER_STATE_WARNING = 5;
+}
+
+// One bus-error episode on an interface (ADR 0060 rule 1): the
+// sidecar's own account of a fault, counted at the source rather than
+// forwarded as a row per error frame. An episode opens at an error
+// frame and closes after 1 s without one; an open episode is
+// republished at the state cadence and once more when it closes
+// (ADR 0060 rule 5).
+message BusErrorEpisode {
+  string interface_id = 1;
+  // This episode's ordinal on `interface_id`, so a reader can tell
+  // which closing report folds into which successor if closed
+  // episodes back up behind a stalled reader (ADR 0060 rule 3).
+  uint64 seq = 2;
+  // Hardware timestamps of the first and latest error in this episode,
+  // on the frames' clock — the same scale as `Frame.timestamp_ns`.
+  uint64 first_ns = 3;
+  uint64 last_ns = 4;
+  // Error frames counted in this episode.
+  uint64 count = 5;
+  ErrorKindCounts count_by_kind = 6;
+  // Errors detected while this side was transmitting / receiving,
+  // where the vendor says which.
+  uint64 tx_count = 7;
+  uint64 rx_count = 8;
+  // The error counters as of `last_ns`.
+  uint32 tec = 9;
+  uint32 rec = 10;
+  // This episode has not yet closed.
+  bool open = 11;
+}
+
+// Per-kind error-frame counts within one `BusErrorEpisode` (ADR 0060
+// rule 1). What each vendor can tell apart: PEAK decodes `bit`, `form`,
+// `stuff`, `other` and `ack` from the error frame's id and bit
+// position; Vector FD decodes its error event's `errorCode`; Vector
+// classic and Kvaser cannot distinguish a kind at all, so every error
+// of theirs counts as `unknown`.
+message ErrorKindCounts {
+  uint64 ack = 1;
+  uint64 bit = 2;
+  uint64 form = 3;
+  uint64 stuff = 4;
+  uint64 crc = 5;
+  uint64 other = 6;
+  uint64 unknown = 7;
+}
+
+// A refused-transmit summary for one interface (ADR 0060 rule 4):
+// never one envelope per refused frame. Published at most about four
+// times a second per interface while refusals continue.
+message TxRefusals {
+  string interface_id = 1;
+  TxRefusalReason reason = 2;
+  // Refused sends counted since the previous report.
+  uint64 count = 3;
+  uint64 first_ns = 4;
+  uint64 last_ns = 5;
+  // The driver's own text for the latest refusal, where it gave one.
+  string last_message = 6;
+  // Transmit-queue flushes counted since the previous report (ADR 0060
+  // rule 7: a queue that has accepted nothing for 1 s is flushed), and
+  // when the latest one happened.
+  uint64 flush_count = 7;
+  uint64 last_flush_ns = 8;
+}
+
+enum TxRefusalReason {
+  TX_REFUSAL_REASON_UNSPECIFIED = 0;
+  TX_REFUSAL_REASON_QUEUE_FULL = 1;
+  TX_REFUSAL_REASON_CLOSED = 2;
+  TX_REFUSAL_REASON_LISTEN_ONLY = 3;
+  TX_REFUSAL_REASON_INCOMPATIBLE = 4;
+  TX_REFUSAL_REASON_OTHER = 5;
+}
+
+// Frames evicted from the bounded data lane (ADR 0060 rule 3): the
+// data lane holds about one second of frames per interface, and on
+// overflow the oldest whole batches are dropped rather than the
+// newest, or the receive thread blocked. Names the frames lost and the
+// span they covered; the host records a dropped-frames gap on that
+// bus's timeline.
+message FramesDropped {
+  string interface_id = 1;
+  uint64 count = 2;
+  uint64 first_ns = 3;
+  uint64 last_ns = 4;
 }
 
 // Install a bridge whose RX feeds from, and TX forwards to, an
