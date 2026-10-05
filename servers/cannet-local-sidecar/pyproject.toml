@@ -79,3 +79,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `slow` marks load harnesses that run for minutes; the default run skips
+# them and `-m slow` (which overrides this) selects them.
+markers = ["slow: load harness, minutes long; run with -m slow"]
+addopts = "-m 'not slow'"
