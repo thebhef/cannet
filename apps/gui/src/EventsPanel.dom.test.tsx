@@ -665,7 +665,13 @@ describe("EventsPanel record types", () => {
 /// Episode `k` on `bus`, at `1000 + 2k` s: three errors over 4 ms
 /// (750/s), its last error the bus's `3(k + 1)`th — except a single
 /// error when `single`.
-function episode(k: number, at = 1_000 + 2 * k, bus = "b1", single = false): BusErrorEpisodeWire {
+function episode(
+  k: number,
+  at = 1_000 + 2 * k,
+  bus = "b1",
+  single = false,
+  over: Partial<BusErrorEpisodeWire> = {},
+): BusErrorEpisodeWire {
   return {
     bus,
     firstT: at,
@@ -674,6 +680,7 @@ function episode(k: number, at = 1_000 + 2 * k, bus = "b1", single = false): Bus
     span: single ? 0 : 0.004,
     rate: single ? null : 750,
     lastOrdinal: 3 * (k + 1),
+    ...over,
   };
 }
 
@@ -707,7 +714,7 @@ describe("EventsPanel bus-error episodes in the one list", () => {
     expect(eventsPageCalls()[0]).toMatchObject({
       buses: ["b1"],
       gapSeconds: 5,
-      kinds: ["busError", "messageBound", "note", "truncation"],
+      kinds: ["busError", "droppedFrames", "messageBound", "note", "truncation"],
       tagQuery: "",
     });
     ch.mockRestore();
@@ -728,6 +735,23 @@ describe("EventsPanel bus-error episodes in the one list", () => {
     // Selecting an episode is acting on it (ADR 0056): the plot lights it
     // and draws its extent.
     expect(activeEventIds()).toEqual(["bus-error:b1:3"]);
+  });
+
+  it("marks an ongoing episode's row and shows its text block in the disclosure, verbatim", async () => {
+    const text =
+      "3 error frames on CAN1 over 0.004 s: ack 3.\n\ncannet-event/1\nid: bus-error:b1:open:1000\nkind: busError";
+    host.episodes = [episode(0, 1_000, "b1", false, { ongoing: true, text })];
+    renderPanel([], traceData, [CAN1]);
+    const [row] = await rowsShown(1);
+    expect(row.textContent).toContain("— ongoing");
+
+    fireEvent.click(screen.getByLabelText("show event details"));
+    // A custom matcher, not a plain string: the text block's embedded
+    // newlines must survive verbatim, and RTL's default text matcher
+    // normalizes whitespace before comparing.
+    expect(
+      screen.getByText((_content, el) => el?.textContent === text),
+    ).toBeInTheDocument();
   });
 
   it("hides every episode under a tag query, which they cannot match", async () => {

@@ -32,6 +32,7 @@ import { useContext, useMemo } from "react";
 import { ProjectContext } from "./projectContext";
 import {
   busHealthRows,
+  formatRate,
   useBusHealth,
   type AdapterIdentity,
   type BusHealthRow,
@@ -140,6 +141,14 @@ function Row({ row }: { row: BusHealthRow }) {
         >
           <span className="bus-health-dot" />
           {row.stateText}
+          {row.controllerStale && (
+            <span
+              className="bus-health-stale"
+              title="the peer hasn't refreshed this reading in over 3 s"
+            >
+              stale
+            </span>
+          )}
         </span>
       </td>
       <td>
@@ -156,6 +165,21 @@ function Row({ row }: { row: BusHealthRow }) {
             {row.errorCount.toLocaleString()}
             {row.errorRate > 0 && (
               <span className="bus-health-rate"> ({formatRate(row.errorRate)}/s)</span>
+            )}
+            {row.errorEpisodeLine !== null && (
+              <span className="bus-health-note">
+                {row.errorEpisodeLine}
+                {row.errorEpisodeOngoing ? " — ongoing" : ""}
+              </span>
+            )}
+            {row.refusalLines.map((line) => (
+              <span className="bus-health-note" key={line}>
+                {line}
+              </span>
+            ))}
+            {row.flushLine !== null && <span className="bus-health-note">{row.flushLine}</span>}
+            {row.missedPeriodsLine !== null && (
+              <span className="bus-health-note">{row.missedPeriodsLine}</span>
             )}
           </>
         )}
@@ -228,13 +252,4 @@ function Num({ value }: { value: number | null }) {
 
 function Absent() {
   return <span className="bus-health-absent">&mdash;</span>;
-}
-
-/// Errors per second, kept to the two digits that matter: a fault
-/// storm's rate is interesting as an order of magnitude, not to three
-/// decimal places.
-function formatRate(rate: number): string {
-  if (rate >= 1000) return `${(rate / 1000).toFixed(1)}k`;
-  if (rate >= 10) return `${Math.round(rate)}`;
-  return rate.toFixed(1);
 }

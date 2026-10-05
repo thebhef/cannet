@@ -82,6 +82,7 @@ describe("event kinds", () => {
   it("gives every kind a category, and the category fixes the lifecycle", () => {
     expect(EVENT_KIND_META.note.category).toBe("userAuthored");
     expect(EVENT_KIND_META.busError.category).toBe("hostDerived");
+    expect(EVENT_KIND_META.droppedFrames.category).toBe("hostRecorded");
     expect(EVENT_KIND_META.truncation.category).toBe("frontendDerived");
     // Only the user's own events are editable.
     expect(EVENT_KINDS.filter((k) => EVENT_KIND_META[k].editable)).toEqual([
@@ -113,9 +114,9 @@ describe("event kinds", () => {
     expect(notes?.kinds).toEqual(["note", "messageBound"]);
   });
 
-  it("files truncation with bus errors — both are the tool's own findings", () => {
+  it("files truncation with bus errors and dropped frames — all three are the tool's own findings", () => {
     const diag = EVENT_KIND_GROUPS.find((g) => g.label === "Diagnostics");
-    expect(diag?.kinds).toEqual(["busError", "truncation"]);
+    expect(diag?.kinds).toEqual(["busError", "droppedFrames", "truncation"]);
   });
 
   it("starts every group visible, so nothing is hidden without being asked", () => {
@@ -126,6 +127,7 @@ describe("event kinds", () => {
     expect(EVENT_KIND_META.note.blfRecord).toBe("GLOBAL_MARKER");
     expect(EVENT_KIND_META.messageBound.blfRecord).toBe("EVENT_COMMENT");
     expect(EVENT_KIND_META.busError.blfRecord).toBe(null);
+    expect(EVENT_KIND_META.droppedFrames.blfRecord).toBe("GLOBAL_MARKER");
     expect(EVENT_KIND_META.truncation.blfRecord).toBe(null);
   });
 

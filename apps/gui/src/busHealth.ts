@@ -22,10 +22,14 @@ import { bindingKind } from "./types";
 import type {
   Bus,
   BusConnStates,
+  BusErrorEpisodeHealth,
+  BusErrorKindTally,
   BusHealthMap,
   BusHealthRecord,
+  BusRefusal,
   InterfaceBinding,
   InterfaceRecord,
+  MissedPeriods,
 } from "./types";
 
 /// Tauri event the host fires when any bus's health moves. Must match
@@ -140,6 +144,27 @@ export interface BusHealthRow {
   /// `describeAppliedConfig`, so a bitrate never acquires a second
   /// spelling. `null` when the bus is not connected.
   applied: string | null;
+  /// The reading is older than the host's staleness window (ADR 0060
+  /// rule 5) — the peer has stopped refreshing it. `false` for a bus
+  /// with no controller at all.
+  controllerStale: boolean;
+  /// The newest bus-error episode's own count, rate and dominant kind,
+  /// worded for a reader — `null` where the bus has none to report.
+  /// Built from `countByKind` and the row's own `errorRate`, which the
+  /// host already computes over this episode's span; nothing here
+  /// re-derives a rate or a count.
+  errorEpisodeLine: string | null;
+  /// Whether that episode is still open — the fault is on right now.
+  errorEpisodeOngoing: boolean;
+  /// "sends refused: N (reason)" per reason the bus's session reported,
+  /// worded for a reader. Empty when nothing was refused.
+  refusalLines: readonly string[];
+  /// The transmit-queue flush count, worded, or `null` when nothing has
+  /// been flushed (ADR 0060 rule 7).
+  flushLine: string | null;
+  /// Periods the scheduler could not offer on this bus, worded, or
+  /// `null` when none were missed (ADR 0060 rule 6).
+  missedPeriodsLine: string | null;
 }
 
 export interface BusHealthInputs {
@@ -198,6 +223,75 @@ export function adapterIdentity(
   };
 }
 
+/// Errors per second, kept to the two digits that matter: a fault
+/// storm's rate is interesting as an order of magnitude, not to three
+/// decimal places. The one rate formatter in the app — every cell that
+/// shows a per-second figure reuses it rather than growing its own.
+export function formatRate(rate: number): string {
+  if (rate >= 1000) return `${(rate / 1000).toFixed(1)}k`;
+  if (rate >= 10) return `${Math.round(rate)}`;
+  return rate.toFixed(1);
+}
+
+/// The kinds in the fixed order a tie favors the earliest of (ADR 0060's
+/// own tie-break, `event_text.rs::bus_error_text`: "most common first;
+/// ties keep the list's order" — `ack` leads because it is the one kind
+/// that names a pulled cable outright).
+const ERROR_KIND_ORDER: readonly (keyof BusErrorKindTally)[] = [
+  "ack",
+  "bit",
+  "form",
+  "stuff",
+  "crc",
+  "other",
+  "unknown",
+];
+
+/// Which kind the episode's own breakdown names most, and how many —
+/// reading the counts the host already tallied, never recomputing one.
+function dominantErrorKind(tally: BusErrorKindTally): { kind: string; n: number } {
+  let best: keyof BusErrorKindTally = ERROR_KIND_ORDER[0];
+  for (const k of ERROR_KIND_ORDER) if (tally[k] > tally[best]) best = k;
+  return { kind: best, n: tally[best] };
+}
+
+/// How an episode's dominant kind reads: `ack` is the one-line diagnosis
+/// of a pulled cable (ADR 0060 consequences — "no other node is
+/// acknowledging"); every other kind just names itself. `""` when the
+/// breakdown is all zero, which a live episode never is.
+function kindPhrase(tally: BusErrorKindTally): string {
+  const { kind, n } = dominantErrorKind(tally);
+  if (n === 0) return "";
+  return kind === "ack" ? ", mostly ack: no other node acknowledging" : `, mostly ${kind}`;
+}
+
+/// The newest bus-error episode's own line: its count, its rate — the
+/// row's own `errorRate`, which the host already computes over this
+/// episode's span (`bus_health.rs`'s own comment on the field) — and
+/// which kind predominates.
+function errorEpisodeLine(episode: BusErrorEpisodeHealth, rate: number): string {
+  const count = episode.count === 1 ? "1 error" : `${episode.count.toLocaleString()} errors`;
+  return `${count} (${formatRate(rate)}/s)${kindPhrase(episode.countByKind)}`;
+}
+
+/// "sends refused: N (reason)" for one refusal reason — the
+/// session-wide ones (a per-frame refusal names no interface) say so.
+function refusalLine(r: BusRefusal): string {
+  const scope = r.sessionWide ? ", across every bus this session" : "";
+  return `sends refused: ${r.count.toLocaleString()} (${r.reasonText}${scope})`;
+}
+
+/// Periods the scheduler could not offer on this bus, worded — `null`
+/// when none were missed, which is the common case and not worth a line.
+function missedPeriodsLine(m: MissedPeriods | undefined): string | null {
+  if (m === undefined) return null;
+  const parts: string[] = [];
+  if (m.noRoom > 0) parts.push(`${m.noRoom.toLocaleString()} no room`);
+  if (m.late > 0) parts.push(`${m.late.toLocaleString()} late`);
+  if (parts.length === 0) return null;
+  return `missed periods: ${parts.join(", ")}`;
+}
+
 /// Build one row per project bus, in project order.
 export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
   return inp.buses.map((bus) => {
@@ -250,6 +344,18 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
           ? null
           : adapterIdentity(inp.interfaces.find((i) => i.id === binding.interface)),
       applied: connected ? describeAppliedConfig(applied) : null,
+      controllerStale: controller?.stale ?? false,
+      errorEpisodeLine:
+        record?.errorEpisode === undefined
+          ? null
+          : errorEpisodeLine(record.errorEpisode, record.errorRate),
+      errorEpisodeOngoing: record?.errorEpisode?.ongoing ?? false,
+      refusalLines: (record?.refusals ?? []).map(refusalLine),
+      flushLine:
+        (record?.flushCount ?? 0) > 0
+          ? `transmit queue flushed ${(record?.flushCount ?? 0).toLocaleString()}×`
+          : null,
+      missedPeriodsLine: missedPeriodsLine(record?.missedPeriods),
     };
   });
 }
@@ -278,6 +384,13 @@ export function anyBusHasErrors(health: BusHealthMap): boolean {
 /// way to error-passive, and a launcher that stayed dark until 128
 /// would go on saying nothing through the part of a fault an operator
 /// could still act on.
+///
+/// **An ongoing bus-error episode is a concern too, even on a bus whose
+/// controller reads active.** A receive-only fault climbs REC by one
+/// per error (ISO 11898-1), so a sparse episode can run for seconds
+/// below the warning limit while errors are genuinely landing (ADR
+/// 0060) — the one thing worth knowing is exactly what a tone-only
+/// reading would miss.
 export function busHealthConcerns(rows: readonly BusHealthRow[]): BusHealthConcern[] {
   return rows
     .filter(
@@ -285,14 +398,19 @@ export function busHealthConcerns(rows: readonly BusHealthRow[]): BusHealthConce
         r.tone === "warning" ||
         r.tone === "passive" ||
         r.tone === "busoff" ||
-        r.tone === "unavailable",
+        r.tone === "unavailable" ||
+        r.errorEpisodeOngoing,
     )
-    .map((r) => ({
-      bus: r.name,
-      state: r.stateText.toLowerCase(),
-      // An unreachable adapter is the launcher's fault tint, not its
-      // warning tint: nothing on that bus is being carried, and unlike
-      // error-passive it does not clear itself.
-      busOff: r.tone === "busoff" || r.tone === "unavailable",
-    }));
+    .map((r) => {
+      const toneConcern =
+        r.tone === "warning" || r.tone === "passive" || r.tone === "busoff" || r.tone === "unavailable";
+      return {
+        bus: r.name,
+        state: toneConcern ? r.stateText.toLowerCase() : "an ongoing error episode",
+        // An unreachable adapter is the launcher's fault tint, not its
+        // warning tint: nothing on that bus is being carried, and unlike
+        // error-passive it does not clear itself.
+        busOff: r.tone === "busoff" || r.tone === "unavailable",
+      };
+    });
 }
