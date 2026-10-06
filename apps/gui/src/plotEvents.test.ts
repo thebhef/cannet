@@ -105,7 +105,7 @@ describe("busErrorEpisodeEvents", () => {
     // An ordinal-keyed id (the finalised case above) moves every time an
     // open episode grows — it is a report count, not an identity — so
     // the plot's and the Events panel's selection must not key on it
-    // while the episode is still open (0163 phase 6 side effect (d)).
+    // while the episode is still open.
     const open = episode("b1", 1, 21, 50_000, 50_000, { ongoing: true });
     const [ev] = busErrorEpisodeEvents([open], BUS_NAME);
     expect(ev.id).toBe("bus-error:b1:open:1");
