@@ -344,7 +344,7 @@ uv run python -m cannet_local_sidecar.bench.fault_recovery run     --driver fake
   (`CAN_GetStatus` on PEAK, which with auto-reset on is where the
   driver resets the controller), accepted from the driver's queue,
   refused from `TxRefusals`, partner rx from what arrived. Runs are
-  transient: not committed.
+  transient: committed while the recovery work is open, removed at its close.
 - **Strategies** (`bench/strategies.py`), each docstring saying what
   the backend call does: `sidecar` (control — the shipped recovery),
   `state_active` (`bus.state = BusState.ACTIVE`), `bus_reset`
