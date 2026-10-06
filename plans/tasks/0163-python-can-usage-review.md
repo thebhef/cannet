@@ -60,8 +60,8 @@ whose best δ exceeds the step threshold is discarded).
 | 7 | Frontend: bus-health row (state, TEC/REC, episode summary, refusals), ongoing-episode row, gap marker, cap setting UI | `task163-frontend` | after 6 |
 | 8 | Docs + checks: README, sidecar README, rustdoc, release notes | `task163-docs` | done 2026-10-05 — report below |
 | 9 | Owner bench: pulls of 5 s / 60 s / 10 min, replug, PEAK bus-off | owner | **failed 2026-10-05** — bus-off reset of USBBUS1 raised `PCAN_ERROR_INITIALIZE` once and was never retried; see *Grooming (2026-10-05)* |
-| 9a | Fault-recovery bench: `cannet.v1` client of an in-process sidecar, recovery callable swapped per run; strategies 1–5; fake-driver scenarios in the default suite (10 s); `hardware` marker; CLI `wait`/`run --no-timeout` | `task163-bench` | groomed 2026-10-05 |
-| 9b | Live PCAN experiments: bench under the orchestrator's watcher, owner on the cable, one strategy per pull, 3/3 to pass | orchestrator + owner | after 9a |
+| 9a | Fault-recovery bench: `cannet.v1` client of an in-process sidecar, recovery callable swapped per run; strategies 1–5; fake-driver scenarios in the default suite (10 s); `hardware` marker; CLI `wait`/`run --no-timeout` | `task163-bench` | done 2026-10-06 (f2146ff6 + runs c8d237dc) |
+| 9b | Live PCAN experiments: bench under the orchestrator's watcher, owner on the cable, one strategy per pull, 3/3 to pass | orchestrator + owner | done 2026-10-06 — `close_then_open` 3/3; report below |
 | 9c | Fix: the winning strategy becomes the sidecar's recovery; regression scenario reproducing the 2026-10-05 failure | `task163-recovery` | after 9b |
 | 9d | Verdict table, ADR 0039/0060 amendment, sidecar README § bench | `task163-recovery-docs` | after 9c |
 
@@ -92,6 +92,50 @@ stays at the top of the stack (owner, 2026-10-04).
 
 ## Status
 
+- 2026-10-06 — **phase 9a landed** (Opus, 22 min wall clock; `task163-bench`
+  f2146ff6 on e151fc04): `cannet_local_sidecar/bench/` (`fault_recovery.py`,
+  `strategies.py`, `fake.py`), CLI `run`/`wait`, `tests/test_fault_recovery_bench.py`
+  (10 pass, 3 `xfail(strict)` against the shipped recovery: `bus_off` under
+  `sidecar` — reopen fails `INITIALIZE` every pass; `reopen_fails` — after a
+  failed open the closed channel stays current, reads `active`, the reset is
+  disarmed **and the rx pump busy-spins** (`recv` returns `None` at once on a
+  closed channel; bench sends fell 400→10/s); `status_word_clears_while_writes_refuse`
+  — only a bus-off *state* reading arms the reset), `hardware` marker,
+  sidecar README § Fault recovery bench. H-C added from code reading: a status
+  word in `_PCAN_STATUS_UNREACHABLE` (incl. `0x4000000`) latches `unavailable`,
+  which also clears the bus-off run. Sidecar lanes green (358 passed), frontend
+  file test green; freeze/release skipped (smoke enumerates PEAK). Runs
+  commit to `perf/bus-recovery/` (c8d237dc; READMEs corrected).
+- 2026-10-06 — **phase 9b: live PCAN experiments** (bench under the
+  orchestrator's watcher, owner on the cable; USBBUS1 under test, USBBUS2
+  partner, FD 500 k/2 M, ~500 f/s each way; records in `perf/bus-recovery/`):
+
+  | # | strategy | verdict | bus-off → active | evidence |
+  |---|---|---|---|---|
+  | 1 | `sidecar` (control) | not recovered | — | `_reopen` → `PCAN_ERROR_INITIALIZE` every 250 ms, 40+ retries, status `0x00018` unchanged after replug |
+  | 2 | `state_active` | not recovered | — | applied 33×, returned `True`, controller unchanged |
+  | 3 | `bus_reset` | not recovered | — | `CAN_Reset` OK 37×, controller unchanged |
+  | 4–6 | `close_then_open` | recovered ×3 | 1.5 / 1.6 / 1.5 s | status `0x4000000` for one row (handle free), then `0x00000`, active, TEC 0 |
+
+  **H-A confirmed on hardware**: `CAN_Initialize` on a handle this process
+  still holds is refused, so `_swap_channel_locked`'s open-before-close order
+  can never recover a PEAK channel; close-then-open is the fix and is
+  vendor-agnostic. **H-B not reproduced**: the status word kept reporting
+  BUSOFF and the sidecar kept retrying — the owner's GUI log (one failure,
+  then silence) is a different path; H-C remains the candidate and the
+  `reopen_fails` / `status_word_clears…` scenarios cover both. Rungs 4–5
+  (`auto_reset`, `uninit_init_same_handle`) not run: unnecessary once an
+  abstract rung passes. Onset every run: passive `0x40008` TEC 128 at the
+  pull, bus-off `0x00018` 18–36 s later. **Open finding (all three passes):**
+  after the reopen USBBUS1 read ~2 170/s with errors 0 and echoes ~310/s
+  while USBBUS2 still logged 2 100–2 700 ack errors/s; 11–12 s later USBBUS2's
+  errors stopped, its echoes burst (1 848/s, `echoes_dropped` 825) and the
+  partner received **9 039–9 343 stale frames over 11–12 s** before live
+  delivery. Hypotheses, unconfirmed: (i) the echoed frames sat in the PEAK
+  controller retransmitting until the bus came back (echo ≠ ack on PEAK) —
+  then "nothing extra" fails and a queue rule is needed; (ii) the bus was
+  back at the reopen and the partner's delivery lagged. The replug moment is
+  not in the record; the next bench run logs it (owner says when).
 - 2026-10-04 — task opened from the retest findings above; phase 1 launched
   and reported the same day (Opus, read-only; nothing in the tree touched).
   Two corrections to the premise in *Why*: (a) the host ingest is not a
