@@ -326,20 +326,36 @@ uv run python -m cannet_local_sidecar.bench.fault_recovery run     --driver fake
   each carrying its direction's sequence number and send time. The bus
   defaults to ev-zonal's — FD, 500 kbit/s nominal, 2 Mbit/s data;
   `--classic`, `--bitrate`, `--data-bitrate` change it.
-- **Found / recovered.** Found is the first of the channel under test
-  reading `state() != active` or a send on it refused; both are
-  recorded with the gap between them. Recovered is the partner
+- **Found / bus back / recovered.** Found is the first of the channel
+  under test reading `state() != active` or a send on it refused; both
+  are recorded with the gap between them. Bus back is the first frame
+  the channel under test receives from the partner once it reads
+  `active` with its own bus-error episode closed — a reopened channel
+  has no backlog, so this is close to live. Recovered is the partner
   receiving the bench's frames count for count for a second after the
   fault was found: contiguous sequence numbers, none stale (older than
   250 ms on arrival), none repeated, keeping up with the sends — a
-  stale queue replaying after a reset is a failure.
-- **Timeouts.** `run` waits 10 s for the fault and 10 s for the
-  recovery (`--timeout` changes both); `--no-timeout` waits forever,
-  for a run with someone at the cable. Exit 0 recovered, 1 not, 2
-  refused to start. `wait <event>` blocks until the event (`found`,
-  `recovered`, `verdict`, …) appears in the newest run's events file,
-  or the one `--run` names, and prints it — start it after `run` has
-  printed its run directory, or pass that directory.
+  stale queue replaying after a reset is a failure. Recovered can lag
+  bus back well behind: the partner's own receive path may still be
+  draining a backlog the under-test side never had.
+- **Timeline.** The verdict prints and records an adapter-clock
+  timeline: each channel's pull (`BusErrorEpisode.first_ns`), the first
+  bus-off reading (`InterfaceState.as_of_ns`), the first reopen, bus
+  back (the later of the two channels' last-episode `last_ns`) and
+  recovered, each as UTC and as seconds after found, plus how far
+  behind wall clock the slower channel's last error report arrived at
+  bus back. `table.md` carries it under the row table; a stage the run
+  never reached is omitted.
+- **Timeouts.** `run`'s own waits are for `found` and `recovered`
+  only — 10 s each (`--timeout` changes both), or forever with
+  `--no-timeout`, for a run with someone at the cable. Exit 0
+  recovered, 1 not, 2 refused to start. `wait <event>` blocks until the
+  event (`found`, `bus_back`, `recovered`, `verdict`, …) appears in the
+  newest run's events file, or the one `--run` names, and prints it —
+  start it after `run` has printed its run directory, or pass that
+  directory. It is a separate process with its own `--timeout`
+  (default: forever), not `run`'s: watching for `bus_back` from another
+  shell needs its own, shorter one if the run itself is bounded.
 - **Record.** Each run writes `perf/bus-recovery/<UTC>-<strategy>/`
   at the repository root (`--out` moves it): `events.jsonl`, every
   reading as it arrived plus the sidecar's own log lines and the
@@ -374,6 +390,16 @@ uv run python -m cannet_local_sidecar.bench.fault_recovery run     --driver fake
 - **Exclusive handles.** PCAN handles are exclusive per process: close
   both channels in cannet first. The bench refuses to start, naming
   the driver's error, when a channel does not open.
+
+**What the PEAK runs showed.** `state_active` and `bus_reset` do
+nothing to a bus-off controller — PCAN-Basic documents the first as a
+stored value the getter echoes back and the second as a queue flush,
+neither touching the fault — so both left it bus-off every pull.
+`close_then_open` recovered every pull, active within about 1.6 s of
+bus-off (ADR 0039's amendment has the table): PCAN-Basic refuses
+`CAN_Initialize` on a handle the process still holds, so a reopen must
+close first. The shipped recovery is that order, made the sidecar's
+own.
 
 ## Swap the driver library
 
