@@ -33,6 +33,11 @@ day).
 6. Drag resizing across plot areas is a bit weird right now.
 7. template views: signal or message filter selection for s1, s2, s3 —
     parameterized
+7a. (owner, 2026-10-05) Plot **follow live** fits y over the full data
+    range, not the visible window. Repro: Fit All → fit y on a narrow
+    region → zoom out. With follow-live **on**, the y range resets to
+    the whole series' range; with follow-live **off**, y adjusts to the
+    view as expected.
 
 ## Server and integration
 
