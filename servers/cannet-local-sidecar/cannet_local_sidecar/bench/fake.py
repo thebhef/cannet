@@ -20,10 +20,9 @@ per attempt. What a fault does follows ISO 11898-1:
   controller is error-passive and its queue fills.
 
 and what PCAN-Basic does with a handle the process already holds:
-``CAN_Initialize`` on it fails ``PCAN_ERROR_INITIALIZE``, the answer the
-owner's bench recorded when the sidecar reopened a bus-off PCAN-USB FD
-channel while still holding it. ``CAN_Uninitialize`` releases the
-handle by number.
+``CAN_Initialize`` on it fails ``PCAN_ERROR_INITIALIZE`` -- the failure
+mode ADR 0039's close-before-open bus-off reset exists to avoid.
+``CAN_Uninitialize`` releases the handle by number.
 
 :data:`SCENARIOS` are the faults the bench is tested against.
 """
