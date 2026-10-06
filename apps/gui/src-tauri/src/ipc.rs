@@ -1278,44 +1278,40 @@ pub struct SampledPoints {
     pub extrapolated: Vec<[f64; 2]>,
 }
 
-/// A bus-error episode's error frames by kind (ADR 0060 rule 1): what
-/// each vendor can tell apart. `ack` is the acknowledge slot going
-/// unanswered — a pulled cable. Vendors that cannot tell count
-/// `unknown`.
-#[derive(serde::Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ErrorKindTally {
-    pub ack: u64,
-    pub bit: u64,
-    pub form: u64,
-    pub stuff: u64,
-    pub crc: u64,
-    pub other: u64,
-    pub unknown: u64,
+/// One kind of error frame in a bus-error episode, and how many (ADR
+/// 0060 rule 1): `kind` is one of `ack`, `bit`, `form`, `stuff`, `crc`,
+/// `other`, `unknown` — what each vendor can tell apart, `ack` being the
+/// acknowledge slot going unanswered (a pulled cable). An episode's
+/// `countByKind` lists only the kinds it counted any of, **largest
+/// first** — the order a reader is shown them in — so a view joins them
+/// as they come rather than sorting or dropping zeros itself.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ErrorKindCount {
+    pub kind: &'static str,
+    pub count: u64,
 }
 
-impl From<cannet_client::episodes::ErrorKindCounts> for ErrorKindTally {
-    fn from(k: cannet_client::episodes::ErrorKindCounts) -> Self {
-        Self {
-            ack: k.ack,
-            bit: k.bit,
-            form: k.form,
-            stuff: k.stuff,
-            crc: k.crc,
-            other: k.other,
-            unknown: k.unknown,
-        }
-    }
+/// `kinds` as the wire lists them: only the kinds counted, largest first.
+pub(crate) fn kind_counts(kinds: &crate::bus_error_episodes::ErrorKinds) -> Vec<ErrorKindCount> {
+    kinds
+        .largest_first()
+        .into_iter()
+        .map(|(kind, count)| ErrorKindCount {
+            kind: kind.name(),
+            count,
+        })
+        .collect()
 }
 
 /// What a bus-error episode says beyond its count and span, from the
 /// reports it was built from: its errors by kind and by direction, and
 /// the error counters as of its last error. Absent for an episode no
-/// report covers (a series restored with a capture whose reports were
-/// not kept).
-#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+/// report covers (a series restored from a scratch written before the
+/// reports were persisted beside it).
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BusErrorDetail {
-    pub count_by_kind: ErrorKindTally,
+    pub count_by_kind: Vec<ErrorKindCount>,
     pub tx_count: u64,
     pub rx_count: u64,
     pub tec: u32,

@@ -9625,8 +9625,15 @@ fn a_reported_episode_is_one_ongoing_event_with_its_kinds_until_the_next_closes_
     assert_eq!(listed.len(), 1);
     assert!(listed[0].ongoing, "shown live while the fault is on");
     assert_eq!(listed[0].count, 900);
-    let detail = listed[0].detail.expect("the report's detail");
-    assert_eq!((detail.count_by_kind.ack, detail.tec), (900, 128));
+    let detail = listed[0].detail.clone().expect("the report's detail");
+    assert_eq!(
+        detail.count_by_kind,
+        vec![ipc::ErrorKindCount {
+            kind: "ack",
+            count: 900
+        }]
+    );
+    assert_eq!(detail.tec, 128);
     assert!(listed[0].text.contains("ack 900"), "{}", listed[0].text);
 
     // Republished at the state cadence: the same event, grown.

@@ -475,17 +475,14 @@ export interface InterfaceRecord {
   serial_number?: string;
 }
 
-/// Error frames by kind, as a bus-error episode tallies them (ADR 0060
-/// rule 1). `ack` is the acknowledge slot going unanswered — a pulled
-/// cable; vendors that cannot tell the kind apart count `unknown`.
-export interface BusErrorKindTally {
-  ack: number;
-  bit: number;
-  form: number;
-  stuff: number;
-  crc: number;
-  other: number;
-  unknown: number;
+/// One kind of error frame in a bus-error episode, and how many (ADR 0060
+/// rule 1). An episode lists only the kinds it counted, largest first —
+/// the host's order, shown as it comes. `ack` is the acknowledge slot
+/// going unanswered — a pulled cable; vendors that cannot tell the kind
+/// apart count `unknown`. Mirrors `src-tauri/src/ipc.rs::ErrorKindCount`.
+export interface BusErrorKindCount {
+  kind: string;
+  count: number;
 }
 
 /// A bus's newest bus-error episode, as the health row carries it.
@@ -496,7 +493,7 @@ export interface BusErrorEpisodeHealth {
   firstTsNs: number;
   lastTsNs: number;
   count: number;
-  countByKind: BusErrorKindTally;
+  countByKind: BusErrorKindCount[];
   /// Errors seen while transmitting / while receiving, where the vendor
   /// says.
   txCount: number;
