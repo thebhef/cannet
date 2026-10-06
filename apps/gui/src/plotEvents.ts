@@ -72,9 +72,9 @@ export function busErrorMarkerLabel(
 /// panel's row for it carries and a link to it resolves through (ADR
 /// 0056). That ordinal is unstable while the episode is still growing —
 /// every new report bumps it — so an **ongoing** one is keyed by its
-/// bus and first error instead, which does not move until it closes
-/// (0163 phase 6 side effect (d): don't key a selection on the moving
-/// id while `ongoing`).
+/// bus and first error instead, which does not move until it closes:
+/// a selection keyed on the moving id would lose its target at every
+/// report.
 function busErrorEpisodeId(e: BusErrorEpisodeWire): string {
   return e.ongoing ? `bus-error:${e.bus}:open:${e.firstT}` : `bus-error:${e.bus}:${e.lastOrdinal}`;
 }
