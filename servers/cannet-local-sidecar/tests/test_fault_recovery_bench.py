@@ -5,12 +5,11 @@ in-process behind loopback gRPC, a PEAK-shaped fake under the real
 ``PythonCanChannel``, the fault injected once traffic runs and cleared
 after it is found. Each asserts what the bench recorded -- the found and
 recovered events and the table's rows -- so the scenarios check the
-bench's plumbing and the sidecar's recovery together.
-
-Where the shipped recovery fails a scenario the test is
-``xfail(strict=True)`` with the reason: the record of what the sidecar
-does today, which flips to a pass (and so a failure here) when the
-recovery changes.
+bench's plumbing and the sidecar's recovery together. ``bus_off``
+under ``sidecar``, ``reopen_fails`` and
+``status_word_clears_while_writes_refuse`` are the regression scenarios
+for the shipped recovery: close before open, retry a failed open, and a
+bus-off refusal arms the reset (ADR 0039).
 
 The last test drives real PEAK hardware and is marked ``hardware``:
 deselected by default, it skips unless ``CANNET_BENCH_UNDER_TEST`` and
@@ -100,26 +99,9 @@ def _assert_recovered(bench: Bench) -> None:
     assert "recovered" in _table(bench).splitlines()[-1]
 
 
-_SHIPPED_REOPEN_FAILS = (
-    "the shipped recovery reopens a PEAK channel before closing the one it "
-    "holds, and PCAN-Basic refuses a second CAN_Initialize on a held handle "
-    "(PCAN_ERROR_INITIALIZE), every pass"
-)
-
-
-@pytest.mark.parametrize(
-    "strategy",
-    [
-        pytest.param(
-            "sidecar",
-            marks=pytest.mark.xfail(strict=True, reason=_SHIPPED_REOPEN_FAILS),
-        ),
-        "close_then_open",
-    ],
-)
+@pytest.mark.parametrize("strategy", ["sidecar", "close_then_open"])
 def test_bus_off(tmp_path: Path, strategy: str) -> None:
-    timeout = _NO_RECOVERY_TIMEOUT_S if strategy == "sidecar" else _RECOVERY_TIMEOUT_S
-    bench = _run(tmp_path, "bus_off", strategy, recovery_timeout=timeout)
+    bench = _run(tmp_path, "bus_off", strategy, recovery_timeout=_RECOVERY_TIMEOUT_S)
     rows = _episode_rows(bench)
     assert any(r["state"] == "bus_off" and r["status"] == "0x00010" for r in rows)
     assert any(r["refused"].get("other") for r in rows)
@@ -162,20 +144,12 @@ def test_refusal_storm(tmp_path: Path) -> None:
     _assert_recovered(bench)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "a reopen that fails after the channel was closed leaves the closed "
-        "channel current; it reads active, which clears the bus-off run, so "
-        "the reset is never tried again"
-    ),
-)
 def test_reopen_fails(tmp_path: Path) -> None:
     bench = _run(
         tmp_path,
         "reopen_fails",
         "close_then_open",
-        recovery_timeout=_NO_RECOVERY_TIMEOUT_S,
+        recovery_timeout=_RECOVERY_TIMEOUT_S,
     )
     rows = _episode_rows(bench)
     assert any("ut: open raised:" in e for r in rows for e in r["strategy"])
@@ -183,19 +157,12 @@ def test_reopen_fails(tmp_path: Path) -> None:
     _assert_recovered(bench)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the bus-off reset is armed only by a bus-off state reading; a send "
-        "refused as bus-off does not arm it"
-    ),
-)
 def test_status_word_clears_while_writes_refuse(tmp_path: Path) -> None:
     bench = _run(
         tmp_path,
         "status_word_clears_while_writes_refuse",
         "close_then_open",
-        recovery_timeout=_NO_RECOVERY_TIMEOUT_S,
+        recovery_timeout=_RECOVERY_TIMEOUT_S,
     )
     rows = _episode_rows(bench)
     assert any(
