@@ -69,8 +69,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::app_state::AppState;
 use crate::bus_error_episodes::{BusErrorReports, ReportedEpisode};
 use crate::connection_state::AppliedBusConfig;
-use crate::ipc::ErrorKindTally;
+use crate::ipc::ErrorKindCount;
 use crate::notes::{EventKind, Note};
+use crate::signal_cache::SignalCacheStore;
 
 /// How often the host reads what the peers reported and republishes the
 /// health rows. The sidecar republishes an open episode and the
@@ -226,7 +227,7 @@ pub(crate) struct ControllerHealth {
 }
 
 /// A bus's newest bus-error episode, as the health row shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ErrorEpisodeHealth {
     /// No closing report has arrived for it: the fault is on now.
@@ -234,8 +235,9 @@ pub(crate) struct ErrorEpisodeHealth {
     pub(crate) first_ts_ns: u64,
     pub(crate) last_ts_ns: u64,
     pub(crate) count: u64,
-    /// What each vendor can tell apart; `ack` names a pulled cable.
-    pub(crate) count_by_kind: ErrorKindTally,
+    /// The kinds it counted, largest first (`crate::ipc::kind_counts`);
+    /// `ack` names a pulled cable.
+    pub(crate) count_by_kind: Vec<ErrorKindCount>,
     /// Errors seen while transmitting / while receiving, where the
     /// vendor says.
     pub(crate) tx_count: u64,
@@ -252,7 +254,7 @@ impl From<&ReportedEpisode> for ErrorEpisodeHealth {
             first_ts_ns: e.first_ns,
             last_ts_ns: e.last_ns,
             count: e.count,
-            count_by_kind: e.count_by_kind.into(),
+            count_by_kind: crate::ipc::kind_counts(&e.kinds),
             tx_count: e.tx_count,
             rx_count: e.rx_count,
             tec: e.tec,
@@ -445,11 +447,42 @@ pub(crate) fn record_episode(
     source: &str,
     report: &BusErrorEpisode,
 ) {
+    fold_episode(&state.signal_caches, health, bus, source, report);
+}
+
+/// [`record_episode`] against `caches`: the report's points go onto the
+/// bus's error series and the episode it updated is kept beside the
+/// series, so both persist together (ADR 0047).
+fn fold_episode(
+    caches: &SignalCacheStore,
+    health: &BusHealth,
+    bus: &str,
+    source: &str,
+    report: &BusErrorEpisode,
+) {
     let mut reports = health.reports();
-    reports.seed(bus, || state.signal_caches.bus_error_total(bus));
+    reports.seed(bus, || caches.bus_error_total(bus));
     let points = reports.apply(bus, source, report);
+    let latest = reports.latest(bus).cloned();
     drop(reports);
-    state.signal_caches.record_bus_errors(bus, &points);
+    caches.record_bus_errors(bus, &points);
+    if let Some(episode) = latest {
+        caches.record_bus_error_episode(bus, &episode);
+    }
+}
+
+/// Start the report store from the error series a scratch restore just
+/// brought back: each bus's total, and the reported episodes persisted
+/// beside its series, so a restored capture's episodes carry the kinds,
+/// directions and counters they showed live (ADR 0060 rule 2). A series
+/// from a scratch written before those were kept restores its total
+/// alone, and its episodes have no detail.
+pub(crate) fn restore_reports(caches: &SignalCacheStore, health: &BusHealth) {
+    let restored = caches.bus_error_reports();
+    let mut reports = health.reports();
+    for (bus, total, episodes) in restored {
+        reports.restore(&bus, total, episodes);
+    }
 }
 
 /// The report-store source a live session's interface reports under:
@@ -1197,14 +1230,15 @@ mod tests {
         assert_eq!(row.error_count, 13_000);
         assert_eq!(row.error_rate, 1_500.0);
         assert_eq!(row.last_error_ts_ns, Some(22 * S));
-        let ep = row.error_episode.unwrap();
+        let ep = row.error_episode.as_ref().unwrap();
         assert!(ep.ongoing);
-        assert_eq!(
-            (ep.count, ep.count_by_kind.ack, ep.tec),
-            (3_000, 3_000, 128)
-        );
+        assert_eq!((ep.count, ep.tec), (3_000, 128));
         let json = serde_json::to_value(row).unwrap();
-        assert_eq!(json["errorEpisode"]["countByKind"]["ack"], 3_000);
+        assert_eq!(
+            json["errorEpisode"]["countByKind"],
+            serde_json::json!([{ "kind": "ack", "count": 3_000 }]),
+            "only the kinds counted, largest first"
+        );
         assert_eq!(json["errorEpisode"]["ongoing"], true);
         assert_eq!(json["missedPeriods"]["noRoom"], 0);
     }
@@ -1303,6 +1337,113 @@ mod tests {
                 ..controller(Some(10 * S), false)
             })
         ));
+    }
+
+    /// Reports folded live, persisted with the error series, and read back
+    /// by a fresh report store over the restored scratch: each reported
+    /// episode's kinds, directions and counters come back with it.
+    fn persisted_then_restored(
+        fold: impl FnOnce(&SignalCacheStore, &BusHealth),
+        check: impl Fn(&BusHealth),
+    ) -> BusHealth {
+        let root = tempfile::TempDir::new().unwrap();
+        let validity = crate::signal_cache::PyramidValidity {
+            capture_id: "cap".into(),
+            low_water: 0,
+        };
+        let model = crate::signal_fingerprint::DecodeModel::plain(Vec::new());
+        let caches = SignalCacheStore::new(root.path());
+        let live = BusHealth::default();
+        fold(&caches, &live);
+        check(&live);
+        assert!(caches.persist(&validity, &model, crate::signal_cache::Harden::All));
+        drop(caches);
+        drop(live);
+
+        let reopened = SignalCacheStore::new(root.path());
+        let _ = reopened.restore(&validity, &model, 0);
+        let restored = BusHealth::default();
+        restore_reports(&reopened, &restored);
+        restored
+    }
+
+    #[test]
+    fn a_restored_capture_reads_its_episodes_detail_exactly_as_it_did_live() {
+        // Owner ruling 2026-10-05: an episode's kinds, directions and
+        // counters persist with the error series (ADR 0047, ADR 0060
+        // rule 2), so a relaunch reads the same episode the live session
+        // showed — closed, since nothing is ongoing after a relaunch.
+        let mut first = episode(1, 10 * S, 11 * S, 3_412, true);
+        first.count_by_kind = ErrorKindCounts {
+            ack: 3_410,
+            bit: 2,
+            ..ErrorKindCounts::default()
+        };
+        first.rx_count = 7;
+        let mut grown = first;
+        grown.last_ns = 12 * S;
+        grown.count = 3_500;
+        grown.count_by_kind.ack = 3_498;
+        grown.tec = 255;
+        grown.open = false;
+        let second = episode(2, 30 * S, 30 * S, 1, true);
+        let live_detail = std::cell::RefCell::new(Vec::new());
+        let restored = persisted_then_restored(
+            |caches, health| {
+                for (bus, r) in [
+                    ("b1", &first),
+                    ("b1", &grown),
+                    ("b1", &second),
+                    ("b2", &first),
+                ] {
+                    fold_episode(caches, health, bus, "s", r);
+                }
+            },
+            |live| {
+                let r = live.reports();
+                *live_detail.borrow_mut() = vec![
+                    r.detail("b1", 10.0, 12.0),
+                    r.detail("b1", 10.0, 30.0),
+                    r.detail("b1", 30.0, 30.0),
+                    r.detail("b2", 10.0, 11.0),
+                ];
+            },
+        );
+        let live_detail = live_detail.into_inner();
+        assert!(live_detail.iter().all(Option::is_some));
+        let r = restored.reports();
+        let back = vec![
+            r.detail("b1", 10.0, 12.0),
+            r.detail("b1", 10.0, 30.0),
+            r.detail("b1", 30.0, 30.0),
+            r.detail("b2", 10.0, 11.0),
+        ];
+        // Equal to the live answer in everything but `ongoing`: seq 2 was
+        // still open live, and is closed once restored.
+        let mut expected = live_detail;
+        for d in expected.iter_mut().flatten() {
+            d.ongoing = false;
+        }
+        assert_eq!(back, expected);
+        assert_eq!((r.total("b1"), r.total("b2")), (3_501, 3_412));
+        assert!(
+            r.open_sources().is_empty(),
+            "nothing is ongoing after a relaunch"
+        );
+    }
+
+    #[test]
+    fn a_series_from_a_scratch_without_episode_records_restores_its_total_alone() {
+        // A scratch written before the records were kept holds the series
+        // and nothing beside it: the count carries on from its total, and
+        // its episodes have no detail — as before.
+        let restored = persisted_then_restored(
+            |caches, _| caches.record_bus_errors("b1", &[(10.0, 1.0), (11.0, 3_412.0)]),
+            |_| {},
+        );
+        let r = restored.reports();
+        assert_eq!(r.total("b1"), 3_412);
+        assert_eq!(r.detail("b1", 10.0, 11.0), None);
     }
 
     #[test]
