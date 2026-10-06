@@ -8,6 +8,16 @@ keeps the queue's copy). This file shrinks every time it is walked.
 ## 1. Behaviour changes needing a yes or no
 
 
+- **163 phase 9c: a failed `ConfigureBus` no longer keeps the old
+  channel.** The reopen now closes before it opens (PEAK refuses
+  `CAN_Initialize` on a handle this process holds), so when the open
+  after the close fails the bus reads `unavailable`, transmits are refused
+  `closed`, and the open is retried with the requested config every poll
+  pass until it succeeds. "Keep the old channel" was never reachable on
+  PEAK. Yes, or revert to keeping the old channel where the open fails
+  before the close could have been needed? Detail: 0163 § Status,
+  2026-10-06 (phase 9c).
+
 - **158 phase 7: an episode row can be selected but not linked** — a
   selected episode lights its extent on the plot (the phase 6 extent
   question resolved: transient, reachable), but Link Events stays
@@ -175,6 +185,15 @@ Owner rulings 2026-10-03 (new-build walk):
 ## 3. Fix later
 
 
+- **A PEAK channel in an ack storm hears everything 6–16 s late**
+  (163 phase 9b, 2026-10-06, trials 4–12): ~80 k error frames queue in the
+  PEAK driver during a pull, the rx pump reads ~2.5 k/s, so the channel's
+  delivery runs behind wall clock by the backlog until it drains. ADR
+  0060 capped error *rows*, not frames *read*. Candidate: the Vector
+  precedent at the driver — `PCAN_ALLOW_ERROR_FRAMES` off once an episode
+  passes the row cap, on again when the controller leaves passive/bus-off.
+  Awaits the owner: groom as a 163 phase, or a later task.
+
 - **Error events split during one continuous error blast** (owner,
   2026-10-04): root-caused, not yet fixed — the wire streams were
   continuous; the host's clock-offset probe rode a sidecar→host stream
@@ -292,13 +311,14 @@ committed verbatim as 5ef108dd, triaged by the overseer):
 ## 4. Finished tasks awaiting acceptance
 
 - **Task 163 — python-can Usage Review and a Fault Model That Holds** —
-  `task163-fault-measure` … `task163-episode-detail` (9 branches, ADR 0060); all
-  agent phases done 2026-10-05, full check matrix green at `task163-episode-detail`
-  e151fc04. **Owner's bench 2026-10-05 failed**: the PEAK bus-off reset raised
-  `PCAN_ERROR_INITIALIZE` once and was never retried (0163 § Grooming
-  2026-10-05). Back in development: phases 9a–9d (fault-recovery bench,
-  live PCAN experiments, fix, docs). Retest of `fix-pcan-busoff-visible`
-  (161) closes on the same bench run.
+  `task163-fault-measure` … `task163-recovery-docs` (12 branches, ADR 0060,
+  ADR 0039 amended). Owner's bench failed 2026-10-05 (PEAK bus-off reset
+  `PCAN_ERROR_INITIALIZE`); phases 9a–9c added the fault-recovery bench
+  and close-before-open recovery, **bench-confirmed on PEAK 2026-10-06**:
+  bus-off recovered 3/3, error-passive 3/3, stuck queue flushed (0163
+  § Status, phase 9b). Phase 9d (verdict table, ADR wording, README,
+  bench timeline) in progress; then PR checks after the owner's `gt ss`.
+  Task 161's retest closes on the same runs.
 - **Task 121 — The Trace Tells the Truth About the Wire** — `task121-echo-row`
   + the PEAK echo gate in `fix-pcan-counters-decay`; bench-confirmed
   2026-10-03. Open § 1 items (refused row's reach, bridge `Tx` drop) are

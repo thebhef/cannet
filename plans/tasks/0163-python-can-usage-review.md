@@ -62,8 +62,8 @@ whose best δ exceeds the step threshold is discarded).
 | 9 | Owner bench: pulls of 5 s / 60 s / 10 min, replug, PEAK bus-off | owner | **failed 2026-10-05** — bus-off reset of USBBUS1 raised `PCAN_ERROR_INITIALIZE` once and was never retried; see *Grooming (2026-10-05)* |
 | 9a | Fault-recovery bench: `cannet.v1` client of an in-process sidecar, recovery callable swapped per run; strategies 1–5; fake-driver scenarios in the default suite (10 s); `hardware` marker; CLI `wait`/`run --no-timeout` | `task163-bench` | done 2026-10-06 (f2146ff6 + runs c8d237dc) |
 | 9b | Live PCAN experiments: bench under the orchestrator's watcher, owner on the cable, one strategy per pull, 3/3 to pass | orchestrator + owner | done 2026-10-06 — `close_then_open` 3/3; report below |
-| 9c | Fix: the winning strategy becomes the sidecar's recovery; regression scenario reproducing the 2026-10-05 failure | `task163-recovery` | after 9b |
-| 9d | Verdict table, ADR 0039/0060 amendment, sidecar README § bench | `task163-recovery-docs` | after 9c |
+| 9c | Fix: the winning strategy becomes the sidecar's recovery; regression scenario reproducing the 2026-10-05 failure | `task163-recovery` | done 2026-10-06 (c23b8374); bench-confirmed 3/3 — report below |
+| 9d | Verdict table, ADR 0039/0060 amendment, sidecar README § bench | `task163-recovery-docs` | runs e2aff0ea; docs in progress |
 
 Agent estimate ≈ 34 h. Every branch sits beneath `doc-closeout-2`, which
 stays at the top of the stack (owner, 2026-10-04).
@@ -92,6 +92,56 @@ stays at the top of the stack (owner, 2026-10-04).
 
 ## Status
 
+- 2026-10-06 — **phase 9c landed** (Opus, 14 min wall clock; `task163-recovery`
+  c23b8374 on c8d237dc). Close before open: `_replace_channel` replaces
+  `_swap_channel_locked` for every reopen (bus-off reset, silent-queue
+  reopen, flush fallback, `reconfigure` — the same `CAN_Initialize` is made
+  there). A failed open after the close leaves no channel: state
+  `unavailable`, transmits refused `closed`, rx pump waits instead of
+  spinning, `_retry_open` each poll pass. New `_open_lock`; the driver open
+  runs outside `_lock` so transmit never waits on hardware (ADR 0060
+  rule 6). A send refused as bus-off (`TxRejected.bus_off`, PEAK text; no
+  Kvaser/Vector code known — documented gap) within the last second with
+  none accepted since counts as a bus-off reading even when the state reads
+  `active` or `unavailable` (H-B/H-C). All three 9a xfails removed; 16 new
+  tests (`_ExclusiveDriver` fake refuses a second open while holding one).
+  372 sidecar tests green; ADR 0039 amended, ADR 0060 pointer. **Behaviour
+  change for the owner (§ 1):** a failed `ConfigureBus` no longer keeps the
+  old channel — `unavailable`, retried with the requested config.
+- 2026-10-06 — **phase 9b, part 2: the shipped recovery on hardware**
+  (trials 7–12, strategy `sidecar` = the 9c code; records in
+  `perf/bus-recovery/`, committed on `task163-recovery-docs` e2aff0ea):
+
+  | # | pull → bus-off? | fix | bus-off → active | recovered |
+  |---|---|---|---|---|
+  | 7 | no (passive 28 s; tx queue full, flushed each second) | — | — | 8 s after bus back |
+  | 8 | **at the plug** (bit 1 / form 15 / stuff 3) | reopened USBBUS1 after 1.0 s | 1.6 s | 12 s |
+  | 9 | no | — | — | by itself |
+  | 10 | **at the plug, partner** (form 34 / stuff 6) | reopened USBBUS2 after 1.0 s | 1.6 s | 6 s |
+  | 11 | no (TEC peaked 176) | — | — | by itself |
+  | 12 | **at the pull**, instantly (found via refusal, 15 ms before the state read) | reopened USBBUS1 after 1.0 s; came back *passive* with the cable still out, active 0.5 s after the plug | 1.4 s | 16 s |
+
+  **Bus-off recovered 3/3; error-passive recovered by itself 3/3; stuck
+  queue flushed and resumed (7, 8). Exit criterion 4's scenarios all
+  observed live.** Two facts from the adapter clock (`last_ns` of each
+  channel's episode): (a) **a pull alone never takes PEAK bus-off** — a
+  passive transmitter's ACK errors do not raise TEC (ISO 11898-1); every
+  bus-off in trials 4–12 came from bit/form/stuff errors at the connector
+  (plug bounce, or the break itself in 12), 15 of them from TEC 136. The
+  owner's GUI observations fit: bus-off at the replug/wiggle, then a
+  controller the old code could never bring back. (b) The 9b "stale
+  replay" was hypothesis (ii): nothing replayed; the partner's receive path
+  was 6–16 s behind wall clock — ~80 k error frames queued in the PEAK
+  driver, read at ~2.5 k/s — so `recovered` (count-for-count) lags "bus
+  back" by the drain. **Open finding (§ 3):** during an ack storm
+  everything heard on the storming channel is late by the backlog;
+  candidate rule: the Vector precedent at the driver — error-frame
+  delivery off once an episode passes the row cap, on again when the
+  controller leaves passive/bus-off. Not groomed; owner's call.
+  Bench note: `found` is event-like (~150 ms after the pull); replug is
+  derivable live from the under-test channel (receives with errors 0 right
+  after its reopen) — 9d adds a `bus_back` event and the adapter-clock
+  timeline to the verdict.
 - 2026-10-06 — **phase 9a landed** (Opus, 22 min wall clock; `task163-bench`
   f2146ff6 on e151fc04): `cannet_local_sidecar/bench/` (`fault_recovery.py`,
   `strategies.py`, `fake.py`), CLI `run`/`wait`, `tests/test_fault_recovery_bench.py`
