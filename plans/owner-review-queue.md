@@ -174,12 +174,6 @@ Owner rulings 2026-10-03 (new-build walk):
 
 ## 3. Fix later
 
-- **A capture restored from the scratch loses its bus-error episodes'
-  detail** (task 163 phase 6, 2026-10-05): the error series persists,
-  the per-episode reports (kinds, TEC/REC, ongoing) do not, so a
-  relaunched capture's episodes show count/span/rate only. Persisting
-  them with the scratch, or accepting the loss — see 0163 Status,
-  phase 6 side effect (a).
 
 - **Error events split during one continuous error blast** (owner,
   2026-10-04): root-caused, not yet fixed — the wire streams were
@@ -298,9 +292,9 @@ committed verbatim as 5ef108dd, triaged by the overseer):
 ## 4. Finished tasks awaiting acceptance
 
 - **Task 163 — python-can Usage Review and a Fault Model That Holds** —
-  `task163-fault-measure` … `task163-docs` (8 branches, ADR 0060); all
-  agent phases done 2026-10-05, full check matrix green at `task163-docs`
-  36bb2e42; release binary built without the sidecar smoke step. Awaits
+  `task163-fault-measure` … `task163-episode-detail` (9 branches, ADR 0060); all
+  agent phases done 2026-10-05, full check matrix green at `task163-episode-detail`
+  e151fc04; release binary built without the sidecar smoke step. Awaits
   the owner's bench (exit criterion 4): cable pulls 5 s / 60 s / 10 min,
   replug, PEAK bus-off — script in 0163 Status, phase 8. Retest of
   `fix-pcan-busoff-visible` (161) rides the same bench.

@@ -276,9 +276,9 @@ repaired something broken.
   bus load leave error frames out entirely, so a disconnected bus reads
   its true data rate — none — instead of an inflated one.
 - **New:** the bus-health row says what happened, in a reader's words:
-  an episode's count, rate and dominant kind (`3,412 errors (1.4k/s),
-  mostly ack: no other node acknowledging` on a pulled cable, `—
-  ongoing` while it hasn't closed), refused sends summarised by reason
+  an episode's count, rate and the kinds it counted, largest first
+  (`3,412 errors (1.4k/s): ack 3,412` on a pulled cable, `— ongoing`
+  while it hasn't closed), refused sends summarised by reason
   instead of one row per refusal (`sends refused: N (transmit queue
   full)`), a transmit-queue flush count, and periods the scheduler
   couldn't offer that bus.
@@ -291,6 +291,9 @@ repaired something broken.
   has to drop the oldest frames rather than deliver them late, a
   **dropped-frames gap** marks the span on that bus's timeline. It is
   saved with the capture and exported to BLF as a `GLOBAL_MARKER`.
+- **New:** a capture reopened after a relaunch shows its bus-error
+  episodes exactly as they read live — kinds, transmit/receive split and
+  error counters included — instead of only their count and span.
 - **Fixed:** the clock-offset measurement no longer mistakes a backed-up
   reply for a real clock error. A round whose reply took far longer than
   a normal step is now discarded instead of applied — it used to step the

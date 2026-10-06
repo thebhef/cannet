@@ -582,8 +582,8 @@ stays at the top of the stack (owner, 2026-10-04).
      **Connected**; no episode/refusal/flush/missed-period line shows.
   2. Pull the cable. Within ~1 s: an **ongoing** `busError` event
      appears on that bus's Events row and plot marker; the bus-health
-     row's episode line reads `N errors (rate/s), mostly ack: no other
-     node acknowledging — ongoing`; TEC climbs toward 128; state reaches
+     row's episode line reads `N errors (rate/s): ack N — ongoing`
+     (kinds listed plainly, largest first); TEC climbs toward 128; state reaches
      error-passive/bus-off. frames/s and bus load on that bus read the
      true (near-zero) data rate throughout — never inflated by the error
      flood.
@@ -606,6 +606,76 @@ stays at the top of the stack (owner, 2026-10-04).
      the marker's wording — "dropped-frames gap" — to recognise it if it
      does).
   7. Tick exit criterion "Bench-confirmed by the owner" once 2–6 hold.
+- 2026-10-05 — **fix: episode detail persists** (`task163-episode-detail`
+  `e151fc04` on `task163-docs` `36bb2e42`; one commit, no WIP history —
+  pre-squash HEAD is the commit itself). Owner ruling 2026-10-05; closes
+  phase 6's side effect (a). New task tip.
+
+  | What | Where / form |
+  |---|---|
+  | Record | `bus_error_episodes::ReportedEpisode` (now `Serialize`/`Deserialize`): `first_ns`, `last_ns`, `count`, `kinds`, `tx_count`, `rx_count`, `tec`, `rec`, `base` (running total before the first error — the record's key); `open` is `#[serde(skip)]`, so a restored episode is closed |
+  | Kinds | sparse `ErrorKinds` (`BTreeMap<ErrorKind, u64>`, JSON `{"ack":3412}`); `largest_first()` sorts by count, ties in ADR 0060's order |
+  | Where it persists | on the bus's error-series `SignalCache` (`reported: Vec<ReportedEpisode>`), serialised in that series' existing `PersistedSignal` row of `pyramids.json` as `"reported": [...]` (`#[serde(default, skip_serializing_if = "Vec::is_empty")]`) — same scratch, same manifest write, same capture gate as the series |
+  | Size | ≈150 B JSON per episode; ≤ 1 per second of capture per bus; front-trimmed with the series (`SignalCache::evict_below` drops records whose `last_ns` is below the mark) |
+  | Write path | `bus_health::record_episode` → `fold_episode`: apply → `record_bus_errors(points)` → `record_bus_error_episode(latest)` (same `base` replaces, later appends, older ignored; unchanged record writes nothing) |
+  | Restore path | `capture.rs::restore_scratch_capture_blocking` calls `bus_health::restore_reports` right after the pyramid restore → `BusErrorReports::restore(bus, total, records)` per bus. A manifest with no `reported` (older scratch) restores the total alone; `detail` is `None` as before. `seed` unchanged |
+  | IPC | `countByKind` on `BusErrorDetail` and `ErrorEpisodeHealth` is now `[{kind, count}]`, only counted kinds, largest first (`ipc::kind_counts`). Chose sparsify-in-payload over a sparse wire: the proto's fixed `ErrorKindCounts` is untouched, and the host sorts so the frontend only joins. `ErrorKindTally` / `BusErrorKindTally` removed |
+
+  Rendered strings: bus-health row `3,412 errors (1.4k/s): ack 3,412`;
+  two kinds `3,412 errors (1.4k/s): ack 3,410, bit 2`; one error
+  `1 error (0.0/s): bit 1`; `— ongoing` appended as before. Event text
+  was already plain and largest first (`3412 error frames on pt over
+  2.500 s: ack 3410, bit 2; …`); it is unchanged in output and now uses
+  `largest_first`. README bus-health sentence updated, and the episode
+  paragraph now says episodes survive a relaunch.
+  `plans/release-notes.md` and this file's phase-8 bench step 2 updated
+  to the new wording (uncommitted).
+
+  Tests: `bus_health::tests::a_restored_capture_reads_its_episodes_detail_exactly_as_it_did_live`
+  (live fold → `persist` → drop → new store `restore` → `restore_reports`;
+  four `detail` windows equal the live answers with `ongoing` cleared,
+  totals 3,501/3,412, no open sources), `a_series_from_a_scratch_without_episode_records_restores_its_total_alone`,
+  `signal_cache::…::a_bus_errors_reported_episodes_update_in_place_and_trim_with_the_series`,
+  `bus_error_episodes::…::kinds_are_kept_sparse_and_listed_largest_first`;
+  payload/wording tests updated (`a_row_reads_the_newest_episode_and_the_running_total`,
+  `tests.rs` live-episode test, `busHealth.test.ts`, `BusHealthPanel.dom.test.tsx`).
+  Falsification: with the `record_bus_error_episode` call stubbed out, the
+  restore test fails (`detail` is `None` after restore); restored, it
+  passes.
+
+  **Full check matrix at the tip** (`e151fc04`):
+
+  | Check | Command | Result |
+  |---|---|---|
+  | rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | clean (two private intra-doc links fixed first) |
+  | Rust test | `cargo test --workspace` | 2,278 passed, 0 failed, 9 ignored |
+  | Rust clippy | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+  | Rust fmt | `cargo fmt --all -- --check` | clean |
+  | Frontend | `pnpm --dir apps/gui install --frozen-lockfile`; `pnpm --dir apps/gui test`; `pnpm --dir apps/gui build` | 251 files / 3,741 tests passed; build clean |
+  | buf breaking | `GIT_LFS_SKIP_SMUDGE=1 buf breaking crates/cannet-wire/proto --against ".git#tag=v0.10.0,subdir=crates/cannet-wire/proto"` | clean (proto unchanged) |
+  | gencode drift | `bash scripts/regen-proto-gencode.sh` + `git status` | no drift |
+  | MDF oracle | `cargo run -p cannet-mdf --example export_sample -- <tmp>.mf4`; `uv run --with asammdf --with numpy python crates/cannet-mdf/tests/fixtures/validate_export.py <tmp>.mf4` | OK — 30 frames, 4 signals, 3 events, 1 attachment |
+  | Python wire | `libs/cannet-python-wire`: `uv sync --extra dev --frozen`, `ruff check .`, `ruff format --check .`, `mypy`, `pytest` | clean; 18 passed |
+  | Python sidecar | `servers/cannet-local-sidecar`: same four | clean; 348 passed, 3 deselected |
+  | Python client | `cargo build -p cannet-server`; `clients/cannet-python-client`: same four | clean; 151 passed, 1 skipped |
+  | Sidecar freeze | `uv run --no-project scripts/build-sidecar.py --no-smoke` | froze (smoke omitted: enumerates hardware) |
+  | comment refs | `git grep --untracked -Ein "task [0-9]\|plans/" -- apps/ crates/ servers/ libs/` | clean |
+  | path hooks | `scripts/check_local_paths.py`, `relativize_project_paths.py` on the changed files | clean |
+
+  The known `uv.lock` `grpcio-tools` `requires-dist` drift reappeared
+  in the client and sidecar after `uv sync`; discarded with
+  `git checkout --`, as in phase 8. Committed `--no-verify` (shared
+  tree); fmt and path hooks run by hand.
+
+  **Bench binary** (`pnpm --dir apps/gui build`, then
+  `cargo build --release -p cannet-gui --features custom-protocol`;
+  not launched): `target/release/cannet-gui.exe`, 27,231,232 bytes,
+  SHA-256 `8d6ea264192fe643734562761b9e4a82a0ac8ee1c4e36cb5c3a0214c4c6265e7`,
+  HEAD `e151fc04`.
+
+  Bench addition: after step 4, close and relaunch the app over the same
+  capture. The restored episode should read the same kinds, TX/RX split
+  and TEC/REC in the Events disclosure as it did live, not ongoing.
 
 ### Phase 2a report (2026-10-04)
 
@@ -854,6 +924,13 @@ the same as a classic 8-byte `CAN_MESSAGE2`; today a 10-minute pull at
   decided-here points (T = 1 s flush, per-vendor flush, flush count in
   `TxRefusals`, silent-queue reopen stays, control-lane keys, reopened
   saves read ≤ N) stand as written. Branch amended to 80608c02.
+- **Ruling 2026-10-05 (episode detail on relaunch):** the per-episode
+  scalars — kind counts as a **sparse map** (one kind is the normal case),
+  tx/rx counts, TEC/REC — persist in the disk cache beside the error
+  series, so a restored capture reads the same episode it showed live;
+  they cannot be rebuilt from rows (only the first N exist). The row and
+  event text list kind counts plainly, largest first (`ack 3,412`), no
+  gloss. Fix branch `task163-episode-detail` e151fc04; queue item deleted.
 
 ## Phase 1 review (2026-10-04)
 
