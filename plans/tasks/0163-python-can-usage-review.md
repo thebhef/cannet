@@ -59,7 +59,11 @@ whose best δ exceeds the step threshold is discarded).
 | 6 | Host: episodes → `busError` events with start/end; frames/s + load exclude error frames; gap event; per-bus refusals; import fold through the same builder; cap setting; park fix per 2a | `task163-host` | after 5 |
 | 7 | Frontend: bus-health row (state, TEC/REC, episode summary, refusals), ongoing-episode row, gap marker, cap setting UI | `task163-frontend` | after 6 |
 | 8 | Docs + checks: README, sidecar README, rustdoc, release notes | `task163-docs` | done 2026-10-05 — report below |
-| 9 | Owner bench: pulls of 5 s / 60 s / 10 min, replug, PEAK bus-off | owner | exit criteria 3–4 |
+| 9 | Owner bench: pulls of 5 s / 60 s / 10 min, replug, PEAK bus-off | owner | **failed 2026-10-05** — bus-off reset of USBBUS1 raised `PCAN_ERROR_INITIALIZE` once and was never retried; see *Grooming (2026-10-05)* |
+| 9a | Fault-recovery bench: `cannet.v1` client of an in-process sidecar, recovery callable swapped per run; strategies 1–5; fake-driver scenarios in the default suite (10 s); `hardware` marker; CLI `wait`/`run --no-timeout` | `task163-bench` | groomed 2026-10-05 |
+| 9b | Live PCAN experiments: bench under the orchestrator's watcher, owner on the cable, one strategy per pull, 3/3 to pass | orchestrator + owner | after 9a |
+| 9c | Fix: the winning strategy becomes the sidecar's recovery; regression scenario reproducing the 2026-10-05 failure | `task163-recovery` | after 9b |
+| 9d | Verdict table, ADR 0039/0060 amendment, sidecar README § bench | `task163-recovery-docs` | after 9c |
 
 Agent estimate ≈ 34 h. Every branch sits beneath `doc-closeout-2`, which
 stays at the top of the stack (owner, 2026-10-04).
@@ -80,7 +84,11 @@ stays at the top of the stack (owner, 2026-10-04).
       client/host bounds (phases 5–6) bound the fourth. **Not yet
       exercised against real hardware** — the bench walk below is
       phase 9's.
-- [ ] Bench-confirmed by the owner.
+- [ ] Bench-confirmed: the fault-recovery bench (phase 9a) passes 3/3 on
+      PCAN for `bus_off`, `error_passive` and `stuck_tx_queue` at ev-zonal
+      load, live with the owner on the cable (phase 9b), and the winning
+      strategy ships as the sidecar's recovery with its regression
+      scenario (9c). Task 161's retest closes on the same run.
 
 ## Status
 
@@ -852,6 +860,58 @@ Hypotheses and how each was tested:
   Log the client worker's envelopes and frames read per second and the
   frame-channel depth next to `trace_len`. That separates the worker
   from `run_pump` on the next bench pull.
+
+## Grooming (2026-10-05) — the bench failed; a fault-recovery bench
+
+**Observation (owner's bench, build e151fc04, log UTC 2026-10-06).**
+03:21:52–54 both PEAK channels read ≈ 3 700 error f/s with no echoes (the
+pull). 03:21:56.062 the host's sends on USBBUS1 were refused "bus-off
+state". 03:21:56.341 the sidecar logged **one** `bus-off reset of
+…USBBUS1 failed: open …: A PCAN Channel has not been initialized yet or
+the initialization process has failed` (`PCAN_ERROR_INITIALIZE`
+0x4000000) and then nothing: zero `failed again`, zero `was bus-off for`,
+zero `state poll … failed` for the rest of the file (DEBUG enabled). From
+03:21:58 USBBUS1 read 0 f/s and refused ≈ 840 sends/s as bus-off for
+40 s+. Autorecovery did not happen; task 161's retest fails on the same
+path.
+
+**Hypotheses (unconfirmed; the bench's first runs are the experiments).**
+
+- H-A: `_swap_channel_locked` opens the fresh handle *before* closing
+  the old one, so `CAN_Initialize` on a channel this process already
+  holds fails; close-then-open (or `CAN_Uninitialize` + `CAN_Initialize`
+  on the held handle) recovers.
+- H-B: after the failed attempt `CAN_GetStatus` no longer reports
+  `BUSOFF` while `CAN_Write` still does, so `_pcan_state` reads
+  error-active, `_bus_off_since` is cleared every pass and the reset is
+  never re-armed — a write refusal does not re-arm it today.
+
+**Rulings (Q1–Q12, 2026-10-05).** The owner: "closing the loop based on
+my observations has not worked" — every fault issue raised becomes a
+scenario on one bench.
+
+| Q | Ruling |
+|---|---|
+| 1 layer | Strategies live at the driver layer (`OpenChannel.reset()` and friends). The bench is a `cannet.v1` client of an **in-process** sidecar (as `tests/test_fault_load.py` runs one), driving it the way cannet does — subscribe, transmit, read `InterfaceState` / `BusErrorEpisode` / `TxRefusals` — and **swaps the recovery callable** under test before opening. No flag, no new proto, no control file; nothing experimental ships. |
+| 2 found / recovered | Found = first of `state()` ≠ active or a send refusal; both logged with the gap. Recovered = the partner channel receives the bench's sequence-numbered frames **at the sent rate, count for count** — nothing missing, nothing extra (no stale queue replaying after a reset). |
+| 3 form | `cannet_local_sidecar/bench/fault_recovery.py` (importable; PyInstaller ships only what the server imports) + CLI `uv run python -m cannet_local_sidecar.bench.fault_recovery wait|run …`; `tests/test_fault_recovery_bench.py` on the fake driver in the default suite with `timeout=10 s`; `hardware` marker (deselected like `slow`) for real dongles; `--no-timeout` for dev with the owner. |
+| 4 scenarios | `bus_off`, `error_passive`, `stuck_tx_queue`, `refusal_storm`, `reopen_fails` (open raises `INITIALIZE` once; retried, never silently disarmed), `status_word_clears_while_writes_refuse` (H-B: a write refusal alone re-arms). |
+| 5 config | Configurable; default = ev-zonal's buses (`examples/ev-zonal/ev-zonal.cannet_prj`): FD, 500 kbit/s nominal / 2 Mbit/s data. |
+| 6 traffic | `--rate`, default 800 f/s per direction, both channels send and receive; frames at max length (8 B classic / 64 B FD); with FD on, a mix of FD and classic-format frames. |
+| 7 ladder | python-can-abstract first: 1 `state_active` (`bus.state = BusState.ACTIVE`), 2 `bus_reset` (`bus.reset()`), 3 `close_then_open`; then PEAK: 4 `auto_reset` (`PCAN_BUSOFF_AUTORESET`), 5 `uninit_init_same_handle`. 3/3 pulls to pass; one failed pull fails the strategy. The same bench, unchanged, runs later with Vector and Kvaser connected. |
+| 8 results | Raw per-run records (250 ms table + events) commit to `perf/bus-recovery/` — transient, removed at close. Verdict tables in this file; the final one in the ADR amendment. How-to in `servers/cannet-local-sidecar/README.md`. |
+| 9 framing | Folded into 163 as phases 9a–9d (table above). |
+| 10–11 protocol | Bench started under the orchestrator's watcher the moment 9a lands → owner unplugs when they can → watcher fires, orchestrator reports the fault and the armed strategy → owner plugs → `recovered` fires, or nothing happens and the owner says so → trial failed, sidecar brought up with the next strategy. One pull = one trial. |
+| 12 | Polling is a floor, not the only source: write results, error frames (PEAK counters), PEAK status frames (disabled at open today) and Vector chip-state events are edge sources. The bench samples them side by side every 250 ms; the event-vs-poll design for the fix waits for that data. |
+
+**Sampling table** (one row per 250 ms, raw, no interpretation):
+`t | state() | status word | TEC | REC | sent/s | accepted/s | refused (reason) | partner rx/s | seq gap | strategy event`.
+
+**Operational.** PCAN handles are exclusive per process: the GUI has both
+channels closed while the bench runs; the bench refuses to start on
+`HWINUSE`/`INITIALIZE` and names the holder. No PEAK handle is opened by
+any agent — phase 9a is built and tested on the fake driver; 9b is the
+orchestrator with the owner.
 
 ## Grooming (2026-10-04)
 

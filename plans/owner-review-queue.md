@@ -294,10 +294,11 @@ committed verbatim as 5ef108dd, triaged by the overseer):
 - **Task 163 — python-can Usage Review and a Fault Model That Holds** —
   `task163-fault-measure` … `task163-episode-detail` (9 branches, ADR 0060); all
   agent phases done 2026-10-05, full check matrix green at `task163-episode-detail`
-  e151fc04; release binary built without the sidecar smoke step. Awaits
-  the owner's bench (exit criterion 4): cable pulls 5 s / 60 s / 10 min,
-  replug, PEAK bus-off — script in 0163 Status, phase 8. Retest of
-  `fix-pcan-busoff-visible` (161) rides the same bench.
+  e151fc04. **Owner's bench 2026-10-05 failed**: the PEAK bus-off reset raised
+  `PCAN_ERROR_INITIALIZE` once and was never retried (0163 § Grooming
+  2026-10-05). Back in development: phases 9a–9d (fault-recovery bench,
+  live PCAN experiments, fix, docs). Retest of `fix-pcan-busoff-visible`
+  (161) closes on the same bench run.
 - **Task 121 — The Trace Tells the Truth About the Wire** — `task121-echo-row`
   + the PEAK echo gate in `fix-pcan-counters-decay`; bench-confirmed
   2026-10-03. Open § 1 items (refused row's reach, bridge `Tx` drop) are

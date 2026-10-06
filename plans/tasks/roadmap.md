@@ -50,6 +50,10 @@ started.
    unbounded FIFO). Phase 1 review done; phase 2 designs the ADR that
    supersedes ADR 0039's fault model; implementation follows the
    owner's ruling. Folds in 0161's clock-step and backlog findings.
+   Phases 1–8 landed 2026-10-05; the owner's bench failed the same day
+   (PEAK bus-off reset raised `PCAN_ERROR_INITIALIZE`, never retried), so
+   phases 9a–9d add a fault-recovery bench, live PCAN experiments and the
+   fix.
 5. [Task 128 — Shared-Layer Holdouts](0128-shared-layer-holdouts.md)
    — the last cleanup items the 2026-08-27 run surfaced, opened at the
    owner's instruction while walking its open items: `serverList.ts`'s
