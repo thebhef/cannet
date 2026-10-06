@@ -103,16 +103,18 @@ def bus_reset(ch: object, ctx: StrategyContext) -> bool:
 
 
 def close_then_open(ch: object, ctx: StrategyContext) -> bool:
-    """Close the channel, then let the sidecar open a fresh one: the
-    sidecar's own reopen, in the other order.
+    """Close the channel, then let the sidecar open a fresh one. The rung
+    that recovered PEAK on hardware, and now the sidecar's own order: its
+    reopen closes before it opens, so this differs from ``sidecar`` only
+    in who makes the close.
 
     The close is ``PythonCanChannel.close`` -- ``bus.shutdown()``, which
     on PEAK stops periodic tasks and calls ``CAN_Uninitialize`` on the
     handle. Answering ``False`` sends the sidecar down its reopen, which
-    opens a new ``can.Bus`` with the same kwargs (``CAN_InitializeFD`` /
-    ``CAN_Initialize`` on the now-free handle) and closes the old channel
-    again, a no-op. If that open raises, the closed channel stays
-    current."""
+    closes the channel again, a no-op, and opens a new ``can.Bus`` with
+    the same kwargs (``CAN_InitializeFD`` / ``CAN_Initialize`` on the
+    now-free handle). If that open raises, the interface has no channel
+    and the sidecar retries the open every state-poll pass."""
     ch.close()  # type: ignore[attr-defined]
     return False
 
