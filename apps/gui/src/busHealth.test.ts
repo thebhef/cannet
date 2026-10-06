@@ -16,14 +16,15 @@ import {
 import type {
   Bus,
   BusConnStates,
-  BusErrorKindTally,
+  BusErrorKindCount,
   BusHealthMap,
   InterfaceBinding,
 } from "./types";
 
-/// A kind breakdown with everything at zero except the kinds given.
-function kindTally(over: Partial<BusErrorKindTally> = {}): BusErrorKindTally {
-  return { ack: 0, bit: 0, form: 0, stuff: 0, crc: 0, other: 0, unknown: 0, ...over };
+/// A kind breakdown as the host sends it: only the kinds given, in the
+/// order given (the host's is largest first).
+function kindCounts(over: Record<string, number>): BusErrorKindCount[] {
+  return Object.entries(over).map(([kind, count]) => ({ kind, count }));
 }
 
 const buses: Bus[] = [
@@ -447,7 +448,7 @@ describe("busHealthRows bus-error episode line", () => {
     expect(row("b1").errorEpisodeOngoing).toBe(false);
   });
 
-  it("words an ongoing ack episode as the pulled-cable diagnosis", () => {
+  it("lists an ongoing episode's kinds plainly, largest first, with the host's rate", () => {
     const r = row("b2", {
       health: {
         ...health,
@@ -460,7 +461,7 @@ describe("busHealthRows bus-error episode line", () => {
             firstTsNs: 0,
             lastTsNs: 2_500_000_000,
             count: 3412,
-            countByKind: kindTally({ ack: 3410, bit: 2 }),
+            countByKind: kindCounts({ ack: 3410, bit: 2 }),
             txCount: 3412,
             rxCount: 0,
             tec: 104,
@@ -473,12 +474,12 @@ describe("busHealthRows bus-error episode line", () => {
     // host's figure over this episode's span — not recomputed from the
     // timestamps carried alongside it.
     expect(r.errorEpisodeLine).toBe(
-      `3,412 errors (${formatRate(1364.8)}/s), mostly ack: no other node acknowledging`,
+      `3,412 errors (${formatRate(1364.8)}/s): ack 3,410, bit 2`,
     );
     expect(r.errorEpisodeOngoing).toBe(true);
   });
 
-  it("names a non-ack dominant kind by itself, and a single error as singular", () => {
+  it("names a single kind plainly, and a single error as singular", () => {
     const r = row("b2", {
       health: {
         ...health,
@@ -491,7 +492,7 @@ describe("busHealthRows bus-error episode line", () => {
             firstTsNs: 0,
             lastTsNs: 0,
             count: 1,
-            countByKind: kindTally({ bit: 1 }),
+            countByKind: kindCounts({ bit: 1 }),
             txCount: 0,
             rxCount: 1,
             tec: 0,
@@ -500,7 +501,7 @@ describe("busHealthRows bus-error episode line", () => {
         },
       },
     });
-    expect(r.errorEpisodeLine).toBe("1 error (0.0/s), mostly bit");
+    expect(r.errorEpisodeLine).toBe("1 error (0.0/s): bit 1");
     expect(r.errorEpisodeOngoing).toBe(false);
   });
 });
@@ -591,7 +592,7 @@ describe("busHealthConcerns ongoing episodes", () => {
               firstTsNs: 0,
               lastTsNs: 4_000_000_000,
               count: 4,
-              countByKind: kindTally({ bit: 4 }),
+              countByKind: kindCounts({ bit: 4 }),
               txCount: 0,
               rxCount: 4,
               tec: 0,
@@ -618,7 +619,7 @@ describe("busHealthConcerns ongoing episodes", () => {
               firstTsNs: 0,
               lastTsNs: 1_000_000_000,
               count: 9000,
-              countByKind: kindTally({ ack: 9000 }),
+              countByKind: kindCounts({ ack: 9000 }),
               txCount: 9000,
               rxCount: 0,
               tec: 256,
@@ -645,7 +646,7 @@ describe("busHealthConcerns ongoing episodes", () => {
               firstTsNs: 0,
               lastTsNs: 1_000_000_000,
               count: 12,
-              countByKind: kindTally({ bit: 12 }),
+              countByKind: kindCounts({ bit: 12 }),
               txCount: 0,
               rxCount: 12,
               tec: 0,
