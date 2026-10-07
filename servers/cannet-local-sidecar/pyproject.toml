@@ -21,17 +21,20 @@ license = { text = "MIT" }
 # interfaces" even when it's missing); declaring it here lets `uv sync`
 # install it as part of the default flow.
 #
-# protobuf 6.x and grpcio 1.80+ are the floor — earlier protobuf can't
-# load gencode emitted by current `grpc_tools.protoc`, and that gencode
-# is checked in, so the runtime must keep up. `uptime` is python-can's
-# optional dep for Epoch-UTC timestamps on PEAK (and elsewhere);
-# without it python-can falls back to boot-relative timestamps and
-# warns. No upper bounds: we want `uv lock --upgrade` to pull current
-# wheels and re-run smoke on bump.
+# protobuf 7.35.1+ and grpcio 1.84.0+ are the floor — the exact
+# versions the checked-in gencode's own `ValidateProtobufRuntimeVersion`
+# / `GRPC_GENERATED_VERSION` checks demand, read off the regenerated
+# stubs in `cannet-python-wire`. `uptime` is python-can's optional dep
+# for Epoch-UTC timestamps on PEAK (and elsewhere); without it
+# python-can falls back to boot-relative timestamps and warns. No
+# upper bounds: we want `uv lock --upgrade` to pull current wheels and
+# re-run smoke on bump — the three Python packages' locks are kept at
+# one grpcio/protobuf/ruff version set across a re-lock, not by an
+# upper pin here.
 dependencies = [
     "cannet-python-wire",
-    "grpcio>=1.80",
-    "protobuf>=6",
+    "grpcio>=1.84.0",
+    "protobuf>=7.35.1",
     "python-can>=4.6",
     "uptime>=3",
 ]
@@ -43,7 +46,7 @@ dependencies = [
 # its dev extra, not here.
 dev = [
     "pytest>=9",
-    "ruff>=0.9",
+    "ruff>=0.16,<0.17",
     "mypy>=1.15",
 ]
 
@@ -62,6 +65,13 @@ packages = ["cannet_local_sidecar"]
 
 [tool.ruff]
 target-version = "py313"
+
+# The rule set ruff 0.15 was enforcing by default, made explicit so a
+# ruff version bump never silently changes what's enforced. Identical
+# across all three Python packages (see cannet-python-wire's
+# pyproject.toml `dev` extra comment for why).
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.13"
