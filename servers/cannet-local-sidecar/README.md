@@ -181,7 +181,15 @@ The sidecar implements the **hardware-server wire model** described in
   and Kvaser, by closing and reopening the channel with its current
   config elsewhere, PEAK included (the channel is opened without
   `PCAN_BUSOFF_AUTORESET`, which would reset it unseen inside the
-  poll's own status read and leave a full transmit queue stalled). A
+  poll's own status read and leave a full transmit queue stalled).
+  Sends the driver refuses as bus-off (PEAK's `PCAN_ERROR_BUSOFF` text)
+  count as a bus-off reading whatever the state read says. Every
+  reopen — this one, the ones below, and a `ConfigureBus` — closes the
+  old channel **before** opening the fresh one: PCAN-Basic refuses
+  `CAN_Initialize` on a handle the process still holds. If the open
+  then fails, the interface has no channel: it reads `unavailable`,
+  sends are refused (`closed`, naming the open's error), and the open
+  is retried every poll until it succeeds. A
   channel that is not bus-off and whose driver has refused every send
   as queue-full for a second, with none accepted, has its **transmit
   queue flushed**, whether or not frames are arriving — PEAK through
@@ -360,8 +368,7 @@ uv run python -m cannet_local_sidecar.bench.fault_recovery run     --driver fake
   while writes still refuse bus-off). The fake refuses a second
   `CAN_Initialize` on a handle the process holds, as PEAK did on the
   owner's bench. `tests/test_fault_recovery_bench.py` runs each in the
-  default suite; where the shipped recovery fails one it is
-  `xfail(strict=True)` with the reason. Its `hardware` test (deselected
+  default suite. Its `hardware` test (deselected
   by default; `-m hardware`) runs a PEAK pair named by
   `CANNET_BENCH_UNDER_TEST` / `CANNET_BENCH_PARTNER`.
 - **Exclusive handles.** PCAN handles are exclusive per process: close
@@ -383,7 +390,8 @@ reopened rather than flushed. A `send` that fails should raise
 `TxRejected(..., reason=...)` with one of the `REFUSAL_*` reasons
 (`queue_full=True` is still accepted for `queue_full`); without
 `queue_full` the stuck-queue flush and the silent-queue reopen never
-fire. The default
+fire. `bus_off=True` on a refusal says the controller is bus-off and
+arms the bus-off reset. The default
 implementation in `driver_python_can.py` wraps `python-can`. To use
 something else:
 

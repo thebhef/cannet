@@ -572,33 +572,11 @@ def test_broadcast_error_fans_out_to_all_outboxes() -> None:
         assert env.log.message == "boom"
 
 
-def test_broadcast_error_under_held_lock_does_not_deadlock() -> None:
-    """Regression guard: the ``reconfigure`` call site fans out while
-    already holding the non-reentrant ``self._lock``. The helper must
-    read the outbox list without re-acquiring the lock — a reentrant
-    re-lock would deadlock here. Run on a worker thread with a join
-    timeout so a regression fails the test cleanly instead of hanging the
-    whole suite."""
-    shared = _new_shared()
-    a = SessionOutbox()
-    shared._outboxes = [a]
-
-    def _run() -> None:
-        with shared._lock:
-            shared._broadcast_error(pb.LOG_LEVEL_ERROR, "held", lock_held=True)
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=2.0)
-    assert not t.is_alive(), "broadcast under the held lock deadlocked"
-    env = a.get(timeout=1.0)
-    assert env.log.message == "held"
-
-
 def test_reconfigure_failure_broadcasts_to_all_subscribers() -> None:
-    """End-to-end guard for the lock-held fan-out: a failed reopen keeps
-    the old channel and pushes a LOG_LEVEL_ERROR to every subscriber —
-    the one broadcast site that runs under ``self._lock``."""
+    """A failed reopen pushes a LOG_LEVEL_ERROR to every subscriber. The
+    old channel is already closed by then -- a handle cannot be opened
+    twice, so the close comes first (ADR 0039) -- and the interface is
+    left with no channel for the state poll to retry."""
     driver = _ReopenFailsDriver()
     reg = srv._InterfaceRegistry(driver)
     a = SessionOutbox()
@@ -611,11 +589,12 @@ def test_reconfigure_failure_broadcasts_to_all_subscribers() -> None:
     reg.reconfigure("fake:0", drv.OpenConfig(bitrate_bps=250_000))
 
     for q in (a, b):
+        [env] = _drain(q, kind="interface_state")
+        assert env.interface_state.state == pb.CONTROLLER_STATE_UNAVAILABLE
         [env] = _drain(q, kind="log")
         assert env.log.level == pb.LOG_LEVEL_ERROR
         assert "reconfigure" in env.log.message
-    # Old channel kept open on a failed reopen.
-    assert driver.first is not None and not driver.first.closed.is_set()
+    assert driver.first is not None and driver.first.closed.is_set()
 
 
 # ---- close-race logging ---------------------------------------------------
@@ -1259,6 +1238,197 @@ def test_a_backend_without_the_hook_is_reopened(
         assert len(driver.opened) == 2
     finally:
         reg.unsubscribe("fake:0", outbox)
+
+
+# ---- a reopen closes first, and one that fails is retried -------------------
+
+
+class _ExclusiveDriver(_ChannelDriver):
+    """Hands out ``_LatchingChannel``s that never reset in place, and
+    refuses to open while a channel it opened is still open -- as
+    PCAN-Basic refuses ``CAN_Initialize`` on a handle the process holds
+    (``PCAN_ERROR_INITIALIZE``). ``fail_opens`` makes the next that many
+    opens fail the same way even on a free handle."""
+
+    def __init__(self) -> None:
+        super().__init__(_LatchingChannel)
+        self.fail_opens = 0
+
+    def open(self, channel_id: str, config: drv.OpenConfig):
+        if any(not ch.closed.is_set() for ch in self.opened):
+            raise OSError("handle held: PCAN_ERROR_INITIALIZE")
+        if self.fail_opens:
+            self.fail_opens -= 1
+            raise OSError("PCAN_ERROR_INITIALIZE")
+        ch = super().open(channel_id, config)
+        ch.in_place = False
+        return ch
+
+
+@pytest.fixture
+def exclusive(monkeypatch: "pytest.MonkeyPatch"):
+    """A subscribed interface on an ``_ExclusiveDriver``, its state poll
+    driven by hand against an injected clock."""
+    monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
+    driver = _ExclusiveDriver()
+    reg = srv._InterfaceRegistry(driver)
+    outbox = SessionOutbox()
+    shared = reg.subscribe("fake:0", outbox)
+    _drain(outbox, kind="interface_state")
+    try:
+        yield driver, shared, outbox
+    finally:
+        reg.unsubscribe("fake:0", outbox)
+
+
+def test_a_bus_off_reopen_closes_the_old_channel_before_opening_the_fresh_one(
+    exclusive,
+) -> None:
+    """The reopen used to open the fresh channel while still holding the
+    old one, which PEAK refuses on every attempt (ADR 0039)."""
+    driver, shared, outbox = exclusive
+    ch = driver.opened[0]
+    ch.set_state(_BUS_OFF)
+    shared._poll_state(ch, now_s=0.0)
+    shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
+    assert ch.closed.is_set()
+    assert len(driver.opened) == 2
+    assert shared._current_channel() is driver.opened[1]
+
+
+def test_a_reconfigure_closes_the_old_channel_before_opening_the_fresh_one(
+    exclusive,
+) -> None:
+    driver, shared, outbox = exclusive
+    shared.reconfigure(drv.OpenConfig(bitrate_bps=250_000))
+    assert driver.opened[0].closed.is_set()
+    assert shared._current_channel() is driver.opened[1]
+    assert driver.configs[1].bitrate_bps == 250_000
+
+
+def test_a_reopen_that_fails_leaves_no_channel_and_is_retried_each_pass(
+    exclusive, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    """The open after the close can fail too. The closed channel must not
+    stay current -- it would read active, disarm the reset, and spin the
+    receive pump on a ``recv`` that returns at once -- so the interface
+    has no channel, reads unavailable, refuses sends saying why, and the
+    next pass tries the open again."""
+    caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
+    driver, shared, outbox = exclusive
+    ch = driver.opened[0]
+    ch.set_state(_BUS_OFF)
+    driver.fail_opens = 2
+    after = si._BUS_OFF_RESET_AFTER_S
+    shared._poll_state(ch, now_s=0.0)
+    shared._poll_state(ch, now_s=after)
+
+    assert ch.closed.is_set()
+    assert shared._current_channel() is None
+    states = _states(outbox)
+    assert states[-1] == pb.CONTROLLER_STATE_UNAVAILABLE
+    with pytest.raises(drv.TxRejected) as refused:
+        shared.transmit(_frame(1), outbox)
+    assert refused.value.reason == drv.REFUSAL_CLOSED
+    assert "PCAN_ERROR_INITIALIZE" in str(refused.value)
+
+    shared._poll_pass(now_s=after + 0.25)
+    assert shared._current_channel() is None
+    shared._poll_pass(now_s=after + 0.5)
+    fresh = shared._current_channel()
+    assert fresh is driver.opened[1]
+    # The fresh channel's first reading replaces the unavailable one.
+    shared._poll_pass(now_s=after + 0.75)
+    assert _transitions(_states(outbox)) == [pb.CONTROLLER_STATE_ACTIVE]
+    shared.transmit(_frame(2), outbox)
+    _wait_for(lambda: len(fresh.sent) == 1)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    infos = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.INFO and "was bus-off for" in r.getMessage()
+    ]
+    assert len(infos) == 1 and "reopened the channel" in infos[0], infos
+
+
+def test_the_pumps_retry_a_failed_reopen_without_spinning(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    """The same, on the pumps' own cadence: the interface comes back by
+    itself, and while it has no channel the receive pump waits rather
+    than spinning."""
+    monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 0.05)
+    monkeypatch.setattr(si, "_BUS_OFF_RESET_AFTER_S", 0.1)
+    driver = _ExclusiveDriver()
+    reg = srv._InterfaceRegistry(driver)
+    outbox = SessionOutbox()
+    shared = reg.subscribe("fake:0", outbox)
+    try:
+        driver.fail_opens = 3
+        driver.opened[0].set_state(_BUS_OFF)
+        _wait_for(lambda: len(driver.opened) == 2, timeout_s=3.0)
+        assert driver.fail_opens == 0
+        assert shared._current_channel() is driver.opened[1]
+    finally:
+        reg.unsubscribe("fake:0", outbox)
+
+
+def test_unsubscribing_while_the_reopen_fails_stops_the_retries(exclusive) -> None:
+    driver, shared, outbox = exclusive
+    ch = driver.opened[0]
+    ch.set_state(_BUS_OFF)
+    driver.fail_opens = 1
+    shared._poll_state(ch, now_s=0.0)
+    shared._poll_state(ch, now_s=si._BUS_OFF_RESET_AFTER_S)
+    assert shared._current_channel() is None
+    assert shared.detach(outbox)
+    shared._poll_pass(now_s=5.0)
+    assert len(driver.opened) == 1
+
+
+_REFUSED_BUS_OFF = drv.TxRejected(
+    "Failed to send: Bus error: the CAN controller is in bus-off state",
+    bus_off=True,
+)
+
+
+@pytest.mark.parametrize(
+    "reading",
+    [drv.ControllerState(), drv.ControllerState(state=drv.STATE_UNAVAILABLE)],
+    ids=["reads_active", "reads_unavailable"],
+)
+def test_sends_refused_bus_off_arm_the_reset_whatever_the_state_reads(
+    exclusive, reading: drv.ControllerState
+) -> None:
+    """The owner's log: one failed reset, then sends refused bus-off for
+    minutes while nothing tried again. A refusal is the driver saying
+    bus-off, so it arms the reset even when the state read says active
+    -- or unavailable, as PEAK's status word does after a failed open."""
+    driver, shared, outbox = exclusive
+    ch = driver.opened[0]
+    ch.set_state(reading)
+    after = si._BUS_OFF_RESET_AFTER_S
+    t = 0.0
+    while t <= after:
+        shared._note_tx_refused(ch, _REFUSED_BUS_OFF, now_s=t)
+        shared._poll_state(ch, now_s=t + 0.01)
+        t += 0.25
+    assert ch.closed.is_set()
+    assert shared._current_channel() is driver.opened[1]
+
+
+def test_a_bus_off_refusal_followed_by_an_accepted_send_does_not_arm(
+    exclusive,
+) -> None:
+    driver, shared, outbox = exclusive
+    ch = driver.opened[0]
+    shared._note_tx_refused(ch, _REFUSED_BUS_OFF, now_s=0.0)
+    shared._note_tx_accepted(ch, now_s=0.1)
+    for k in range(1, 10):
+        shared._poll_state(ch, now_s=0.25 * k)
+    assert len(driver.opened) == 1
 
 
 # ---- a controller refusing queue-full in silence is reopened ----------------

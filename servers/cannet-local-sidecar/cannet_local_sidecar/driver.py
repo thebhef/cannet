@@ -219,6 +219,13 @@ class TxRejected(Exception):
     one that is also receiving nothing is reopened (ADR 0060 rule 7,
     ADR 0039). A driver that cannot tell leaves the reason ``other``,
     which disables those rules and nothing else.
+
+    ``bus_off=True`` says the driver refused because its controller is
+    bus-off. It is not a wire reason -- the refusal is still counted
+    under :attr:`reason` -- but it arms the state poll's bus-off reset
+    (ADR 0039) even when the state read does not say bus-off: a status
+    read and a write can disagree, and the write is the one being
+    refused. A driver that cannot tell leaves it ``False``.
     """
 
     def __init__(
@@ -227,11 +234,13 @@ class TxRejected(Exception):
         *,
         queue_full: bool = False,
         reason: Optional[str] = None,
+        bus_off: bool = False,
     ) -> None:
         super().__init__(message)
         if reason is None:
             reason = REFUSAL_QUEUE_FULL if queue_full else REFUSAL_OTHER
         self.reason = reason
+        self.bus_off = bus_off
 
     @property
     def queue_full(self) -> bool:
