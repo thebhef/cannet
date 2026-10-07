@@ -171,3 +171,21 @@ come from an intent.
   the tests that pin them; a refusal is reported only as the bus-health
   per-bus refusal count (163 phase 6). The store then takes no row from
   any transmit intent — the rule holds with no exception.
+
+- 2026-10-07 — **Phase 2 (refused-send row) landed** on `task160-wire-rule`
+  (`9328e50b`). Removed `append_refused_tx_row`, `UndeliveredTx` /
+  `MAX_UNDELIVERED_RUNS`, `AppState::undelivered_tx`, the paged record's
+  `tx_delivery` (host + `types.ts`), the trace's `Tx ✗` label / row class
+  / tooltip / CSS, and the tests pinning them. A refused batch in
+  `fire_due` is dropped. New tests (no row, no by-id count, no `fps.tx`):
+  no-session send, gone-adapter send, session-refused periodic batch,
+  accepted send. Durable rule: ADR 0061 (with the PEAK caveat), CONTEXT.md
+  term, CLAUDE.md paragraph; ADR 0039 / 0023 amended with dated notes;
+  README corrected. Scoped CI green (gui 1437 tests, clippy, fmt,
+  rustdoc; pnpm 3765 tests + build). Still open in phase 2: the vbus
+  bridge `Tx` drop (held for the wire-design ruling); the plot's closed
+  raw gaps not taken. **Found:** `TransmitPanel.tsx:315` discards the
+  manual send's `wire_status` (`.catch(() => {})`), so a manual send onto
+  an unbound bus now gives the user no feedback at all — and the
+  bus-health refusal count (ADR 0060) holds only the peer's refusals, not
+  the host's (no route, closed session, full request channel). Queue § 1.

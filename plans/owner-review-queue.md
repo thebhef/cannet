@@ -18,6 +18,16 @@ keeps the queue's copy). This file shrinks every time it is walked.
   the 160 dead comments; ~15 min. Asked 2026-10-07; not a gate — rows 2–4
   proceed. Detail: 0136 § Post-completion notes.
 
+- **160 phase 2: a manual send onto an unbound bus now gives no
+  feedback.** With the `Tx ✗` row gone, the only record of a host-side
+  refusal (no route, closed session, full request channel) is the
+  `wire_status` the command returns — and `TransmitPanel.tsx:315`
+  discards it. The bus-health refusal count (ADR 0060) holds only the
+  peer's refusals. Options: show the returned refusal in the transmit
+  panel (recommended — it is the answer the user asked for, not a bus
+  fact); and/or a host-side refusal count on bus health. Detail: 0160
+  § Status log, 2026-10-07.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
