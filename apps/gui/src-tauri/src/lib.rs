@@ -47,6 +47,7 @@ mod command_surface;
 mod connect_flow;
 mod connection_state;
 mod crash;
+mod date_pattern;
 mod dbc_commands;
 mod dbc_watcher;
 mod diag;
