@@ -1,6 +1,8 @@
 # ADR 0023 — Logical bus, interface, and the binding between them
 
-Status: accepted (2026-05-29)
+Status: accepted (2026-05-29); amended (2026-10-07) by
+[ADR 0061](0061-only-the-wire-writes-data.md) — frames aimed at a
+`NoInterface` bus leave no row
 
 ## Decision
 
@@ -81,9 +83,10 @@ owner ruling ("Refuse to connect without a bound bus," 2026-08-25):
   missing — stands.
 - **A bus bound to `NoInterface` connects along with the rest of the
   project.** The host treats it as a bus with no wire: transmit and
-  RBS frames aimed at it are marked undelivered, with no up-front
-  refusal, the same as any other bus whose wire has gone away. It
-  displays as unbound throughout.
+  RBS frames aimed at it are refused and leave no row (*amended
+  2026-10-07*, ADR 0061; they were once marked undelivered), with no
+  up-front refusal, the same as any other bus whose wire has gone
+  away. It displays as unbound throughout.
 
 ## Rejected alternatives
 
