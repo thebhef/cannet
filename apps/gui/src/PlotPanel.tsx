@@ -3061,6 +3061,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               winStart={winStart}
               winEnd={winEnd}
               originSeconds={model.sessionStartSeconds}
+              baseSeconds={baseSeconds}
               modelEpoch={model.epoch}
               live={live}
               followLive={followLive}
