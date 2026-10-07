@@ -215,6 +215,17 @@ trip over it.
 
 ### GUI chrome and cross-cutting
 
+- `[model]` **MDF4 add-to-capture.** Task 164 adds BLF only (owner
+  ruling 2026-10-06). MDF4 frames could go through the same add mode;
+  held until the file-backed item below lands, because an MDF carries
+  both.
+- `[model]` **File-backed series keyed per source file.** `SignalKey::file`
+  is `(group number, signal)` and `fill_file_backed` fills a series
+  "once, completely", so two files' groups collide and a second file
+  cannot be added. Owner, 2026-10-06: *"ideally architecture wouldn't
+  force us to decide"* — namespace the key (and the pyramid manifest
+  row, and the plot picker) by source file so adding an MDF needs no
+  special case.
 - `[model]` **Calc-field overrides vs the DBC: suppression and
   no-op edits.** Two halves of one gap, backlogged together by owner
   ruling 2026-08-26 (owner-review-queue 3.7, 3.50): *"it's a similar
