@@ -28,10 +28,19 @@ origin for the whole application.
    panel, or renderer has its own zero.
 
 3. **Elapsed time renders as `[d:][hh:][mm:]ss.ffff`** — only the
-   segments needed to span the magnitude, with four fractional digits
-   (0.1 ms). The leading segment is unpadded (`5.8710`, `1:05.0000`);
-   lower segments are two-digit zero-padded once a higher one is
-   present (`2:00:03.5000`, `1:01:01:01.5000`).
+   segments needed to span the magnitude, with a fractional digit
+   count that follows the zoom: four digits at a 1 s span, one fewer
+   per decade zoomed out (to 0, whole seconds, at an hour) and one
+   more per decade zoomed in (to 9, nanoseconds). The x-axis ticks,
+   the hover time, and the A/B cursor chips all share that one digit
+   count; the Δt chip shares it too but never drops below three
+   (milliseconds) — a span is what the cursors were placed to measure.
+   A cursor outside the visible window pins its chip to the window's
+   edge on its side, so the span stays readable, and clicking it pans
+   the view to that cursor at the same span; with both cursors out of
+   view no chips draw. The leading segment is unpadded (`5.8710`,
+   `1:05.0000`); lower segments are two-digit zero-padded once a
+   higher one is present (`2:00:03.5000`, `1:01:01:01.5000`).
 
 Because the origin is shared, the same instant reads identically in
 every panel: the trace table, the plot, and any event marker all show
@@ -54,7 +63,12 @@ settle it, and they are the same rules on every import path.
    beginning, naming no instant. It is one arithmetic either way — an
    unstated start supplies zero — not a special case, and
    `format.ts::hasWallClockAnchor` is how a renderer asks which kind of
-   timeline it is looking at.
+   timeline it is looking at. On a wall-clock timeline, hovering a
+   trace row's time cell names its instant as local date and time
+   (`format.ts::formatLocalTimestamp`); the plot's A/B cursor chips and
+   x-axis tick labels read the same way on hover, through the same
+   formatter, at the panel's x origin plus their x value. On a relative
+   timeline none of them shows anything.
 
 5. **The session origin is the earliest timestamp the import brings
    in.** Over *everything* on the capture's timeline: frames,

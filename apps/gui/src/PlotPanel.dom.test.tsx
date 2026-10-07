@@ -39,7 +39,7 @@ function drawRecorder(ops: { op: string; args: number[] }[]) {
       ops.push({ op, args: args as number[] });
     };
   return {
-    canvas: { width: 600, height: 400 },
+    canvas: { width: 600, height: 400, getBoundingClientRect: () => ({ left: 0, top: 0 }) },
     font: "",
     lineWidth: 1,
     strokeStyle: "",
@@ -523,6 +523,7 @@ import { PLOT_AREA_DND_MIME, type PlotAreaConfig } from "./plotPanelConfig";
 import { parsePlotAreaDragData } from "./plotAreaTransfer";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
+import { formatLocalTimestamp } from "./format";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
@@ -2100,9 +2101,11 @@ describe("PlotPanel", () => {
         inst.cursor.left = 150;
         inst.fire("setCursor");
       });
-      // Padded to the width of the window's widest time ("10.0000"), so
-      // the string can't change width as the pointer moves.
-      expect(label()).toBe("time (s) ·  1.5000");
+      // Padded to the width of the window's widest time ("10.000" — a
+      // 10 s window now gets 3 fractional digits, one fewer than the
+      // 1 s-span default, per `fracDigitsForSpan`), so the string can't
+      // change width as the pointer moves.
+      expect(label()).toBe("time (s) ·  1.500");
       // Pointer leaves → back to the static label; a held number would
       // have no crosshair on screen to refer to.
       await act(async () => {
@@ -8637,11 +8640,12 @@ describe("where the A/B cursors put their timestamps", () => {
 
   /// Every string each stacked area's draw hook painted, top to bottom,
   /// with a pair of x cursors already placed.
-  async function opsPerArea(areas: unknown[]): Promise<DrawnText[][]> {
+  async function opsPerArea(areas: unknown[], trace?: Partial<TraceData>): Promise<DrawnText[][]> {
     const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
     try {
       renderPanel({
+        trace,
         params: { elementId: "el-ab-label" },
         registry: makeRegistry({
           id: "el-ab-label",
@@ -8732,6 +8736,99 @@ describe("where the A/B cursors put their timestamps", () => {
     expect(chips.map((o) => o.text.slice(0, 2)).sort()).toEqual(["A ", "B ", "Δt"]);
     const bb = lastLive[1].bbox;
     for (const c of chips) expect(c.y).toBeGreaterThan(bb.top + bb.height);
+  });
+
+  it("leaves a rebuilt instance's chip listeners behind with it", async () => {
+    // The pinned-chip click and the calendar-time hover listen on the
+    // chart container, which outlives the uPlot instance: a rebuild
+    // must take the old instance's listeners with it, or a click on a
+    // pinned chip still pans the destroyed one.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel({
+        params: { elementId: "el-ab-rebuild" },
+        registry: makeRegistry({
+          id: "el-ab-rebuild",
+          // B at 10 s is 1000 px — past the 600 px box, so its chip pins
+          // to the right edge while A (50 px) stays in view.
+          config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }], cursorX: { a: 0.5, b: 10 } },
+        }),
+      });
+      const settle = () =>
+        act(async () => {
+          await new Promise((r) => setTimeout(r, 60));
+        });
+      await settle();
+      const first = uplotInstances[uplotInstances.length - 1] as FakeUPlotInst;
+      await act(async () => first.fire("ready"));
+      // The points mode is part of the instance's identity: changing it
+      // rebuilds uPlot into the same container.
+      fireEvent.click(screen.getByRole("button", { name: "Show Points" }));
+      await settle();
+      const live = uplotInstances[uplotInstances.length - 1] as FakeUPlotInst;
+      expect(live).not.toBe(first);
+      expect(live.root).toBe(first.root);
+      await act(async () => {
+        live.fire("ready");
+        live.fire("draw");
+      });
+      const firstCalls = first.xCalls.length;
+      const liveCalls = live.xCalls.length;
+      fireEvent.mouseDown(live.root, { button: 0, clientX: 595, clientY: 452 });
+      expect(live.xCalls.length).toBe(liveCalls + 1);
+      expect(first.xCalls.length).toBe(firstCalls);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
+  describe("calendar time on hover (ADR 0024)", () => {
+    /// 2023-11-14T22:06:40Z — a session origin that is a wall clock.
+    const WALL = 1_699_999_600;
+    /// The fake instance's geometry, CSS px (ratio 1): the plot box
+    /// ends at 434; the cursor gutter runs 444–461 below the 10 px tick
+    /// marks; the tick values sit below it from 466.
+    const CHIP_Y = 452;
+    const TICK_Y = 472;
+
+    async function bottomAxis(trace: Partial<TraceData>): Promise<FakeUPlotInst> {
+      await opsPerArea([{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }], trace);
+      const u = lastLive[0];
+      await act(async () => u.fire("ready"));
+      // uPlot computes the tick labels; the fake never does, so ask the
+      // axis for the split at x = 1 s (100 px) the way uPlot would.
+      const axes = u.opts.axes as { values: (u: unknown, splits: number[]) => string[] }[];
+      axes[0].values(u, [1]);
+      return u;
+    }
+    const hover = (u: FakeUPlotInst, clientX: number, clientY: number) => {
+      fireEvent.mouseMove(u.root, { clientX, clientY });
+      return u.root.getAttribute("title");
+    };
+
+    it("names cursor A's chip and a tick label as local date and time", async () => {
+      const u = await bottomAxis({ sessionStartSeconds: WALL });
+      // A sits at 0.5 s → 50 px; the tick at 1 s → 100 px.
+      await waitFor(() => expect(hover(u, 50, CHIP_Y)).toBe(formatLocalTimestamp(WALL + 0.5, WALL)));
+      expect(hover(u, 100, TICK_Y)).toBe(formatLocalTimestamp(WALL + 1, WALL));
+      // Off every target, and out of the chart, it says nothing.
+      expect(hover(u, 50, 200)).toBeNull();
+      expect(hover(u, 50, CHIP_Y)).not.toBeNull();
+      fireEvent.mouseLeave(u.root);
+      expect(u.root.getAttribute("title")).toBeNull();
+    });
+
+    it("says nothing without a wall-clock origin", async () => {
+      const u = await bottomAxis({ sessionStartSeconds: 0 });
+      // Give the base report its tick to land, then hover both targets.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 30));
+      });
+      expect(hover(u, 50, CHIP_Y)).toBeNull();
+      expect(hover(u, 100, TICK_Y)).toBeNull();
+    });
   });
 
   it("keeps the readouts below the box on the axis that inherits them", async () => {
