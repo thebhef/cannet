@@ -4,9 +4,11 @@
 //! trace-store flush timers, plus the System Messages surface: the
 //! `emit_system_log` chokepoint the `sys_*` macros expand to (re-exported
 //! at the crate root as `crate::emit_system_log`) and the `fetch` /
-//! `clear` / `gui_emit` system-log commands.
+//! `clear` / `gui_emit` system-log commands. [`DropEpisode`] rides the
+//! `trace-grew` tick too — it turns the trace store's before-session
+//! drop counter into coalesced WARN lines.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -15,6 +17,7 @@ use crate::ipc::{BusFps, TraceGrew};
 use crate::signal_cache::Harden;
 use crate::system_log::{self, SystemMessage};
 use crate::trace_query::collect_trace_records;
+use crate::trace_store::FirstDrop;
 use crate::{crash, diag};
 
 /// How often the host pushes a `trace-grew` IPC event with the latest
@@ -144,6 +147,220 @@ pub(crate) fn trace_grew_changed(
     }
 }
 
+/// One coalesced line [`DropEpisode::tick`] tells the caller to emit, or
+/// the reason for `None`: the open / continue / resume / close shape the
+/// before-session drop counter is coalesced into, the same discipline
+/// [`crate::bus_health::rejection_reports`] uses for a peer's per-frame
+/// refusals (ADR 0035's coalescing style, applied to a counter with an
+/// onset worth naming instead of a running total). `total` throughout is
+/// the store's cumulative `dropped_before_session` reading — it is never
+/// reset between episodes in the same session, only at a Clear — so a
+/// later episode's `Continued` / `Closed` / `Resumed` line reports the
+/// whole session's total, not a per-episode one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DropEpisodeLine {
+    /// The session's first drop episode: names the bus, the frame's own
+    /// timestamp, and how far before the session start it fell.
+    Opened {
+        bus_id: String,
+        frame_ts_ns: u64,
+        before_origin_ns: u64,
+    },
+    /// The episode continues: `since_last` more dropped since the
+    /// previous line, `total` this session. Rate-limited to at most one
+    /// per [`CONTINUED_MIN_GAP_MS`] of wall clock — an hours-long episode
+    /// ticks far more often than that.
+    Continued { since_last: u64, total: u64 },
+    /// A tick with no new drops after an open episode: the episode's
+    /// closing line, carrying the session's total.
+    Closed { total: u64 },
+    /// A **second** (or later) episode opens in the same session — the
+    /// store's first-drop detail still names the *first* episode's onset
+    /// (only a session change clears it), so this reopening is reported
+    /// without it rather than as a second [`Self::Opened`] naming a stale
+    /// frame. `since_last` / `total` read the same as [`Self::Continued`].
+    Resumed { since_last: u64, total: u64 },
+}
+
+impl DropEpisodeLine {
+    /// The system-log message body this line reads as (the `sys_warn!`
+    /// call site supplies the source tag and level).
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::Opened {
+                bus_id,
+                frame_ts_ns,
+                before_origin_ns,
+            } => format!(
+                "dropping frames stamped before the session start — first on \
+                 bus {bus_id} at {frame_ts_ns} ns, {gap} before the origin",
+                gap = human_duration_ns(*before_origin_ns),
+            ),
+            Self::Continued { since_last, total } => format!(
+                "still dropping frames stamped before the session start — \
+                 {since_last} more since the last line, {total} this session"
+            ),
+            Self::Closed { total } => format!(
+                "stopped dropping frames stamped before the session start — \
+                 {total} dropped this session"
+            ),
+            Self::Resumed { since_last, total } => format!(
+                "dropping frames stamped before the session start again — \
+                 {since_last} more since it stopped, {total} this session"
+            ),
+        }
+    }
+}
+
+/// Render a nanosecond duration in the unit a reader would reach for:
+/// seconds under a minute, minutes under an hour, hours beyond — so a
+/// wrapped 32-bit hardware timestamp's ~42,950 s stale gap reads as
+/// "11.9 h" rather than a five-digit second count.
+pub(crate) fn human_duration_ns(ns: u64) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let secs = ns as f64 / 1_000_000_000.0;
+    if secs < 60.0 {
+        format!("{secs:.3} s")
+    } else if secs < 3_600.0 {
+        format!("{:.1} m", secs / 60.0)
+    } else {
+        format!("{:.1} h", secs / 3_600.0)
+    }
+}
+
+/// Floor between two [`DropEpisodeLine::Continued`] lines. The
+/// system log's per-`(source, template)` rate limiter only caps a
+/// *burst* (a handful of entries per second); it does nothing about an
+/// episode that stays open for hours, which at the `trace-grew` cadence
+/// (sub-second to ~1 s) would otherwise put thousands of "still
+/// dropping…" lines in the System Messages panel. `Opened` / `Closed` /
+/// `Resumed` are unaffected — each is a state transition, not a repeated
+/// status line, so there is nothing to coalesce.
+pub(crate) const CONTINUED_MIN_GAP_MS: u64 = 10_000;
+
+/// Coalesces
+/// [`TraceStore::frames_dropped_before_session`](crate::trace_store::TraceStore::frames_dropped_before_session)'s
+/// running total into episode open / continue / resume / close lines.
+/// Pure — no clock, no locks, no Tauri — so the state machine is
+/// testable on its own; [`spawn_trace_grew_emitter`] is the only caller,
+/// ticking it once per `trace-grew` tick off the same
+/// [`StatusSnapshot`](crate::trace_store::StatusSnapshot) it already
+/// reads (ADR 0049: nothing extra taken off the store for this), passing
+/// its own monotonic clock in rather than this type reading one.
+#[derive(Debug, Default)]
+pub(crate) struct DropEpisode {
+    /// Whether an episode is currently open — a line has named its
+    /// onset (or resumption) and no closing line has followed yet.
+    open: bool,
+    /// Whether an episode has already opened and closed once this
+    /// session. Distinguishes a fresh [`DropEpisodeLine::Opened`] from a
+    /// [`DropEpisodeLine::Resumed`] — the store's first-drop detail
+    /// only ever names the session's *first* episode, so a second one
+    /// must not be reported as if it were the first.
+    had_episode: bool,
+    /// The counter's total as of the last tick, whatever that tick did
+    /// — including a suppressed one. Read against the new tick's total
+    /// to tell "more drops since last tick" from "nothing moved": the
+    /// counter is monotonic within a session, so anything else is a
+    /// session change, which the caller reports through
+    /// `session_changed` instead of a falling total. This is what makes
+    /// the close line fire on the first genuinely quiet tick regardless
+    /// of the `Continued` rate limit below.
+    last_total: u64,
+    /// The total as of the last line actually *emitted*. The baseline
+    /// `since_last` in the next `Continued` / `Resumed` line is read
+    /// against — distinct from `last_total` because a rate-limited tick
+    /// updates the latter without emitting, and the next line emitted
+    /// must still report the whole gap since the last one a reader saw.
+    reported_total: u64,
+    /// Wall-clock ms (the caller's own clock) of the last emitted
+    /// `Continued` line, or of the open/resume that started counting
+    /// towards it. `None` before either has happened.
+    last_continued_ms: Option<u64>,
+}
+
+impl DropEpisode {
+    /// Fold in one `trace-grew` tick's reading.
+    ///
+    /// `total` is the drop counter; `first` is the store's first-drop
+    /// detail, read only when this tick opens the session's first
+    /// episode; `session_changed` is whether this tick's session
+    /// generation differs from the last one's — a Clear resets the
+    /// counter to zero alongside starting a fresh session, and must
+    /// read as neither "nothing dropped since last tick" (a phantom
+    /// close) nor "the fresh session's first drop compares against the
+    /// old episode's total" (an undercount or an underflow), and must
+    /// let a post-Clear episode open as `Opened` again rather than
+    /// `Resumed`. `now_ms` is a monotonic reading of the caller's own
+    /// clock (e.g. `Instant::elapsed().as_millis()`), used only to rate-
+    /// limit `Continued` — this type reads no clock of its own.
+    ///
+    /// Returns at most one line, because this runs at most once per
+    /// tick.
+    pub(crate) fn tick(
+        &mut self,
+        total: u64,
+        first: Option<&FirstDrop>,
+        session_changed: bool,
+        now_ms: u64,
+    ) -> Option<DropEpisodeLine> {
+        if session_changed {
+            self.open = false;
+            self.had_episode = false;
+            self.last_total = 0;
+            self.reported_total = 0;
+            self.last_continued_ms = None;
+            return None;
+        }
+        if total <= self.last_total {
+            self.last_total = total;
+            if self.open {
+                self.open = false;
+                self.reported_total = total;
+                self.last_continued_ms = None;
+                return Some(DropEpisodeLine::Closed { total });
+            }
+            return None;
+        }
+        self.last_total = total;
+        if !self.open {
+            self.open = true;
+            let resuming = self.had_episode;
+            self.had_episode = true;
+            // `since_last` (if this is a resumption) is read against the
+            // total as of the *previous* episode's close, so compute it
+            // before `reported_total` moves to this tick's total.
+            let since_last = total - self.reported_total;
+            self.reported_total = total;
+            self.last_continued_ms = Some(now_ms);
+            // `first` is absent only if the store's own 0 → 1 detail is
+            // somehow missing — state still advances (there is nothing to
+            // retry into), but there is no onset to name, so no line.
+            return if resuming {
+                Some(DropEpisodeLine::Resumed { since_last, total })
+            } else {
+                first.map(|f| DropEpisodeLine::Opened {
+                    bus_id: f.bus_id.clone(),
+                    frame_ts_ns: f.frame_ts_ns,
+                    before_origin_ns: f.before_origin_ns,
+                })
+            };
+        }
+        // Already open: a `Continued` line, rate-limited to at most one
+        // per `CONTINUED_MIN_GAP_MS` of wall clock.
+        let due = self
+            .last_continued_ms
+            .is_none_or(|t| now_ms.saturating_sub(t) >= CONTINUED_MIN_GAP_MS);
+        if !due {
+            return None;
+        }
+        let since_last = total - self.reported_total;
+        self.reported_total = total;
+        self.last_continued_ms = Some(now_ms);
+        Some(DropEpisodeLine::Continued { since_last, total })
+    }
+}
+
 /// Periodic emitter that fires `trace-grew` events on a fixed cadence.
 /// Runs on Tauri's tokio runtime; doesn't own or block any worker
 /// thread. Each tick takes one
@@ -160,6 +377,12 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
         let mut period = trace_grew_tick();
         let mut interval = tokio::time::interval(period);
         let mut last_emitted: Option<(u64, f64, u64, u64)> = None;
+        let mut drop_episode = DropEpisode::default();
+        let mut last_generation: Option<u64> = None;
+        // The `Continued` rate limit's own clock — monotonic, and started
+        // fresh each time the emitter (re)spawns, which only ever happens
+        // at app launch, so there's no wrap or cross-run state to reload.
+        let clock = Instant::now();
         loop {
             interval.tick().await;
             retune(&mut interval, &mut period, trace_grew_tick());
@@ -172,6 +395,21 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
             // the frontend can place the truncation marker (ADR 0035) when
             // `first_index > 0`.
             let snap = state.trace_store.status_snapshot();
+            // Ticked unconditionally, ahead of the `trace_grew_changed`
+            // gate below: a drop episode can move (or close) on a tick
+            // where the count/rate/origin tuple that gate watches does
+            // not, since a rejected frame never reaches the store.
+            let session_changed = last_generation.is_some_and(|g| g != snap.session_generation);
+            last_generation = Some(snap.session_generation);
+            let now_ms = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+            if let Some(line) = drop_episode.tick(
+                snap.frames_dropped_before_session,
+                snap.first_dropped_before_session.as_ref(),
+                session_changed,
+                now_ms,
+            ) {
+                crate::sys_warn!(&app, "session", "{}", line.message());
+            }
             let count = u64::try_from(snap.len).unwrap_or(u64::MAX);
             // Filter the aggregate before it leaves the host: the status
             // line reads the trend, not the per-batch arrival jitter. The
