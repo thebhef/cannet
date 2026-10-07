@@ -230,6 +230,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: libs/cannet-python-wire/uv.lock
 
+      # A stale lock (e.g. a dependency floor bumped in pyproject.toml
+      # without re-running `uv lock`) fails here, on a fresh checkout,
+      # rather than opaquely inside `uv sync --frozen` below.
+      - run: uv lock --check
       - run: uv sync --extra dev --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -267,6 +271,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: servers/cannet-local-sidecar/uv.lock
 
+      # A stale lock fails here, on a fresh checkout, rather than
+      # opaquely inside `uv sync --frozen` below.
+      - run: uv lock --check
       - run: uv sync --extra dev --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -295,6 +302,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: clients/cannet-python-client/uv.lock
 
+      # A stale lock fails here, on a fresh checkout, rather than
+      # opaquely inside `uv sync --frozen` below.
+      - run: uv lock --check
+        working-directory: clients/cannet-python-client
       - run: uv sync --extra dev --frozen
         working-directory: clients/cannet-python-client
       - run: uv run ruff check .

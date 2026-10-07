@@ -5,7 +5,7 @@ import warnings
 
 from . import cannet_pb2 as cannet__pb2
 
-GRPC_GENERATED_VERSION = '1.80.0'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class CannetServerStub(object):
+class CannetServerStub:
     """CAN frame transport between cannet clients and servers.
 
     Three RPCs: `ListInterfaces` for an on-demand snapshot of the
@@ -71,7 +71,7 @@ class CannetServerStub(object):
                 _registered_method=True)
 
 
-class CannetServerServicer(object):
+class CannetServerServicer:
     """CAN frame transport between cannet clients and servers.
 
     Three RPCs: `ListInterfaces` for an on-demand snapshot of the
@@ -145,7 +145,7 @@ def add_CannetServerServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class CannetServer(object):
+class CannetServer:
     """CAN frame transport between cannet clients and servers.
 
     Three RPCs: `ListInterfaces` for an on-demand snapshot of the
