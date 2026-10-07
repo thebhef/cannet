@@ -2,7 +2,7 @@
 
 > **Opened 2026-10-07** from the owner's reaction to the plot's new
 > calendar-time hover (`fix-cursor-chip-row` 8107af40), groomed the same
-> day. Not started.
+> day. In progress (phase 1 landed 2026-10-07).
 
 ## Why
 
@@ -125,4 +125,25 @@ lanes for phase 1 and 2's host halves.
 
 ## Status
 
-(none yet)
+- 2026-10-07 — **Phase 1 landed** (`task165-date-pattern` c0550d9d, on
+  `task160-wire-rule`). The TR35 subset is implemented twice —
+  `date_pattern.rs` on the host, `datePattern.ts` on the frontend — and
+  both are held to `apps/gui/src/datePattern.vectors.json` (69 format,
+  20 error, 3 display-only vectors; the error messages are shared and
+  exact). `export_template.rs` resolves `{start:…}` / `{now:…}` through
+  it; strftime is removed. `{start:%Y-%m-%d}` fails with `"Y" is not a
+  date pattern field …` in the preview and in the logger's run-path
+  resolution; the bare tokens are still ISO basic
+  (`yyyyMMdd'T'HHmmssxx`). `zzz` renders through `Intl` on the frontend
+  and is refused on the host with a pointer to `xxx`. chrono stays for
+  calendar arithmetic and `logger.rs`. Docs: ADR 0062, README § export
+  templates, token help, inventory (TR35 adopted; strftime, date-fns,
+  ICU4X rejected). Scoped CI: cargo-gui 1443, vitest 3857 (92 in
+  `datePattern.test.ts`), clippy, fmt, rustdoc, build. `datePattern.ts`
+  is not consumed yet. **Hand-off to phase 2:** the host's
+  `DatePattern::parse` refuses `zzz` (file names only) — validating the
+  display setting on write needs a display-mode parse that accepts it,
+  with a matching vector-file field; the frontend API is
+  `formatDatePattern(pattern, {seconds, nanos}, offsetMinutes,
+  timeZone?)` and phase 2 supplies the local offset itself (the negation
+  of `getTimezoneOffset()` at that instant).
