@@ -352,7 +352,9 @@ repaired something broken.
 
 - **Changed:** when the A, B and Δt cursor chips would overlap, they
   draw as one row — `A | Δt | B` — centred between the cursors and kept
-  inside the plot, instead of piling up with Δt underneath.
+  inside the plot, instead of piling up with Δt underneath. A cursor
+  scrolled out of view pins its chip to the edge on its side, so Δt and
+  both times stay readable while you zoom into part of the span.
 - **Changed:** time precision follows the zoom. The x-axis ticks, the
   hover time and the A/B chips share one digit count: four decimals at
   a one-second window, one fewer per decade zoomed out (whole seconds
