@@ -144,6 +144,14 @@ trip over it.
 
 ### Plot panel
 
+- `[idea]` **Bus-error episodes: extent at rest, or as link targets.** An
+  episode draws one marker at its first error; its extent (to the last
+  error) lights only on hover/select, and Link Events refuses it (the
+  notes store holds durable events only, ADR 0035/0060; episodes are not
+  exported — the error rows are). Owner, 2026-10-07: backlog for now.
+  Options when picked up: draw the extent always; or let `link_events`
+  accept an episode id it does not hold (ADR 0056 amendment). Detail:
+  0158 § Blockers, 2026-10-03.
 - `[ux]` **The plot's Shift+click gesture is undiscoverable.** Nothing
   on the plot says it exists; the README does. The prototype's hint
   line has no home in the toolbar and the shared button style has no

@@ -1078,3 +1078,9 @@ owner acceptance (review queue § 4).
   **keep transient**: selecting an episode row lights it. Open: linking
   an episode (queue § 1). All eleven criteria met; the task awaits
   acceptance (queue § 4).
+
+- 2026-10-07 — **Owner ruling (queue § 1, episode links / start+end
+  markers):** backlogged (`plans/backlog.md`, Plot panel). Premise
+  corrections recorded there: episodes are not written to BLF (the error
+  rows are), and start/end is one spanned event drawn as one marker plus
+  its extent on selection (phase 6 ruling). Queue item deleted.

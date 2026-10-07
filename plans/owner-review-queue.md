@@ -10,15 +10,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
 Two items the owner answered with a question (2026-10-07); taken one at
 a time with the design in front of them, not here.
 
-- **158 phase 7: an episode row can be selected but not linked** — Link
-  Events stays authored ↔ authored because the notes store refuses a
-  link target it does not hold. Owner, 2026-10-07: "is there any good
-  reason these events are held out of this bag? I know they get
-  updated, but we're only changing the content. they get written out to
-  BLF logs just like the note events do. I think I had asked for start
-  and end markers and am only seeing start markers." Detail: 0158
-  § Blockers, 2026-10-03.
-
 - **158: the bus-health panel's error rate keeps a 1 s burst gap.**
   Owner, 2026-10-07: "This seems like an implementation detail I didn't
   specify […] What is the alternative, and what is the user-level
