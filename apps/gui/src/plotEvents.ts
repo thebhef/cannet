@@ -4,7 +4,8 @@
 // kinds it is showing, and the theme colors.
 
 import type { EventExtent } from "./eventHighlight";
-import { timelineEvents, type EventKind, type EventSubject, type Note } from "./notes";
+import { formatDurationSeconds } from "./format";
+import { timelineEvents, type EventKind, type EventSubject, type Note, type TimelineEvent } from "./notes";
 import { signalRefKey, type NoteEvent, type SignalRef } from "./plotPanelConfig";
 
 /// Event cursors for the plot, in display-relative seconds against
@@ -21,8 +22,24 @@ export function plotTimelineEvents(
   visible: ReadonlySet<EventKind>,
   kindColor: (kind: EventKind) => string | undefined,
 ): NoteEvent[] {
+  return plotEventsFromTimeline(timelineEvents(notes, truncationTsNs), baseSeconds, visible, kindColor);
+}
+
+/// The general form {@link plotTimelineEvents} specializes for the notes
+/// store's `Note[]` wire shape: project an already-built
+/// {@link TimelineEvent} list (host-derived events included) onto the
+/// plot's display-relative x axis. Bus-error markers (ADR 0035 amended)
+/// are built straight as `TimelineEvent`s — there is no `Note` to derive
+/// them from — so they come in through here rather than through
+/// `plotTimelineEvents`.
+export function plotEventsFromTimeline(
+  events: readonly TimelineEvent[],
+  baseSeconds: number | null,
+  visible: ReadonlySet<EventKind>,
+  kindColor: (kind: EventKind) => string | undefined,
+): NoteEvent[] {
   if (baseSeconds == null || !Number.isFinite(baseSeconds)) return [];
-  return timelineEvents(notes, truncationTsNs)
+  return events
     .filter((e) => visible.has(e.kind))
     .map((e) => ({
       id: e.id,
@@ -30,6 +47,63 @@ export function plotTimelineEvents(
       label: e.label,
       color: e.color ?? kindColor(e.kind),
     }));
+}
+
+/// One bus's error series over a served window (`bus_error_series`,
+/// `sampling.rs`), decoded off the wire: `t[i]` absolute seconds, `v[i]`
+/// the running error count on `bus` at that instant — the same shape as
+/// `BusErrorPoints`, with the bus id carried alongside since the host
+/// answers positionally.
+export interface BusErrorSeries {
+  bus: string;
+  t: readonly number[];
+  v: readonly number[];
+}
+
+/// The label a bus-error marker carries: the episode a delta between two
+/// served points describes (ADR 0035 amended) — count, span and rate.
+/// `spanSeconds` is `0` only when two errors land at the same instant, in
+/// which case rate has nothing to divide by.
+export function busErrorMarkerLabel(count: number, spanSeconds: number): string {
+  const countText = count === 1 ? "1 bus error" : `${count} bus errors`;
+  const rate = count / spanSeconds;
+  const rateText = spanSeconds > 0 ? `${rate.toFixed(rate >= 10 ? 0 : 1)}/s` : "—";
+  return `${countText} over ${formatDurationSeconds(spanSeconds)} (${rateText})`;
+}
+
+/// One `TimelineEvent` per delta between consecutive points of a bus's
+/// served error series — the walk starts at index 1, so the served
+/// window's boundary sample before it (index 0) supplies the first
+/// delta and draws no marker of its own. `id` is `bus-error:{bus}:{n}`,
+/// `n` the point's own running-count value: stable across zoom and
+/// restore, since every served point at every pyramid level is a real
+/// level-0 sample (ADR 0035 amended).
+///
+/// Any two consecutive served points are an exact episode regardless of
+/// the pyramid level the window was read off, so this never merges or
+/// re-derives a count — it only reads the deltas the host already gave it
+/// (CLAUDE.md § GUI architecture: domain computation belongs in the
+/// model).
+export function busErrorTimelineEvents(series: readonly BusErrorSeries[]): TimelineEvent[] {
+  const out: TimelineEvent[] = [];
+  for (const s of series) {
+    for (let i = 1; i < s.t.length; i++) {
+      const count = s.v[i] - s.v[i - 1];
+      const span = s.t[i] - s.t[i - 1];
+      out.push({
+        id: `bus-error:${s.bus}:${s.v[i]}`,
+        timestampNs: Math.round(s.t[i] * 1e9),
+        label: busErrorMarkerLabel(count, span),
+        kind: "busError",
+        color: null,
+        description: null,
+        tag: null,
+        editable: false,
+        subjects: [],
+      });
+    }
+  }
+  return out;
 }
 
 /// What a plot area's current signal selection is *about*, as event
