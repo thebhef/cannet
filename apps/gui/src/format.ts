@@ -115,28 +115,39 @@ export function formatElapsed(seconds: number, fracDigits = 4): string {
   else if (hours > 0) body = `${hours}:${p2(mins)}:${p2(secs)}`;
   else if (mins > 0) body = `${mins}:${p2(secs)}`;
   else body = `${secs}`;
-  return `${sign}${body}.${frac}`;
+  // No fractional digits at all (a zoomed-out span) means no trailing
+  // dot either — `2:00:03`, not `2:00:03.`.
+  return fracDigits > 0 ? `${sign}${body}.${frac}` : `${sign}${body}`;
 }
 
 /// Fractional digits for a timeline-position label when the visible
-/// x-window spans `spanSeconds`: the trace's 4-digit default for spans of
-/// 1 s or more, plus one digit per decade of zoom below that (so adjacent
-/// labels stay distinguishable down to pixel granularity), capped at 9
-/// (nanosecond — the capture's native resolution). Degenerate spans
-/// (zero, negative, non-finite) fall back to the default.
+/// x-window spans `spanSeconds`: 4 digits at a 1 s span, one fewer per
+/// decade zoomed out (down to 0 — whole seconds are plenty at an hour
+/// scale), one more per decade zoomed in (up to 9, the capture's native
+/// resolution — nanoseconds). Degenerate spans (zero, negative,
+/// non-finite) fall back to the 1 s-span default.
 export function fracDigitsForSpan(spanSeconds: number): number {
   if (!Number.isFinite(spanSeconds) || spanSeconds <= 0) return 4;
-  return Math.min(9, Math.max(4, 4 - Math.floor(Math.log10(spanSeconds))));
+  return Math.min(9, Math.max(0, 4 - Math.floor(Math.log10(spanSeconds))));
 }
 
 /// A *duration* (cursor Δt, a period) in plain seconds: fixed unit `s`,
 /// never SI-rescaled to ms/µs, so durations read on one scale everywhere.
-/// Rounded at nanosecond resolution, trailing zeros trimmed
-/// (`0.05 s`, `0.00003 s`, `2 s`). Missing / non-finite values render as
-/// an em dash.
-export function formatDurationSeconds(seconds: number | null | undefined): string {
+/// With no `fracDigits`, rounded at nanosecond resolution; given one,
+/// rounded to it instead — so a Δt chip can match the precision the
+/// x-axis ticks are showing (ADR 0024). Either way, trailing zeros are
+/// trimmed (`0.05 s`, `0.00003 s`, `2 s`). Missing / non-finite values
+/// render as an em dash.
+export function formatDurationSeconds(
+  seconds: number | null | undefined,
+  fracDigits = 9,
+): string {
   if (seconds == null || !Number.isFinite(seconds)) return "—";
-  return `${seconds.toFixed(9).replace(/\.?0+$/, "")} s`;
+  const fixed = seconds.toFixed(fracDigits);
+  // Only trim when `toFixed` actually produced a fractional part — at
+  // `fracDigits` 0 there is no dot, and trailing zeros are then the
+  // integer's own, not padding to strip (`20 s`, not `2 s`).
+  return `${fracDigits > 0 ? fixed.replace(/\.?0+$/, "") : fixed} s`;
 }
 
 /// Render a frame/event timestamp for a trace-style view: elapsed time since
