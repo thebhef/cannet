@@ -32,11 +32,6 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
-- **160 phase 2: no refused-send row at all** — "I thought we weren't
-  appending transmit messages to the trace store anymore." The `Tx ✗`
-  row (121's one kept exception, written when an enqueue is refused) is
-  removed with `UndeliveredTx`; a refusal is the bus-health count only.
-  (0160 § Status log, 2026-10-07.)
 - **160 phase 2: the virtual bus behaves like a physical bus** — the
   bridge carries the `Tx` frames it pulls from the far side instead of
   dropping them. "This obviously breaks our expected behavior. Needs to
@@ -54,21 +49,6 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   Database and trace views "but is slow, and maybe could yield some
   results early." The haystack change itself is kept. (0153 § Status
   log, 2026-10-07.) Needs grooming.
-- **The Python gRPC toolchain is inconsistent, and the client's lockfile
-  is stale** (owner, 2026-10-07, hit on a fresh clone: "a trip hazard
-  that never should have been accepted … I'm generally in favor of
-  updating versions; what's not acceptable is whatever half-assed
-  non-attempt to be consistent happened here"). Data: `uv lock --check`
-  fails in `clients/cannet-python-client` (its lock still records the
-  wire package's pre-pin `grpcio-tools>=1.80`); the three packages lock
-  grpcio 1.84.0 / 1.80.0 / 1.83.1 and protobuf 6.33.6 / 6.33.6 / 7.36.1
-  against gencode from grpcio-tools 1.80.0 / protobuf 6.31.1. Fix: one
-  move — regenerate with current grpcio-tools, lift the `<1.81` pin, set
-  every package's grpcio/protobuf floor to what the gencode demands,
-  re-lock all three to the same versions, rebuild the frozen sidecar,
-  and a CI lane running `uv lock --check` per package so a stale lock
-  fails CI instead of a fresh clone. Inventory rule rewritten. (0145
-  § Status log, 2026-10-07.)
 - **The ruff 0.16 uplift** with the `[tool.ruff.lint] select` stanza —
   "should get fixed"; "noqa is a smell" — a `noqa` survives only at a
   genuine boundary with its reason stated, silent teardowns log at
