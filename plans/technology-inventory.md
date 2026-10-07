@@ -564,18 +564,37 @@ without reshaping callers.
   ADR 0008.
 
   **`grpcio-tools` dev pin `>=1.80,<1.81`** — `adopted` 2026-09-20
-  (task 145) in `libs/cannet-python-wire`'s `dev` extra, the one place
-  the checked-in gencode is generated. The rule: **the generator must
-  never be newer than the oldest grpcio/protobuf runtime any consumer
-  locks**; lifting the pin moves every consumer's grpcio and protobuf
-  in the same change. Every generated stub records the toolchain that
-  emitted it and refuses to import under an older runtime — `_pb2.py`
-  against protobuf, `_pb2_grpc.py` against grpcio — and the sidecar and
-  the client lock grpcio 1.80.0 / protobuf 6.33.6. 1.81 emits stubs
-  demanding grpcio >= 1.81.1; 1.82 moves to protobuf 7 and emits 7.x
-  gencode. Either import-errors in both consumers the moment anyone
-  re-runs `scripts/regen_proto.sh`. Latent until the gencode-drift CI
-  check (ADR 0059) made regeneration reproducible.
+  (task 145) in `libs/cannet-python-wire`'s `dev` extra, **rejected**
+  2026-10-07 (owner, hit on a fresh clone): "a trip hazard that never
+  should have been accepted" — `uv lock --check` failed in
+  `clients/cannet-python-client`, whose lock still recorded the wire
+  package's pre-pin specifier, and the three packages had resolved
+  three different grpcio versions and two protobuf majors against
+  1.80-era gencode. "I'm generally in favor of updating versions;
+  what's not acceptable is whatever half-assed non-attempt to be
+  consistent happened here." Versions go forward, and consistently.
+
+  **New rule, same change (task 145 follow-up, fix-python-toolchain):**
+  no upper pin on `grpcio-tools`, `grpcio`, or `protobuf` in any of the
+  three Python packages (`libs/cannet-python-wire`,
+  `servers/cannet-local-sidecar`, `clients/cannet-python-client`).
+  Instead, **the three packages are re-locked together, in the same
+  change, to one grpcio/protobuf/grpcio-tools version set**, and the
+  checked-in gencode is regenerated from the locked `grpcio-tools`
+  immediately after. Every generated stub still records the toolchain
+  that emitted it and refuses to import under an older runtime —
+  `_pb2.py` against protobuf, `_pb2_grpc.py` against grpcio — so
+  `libs/cannet-python-wire`'s and `servers/cannet-local-sidecar`'s
+  `grpcio`/`protobuf` floors are read off the regenerated stubs'
+  `ValidateProtobufRuntimeVersion` / `GRPC_GENERATED_VERSION` checks
+  after every regeneration, not held at a fixed value. The
+  gencode-drift CI check (ADR 0059) still catches a `_proto/` that
+  fell out of sync with `cannet.proto`; a new `uv lock --check` step in
+  each of the three Python CI jobs (added with this change) now also
+  catches a lock that fell out of sync with its `pyproject.toml`,
+  before `uv sync --frozen` fails opaquely. Landed at grpcio 1.84.0 /
+  protobuf 7.36.2 / grpcio-tools 1.84.0, checked against CPython 3.14
+  (the `.python-version` all three packages pin).
 - **Vector XL Driver Library** / **Kvaser CANlib** /
   **PEAK PCAN-Basic** — `adopted` as runtime, user-installed
   vendor dependencies; not bundled. See ADR 0008.
