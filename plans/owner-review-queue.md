@@ -55,6 +55,9 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   `noqa` and silent-teardown judgment calls await its end. (0136 § Status
   log, 2026-10-07.)
 
+  
+- manually captured: saving cache message is shown on exit even if we just reloaded the cache and closed the project, which seems completely unnecessary
+
 ## 3. Fix later
 
 - **A PEAK channel in an ack storm hears everything 6–16 s late**
