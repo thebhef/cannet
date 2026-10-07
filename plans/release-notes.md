@@ -350,6 +350,14 @@ repaired something broken.
 
 ## Plot
 
+- **Changed:** when the A, B and Δt cursor chips would overlap, they
+  draw as one row — `A | Δt | B` — centred between the cursors and kept
+  inside the plot, instead of piling up with Δt underneath.
+- **Changed:** time precision follows the zoom. The x-axis ticks, the
+  hover time, the A/B chips and Δt share one digit count: four decimals
+  at a one-second window, one fewer per decade zoomed out (whole seconds
+  at a day), one more per decade zoomed in. An hour-wide view no longer
+  shows tenths of a millisecond.
 - **Fixed:** the bus-error markers on the plot refresh as errors
   arrive. They used to be asked for only when the view moved, so on a
   stopped, paused or scrubbed-back plot a new fault showed only after a
