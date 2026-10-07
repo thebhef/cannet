@@ -119,13 +119,24 @@ describe("formatElapsed", () => {
     expect(formatElapsed(59.9999996, 6)).toBe("1:00.000000");
     expect(formatElapsed(59.9999999996, 9)).toBe("1:00.000000000");
   });
+
+  it("drops the trailing dot at 0 fractional digits", () => {
+    expect(formatElapsed(5.871, 0)).toBe("6");
+    expect(formatElapsed(3661.5, 0)).toBe("1:01:02");
+  });
 });
 
 describe("fracDigitsForSpan", () => {
-  it("keeps the trace's 4-digit default for spans of a second or more", () => {
+  it("gives the trace's 4-digit default at a 1 s span", () => {
     expect(fracDigitsForSpan(1)).toBe(4);
-    expect(fracDigitsForSpan(60)).toBe(4);
-    expect(fracDigitsForSpan(86_400)).toBe(4);
+  });
+
+  it("drops one digit per decade of zoom out, down to 0 at an hour", () => {
+    expect(fracDigitsForSpan(10)).toBe(3);
+    expect(fracDigitsForSpan(60)).toBe(3);
+    expect(fracDigitsForSpan(600)).toBe(2);
+    expect(fracDigitsForSpan(3600)).toBe(1);
+    expect(fracDigitsForSpan(86_400)).toBe(0);
   });
 
   it("adds one digit per decade of zoom below a 1 s span", () => {
@@ -175,6 +186,18 @@ describe("formatDurationSeconds", () => {
     expect(formatDurationSeconds(null)).toBe("—");
     expect(formatDurationSeconds(undefined)).toBe("—");
     expect(formatDurationSeconds(NaN)).toBe("—");
+  });
+
+  it("rounds to a given precision instead of nanoseconds, trimming the same way", () => {
+    expect(formatDurationSeconds(2, 2)).toBe("2 s");
+    expect(formatDurationSeconds(2.5, 2)).toBe("2.5 s");
+    expect(formatDurationSeconds(0.05, 2)).toBe("0.05 s");
+    expect(formatDurationSeconds(1.239, 2)).toBe("1.24 s");
+  });
+
+  it("leaves whole seconds alone at 0 fractional digits (no spurious trim)", () => {
+    expect(formatDurationSeconds(20, 0)).toBe("20 s");
+    expect(formatDurationSeconds(100, 0)).toBe("100 s");
   });
 });
 
