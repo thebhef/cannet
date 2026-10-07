@@ -7756,25 +7756,6 @@ input.unit-customization-add {
   padding: 0 0.2rem;
 }
 
-/* The events view's tag filter, beside the kind checklist. */
-.events-panel-tag-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-}
-
-.events-panel-tag-filter input {
-  font: inherit;
-  width: 8rem;
-  background: var(--surface-field);
-  color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
-  border-radius: 2px;
-  padding: 0 0.25rem;
-}
-
 /* --- Export capture: the dialog in front of the OS save picker ---
    The name template with its live preview, the range picker's timeline
    and bound fields, and the informational labels for the capture's own

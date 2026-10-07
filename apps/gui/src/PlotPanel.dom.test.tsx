@@ -8910,17 +8910,17 @@ describe("empty plot areas", () => {
   });
 });
 
-// The plot toolbar's Events chip (owner ruling 2026-09-20): the trace
-// panel's own chip-reveals-checklist pattern, replacing the checklist
-// copy that used to live only in the toolbar's right-click menu — one
-// control instead of two. Visibility itself stays view-local (ADR
-// 0035, unchanged); `busError` stays grouped under Diagnostics.
-describe("the plot toolbar's Events chip", () => {
-  it("is hidden until pressed, and reveals the checklist", () => {
+// The event-kind checklist in the plot toolbar (owner ruling
+// 2026-10-03): the redundant disclosure chip is gone — the checklist
+// behaves as if it were permanently pressed, always on the bar, replacing
+// the checklist copy that used to live only in the toolbar's right-click
+// menu — one control instead of two. Visibility itself stays view-local
+// (ADR 0035, unchanged); `busError` stays grouped under Diagnostics.
+describe("the event-kind checklist is always in the toolbar", () => {
+  it("is present on mount, with no Events button to click", () => {
     renderPanel();
-    expect(screen.queryByRole("group", { name: "event kinds" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Events" }));
     expect(screen.getByRole("group", { name: "event kinds" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Events" })).toBeNull();
   });
 
   it("no longer carries the checklist in the toolbar's right-click menu", () => {
@@ -8985,7 +8985,6 @@ describe("the plot toolbar's Events chip", () => {
         return inst.drawOps.filter((o) => o.op === "fillText").map((o) => String(o.args[0]));
       };
       expect(await chipTexts()).toContain(label);
-      fireEvent.click(screen.getByRole("button", { name: "Events" }));
       fireEvent.click(screen.getByRole("checkbox", { name: "Diagnostics" }));
       expect(await chipTexts()).not.toContain(label);
     });
@@ -9205,7 +9204,6 @@ describe("bus-error markers", () => {
       ];
       const inst = await mountAndSetRange("0 5");
       expect(busErrorChips(inst)).toHaveLength(2);
-      fireEvent.click(screen.getByRole("button", { name: "Events" }));
       const diagnostics = screen.getByRole("checkbox", { name: "Diagnostics" });
       expect(diagnostics.closest("label")!.textContent).toContain("50001");
       fireEvent.click(diagnostics);

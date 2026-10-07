@@ -1771,7 +1771,7 @@ writes, so the panel teaches the file.
   interfaces → Restart** applies a change without relaunching cannet.
 - **Defaults you can still change per view.** Some settings only decide
   what a *new* view starts as — the trace panel's **Default trace
-  view**, **Default auto-scroll**, and **Default events overlay**, the
+  view** and **Default auto-scroll**, the
   plot's **Default y-axis layout**, **Default trace columns** /
   **Default signal columns** (which columns a new table shows, in what
   order, how wide), the **Default server address** a new bridge
@@ -2123,10 +2123,10 @@ resample at the end.
   capture-start "T0" plus your notes — draw as vertical lines across the
   areas; the event log under the panel renames (click the label) and
   removes notes.
-- **Events chip.** A toolbar chip (same pattern as the Trace panel's)
-  reveals the per-kind event checklist — notes, and diagnostics (bus
-  error runs, history truncation) — that decides which kinds' markers
-  draw on the plot. Visibility is view-local per panel.
+- **Event-kind checklist.** The toolbar always carries the per-kind
+  event checklist — notes, and diagnostics (bus error runs, history
+  truncation) — that decides which kinds' markers draw on the plot.
+  Visibility is view-local per panel.
 - **The toolbar's right-click menu.** Right-click the plot toolbar for
   the seldom-used switches: **show diagnostics** (the per-signal
   y-range / cached-t-range line in each row), **show performance
