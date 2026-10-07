@@ -14,7 +14,9 @@ export function TemplateTokenHelp({ logger }: { logger: boolean }) {
     "",
     "A bare token renders as ISO 8601 basic with offset,",
     "e.g. 20260905T091502-0600.",
-    "{start:%Y-%m-%d} and friends pass straight through strftime.",
+    "{start:yyyy-MM-dd} renders a date pattern: yyyy yy, M MM MMM MMMM,",
+    "d dd, EEE EEEE, H HH h hh a, mm ss, S to SSSSSSSSS, xx xxx X XX XXX;",
+    "quote literal letters, e.g. 'T'.",
   ];
   return (
     <span
