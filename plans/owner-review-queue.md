@@ -19,8 +19,6 @@ a time with the design in front of them, not here.
 
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
-(none — release notes brought current through the stack's tip, 49afe029)
-
 Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
 - **160 phase 2: the refused `Tx ✗` row leaves the parsing and plotting
@@ -49,41 +47,6 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   "should get fixed." The owner's sentence broke off at "noqua and"; the
   `noqa` and silent-teardown judgment calls await its end. (0136 § Status
   log, 2026-10-07.)
-
-Owner rulings 2026-10-03 (new-build walk):
-
-- **The Events chip goes, in the trace and the plot** — both behave as
-  if it were pressed: the kind checklist sits inline in the toolbar,
-  the trace interleaves event rows per the checklist alone, and
-  `trace_show_events` / `TraceConfig.showEvents` are removed outright.
-  Supersedes the 2026-09-20 "chip reveals checklist" ruling. The Events
-  panel's `tag` prefix on its filter box goes too (gridview filter-box
-  shape, placeholder "filter by tag"). **Landed**:
-  `fix-events-checklist-inline` `67692db6` (13 files; `trace_show_events`
-  and `TraceConfig.showEvents` removed; a settings file or saved panel
-  config still carrying either key loads, pinned by tests).
-- **158 phase 7 starts now**; **121 phase 1 moves to the front** of the
-  development sequence (fifth report; task 160 opened for the audit and
-  the durable rule); **marker refresh fixed now** (`fix-plot-marker-refresh`,
-  `f8b17451`); **bus-off recovery** is task 161, beside
-  `task155-kvaser-unwrap`, Kvaser and Vector alike — **landed**
-  (`task161-bus-off-recovery` `18a99527`; Kvaser bus-off detection added
-  along the way, since python-can's Kvaser bus reports no state; Vector
-  and Kvaser resets unverified on hardware). Bench follow-ups the same
-  evening: the stale error-passive reading **fixed**
-  (`fix-pcan-counters-decay`, now `e782e3df`); the post-recovery burst is
-  the PEAK driver's transmit queue draining — **accepted** as driver
-  behaviour, not fixed. **PEAK's echo is not an acknowledge** (owner
-  bench, same evening): ruled — withhold PEAK echoes while the controller
-  is error-passive, Vector likewise as a precaution, Kvaser not; the
-  per-echo counter decay replaced by a per-poll clear; absorbed into the
-  same branch.
-- **A long disconnect did not recover** (owner bench 2026-10-03/04;
-  "it must be in bus-off state"): ruled 2026-10-04 — drop PCAN's
-  `auto_reset` (it hid bus-off from the poll and left the transmit queue
-  stuck) and add the vendor-neutral queue-full + 2 s silence reopen.
-  **Landed**: `fix-pcan-busoff-visible` `6b66ab2f` (0161 § Status
-  2026-10-04). Awaiting the owner's retest on a fresh build.
 
 ## 3. Fix later
 

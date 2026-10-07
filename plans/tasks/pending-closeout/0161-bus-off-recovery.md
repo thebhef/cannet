@@ -190,3 +190,11 @@ Branch sits in the stack **beside the last driver change**
   long error-passive phase with error frames, then — if bus-off comes —
   a reopen within about a second; with the cable back, transmit resumes
   within ~2 s either way. Pending the owner's retest on a fresh build.
+
+- 2026-10-07 — **Retest closed** by task 163's fault-recovery bench on the
+  owner's PEAK pair (2026-10-06, phase 9b): bus-off recovered 3/3,
+  error-passive 3/3, stuck queue flushed — the long pull that failed on
+  2026-10-03/04 now recovers (`fix-pcan-busoff-visible` + 163's
+  close-before-open). Queue § 2 block of 2026-10-03 rulings deleted: every
+  item landed. Acceptance waits on the owner's integrated run with the
+  installer (queue § 4).
