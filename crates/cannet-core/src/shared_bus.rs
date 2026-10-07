@@ -14,11 +14,14 @@
 //! enable). Attach a virtual participant with [`SharedBus::attach_participant`]: the
 //! returned [`LocalSink`] queues frames the participant transmits and the
 //! returned [`LocalSource`] yields a stream of [`ParticipantEvent`]s for that
-//! participant — other participants' frames as `Rx`, plus a `NoAcknowledger` event
-//! for every frame the participant sent that reached zero recipients. Attach
-//! a bridge with [`SharedBus::attach_bridge`]: frames pulled from the
-//! supplied source fan out to other participants; frames the bus delivers to
-//! the bridge are forwarded to the supplied sink with `Direction::Tx`.
+//! participant — other participants' frames as `Rx`, the participant's own
+//! frames echoed back as `Tx` once the bus carried them, and a
+//! `NoAcknowledger` event (and no echo) for every frame the participant sent
+//! that reached zero recipients. Attach a bridge with
+//! [`SharedBus::attach_bridge`]: `Rx` frames pulled from the supplied source
+//! fan out to other participants (`Tx` ones are the far side's echo of the
+//! bridge's own egress and are dropped); frames the bus delivers to the
+//! bridge are forwarded to the supplied sink with `Direction::Tx`.
 //!
 //! Dropping a [`LocalSink`] detaches its participant; dropping a
 //! [`BridgeHandle`] detaches the bridge. Dropping the [`SharedBus`]
@@ -89,11 +92,14 @@ impl BusConfig {
 /// An event delivered to a participant attached to a [`SharedBus`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParticipantEvent {
-    /// A frame from another participant fanned out to this participant.
-    /// `frame.direction` is `Rx` and `frame.timestamp_ns` is the bus's
-    /// fan-out timestamp; `sender` is the [`ParticipantId`] of the
-    /// participant that submitted the frame, so the recipient can
-    /// attribute it without ambiguity (ADR 0021).
+    /// A frame the bus carried. From another participant it is fanned
+    /// out with `frame.direction == Rx`; to the participant that sent
+    /// it, it comes back once as its echo with `frame.direction == Tx`
+    /// (only when at least one other participant received it — see
+    /// [`Self::NoAcknowledger`]). `frame.timestamp_ns` is the bus's
+    /// arbitration timestamp, the same on every copy; `sender` is the
+    /// [`ParticipantId`] of the participant that submitted the frame, so
+    /// the recipient can attribute it without ambiguity (ADR 0021).
     Frame {
         frame: CanFrame,
         sender: ParticipantId,
@@ -258,7 +264,9 @@ impl SharedBus {
     /// Attach a bridge participant.
     ///
     /// Frames pulled from `remote_source` fan out to every other participant
-    /// on the bus immediately, bypassing the virtual arbiter. Frames
+    /// on the bus immediately, bypassing the virtual arbiter — except
+    /// `Direction::Tx` ones, which are the far side's echo of frames this
+    /// bridge egressed and which the bus already carried. Frames
     /// the bus delivers to the bridge are forwarded to `remote_sink`
     /// with [`Direction::Tx`].
     ///
@@ -338,6 +346,14 @@ impl SharedBus {
                 let Ok(Some(next)) = remote_source.next_frame() else {
                     return;
                 };
+                // The far side's `Tx` frames are its controller's echo
+                // of what this bridge egressed. The virtual bus carried
+                // that frame when it won arbitration here, and its
+                // originator already has its own echo; re-entering it
+                // would deliver it twice.
+                if next.direction == Direction::Tx {
+                    continue;
+                }
                 let Some(inner) = inner_for_ingress.upgrade() else {
                     return;
                 };
@@ -557,6 +573,8 @@ fn run_worker(inner: &Arc<BusInner>) {
         let delivered = broadcast(&mut state, originator_id, &frame, timestamp_ns);
         if delivered == 0 {
             send_no_acknowledger(&state, originator_id, frame);
+        } else {
+            send_echo(&state, originator_id, frame, timestamp_ns);
         }
     }
 }
@@ -615,6 +633,24 @@ fn broadcast(
     delivered
 }
 
+/// Hand the originator its own frame back, as `Tx`, once the bus has
+/// carried it — what a real controller's transmit echo reports, and the
+/// only record of the transmit a participant gets. Stamped with the
+/// arbitration instant the recipients saw. Only called when the frame
+/// reached at least one recipient: a frame nobody acknowledged was not
+/// carried, and gets [`ParticipantEvent::NoAcknowledger`] instead.
+fn send_echo(state: &BusState, originator_id: ParticipantId, frame: CanFrame, timestamp_ns: u64) {
+    if let Some(participant) = state.participants.iter().find(|n| n.id == originator_id) {
+        let mut echo = frame;
+        echo.timestamp_ns = timestamp_ns;
+        echo.direction = Direction::Tx;
+        let _ = participant.events_tx.send(ParticipantEvent::Frame {
+            frame: echo,
+            sender: originator_id,
+        });
+    }
+}
+
 fn send_no_acknowledger(state: &BusState, originator_id: ParticipantId, frame: CanFrame) {
     if let Some(participant) = state.participants.iter().find(|n| n.id == originator_id) {
         let _ = participant
@@ -642,8 +678,8 @@ fn ns_for(bits: u64, speed_bps: u64) -> Duration {
 }
 
 /// Wall-clock nanoseconds since the Unix epoch. Every frame that lands
-/// in the trace — the GUI host's tx-confirms, hardware RX, and this
-/// virtual bus's fan-out — is stamped on this one clock, so a
+/// in the trace — hardware frames and their echoes, and this virtual
+/// bus's fan-out and echoes — is stamped on this one clock, so a
 /// transmitted frame and its received copy share a time base. The vbus
 /// is a made-up bus; it stamps with the same clock as the real ones
 /// rather than its own relative epoch, which kept the receiver's
@@ -706,10 +742,11 @@ mod tests {
     }
 
     #[test]
-    fn fanout_excludes_the_originator() {
+    fn fanout_reaches_others_as_rx_and_echoes_to_the_originator_as_tx() {
         let bus = SharedBus::new(BusConfig::classic_500k());
         let (mut a_sink, mut a_src) = bus.attach_participant();
         let (_b_sink, mut b_src) = bus.attach_participant();
+        let a_id = a_sink.id();
 
         a_sink.submit(classic(0x100, vec![1, 2, 3])).unwrap();
 
@@ -719,8 +756,22 @@ mod tests {
         assert_eq!(b_frames[0].id.raw(), 0x100);
         assert_eq!(b_frames[0].payload.data(), &[1, 2, 3]);
 
-        // The originator does not see its own frame come back.
-        assert!(matches!(a_src.try_next(), Ok(None)));
+        // The originator hears its own frame back once the bus carried
+        // it: as a transmit, stamped with the same arbitration instant
+        // the recipients saw, as a real controller's echo is.
+        let a_events = drain_events(&mut a_src, 1, Duration::from_millis(500));
+        match a_events.as_slice() {
+            [ParticipantEvent::Frame { frame, sender }] => {
+                assert_eq!(*sender, a_id);
+                assert_eq!(frame.direction, Direction::Tx);
+                assert_eq!(frame.id.raw(), 0x100);
+                assert_eq!(frame.payload.data(), &[1, 2, 3]);
+                assert_eq!(frame.timestamp_ns, b_frames[0].timestamp_ns);
+            }
+            other => panic!("expected one echo, got {other:?}"),
+        }
+        let more = drain_events(&mut a_src, 1, Duration::from_millis(100));
+        assert!(more.is_empty(), "exactly one echo, got more: {more:?}");
     }
 
     #[test]
@@ -757,6 +808,9 @@ mod tests {
             }
             other => panic!("expected NoAcknowledger, got {other:?}"),
         }
+        // A frame nobody acknowledged was not carried: no echo follows.
+        let more = drain_events(&mut src, 1, Duration::from_millis(100));
+        assert!(more.is_empty(), "unexpected events: {more:?}");
     }
 
     #[test]
@@ -812,8 +866,8 @@ mod tests {
     #[test]
     fn fanout_timestamps_ride_the_wall_clock() {
         // The fan-out copy of a transmitted frame must be stamped on the
-        // same wall clock the rest of the analyzer uses (the GUI host's
-        // tx-confirms, hardware RX). A bus-relative epoch stamp is
+        // same wall clock the rest of the analyzer uses (hardware frames
+        // and their echoes). A bus-relative epoch stamp is
         // decades adrift from wall time, so a transmitted frame and its
         // received copy would land on two different time bases in one
         // trace buffer — and the plot, which anchors its x-axis on the
@@ -896,10 +950,14 @@ mod tests {
         let (mut a_sink, mut a_src) = bus.attach_participant();
         let (b_sink, _b_src) = bus.attach_participant();
 
-        // While b is alive, a's transmit fans out and a receives no NoAck.
+        // While b is alive, a's transmit fans out and a hears only its
+        // own echo, no NoAck.
         a_sink.submit(classic(0x100, vec![1])).unwrap();
-        let alive = drain_events(&mut a_src, 1, Duration::from_millis(200));
-        assert!(alive.is_empty(), "a should not receive events while b acks");
+        let alive = drain_events(&mut a_src, 2, Duration::from_millis(200));
+        assert!(
+            matches!(alive.as_slice(), [ParticipantEvent::Frame { frame, .. }] if frame.direction == Direction::Tx),
+            "a should hear only its echo while b acks: {alive:?}",
+        );
 
         drop(b_sink);
 
@@ -1000,6 +1058,12 @@ mod tests {
         drop(bridge);
     }
 
+    fn received(id: u32, data: Vec<u8>) -> CanFrame {
+        let mut frame = classic(id, data);
+        frame.direction = Direction::Rx;
+        frame
+    }
+
     #[test]
     fn bridge_ingress_fans_out_to_other_participants() {
         let bus = SharedBus::new(BusConfig::classic_500k());
@@ -1008,7 +1072,7 @@ mod tests {
             "ingress",
             CapturingSink::default(),
             QueuedSource {
-                frames: VecDeque::from([classic(0x250, vec![9, 9])]),
+                frames: VecDeque::from([received(0x250, vec![9, 9])]),
             },
         );
 
@@ -1042,10 +1106,70 @@ mod tests {
         await_captured(&captured, 1, Duration::from_millis(500));
         assert_eq!(captured.lock().expect("captured poisoned").len(), 1);
 
-        // The originator does not see its own frame nor a NoAck.
-        let events = drain_events(&mut src, 1, Duration::from_millis(200));
-        assert!(events.is_empty(), "unexpected events: {events:?}");
+        // The originator hears its own echo, and no NoAck.
+        let events = drain_events(&mut src, 2, Duration::from_millis(200));
+        assert!(
+            matches!(events.as_slice(), [ParticipantEvent::Frame { frame, .. }] if frame.direction == Direction::Tx),
+            "unexpected events: {events:?}",
+        );
 
+        drop(bridge);
+    }
+
+    /// A source that yields whatever the test pushes, and ends when the
+    /// sender is dropped.
+    struct ChannelSource(Receiver<CanFrame>);
+
+    impl CanFrameSource for ChannelSource {
+        type Error = BusClosed;
+
+        fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
+            Ok(self.0.recv().ok())
+        }
+    }
+
+    #[test]
+    fn a_bridged_echo_is_not_carried_twice() {
+        // The far side of a bridge reports the frames it transmitted
+        // for the bridge (the controller's echo) as `Tx`. The virtual
+        // bus already carried that frame when it won arbitration here,
+        // and its originator already has its echo, so re-entering it
+        // would hand every participant the frame twice and the
+        // originator a second copy, as a receive.
+        let bus = SharedBus::new(BusConfig::classic_500k());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (remote_tx, remote_rx) = mpsc::channel();
+        let bridge = bus.attach_bridge(
+            "echoing",
+            CapturingSink {
+                captured: captured.clone(),
+            },
+            ChannelSource(remote_rx),
+        );
+        let (mut a_sink, mut a_src) = bus.attach_participant();
+        let (_b_sink, mut b_src) = bus.attach_participant();
+
+        a_sink.submit(classic(0x111, vec![1])).unwrap();
+        await_captured(&captured, 1, Duration::from_millis(500));
+        // The physical side echoes what the bridge sent, then receives
+        // a frame from some other node.
+        let echoed = captured.lock().expect("captured poisoned")[0].clone();
+        assert_eq!(echoed.direction, Direction::Tx);
+        remote_tx.send(echoed).unwrap();
+        remote_tx.send(received(0x222, vec![2])).unwrap();
+
+        let a_seen: Vec<(u32, Direction)> = drain_frames(&mut a_src, 3, Duration::from_millis(300))
+            .iter()
+            .map(|f| (f.id.raw(), f.direction))
+            .collect();
+        assert_eq!(a_seen, vec![(0x111, Direction::Tx), (0x222, Direction::Rx)]);
+        let b_seen: Vec<(u32, Direction)> = drain_frames(&mut b_src, 3, Duration::from_millis(300))
+            .iter()
+            .map(|f| (f.id.raw(), f.direction))
+            .collect();
+        assert_eq!(b_seen, vec![(0x111, Direction::Rx), (0x222, Direction::Rx)]);
+
+        drop(remote_tx);
         drop(bridge);
     }
 }

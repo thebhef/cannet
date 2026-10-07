@@ -209,8 +209,9 @@ message Frame {
   uint32 can_id = 2;
   // True for 29-bit extended ids; false for 11-bit standard.
   bool extended = 3;
-  // Whether this frame originated from the bus (Rx) or was emitted
-  // by the sender (Tx, including tx-confirms).
+  // Rx: received from the bus. Tx: a frame this side transmitted —
+  // on a frame the server sends, the driver's echo of a transmit the
+  // bus carried; on a frame the client sends, the frame to transmit.
   Direction direction = 4;
   FrameKind kind = 5;
   // Payload bytes. Empty for Remote and Error kinds. Length implies

@@ -47,6 +47,11 @@ def message_to_frame(msg) -> Frame:
     them through either overflows the wire encode (killing the frame
     stream) or wrecks the trace view's timing the same way a
     mixed-clock stamp does.
+
+    Direction comes from ``Message.is_rx``: a frame the adapter itself
+    put on the bus — the echo a bus opened with
+    ``receive_own_messages=True`` reports — has ``is_rx == False`` and
+    maps to a transmitted frame.
     """
     ts_s = float(getattr(msg, "timestamp", 0.0) or 0.0)
     if ts_s and abs(ts_s - time.time()) <= _TS_PLAUSIBLE_SLACK_S:
@@ -58,7 +63,7 @@ def message_to_frame(msg) -> Frame:
         timestamp_ns=timestamp_ns,
         can_id=int(getattr(msg, "arbitration_id", 0)),
         extended=bool(getattr(msg, "is_extended_id", False)),
-        is_rx=not bool(getattr(msg, "is_tx", False)),
+        is_rx=bool(getattr(msg, "is_rx", True)),
         data=data,
         kind=FrameKind.from_flags(
             is_error=bool(getattr(msg, "is_error_frame", False)),

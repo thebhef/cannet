@@ -20,6 +20,7 @@ pre-Phase-13 per-session ``_Subscription`` shape:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import queue
 import sys
@@ -60,8 +61,14 @@ def _frame(i: int) -> drv.Frame:
 
 
 class _FakeChannel:
-    def __init__(self, channel_id: str = "fake:0") -> None:
+    """A channel that, like a python-can bus opened with
+    ``receive_own_messages=True``, hands back every frame it sends
+    through its own receive path as a transmitted frame — unless it was
+    opened listen-only, which asks for no echo."""
+
+    def __init__(self, channel_id: str = "fake:0", *, echo: bool = True) -> None:
         self.channel_id = channel_id
+        self._echo = echo
         self._q: "queue.Queue[drv.Frame]" = queue.Queue()
         self._state = drv.ControllerState()
         self.closed = threading.Event()
@@ -82,6 +89,8 @@ class _FakeChannel:
 
     def send(self, frame: drv.Frame) -> None:
         self.sent.append(frame)
+        if self._echo:
+            self._q.put(dataclasses.replace(frame, is_rx=False))
 
     def state(self) -> drv.ControllerState:
         return self._state
@@ -107,7 +116,7 @@ class _FakeDriver:
     def open(self, channel_id: str, config: drv.OpenConfig) -> _FakeChannel:
         if channel_id != self._channel_id:
             raise KeyError(channel_id)
-        ch = _FakeChannel(channel_id=channel_id)
+        ch = _FakeChannel(channel_id=channel_id, echo=not config.listen_only)
         self.opened.append(ch)
         self.configs.append(config)
         return ch
@@ -214,6 +223,38 @@ def test_transmit_from_any_subscriber_reaches_the_shared_bus() -> None:
     _wait_for(lambda: len(driver.opened[0].sent) == 2)
     sent = driver.opened[0].sent
     assert [f.can_id for f in sent] == [0x101, 0x102]
+
+
+def test_the_drivers_echo_reaches_every_subscriber_as_a_transmitted_frame() -> None:
+    """The frame the adapter reports having put on the wire is what the
+    trace records — not the accepted send. It arrives through the
+    ordinary receive path and is forwarded as ``DIRECTION_TX`` to every
+    session on the adapter (the sessions sharing one adapter are one
+    node on the bus)."""
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    b: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    reg.subscribe("fake:0", b)
+
+    reg.transmit("fake:0", _frame(5), a)
+
+    for outbox in (a, b):
+        [env] = _drain(outbox, kind="frame_batch")
+        [frame] = env.frame_batch.frames
+        assert frame.can_id == 0x105
+        assert frame.direction == pb.DIRECTION_TX
+
+
+def test_a_received_frame_is_forwarded_as_received() -> None:
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    driver.opened[0].enqueue(_frame(6))
+    [env] = _drain(a, kind="frame_batch")
+    assert env.frame_batch.frames[0].direction == pb.DIRECTION_RX
 
 
 def test_transmit_does_not_block_on_a_slow_send() -> None:

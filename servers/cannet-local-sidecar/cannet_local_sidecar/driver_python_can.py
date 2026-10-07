@@ -1459,8 +1459,11 @@ def _bus_kwargs_for(channel_id: str, config: OpenConfig):
         common["timing"] = _build_fd_timing(config)
     elif config.bitrate_bps is not None:
         common["bitrate"] = config.bitrate_bps
-    if config.listen_only:
-        common["receive_own_messages"] = False
+    # The echo is how a transmit enters the trace: the driver hands back
+    # each frame the adapter actually put on the wire through ``recv``,
+    # marked ``is_rx == False``. An accepted send is not a frame on the
+    # bus; a listen-only bus transmits nothing, so asks for no echo.
+    common["receive_own_messages"] = not config.listen_only
     if vendor == "vector":
         # Open by ``serial`` + hw_channel when we have it: python-can's
         # vector backend then resolves the physical channel directly
