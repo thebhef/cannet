@@ -36,13 +36,6 @@ pub struct TraceFrameRecord {
     /// flagged rows red (ADR 0027). Absent for clean frames.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub violation: Option<&'static str>,
-    /// `"undelivered"` on a `Tx` row whose frame reached no wire — the
-    /// bus routed to no open session, or the session refused it. Absent
-    /// on every other row, including a transmit a session accepted: the
-    /// mark says the frame was not carried, not that it was not
-    /// acknowledged.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tx_delivery: Option<&'static str>,
     /// The signal names this row matched by, when the filter's fuzzy
     /// query was best answered by a signal or by one of a signal's
     /// value-table labels (see [`crate::filter::FuzzyWinner`]). The
@@ -180,7 +173,6 @@ impl TraceFrameRecord {
             // a row that shows no bus, which is what it had.
             bus_id: frame.bus_id.clone().unwrap_or_default(),
             violation: None,
-            tx_delivery: None,
             matching_signals: Vec::new(),
         }
     }
@@ -572,15 +564,18 @@ mod opt_hex_u64 {
 /// Returned from `transmit_frame`. `wire_status` reports the enqueue
 /// outcome — what the session answered, not what the bus did:
 ///
-/// - `not_connected` — no remote session is open; the send is refused
-///   and leaves a marked `Tx ✗` row.
-/// - `accepted` — the session took the frame. Nothing is appended: the
-///   frame's `Tx` row is the driver's echo, which arrives on the receive
-///   path once the bus carried it (and never, if it did not). A server
-///   rejection (e.g. `Error::TX_REJECTED`) surfaces on that path too.
+/// - `not_connected` — no remote session is open; the send is refused.
+/// - `accepted` — the session took the frame. The frame's `Tx` row is
+///   the driver's echo, which arrives on the receive path once the bus
+///   carried it (and never, if it did not). A server rejection (e.g.
+///   `Error::TX_REJECTED`) surfaces on that path too, as a bus-health
+///   refusal count.
 /// - `failed { message }` — the session was open but the transmit
 ///   could not be enqueued (session closed mid-call, the channel has no
-///   mapped interface, or its adapter is gone); a marked `Tx ✗` row.
+///   mapped interface, or its adapter is gone).
+///
+/// No answer appends anything: an enqueue answer is an intent, not a
+/// bus fact (ADR 0061).
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct TransmitResult {
     pub wire_status: TransmitWireStatus,
