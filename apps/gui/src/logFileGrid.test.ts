@@ -9,6 +9,7 @@ import {
   formatLogTimestamp,
   isSelectableLogNode,
   logPathSeparator,
+  revealLabel,
   type LogFileNode,
 } from "./logFileGrid";
 
@@ -147,5 +148,19 @@ describe("logPathSeparator", () => {
   it("is the separator of the folder the host resolved, not always Windows'", () => {
     expect(logPathSeparator("C:\\proj\\logs\\bench")).toBe("\\");
     expect(logPathSeparator("/Users/dev/proj/logs/bench")).toBe("/");
+  });
+});
+
+describe("revealLabel", () => {
+  it("names Finder on mac", () => {
+    expect(revealLabel(true, false)).toBe("Show in Finder");
+  });
+
+  it("names Explorer on Windows", () => {
+    expect(revealLabel(false, true)).toBe("Show in Explorer");
+  });
+
+  it("names the generic file manager elsewhere (reveal.rs opens the containing folder with xdg-open)", () => {
+    expect(revealLabel(false, false)).toBe("Show in file manager");
   });
 });

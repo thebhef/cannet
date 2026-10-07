@@ -159,3 +159,15 @@ export const PENDING_CELL_HINT = "Reading this file's header…";
 /// rx rate on a project with an RBS running, which is worth a tooltip
 /// note rather than a silent surprise.
 export const MESSAGE_COUNT_HINT = "Frame count includes both received and transmitted messages.";
+
+/// The row context menu's reveal entry, named for the platform's own
+/// file manager rather than one fixed word — `reveal.rs`'s
+/// `reveal_command` is what actually runs. Windows and mac each select
+/// the file in a named application; the generic Unix fallback opens the
+/// containing folder with whatever the desktop registers, which has no
+/// one name across file managers, hence the neutral phrasing.
+export function revealLabel(isMac: boolean, isWindows: boolean): string {
+  if (isMac) return "Show in Finder";
+  if (isWindows) return "Show in Explorer";
+  return "Show in file manager";
+}
