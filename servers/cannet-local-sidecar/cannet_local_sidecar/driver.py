@@ -185,24 +185,90 @@ def state_from_counters(tec: int, rec: int) -> str:
     return STATE_ACTIVE
 
 
+#: Why a send was refused -- :attr:`TxRejected.reason`, and the wire
+#: ``TxRefusalReason`` it maps onto (ADR 0060 rule 4).
+#:
+#: - ``queue_full``: the driver's transmit queue is full, i.e. the
+#:   controller is not taking frames off it (or the sidecar's own
+#:   per-interface queue in front of it is full).
+#: - ``closed``: the interface is not open.
+#: - ``listen_only``: the interface was opened listen-only.
+#: - ``incompatible``: the frame cannot go on this bus as configured
+#:   (FD on a classic bus, a payload longer than the bus allows, ...).
+#: - ``other``: anything else the driver refused.
+REFUSAL_QUEUE_FULL = "queue_full"
+REFUSAL_CLOSED = "closed"
+REFUSAL_LISTEN_ONLY = "listen_only"
+REFUSAL_INCOMPATIBLE = "incompatible"
+REFUSAL_OTHER = "other"
+
+
 class TxRejected(Exception):
     """Raised by :meth:`Driver.send` when the driver refused the frame.
 
-    The sidecar's wire layer maps this onto ``Error.CODE_TX_REJECTED``
-    (read-only / listen-only / bus-off / vendor-specific). The
-    accompanying message is forwarded verbatim.
+    The sidecar counts it into the sending session's ``TxRefusals``
+    summary for the interface (ADR 0060 rule 4) under :attr:`reason`;
+    the message rides along as the summary's ``last_message``.
 
-    ``queue_full`` is ``True`` when the driver refused the frame because
-    its own transmit queue is full -- the controller is not taking
-    frames off it. The wire layer reads only this flag, never the
-    message text: a channel refusing queue-full while receiving nothing
-    at all is reopened (ADR 0039). A driver that cannot tell leaves it
-    ``False``, which disables that rule and nothing else.
+    ``reason`` is one of the ``REFUSAL_*`` constants above.
+    ``queue_full=True`` is the older spelling of
+    ``reason=REFUSAL_QUEUE_FULL`` and is kept for driver authors who
+    only ever classified that one case. A full driver queue is the one
+    reason the sidecar acts on: a channel refusing queue-full and
+    accepting nothing for a second has its transmit queue flushed, and
+    one that is also receiving nothing is reopened (ADR 0060 rule 7,
+    ADR 0039). A driver that cannot tell leaves the reason ``other``,
+    which disables those rules and nothing else.
     """
 
-    def __init__(self, message: str = "", *, queue_full: bool = False) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        queue_full: bool = False,
+        reason: Optional[str] = None,
+    ) -> None:
         super().__init__(message)
-        self.queue_full = queue_full
+        if reason is None:
+            reason = REFUSAL_QUEUE_FULL if queue_full else REFUSAL_OTHER
+        self.reason = reason
+
+    @property
+    def queue_full(self) -> bool:
+        return self.reason == REFUSAL_QUEUE_FULL
+
+
+#: Error kinds a :class:`BusError` may carry -- the field names of the
+#: wire ``ErrorKindCounts`` (ADR 0060 rule 1).
+ERROR_KINDS = ("ack", "bit", "form", "stuff", "crc", "other", "unknown")
+
+
+@dataclasses.dataclass(frozen=True)
+class BusError:
+    """What a driver can say about one error frame it received.
+
+    Returned by the optional :meth:`OpenChannel.classify_error`; the
+    sidecar folds each one into the interface's bus-error episode (ADR
+    0060 rule 1).
+
+    - ``kind``: one of :data:`ERROR_KINDS`; ``unknown`` where the vendor
+      reports no kind.
+    - ``direction``: ``"tx"`` or ``"rx"`` -- whether the controller was
+      transmitting or receiving when it detected the error -- or
+      ``None`` where the vendor does not say.
+    - ``tec`` / ``rec``: the error counters the frame carried, or
+      ``None`` where it carried none (the sidecar then uses the state
+      poll's latest reading).
+    - ``counted``: ``False`` for a frame that is a counter update rather
+      than an error (PEAK's ID-0 frame): it updates the counters, is not
+      counted, opens no episode and is not forwarded as a row.
+    """
+
+    kind: str = "unknown"
+    direction: Optional[str] = None
+    tec: Optional[int] = None
+    rec: Optional[int] = None
+    counted: bool = True
 
 
 class Driver(Protocol):
@@ -320,18 +386,52 @@ class OpenChannel(Protocol):
         reopened.
         """
 
+    def classify_error(self, frame: Frame) -> BusError:
+        """What the backend can say about ``frame``, an error frame this
+        channel's :meth:`recv` just returned -- kind, direction, counters
+        (see :class:`BusError`). Called on the receive thread, right after
+        the :meth:`recv` that returned the frame.
+
+        **Optional**: a driver that omits it has every error frame
+        counted as kind ``unknown`` with no direction and no counters.
+        """
+
+    def flush_tx(self) -> bool:
+        """Empty the driver's transmit queue without re-initialising the
+        controller (ADR 0060 rule 7).
+
+        Called by the state poll when the channel has refused every send
+        as queue-full for a second with none accepted and is not bus-off:
+        the frames it holds are stale and the queue is not draining.
+
+        Returns ``True`` when the queue was flushed in place, and
+        ``False`` when this backend has no in-place flush -- the poll then
+        reopens the channel. May raise; the poll logs it and tries again
+        while the shape persists.
+
+        **Optional**, like :meth:`reset`: a driver that omits it is
+        reopened.
+        """
+
     def close(self) -> None:
         """Idempotent. Cleans up any vendor resources."""
 
 
 __all__ = [
+    "BusError",
     "Channel",
     "ControllerState",
     "Driver",
+    "ERROR_KINDS",
     "Frame",
     "FrameKind",
     "OpenChannel",
     "OpenConfig",
+    "REFUSAL_CLOSED",
+    "REFUSAL_INCOMPATIBLE",
+    "REFUSAL_LISTEN_ONLY",
+    "REFUSAL_OTHER",
+    "REFUSAL_QUEUE_FULL",
     "STATE_ACTIVE",
     "STATE_BUS_OFF",
     "STATE_PASSIVE",

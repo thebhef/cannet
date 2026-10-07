@@ -7,6 +7,20 @@ and the four pump threads; :class:`_InterfaceRegistry` is the
 process-wide map from interface id to its :class:`_SharedInterface`,
 holding early ``ConfigureBus`` state so a config that arrives before any
 subscribe is applied at the next open.
+
+The bus-fault model is ADR 0060's. The receive pump folds every error
+frame into the interface's bus-error episode
+(:class:`~.episodes.EpisodeAccumulator`) and forwards only the first N
+of each episode as rows. The state pump reads the controller every
+:data:`_STATE_POLL_INTERVAL_S`, publishes ``InterfaceState`` on change
+and at least every :data:`_STATE_HEARTBEAT_S`, republishes an open
+episode, and recovers the channel: a bus-off reset and a silent-queue
+reopen (ADR 0039), and a flush of a transmit queue that has accepted
+nothing for :data:`_STUCK_QUEUE_FLUSH_AFTER_S`. Refused transmits are
+counted into the sending session's
+:class:`~.outbox.SessionOutbox`, never sent one envelope each, and a
+full per-interface transmit queue refuses at once, so one interface
+never holds back another.
 """
 
 from __future__ import annotations
@@ -21,12 +35,13 @@ from cannet_python_wire import frame_to_proto
 from cannet_python_wire._proto import cannet_pb2 as pb
 
 from .. import driver as drv
+from .episodes import EpisodeAccumulator
 from .helpers import (
-    _error_envelope,
     _interface_state,
     _log_envelope,
     _state_name_to_proto,
 )
+from .outbox import SessionOutbox
 
 _log = logging.getLogger(__name__)
 
@@ -39,10 +54,11 @@ _BATCH_FLUSH_NS = 5_000_000  # 5 ms
 #: Per-interface TX-worker queue depth. Deep enough to absorb a
 #: same-tick burst of periodics (hundreds of messages sharing a phase)
 #: without rejecting; shallow enough that sustained saturation surfaces
-#: as TX_REJECTED within ~a queue-drain rather than unbounded latency.
+#: as a ``queue_full`` refusal within ~a queue-drain rather than
+#: unbounded latency. A full queue refuses at once (ADR 0060 rule 6):
+#: the session's request thread serves every interface on the session,
+#: so waiting on one interface's queue would pace them all to it.
 _TX_QUEUE_MAX = 256
-#: How long ``transmit`` may block on a full TX queue before rejecting.
-_TX_ENQUEUE_GRACE_S = 0.25
 
 #: Hard cap on frames per ``FrameBatch`` envelope. Sized so a saturated
 #: multi-channel bus (~200k frames/s) still fits one batch inside the
@@ -53,27 +69,46 @@ _TX_ENQUEUE_GRACE_S = 0.25
 _BATCH_MAX_FRAMES = 2048
 
 #: How often the state-poll thread re-reads the controller's
-#: fault-confinement state. Cheap on every backend that exposes it; on
-#: backends that don't, the read returns the default (ACTIVE / 0 / 0)
-#: and the watcher does nothing.
-_STATE_POLL_INTERVAL_S = 0.5
+#: fault-confinement state and error counters (ADR 0060 rule 5). It is
+#: also the cadence an open bus-error episode is republished at, so a
+#: fault reaches the host within about a poll of its first error frame.
+#: Cheap on every backend that exposes it; on backends that don't, the
+#: read returns the default (ACTIVE / 0 / 0).
+_STATE_POLL_INTERVAL_S = 0.25
+
+#: ``InterfaceState`` is published on change and at least this often
+#: regardless, each carrying when it was read (ADR 0060 rule 5), so a
+#: reading that has stopped arriving is visibly stale rather than
+#: silently unchanged.
+_STATE_HEARTBEAT_S = 1.0
 
 #: How long a controller may read bus-off before the state poll resets
 #: it. The controller's own way back -- 128 occurrences of 11 recessive
 #: bits -- takes milliseconds at any bitrate, so a controller still
 #: bus-off after a second is latched: the driver is holding it there
-#: until something resets it. Two poll intervals, so one stale reading
-#: cannot trigger a reset on its own.
+#: until something resets it. Several poll intervals, so one stale
+#: reading cannot trigger a reset on its own.
 _BUS_OFF_RESET_AFTER_S = 1.0
+
+#: How long a channel may refuse every send as queue-full, with none
+#: accepted, before the state poll flushes its transmit queue (ADR 0060
+#: rule 7). On a working bus a full queue frees a slot every frame time,
+#: so a second without one accepted send is thousands of frame times:
+#: the queue is not draining, and the frames in it are older than any
+#: period worth sending. The flush is repeated at most this often while
+#: the shape persists. Not applied to a bus-off controller, which the
+#: bus-off reset owns.
+_STUCK_QUEUE_FLUSH_AFTER_S = 1.0
 
 #: How long a channel whose driver is refusing sends with a full transmit
 #: queue may go without receiving anything -- no data frame, no error
 #: frame -- before the state poll reopens it (ADR 0039). A controller
 #: that is retransmitting into a fault reports every attempt as an error
 #: frame, so silence on top of a full queue means the controller is not
-#: transmitting at all and nothing on the wire will restart it. Four
-#: poll intervals: a refusal is judged against a run of silence, never
-#: one quiet pass.
+#: transmitting at all and nothing on the wire will restart it; the
+#: flush (:data:`_STUCK_QUEUE_FLUSH_AFTER_S`) has already been tried by
+#: then and does not re-initialise a controller. Many poll intervals: a
+#: refusal is judged against a run of silence, never one quiet pass.
 _QUEUE_FULL_SILENCE_REOPEN_AFTER_S = 2.0
 
 #: How often the reader thread logs its driver-read rate and rx-queue
@@ -131,7 +166,10 @@ class _SharedInterface:
         # Ordered subscriber list; values are gRPC-Session outboxes.
         # We keep it as a list (not a set) so iteration order is
         # deterministic for tests.
-        self._outboxes: list["queue.Queue[Optional[pb.Envelope]]"] = []
+        self._outboxes: list[SessionOutbox] = []
+        # This interface's bus-error episodes (ADR 0060 rules 1-2). Kept
+        # across reopens: a reset or flush mid-fault is the same blast.
+        self._episodes = EpisodeAccumulator(channel_id)
         self._stop = threading.Event()
         self._rx_thread: Optional[threading.Thread] = None
         self._pack_thread: Optional[threading.Thread] = None
@@ -158,6 +196,9 @@ class _SharedInterface:
         # says 0 -- so this is tri-state on purpose and the wire field
         # is left unset for ``None``.
         self._last_rx_overruns: Optional[int] = None
+        # Monotonic time of the last `InterfaceState` publish, for the
+        # heartbeat. Owned by the state poll.
+        self._last_publish_s: Optional[float] = None
         # Rollovers of the backend's own receive timer already reported
         # to subscribers. The driver corrects the stamps; this is what
         # turns each correction into one operator-visible line, and it
@@ -186,6 +227,16 @@ class _SharedInterface:
         # Whether the current run of queue-full reopens has already had
         # one fail, so a failure that repeats warns once per run.
         self._queue_full_reopen_failing = False
+        # The channel and time of the first queue-full refusal since its
+        # last accepted send (or last flush), or ``None``: how long it
+        # has refused everything (ADR 0060 rule 7). Written by the tx
+        # pump, read and cleared by the state poll.
+        self._queue_full_since: Optional[tuple[drv.OpenChannel, float]] = None
+        # Whether this run of flushes -- flushes with no accepted send
+        # between them -- has logged its info line, and whether a flush
+        # in it has failed, so each says so once per run.
+        self._flush_run_logged = False
+        self._flush_failing = False
         # Transmit-side counters, emitted alongside the rx stats on the
         # rx pump's periodic tick. `transmit` runs on gRPC handler
         # threads while the tick reads/resets on the rx thread, so a
@@ -200,6 +251,12 @@ class _SharedInterface:
         self._tx_count = 0
         self._tx_count_total = 0
         self._tx_max_send_ns = 0
+        # Sends offered to this interface (every `transmit` call) and
+        # refused (by this queue or by the driver) in the interval: with
+        # `queued_to_driver` they tell "nothing offered" from "everything
+        # refused" in the log, which the accepted count alone cannot.
+        self._tx_offered = 0
+        self._tx_refused = 0
         # Wall-clock of the previous ``ch.send`` completion, plus the
         # worst idle between one send finishing and the next starting in
         # the interval (`max_gap`). Measured separately from `max_send`
@@ -216,11 +273,11 @@ class _SharedInterface:
         # sends serialized there, saturating at ~1 kHz total and bursting
         # the wire. ``transmit`` now enqueues; this worker owns the sends,
         # so interfaces transmit in parallel and the reader never blocks
-        # on hardware. The queue is bounded: a full queue rejects the
-        # frame (TX_REJECTED) after a short block rather than stalling
-        # the reader indefinitely - saturation stays visible.
-        self._tx_queue: "queue.Queue[Optional[tuple[drv.Frame, queue.Queue[Optional[pb.Envelope]]]]]" = queue.Queue(
-            maxsize=_TX_QUEUE_MAX
+        # on hardware. The queue is bounded, and a full queue refuses the
+        # frame at once rather than blocking the reader -- saturation
+        # stays visible, and stays this interface's alone.
+        self._tx_queue: "queue.Queue[Optional[tuple[drv.Frame, SessionOutbox]]]" = (
+            queue.Queue(maxsize=_TX_QUEUE_MAX)
         )
         self._tx_thread: Optional[threading.Thread] = None
 
@@ -228,7 +285,12 @@ class _SharedInterface:
     def channel_id(self) -> str:
         return self._channel_id
 
-    def attach(self, outbox: "queue.Queue[Optional[pb.Envelope]]") -> None:
+    def set_error_row_cap(self, cap: Optional[int]) -> None:
+        """The error-row cap for this interface's next episodes (ADR 0060
+        rule 2); ``None`` is the default. An open episode keeps its own."""
+        self._episodes.set_cap(cap)
+
+    def attach(self, outbox: SessionOutbox) -> None:
         """Register ``outbox`` as a subscriber.
 
         Opens the underlying channel on the first attach. Pushes the
@@ -259,7 +321,7 @@ class _SharedInterface:
             )
         )
 
-    def detach(self, outbox: "queue.Queue[Optional[pb.Envelope]]") -> bool:
+    def detach(self, outbox: SessionOutbox) -> bool:
         """Drop ``outbox`` from the subscriber list.
 
         Returns ``True`` when this was the last subscriber and the
@@ -279,29 +341,36 @@ class _SharedInterface:
         with self._lock:
             return bool(self._outboxes)
 
-    def transmit(
-        self,
-        frame: drv.Frame,
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
-    ) -> None:
+    def transmit(self, frame: drv.Frame, outbox: SessionOutbox) -> None:
         """Queue ``frame`` for the TX worker.
 
         Raises :class:`drv.TxRejected` synchronously when the interface
-        is closed or the TX queue stays full past a short grace (the
-        worker is stalled or saturated). Send errors discovered on the
-        worker are routed back to ``outbox`` as ``TX_REJECTED``
-        envelopes.
+        is closed or its TX queue is full -- at once, never waiting
+        (ADR 0060 rule 6): the caller is the session's one request
+        thread, and every other interface on the session is behind it.
+        Refusals discovered on the worker are counted into ``outbox``'s
+        refusal summary for this interface.
         """
+        with self._tx_stats_lock:
+            self._tx_offered += 1
         with self._lock:
             ch = self._channel
-        if ch is None:
-            raise drv.TxRejected(f"{self._channel_id}: interface closed")
         try:
-            self._tx_queue.put((frame, outbox), timeout=_TX_ENQUEUE_GRACE_S)
-        except queue.Full:
-            raise drv.TxRejected(
-                f"{self._channel_id}: tx queue full ({_TX_QUEUE_MAX} frames)"
-            ) from None
+            if ch is None:
+                raise drv.TxRejected(
+                    f"{self._channel_id}: interface closed", reason=drv.REFUSAL_CLOSED
+                )
+            try:
+                self._tx_queue.put_nowait((frame, outbox))
+            except queue.Full:
+                raise drv.TxRejected(
+                    f"{self._channel_id}: tx queue full ({_TX_QUEUE_MAX} frames)",
+                    reason=drv.REFUSAL_QUEUE_FULL,
+                ) from None
+        except drv.TxRejected:
+            with self._tx_stats_lock:
+                self._tx_refused += 1
+            raise
 
     def _tx_pump(self) -> None:
         """TX worker thread. Drains the per-interface queue and owns
@@ -311,6 +380,7 @@ class _SharedInterface:
         line: `max_send` is the worst single send in the interval,
         `max_gap` the worst idle between sends (upstream delivery
         burstiness) - reading both disambiguates where a stall lives."""
+        cid = self._channel_id
         while True:
             try:
                 item = self._tx_queue.get(timeout=0.1)
@@ -323,25 +393,24 @@ class _SharedInterface:
             frame, outbox = item
             ch = self._current_channel()
             if ch is None:
-                outbox.put(
-                    _error_envelope(
-                        pb.Error.CODE_TX_REJECTED,
-                        f"{self._channel_id}: interface closed",
-                    )
-                )
+                self._count_tx_refused()
+                outbox.refuse(cid, drv.REFUSAL_CLOSED, f"{cid}: interface closed")
                 continue
             t0 = time.monotonic_ns()
             try:
                 ch.send(frame)
             except drv.TxRejected as e:
+                self._count_tx_refused()
                 self._note_tx_refused(ch, e, now_s=time.monotonic())
-                outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, str(e)))
+                outbox.refuse(cid, e.reason, str(e))
                 continue
             except Exception as e:  # noqa: BLE001 - worker must survive
-                msg = f"send on {self._channel_id} failed: {e}"
+                msg = f"send on {cid} failed: {e}"
                 _log.warning(msg)
-                outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, msg))
+                self._count_tx_refused()
+                outbox.refuse(cid, drv.REFUSAL_OTHER, msg)
                 continue
+            self._note_tx_accepted(ch, now_s=time.monotonic())
             done = time.monotonic_ns()
             send_ns = done - t0
             with self._tx_stats_lock:
@@ -363,15 +432,28 @@ class _SharedInterface:
 
         If the interface is currently open, the channel is closed and
         reopened with the new config — the rx pump rolls over to the
-        new channel on its next loop iteration. If the open call
-        fails, the old channel is kept (and a ``LogMessage`` is
-        emitted to every subscriber).
+        new channel on its next loop iteration — but only when
+        ``new_config`` actually differs from the live one. A
+        ``ConfigureBus`` that changes nothing on the open side (the
+        error-row cap travels separately, via
+        :meth:`set_error_row_cap`) is a no-op here, so a cap-only
+        change does not drop and re-initialise a live bus (ADR 0060).
+        If the open call fails, the old channel is kept (and a
+        ``LogMessage`` is emitted to every subscriber).
         """
         with self._lock:
+            unchanged = self._channel is not None and new_config == self._config
             self._config = new_config
             if self._channel is None:
                 _log.debug(
                     "reconfigure %s deferred to next open: %r",
+                    self._channel_id,
+                    new_config,
+                )
+                return
+            if unchanged:
+                _log.debug(
+                    "reconfigure %s: open config unchanged, not reopening: %r",
                     self._channel_id,
                     new_config,
                 )
@@ -498,7 +580,7 @@ class _SharedInterface:
         with self._lock:
             return self._channel
 
-    def _outbox_snapshot(self) -> list["queue.Queue[Optional[pb.Envelope]]"]:
+    def _outbox_snapshot(self) -> list[SessionOutbox]:
         with self._lock:
             return list(self._outboxes)
 
@@ -518,14 +600,55 @@ class _SharedInterface:
         for ob in outboxes:
             ob.put(env)
 
+    def _note_error_frame(
+        self, ch: drv.OpenChannel, frame: drv.Frame, now_s: float
+    ) -> bool:
+        """Fold an error frame into the interface's bus-error episode
+        (ADR 0060 rule 1) and publish what that opens or closes. Returns
+        whether the frame is one of the episode's first-N rows (rule 2);
+        the rest are counted and not forwarded.
+
+        The driver says what it can about the frame through its optional
+        ``classify_error``; one that does not, or fails to, has the frame
+        counted as kind ``unknown``.
+        """
+        classify = getattr(ch, "classify_error", None)
+        err = drv.BusError()
+        if callable(classify):
+            try:
+                err = classify(frame)
+            except Exception:  # noqa: BLE001 - one frame, not the pump
+                err = drv.BusError()
+        row, reports = self._episodes.on_error(err, frame.timestamp_ns, now_s)
+        self._publish_episodes(reports)
+        return row
+
+    def _publish_episodes(self, reports: list[pb.BusErrorEpisode]) -> None:
+        if not reports:
+            return
+        outboxes = self._outbox_snapshot()
+        for report in reports:
+            env = pb.Envelope(bus_error_episode=report)
+            for ob in outboxes:
+                ob.put(env)
+
     def _rx_pump(self) -> None:
         """Reader thread. Stays minimal so PCAN's recv queue drains as
         fast as physically possible: block on ``ch.recv``, push the raw
         ``Frame`` onto ``self._rx_queue``, repeat. Protobuf encoding,
-        batching, and outbox fan-out happen on the packer thread."""
+        batching, and outbox fan-out happen on the packer thread.
+
+        Error frames are the exception to "push every frame": each is
+        folded into the interface's bus-error episode here, and only the
+        episode's first N go on to the packer as rows (ADR 0060)."""
         cid = self._channel_id
         read = 0
         read_total = 0
+        # Error frames and echoes of our own frames read in the stats
+        # interval: with `read=` they tell a fault (errors) from our
+        # queue draining (echoes) from traffic on the bus.
+        errors = 0
+        echoes = 0
         # Whether the current read is inside a run of failures, so the
         # 10 Hz retry loop reports one line per episode rather than one
         # per attempt.
@@ -574,10 +697,21 @@ class _SharedInterface:
                     continue
                 read_failing = False
                 if frame is not None:
-                    self._rx_queue.put(frame)
-                    self._note_rx(now_s=time.monotonic())
+                    now_s = time.monotonic()
+                    self._note_rx(now_s=now_s)
                     read += 1
                     read_total += 1
+                    if frame.kind == drv.FrameKind.ERROR:
+                        errors += 1
+                        if self._note_error_frame(ch, frame, now_s):
+                            self._rx_queue.put(frame)
+                    else:
+                        if not frame.is_rx:
+                            echoes += 1
+                        self._publish_episodes(
+                            self._episodes.on_frame(frame.timestamp_ns)
+                        )
+                        self._rx_queue.put(frame)
                 # Periodic stats. Checked every loop iteration (recv
                 # times out every 0.25 s), not only on frame arrival, so
                 # tx stats still emit on a bus that is transmitting but
@@ -591,30 +725,42 @@ class _SharedInterface:
                         tx_total = self._tx_count_total
                         tx_max_ns = self._tx_max_send_ns
                         tx_max_gap_ns = self._tx_max_gap_ns
+                        offered = self._tx_offered
+                        refused = self._tx_refused
                         self._tx_count = 0
                         self._tx_max_send_ns = 0
                         self._tx_max_gap_ns = 0
-                    if read > 0 or tx > 0:
-                        read_rate = read / secs if secs > 0 else 0.0
+                        self._tx_offered = 0
+                        self._tx_refused = 0
+                    if read > 0 or tx > 0 or offered > 0:
+
+                        def per_s(n: int) -> float:
+                            return n / secs if secs > 0 else 0.0
+
                         _log.info(
-                            "rx stats %s: read=%.0f/s total=%d queue=%d%s",
+                            "rx stats %s: read=%.0f/s total=%d queue=%d "
+                            "errors=%.0f/s echoes=%.0f/s%s",
                             cid,
-                            read_rate,
+                            per_s(read),
                             read_total,
                             self._rx_queue.qsize(),
+                            per_s(errors),
+                            per_s(echoes),
                             _echoes_dropped_field(ch),
                         )
-                        tx_rate = tx / secs if secs > 0 else 0.0
                         _log.info(
                             "tx stats %s: queued_to_driver=%.0f/s total=%d "
+                            "offered=%.0f/s refused=%.0f/s "
                             "max_send=%.2f ms max_gap=%.2f ms",
                             cid,
-                            tx_rate,
+                            per_s(tx),
                             tx_total,
+                            per_s(offered),
+                            per_s(refused),
                             tx_max_ns / 1e6,
                             tx_max_gap_ns / 1e6,
                         )
-                    read = 0
+                    read = errors = echoes = 0
                     next_stats_ns = now_ns + _RX_STATS_INTERVAL_NS
         except Exception as e:  # noqa: BLE001
             _log.warning("rx pump for %s crashed: %s", cid, e)
@@ -690,29 +836,46 @@ class _SharedInterface:
         tec: int,
         rec: int,
         rx_overruns: Optional[int] = None,
+        *,
+        now_s: Optional[float] = None,
     ) -> None:
         """Broadcast an :class:`InterfaceState` if this differs from the
-        last one published. The single place a controller state leaves
-        the interface, so the state poll and any other discovery of the
-        controller's condition cannot disagree about what subscribers
-        were last told.
+        last one published, or if the last one is a heartbeat old. The
+        single place a controller state leaves the interface, so the
+        state poll and any other discovery of the controller's condition
+        cannot disagree about what subscribers were last told.
 
-        ``rx_overruns`` rides the same envelope and the same
-        publish-on-change gate: it moves rarely (a bus that is losing
-        frames is a bus in trouble, not a bus at work), so a fresh
-        envelope per poll would be noise on every healthy interface."""
+        ``now_s`` is the poll's monotonic reading. An unchanged reading
+        is republished once :data:`_STATE_HEARTBEAT_S` has passed since
+        the last publish (ADR 0060 rule 5): every envelope carries when
+        it was read, so a reader can tell a reading that has stopped
+        arriving from one that is simply unchanged. Republishing costs
+        one keyed slot on each session's control lane, which a newer
+        reading replaces.
+
+        ``rx_overruns`` rides the same envelope and the same gate: it
+        moves rarely (a bus that is losing frames is a bus in trouble,
+        not a bus at work)."""
         with self._lock:
-            if (
+            unchanged = (
                 mapped == self._last_state
                 and tec == self._last_tec
                 and rec == self._last_rec
                 and rx_overruns == self._last_rx_overruns
-            ):
+            )
+            due = (
+                now_s is not None
+                and self._last_publish_s is not None
+                and now_s - self._last_publish_s >= _STATE_HEARTBEAT_S
+            )
+            if unchanged and not due:
                 return
             self._last_state = mapped
             self._last_tec = tec
             self._last_rec = rec
             self._last_rx_overruns = rx_overruns
+            if now_s is not None:
+                self._last_publish_s = now_s
             outboxes = list(self._outboxes)
         env = pb.Envelope(
             interface_state=_interface_state(
@@ -737,12 +900,18 @@ class _SharedInterface:
 
     def _poll_state(self, ch: drv.OpenChannel, *, now_s: float) -> None:
         """One pass of the state poll: read the controller, publish what
-        it says, and reset it if it has read bus-off for longer than it
-        could take to come back by itself. ``now_s`` is a monotonic
-        reading, passed in so the threshold can be tested without
-        waiting it out."""
+        it says, republish or close the open bus-error episode, and
+        recover the channel -- reset it if it has read bus-off for longer
+        than it could take to come back by itself, reopen it if its queue
+        is full in silence, flush it if its queue has accepted nothing
+        for a second. ``now_s`` is a monotonic reading, passed in so the
+        thresholds can be tested without waiting them out."""
         cid = self._channel_id
         self._report_timer_wraps(ch)
+        if self._last_publish_s is None:
+            # The heartbeat counts from the first pass: the subscribe
+            # snapshot was each session's own, not a publish to all.
+            self._last_publish_s = now_s
         try:
             st = ch.state()
         except Exception as e:  # noqa: BLE001
@@ -757,24 +926,88 @@ class _SharedInterface:
                 0,
                 0,
                 self._read_rx_overruns(ch),
+                now_s=now_s,
             )
+            self._publish_episodes(self._episodes.tick(now_s, 0, 0))
             return
         self._publish_state(
             _state_name_to_proto(st.state),
             st.tec,
             st.rec,
             self._read_rx_overruns(ch),
+            now_s=now_s,
         )
+        self._publish_episodes(self._episodes.tick(now_s, st.tec, st.rec))
         if st.state != drv.STATE_BUS_OFF:
             self._bus_off_since = None
             self._bus_off_reset_failing = False
-            self._reopen_if_queue_full_in_silence(ch, now_s)
+            if not self._reopen_if_queue_full_in_silence(ch, now_s):
+                self._flush_if_queue_stuck(ch, now_s)
             return
         if self._bus_off_since is None:
             self._bus_off_since = now_s
             return
         if now_s - self._bus_off_since >= _BUS_OFF_RESET_AFTER_S:
             self._reset_bus_off(ch, now_s - self._bus_off_since)
+
+    def _flush_if_queue_stuck(self, ch: drv.OpenChannel, now_s: float) -> None:
+        """Flush the transmit queue of a channel whose driver has refused
+        every send as queue-full for :data:`_STUCK_QUEUE_FLUSH_AFTER_S`,
+        with none accepted, whether or not frames are arriving (ADR 0060
+        rule 7). The caller has already ruled out bus-off.
+
+        Refusals that have stopped are not a stuck queue -- nobody is
+        sending, so nothing says it is not draining -- so the latest
+        queue-full refusal must also fall inside the window. A flush
+        restarts the window, so while the shape persists the channel is
+        flushed at most once per window.
+
+        In place through the driver's ``flush_tx`` where it has one,
+        otherwise by reopening the channel. Each flush is counted into
+        every subscribed session's queue-full refusal summary; the first
+        of a run is logged at info, the rest at debug.
+        """
+        since = self._queue_full_since
+        refused = self._queue_full_refused
+        if (
+            since is None
+            or since[0] is not ch
+            or refused is None
+            or refused[0] is not ch
+        ):
+            return
+        window = _STUCK_QUEUE_FLUSH_AFTER_S
+        if now_s - since[1] < window or now_s - refused[1] >= window:
+            return
+        cid = self._channel_id
+        try:
+            flush = getattr(ch, "flush_tx", None)
+            in_place = bool(flush()) if callable(flush) else False
+            if not in_place and not self._reopen(ch):
+                return
+        except Exception as e:  # noqa: BLE001
+            if not self._flush_failing:
+                self._flush_failing = True
+                _log.warning("transmit-queue flush of %s failed: %s", cid, e)
+            else:
+                _log.debug("transmit-queue flush of %s failed again: %s", cid, e)
+            return
+        self._queue_full_since = None
+        self._flush_failing = False
+        how = "flushed its transmit queue" if in_place else "reopened the channel"
+        if not self._flush_run_logged:
+            self._flush_run_logged = True
+            _log.info(
+                "%s refused every send with its transmit queue full for %.1f s; %s",
+                cid,
+                now_s - since[1],
+                how,
+            )
+        else:
+            _log.debug("%s still refusing queue-full; %s again", cid, how)
+        now_ns = time.time_ns()
+        for ob in self._outbox_snapshot():
+            ob.note_flush(cid, now_ns=now_ns)
 
     def _reset_bus_off(self, ch: drv.OpenChannel, held_s: float) -> None:
         """Reset a controller latched bus-off (ADR 0039): in place
@@ -844,46 +1077,64 @@ class _SharedInterface:
         """The driver refused a send on ``ch`` at monotonic ``now_s``.
         Only a full transmit queue is remembered, by the driver's own
         classification (:attr:`~cannet_local_sidecar.driver.TxRejected
-        .queue_full`)."""
+        .queue_full`): the latest such refusal for the silent-queue
+        reopen, and the first since the last accepted send for the
+        stuck-queue flush."""
         if error.queue_full:
             self._queue_full_refused = (ch, now_s)
+            since = self._queue_full_since
+            if since is None or since[0] is not ch:
+                self._queue_full_since = (ch, now_s)
+
+    def _note_tx_accepted(self, ch: drv.OpenChannel, *, now_s: float) -> None:
+        """The driver accepted a send on ``ch`` at monotonic ``now_s``:
+        its queue is draining, so the stuck-queue second starts over and
+        the next flush, if one comes, starts a new run."""
+        self._queue_full_since = None
+        self._flush_run_logged = False
+        self._flush_failing = False
+
+    def _count_tx_refused(self) -> None:
+        with self._tx_stats_lock:
+            self._tx_refused += 1
 
     def _reopen_if_queue_full_in_silence(
         self, ch: drv.OpenChannel, now_s: float
-    ) -> None:
+    ) -> bool:
         """Reopen a channel whose controller has stopped transmitting
         without saying so (ADR 0039): its driver has refused a send with
         a full transmit queue within the last
         :data:`_QUEUE_FULL_SILENCE_REOPEN_AFTER_S`, and nothing at all
-        has been received for that long.
+        has been received for that long. Returns whether it tried, so
+        the same pass does not also flush.
 
-        Either half alone is no reason. A full queue while error frames
-        arrive is a live fault the controller is reporting; silence
-        without refusals is an idle bus. Together they are a controller
-        that is neither sending nor erroring -- the shape a PEAK channel
-        took when its driver reset it from bus-off behind a full
-        transmit queue -- and only a re-initialisation empties the
-        queue. Checked once per state-poll pass, so a shape that
+        Silence without refusals is an idle bus. A full queue while
+        frames arrive is flushed instead (ADR 0060 rule 7), which empties
+        the queue without re-initialising a controller that is working;
+        a controller that is neither sending nor erroring -- the shape a
+        PEAK channel took when its driver reset it from bus-off behind a
+        full transmit queue -- needs the re-initialisation, which only a
+        reopen gives. Checked once per state-poll pass, so a shape that
         persists is reopened at most once a pass.
         """
         refused = self._queue_full_refused
         if refused is None or refused[0] is not ch:
-            return
+            return False
         window = _QUEUE_FULL_SILENCE_REOPEN_AFTER_S
         silent_s = now_s - self._last_rx_s
         if silent_s < window or now_s - refused[1] >= window:
-            return
+            return False
         cid = self._channel_id
         try:
             if not self._reopen(ch):
-                return
+                return True
         except Exception as e:  # noqa: BLE001
             if not self._queue_full_reopen_failing:
                 self._queue_full_reopen_failing = True
                 _log.warning("queue-full reopen of %s failed: %s", cid, e)
             else:
                 _log.debug("queue-full reopen of %s failed again: %s", cid, e)
-            return
+            return True
         self._queue_full_reopen_failing = False
         _log.info(
             "%s refused sends with its transmit queue full and received "
@@ -891,6 +1142,7 @@ class _SharedInterface:
             cid,
             silent_s,
         )
+        return True
 
     def _report_timer_wraps(self, ch: drv.OpenChannel) -> None:
         """Emit one WARNING ``LogMessage`` per rollover of the channel's
@@ -963,11 +1215,14 @@ class _InterfaceRegistry:
         self._lock = threading.Lock()
         self._interfaces: dict[str, _SharedInterface] = {}
         self._configs: dict[str, drv.OpenConfig] = {}
+        # Error-row caps from `ConfigureBus` (ADR 0060 rule 2), kept like
+        # the configs so a cap that arrives before the open applies to it.
+        self._caps: dict[str, Optional[int]] = {}
 
     def subscribe(
         self,
         channel_id: str,
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
+        outbox: SessionOutbox,
     ) -> _SharedInterface:
         with self._lock:
             shared = self._interfaces.get(channel_id)
@@ -979,6 +1234,7 @@ class _InterfaceRegistry:
                     channel_id=channel_id,
                     initial_config=cfg,
                 )
+                shared.set_error_row_cap(self._caps.get(channel_id))
                 self._interfaces[channel_id] = shared
         assert shared is not None
         try:
@@ -993,7 +1249,7 @@ class _InterfaceRegistry:
     def unsubscribe(
         self,
         channel_id: str,
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
+        outbox: SessionOutbox,
     ) -> None:
         with self._lock:
             shared = self._interfaces.get(channel_id)
@@ -1007,6 +1263,16 @@ class _InterfaceRegistry:
                 if cur is shared and not cur.has_subscribers():
                     self._interfaces.pop(channel_id, None)
 
+    def set_error_row_cap(self, channel_id: str, cap: Optional[int]) -> None:
+        """The error-row cap for ``channel_id`` (ADR 0060 rule 2);
+        ``None`` restores the default. Takes effect from the interface's
+        next bus-error episode, and is remembered for its next open."""
+        with self._lock:
+            self._caps[channel_id] = cap
+            shared = self._interfaces.get(channel_id)
+        if shared is not None:
+            shared.set_error_row_cap(cap)
+
     def reconfigure(self, channel_id: str, config: drv.OpenConfig) -> None:
         with self._lock:
             shared = self._interfaces.get(channel_id)
@@ -1018,7 +1284,7 @@ class _InterfaceRegistry:
         self,
         channel_id: str,
         frame: drv.Frame,
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
+        outbox: SessionOutbox,
     ) -> None:
         with self._lock:
             shared = self._interfaces.get(channel_id)
