@@ -198,3 +198,9 @@ Branch sits in the stack **beside the last driver change**
   close-before-open). Queue § 2 block of 2026-10-03 rulings deleted: every
   item landed. Acceptance waits on the owner's integrated run with the
   installer (queue § 4).
+- 2026-10-07 — Queue § 3 walk: the Kvaser queue-full text ("transmit
+  buffer in can controller is full", `_KVASER_ERR_TXBUFOFL`) landed with
+  163; Vector's `XL_ERR_QUEUE_IS_FULL` is the one entry still awaiting
+  hardware. The rx stats line now logs on `offered > 0` too, so a dead
+  channel refusing sends is no longer silent. The post-bus-off burst bound
+  stays unbuilt (the burst was accepted). Items deleted from the queue.

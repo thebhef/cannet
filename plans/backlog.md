@@ -24,6 +24,10 @@ work or admit it isn't going to happen and delete it.
 
 ### CI / checks
 
+- `[cleanup]` **The shared tree's `target/debug` grows without bound**
+  (43 GB on 2026-09-23, `incremental/` alone 18 GB, ~580 MB free before a
+  phase build). A periodic `cargo clean` or a CI-side cap, rather than
+  each phase rediscovering it. (0155 § Status log, 2026-09-23.)
 Static and automated checks we'd like running on the repo to catch a
 class of bug before it ships, rather than relying on the next user to
 trip over it.
@@ -223,6 +227,18 @@ trip over it.
 
 ### GUI chrome and cross-cutting
 
+- `[defect]` **The logger's idle file listing has no filesystem watch** —
+  it refreshes only on `loggers-changed`, so BLFs moved into the folder
+  by hand are never noticed until something else triggers a listing.
+  `notify` is adopted already (`dbc_watcher`, `project_watch`,
+  `rbs/watch` share one watcher). Detail: 0137 § Status log, 2026-09-22.
+- `[defect]` **`litre` reaches no unit; `liter` and `L` do** — the library
+  spells it American and neither the picker's filter nor recognition
+  carries the British alternate. Detail: 0149 § Blockers / side effects.
+- `[cleanup]` **The GUI's `servers.json` writer drops JSON keys it does
+  not know** on every write; the CLI writer preserves them. Bites the day
+  the store grows a field an older GUI build rewrites away. (0144 § Status
+  log.)
 - `[model]` **MDF4 add-to-capture.** Task 164 adds BLF only (owner
   ruling 2026-10-06). MDF4 frames could go through the same add mode;
   held until the file-backed item below lands, because an MDF carries

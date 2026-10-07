@@ -42,7 +42,6 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
 ## 3. Fix later
 
-
 - **A PEAK channel in an ack storm hears everything 6–16 s late**
   (163 phase 9b, 2026-10-06, trials 4–12): ~80 k error frames queue in the
   PEAK driver during a pull, the rx pump reads ~2.5 k/s, so the channel's
@@ -52,119 +51,9 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   passes the row cap, on again when the controller leaves passive/bus-off.
   Awaits the owner: groom as a 163 phase, or a later task.
 
-- **Error events split during one continuous error blast** (owner,
-  2026-10-04): root-caused, not yet fixed — the wire streams were
-  continuous; the host's clock-offset probe rode a sidecar→host stream
-  that was minutes behind, measured θ = −48.4 s with δ ≈ 97 s, and the
-  slew **stepped** every frame's time by 48 s (`settle_round` keeps the
-  min-δ sample with no δ bound; `OffsetSlew::retarget` steps above 1 s),
-  so `EpisodeList::push` saw a ≥ gap jump and opened a new episode at
-  each step. Fix proposed: a round whose best δ exceeds the step
-  threshold cannot bound the offset and is discarded (last measurement
-  kept, counted as a silent round, one coalesced log line). Awaiting the
-  owner's scope ruling (with or without the backlog item below).
-- **Folded into task 163 (2026-10-04):** the clock-step item above and the
-  sidecar→host backlog (unbounded per-session `outbox`, control messages
-  behind the data, no loss signal) are divergences D12 and D2/D4 of the
-  0163 phase-1 review; the premise "flat ~3.6 k f/s ceiling" was wrong
-  (`fps=` is the rate readout; ingest measured 1.3–7.7 k f/s). The
-  2026-10-04 retest added: the host **parked sends for 72 s**
-  (10:30:49–10:32:01) on stale refusals while the wire was already
-  healthy. Design and fix in 0163; these two items leave the queue with
-  its phase 2.
-- **Correction from 0163 phase 2a (2026-10-04):** the "72 s park" was
-  not a park. `queued_to_driver` counts accepted sends only. The host
-  kept sending, slowed to ≈ 330–520/s, and PEAK refused every send for
-  77.6 s. The host received those refusals within seconds (inferred
-  from the stream's lag at both ends of the window).
-  - The slowdown is a defect the phase reproduced: all interfaces on a
-    session send in lockstep with the slowest transmit worker.
-  - On the host, one full request channel stalls the single periodic
-    scheduler for every bus.
-  - The H1 envelope bound is refuted for the sidecar and transport at
-    the retest's load.
-  - Detail and proposed fixes: 0163 *Phase 2a report*, phases 4 and 6.
-- **Queue-full is recognised by PEAK's text only** ("transmit queue is
-  full"); Kvaser ("Transmit buffer overflow") and Vector
-  (`XL_ERR_QUEUE_IS_FULL`) are each one entry in `_QUEUE_FULL_TEXTS`
-  once seen on hardware (0161, 2026-10-04).
-- **The rx stats line stays silent on a dead channel** (`read > 0 or
-  tx > 0`; refused sends are not sends), so a stuck controller leaves no
-  periodic trace in the sidecar log — the new reopen INFO line is the
-  only evidence (0161, 2026-10-04).
 - **A reopen does not reset the published state** (bus-off backstop and
   queue-full reopen alike): a stale error-passive stays shown until the
   fresh channel's first poll (0161, 2026-10-04).
-- Post-bus-off burst: a sidecar-side bound on the driver's transmit
-  queue (frames handed to the driver − echoes received, capped;
-  `flush_tx_buffer()` past the cap) would stop the drain burst the owner
-  accepted on 2026-10-03. Only if the acceptance is revisited.
-  (0161 § Blockers)
-- A vbus bridge counts as a recipient: a local participant is echoed
-  even when the physical bus behind the bridge carried nothing (ADR 0021
-  model; 0121 § Blockers 2026-10-03).
-- FYI: local venvs need `uv sync --extra dev --reinstall-package
-  cannet-python-wire` after 121 (uv copies the path dependency); the
-  frozen sidecar and release binary were rebuilt.
-- The plot closes raw gaps at decimated zoom: no `null` is inserted,
-  `mergeSeries` holds the last value across columns, and the dashed
-  "extrapolated" cue needs ≤ 1 raw sample between served points — a
-  0.5 s hole inside a bucket is never shown (2026-10-03, from the 0.5 s
-  unplug; secondary to 121's row). Task 160 phase 2 may absorb it.
-
-**Owner's 2026-10-02 dongle-unplug test** (notes taken in this file,
-committed verbatim as 5ef108dd, triaged by the overseer):
-
-- **Bus load reading jumps between 36 % and 100 % during/after a PEAK
-  outage** (owner, 2026-10-02; the sticky error-passive half of that
-  report is fixed by `fix-pcan-counters-decay`). `bits_per_second_by_bus`
-  (`bus_health.rs`) sums the trace store's per-bus bits; during a pull
-  the store took synthesised `Tx` rows (gone with 121) *and* ~2 000/s
-  PEAK error frames — whether error frames count as bus bits, and what
-  the reading does now, is unmeasured since 121. Needs one bench look
-  on the new build; no task yet.
-
-- **`--app-data-dir` leaves the project cache shared with the
-  operator's unsaved session** (`resolve_project_dir` roots under
-  `app_cache_dir`, which the flag does not move), so a harness run can
-  write it — against ADR 0031. Task 79 already owns making the flag
-  isolate the scratch; this is a second observation of the same gap.
-  Detail: 0156 § Blockers / side effects, 2026-09-23 phase 3.
-
-
-- The GUI's `servers.json` writer **drops JSON keys it doesn't
-  know** on every write; the new CLI writer preserves them. Safe in
-  today's direction (the GUI owns the schema) but the asymmetry
-  bites the day the store grows a field an older GUI build rewrites
-  away. GUI-side fix, some later task. (0144 § Status log)
-
-- **145: the server token gate is per-service now**, not a server-wide
-  `Server::layer` — `ServerInfo` must answer without a credential and
-  a tonic interceptor cannot see which service a call is for.
-  `crates/cannet-server/tests/auth.rs` holds the line (every gated RPC
-  refuses an absent or wrong token; `ServerInfo` answers with
-  neither). Detail: 0145 § Blockers / side effects.
-- **145: `grpcio-tools` dev pin `>=1.80,<1.81`** on `task136-core-bus`:
-  the wire package's lock had resolved 1.84 while the committed gencode
-  came from 1.80; the new drift check exposed it. Inventory entry
-  records the rule. FYI only.
-
-- **137: the logger's file listing scans whole BLFs on the 250 ms poll
-  path** (owner report 2026-09-22: SharePoint folder, moved-in BLFs,
-  20 M-frame buffer → sluggish system, list never updates, reopened
-  panel empty). Diagnosed; the listing fix is task 152 phase 3 (owner
-  ruling 2026-09-22). The idle listing's missing filesystem watch stays
-  a 137 fix branch after it. Detail: 0137 § Status log, 2026-09-22.
-- **149: `litre` reaches no unit; `liter` and `L` do.** The library
-  spells it American, and neither the picker's filter nor recognition
-  carries a British alternate. Detail: 0149 § Blockers / side effects.
-- **The shared tree's `target/debug` had grown to 43 GB** (`incremental/`
-  alone 18 GB) and left the machine with ~580 MB free before 155 phase
-  2's first build. Cleared `target/debug/incremental` (compiler cache
-  only, safely regenerable, no shared source touched) to unblock; left
-  `deps/` alone. Likely recurs on later phases sharing this tree — worth
-  a periodic `cargo clean` or CI-side cap rather than each phase
-  rediscovering it. Detail: 0155 § Status log, 2026-09-23 (phase 2).
 
 ## 4. Finished tasks awaiting acceptance
 

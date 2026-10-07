@@ -157,3 +157,8 @@ come from an intent.
   durable rule (ADR, CONTEXT.md, CLAUDE.md, with the PEAK caveat). Task
   file moved under `pending-closeout/` (in progress; owner's 2026-10-07
   roadmap rule).
+- 2026-10-07 — For phase 2's bridge fix (queue § 3 note folded in): a
+  vbus bridge counts as a recipient under ADR 0021's model — a local
+  participant is echoed even when the physical bus behind the bridge
+  carried nothing (0121 § Blockers, 2026-10-03). The fix must say whether
+  that stands once the bridge carries far-side `Tx`.
