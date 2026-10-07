@@ -619,7 +619,7 @@ class PythonCanDriver:
                 bus = _open_vector_bus(kwargs)
             else:
                 bus = can.interface.Bus(interface=interface, **kwargs)  # type: ignore[union-attr]
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - backend's own exception type; re-raised as OSError
             raise OSError(f"open {channel_id}: {e}") from e
         if interface == "pcan":
             _disable_pcan_status_frames(bus)
@@ -977,7 +977,7 @@ class PythonCanChannel:
         msg = frame_to_message(frame)
         try:
             self._bus.send(msg)  # type: ignore[attr-defined]
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - backend's own exception type; re-raised as TxRejected
             raise TxRejected(
                 str(e),
                 reason=_send_refusal_reason(e),
@@ -1057,7 +1057,7 @@ class PythonCanChannel:
             return self._kvaser_state()
         try:
             raw = self._bus.state  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - backend's `.state` getter can raise anything; read as unreachable
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         name = getattr(raw, "name", str(raw)).upper()
@@ -1128,7 +1128,7 @@ class PythonCanChannel:
             return ControllerState(state=from_counters, tec=tec, rec=rec)
         try:
             status = int(status_read())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - PCAN-Basic status read can raise; read as unreachable
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         self._unreachable = False
@@ -1232,7 +1232,7 @@ class PythonCanChannel:
         """
         try:
             self._bus.request_chip_state()  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - XL driver's request can raise; read as unreachable
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         self._unreachable = False
@@ -1256,7 +1256,7 @@ class PythonCanChannel:
             api = _kvaser_api()
             status = api.read_status(handle)
             tec, rec = api.read_error_counters(handle)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - CANlib read can raise; read as unreachable
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         self._unreachable = False
@@ -1306,8 +1306,8 @@ class PythonCanChannel:
         self._closed = True
         try:
             self._bus.shutdown()  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001 - closing; nothing left to do but log
+            _log.debug("shutdown of %s failed: %s", self.channel_id, e)
 
 
 # ----- Vendor enumeration helpers --------------------------------------------
@@ -1335,7 +1335,7 @@ def _vector_driver_version(vector_canlib) -> Optional[str]:
         return None
     try:
         packed = int(read().dllVersion)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - driver-config read can raise; version then reports absent
         return None
     if packed <= 0:
         return None
@@ -1372,7 +1372,7 @@ def _list_vector() -> List[Channel]:
     """
     try:
         from can.interfaces.vector import canlib as vector_canlib  # type: ignore[import-untyped]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - Vector backend/XL library absent or broken; reports zero channels
         return []
     # CAN-FD capability flags from xldefine.XL_ChannelCapabilities.
     # Looked up lazily because importing xldefine pulls the vxlapi
@@ -1404,12 +1404,12 @@ def _list_vector() -> List[Channel]:
                 0,
             )
         )
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - xldefine lookup can fail on some platforms; falls back to the permissive default
         fd_mask = 0
         can_cap_mask = 0
     try:
         configs = vector_canlib.get_channel_configs()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 - vendor enumeration can fail in many ways; logged and skipped
         _log.info("vector enumeration failed (%s); skipping", e)
         return []
     # One driver-config read for the whole enumeration: the version is
@@ -1492,7 +1492,7 @@ def _list_kvaser() -> List[Channel]:
         return []
     try:
         detected = can.detect_available_configs(interfaces=["kvaser"])
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 - CANlib detection can fail in many ways; logged and skipped
         _log.info("kvaser enumeration failed (%s); skipping", e)
         return []
     out: List[Channel] = []
@@ -1536,7 +1536,8 @@ def _pcan_read_int(api, handle, pcan_basic, *param_names: str, default: int = 0)
             continue
         try:
             err, val = api.GetValue(handle, param)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - optional parameter, tried next
+            _log.debug("PCAN-Basic GetValue(%s) failed: %s", pname, e)
             continue
         if err == 0 and val is not None:
             return int(getattr(val, "value", val))
@@ -1553,7 +1554,8 @@ def _pcan_read_str(api, handle, pcan_basic, *param_names: str) -> str:
             continue
         try:
             err, val = api.GetValue(handle, param)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - optional parameter, tried next
+            _log.debug("PCAN-Basic GetValue(%s) failed: %s", pname, e)
             continue
         if err == 0 and val:
             return _decode_pcan_bytes(val)
@@ -1586,7 +1588,7 @@ def _list_pcan() -> List[Channel]:
         return []
     try:
         from can.interfaces.pcan import basic as pcan_basic  # type: ignore[import-untyped]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - PEAK backend absent; reports zero channels
         return []
     PCANBasic = getattr(pcan_basic, "PCANBasic", None)
     if PCANBasic is None:
@@ -1594,7 +1596,7 @@ def _list_pcan() -> List[Channel]:
     try:
         detected = can.detect_available_configs(interfaces=["pcan"])
         api = PCANBasic()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 - PEAK enumeration can fail in many ways; logged and skipped
         _log.info("pcan enumeration failed (%s); skipping", e)
         return []
     out: List[Channel] = []
