@@ -3,7 +3,7 @@
 //
 // It is the export dialog's controls, standing still. The same templates
 // resolve through the same host command (`preview_export_template`), so
-// the tokens and their strftime formats stay the model's, and the
+// the tokens and their date patterns stay the model's, and the
 // preview and the resolved folder are both the host's answers rather
 // than anything derived here.
 //
