@@ -306,3 +306,12 @@ One phase, one agent, in stack order:
   beside `check_protocol` — and gated by it, since it dials a server
   too), and `rename-local-sidecar` (the two new sidecar files following
   the package rename).
+
+- 2026-10-07 — **The `grpcio-tools>=1.80,<1.81` pin is rejected by the
+  owner** (hit on a fresh clone): `uv lock --check` fails in
+  `clients/cannet-python-client` — its lock still records the wire
+  package's pre-pin specifier — and the three packages lock three grpcio
+  versions and two protobuf majors against 1.80-era gencode. Ruling: move
+  versions forward, consistently. Fix ordered onto the stack (queue § 2):
+  regenerate with current tools, floors to match, one lock state across
+  the packages, CI checks lock currency per package.
