@@ -16,12 +16,16 @@
 //!   variants — `Subscribe`, `Unsubscribe`, `FrameBatch`, `Error`,
 //!   `LogMessage`, `ConfigureBus`, `InterfaceAllocated`,
 //!   `InterfaceState`, `AttachBridge`, `DetachBridge`, `ClockProbe`,
-//!   `ClockReply`, and `Error::Code::NoAcknowledger` — flow on the
-//!   same stream. Direction conventions (client→server vs
-//!   server→client) and the virtual-bus / hardware-server
-//!   responsibility split are documented in [ADR 0021].
+//!   `ClockReply`, `BusErrorEpisode`, `TxRefusals`, `FramesDropped`,
+//!   and `Error::Code::NoAcknowledger` — flow on the same stream.
+//!   Direction conventions (client→server vs server→client) and the
+//!   virtual-bus / hardware-server responsibility split are documented
+//!   in [ADR 0021]. `BusErrorEpisode`, `TxRefusals` and `FramesDropped`
+//!   are server→client bus-fault reports, carried on the control lane
+//!   of [ADR 0060]'s two-lane split.
 //!
 //! [ADR 0021]: ../../../docs/adr/0021-virtual-bus-server.md
+//! [ADR 0060]: ../../../docs/adr/0060-a-bus-fault-is-an-episode-the-sidecar-reports.md
 //!
 //! [`proto::LogMessage`] is the out-of-band log channel: a
 //! sender (vendor sidecar, server, peer client) emits structured
