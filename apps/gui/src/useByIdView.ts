@@ -24,6 +24,9 @@ interface ByIdPage {
 export interface ByIdView {
   count: number;
   version: number;
+  /// A fetch for the current window/predicate/sort is in flight (or
+  /// queued behind one). See `useFilteredTrace`, which this mirrors.
+  pending: boolean;
   getRow: (index: number) => ByIdSnapshotRecord | null;
   ensureVisible: (start: number, end: number) => void;
   /// The page envelope's `fuzzy_winner` (ADR 0044). See `useFilteredTrace`.
@@ -111,7 +114,7 @@ export function useByIdView(
     [filter, winStart, winEnd, sortKey, sortDir, busNames, running],
   );
 
-  const { count, version, getRow, ensureVisible } =
+  const { count, version, pending, getRow, ensureVisible } =
     useWindowedQuery<ByIdSnapshotRecord>({
       descriptor,
       fetchPage,
@@ -123,5 +126,5 @@ export function useByIdView(
       extentSignal: winEnd + (running ? 0 : 1),
     });
 
-  return { count, version, getRow, ensureVisible, fuzzyWinner: winnerRef.current };
+  return { count, version, pending, getRow, ensureVisible, fuzzyWinner: winnerRef.current };
 }

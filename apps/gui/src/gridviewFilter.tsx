@@ -206,6 +206,15 @@ interface GridviewFilterBoxProps {
   /// is active, carrying this class. Omitted ⇒ no count (the panels that
   /// never showed one keep their toolbar as it was).
   matchCountClassName?: string;
+  /// For a host-paged view with no client-side row space (the trace):
+  /// the host's own count and whether it's still walking the index for
+  /// the settled query. When given, it replaces `filter.matchSet.size`
+  /// as the count source — `filter`'s own matcher is never built for
+  /// such a view (there is nothing for it to match over), so its
+  /// `matchSet` is always empty and reading it here would read "0
+  /// matches" under real matches. Ignored unless `matchCountClassName`
+  /// is also set.
+  hostMatches?: { count: number; pending: boolean };
   /// Exposes the input element to the panel — e.g. so `panel.find`
   /// (ADR 0018, Mod+F) can focus and select it.
   inputRef?: RefObject<HTMLInputElement>;
@@ -220,6 +229,7 @@ export function GridviewFilterBox({
   ariaLabel,
   inputType = "search",
   matchCountClassName,
+  hostMatches,
   inputRef,
 }: GridviewFilterBoxProps) {
   return (
@@ -235,7 +245,11 @@ export function GridviewFilterBox({
       />
       {matchCountClassName && filter.active && (
         <span className={matchCountClassName} aria-live="polite">
-          {filter.matchSet.size} match{filter.matchSet.size === 1 ? "" : "es"}
+          {hostMatches
+            ? hostMatches.pending
+              ? "searching…"
+              : `${hostMatches.count} match${hostMatches.count === 1 ? "" : "es"}`
+            : `${filter.matchSet.size} match${filter.matchSet.size === 1 ? "" : "es"}`}
         </span>
       )}
     </>

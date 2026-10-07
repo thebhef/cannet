@@ -41,11 +41,14 @@ export interface WindowPage<T> {
 
 /// The view-facing surface: `count` (extent, drives the scrollbar),
 /// `version` (bumped when window content changes, so consumers
-/// re-render and re-consult `getRow`), a random-access row getter, and
-/// the prefetch hook the virtualizer calls with its visible range.
+/// re-render and re-consult `getRow`), `pending` (a fetch for the
+/// current descriptor is in flight or queued behind one), a
+/// random-access row getter, and the prefetch hook the virtualizer
+/// calls with its visible range.
 export interface WindowedQuery<T> {
   count: number;
   version: number;
+  pending: boolean;
   getRow: (index: number) => T | null;
   ensureVisible: (start: number, end: number) => void;
 }
@@ -136,6 +139,14 @@ export function useWindowedQuery<T>(
   } = opts;
 
   const [win, setWin] = useState<WindowState<T>>(emptyWindow);
+  // `ctl.current.fetching`/`.pending` already track this, but in a ref
+  // the render never reads (ADR 0025 says nothing about *when* a fetch
+  // is in flight, only what it returns). This mirrors that ref into
+  // render state, flipped only at the transitions below — true the
+  // moment a fetch is kicked off, false only once no further fetch is
+  // queued behind it — so a view with no caller watching `pending`
+  // pays no extra renders beyond the two per fetch this already adds.
+  const [pending, setPending] = useState(false);
 
   // Latest inputs + single-flight control, read by the stable `load`
   // callback. Mutated in render — a plain "latest value" ref, never read
@@ -168,9 +179,11 @@ export function useWindowedQuery<T>(
       if (c.fetching) {
         // Only the most recent request matters — supersede any pending.
         c.pending = { wantStart, fromEnd, countOnly };
+        setPending(true);
         return;
       }
       c.fetching = true;
+      setPending(true);
       const descriptor = c.descriptor;
       const limit = countOnly ? 0 : c.pageSize;
       void c
@@ -198,6 +211,8 @@ export function useWindowedQuery<T>(
             const n = c.pending;
             c.pending = null;
             load(n.wantStart, n.fromEnd, n.countOnly);
+          } else {
+            setPending(false);
           }
         });
     },
@@ -211,7 +226,13 @@ export function useWindowedQuery<T>(
     ctl.current.descriptor = descriptor;
     ctl.current.loadedStart = 0;
     setWin((p) => ({ ...emptyWindow<T>(), version: p.version + 1 }));
-    if (descriptor === "") return;
+    if (descriptor === "") {
+      // Going inactive abandons whatever the old descriptor was
+      // fetching — nothing left to report pending for.
+      ctl.current.pending = null;
+      setPending(false);
+      return;
+    }
     load(0, ctl.current.followLive, false);
   }, [descriptor, load]);
 
@@ -265,5 +286,5 @@ export function useWindowedQuery<T>(
   );
 
   const count = extent !== undefined ? extent : win.fetchedTotal;
-  return { count, version: win.version, getRow, ensureVisible };
+  return { count, version: win.version, pending, getRow, ensureVisible };
 }
