@@ -247,6 +247,47 @@ describe("BusHealthPanel", () => {
     expect(cellsOf("Sim")[5]).toBe("—");
   });
 
+  it("shows the stale marker, the ongoing episode's own line, refusals, flushes and missed periods", async () => {
+    connStates = { b1: { kind: "connected", applied: null } };
+    health = {
+      b1: {
+        controller: { state: "warning", tec: 104, rec: 0, asOfNs: 1, stale: true },
+        errorCount: 3412,
+        errorRate: 1364.8,
+        errorEpisode: {
+          ongoing: true,
+          firstTsNs: 0,
+          lastTsNs: 2_500_000_000,
+          count: 3412,
+          countByKind: { ack: 3410, bit: 2, form: 0, stuff: 0, crc: 0, other: 0, unknown: 0 },
+          txCount: 3412,
+          rxCount: 0,
+          tec: 104,
+          rec: 0,
+        },
+        refusals: [
+          {
+            reason: "queueFull",
+            reasonText: "transmit queue full",
+            count: 1234,
+            lastMessage: "",
+            sessionWide: false,
+          },
+        ],
+        flushCount: 2,
+        missedPeriods: { noRoom: 5, late: 0 },
+      },
+    };
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("stale")).toBeInTheDocument());
+    const cell = cellsOf("Powertrain")[6];
+    expect(cell).toContain("mostly ack: no other node acknowledging");
+    expect(cell).toContain("— ongoing");
+    expect(cell).toContain("sends refused: 1,234 (transmit queue full)");
+    expect(cell).toContain("transmit queue flushed 2×");
+    expect(cell).toContain("missed periods: 5 no room");
+  });
+
   it("says so rather than drawing an empty grid for a project with no buses", async () => {
     connStates = {};
     health = {};

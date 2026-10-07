@@ -113,6 +113,10 @@ export interface Settings {
   /// Seconds of silence on a bus that end a bus-error episode — the grain
   /// of the bus-error rows in the Events panel's list.
   bus_error_episode_gap_s: number;
+  /// How many error frames of each bus-error episode are kept as trace
+  /// rows; the rest are only counted (ADR 0060's error-row cap). `0`
+  /// keeps none. Applies to live sessions and imported captures alike.
+  error_row_cap: number;
   /// Wait before reconnecting to a `cannet-server` after a drop.
   reconnect_backoff_ms: number;
   /// The address a new-server form opens filled with — the bus binding
@@ -234,6 +238,7 @@ export function defaultSettings(): Settings {
     health_sample_interval_ms: 20_000,
     sidecar_restart_budget: 3,
     bus_error_episode_gap_s: 5,
+    error_row_cap: 16,
     reconnect_backoff_ms: 2000,
     default_server_address: "127.0.0.1:50051",
     sidecar_dir: "",

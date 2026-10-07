@@ -1285,6 +1285,10 @@ const EVENT_KIND_COLOR: Record<string, () => string> = {
   // A comment is the user's own annotation like a note, so it takes the
   // same default; what distinguishes it is the record it rides, not a hue.
   messageBound: () => theme().eventMarker,
+  // Live data the server dropped rather than deliver late (ADR 0060) —
+  // its own color, distinct from a bus-error fault and from the
+  // truncation marker's old-history eviction.
+  droppedFrames: () => theme().eventDroppedFrames,
 };
 
 /// One timeline-event row (ADR 0035), rendered by the same `Row` path as a

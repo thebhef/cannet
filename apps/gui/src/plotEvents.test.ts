@@ -67,9 +67,19 @@ function episode(
   lastT: number,
   count: number,
   lastOrdinal: number,
+  over: Partial<BusErrorEpisodeWire> = {},
 ): BusErrorEpisodeWire {
   const span = lastT - firstT;
-  return { bus, firstT, lastT, count, span, rate: span > 0 ? count / span : null, lastOrdinal };
+  return {
+    bus,
+    firstT,
+    lastT,
+    count,
+    span,
+    rate: span > 0 ? count / span : null,
+    lastOrdinal,
+    ...over,
+  };
 }
 
 const BUS_NAME = (bus: string) => (bus === "b1" ? "Bus 1" : bus);
@@ -90,6 +100,44 @@ describe("busErrorEpisodeEvents", () => {
       true,
     );
   });
+
+  it("marks an ongoing episode's label, and keys it on its bus and first error rather than its moving ordinal", () => {
+    // An ordinal-keyed id (the finalised case above) moves every time an
+    // open episode grows — it is a report count, not an identity — so
+    // the plot's and the Events panel's selection must not key on it
+    // while the episode is still open (0163 phase 6 side effect (d)).
+    const open = episode("b1", 1, 21, 50_000, 50_000, { ongoing: true });
+    const [ev] = busErrorEpisodeEvents([open], BUS_NAME);
+    expect(ev.id).toBe("bus-error:b1:open:1");
+    expect(ev.label.endsWith(" — ongoing")).toBe(true);
+
+    // The same episode reported again, grown — same bus, same first
+    // error, a different (larger) lastOrdinal — keeps the same id.
+    const grown = episode("b1", 1, 25, 60_000, 60_000, { ongoing: true });
+    expect(busErrorEpisodeEvents([grown], BUS_NAME)[0].id).toBe(ev.id);
+  });
+
+  it("finalises back onto the ordinal id, unmarked, once the episode closes", () => {
+    const closed = episode("b1", 1, 21, 50_000, 50_000, { ongoing: false });
+    const [ev] = busErrorEpisodeEvents([closed], BUS_NAME);
+    expect(ev.id).toBe("bus-error:b1:50000");
+    expect(ev.label.endsWith(" — ongoing")).toBe(false);
+  });
+
+  it("carries the host's own text block through as the description, verbatim", () => {
+    // Never recomposed from `detail` here — ADR 0060's host already
+    // worded it (`event_text.rs::bus_error_text`).
+    const withText = episode("b1", 1, 21, 50_000, 50_000, {
+      text: "50000 error frames on b1 over 20.000 s: ack 49998, bit 2.\n\ncannet-event/1\nid: bus-error:b1:50000\nkind: busError",
+    });
+    const [ev] = busErrorEpisodeEvents([withText], BUS_NAME);
+    expect(ev.description).toBe(withText.text);
+  });
+
+  it("reads no description for a peer too old to send the text block", () => {
+    const [ev] = busErrorEpisodeEvents([episode("b1", 1, 21, 50_000, 50_000)], BUS_NAME);
+    expect(ev.description).toBeNull();
+  });
 });
 
 describe("busErrorEpisodeExtents", () => {
@@ -104,19 +152,29 @@ describe("busErrorEpisodeExtents", () => {
       { startNs: 40e9, endNs: 41e9, color: null, kind: "busError", key: "bus-error:b1:50002" },
     ]);
   });
+
+  it("keys an ongoing episode's extent the same stable way its event id is keyed", () => {
+    const open = episode("b1", 40, 41, 2, 50_002, { ongoing: true });
+    expect(busErrorEpisodeExtents([open], new Set(["bus-error:b1:open:40"]))).toEqual([
+      { startNs: 40e9, endNs: 41e9, color: null, kind: "busError", key: "bus-error:b1:open:40" },
+    ]);
+  });
 });
 
 describe("busErrorMarkerLabel", () => {
-  it("carries count, span and rate", () => {
-    expect(busErrorMarkerLabel(5, 2)).toBe("5 bus errors over 2 s (2.5/s)");
+  it("carries count, span and the host's own rate", () => {
+    // The rate is passed straight through, not recomputed from count and
+    // span — `2.5` here is deliberately not `5 / 2`, so a test that
+    // silently went back to local division would still fail.
+    expect(busErrorMarkerLabel(5, 2, 2.5)).toBe("5 bus errors over 2 s (2.5/s)");
   });
 
   it("reads singular for one error", () => {
-    expect(busErrorMarkerLabel(1, 1)).toBe("1 bus error over 1 s (1.0/s)");
+    expect(busErrorMarkerLabel(1, 1, 1)).toBe("1 bus error over 1 s (1.0/s)");
   });
 
-  it("has nothing to divide by when two errors land at once", () => {
-    expect(busErrorMarkerLabel(2, 0)).toBe("2 bus errors over 0 s (—)");
+  it("shows no rate when the host sent none — a zero span, not a local divide-by-zero", () => {
+    expect(busErrorMarkerLabel(2, 0, null)).toBe("2 bus errors over 0 s (—)");
   });
 });
 

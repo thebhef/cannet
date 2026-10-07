@@ -475,6 +475,69 @@ export interface InterfaceRecord {
   serial_number?: string;
 }
 
+/// Error frames by kind, as a bus-error episode tallies them (ADR 0060
+/// rule 1). `ack` is the acknowledge slot going unanswered — a pulled
+/// cable; vendors that cannot tell the kind apart count `unknown`.
+export interface BusErrorKindTally {
+  ack: number;
+  bit: number;
+  form: number;
+  stuff: number;
+  crc: number;
+  other: number;
+  unknown: number;
+}
+
+/// A bus's newest bus-error episode, as the health row carries it.
+/// Mirrors `src-tauri/src/bus_health.rs::ErrorEpisodeHealth`.
+export interface BusErrorEpisodeHealth {
+  /// No closing report has arrived for it: the fault is on now.
+  ongoing: boolean;
+  firstTsNs: number;
+  lastTsNs: number;
+  count: number;
+  countByKind: BusErrorKindTally;
+  /// Errors seen while transmitting / while receiving, where the vendor
+  /// says.
+  txCount: number;
+  rxCount: number;
+  /// The error counters as of its latest error.
+  tec: number;
+  rec: number;
+}
+
+/// One reason a bus's sends were refused, summed over the session.
+/// Mirrors `src-tauri/src/bus_health.rs::BusRefusal`.
+export interface BusRefusal {
+  /// `"queueFull"`, `"closed"`, `"listenOnly"`, `"incompatible"`,
+  /// `"other"` (ADR 0060 rule 4) — or, from a peer that predates those
+  /// summaries, `"txRejected"`, `"notSubscribed"`, `"noAcknowledger"`.
+  reason: string;
+  /// The reason worded for a reader, e.g. "transmit queue full".
+  reasonText: string;
+  count: number;
+  /// The first and latest refusal, on this host's clock. Absent for a
+  /// per-frame refusal, which carries no time.
+  firstNs?: number;
+  lastNs?: number;
+  /// The driver's own words for the latest refusal, where it gave any.
+  lastMessage: string;
+  /// Counted for the whole session rather than for this bus: a
+  /// per-frame refusal names no interface, so it is shown on every bus
+  /// the session carries.
+  sessionWide: boolean;
+}
+
+/// The periods the periodic scheduler did not offer on a bus (ADR 0060
+/// rule 6). Mirrors `src-tauri/src/bus_health.rs::MissedPeriods`.
+export interface MissedPeriods {
+  /// No room in the session's request channel.
+  noRoom: number;
+  /// A tick ran late past one or more whole periods, dropped rather
+  /// than burst (ADR 0039 rule 2).
+  late: number;
+}
+
 /// One bus's low-level health, as the host reports it. Mirrors
 /// `src-tauri/src/bus_health.rs::BusHealthRecord`.
 ///
@@ -484,6 +547,12 @@ export interface InterfaceRecord {
 /// no defined load. The map holds only buses the host has something to
 /// say about — a project bus with no entry reads as an em dash all the
 /// way across.
+///
+/// `flushCount` and `missedPeriods` are declared optional here even
+/// though the host always sends them (ADR 0060 rules 6–7): a fixture
+/// built before those fields existed — or a stub in a test — still
+/// type-checks, and absent reads as "nothing to report" (0 / all-zero)
+/// the same way a host too old to send them would.
 export interface BusHealthRecord {
   controller?: {
     state: string;
@@ -496,11 +565,31 @@ export interface BusHealthRecord {
     /// Counts reports, not lost frames — no vendor says how many an
     /// overrun swallowed.
     rxOverruns?: number;
+    /// When the peer took this reading, on this host's clock. Absent
+    /// for a peer that does not stamp its readings.
+    asOfNs?: number;
+    /// The reading is older than the host's staleness window: the peer
+    /// has stopped refreshing it. Absent (reads as not stale) for a
+    /// fixture that predates the heartbeat.
+    stale?: boolean;
   };
   loadPercent?: number;
   errorCount: number;
   errorRate: number;
   lastErrorTsNs?: number;
+  /// The newest bus-error episode, ongoing or not. Absent for a bus
+  /// with none to report — including a peer too old to report episodes
+  /// at all (ADR 0060).
+  errorEpisode?: BusErrorEpisodeHealth;
+  /// What the peer refused to send on this bus, one entry per reason.
+  /// Absent (reads as empty) when nothing was refused.
+  refusals?: BusRefusal[];
+  /// Transmit-queue flushes the peer reported for this bus (ADR 0060
+  /// rule 7), and when the latest was, on this host's clock.
+  flushCount?: number;
+  lastFlushNs?: number;
+  /// Periods the scheduler did not offer on this bus.
+  missedPeriods?: MissedPeriods;
 }
 
 /// The whole per-bus health map, keyed by logical bus id.

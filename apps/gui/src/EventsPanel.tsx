@@ -173,7 +173,7 @@ export function EventsPanel(_props: IDockviewPanelProps) {
           // The gap the bus errors are grouped at — a setting
           // (`bus_error_episode_gap_s`) — said where the kind is.
           titles={{
-            Diagnostics: `Diagnostics — what the tool found: bus errors, as episodes at ${gapSeconds} s, and where history was truncated`,
+            Diagnostics: `Diagnostics — what the tool found: bus errors, as episodes at ${gapSeconds} s, dropped-frames gaps, and where history was truncated`,
           }}
         />
         <span className="chip-field" title="filter by tag">

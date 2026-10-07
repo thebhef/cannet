@@ -12,14 +12,18 @@ import { wheelColor } from "./palette";
 /// episode of a bus's error series, read off the signal-cache pyramid
 /// (ADR 0035 amended) — the plot's markers and the Events panel's rows
 /// (`useEventsPage.ts`) both build it, but it never enters this module's
-/// own event store; `truncation` is the disk-spill marker
-/// synthesised here in the frontend (never sent by the host).
-export type EventKind = "note" | "messageBound" | "busError" | "truncation";
+/// own event store; `droppedFrames` is a dropped-frames gap the host
+/// recorded from a peer's report (ADR 0060) — durable like a note, and
+/// carried the same `Note` wire shape; `truncation` is the disk-spill
+/// marker synthesised here in the frontend (never sent by the host).
+export type EventKind = "note" | "messageBound" | "busError" | "droppedFrames" | "truncation";
 
 /// Where an event came from (ADR 0035). The category, not the individual
-/// kind, decides the lifecycle: only a user-authored event is editable,
-/// persisted and exported.
-export type EventCategory = "userAuthored" | "hostDerived" | "frontendDerived";
+/// kind, decides the lifecycle: only a user-authored event is editable.
+/// `hostRecorded` is a durable kind the host itself placed from what a
+/// peer reported — persisted and exported like an authored event, but
+/// not user-editable (ADR 0060's dropped-frames gap).
+export type EventCategory = "userAuthored" | "hostRecorded" | "hostDerived" | "frontendDerived";
 
 /// What a kind declares about itself — one global truth, so no view has to
 /// know a particular kind's habits.
@@ -42,6 +46,7 @@ export const EVENT_KINDS: readonly EventKind[] = [
   "note",
   "messageBound",
   "busError",
+  "droppedFrames",
   "truncation",
 ];
 
@@ -64,6 +69,12 @@ export const EVENT_KIND_META: Record<EventKind, EventKindMeta> = {
     category: "hostDerived",
     editable: false,
     blfRecord: null,
+  },
+  droppedFrames: {
+    label: "Dropped Frames",
+    category: "hostRecorded",
+    editable: false,
+    blfRecord: "GLOBAL_MARKER",
   },
   truncation: {
     label: "Truncation",
@@ -103,8 +114,9 @@ export const EVENT_KIND_GROUPS: readonly EventKindGroup[] = [
   },
   {
     label: "Diagnostics",
-    title: "what the tool found: bus error runs, and where history was truncated",
-    kinds: ["busError", "truncation"],
+    title:
+      "what the tool found: bus-error episodes, dropped-frames gaps, and where history was truncated",
+    kinds: ["busError", "droppedFrames", "truncation"],
   },
 ];
 
