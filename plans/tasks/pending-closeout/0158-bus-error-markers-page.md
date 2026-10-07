@@ -1084,3 +1084,11 @@ owner acceptance (review queue § 4).
   corrections recorded there: episodes are not written to BLF (the error
   rows are), and start/end is one spanned event drawn as one marker plus
   its extent on selection (phase 6 ruling). Queue item deleted.
+
+- 2026-10-07 — **The rate's burst gap (queue § 1): no decision left.** Since
+  task 163 phase 6 the panel's `error_rate` is the sidecar-reported latest
+  episode's own rate (`bus_health.rs` `ReportedEpisode::rate`); the
+  per-bus tally and `RATE_BURST_GAP_NS` are gone, and the boundary is ADR
+  0060's episode (closes after 1 s without an error) — ruled with 163.
+  The owner sees it as the `(R/s)` after the error count in the Bus
+  Health row. Queue item deleted.

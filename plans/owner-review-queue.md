@@ -7,15 +7,7 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-Two items the owner answered with a question (2026-10-07); taken one at
-a time with the design in front of them, not here.
-
-- **158: the bus-health panel's error rate keeps a 1 s burst gap.**
-  Owner, 2026-10-07: "This seems like an implementation detail I didn't
-  specify […] What is the alternative, and what is the user-level
-  impact of changing it? What UI element should I look at to decide,
-  assuming there is indeed any decision truly needed?" Detail: 0158
-  § Status log, phase 1.
+(none)
 
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
