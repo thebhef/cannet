@@ -354,7 +354,9 @@ repaired something broken.
   draw as one row — `A | Δt | B` — centred between the cursors and kept
   inside the plot, instead of piling up with Δt underneath. A cursor
   scrolled out of view pins its chip to the edge on its side, so Δt and
-  both times stay readable while you zoom into part of the span.
+  both times stay readable while you zoom into part of the span; click
+  the pinned chip to pan to that cursor at the same zoom. With both
+  cursors out of view no chips draw.
 - **Changed:** time precision follows the zoom. The x-axis ticks, the
   hover time and the A/B chips share one digit count: four decimals at
   a one-second window, one fewer per decade zoomed out (whole seconds
