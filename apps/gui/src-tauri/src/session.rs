@@ -252,6 +252,9 @@ fn presubscribe_config_from(b: &InterfaceBusBinding) -> Option<PreSubscribeConfi
         speed_bps: u64::from(b.speed_bps.unwrap_or(0)),
         fd_enabled: b.fd.unwrap_or(false),
         fd_data_speed_bps: u64::from(b.fd_data_speed_bps.unwrap_or(0)),
+        // No project setting for the error-row cap exists yet
+        // (ADR 0060 rule 2); unset keeps the server's default (16).
+        error_row_cap: None,
     })
 }
 
