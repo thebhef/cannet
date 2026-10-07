@@ -110,6 +110,9 @@ export interface Settings {
   health_sample_interval_ms: number;
   /// Auto-restarts allowed per session for a crashed sidecar.
   sidecar_restart_budget: number;
+  /// Seconds of silence on a bus that end a bus-error episode — the grain
+  /// of the Events panel's bus-error section.
+  bus_error_episode_gap_s: number;
   /// Wait before reconnecting to a `cannet-server` after a drop.
   reconnect_backoff_ms: number;
   /// The address a new-server form opens filled with — the bus binding
@@ -233,6 +236,7 @@ export function defaultSettings(): Settings {
     system_log_rate_limit: 5,
     health_sample_interval_ms: 20_000,
     sidecar_restart_budget: 3,
+    bus_error_episode_gap_s: 5,
     reconnect_backoff_ms: 2000,
     default_server_address: "127.0.0.1:50051",
     sidecar_dir: "",
