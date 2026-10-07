@@ -253,10 +253,27 @@ The in-RAM fallback the host keeps is for a cache that cannot be
 **created** — a path that is a file, permissions, a missing volume —
 never for one that is held. The refusal names the holder, because the
 overwhelmingly common cause is a relaunch that overtook the previous
-process's shutdown flush: the window has gone but the host is still
-syncing a multi-gigabyte scratch, and "another cannet (pid N) still
-holds this project's cache — it may still be closing" is the true
-statement about that.
+process's shutdown flush: the host is still syncing a multi-gigabyte
+scratch, and "another cannet (pid N) still holds this project's cache —
+it may still be closing" is the true statement about that.
+
+**The shutdown flush runs behind the window.** It used to run after the
+window had closed, so the app looked gone for the ~20 s a large scratch
+takes to sync — which is how a relaunch came to overtake it. Now a
+decided close does not close the window: the host runs the whole
+shutdown sequence — disconnect, finish the loggers, the synchronous
+scratch flush (DS-2) and the pyramid manifest (ADR 0047), or the
+clear-on-exit wipe instead of the two writes — on its own thread, never
+the event loop (ADR 0049), announcing each step to a full-window
+closing state that says what it is on and, for the flush and the
+pyramids, how much. The lock is released **last**, after every write
+into the directory, and the app exits only then; so the window is on
+screen for exactly as long as the cache is held, and a relaunch during
+it is refused rather than let onto a half-written cache. Every exit
+route runs the sequence exactly once: the window's close hands it to
+the host once the unsaved-work prompt is settled, and any other exit
+request — a code-carrying exit, a destroyed window, the OS — is held
+until the sequence has run, keeping the requested exit code.
 
 The same rule binds the **launch**. A session does not settle into a
 held directory with a RAM store and carry on: every derived family —
