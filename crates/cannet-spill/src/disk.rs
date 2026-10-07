@@ -1630,6 +1630,64 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "reproduces a known defect: no reopen yet refuses a directory another mapping still holds"]
+    fn a_reopened_store_never_truncates_a_segment_another_store_still_holds() {
+        // The by-id half of the same defect the sample sequence carries:
+        // two live stores over one scratch directory, which is what two
+        // cannet processes sharing a project's cache are — a mapping
+        // belongs to the file, not to the process that made it.
+        //
+        // The first store is ahead of the manifest: it grew its by-id
+        // chain for id 7 into segment 1 *after* the flush that recorded
+        // the chain's length, so the segment file exists and is mapped
+        // while the manifest still describes a one-segment chain. The
+        // second store reopens from that manifest (ADR 0002 DS-7), so its
+        // chain is one segment short, and its next append for id 7 calls
+        // `create_segment` on the path the first store maps: Windows
+        // refuses (ERROR_USER_MAPPED_FILE, 1224) and the append panics,
+        // while POSIX truncates the file under the live mapping.
+        //
+        // Default sizing, so only the by-id family has to grow — the
+        // meta and payload segments stay inside segment 0 throughout.
+        let dir = TempDir::new().unwrap();
+        let mut held = DiskRawStore::new(dir.path()).unwrap();
+        // 64 postings exactly fill by-id segment 0 for id 7.
+        for i in 0u32..64 {
+            held.append(frame(u64::from(i), 7));
+        }
+        held.flush().unwrap();
+        // Past the manifest: this append creates and maps segment 1.
+        held.append(frame(64, 7));
+        assert_eq!(held.len(), 65);
+
+        let mut reopened = DiskRawStore::reopen(dir.path())
+            .unwrap()
+            .expect("manifest present");
+        assert_eq!(reopened.len(), 64, "the manifest is one append behind");
+
+        let grew = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reopened.append(frame(65, 7));
+        }));
+        assert!(
+            grew.is_ok(),
+            "growing a by-id chain into a segment another store maps \
+             panicked (Windows refuses to truncate a mapped file)"
+        );
+        // And the store that still holds the mapping can still read the
+        // posting it wrote there.
+        let got: Vec<usize> = held
+            .matching_frames_indexed(7, false, 0, 65)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            got,
+            (0..65).collect::<Vec<_>>(),
+            "the held store's by-id segment 1 was truncated under its mapping"
+        );
+    }
+
+    #[test]
     fn reopen_then_append_continues_from_the_watermark() {
         let dir = TempDir::new().unwrap();
         {
