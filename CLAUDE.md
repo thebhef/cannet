@@ -48,9 +48,9 @@ what order. Treat it as living documentation, not historical record.
   task's scope — if something needs to move, update the roadmap (and the
   task file) first. A task that has met every exit criterion but awaits
   the owner's acceptance moves its file to `plans/tasks/pending-closeout/`
-  (the roadmap link follows it). Completed tasks are removed from the
-  roadmap (the detail stays in git history), so it lists only outstanding
-  work.
+  and leaves the roadmap — that directory is the list of work awaiting
+  acceptance. Accepted tasks are deleted (the detail stays in git
+  history), so the roadmap lists only outstanding work.
 - **`plans/technology-inventory.md`** — running list of third-party libraries,
   protocols, file formats, and drivers. **Update it whenever a dependency
   decision is made**, even if the decision is "rejected." Mark each entry as
