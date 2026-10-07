@@ -71,10 +71,10 @@ export function busErrorMarkerLabel(count: number, spanSeconds: number): string 
   return `${countText} over ${formatDurationSeconds(spanSeconds)} (${rateText})`;
 }
 
-/// One `TimelineEvent` per delta between consecutive points of a bus's
+/// One episode: the delta between two consecutive points of a bus's
 /// served error series — the walk starts at index 1, so the served
 /// window's boundary sample before it (index 0) supplies the first
-/// delta and draws no marker of its own. `id` is `bus-error:{bus}:{n}`,
+/// delta and yields no episode of its own. `id` is `bus-error:{bus}:{n}`,
 /// `n` the point's own running-count value: stable across zoom and
 /// restore, since every served point at every pyramid level is a real
 /// level-0 sample (ADR 0035 amended).
@@ -83,27 +83,47 @@ export function busErrorMarkerLabel(count: number, spanSeconds: number): string 
 /// the pyramid level the window was read off, so this never merges or
 /// re-derives a count — it only reads the deltas the host already gave it
 /// (CLAUDE.md § GUI architecture: domain computation belongs in the
-/// model).
-export function busErrorTimelineEvents(series: readonly BusErrorSeries[]): TimelineEvent[] {
-  const out: TimelineEvent[] = [];
+/// model). Shared by the plot's markers (`busErrorTimelineEvents`) and
+/// the Events panel's paged section (`useBusErrorEvents`), so the two
+/// surfaces can never disagree on what an episode is.
+export interface BusErrorEpisode {
+  id: string;
+  bus: string;
+  timestampNs: number;
+  count: number;
+  spanSeconds: number;
+}
+
+export function busErrorEpisodes(series: readonly BusErrorSeries[]): BusErrorEpisode[] {
+  const out: BusErrorEpisode[] = [];
   for (const s of series) {
     for (let i = 1; i < s.t.length; i++) {
-      const count = s.v[i] - s.v[i - 1];
-      const span = s.t[i] - s.t[i - 1];
       out.push({
         id: `bus-error:${s.bus}:${s.v[i]}`,
+        bus: s.bus,
         timestampNs: Math.round(s.t[i] * 1e9),
-        label: busErrorMarkerLabel(count, span),
-        kind: "busError",
-        color: null,
-        description: null,
-        tag: null,
-        editable: false,
-        subjects: [],
+        count: s.v[i] - s.v[i - 1],
+        spanSeconds: s.t[i] - s.t[i - 1],
       });
     }
   }
   return out;
+}
+
+/// {@link busErrorEpisodes}, projected onto the plot's `TimelineEvent`
+/// shape — one marker per episode, labelled with its count/span/rate.
+export function busErrorTimelineEvents(series: readonly BusErrorSeries[]): TimelineEvent[] {
+  return busErrorEpisodes(series).map((e) => ({
+    id: e.id,
+    timestampNs: e.timestampNs,
+    label: busErrorMarkerLabel(e.count, e.spanSeconds),
+    kind: "busError",
+    color: null,
+    description: null,
+    tag: null,
+    editable: false,
+    subjects: [],
+  }));
 }
 
 /// What a plot area's current signal selection is *about*, as event
