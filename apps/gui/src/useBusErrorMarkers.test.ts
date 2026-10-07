@@ -20,7 +20,17 @@ beforeEach(() => mockInvoke.mockReset());
 afterEach(() => vi.restoreAllMocks());
 
 function req(over: Partial<BusErrorMarkerRequest> = {}): BusErrorMarkerRequest {
-  return { buses: ["b1"], fromSeconds: 0, toSeconds: 10, maxPoints: 600, ...over };
+  return { buses: ["b1"], fromSeconds: 0, toSeconds: 10, gapSeconds: 5, maxMarkers: 43, ...over };
+}
+
+/// One episode on `b1`, as the host serves it.
+function ep(firstT: number) {
+  return { bus: "b1", firstT, lastT: firstT + 1, count: 3, span: 1, rate: 3, lastOrdinal: 3 };
+}
+
+/// A `bus_error_episodes_in_window` answer holding `firstTs`' episodes.
+function reply(firstTs: number[], complete = true) {
+  return { episodes: firstTs.map(ep), gapSeconds: 5, errorCount: 3 * firstTs.length, complete };
 }
 
 /// Resolve every `invoke` call currently pending, letting the hook's own
@@ -35,7 +45,12 @@ async function flush() {
 describe("useBusErrorMarkers", () => {
   it("starts empty and complete — nothing queried yet", () => {
     const { result } = renderHook(() => useBusErrorMarkers());
-    expect(result.current.state).toEqual({ series: [], complete: true });
+    expect(result.current.state).toEqual({
+      episodes: [],
+      gapSeconds: null,
+      errorCount: 0,
+      complete: true,
+    });
   });
 
   it("asks nothing for a null or bus-less request", async () => {
@@ -46,27 +61,30 @@ describe("useBusErrorMarkers", () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it("fetches and fills state per bus, in request order", async () => {
-    mockInvoke.mockResolvedValue({ series: [{ t: [1, 2], v: [1, 2] }], complete: true });
+  it("fetches and fills state with the host's episodes, gap and count", async () => {
+    mockInvoke.mockResolvedValue(reply([1, 2]));
     const { result } = renderHook(() => useBusErrorMarkers());
 
     act(() => result.current.request(req()));
-    await waitFor(() => expect(result.current.state.series).toHaveLength(1));
+    await waitFor(() => expect(result.current.state.episodes.length).toBeGreaterThan(0));
 
     expect(result.current.state).toEqual({
-      series: [{ bus: "b1", t: [1, 2], v: [1, 2] }],
+      episodes: [ep(1), ep(2)],
+      gapSeconds: 5,
+      errorCount: 6,
       complete: true,
     });
-    expect(mockInvoke).toHaveBeenCalledWith("bus_error_series", {
+    expect(mockInvoke).toHaveBeenCalledWith("bus_error_episodes_in_window", {
       buses: ["b1"],
       fromSeconds: 0,
       toSeconds: 10,
-      maxPoints: 600,
+      gapSeconds: 5,
+      maxMarkers: 43,
     });
   });
 
   it("makes no round-trip for a request identical to the last complete answer", async () => {
-    mockInvoke.mockResolvedValue({ series: [{ t: [1], v: [1] }], complete: true });
+    mockInvoke.mockResolvedValue(reply([1]));
     const { result } = renderHook(() => useBusErrorMarkers());
 
     act(() => result.current.request(req()));
@@ -82,7 +100,7 @@ describe("useBusErrorMarkers", () => {
   });
 
   it("keeps asking while the answer is incomplete (ADR 0049)", async () => {
-    mockInvoke.mockResolvedValue({ series: [{ t: [1], v: [1] }], complete: false });
+    mockInvoke.mockResolvedValue(reply([1], false));
     const { result } = renderHook(() => useBusErrorMarkers());
 
     act(() => result.current.request(req()));
@@ -100,7 +118,7 @@ describe("useBusErrorMarkers", () => {
     mockInvoke.mockImplementationOnce(
       () => new Promise((resolve) => (resolveFirst = resolve)),
     );
-    mockInvoke.mockResolvedValueOnce({ series: [{ t: [9], v: [9] }], complete: true });
+    mockInvoke.mockResolvedValueOnce(reply([9]));
     const { result } = renderHook(() => useBusErrorMarkers());
 
     act(() => result.current.request(req({ toSeconds: 10 })));
@@ -110,22 +128,23 @@ describe("useBusErrorMarkers", () => {
     act(() => result.current.request(req({ toSeconds: 30 })));
     expect(mockInvoke).toHaveBeenCalledTimes(1); // the first is still in flight
 
-    resolveFirst!({ series: [{ t: [1], v: [1] }], complete: true });
+    resolveFirst!(reply([1]));
     await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(2));
     // The superseded middle request (toSeconds: 20) never went out.
-    expect(mockInvoke).toHaveBeenLastCalledWith("bus_error_series", {
+    expect(mockInvoke).toHaveBeenLastCalledWith("bus_error_episodes_in_window", {
       buses: ["b1"],
       fromSeconds: 0,
       toSeconds: 30,
-      maxPoints: 600,
+      gapSeconds: 5,
+      maxMarkers: 43,
     });
   });
 
   it("keeps the last markers on a failed fetch rather than clearing them", async () => {
-    mockInvoke.mockResolvedValueOnce({ series: [{ t: [1], v: [1] }], complete: true });
+    mockInvoke.mockResolvedValueOnce(reply([1]));
     const { result } = renderHook(() => useBusErrorMarkers());
     act(() => result.current.request(req()));
-    await waitFor(() => expect(result.current.state.series).toHaveLength(1));
+    await waitFor(() => expect(result.current.state.episodes.length).toBeGreaterThan(0));
 
     mockInvoke.mockRejectedValueOnce(new Error("host unreachable"));
     act(() => result.current.request(req({ toSeconds: 99 })));
@@ -133,7 +152,9 @@ describe("useBusErrorMarkers", () => {
     await flush();
 
     expect(result.current.state).toEqual({
-      series: [{ bus: "b1", t: [1], v: [1] }],
+      episodes: [ep(1)],
+      gapSeconds: 5,
+      errorCount: 3,
       complete: true,
     });
   });

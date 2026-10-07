@@ -7,6 +7,7 @@ import type { EventExtent } from "./eventHighlight";
 import { formatDurationSeconds } from "./format";
 import { timelineEvents, type EventKind, type EventSubject, type Note, type TimelineEvent } from "./notes";
 import { signalRefKey, type NoteEvent, type SignalRef } from "./plotPanelConfig";
+import type { BusErrorEpisodeWire } from "./useBusErrorMarkers";
 
 /// Event cursors for the plot, in display-relative seconds against
 /// `baseSeconds` (the panel's x-axis origin in absolute seconds).
@@ -49,21 +50,9 @@ export function plotEventsFromTimeline(
     }));
 }
 
-/// One bus's error series over a served window (`bus_error_series`,
-/// `sampling.rs`), decoded off the wire: `t[i]` absolute seconds, `v[i]`
-/// the running error count on `bus` at that instant — the same shape as
-/// `BusErrorPoints`, with the bus id carried alongside since the host
-/// answers positionally.
-export interface BusErrorSeries {
-  bus: string;
-  t: readonly number[];
-  v: readonly number[];
-}
-
-/// The label a bus-error marker carries: the errors a delta between two
-/// served points describes (ADR 0035 amended) — count, span and rate.
-/// `spanSeconds` is `0` only when two errors land at the same instant, in
-/// which case rate has nothing to divide by.
+/// The count, span and rate a bus-error marker's label carries.
+/// `spanSeconds` is `0` for a single error, or for errors at one instant,
+/// in which case rate has nothing to divide by.
 export function busErrorMarkerLabel(count: number, spanSeconds: number): string {
   const countText = count === 1 ? "1 bus error" : `${count} bus errors`;
   const rate = count / spanSeconds;
@@ -71,52 +60,29 @@ export function busErrorMarkerLabel(count: number, spanSeconds: number): string 
   return `${countText} over ${formatDurationSeconds(spanSeconds)} (${rateText})`;
 }
 
-/// One plot marker's worth: the delta between two consecutive points of
-/// a bus's served error series — the walk starts at index 1, so the served
-/// window's boundary sample before it (index 0) supplies the first
-/// delta and yields no span of its own. `id` is `bus-error:{bus}:{n}`,
-/// `n` the point's own running-count value: stable across zoom and
-/// restore, since every served point at every pyramid level is a real
-/// level-0 sample (ADR 0035 amended).
-///
-/// Any two consecutive served points are an exact span regardless of
-/// the pyramid level the window was read off, so this never merges or
-/// re-derives a count — it only reads the deltas the host already gave it
-/// (CLAUDE.md § GUI architecture: domain computation belongs in the
-/// model). Not a bus-error *episode* (CONTEXT.md): a span's extent is
-/// whatever the zoom resolved, while the Events panel lists the host's
-/// episodes at the configured gap (`useBusErrorEvents`).
-export interface BusErrorSpan {
-  id: string;
-  bus: string;
-  timestampNs: number;
-  count: number;
-  spanSeconds: number;
+/// A bus-error episode's id: `bus-error:{bus}:{n}`, `n` the ordinal of
+/// its last error on the bus — a real sample of the bus's error series,
+/// so the same id the Events panel's row for it carries and a link to it
+/// resolves through (ADR 0056).
+function busErrorEpisodeId(e: BusErrorEpisodeWire): string {
+  return `bus-error:${e.bus}:${e.lastOrdinal}`;
 }
 
-export function busErrorSpans(series: readonly BusErrorSeries[]): BusErrorSpan[] {
-  const out: BusErrorSpan[] = [];
-  for (const s of series) {
-    for (let i = 1; i < s.t.length; i++) {
-      out.push({
-        id: `bus-error:${s.bus}:${s.v[i]}`,
-        bus: s.bus,
-        timestampNs: Math.round(s.t[i] * 1e9),
-        count: s.v[i] - s.v[i - 1],
-        spanSeconds: s.t[i] - s.t[i - 1],
-      });
-    }
-  }
-  return out;
-}
-
-/// {@link busErrorSpans}, projected onto the plot's `TimelineEvent`
-/// shape — one marker per span, labelled with its count/span/rate.
-export function busErrorTimelineEvents(series: readonly BusErrorSeries[]): TimelineEvent[] {
-  return busErrorSpans(series).map((e) => ({
-    id: e.id,
-    timestampNs: e.timestampNs,
-    label: busErrorMarkerLabel(e.count, e.spanSeconds),
+/// The plot's bus-error markers (ADR 0035 amended): one `TimelineEvent`
+/// of kind `busError` per **episode** the host served, at its first
+/// error, labelled `<bus>: N bus errors over S (R/s)` with the bus's
+/// project name. They draw through {@link plotEventsFromTimeline}, the
+/// authored events' path, and nothing about them is styled apart but
+/// their kind's colour. The host has already folded the episodes at the
+/// window's gap; this only shapes them (CLAUDE.md § GUI architecture).
+export function busErrorEpisodeEvents(
+  episodes: readonly BusErrorEpisodeWire[],
+  busName: (bus: string) => string,
+): TimelineEvent[] {
+  return episodes.map((e) => ({
+    id: busErrorEpisodeId(e),
+    timestampNs: Math.round(e.firstT * 1e9),
+    label: `${busName(e.bus)}: ${busErrorMarkerLabel(e.count, e.span)}`,
     kind: "busError",
     color: null,
     description: null,
@@ -124,6 +90,26 @@ export function busErrorTimelineEvents(series: readonly BusErrorSeries[]): Timel
     editable: false,
     subjects: [],
   }));
+}
+
+/// The extents of the episodes among `lit` — first error to last — in the
+/// shape a linked pair's extent takes ({@link EventExtent}), so the plot
+/// draws them as it draws a pair's: transiently, while the episode is
+/// being acted on or is linked to what is (ADR 0056 § 3). Nothing at rest.
+export function busErrorEpisodeExtents(
+  episodes: readonly BusErrorEpisodeWire[],
+  lit: ReadonlySet<string>,
+): EventExtent[] {
+  if (lit.size === 0) return [];
+  return episodes
+    .filter((e) => lit.has(busErrorEpisodeId(e)))
+    .map((e) => ({
+      startNs: Math.round(e.firstT * 1e9),
+      endNs: Math.round(e.lastT * 1e9),
+      color: null,
+      kind: "busError",
+      key: busErrorEpisodeId(e),
+    }));
 }
 
 /// What a plot area's current signal selection is *about*, as event

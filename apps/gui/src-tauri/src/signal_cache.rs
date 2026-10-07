@@ -3902,6 +3902,66 @@ impl SignalCacheStore {
         limit: usize,
         store: &TraceStore,
     ) -> EpisodePage {
+        self.with_episodes(buses, gap_seconds, store, |lists, complete| EpisodePage {
+            count: lists.iter().map(|l| l.len()).sum(),
+            episodes: bus_error_episodes::newest_first_page(lists, offset, limit),
+            complete,
+        })
+    }
+
+    /// The episodes of `buses` at `gap_seconds` that intersect
+    /// `[from_seconds, to_seconds]`, at most `max_markers` of them — what
+    /// a plot draws one marker each for.
+    ///
+    /// Read off the same per-bus episode list [`Self::bus_error_episodes`]
+    /// pages, caught up the same way (so the list is never rebuilt for
+    /// asking at the same gap). The window is a binary search on each
+    /// bus's chronological list; when more episodes intersect it than
+    /// `max_markers`, the gap doubles and the slice merges at it until
+    /// they fit (`bus_error_episodes::fit_window`) — a long window reads
+    /// as fewer, longer episodes, never a cap. The gap the answer is
+    /// folded at comes back with it.
+    ///
+    /// `complete` as [`EpisodePage::complete`] (ADR 0049); the fit runs
+    /// under the one hold of the cache lock that reads the lists (ADR
+    /// 0048).
+    pub fn bus_error_episodes_in_window(
+        &self,
+        buses: &[&str],
+        from_seconds: f64,
+        to_seconds: f64,
+        gap_seconds: f64,
+        max_markers: usize,
+        store: &TraceStore,
+    ) -> EpisodeWindow {
+        self.with_episodes(buses, gap_seconds, store, |lists, complete| {
+            let fitted = bus_error_episodes::fit_window(
+                lists,
+                gap_seconds,
+                from_seconds,
+                to_seconds,
+                max_markers,
+            );
+            EpisodeWindow {
+                error_count: fitted.episodes.iter().map(|(_, e)| e.count()).sum(),
+                episodes: fitted.episodes,
+                gap_seconds: fitted.gap,
+                complete,
+            }
+        })
+    }
+
+    /// Catch `buses`' error series and their episode lists at
+    /// `gap_seconds` up within one serve's budget, then hand `read` each
+    /// bus's list (in `buses` order) and whether every one had reached
+    /// the capture's end — under one hold of the cache lock.
+    fn with_episodes<R>(
+        &self,
+        buses: &[&str],
+        gap_seconds: f64,
+        store: &TraceStore,
+        read: impl FnOnce(&[&[Episode]], bool) -> R,
+    ) -> R {
         let keys = self.ensure_bus_error_caches(buses);
         let store_len = store.len();
         let budget = self.serve_limit();
@@ -3930,11 +3990,7 @@ impl SignalCacheStore {
                 }
             })
             .collect();
-        EpisodePage {
-            count: lists.iter().map(|l| l.len()).sum(),
-            episodes: bus_error_episodes::newest_first_page(&lists, offset, limit),
-            complete: folded_all && caught_up(&caches, &keys, store_len),
-        }
+        read(&lists, folded_all && caught_up(&caches, &keys, store_len))
     }
 
     /// One bounded step of [`Self::bus_error_episodes`]' derivation: under
@@ -4531,6 +4587,22 @@ pub struct EpisodePage {
     /// `false` while any bus's error series, or its episode list, is
     /// still behind the capture (ADR 0049): the page is then drawn from
     /// what has been derived so far, and a further serve continues.
+    pub complete: bool,
+}
+
+/// What [`SignalCacheStore::bus_error_episodes_in_window`] answers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpisodeWindow {
+    /// The episodes intersecting the window, chronological by first time:
+    /// `(index into the requested buses, episode)`.
+    pub episodes: Vec<(usize, Episode)>,
+    /// The gap they are folded at — the one asked for, or that doubled
+    /// as often as it took to fit the marker budget.
+    pub gap_seconds: f64,
+    /// The error frames those episodes hold, summed — what a view says
+    /// the window's bus errors number, without counting anything itself.
+    pub error_count: u64,
+    /// As [`EpisodePage::complete`] (ADR 0049).
     pub complete: bool,
 }
 
@@ -11955,6 +12027,57 @@ mod tests {
             whole.len() > 20 && whole.len() < 300,
             "{} episodes",
             whole.len()
+        );
+    }
+
+    /// The windowed read for a plot: a 50,000-error burst is one
+    /// episode; the list it reads is the paged one, unchanged; a window
+    /// over more episodes than the budget answers at a doubled gap.
+    #[test]
+    #[allow(clippy::float_cmp)] // a gap is exact: the asked-for one, doubled
+    fn a_plot_window_reads_the_episode_list_at_its_gap_and_fits_the_budget() {
+        const MS: u64 = 1_000_000;
+        let mut frames = Vec::new();
+        // Bus 0: 50,000 errors 0.4 ms apart from 1 s (one 20 s burst).
+        for i in 0..50_000u64 {
+            frames.push(err_frame(1_000 * MS + i * 400_000, ERR_BUSES[0]));
+        }
+        // Bus 1: 400 one-second episodes (three errors each), 2 s apart.
+        for i in 0..400u64 {
+            for k in 0..3u64 {
+                frames.push(err_frame(
+                    30_000 * MS + i * 2_000 * MS + k * 500 * MS,
+                    ERR_BUSES[1],
+                ));
+            }
+        }
+        frames.sort_by_key(|f| f.timestamp_ns);
+        let trace = trace_of(&frames);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        let window = |buses: &[&str], from: f64, to: f64, gap: f64, max: usize| loop {
+            let w = store.bus_error_episodes_in_window(buses, from, to, gap, max, &trace);
+            if w.complete {
+                return w;
+            }
+        };
+
+        let burst = window(&ERR_BUSES[..1], 0.0, 25.0, 1.0, 300);
+        assert_eq!(burst.episodes.len(), 1);
+        assert_eq!(burst.gap_seconds, 1.0);
+        assert_eq!(burst.error_count, 50_000);
+        let (_, e) = burst.episodes[0];
+        assert_eq!((e.first_n, e.last_n), (1, 50_000));
+
+        let many = window(&ERR_BUSES[1..], 0.0, 900.0, 1.0, 300);
+        assert!(many.episodes.len() <= 300);
+        assert_eq!(many.gap_seconds, 2.0);
+        assert_eq!(many.error_count, 1_200);
+        // The held list stays at the asked-for gap: paging it still sees
+        // all 400.
+        assert_eq!(
+            all_episodes(&store, &ERR_BUSES[1..], 1.0, &trace).count,
+            400
         );
     }
 
