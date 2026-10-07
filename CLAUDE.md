@@ -151,6 +151,18 @@ Treat a code-vs-principle mismatch the same way
 this document treats a doc-vs-code mismatch: don't leave it silently
 inconsistent.
 
+## Only the wire writes data
+
+A row, count, sample, rate, logger record, export record or health
+tally comes only from what the wire reported — a received frame or the
+driver's echo of our own (`Tx`). A transmit **intent** — an enqueue
+answer, a `send()` return, a route being up — produces none of them,
+whether it was accepted or refused; a refusal is a count, never a row.
+Review every new writer of data against this. See
+[`docs/adr/0061-only-the-wire-writes-data.md`](docs/adr/0061-only-the-wire-writes-data.md),
+including its PEAK caveat (an echo there means "on the wire", not
+"acknowledged").
+
 ## File formats
 
 **No sidecar files.** Data that logically belongs to a file lives

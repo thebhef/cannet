@@ -135,8 +135,8 @@ pub enum BindingKind {
     /// refuses a connect attempt — a `NoInterface` row is a recorded
     /// choice: the host connects the rest of the project and treats
     /// this bus as one with no wire (transmit and RBS frames aimed at
-    /// it are marked undelivered). `server` and `interface` are both
-    /// empty; there is nothing to resolve.
+    /// it are refused and leave no row, ADR 0061). `server` and
+    /// `interface` are both empty; there is nothing to resolve.
     NoInterface,
 }
 
