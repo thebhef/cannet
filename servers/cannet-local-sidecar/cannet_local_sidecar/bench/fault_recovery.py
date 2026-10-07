@@ -25,6 +25,18 @@ older than 250 ms when it arrives, none repeated, and whose newest is
 within a quarter second of sends of the newest sent. A stale transmit
 queue replaying after a reset breaks the run.
 
+**Bus back** is the first frame the channel under test receives from
+the partner once it reads ``active`` with its own bus-error episode
+closed -- a reopened channel has no backlog, so this is close to live,
+unlike **recovered**, which waits out whatever backlog the *partner* is
+still draining. The verdict's adapter-clock timeline (:meth:`Bench.timeline`)
+reports both moments against the pull (each channel's first error, from
+``BusErrorEpisode.first_ns``), the first bus-off reading
+(``InterfaceState.as_of_ns``) and the first reopen, each as UTC and as
+seconds after **found**, plus how far behind wall clock the slower
+channel's last error report arrived at **bus back** -- the backlog
+**bus back** is defined to avoid waiting out.
+
 **Record.** Each run writes ``<out>/<UTC>-<strategy>/events.jsonl`` --
 every reading as it arrives, the sidecar's own log lines, the strategy's
 calls -- and ``table.md``: a row per 250 ms while the fault lasts and
@@ -48,9 +60,10 @@ controller.
   recovered, 1 not, 2 refused to start. ``--driver fake`` runs a
   scenario from :mod:`.fake` end to end.
 - ``wait EVENT [--run DIR]``: blocks until ``EVENT`` (``found``,
-  ``recovered``, ``verdict``, ...) appears in the run's events file --
-  the newest run under ``--out`` unless ``--run`` names one -- and
-  prints it.
+  ``bus_back``, ``recovered``, ``verdict``, ...) appears in the run's
+  events file -- the newest run under ``--out`` unless ``--run`` names
+  one -- and prints it. Works for any event name the same way, so
+  ``wait bus_back`` needs nothing beyond this.
 
 PCAN handles are exclusive per process: the bench refuses to start,
 naming the driver's error, when either channel does not open.
@@ -295,8 +308,23 @@ class Bench:
         self.rows: list[dict] = []
         self.found: Optional[dict] = None
         self.recovered: Optional[dict] = None
+        self.bus_back: Optional[dict] = None
         self.first_state_t: Optional[float] = None
         self.first_refusal_t: Optional[float] = None
+        #: Per interface id: the first episode's ``first_ns`` (the pull),
+        #: and the latest report's ``last_ns`` / ``open`` / arrival wall
+        #: clock (the running "last episode" the timeline reads).
+        self._channel_pull_ns: dict[str, int] = {}
+        self._channel_last_episode: dict[str, dict] = {}
+        self._ut_state_active = False
+        self._ut_episode_open = False
+        #: Whether the channel under test is ready for a confirming
+        #: partner frame to count as "bus back" (see module docstring).
+        self._ut_ready = False
+        self._found_utc: Optional[dt.datetime] = None
+        self._recovered_utc: Optional[dt.datetime] = None
+        self._bus_off_utc: Optional[dt.datetime] = None
+        self._reopen_utc: Optional[dt.datetime] = None
         self._lock = threading.Lock()
         self._seen = threading.Condition()
         self._seen_events: set[str] = set()
@@ -375,8 +403,9 @@ class Bench:
         """Stop the run, write ``table.md`` and return the verdict line."""
         self._shutdown()
         verdict = self.verdict()
-        self._emit("verdict", text=verdict)
-        self._write_table(verdict)
+        timeline = self.timeline()
+        self._emit("verdict", text=verdict, timeline=timeline)
+        self._write_table(verdict, timeline)
         self._close_events()
         return verdict
 
@@ -500,7 +529,9 @@ class Bench:
                         with self._seen:
                             self._startup_error = env.error.message
                             self._seen.notify_all()
-                elif body in ("bus_error_episode", "frames_dropped", "log"):
+                elif body == "bus_error_episode":
+                    self._on_episode(env.bus_error_episode)
+                elif body in ("frames_dropped", "log"):
                     self._emit(body, **_raw(getattr(env, body)))
         except grpc.RpcError:
             pass
@@ -514,6 +545,14 @@ class Bench:
             self._seen.notify_all()
         if changed:
             self._emit("state", **_raw(st))
+        if name == "bus_off":
+            with self._lock:
+                if self._bus_off_utc is None:
+                    self._bus_off_utc = _ns_to_utc(st.as_of_ns)
+        if st.interface_id == self.config.under_test:
+            with self._lock:
+                self._ut_state_active = name == "active"
+                self._update_ut_ready_locked()
         if (
             st.interface_id == self.config.under_test
             and self._go.is_set()
@@ -544,8 +583,37 @@ class Bench:
                 return
             self._found_s = time.monotonic()
             self.found = {"t": self._t(), "via": via}
+            self._found_utc = _utcnow()
             self._streams[U2P_ID].break_run()
         self._emit("found", **self.found)
+
+    def _on_episode(self, ep) -> None:
+        self._emit("bus_error_episode", **_raw(ep))
+        cid = ep.interface_id
+        last_ns = int(ep.last_ns)
+        with self._lock:
+            if cid not in self._channel_pull_ns:
+                self._channel_pull_ns[cid] = int(ep.first_ns)
+            prev = self._channel_last_episode.get(cid)
+            if prev is None or last_ns >= prev["last_ns"]:
+                self._channel_last_episode[cid] = {
+                    "last_ns": last_ns,
+                    "open": ep.open,
+                    "utc": _utcnow(),
+                }
+            if cid == self.config.under_test:
+                self._ut_episode_open = ep.open
+                self._update_ut_ready_locked()
+
+    def _update_ut_ready_locked(self) -> None:
+        self._ut_ready = self._ut_state_active and not self._ut_episode_open
+
+    def _maybe_bus_back(self) -> None:
+        with self._lock:
+            if self.bus_back is not None or self.found is None or not self._ut_ready:
+                return
+            self.bus_back = {"t": self._t()}
+        self._emit("bus_back", **self.bus_back)
 
     def _on_frames(self, batch, now: float) -> None:
         cfg = self.config
@@ -563,6 +631,7 @@ class Bench:
                 stream = self._streams[P2U_ID]
                 seq, sent_ms = struct.unpack_from("<II", f.data)
                 stream.note_rx(seq, sent_ms, now, now_ms)
+                self._maybe_bus_back()
                 continue
             else:
                 continue
@@ -603,6 +672,11 @@ class Bench:
             "frames": seq - stream.run_first + 1,
             "behind": behind,
         }
+        # "recovered" is confirmed only once the clean run has held for
+        # recovery_window_s, i.e. after the fact -- back-date the wall
+        # clock reading to when the run actually started, the same
+        # instant run_start_t reports, not to now.
+        self._recovered_utc = _utcnow() - dt.timedelta(seconds=now - stream.run_start_s)
         return self.recovered
 
     # ----- sampling --------------------------------------------------------
@@ -656,6 +730,8 @@ class Bench:
         who = "ut" if interface_id == self.config.under_test else "partner"
         with self._lock:
             self._row["strategy"].append(f"{who}: {what}")
+            if what == "opened" and self._reopen_utc is None:
+                self._reopen_utc = _utcnow()
         self._emit("strategy", interface_id=interface_id, what=what)
 
     # ----- the sidecar's log -------------------------------------------------
@@ -734,7 +810,70 @@ class Bench:
             parts.append(f"not recovered by t={self._t():.3f} s")
         return "; ".join(parts)
 
-    def _write_table(self, verdict: str) -> None:
+    def timeline(self) -> list[dict]:
+        """The adapter-clock timeline the verdict prints and records: when
+        the run reached each stage, as UTC and as seconds after ``found``.
+        A pull and **bus back** read the frames' own clock
+        (``BusErrorEpisode.first_ns``/``last_ns``); bus-off reads
+        ``InterfaceState.as_of_ns``; a reopen and the bench's own
+        found/recovered readings read its wall clock -- all epoch-based,
+        so subtracting across them holds. A stage this run never reached
+        is omitted."""
+        rows: list[dict] = []
+
+        def add(label: str, when: Optional[dt.datetime]) -> None:
+            if when is not None:
+                rows.append(
+                    {
+                        "label": label,
+                        "utc": when.isoformat(timespec="milliseconds"),
+                        "after_found_s": self._after_found(when),
+                    }
+                )
+
+        for cid in sorted(self._channel_pull_ns, key=self._role):
+            add(f"pull ({self._role(cid)})", _ns_to_utc(self._channel_pull_ns[cid]))
+        add("bus-off", self._bus_off_utc)
+        add("reopen", self._reopen_utc)
+        bus_back_when, backlog_s, backlog_role = self._bus_back_reading()
+        add("bus back", bus_back_when)
+        add("recovered", self._recovered_utc)
+        if backlog_s is not None:
+            rows.append(
+                {
+                    "label": f"backlog ({backlog_role}) at bus back",
+                    "utc": None,
+                    "after_found_s": None,
+                    "backlog_s": backlog_s,
+                }
+            )
+        return rows
+
+    def _role(self, interface_id: str) -> str:
+        return "ut" if interface_id == self.config.under_test else "partner"
+
+    def _after_found(self, when: dt.datetime) -> Optional[float]:
+        if self._found_utc is None:
+            return None
+        return round((when - self._found_utc).total_seconds(), 3)
+
+    def _bus_back_reading(
+        self,
+    ) -> tuple[Optional[dt.datetime], Optional[float], Optional[str]]:
+        """``bus back``: the later of the two channels' last-episode
+        ``last_ns``, and that channel's backlog at the moment -- how far
+        behind wall clock its report of it arrived. ``None`` until both
+        channels have reported at least one episode."""
+        if len(self._channel_last_episode) < 2:
+            return None, None, None
+        cid, ep = max(
+            self._channel_last_episode.items(), key=lambda kv: kv[1]["last_ns"]
+        )
+        when = _ns_to_utc(ep["last_ns"])
+        backlog = round((ep["utc"] - when).total_seconds(), 3)
+        return when, backlog, self._role(cid)
+
+    def _write_table(self, verdict: str, timeline: list[dict]) -> None:
         cfg = self.config
         bus = (
             f"FD {cfg.bitrate}/{cfg.data_bitrate} bit/s"
@@ -753,6 +892,9 @@ class Bench:
             "|" + "---|" * len(_COLUMNS),
         ]
         lines += ["| " + " | ".join(table_cells(row)) + " |" for row in self.rows]
+        if timeline:
+            lines += ["", "adapter-clock timeline:"]
+            lines += [_timeline_line(row) for row in timeline]
         lines += ["", verdict, ""]
         (self.run_dir / "table.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -769,6 +911,24 @@ def _when(what: str, t: Optional[float]) -> str:
 
 def _raw(message) -> dict:
     return MessageToDict(message, preserving_proto_field_name=True)
+
+
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def _ns_to_utc(ns: int) -> dt.datetime:
+    """A frames'-clock or ``as_of_ns`` reading as UTC: both are epoch
+    nanoseconds on the same wall clock the bench's own readings use."""
+    return dt.datetime.fromtimestamp(ns / 1e9, tz=dt.timezone.utc)
+
+
+def _timeline_line(row: dict) -> str:
+    if "backlog_s" in row:
+        return f"- {row['label']}: {row['backlog_s']:.3f} s"
+    after = row["after_found_s"]
+    suffix = f", {after:+.3f} s after found" if after is not None else ""
+    return f"- {row['label']}: {row['utc']}{suffix}"
 
 
 def table_cells(row: dict) -> list[str]:
@@ -959,6 +1119,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if wire is not None:
             wire.close()
     print(verdict, flush=True)
+    for row in bench.timeline():
+        print(_timeline_line(row), flush=True)
     return 0 if bench.recovered is not None else 1
 
 
