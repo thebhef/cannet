@@ -13,11 +13,11 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
-- **160 phase 2: the refused `Tx ✗` row leaves the parsing and plotting
-  machinery** — "if a message isn't sent it shouldn't make it into the
-  message parsing/plotting machinery." No decode, counts, `fps.tx`,
-  logger or export; the trace row stays as the refusal's record. (0121
-  § Blockers → 0160 § Status log, 2026-10-07.)
+- **160 phase 2: no refused-send row at all** — "I thought we weren't
+  appending transmit messages to the trace store anymore." The `Tx ✗`
+  row (121's one kept exception, written when an enqueue is refused) is
+  removed with `UndeliveredTx`; a refusal is the bus-health count only.
+  (0160 § Status log, 2026-10-07.)
 - **160 phase 2: the virtual bus behaves like a physical bus** — the
   bridge carries the `Tx` frames it pulls from the far side instead of
   dropping them. "This obviously breaks our expected behavior. Needs to

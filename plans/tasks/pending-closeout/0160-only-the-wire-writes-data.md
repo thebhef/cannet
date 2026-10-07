@@ -162,3 +162,12 @@ come from an intent.
   participant is echoed even when the physical bus behind the bridge
   carried nothing (0121 § Blockers, 2026-10-03). The fix must say whether
   that stands once the bridge carries far-side `Tx`.
+- 2026-10-07 — **Owner ruling, superseding (1) above: no refused-send row
+  at all.** "I thought we weren't appending transmit messages to the
+  trace store anymore." The 121 grooming kept the `Tx ✗` row for a
+  refused enqueue (0121 § Scope: "there the queue did say no"); that
+  exception is withdrawn. Phase 2 removes `append_refused_tx_row`,
+  `UndeliveredTx` and the trace's `Tx ✗` label/row class/tooltip, with
+  the tests that pin them; a refusal is reported only as the bus-health
+  per-bus refusal count (163 phase 6). The store then takes no row from
+  any transmit intent — the rule holds with no exception.
