@@ -357,6 +357,9 @@ pub fn spawn_health_recorder(app: AppHandle) {
     // Whether the frontend's silence has already been announced, so the
     // stall is named once at each edge rather than every tick.
     let mut ui_warned = false;
+    // Each remote session's worker read count at the previous tick, so
+    // the ingest line can say a rate rather than a running total.
+    let mut ingest_seen: IngestSeen = std::collections::BTreeMap::new();
     let _ = std::thread::Builder::new()
         .name("cannet-health-recorder".into())
         .spawn(move || loop {
@@ -399,6 +402,9 @@ pub fn spawn_health_recorder(app: AppHandle) {
                     ui_age
                 )
             );
+            for line in ingest_lines(&state, &mut ingest_seen, std::time::Instant::now()) {
+                sys_debug!(&app, "health", "{line}");
+            }
             // The sample above is `debug`; a window that has stopped
             // responding is not a trend, so it gets its own line at a
             // level a bug report will not have filtered away.
@@ -419,6 +425,49 @@ pub fn spawn_health_recorder(app: AppHandle) {
                 UiLiveness::Quiet => {}
             }
         });
+}
+
+/// Per remote session: its worker's frame read count and when it was read.
+type IngestSeen = std::collections::BTreeMap<String, (u64, std::time::Instant)>;
+
+/// One line per open remote session on the health cadence: how fast its
+/// client worker read frames off the wire since the last tick, and how
+/// many it has handed over that the pump has not yet taken (the frame
+/// channel's depth). The two say which side of the client a slow capture
+/// is on: a read rate at the bus rate with the queue climbing is the host
+/// behind; a read rate short of the bus with an empty queue is the wire
+/// or the server. `seen` is updated in place and forgets sessions that
+/// have gone.
+fn ingest_lines(state: &AppState, seen: &mut IngestSeen, now: std::time::Instant) -> Vec<String> {
+    let sessions: Vec<(String, u64, u64)> = state
+        .remote_sessions()
+        .iter()
+        .filter_map(|(address, s)| {
+            let ingest = &s.peer.as_ref()?.ingest;
+            Some((address.clone(), ingest.frames_read(), ingest.queued()))
+        })
+        .collect();
+    seen.retain(|address, _| sessions.iter().any(|(a, ..)| a == address));
+    sessions
+        .into_iter()
+        .map(|(address, read, queued)| {
+            let rate = seen.get(&address).and_then(|&(before, at)| {
+                let secs = now.saturating_duration_since(at).as_secs_f64();
+                #[allow(clippy::cast_precision_loss)]
+                (secs > 0.0).then(|| read.saturating_sub(before) as f64 / secs)
+            });
+            seen.insert(address.clone(), (read, now));
+            format_ingest_line(&address, rate, read, queued)
+        })
+        .collect()
+}
+
+/// The ingest line for one session, in the health line's `key=value`
+/// style. `read_fps` is `?` on a session's first tick, which has no
+/// interval to divide by.
+fn format_ingest_line(address: &str, read_fps: Option<f64>, read: u64, queued: u64) -> String {
+    let rate = read_fps.map_or_else(|| "?".to_string(), |r| format!("{r:.0}"));
+    format!("ingest session={address} read_fps={rate} read={read} queued={queued}")
 }
 
 /// Which Chromium child role a `WebView` process plays, parsed from its
@@ -778,6 +827,23 @@ fn format_health_message(
         mb(mem.sys_avail),
         mb(mem.sys_total),
     )
+}
+
+#[cfg(test)]
+mod ingest_line_tests {
+    use super::format_ingest_line;
+
+    #[test]
+    fn the_ingest_line_names_the_session_its_read_rate_and_the_queue() {
+        assert_eq!(
+            format_ingest_line("tcp://bench:50051", Some(1_612.4), 96_744, 3),
+            "ingest session=tcp://bench:50051 read_fps=1612 read=96744 queued=3"
+        );
+        assert_eq!(
+            format_ingest_line("tcp://bench:50051", None, 0, 0),
+            "ingest session=tcp://bench:50051 read_fps=? read=0 queued=0"
+        );
+    }
 }
 
 /// Render one System Message as a single log line (trailing newline).

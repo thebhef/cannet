@@ -549,38 +549,58 @@ retained), so the figure is a floor rather than an estimate. Where no
 bitrate was sent there is nothing to divide by and the panel shows
 nothing rather than a guess.
 
-**Error frames** are surfaced two ways. Each bus's error frames feed a
-signal-cache pyramid of running error counts, and the host groups them
-into **episodes** — a burst of errors on one bus, ended once the bus has
-been silent for the episode gap (**Trace → Bus-error episode gap**). The
-plot draws one **Bus error** marker per episode, at its first error,
-labelled with the bus, the count, the span and the rate, and drawn as
-any other event is; while it is being acted on (its row selected in the
-Events panel, or linked to the event that is) its extent from first error to last washes in, as a
-linked pair's does. When more episodes fall in the visible window than
-fit across the plot at one chip's width each, the gap doubles until they
-fit — so a fault that produces a hundred thousand error frames is one
-marker, and a long window reads as fewer, longer episodes rather than
-hitting a cap. Markers refresh as errors arrive — the host's per-bus
-error count moving asks again — not only on a pan or zoom. Each frame is otherwise a row in the trace
-saying `Bus error` — with the `type` column hidden by
-default, an imported log's error frames would otherwise be
-indistinguishable from zero-byte data frames.
+**A bus fault is an episode, not a row per error frame** (ADR 0060). A
+physical fault aborts the frame in flight, which is then retransmitted,
+so it produces error frames at roughly the bus's whole frame rate —
+about 3,600 a second per channel on the bench with a cable pulled. The
+sidecar counts them into **bus-error episodes** (one opens at an error
+frame and closes after a second without one) and reports each one —
+its first and latest error, its counts by kind (`ack`, `bit`, `form`,
+`stuff`, `crc`, `other`, `unknown`; on PEAK and Vector FD an `ack`
+majority is the pulled cable), whether they struck while transmitting
+or receiving, and the error counters — while it is open and once more
+when it closes. Only the **first 16 error frames of each episode** become
+trace rows (**Error frames kept per bus-error episode**, an app setting
+sent to every interface at connect and again when it changes); the rest
+are counted in the episode. The trace still shows each kept one as a row
+saying `Bus error`.
 
-Both at once is unreadable. A physical fault aborts the frame in flight,
-which is then retransmitted, so it produces error frames at roughly the
-bus's whole frame rate — about 5,200 a second on the bench — and a trace
-drawing one row each has buried everything else on the bus. So the
-chronological trace's **Collapse Errors** toggle, on by default, holds
-the individual error rows back once a bus has actually reported an
-error frame, so a clean capture keeps the plain unfiltered window.
-Nothing stands in their place inline — the plot's markers are where the
-count, span and rate live.
+The host turns each bus's episode reports into a signal-cache pyramid of
+running error counts and groups them into the episodes a view shows —
+ended once the bus has been silent for the episode gap (**Trace →
+Bus-error episode gap**), so at the default 5 s a burst of short faults
+reads as one. The plot draws one **Bus error** marker per episode, at
+its first error, labelled with the bus, the count, the span and the
+rate, and drawn as any other event is; while it is being acted on (its
+row selected in the Events panel, or linked to the event that is) its
+extent from first error to last washes in, as a linked pair's does. An
+episode still under way is **ongoing** and grows as its reports arrive,
+within about a second of the wire. When more episodes fall in the
+visible window than fit across the plot at one chip's width each, the
+gap doubles until they fit — so a fault that produces a hundred thousand
+error frames is one marker, and a long window reads as fewer, longer
+episodes rather than hitting a cap.
 
-**Nothing here touches what is stored.** A saved capture still contains
-every error frame that was received; the pyramid and its markers are
-host-derived and never written to a file; and switching the collapse
-off brings every row straight back, because nothing was ever dropped.
+**frames/s and bus load leave error frames out**, so a disconnected bus
+reads its true data rate — none — rather than its error rate. The
+chronological trace's **Collapse Errors** toggle, on by default, still
+holds the error rows back once a bus has reported one, so a clean
+capture keeps the plain unfiltered window.
+
+**A save writes the rows the capture holds** — at most 16 error frames
+per episode, as Vector's own trace and BLF hold — and the episodes are
+never written to a file. **An import reads as the live session did**:
+a BLF's or MDF's error records go through the same episode rule, the
+first 16 of each episode become rows and the rest are counted, so a file
+saved by an older cannet with a row per error frame opens as episodes
+plus at most 16 rows each. A reopened save counts only the rows it
+holds.
+
+If the sidecar ever falls more than about a second behind the host, it
+drops the oldest frames rather than delivering them late, and says so: a
+**dropped-frames gap** event marks the span on that bus's timeline with
+the count. Nothing can recompute it from the frames, so it is kept like a
+note — saved with the capture and written to a BLF as a `GLOBAL_MARKER`.
 
 The bar is one row and never wraps — a header that grew a second line
 would reflow every panel beneath it. When the window is too narrow the

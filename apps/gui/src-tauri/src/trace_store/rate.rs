@@ -6,6 +6,14 @@
 //! per-id windowed [`RateEstimate`] (with its silence-decay fallback) and
 //! the bucket-scoped [`RateTrack`] the aggregate / per-bus / per-direction
 //! throughput readouts share, both sampled and pruned the same way.
+//!
+//! **Error frames are not throughput.** The few error frames of each
+//! bus-error episode that are kept as rows (ADR 0060's error-row cap) are
+//! left out of every [`RateTrack`] — frames/s, the per-bus and
+//! per-direction figures, and the bit-time windows bus load reads — so a
+//! disconnected bus reads its true data rate, which is none
+//! ([`TraceStore::append`]). They keep their per-id [`RateEstimate`],
+//! which describes the row rather than the bus.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};

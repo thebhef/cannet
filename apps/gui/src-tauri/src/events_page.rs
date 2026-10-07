@@ -1,9 +1,12 @@
 //! The Events panel's **one list** (ADR 0035): the authored events and
 //! every bus's bus-error episodes, merged by time, oldest first, served a
-//! page at a time.
+//! page at a time. "Authored" here is the notes store's whole durable
+//! list, which also holds the dropped-frames gaps the host recorded from
+//! a peer's report (ADR 0060) — durable like a note, and listed as one.
 //!
 //! The two halves are held differently. The authored events are the notes
-//! store's whole list — bounded by what the user wrote. The episodes are
+//! store's whole list — bounded by what the user wrote and by the gaps
+//! a peer reported. The episodes are
 //! each bus's list in the signal cache at the episode gap
 //! ([`crate::signal_cache::SignalCacheStore::with_episodes`]) — bounded by
 //! capture time ÷ gap, but not something to copy per page. So the merge
@@ -42,6 +45,7 @@ pub enum ListedKind {
     Note,
     MessageBound,
     BusError,
+    DroppedFrames,
     Truncation,
 }
 
@@ -103,6 +107,7 @@ pub fn events_page(
         .filter(|n| match n.kind {
             EventKind::Note => shows(ListedKind::Note),
             EventKind::MessageBound => shows(ListedKind::MessageBound),
+            EventKind::DroppedFrames => shows(ListedKind::DroppedFrames),
             EventKind::BusError => false,
         })
         .filter(|n| {
@@ -126,7 +131,7 @@ pub fn events_page(
     };
     let (count, start, rows, complete) =
         if untagged && shows(ListedKind::BusError) && !query.buses.is_empty() {
-            caches.with_episodes(query.buses, query.gap_seconds, trace, page)
+            caches.with_episodes(query.buses, query.gap_seconds, page)
         } else {
             page(&[], true)
         };
@@ -306,12 +311,29 @@ mod tests {
     const S: u64 = 1_000_000_000;
     const MS: u64 = 1_000_000;
     const BUSES: [&str; 2] = ["ea", "eb"];
-    const ALL: [ListedKind; 4] = [
+    const ALL: [ListedKind; 5] = [
         ListedKind::Note,
         ListedKind::MessageBound,
         ListedKind::BusError,
+        ListedKind::DroppedFrames,
         ListedKind::Truncation,
     ];
+
+    /// Record `frames`' errors into their buses' error series, one point
+    /// each — `(its time, its ordinal on the bus)` — as the episode
+    /// reports would at their finest (ADR 0060).
+    #[allow(clippy::cast_precision_loss)]
+    fn record(caches: &SignalCacheStore, frames: &[RawTraceFrame]) {
+        let mut totals: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        for f in frames {
+            let bus = f.bus_id.clone().unwrap();
+            let n = totals
+                .entry(bus.clone())
+                .or_insert_with(|| caches.bus_error_total(&bus));
+            *n += 1;
+            caches.record_bus_errors(&bus, &[(seconds(f.timestamp_ns), *n as f64)]);
+        }
+    }
 
     fn err_frame(ts_ns: u64, bus: &str) -> RawTraceFrame {
         RawTraceFrame {
@@ -378,18 +400,16 @@ mod tests {
 
     fn fixture(frames: &[RawTraceFrame], notes: &[Note]) -> Fixture {
         let dir = TempDir::new().unwrap();
-        let trace = TraceStore::new();
-        for f in frames {
-            trace.append(f.clone());
-        }
+        let caches = SignalCacheStore::new_unbounded(dir.path());
+        record(&caches, frames);
         let store = NotesStore::new();
         for n in notes {
             let _ = store.add(n.clone());
         }
         Fixture {
             notes: store,
-            caches: SignalCacheStore::new_unbounded(dir.path()),
-            trace,
+            caches,
+            trace: TraceStore::new(),
             _dir: dir,
         }
     }
@@ -486,11 +506,9 @@ mod tests {
             .collect();
         let dir = TempDir::new().unwrap();
         let trace = TraceStore::new();
-        for fr in &frames {
-            trace.append(fr.clone());
-        }
         let notes = NotesStore::new();
         let caches = SignalCacheStore::new_chunk_at_a_time(dir.path());
+        record(&caches, &frames);
         let first = events_page(&notes, &caches, &trace, &query(&ALL, "", 0, 10));
         assert!(!first.complete);
         assert!(first.count < 40_000, "{} so far", first.count);
@@ -513,7 +531,7 @@ mod tests {
         let v1 = f.page(&query(&ALL, "", 0, 10)).version;
         assert_ne!(v1, v0, "a note edit");
 
-        f.trace.append(err_frame(10 * S, "ea"));
+        record(&f.caches, &[err_frame(10 * S, "ea")]);
         let v2 = f.page(&query(&ALL, "", 0, 10)).version;
         assert_ne!(v2, v1, "an episode append");
 
@@ -544,6 +562,19 @@ mod tests {
         assert_eq!(no_errors.count, 2);
         let only_errors = f.page(&query(&[ListedKind::BusError], "", 0, 10));
         assert_eq!(names(&only_errors.rows), ["ea:1", "eb:1"]);
+    }
+
+    #[test]
+    fn a_dropped_frames_gap_is_listed_among_the_authored_events_under_its_own_kind() {
+        let mut gap = note("gap", 2 * S, None);
+        gap.kind = EventKind::DroppedFrames;
+        let f = fixture(&[err_frame(S, "ea")], &[gap, note("n", 3 * S, None)]);
+        assert_eq!(
+            names(&f.page(&query(&ALL, "", 0, 10)).rows),
+            ["ea:1", "gap", "n"]
+        );
+        let without = f.page(&query(&[ListedKind::Note, ListedKind::BusError], "", 0, 10));
+        assert_eq!(names(&without.rows), ["ea:1", "n"]);
     }
 
     #[test]
