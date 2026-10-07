@@ -1,26 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { emit } from "@tauri-apps/api/event";
 
-import { BusErrorEventsSection } from "./BusErrorEventsSection";
 import { useBusHealth } from "./busHealth";
 import { ChipButton } from "./ChipButton";
 import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT } from "./gotoEvent";
+import { useSetting } from "./hostSettings";
 import { useProjectContext } from "./projectContext";
 import { useTraceModel } from "./traceData";
 import { useNotes, useRemoveChip } from "./notesContext";
-import {
-  linkedEventIds,
-  matchesTagQuery,
-  tagsInUse,
-  timelineEvents,
-  visibleEvents,
-} from "./notes";
+import { linkedEventIds, tagsInUse, timelineEvents } from "./notes";
 import { resetEventHighlight, selectEvents } from "./eventHighlight";
 import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import type { TraceRow } from "./trace";
 import { busLookup, type ColumnState } from "./traceColumns";
+import { useEventsPage } from "./useEventsPage";
 import { diagCount } from "./diag"; // DIAG
 
 /// The column set this view declares to TraceView: empty. One shared
@@ -29,10 +24,14 @@ const NO_COLUMNS: readonly ColumnState[] = [];
 
 /// The singleton timeline-events view (ADR 0035): one panel, opened from the
 /// command palette like Project / System Messages, that *is* the trace view
-/// rendering only events — the host notes merged with the derived truncation
-/// marker, chronological. It reuses TraceView's event-row renderer (one base
-/// type, `TraceRow`), with the frame header hidden. Each editable row carries
-/// inline rename / recolor / remove controls (derived events aren't editable).
+/// rendering only events — **one list**, oldest first: the authored events,
+/// the derived truncation marker and every bus's bus-error episodes at the
+/// configured gap, merged by time. The host merges, filters, counts and
+/// pages it (`events_page`); this view holds one page (`useEventsPage`). It
+/// reuses TraceView's event-row renderer (one base type, `TraceRow`), with
+/// the frame header hidden. Each editable row carries inline rename /
+/// recolor / remove controls; derived events — the truncation marker, an
+/// episode — aren't editable, but every row is selectable.
 ///
 /// **How much of the gridview (ADR 0044) these rows are on.** They are on its
 /// *interaction* base — the cursor, the row DOM ids, the click policy that
@@ -44,20 +43,9 @@ const NO_COLUMNS: readonly ColumnState[] = [];
 /// cells or not. That is why this view declares **none** — a column set is not
 /// inert here, and the default frame layout (1144 px of tracks) laid the ✎ / ×
 /// controls out ~900 px beyond a narrow panel's right edge.
-export function EventsPanel({ api }: IDockviewPanelProps) {
+export function EventsPanel(_props: IDockviewPanelProps) {
   diagCount("render.EventsPanel"); // DIAG
   const model = useTraceModel();
-  // How many times this view has been on screen, counting its first
-  // render — dockview detaches a hidden panel's element, so the
-  // bus-error section's own scroll offset needs putting back on return
-  // (`useScrollRestore.ts`, the same pattern `SettingsPanel.tsx` uses).
-  const [shownCount, setShownCount] = useState(1);
-  useEffect(() => {
-    const d = api.onDidVisibilityChange((e) => {
-      if (e.isVisible) setShownCount((n) => n + 1);
-    });
-    return () => d.dispose();
-  }, [api]);
   const {
     notes,
     renameNote,
@@ -69,6 +57,9 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
     unlinkEvents,
   } = useNotes();
   const removeChip = useRemoveChip();
+  // The authored events, whole (ADR 0035: bounded by what the user wrote)
+  // — what the counts, the tag suggestions and the Link control read. The
+  // rows themselves are the host's page below.
   const allEvents = useMemo(
     () => timelineEvents(notes, model.truncationTsNs),
     [notes, model.truncationTsNs],
@@ -80,17 +71,11 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
   // partial word narrows the list without the user having to know the whole
   // vocabulary. The datalist offers what is actually in use.
   const [tagQuery, setTagQuery] = useState("");
-  const events = useMemo(
-    () =>
-      visibleEvents(allEvents, kindFilter.visible).filter((e) => matchesTagQuery(e, tagQuery)),
-    [allEvents, kindFilter.visible, tagQuery],
-  );
-  // Bus errors are a paged section below (ADR 0035 amended), not part of
-  // this whole-list view — the notes store holds authored events only,
-  // so `allEvents` never carries one. The checklist's own count is
-  // still a model fact, read off `get_bus_health`'s per-bus totals
-  // rather than left at zero: a fault is exactly what a reader most
-  // wants surfaced, including on the row that says how many there are.
+  // Bus errors are episodes the host derives per bus (ADR 0035 amended),
+  // never in the notes store, so `allEvents` never carries one. The
+  // checklist's count for them is a model fact read off `get_bus_health`'s
+  // per-bus totals: a fault is exactly what a reader most wants surfaced,
+  // including on the row that says how many there are.
   const { buses: sessionBuses } = useProjectContext();
   const busHealth = useBusHealth();
   const busErrorCount = useMemo(
@@ -102,19 +87,43 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
     [allEvents, busErrorCount],
   );
   const tags = useMemo(() => tagsInUse(allEvents), [allEvents]);
+  const gapSeconds = useSetting("bus_error_episode_gap_s");
+
+  // What the list is made of moved outside this view: an authored edit (a
+  // new `notes` snapshot), a bus fault (the error total), the truncation
+  // point. Counted — a plain "latest value" ref, mutated in render — so the
+  // loaded page is re-fetched in place on the next refresh tick.
+  const changes = useRef({ notes, busErrorCount, truncation: model.truncationTsNs, n: 0 });
+  const seen = changes.current;
+  if (
+    seen.notes !== notes ||
+    seen.busErrorCount !== busErrorCount ||
+    seen.truncation !== model.truncationTsNs
+  ) {
+    changes.current = { notes, busErrorCount, truncation: model.truncationTsNs, n: seen.n + 1 };
+  }
+  const page = useEventsPage({
+    buses: sessionBuses,
+    gapSeconds,
+    kinds: kindFilter.visible,
+    tagQuery,
+    changeSignal: changes.current.n,
+  });
 
   // The linking gesture is multi-select plus one control (owner ruling):
   // the selection lives in the gridview, which this view declares its
   // event rows selectable in, and the view keeps only the ids it reports.
   const [selected, setSelected] = useState<readonly string[]>([]);
   // Selecting an event is acting on it (ADR 0056): its subjects light up
-  // in the plot and the trace, and a selected end of a linked pair draws
-  // the pair's extent. Transient — the channel is view-local, and this
-  // view closing puts it back to rest.
+  // in the plot and the trace, and a selected end of a linked pair — or a
+  // selected bus-error episode — draws its extent. Transient — the channel
+  // is view-local, and this view closing puts it back to rest.
   useEffect(() => {
     selectEvents(selected);
   }, [selected]);
   useEffect(() => resetEventHighlight, []);
+  // A link is stored on an authored event (ADR 0056), and the store links
+  // two authored events: a pair with an episode in it offers no link.
   const pair = useMemo(() => {
     if (selected.length !== 2) return null;
     const two = allEvents.filter((e) => selected.includes(e.id));
@@ -127,12 +136,13 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
     return { first, second, linked: linkedEventIds(allEvents, first.id).includes(second.id) };
   }, [allEvents, selected]);
 
+  const pageRow = page.getRow;
   const getRow = useCallback(
     (i: number): TraceRow | null => {
-      const e = events[i];
+      const e = pageRow(i);
       return e ? { row: "event", event: e } : null;
     },
-    [events],
+    [pageRow],
   );
 
   // TraceView is built for frame data; an events-only view supplies no
@@ -156,7 +166,15 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
   return (
     <div className="trace-panel events-panel">
       <div className="events-panel-toolbar">
-        <EventKindFilter state={kindFilter} counts={counts} />
+        <EventKindFilter
+          state={kindFilter}
+          counts={counts}
+          // The gap the bus errors are grouped at — a setting
+          // (`bus_error_episode_gap_s`) — said where the kind is.
+          titles={{
+            Diagnostics: `Diagnostics — what the tool found: bus errors, as episodes at ${gapSeconds} s, and where history was truncated`,
+          }}
+        />
         <label className="events-panel-tag-filter">
           tag
           <input
@@ -173,6 +191,11 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
             ))}
           </datalist>
         </label>
+        {!page.complete && (
+          <span className="events-panel-pending" title="still catching up with the capture">
+            catching up…
+          </span>
+        )}
         <span className="events-panel-toolbar-spacer" />
         {/* One control, two faces: with two events selected it links
             them, and with two already-linked events selected it takes
@@ -197,8 +220,8 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
         />
       </div>
       <TraceView
-        count={events.length}
-        version={events.length}
+        count={page.count}
+        version={page.version}
         autoScroll={false}
         baseTimestampSeconds={model.sessionStartSeconds}
         columns={NO_COLUMNS}
@@ -208,7 +231,7 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
         resolveColor={null}
         busLookup={lookup}
         getRow={getRow}
-        ensureVisible={noop}
+        ensureVisible={page.ensureVisible}
         onAutoScrollDisabled={noop}
         eventActions={eventActions}
         showHeader={false}
@@ -216,13 +239,6 @@ export function EventsPanel({ api }: IDockviewPanelProps) {
         selectableEvents
         onEventSelectionChange={setSelected}
       />
-      {kindFilter.visible.has("busError") && (
-        <BusErrorEventsSection
-          buses={sessionBuses}
-          baseTimestamp={model.sessionStartSeconds}
-          shownCount={shownCount}
-        />
-      )}
     </div>
   );
 }

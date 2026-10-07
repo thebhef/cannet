@@ -1278,7 +1278,8 @@ pub struct SampledPoints {
     pub extrapolated: Vec<[f64; 2]>,
 }
 
-/// One bus-error **episode** as `bus_error_episodes` serves it: a burst of
+/// One bus-error **episode** as `events_page` and
+/// `bus_error_episodes_in_window` serve it: a burst of
 /// errors on `bus` in which each followed the last by less than the
 /// episode gap (`crate::bus_error_episodes`). Times are absolute seconds;
 /// `rate` is errors per second over the span, absent for a zero span.
@@ -1296,16 +1297,33 @@ pub struct BusErrorEpisode {
     pub last_ordinal: u64,
 }
 
-/// `bus_error_episodes`' answer: a row-addressed page, like a
-/// [`RowPage`] — `count` episodes in all (the row space's extent), the
-/// page starting at newest-first index `start` — and whether the series
-/// and their episode lists had caught up with the capture (ADR 0049).
+/// One row of the Events panel's list, tagged by `row`: an authored
+/// event (the [`crate::notes::Note`] itself), the truncation marker's
+/// place (the frontend draws the marker, as everywhere else), or a
+/// bus-error episode.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
-pub struct BusErrorEpisodePage {
+#[serde(tag = "row", rename_all = "camelCase")]
+pub enum EventsPageRow {
+    Note(crate::notes::Note),
+    Truncation {
+        #[serde(rename = "timestampNs")]
+        timestamp_ns: u64,
+    },
+    BusError(BusErrorEpisode),
+}
+
+/// `events_page`'s answer: a row-addressed page, like a [`RowPage`] —
+/// `count` rows in the filtered list, the page starting at oldest-first
+/// index `start`; whether every episode list had caught up with the
+/// capture (ADR 0049); and the list's version, which moves whenever its
+/// rows could have changed.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct EventsPage {
     pub count: u64,
     pub start: u64,
-    pub episodes: Vec<BusErrorEpisode>,
+    pub rows: Vec<EventsPageRow>,
     pub complete: bool,
+    pub version: u64,
 }
 
 /// `bus_error_episodes_in_window`'s answer: the episodes intersecting a

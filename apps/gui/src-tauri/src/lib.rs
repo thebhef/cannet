@@ -52,6 +52,7 @@ mod dbc_watcher;
 mod diag;
 mod emitters;
 mod event_text;
+mod events_page;
 mod export_state;
 mod export_template;
 mod trace_query;
@@ -204,7 +205,7 @@ use emitters::{
 use filter::FilterPredicate;
 #[cfg(test)]
 use ipc::{ByIdSnapshot, DecodedRecord, SignalSelection, SignalSnapshotRecord, TraceFrameRecord};
-use sampling::{bus_error_episodes, bus_error_episodes_in_window, sample_signals, signal_min_max};
+use sampling::{bus_error_episodes_in_window, events_page, sample_signals, signal_min_max};
 use session::{connect_remote_server, disconnect_remote_server};
 #[cfg(test)]
 use session::{panic_message, route_channel, LocalSourceFrameSource, RemoteSession, SessionTx};
@@ -777,8 +778,8 @@ pub fn run() -> ! {
             list_file_backed_content,
             sample_signals,
             signal_min_max,
-            bus_error_episodes,
             bus_error_episodes_in_window,
+            events_page,
             list_transmit_frames,
             set_transmit_frame,
             remove_transmit_frame,
