@@ -543,3 +543,11 @@ contract.
   backtrace from the hook in `crash.rs`, and nothing from cannet-spill
   about which chain, segment or mapping was involved). All criteria
   met; awaiting acceptance.
+
+- 2026-10-07 — **Owner rulings (queue § 1).** A launch refused its cache
+  boots in the unsaved project directory: "I accept this for now. In my
+  mind opening the same project twice is undefined behavior since I
+  haven't really tried it." → `plans/backlog.md`. `Save As` onto a held
+  destination cache: "kinda messy but I don't think we introduced this
+  issue since 0.10.0. Let's backlog. failing to save as is not a
+  reasonable alternative." → `plans/backlog.md`. Both queue items deleted.

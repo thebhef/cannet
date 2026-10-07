@@ -429,3 +429,10 @@ Settled by the overseer, open to reversal:
 | 6 | **met** — 3658 frontend tests over 248 files, green. Phase 3 alone added 2 gridview tests, 3 reveal tests, 4 stale-layout tests and an end-to-end palette walk, and moved 36 affordance tests with no assertion changed |
 
 Task complete 2026-09-23: 6/6 met. Awaiting owner acceptance (review queue § 4).
+
+- 2026-10-07 — **Owner rulings (queue § 1).** *Show servers* command
+  retired: accepted ("I'm pretty sure this is what I asked for, but
+  accepted, either way"). Dimensions open collapsed: accepted ("this is
+  fine"), with a new finding on the units collection itself — "I'm seeing
+  mV, V, kV, MV all listed here — we should be relying on SI prefixes" →
+  queue § 2 (fix on this stack). Both queue items deleted.

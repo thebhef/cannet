@@ -481,6 +481,17 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
+- `[defect]` **Opening the same project twice is undefined behaviour.**
+  A launch refused its project cache (held by another cannet) boots in
+  the unsaved project directory with an in-RAM store rather than
+  staying rooted in the held one. Owner, 2026-10-07: accepted for now;
+  define the behaviour when it matters. Detail: 0156 § Status log,
+  2026-09-23 phase 2.
+- `[defect]` **`Save As` onto a held destination cache writes the project
+  file but leaves the session (and its capture) where it was**, reporting
+  the holder on the system log. Owner, 2026-10-07: backlog; failing the
+  Save As is not an acceptable alternative. Detail: 0156 § Blockers /
+  side effects, 2026-09-23 phase 2.
 - `[perf]` **Quitting within ~1 min of a large cold rebuild costs
   ~11 s of synchronous pyramid flush** (drains to ~2.5 s once the
   cadence has idled). Levers identified: raise the idle

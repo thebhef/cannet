@@ -601,3 +601,8 @@ the next reader does not open a task on it.
 | 7 | ADR 0049 carries the general rule and the shape-A guard; ADR 0002 and README match the behaviour | **met.** ADR 0049 gains a "same shape, three more times" context section and six general rules under § Decision (a command answers with what exists; a background job is single-flight per key and announces itself; a foreground poll never drives unbounded derivation; one request in flight per poller, newest wins; pending is neither empty nor zero; the guard is a test — `command_surface`'s allow-list, and why it must read the source). Status line amended. ADR 0002 DS-8 needed no further change: "sizes asked for, never polled" still holds — the walk is triggered by the listing, not a timer. README updated for both pending states. |
 
 Task complete 2026-09-23: 7/7 met. Awaiting owner acceptance (review queue § 4).
+
+- 2026-10-07 — **Owner rulings (queue § 1).** The dimmed `…` while the
+  host reads: accepted ("this is fine"). A manual TX onto a full outbound
+  queue refused rather than waited on: accepted ("yeah, that seems
+  right"). Both queue items deleted.

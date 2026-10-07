@@ -219,3 +219,10 @@ bench.
   stop and bus-health reads error-passive; replugged → the accepted
   driver-queue burst, then active and rows at rate. Phase 2 met; every
   exit criterion met → **pending closeout**.
+
+- 2026-10-07 — **Owner rulings (queue § 1).** The refused `Tx ✗` row:
+  "if a message isn't sent it shouldn't make it into the message
+  parsing/plotting machinery. I thought we had entirely resolved this by
+  now." The bridge's `Tx` drop: "the virtual bus needs to behave like
+  physical busses do; this obviously breaks our expected behavior. Needs
+  to get fixed." Both are task 160 phase 2 (queue § 2).

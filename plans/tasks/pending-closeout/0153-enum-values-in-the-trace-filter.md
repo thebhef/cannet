@@ -350,3 +350,8 @@ term."
 | 6 | Tests cover 1–4 | **Met** — criteria 1–3 were the host half (phase 1, already verdicted "Met"); criterion 4's DOM half lands here |
 
 Task complete 2026-09-23: 6/6 met. Awaiting owner acceptance (review queue § 4).
+
+- 2026-10-07 — **Owner ruling (queue § 1, the haystack change):** kept
+  open as work — "we need to iterate on this search/filtering. Seems to
+  work in Database and trace view about how I would like, but is slow,
+  and maybe could yield some results early." → queue § 2.

@@ -286,3 +286,9 @@ builds the server for that lane. Nothing open against this task; awaiting owner 
   sidecar-touching change) scrubbed during the wire-extraction round;
   the bitrate gap it pointed at stays tracked in `plans/backlog.md`
   itself.
+
+- 2026-10-07 — **Owner ruling (queue § 1, ruff locks aligned down):**
+  "should get fixed" — the 0.16 uplift (with the `select` stanza) is
+  ordered onto the stack → queue § 2. The response broke off at "noqua
+  and"; the two judgment calls (the 50 deliberate `noqa`s, the 5 silent
+  teardown paths) wait for the rest of that sentence.

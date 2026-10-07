@@ -92,6 +92,13 @@ stays at the top of the stack (owner, 2026-10-04).
 
 ## Status
 
+- 2026-10-07 — **Owner ruling (queue § 1, phase 9c `ConfigureBus`):
+  accepted.** "I don't have any attachment to the existing session, the
+  user should have to take no action to recover. It's fine if that means
+  the PEAK connection has to be turned over at the python-can level."
+  Close-before-open stands; a failed open reads `unavailable` and is
+  retried every poll pass. Queue item deleted. Task file moved under
+  `pending-closeout/` (in progress; owner's 2026-10-07 roadmap rule).
 - 2026-10-06 — **phase 9c landed** (Opus, 14 min wall clock; `task163-recovery`
   c23b8374 on c8d237dc). Close before open: `_replace_channel` replaces
   `_swap_channel_locked` for every reopen (bus-off reset, silent-queue

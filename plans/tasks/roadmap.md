@@ -12,9 +12,9 @@ and in [`../../CLAUDE.md`](../../CLAUDE.md).
 
 Tasks keep stable numbers (they don't renumber when the order changes).
 
-A task whose exit criteria are all met leaves this list: its file
-waits under `pending-closeout/` for the owner's acceptance, and that
-directory — not this file — is the list of work awaiting it.
+This file lists work not yet started. A task that is in progress, or
+has met every exit criterion, lives under `pending-closeout/` until the
+owner closes it out; that directory — not this file — is that list.
 
 ## 0.10.x — fix and stabilize
 
@@ -29,82 +29,65 @@ started.
    `{start:…}` file-name tokens switch from strftime to the same
    patterns; ISO stays in file names, file formats and logs. Two
    phases, beneath `fix-cursor-chip-row`.
-2. [Task 160 — Only the Wire Writes Data](0160-only-the-wire-writes-data.md)
-   — opened 2026-10-03 by owner order after the fifth report of 121's
-   defect: audit every place a transmit intent is recorded as a bus
-   fact (done — one writer, all consumers read its rows), then make the
-   rule durable (ADR, CONTEXT.md, CLAUDE.md) and confirm on the bench
-   with 121.
-3. [Task 163 — python-can Usage Review and a Fault Model That Holds](0163-python-can-usage-review.md)
-   — opened 2026-10-04 by owner order after the fifth one-symptom fix:
-   cannet treats a bus fault as data (every error frame a row, every
-   refused send an envelope, control messages behind both in one
-   unbounded FIFO). Phase 1 review done; phase 2 designs the ADR that
-   supersedes ADR 0039's fault model; implementation follows the
-   owner's ruling. Folds in 0161's clock-step and backlog findings.
-   Phases 1–8 landed 2026-10-05; the owner's bench failed the same day
-   (PEAK bus-off reset raised `PCAN_ERROR_INITIALIZE`, never retried), so
-   phases 9a–9d add a fault-recovery bench, live PCAN experiments and the
-   fix.
-4. [Task 128 — Shared-Layer Holdouts](0128-shared-layer-holdouts.md)
+2. [Task 128 — Shared-Layer Holdouts](0128-shared-layer-holdouts.md)
    — the last cleanup items the 2026-08-27 run surfaced, opened at the
    owner's instruction while walking its open items: `serverList.ts`'s
    two hooks onto `useHostMirror` via a `fromPayload` ignore signal
    (ruled: option a — no behaviour change), Escape reaching a
    portalled dropdown before the fullscreen binding, and the columned
    gridviews' missing ARIA roles.
-5. [Task 119 — Example DBCs for the Duplicate-Id Collision](0119-duplicate-id-example-dbcs.md)
+3. [Task 119 — Example DBCs for the Duplicate-Id Collision](0119-duplicate-id-example-dbcs.md)
     — two DBCs that collide on one bus plus a project assigning both, so
     the owner can review what the Database panel marks. **A deliverable
     to review against, not a behaviour change.** From queue item 1.33a;
     ruled 2026-08-25. Two open questions.
-6. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
+4. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
     — the user-reachable empty-view defect Task 78 phase 1 attributed
     (restore a prior capture, then import: the view stays empty while
     the store refills), plus making `--app-data-dir` isolate the
     capture scratch as ADR 0031 claims. Opened by owner ruling
     2026-08-15; kept as scoped, both halves, by owner ruling
     2026-08-19.
-7. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+5. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
     — the hardware/virtual-bus verify-and-fix pass (post-clear negative
     timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
     plot-color bug and the `decimatePoints` dead-code removal.
-8. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
+6. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
     — the small findings the retiring 70–78 task files recorded in
     passing, collected as one groomable pass: the project-command test
     harness gap, the rebuild-chip rough edges, the unattributed
     launch-hang lead, frameless-import time ranges, and the
     untrusted-row token editor. Opened by owner ruling 2026-08-16.
-9. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
+7. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
     — an imported MDF's embedded DBC decodes for the session but
     survives no reopen; make it durable (extraction or a durable
     project reference), then revisit name-matching file-backed
     signals on top. **Needs grilling before implementation.** Opened by
     owner ruling 2026-08-16.
-10. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+8. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
     — crash on exit (wry/WebKit layer-tree teardown race) and missing
     Spotlight bundle metadata. Independently-shippable macOS fixes.
-11. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
+9. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
     — the two data-named cuts from the 2026-08-08 ingest profiling: the
     disk-spill segment write (43 % of the release per-frame budget)
     and `bus_id: Option<String>` interning (~15 %). Opened by owner
     ruling 2026-08-09.
-12. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
+10. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
     — the health sampler's process-family metrics move to the web
     engine's own bookkeeping (WebView2 `GetProcessInfos`) as the
     de-jure source; per-platform matrix (the macOS ppid walk silently
     excludes WKWebView's launchd-parented helpers), the
     `unsafe`/`webview2-com` adoption rulings, costs re-measured.
     Opened by owner ruling 2026-08-15.
-13. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
+11. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
     — shape 3 of Task 72 phase 3's attributed enum-lag fix (owner
     ruling 2026-08-15): decode cursors advance independently of view
     fetches, serves read what the cursors reached. Amends ADR 0049.
-14. [Task 133 — Misc Fixes](0133-misc-fixes.md)
+12. [Task 133 — Misc Fixes](0133-misc-fixes.md)
     — the collection point for small owner-reported fixes that belong
     to no open task; currently: hex displays preserve leading zeros.
     Opened by owner instruction 2026-09-03.
-15. [Task 143 — A Webview Reload Rejoins the Running Session](0143-reload-rejoins-the-session.md)
+13. [Task 143 — A Webview Reload Rejoins the Running Session](0143-reload-rejoins-the-session.md)
     — a reload today re-runs the fresh-host boot (stops loggers, RBS
     and periodic TX; swaps the raw store under a live pump); make it
     rejoin the host's session instead, then let the health recorder

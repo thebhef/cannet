@@ -7,145 +7,57 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
+Two items the owner answered with a question (2026-10-07); taken one at
+a time with the design in front of them, not here.
 
-- **163 phase 9c: a failed `ConfigureBus` no longer keeps the old
-  channel.** The reopen now closes before it opens (PEAK refuses
-  `CAN_Initialize` on a handle this process holds), so when the open
-  after the close fails the bus reads `unavailable`, transmits are refused
-  `closed`, and the open is retried with the requested config every poll
-  pass until it succeeds. "Keep the old channel" was never reachable on
-  PEAK. Yes, or revert to keeping the old channel where the open fails
-  before the close could have been needed? Detail: 0163 § Status,
-  2026-10-06 (phase 9c).
-
-- **158 phase 7: an episode row can be selected but not linked** — a
-  selected episode lights its extent on the plot (the phase 6 extent
-  question resolved: transient, reachable), but Link Events stays
-  authored ↔ authored because the notes store refuses a link target it
-  does not hold. Widen it (store + ADR 0056), or leave links to
-  authored pairs (recommended)? Detail: 0158 § Blockers, 2026-10-03.
+- **158 phase 7: an episode row can be selected but not linked** — Link
+  Events stays authored ↔ authored because the notes store refuses a
+  link target it does not hold. Owner, 2026-10-07: "is there any good
+  reason these events are held out of this bag? I know they get
+  updated, but we're only changing the content. they get written out to
+  BLF logs just like the note events do. I think I had asked for start
+  and end markers and am only seeing start markers." Detail: 0158
+  § Blockers, 2026-10-03.
 
 - **158: the bus-health panel's error rate keeps a 1 s burst gap.**
-  The coalescer and its run list are gone, but "errors per second over
-  the latest burst" needs a burst boundary, so `RATE_BURST_GAP_NS`
-  stays inside a per-bus tally with no list and no cap. Keep, or
-  redefine the rate? Detail: 0158 § Status log, phase 1. (Owner,
-  2026-10-02: the count itself "seems fine"; the rate's gap is still
-  the open yes/no.)
-
-- **156 phase 2 — a launch refused its project cache boots in the
-  unsaved project directory**, rather than staying rooted in the held
-  one with an in-RAM store. Reason: the pyramids, filter index and
-  notes all root in that same cache and two of them are mapped files,
-  so "refuse the trace store" alone still let a second instance write
-  into a held directory. Wider than the groomed wording, which spoke
-  only of the project *open*. Detail: 0156 § Status log, 2026-09-23
-  phase 2.
-
-- **156 phase 2 — `Save As` onto a held destination cache writes the
-  project file but leaves the session (and its capture) where it
-  was**, reporting the holder on the system log rather than failing the
-  command. Detail: 0156 § Blockers / side effects, 2026-09-23 phase 2.
-
-- **151: the *Show servers* command is gone.** `panel.show.servers`
-  retired with the singleton panel; the command palette's *Servers*
-  go-to-view entry and *Manage servers…* open the settings view at the
-  Servers section instead. A user keybinding bound to the old id reads
-  as unknown in the shortcuts view and stops working, with no command
-  to rebind to. Leave it, or restore `panel.show.servers` opening the
-  section? Detail: 0151 § Status log, 2026-09-23 (phase 3).
-
-- **Units section: dimensions now open collapsed.** The settings view's
-  Units section is a gridview of dimension branches over unit rows, and
-  on open every dimension is shut except one holding a unit this
-  project maps or composes (overseer's ruling, 2026-09-22). A project
-  with no unit customizations therefore sees 109 headings and no units
-  until it opens one or types in the filter. One line to flip if that
-  reads wrong — task 151 phase 1 status log,
-  `plans/tasks/pending-closeout/0151-settings-view-grids.md`.
-
-- **153: a signal name is no longer part of its message's searchable
-  text.** Ranking signals in their own right required moving them out
-  of the message's haystack — a message that ties a signal cannot be
-  outscored by it (fixture: 272 = 272). Consequence: a query spanning a
-  message name and a signal name as one fuzzy string (`packstatus
-  voltage`) no longer matches, since no single haystack holds both.
-  Detail and scores: 0153 § Status log, 2026-09-23.
-
-- **152: the logger file list and the project-cache list show a dimmed
-  `…` while the host reads.** Trace start / end / duration / count for
-  a file whose header is unread, and a cache's size before its walk
-  lands, instead of blanks or zeros; the caches header reads
-  `N projects · measuring…` until every size is in. Detail: 0152
-  § Status log, 2026-09-23 (phase 3).
-
-- **152: a manual TX onto a full outbound queue is now refused, not
-  waited on.** `transmit_frame_once` reports `Failed { … outgoing queue
-  is full … }` instead of parking the IPC thread until the server
-  drains. Ruled in 0152 § Audit A14; here because it is the one
-  user-visible change in phase 2. Detail: 0152 § Status log,
-  2026-09-23.
-
-- **The ruff locks aligned DOWN to 0.15.16** — *not accepted* (owner,
-  2026-09-21). The 0.16 uplift lands as its own branch absorbing the
-  ~200 mechanical fixes, with a `[tool.ruff.lint] select` stanza so
-  the rule set can't drift again; the two judgment calls (the 50
-  deliberate `noqa`s, the 5 silent teardown paths) are decided there.
-  Noted for now, not scheduled. Detail: 0136 § Status log, 2026-09-16.
-
-- **The unified enum-lane serve will still lose a held code under
-  ~1.5 pixel columns**, where the categorical reducer lost none. The
-  ruled fix (first and last beside min and max) takes the worst-case
-  loss from 3.21 columns to 1.49; the residual is the *pyramid fold's*
-  min/max, and closing it measures **worse**, not better (4.78 columns
-  lost, 2.3x the pyramid), because a fatter level makes the serve read
-  a coarser one. Accept the 1.5-column boundary, or reopen? Detail:
-  0146 § Status log, 2026-09-20 phase 1.
-
-- **An enum lane's tiles now draw *under* the line and its markers**,
-  with only the labels held back to draw over. The ruling said "the
-  lane is an overlay; the enum value is plotted under it", and the
-  exit criterion said a lane's markers are uPlot's *and* legible over
-  the tile — which cannot both hold, because a marker under a
-  0.65–0.75 alpha tile measures 1.8:1 against it on a light theme
-  against the project's own 3:1 bar. Legibility won. Confirm, or say
-  the tiles must stay in front and the markers go back to a pass of
-  their own? Detail: 0146 § Status log, 2026-09-20 phase 2.
-
-- **A lane under `Points: auto` loses its exemption from uPlot's
-  density rule.** With the private marker pass gone, a slow lane on a
-  shared enum-lanes axis is governed by the axis's merged density and
-  the minimum-sample-count floor, exactly as a slow line on a shared
-  axis is — where before a lane was always marked. That is what
-  "marked exactly like a numeric stepped series" means, and it is a
-  visible change to `auto`. Detail: 0146 § Status log, 2026-09-20
-  phase 2.
-
-- **A wide `ΔH` chip is clipped at the plot box's edge.** The H1/H2/ΔH
-  readouts moved into the y gutter (~52 px) per the cursor-chrome
-  ruling, and deliberately do not widen it — a gutter that grew with a
-  transient reading would slide every plot box in the stack sideways as
-  the cursor was placed. So `ΔH` plus a long value loses its tail. The
-  full value is in the side panel and the measurement strip. Accept, or
-  want it elsewhere? Detail: 0146 § Blockers / side effects.
-
-- **121 phase 1: the refused `Tx ✗` row still feeds plots, per-message
-  counts, `fps.tx`, the logger and Save Capture** — the one row the host
-  still writes from an intent. Keep as is, or keep the trace row and
-  exclude undelivered rows from decode, counts, `fps.tx`, logger and
-  export (recommended; 160 phase 2)? Undoing either way is a filter on
-  `UndeliveredTx`. (0121 § Blockers, 2026-10-03)
-- **121 phase 1: a virtual bus's bridge drops every `Tx` frame it pulls
-  from the far side**, so the remote echo of the bridge's own egress is
-  not carried twice. It also drops a co-subscriber's transmits on the
-  bridged adapter and recorded `Tx` frames from a bridged replay server.
-  Keep (recommended), or convert `Tx`→`Rx` at ingress and accept the
-  originator seeing its frame twice? Per-frame matching is excluded by
-  ruling. (0121 § Blockers, 2026-10-03)
+  Owner, 2026-10-07: "This seems like an implementation detail I didn't
+  specify […] What is the alternative, and what is the user-level
+  impact of changing it? What UI element should I look at to decide,
+  assuming there is indeed any decision truly needed?" Detail: 0158
+  § Status log, phase 1.
 
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 (none — release notes brought current through the stack's tip, 49afe029)
+
+Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
+
+- **160 phase 2: the refused `Tx ✗` row leaves the parsing and plotting
+  machinery** — "if a message isn't sent it shouldn't make it into the
+  message parsing/plotting machinery." No decode, counts, `fps.tx`,
+  logger or export; the trace row stays as the refusal's record. (0121
+  § Blockers → 0160 § Status log, 2026-10-07.)
+- **160 phase 2: the virtual bus behaves like a physical bus** — the
+  bridge carries the `Tx` frames it pulls from the far side instead of
+  dropping them. "This obviously breaks our expected behavior. Needs to
+  get fixed." (0121 § Blockers → 0160 § Status log, 2026-10-07.)
+- **146: an enum transition must survive zooming out.** Narrow held
+  codes may go, but "if there was a transition there we should make
+  sure it shows up when zoomed way out; wouldn't want the enum to show
+  that it stayed the same value the whole time" — 1 px transients need
+  not be legible. Before shipping. (0146 § Status log, 2026-10-07.)
+- **151 follow-on: the units collection relies on SI prefixes** — the
+  owner sees `mV, V, kV, MV` listed as separate units in the Units
+  section; one base unit with prefixes is wanted. (0151 § Status log,
+  2026-10-07.) Needs grooming (task 149's library is the surface).
+- **153: iterate on search/filtering** — works as the owner wants in the
+  Database and trace views "but is slow, and maybe could yield some
+  results early." The haystack change itself is kept. (0153 § Status
+  log, 2026-10-07.) Needs grooming.
+- **The ruff 0.16 uplift** with the `[tool.ruff.lint] select` stanza —
+  "should get fixed." The owner's sentence broke off at "noqua and"; the
+  `noqa` and silent-teardown judgment calls await its end. (0136 § Status
+  log, 2026-10-07.)
 
 Owner rulings 2026-10-03 (new-build walk):
 
@@ -484,8 +396,7 @@ committed verbatim as 5ef108dd, triaged by the overseer):
   one (one line). Belongs on `task136-core-bus` as an amend + restack;
   CI's `uv sync --frozen` does not catch it. Patch parked in the
   overseer's scratchpad.
-- **Retire tasks 142, 145, 146, 147, 148 from the roadmap** once
-  accepted (§ 4), and dispose of the tip perf report
+- **Dispose of the tip perf report**
   `docs/performance-measurements/frontend/2026-09-20-25ffdf9e-feedback-tip-run1.json`
   (fold into the series review above or delete).
 - **0146's phase-4 status log** carries the tip perf reading

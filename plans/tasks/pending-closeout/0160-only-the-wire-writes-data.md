@@ -144,3 +144,16 @@ come from an intent.
   phase 2 — the durable rule (ADR, CONTEXT.md, CLAUDE.md, with the PEAK
   caveat), the refused `Tx ✗` row's reach (queue § 1), the bridge `Tx`
   drop (queue § 1), the plot's closed gaps (queue § 3).
+
+- 2026-10-07 — **Owner rulings for phase 2 (queue § 1 → § 2).**
+  (1) The refused `Tx ✗` row — the row the host writes when the driver
+  refuses a send (queue full, bus-off) — leaves the parsing and plotting
+  machinery entirely: no decode, no per-message count, no `fps.tx`, no
+  logger output, no export. The trace row itself is the refusal's one
+  record (a `UndeliveredTx` filter everywhere else). (2) The virtual bus
+  behaves like a physical bus: the bridge carries the `Tx` frames it
+  pulls from the far side instead of dropping them. Phase 2 = those two
+  fixes, the plot's closed raw gaps if they fit (queue § 3), and the
+  durable rule (ADR, CONTEXT.md, CLAUDE.md, with the PEAK caveat). Task
+  file moved under `pending-closeout/` (in progress; owner's 2026-10-07
+  roadmap rule).
