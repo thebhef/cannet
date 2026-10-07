@@ -2309,8 +2309,10 @@ Where a sent frame goes:
   echoes of an error-passive transmitter, so a frame retransmitted
   into a pulled cable is not reported back as sent.
 - **A send refused outright** — no session carried its bus, or the
-  session would not take it — is the one transmit that writes its own
-  row: it reads `Tx ✗` in the direction column and says why on hover.
+  session would not take it — leaves no row either: only the wire
+  writes data ([ADR 0061](docs/adr/0061-only-the-wire-writes-data.md)).
+  A periodic the host could not offer shows as a **missed periods**
+  count on the bus-health row.
 - The far end can still refuse a frame it accepted from us. `TX_REJECTED`
   and its two siblings (`NOT_SUBSCRIBED`, `NO_ACKNOWLEDGER`) arrive later
   on the receive stream and belong to no single row, so they are tallied

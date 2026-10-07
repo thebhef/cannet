@@ -2,14 +2,15 @@
 //!
 //! The host owns the TX-message pool; every transmit panel is a thin
 //! view onto it (mutations go through these commands, each emitting
-//! `transmit-frames-changed`). `transmit_frame_inner` / `build_frame` +
-//! `append_refused_tx_row` are the single transmit primitive (offer the
-//! frame to the wire; append a row only when the enqueue was refused),
-//! shared by the manual send and the single `run_transmit_scheduler`
-//! thread that drives every running periodic (fixed-rate grid, ADR 0039).
-//! A frame the session accepted enters the trace only when the bus
-//! carries it — as the driver's echo, ingested like any frame (ADR 0039). `resolve_effective_calc` layers a
-//! message's calculated-field overrides over the DBC defaults (ADR 0027).
+//! `transmit-frames-changed`). `transmit_frame_inner` / `build_frame`
+//! are the single transmit primitive (offer the frame to the wire,
+//! append nothing), shared by the manual send and the single
+//! `run_transmit_scheduler` thread that drives every running periodic
+//! (fixed-rate grid, ADR 0039). Only the wire writes data (ADR 0061): a
+//! frame enters the trace only when the bus carries it — as the
+//! driver's echo, ingested like any frame — and a refused send leaves
+//! no row at all. `resolve_effective_calc` layers a message's
+//! calculated-field overrides over the DBC defaults (ADR 0027).
 
 use std::time::Duration;
 
@@ -20,7 +21,6 @@ use cannet_core::CanId;
 use crate::app_state::{refresh_calc_resolutions, AppState};
 use crate::ipc;
 use crate::session::{resolve_bus_route, BusRoute};
-use crate::trace_store::RawTraceFrame;
 use crate::{diag, transmit_frames, transmit_scheduler, verification};
 
 /// How often the transmit scheduler re-checks routes for periodics
@@ -35,89 +35,6 @@ const PARKED_ROUTE_PROBE: Duration = Duration::from_secs(1);
 /// per frame.
 type WireDestination = (String, u8, String);
 
-/// Ceiling on the number of undelivered runs [`UndeliveredTx`] holds.
-/// A bus that is down stays down, so an outage is one run however long
-/// it lasts and the realistic driver of growth is a bus that flaps.
-/// Past the cap the oldest run is dropped — the same windowed-ring
-/// answer the frame store gives its rows
-/// ([ADR 0002](../../../docs/adr/0002-disk-spill-store.md) DS-8), and by
-/// then the rows it described are the ones nearest eviction.
-pub(crate) const MAX_UNDELIVERED_RUNS: usize = 4096;
-
-/// Which `Tx` rows describe a frame **no wire took** — the `Tx ✗` rows.
-///
-/// A send the session accepts appends nothing: its row is the echo the
-/// bus reports once it carried the frame. A send the transmit path
-/// refused — no session routes the bus, or the session would not take
-/// the frame — is the one transmit the host writes into the trace
-/// itself, and every such row is recorded here so it cannot read as a
-/// frame the bus carried. The trace fetch reads this the way it reads
-/// the ingest-time violation index, decorating the row it names.
-///
-/// Rows are held as inclusive index runs rather than one entry each:
-/// the case that produces them in bulk is a bus that is down, which is
-/// one run.
-///
-/// This is the *enqueue* answer. A frame the session accepted and the
-/// far end then rejected is not marked here — that rejection arrives
-/// asynchronously, belongs to no single row, and is reported as its own
-/// coalesced count (see [`crate::bus_health`]).
-#[derive(Debug, Default)]
-pub(crate) struct UndeliveredTx {
-    /// Inclusive `(first, last)` runs, ascending and non-overlapping.
-    runs: std::sync::Mutex<std::collections::VecDeque<(u64, u64)>>,
-}
-
-impl UndeliveredTx {
-    /// Record that the row at `index` describes a frame no wire took.
-    /// Indices arrive in append order, so this extends the newest run
-    /// when it is contiguous and opens a new one otherwise.
-    pub(crate) fn mark(&self, index: u64) {
-        let Ok(mut runs) = self.runs.lock() else {
-            return;
-        };
-        match runs.back_mut() {
-            Some((_, last)) if *last + 1 == index => *last = index,
-            Some((_, last)) if *last >= index => {}
-            _ => {
-                if runs.len() >= MAX_UNDELIVERED_RUNS {
-                    runs.pop_front();
-                }
-                runs.push_back((index, index));
-            }
-        }
-    }
-
-    /// Whether the row at `index` is marked.
-    pub(crate) fn contains(&self, index: u64) -> bool {
-        self.runs.lock().is_ok_and(|runs| {
-            runs.binary_search_by(|(first, last)| {
-                if index < *first {
-                    std::cmp::Ordering::Greater
-                } else if index > *last {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
-            .is_ok()
-        })
-    }
-
-    /// How many runs are held — the bound this type exists to keep.
-    #[cfg(test)]
-    pub(crate) fn runs(&self) -> usize {
-        self.runs.lock().map_or(0, |runs| runs.len())
-    }
-
-    /// Forget every mark. The marks address rows by index, so a new
-    /// capture has to start with none.
-    pub(crate) fn clear(&self) {
-        if let Ok(mut runs) = self.runs.lock() {
-            runs.clear();
-        }
-    }
-}
 // ---- host-side TX-message registry IPC surface ----
 //
 // Every transmit panel is a thin view onto the host pool. Mutations go
@@ -738,7 +655,8 @@ struct DueEntry {
 ///    it. With room, each period is prepared (`fire_info`, which steps
 ///    its counters) and the destination's frames go out as one batch.
 ///    A session that has gone refuses the batch, and its frames are
-///    the marked `Tx ✗` rows the single-frame path leaves.
+///    dropped: a refused send is an intent, and leaves no row (ADR
+///    0061).
 /// 3. **Lateness.** A tick that ran past one or more whole periods drops
 ///    them rather than bursting (ADR 0039 rule 2), and counts them as
 ///    [`MissedPeriod::Late`](crate::bus_health::MissedPeriod).
@@ -796,8 +714,8 @@ pub(crate) fn fire_due(
         }
     }
     // Pass 2 — per destination: room first, then preparation and the
-    // batch. Batch order is the refused-row order: `group_wire_batches`
-    // preserves per-destination order, and the batches are offered in it.
+    // batch. `group_wire_batches` preserves per-destination order, and
+    // the batches are offered in it.
     let mut fired = 0;
     for ((address, channel, interface_id), entries) in group_wire_batches(routed) {
         let tx = handles.iter().find(|(a, _)| *a == address).map(|(_, t)| t);
@@ -819,7 +737,7 @@ pub(crate) fn fire_due(
             }
             Some(Ok(reserved)) => Some(reserved),
             // The session has gone since the route resolved: the frames
-            // are prepared and refused, as before.
+            // are prepared and refused.
             Some(Err(cannet_client::TransmitRefused::Closed)) | None => None,
         };
         let mut prepared: Vec<(ipc::TransmitRequest, cannet_core::CanFrame)> = Vec::new();
@@ -844,17 +762,11 @@ pub(crate) fn fire_due(
                 prepared.push((request, frame));
             }
         }
-        let frames: Vec<cannet_core::CanFrame> = prepared.iter().map(|(_, f)| f.clone()).collect();
-        let delivered = match (tx, reserved) {
-            (Some(tx), Some(reserved)) => tx
-                .send_reserved(reserved, channel, &interface_id, &frames)
-                .is_ok(),
-            _ => false,
-        };
-        if !delivered {
-            for (request, frame) in &prepared {
-                append_refused_tx_row(state, request, frame);
-            }
+        let frames: Vec<cannet_core::CanFrame> = prepared.into_iter().map(|(_, f)| f).collect();
+        // A refused batch is dropped: it is an intent, not a bus fact,
+        // and writes no row, count or sample (ADR 0061).
+        if let (Some(tx), Some(reserved)) = (tx, reserved) {
+            let _ = tx.send_reserved(reserved, channel, &interface_id, &frames);
         }
     }
     fired
@@ -902,13 +814,12 @@ fn resume_parked_routes(state: &AppState, schedule: &mut transmit_scheduler::Per
 /// (`run_transmit_scheduler`) route through here, so there's no
 /// special-casing for the periodic case.
 ///
-/// Only the wire writes data. A send the session accepts appends
-/// nothing: the frame enters the trace when the bus carries it, as the
-/// driver's echo — a `Tx` frame on the receive path, logged, counted
-/// and decoded like any other — and a frame the bus never carries
-/// leaves no row. A send that is refused (no session routes the bus, or
-/// the session would not take it) appends its `Tx` row here, recorded
-/// in [`UndeliveredTx`] so it reads as `Tx ✗`.
+/// Only the wire writes data (ADR 0061). Nothing is appended here,
+/// whatever the session answers: an accepted frame enters the trace
+/// when the bus carries it, as the driver's echo — a `Tx` frame on the
+/// receive path, logged, counted and decoded like any other — and a
+/// frame the bus never carries, or a send that is refused (no session
+/// routes the bus, or the session would not take it), leaves no row.
 ///
 /// `wire_status` reports the *enqueue* outcome. Server-side rejection
 /// (e.g. the BLF replay server's `Error::TX_REJECTED`) arrives later on
@@ -919,10 +830,8 @@ pub(crate) fn transmit_frame_inner(
     request: &ipc::TransmitRequest,
 ) -> Result<ipc::TransmitResult, String> {
     // Resolve `bus_id` → `(session, channel, interface_id)`. With no
-    // active session for the target bus, the refused `Tx ✗` row still
-    // lands (the user sees what they tried to send); use wire channel 0
-    // in that case — the trace view shows the *bus* column, not the
-    // wire channel, so it stays unambiguous.
+    // active session for the target bus the frame is still built — a
+    // malformed request is an error either way — on wire channel 0.
     let sessions_guard = state.remote_sessions();
     let routing = resolve_bus_route(&sessions_guard, &request.bus_id);
     let wire_channel = routing.as_ref().map_or(0u8, |r| r.channel);
@@ -964,17 +873,13 @@ pub(crate) fn transmit_frame_inner(
     };
     drop(sessions_guard);
 
-    if !matches!(wire_status, ipc::TransmitWireStatus::Accepted { .. }) {
-        append_refused_tx_row(state, request, &frame);
-    }
-
     Ok(ipc::TransmitResult { wire_status })
 }
 
 /// Compose the wire [`cannet_core::CanFrame`] for `request`. Shared by
 /// the single-frame path ([`transmit_frame_inner`]) and the scheduler's
 /// batched tick, so one place owns frame composition — and neither
-/// touches the trace until the wire has answered.
+/// touches the trace: the wire's echo is the row (ADR 0061).
 fn build_frame(
     request: &ipc::TransmitRequest,
     wire_channel: u8,
@@ -987,7 +892,7 @@ fn build_frame(
     let id =
         CanId::new(request.id, request.extended).map_err(|e| format!("invalid {mode} id: {e}"))?;
     // Best-effort wall-clock stamp: the wire restamps a carried frame,
-    // so this is what a refused `Tx ✗` row shows.
+    // and the echo's stamp is the one the trace shows.
     let timestamp_ns = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
@@ -1026,23 +931,6 @@ fn build_frame(
     };
 
     Ok(frame)
-}
-
-/// Append a refused send's `Tx ✗` row: `frame` as a `Tx`-direction row,
-/// stamped with the target `bus_id` so the trace shows it on the right
-/// bus even though no session carried it, and recorded in
-/// [`UndeliveredTx`]. Only a refused enqueue writes a row here — an
-/// accepted send's row is the echo the bus reports.
-fn append_refused_tx_row(
-    state: &AppState,
-    request: &ipc::TransmitRequest,
-    frame: &cannet_core::CanFrame,
-) {
-    let mut raw = RawTraceFrame::from(frame.clone());
-    raw.bus_id = Some(request.bus_id.clone());
-    if let Some(index) = state.trace_store.append(raw) {
-        state.undelivered_tx.mark(index);
-    }
 }
 
 /// Group `(destination, frame)` pairs into per-destination batches,
