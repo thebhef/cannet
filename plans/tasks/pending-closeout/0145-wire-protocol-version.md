@@ -315,3 +315,23 @@ One phase, one agent, in stack order:
   versions forward, consistently. Fix ordered onto the stack (queue § 2):
   regenerate with current tools, floors to match, one lock state across
   the packages, CI checks lock currency per package.
+
+- 2026-10-07 — **Fixed, branch `fix-python-toolchain`.** The upper pin
+  on `grpcio-tools` is gone; `libs/cannet-python-wire`,
+  `servers/cannet-local-sidecar` and `clients/cannet-python-client` all
+  re-locked to grpcio 1.84.0 / protobuf 7.36.2 / grpcio-tools 1.84.0
+  (wire's dev extra only), checked against the CPython 3.14 all three
+  `.python-version` files pin. `scripts/regen_proto.sh` re-ran against
+  the upgraded `grpcio-tools`; the regenerated `_pb2.py` /
+  `_pb2_grpc.py` version checks (`ValidateProtobufRuntimeVersion(7, 35,
+  1, ...)`, `GRPC_GENERATED_VERSION = '1.84.0'`) are what set the
+  wire's and the sidecar's new `grpcio>=1.84.0` / `protobuf>=7.35.1`
+  floors — read off the stubs, not asserted. `uv lock --check` passes
+  in all three packages; a `uv lock --check` step was added to each of
+  the three Python CI jobs, before `uv sync --frozen`, so a lock that
+  falls out of sync with its `pyproject.toml` fails there instead of
+  opaquely inside the sync. `python-can` did not move (4.6.1 in all
+  three locks, before and after) — the re-lock never touched it.
+  `plans/technology-inventory.md`'s `grpcio-tools` entry records the
+  rejection and the new rule. Landed together with the ruff 0.16
+  uplift (0136's 2026-10-07 post-completion note).
