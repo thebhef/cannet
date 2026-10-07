@@ -51,9 +51,10 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   fails CI instead of a fresh clone. Inventory rule rewritten. (0145
   § Status log, 2026-10-07.)
 - **The ruff 0.16 uplift** with the `[tool.ruff.lint] select` stanza —
-  "should get fixed." The owner's sentence broke off at "noqua and"; the
-  `noqa` and silent-teardown judgment calls await its end. (0136 § Status
-  log, 2026-10-07.)
+  "should get fixed"; "noqa is a smell" — a `noqa` survives only at a
+  genuine boundary with its reason stated, silent teardowns log at
+  DEBUG. (0136 § Post-completion notes, 2026-10-07.) In progress on
+  `fix-python-toolchain` with the item above.
 
   
 - manually captured: saving cache message is shown on exit even if we just reloaded the cache and closed the project, which seems completely unnecessary

@@ -289,6 +289,10 @@ builds the server for that lane. Nothing open against this task; awaiting owner 
 
 - 2026-10-07 — **Owner ruling (queue § 1, ruff locks aligned down):**
   "should get fixed" — the 0.16 uplift (with the `select` stanza) is
-  ordered onto the stack → queue § 2. The response broke off at "noqua
-  and"; the two judgment calls (the 50 deliberate `noqa`s, the 5 silent
-  teardown paths) wait for the rest of that sentence.
+  ordered onto the stack → queue § 2. The cut-off sentence, completed
+  the same day: "noqa is a smell" — the rest was disappointment with the
+  regression, nothing more. Applied as: the uplift fixes what has a real
+  fix; a `noqa` survives only at a genuine boundary (a catch-all at a
+  thread or driver edge, an import after a `sys.path` edit) and states
+  its reason; the five silent teardown paths log at DEBUG. Landing on
+  `fix-python-toolchain`, together with the grpcio/protobuf re-lock.
