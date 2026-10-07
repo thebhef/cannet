@@ -7,7 +7,16 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-(none)
+- **ruff rule set (fix-python-toolchain, f0faf9cb).** The branch pins
+  `[tool.ruff.lint] select = ["E4","E7","E9","F"]` — ruff's pre-0.16
+  default — under which 160 existing `noqa` directives suppress nothing
+  (`ruff check --select RUF100`: wire 12, sidecar 143, client 5). Ruff
+  0.16's own default (`--isolated`) finds wire 14 / sidecar 362 /
+  client 6, 356 of 382 auto-fixable, ~34 by hand. **A (recommended):**
+  adopt the 0.16 default, listed explicitly; dead `noqa`s go via
+  `RUF100`; ~1 h amend. **B:** keep the frozen set, add `RUF100`, delete
+  the 160 dead comments; ~15 min. Asked 2026-10-07; not a gate — rows 2–4
+  proceed. Detail: 0136 § Post-completion notes.
 
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
