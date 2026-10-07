@@ -20,7 +20,15 @@ beforeEach(() => mockInvoke.mockReset());
 afterEach(() => vi.restoreAllMocks());
 
 function req(over: Partial<BusErrorMarkerRequest> = {}): BusErrorMarkerRequest {
-  return { buses: ["b1"], fromSeconds: 0, toSeconds: 10, gapSeconds: 5, maxMarkers: 43, ...over };
+  return {
+    buses: ["b1"],
+    fromSeconds: 0,
+    toSeconds: 10,
+    gapSeconds: 5,
+    maxMarkers: 43,
+    errorsSeen: 0,
+    ...over,
+  };
 }
 
 /// One episode on `b1`, as the host serves it.
@@ -97,6 +105,27 @@ describe("useBusErrorMarkers", () => {
     // A changed window is a different request and does re-fetch.
     act(() => result.current.request(req({ toSeconds: 20 })));
     await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(2));
+  });
+
+  it("asks again for the same window once more errors have been seen", async () => {
+    mockInvoke.mockResolvedValue(reply([1]));
+    const { result } = renderHook(() => useBusErrorMarkers());
+
+    act(() => result.current.request(req({ errorsSeen: 3 })));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(1));
+
+    // The window is unmoved, but the bus has faulted since: the last
+    // complete answer no longer covers what the window holds.
+    act(() => result.current.request(req({ errorsSeen: 7 })));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(2));
+    // The count is the freshness token, not a query argument.
+    expect(mockInvoke).toHaveBeenLastCalledWith("bus_error_episodes_in_window", {
+      buses: ["b1"],
+      fromSeconds: 0,
+      toSeconds: 10,
+      gapSeconds: 5,
+      maxMarkers: 43,
+    });
   });
 
   it("keeps asking while the answer is incomplete (ADR 0049)", async () => {
