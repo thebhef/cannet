@@ -2,7 +2,7 @@
 
 > **Opened 2026-10-07** from the owner's reaction to the plot's new
 > calendar-time hover (`fix-cursor-chip-row` 8107af40), groomed the same
-> day. Both phases landed 2026-10-07; awaiting the owner's acceptance.
+> day. Phases 1–2 landed 2026-10-07; phase 3 (logger `{now}` per file) added 2026-10-08.
 
 ## Why
 
@@ -105,6 +105,27 @@ pattern-string API, megabytes of locale data for one format).
    ADR 0024 rule 4, CONTEXT.md (*date/time pattern*), README settings
    list.
 
+3. **`{now}` names the file, `{start}` names the capture (host +
+   frontend)** — Sonnet. Owner, 2026-10-08, on finding `{now}` frozen at
+   the trace start: "now should be per file, start should be when the
+   capture started — that's the behavior I had intuited from both
+   existing, so if they're the same today by design that's even more
+   confusing than I expected." Today `resolve_run_path` resolves the
+   file template once per run and every split reuses that base
+   (`split_path`), and the panel's preview re-asks the host only when
+   the template, project, name or capture start changes. Phase 3: each
+   file of a run — the first and every split — is the file template
+   resolved at its own creation (`{now}` = that instant; `{start}` = the
+   capture start, falling back to `{now}` as today when there is no
+   capture); a resolved name that already exists takes the next `-NNN`
+   suffix (today's collision rule, now the only reason a suffix
+   appears); the preview ticks (1 s) while the panel is open so `{now}`
+   reads as a clock. Tests: a roll with an injected clock names the next
+   file from the fresh instant; a template without `{now}` still
+   suffixes; the preview re-asks on the tick. Docs: `export_template.rs`
+   and `logger.rs` rustdoc, token help, README logger section, the
+   logger ADR if one states the run rule.
+
 Branch base: `fix-cursor-chip-row` (the hover this task re-formats);
 `doc-closeout-2` restacked on top. Frontend-only lanes plus the Rust
 lanes for phase 1 and 2's host halves.
@@ -122,6 +143,8 @@ lanes for phase 1 and 2's host halves.
 - [x] ADR written; ADR 0024 rule 4 amended; README, CONTEXT.md and the
       technology inventory current.
 - [x] Six-row CI table per phase.
+- [ ] Phase 3: every file of a run is named from its own creation
+      instant; `{start}` is the capture start; the preview ticks.
 
 ## Status
 
