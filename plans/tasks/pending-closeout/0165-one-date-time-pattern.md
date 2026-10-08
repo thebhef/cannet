@@ -2,7 +2,7 @@
 
 > **Opened 2026-10-07** from the owner's reaction to the plot's new
 > calendar-time hover (`fix-cursor-chip-row` 8107af40), groomed the same
-> day. In progress (phase 1 landed 2026-10-07).
+> day. Both phases landed 2026-10-07; awaiting the owner's acceptance.
 
 ## Why
 
@@ -111,17 +111,17 @@ lanes for phase 1 and 2's host halves.
 
 ## Exit criteria
 
-- [ ] Every site in the survey's "follows" rows renders the pattern
+- [x] Every site in the survey's "follows" rows renders the pattern
       from Settings; the export From / To fields are unchanged.
-- [ ] `{start:yyyy-MM-dd}` resolves; `{start:%Y-%m-%d}` reports an
+- [x] `{start:yyyy-MM-dd}` resolves; `{start:%Y-%m-%d}` reports an
       error in the preview and at write time; the bare token is still
       ISO basic.
-- [ ] The Rust and TypeScript formatters pass the same vector file.
-- [ ] An invalid pattern cannot be saved; the control previews the
+- [x] The Rust and TypeScript formatters pass the same vector file.
+- [x] An invalid pattern cannot be saved; the control previews the
       pattern live.
-- [ ] ADR written; ADR 0024 rule 4 amended; README, CONTEXT.md and the
+- [x] ADR written; ADR 0024 rule 4 amended; README, CONTEXT.md and the
       technology inventory current.
-- [ ] Six-row CI table per phase.
+- [x] Six-row CI table per phase.
 
 ## Status
 
@@ -147,3 +147,26 @@ lanes for phase 1 and 2's host halves.
   `formatDatePattern(pattern, {seconds, nanos}, offsetMinutes,
   timeZone?)` and phase 2 supplies the local offset itself (the negation
   of `getTimezoneOffset()` at that instant).
+
+- 2026-10-07 — **Phase 2 landed** (`task165-date-setting` fb08a95c, on
+  `task165-date-pattern`). `date_time_pattern` end to end: `settings.rs`
+  (default `yyyy-MM-dd HH:mm:ss`, validated on write through the new
+  `DatePattern::parse_display` — the display-mode sibling of `parse`
+  that accepts `zzz`, proven against the same `displayOnly` vectors
+  `parse` refuses), `settings_descriptor.rs` (General surface,
+  `Control::Custom`), `hostSettings.ts`; `DateTimePatternEditor.tsx`
+  previews *now* live (1 s tick), or the pattern's own error. The five
+  one-off formatters collapse into `format.ts::formatCalendarTime(seconds,
+  base, pattern)`, read via `useSetting` at each site (trace / By-ID /
+  event hovers, plot A/B chips and x-tick hovers, export extent labels,
+  logger grid start / end / modified, System Messages column — widened
+  to 11rem, milliseconds only when the pattern carries `S…` — and the
+  BLF channel-map modal's capture start, which now reads `—` for an
+  unset start instead of 1970). `exportRange.ts` From / To untouched.
+  Fixed a float64 nanosecond-precision bug in the new formatter (round
+  the millisecond product first). Docs: ADR 0024 rule 4 and ADR 0062 § 3
+  dated notes, README, CONTEXT.md (*Date/time pattern*). Scoped CI:
+  cargo-gui 1447, vitest 3872, clippy, fmt, rustdoc, build. Overseer's
+  exit-criteria walk: all six met (ticked above). FYI: the formatter
+  carries millisecond precision — a `SSSSSS…` pattern shows zeros past
+  the third digit, matching the float seconds every caller holds.

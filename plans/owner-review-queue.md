@@ -75,6 +75,12 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
 ## 4. Finished tasks awaiting acceptance
 
+- **Task 165 — One Date/Time Pattern** — `task165-date-pattern`
+  c0550d9d + `task165-date-setting` fb08a95c (ADR 0062; ADR 0024 rule 4
+  amended). Settings → General → *Date/time pattern*; the `{start:…}`
+  tokens now take TR35 (`{start:yyyy-MM-dd}`), a saved strftime template
+  reports an error until retyped. Exit criteria walked 2026-10-07, all
+  met (0165 § Status).
 - **Task 163 — python-can Usage Review and a Fault Model That Holds** —
   `task163-fault-measure` … `task163-recovery-docs` (12 branches, ADR 0060,
   ADR 0039 amended). Owner's bench failed 2026-10-05 (PEAK bus-off reset
