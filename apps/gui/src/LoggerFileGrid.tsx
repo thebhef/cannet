@@ -28,6 +28,7 @@ import {
   type LogFileColumnState,
 } from "./logFileColumns";
 import { reorderColumn, resizeColumn, toggleColumn, visibleColumns } from "./traceColumns";
+import { useSetting } from "./hostSettings";
 import { useGridview } from "./useGridview";
 import { useHostMirror } from "./useHostMirror";
 import { LOG_FILES_SCANNED_EVENT, LOGGERS_CHANGED_EVENT } from "./logger";
@@ -87,6 +88,7 @@ export function LoggerFileGrid({
   onColumnsChange,
 }: LoggerFileGridProps) {
   const revealMenuLabel = useMemo(() => revealLabel(isMacPlatform(), isWindowsPlatform()), []);
+  const datePattern = useSetting("date_time_pattern");
   // The column layout, through the shared column layer — resize,
   // reorder and show/hide are its gestures, not this view's. Changes
   // are reported upward for the panel to persist; the mount value never
@@ -335,12 +337,12 @@ export function LoggerFileGrid({
                     return fileCell(node.kind === "file" ? formatLogSize(node.sizeBytes) : "", className);
                   case "start":
                     return traceCell(
-                      node.kind === "file" ? formatLogTimestamp(node.startNs) : "",
+                      node.kind === "file" ? formatLogTimestamp(node.startNs, datePattern) : "",
                       className,
                     );
                   case "end":
                     return traceCell(
-                      node.kind === "file" ? formatLogTimestamp(node.endNs) : "",
+                      node.kind === "file" ? formatLogTimestamp(node.endNs, datePattern) : "",
                       className,
                     );
                   case "duration":
@@ -356,7 +358,7 @@ export function LoggerFileGrid({
                     );
                   case "modified":
                     return fileCell(
-                      node.kind === "file" ? formatLogModified(node.modifiedMs) : "",
+                      node.kind === "file" ? formatLogModified(node.modifiedMs, datePattern) : "",
                       className,
                     );
                   case "action":

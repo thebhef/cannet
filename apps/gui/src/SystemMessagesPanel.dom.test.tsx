@@ -28,7 +28,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 const { SystemMessagesPanel } = await import("./SystemMessagesPanel");
-const { hydrateSettings } = await import("./hostSettings");
+const { defaultSettings, hydrateSettings } = await import("./hostSettings");
+const { formatCalendarTime } = await import("./format");
 const { pickCombobox, comboboxValue } = await import("./comboboxTestKit");
 const { SystemLogContext } = await import("./systemLogContext");
 type SystemMessage = import("./types").SystemMessage;
@@ -212,5 +213,49 @@ describe("SystemMessagesPanel toolbar buttons", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(clearSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SystemMessagesPanel timestamp column (ADR 0062)", () => {
+  const msg = (tsMs: number): SystemMessage => ({
+    seq: 0,
+    source: "sidecar",
+    level: "info",
+    message: "boom",
+    ts_ms: tsMs,
+  });
+  const TS_MS = 1_700_000_000_000 + 789;
+
+  it("renders the default date_time_pattern", async () => {
+    stored = {};
+    await hydrateSettings();
+    render(
+      <SystemLogContext.Provider
+        value={{ messages: [msg(TS_MS)], unread: 0, clear: () => {}, markRead: () => {} }}
+      >
+        <SystemMessagesPanel {...panelProps().props} />
+      </SystemLogContext.Provider>,
+    );
+    const pattern = defaultSettings().date_time_pattern;
+    const seconds = TS_MS / 1000;
+    expect(
+      screen.getByText(formatCalendarTime(seconds, seconds, pattern)!),
+    ).toBeInTheDocument();
+  });
+
+  it("follows a custom date_time_pattern, milliseconds only with a fraction field", async () => {
+    stored = { date_time_pattern: "HH:mm:ss.SSS" };
+    await hydrateSettings();
+    render(
+      <SystemLogContext.Provider
+        value={{ messages: [msg(TS_MS)], unread: 0, clear: () => {}, markRead: () => {} }}
+      >
+        <SystemMessagesPanel {...panelProps().props} />
+      </SystemLogContext.Provider>,
+    );
+    const seconds = TS_MS / 1000;
+    expect(
+      screen.getByText(formatCalendarTime(seconds, seconds, "HH:mm:ss.SSS")!),
+    ).toBeInTheDocument();
   });
 });

@@ -523,7 +523,7 @@ import { PLOT_AREA_DND_MIME, type PlotAreaConfig } from "./plotPanelConfig";
 import { parsePlotAreaDragData } from "./plotAreaTransfer";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
-import { formatLocalTimestamp } from "./format";
+import { formatCalendarTime } from "./format";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
@@ -8792,6 +8792,7 @@ describe("where the A/B cursors put their timestamps", () => {
     /// marks; the tick values sit below it from 466.
     const CHIP_Y = 452;
     const TICK_Y = 472;
+    const PATTERN = "yyyy-MM-dd HH:mm:ss";
 
     async function bottomAxis(trace: Partial<TraceData>): Promise<FakeUPlotInst> {
       await opsPerArea([{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }], trace);
@@ -8811,13 +8812,24 @@ describe("where the A/B cursors put their timestamps", () => {
     it("names cursor A's chip and a tick label as local date and time", async () => {
       const u = await bottomAxis({ sessionStartSeconds: WALL });
       // A sits at 0.5 s → 50 px; the tick at 1 s → 100 px.
-      await waitFor(() => expect(hover(u, 50, CHIP_Y)).toBe(formatLocalTimestamp(WALL + 0.5, WALL)));
-      expect(hover(u, 100, TICK_Y)).toBe(formatLocalTimestamp(WALL + 1, WALL));
+      await waitFor(() =>
+        expect(hover(u, 50, CHIP_Y)).toBe(formatCalendarTime(WALL + 0.5, WALL, PATTERN)),
+      );
+      expect(hover(u, 100, TICK_Y)).toBe(formatCalendarTime(WALL + 1, WALL, PATTERN));
       // Off every target, and out of the chart, it says nothing.
       expect(hover(u, 50, 200)).toBeNull();
       expect(hover(u, 50, CHIP_Y)).not.toBeNull();
       fireEvent.mouseLeave(u.root);
       expect(u.root.getAttribute("title")).toBeNull();
+    });
+
+    it("follows a custom date_time_pattern setting", async () => {
+      const u = await bottomAxis({ sessionStartSeconds: WALL });
+      const custom = "dd/MM/yyyy HH:mm:ss";
+      await act(async () => {
+        await updateSettings({ date_time_pattern: custom });
+      });
+      expect(hover(u, 100, TICK_Y)).toBe(formatCalendarTime(WALL + 1, WALL, custom));
     });
 
     it("says nothing without a wall-clock origin", async () => {

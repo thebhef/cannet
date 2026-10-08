@@ -440,6 +440,21 @@ The set of gridview rows (and pattern chips) the click gestures — and
 Shift+Up/Down from the keyboard — have selected; what a drag carries
 and a bulk action acts on. Ephemeral — never persisted.
 
+**Date/time pattern**:
+The `date_time_pattern` setting (ADR 0062): one TR35 pattern every
+displayed calendar time renders through — a trace or By-ID row's
+time-cell hover, the plot's A/B chip and x-tick hovers, the export
+extent labels, the logger grid's start / end / modified columns, the
+System Messages column, and the BLF channel-map modal's capture
+start. Default `yyyy-MM-dd HH:mm:ss`, local time; the settings panel
+previews it live as it is typed, and a pattern that fails to parse is
+refused with its own error, the stored value unchanged.
+_Avoid_: confusing it with the export / logger name template's own
+`{start:…}` / `{now:…}` tokens — a separate pattern, typed per
+template, for file names rather than display — or with the export
+range's From / To fields, which take and echo their own fixed
+wall-clock/offset syntax rather than this setting's pattern.
+
 ### Plot view
 
 **Plot panel**:

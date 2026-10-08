@@ -1842,6 +1842,18 @@ writes, so the panel teaches the file.
   ids overlap as numbers, so it is the only thing saying which frame a
   row is. Display columns only: the transmit and filter editors still
   take hex.
+- **Date/time pattern.** **`date_time_pattern`** is a TR35 pattern
+  (`yyyy-MM-dd HH:mm:ss` default, local time) that every displayed
+  calendar time renders through — the trace, By-ID and event time-cell
+  hovers, the plot's A/B chips and x-tick hovers, the export extent
+  labels, the logger grid's start / end / modified columns, the System
+  Messages column, and the BLF channel-map modal's capture start. The
+  control shows a live preview of *now* as you type, and a pattern that
+  doesn't parse is refused with its own error, the stored value
+  unchanged. File names (the export / logger name template's
+  `{start:…}` / `{now:…}` tokens), logs, and the export range's
+  editable From / To fields keep their own formats — this setting is
+  display only.
 - **Bus-error episode gap.** **Trace → Bus-error episode gap**
   (`bus_error_episode_gap_s`, in seconds) is how long a bus must fall
   silent before the Events panel starts a new bus-error episode: 5 by

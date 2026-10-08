@@ -89,9 +89,9 @@ import { ColorChip } from "./ColorChip";
 import { Icon } from "./Icon";
 import { DisclosureToggle } from "./DisclosureToggle";
 import {
+  formatCalendarTime,
   formatDurationSeconds,
   formatElapsed,
-  formatLocalTimestamp,
   fracDigitsForSpan,
   hasWallClockAnchor,
 } from "./format";
@@ -1592,10 +1592,11 @@ export function timeHoverTooltip(
   cssY: number,
   boxes: readonly TimeHitBox[],
   baseSeconds: number | null,
+  pattern: string,
 ): string | null {
   if (baseSeconds === null || !hasWallClockAnchor(baseSeconds)) return null;
   const hit = boxes.find((b) => inTimeHitBox(b, cssX, cssY));
-  return hit ? formatLocalTimestamp(baseSeconds + hit.t, baseSeconds) : null;
+  return hit ? formatCalendarTime(baseSeconds + hit.t, baseSeconds, pattern) : null;
 }
 
 /**
@@ -4157,7 +4158,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                       }),
                     ]
                   : chips;
-              setTitle(timeHoverTooltip(x, y, boxes, base));
+              setTitle(timeHoverTooltip(x, y, boxes, base, hostSettings().date_time_pattern));
             }, listen);
             el.addEventListener("mouseleave", () => setTitle(null), listen);
           },
