@@ -992,4 +992,7 @@ call has no argument at all.
    on one build — host +6.5 MB mean, flush_ms mean 2.95 → 3.39, timing family unmoved.
 8. **Met** (135-1/2/3): README math section, rustdoc, CONTEXT.md terms.
 
-Awaiting owner acceptance; the criterion-2 deviation is the one open ruling.
+Awaiting owner acceptance. The criterion-2 deviation was ruled on 2026-10-02: the
+owner rejected the session-scoped rationale ("Recompute isn't free … should just be
+values + fingerprint like any other signal"); task 159 persists math pyramids. Nothing
+else is open against this task.
