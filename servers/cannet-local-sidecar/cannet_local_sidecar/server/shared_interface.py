@@ -499,7 +499,7 @@ class _SharedInterface:
             _log.debug("reopening %s with %r", self._channel_id, new_config)
             try:
                 self._replace_channel(old)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001 - driver can raise anything on reopen; reported, not raised
                 msg = f"reconfigure {self._channel_id} failed: {e}"
                 _log.warning(msg)
                 # The traceback goes to the debug sink only: the warning
@@ -566,8 +566,8 @@ class _SharedInterface:
     def _close_swapped(old: drv.OpenChannel) -> None:
         try:
             old.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001 - closing; nothing left to do but log
+            _log.debug("close of swapped-out channel failed: %s", e)
 
     # ---- internal --------------------------------------------------------
 
@@ -629,8 +629,8 @@ class _SharedInterface:
         if ch is not None:
             try:
                 ch.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001 - closing; nothing left to do but log
+                _log.debug("close of %s failed: %s", self._channel_id, e)
 
     def _reset_state_baseline_locked(self) -> None:
         """Pin the controller-state baseline to ACTIVE / 0 / 0 so the
@@ -731,7 +731,7 @@ class _SharedInterface:
                     continue
                 try:
                     frame = ch.recv(timeout_s=0.25)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:  # noqa: BLE001 - driver edge; branches on cause below, always logged
                     if self._stop.is_set():
                         # The close we were told about (``_stop`` is set
                         # before the channel is closed) landed while this
@@ -830,7 +830,7 @@ class _SharedInterface:
                         )
                     read = errors = echoes = 0
                     next_stats_ns = now_ns + _RX_STATS_INTERVAL_NS
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - thread must survive the process; logged and reported
             _log.warning("rx pump for %s crashed: %s", cid, e)
             self._broadcast_error(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}")
 
@@ -892,7 +892,7 @@ class _SharedInterface:
                 )
                 for ob in self._outbox_snapshot():
                     ob.put(env)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - thread must survive the process; logged and reported
             _log.warning("pack pump for %s crashed: %s", cid, e)
             self._broadcast_error(
                 pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}"
@@ -991,7 +991,7 @@ class _SharedInterface:
                     return
             try:
                 self._replace_channel(None)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001 - retried next pass, the poll's own cadence
                 _log.debug("reopen of %s failed again: %s", cid, e)
                 self._publish_state(
                     pb.CONTROLLER_STATE_UNAVAILABLE, 0, 0, None, now_s=now_s
@@ -1039,7 +1039,7 @@ class _SharedInterface:
         )
         try:
             st = ch.state()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - controller read failing is unreachable, not silence
             # A controller read that fails is not silence: the
             # driver could not reach the interface. Publishing that
             # is the whole point of the poll — swallowing it left an
@@ -1118,7 +1118,7 @@ class _SharedInterface:
             in_place = bool(flush()) if callable(flush) else False
             if not in_place and not self._reopen(ch):
                 return
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - flush/reopen can fail for any reason; retried next pass
             if not self._flush_failing:
                 self._flush_failing = True
                 _log.warning("transmit-queue flush of %s failed: %s", cid, e)
@@ -1161,7 +1161,7 @@ class _SharedInterface:
                 # channel gets its own count.
                 self._bus_off_since = None
                 return
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - reset/reopen can fail for any reason; retried next pass
             # Retried on the next pass -- the poll's own cadence, never a
             # tighter loop: a reset that raised, on the next pass that
             # still reads bus-off; an open that raised after the close,
@@ -1265,7 +1265,7 @@ class _SharedInterface:
         try:
             if not self._reopen(ch):
                 return True
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - reopen can fail for any reason; retried next pass
             if not self._queue_full_reopen_failing:
                 self._queue_full_reopen_failing = True
                 _log.warning("queue-full reopen of %s failed: %s", cid, e)
@@ -1301,7 +1301,7 @@ class _SharedInterface:
         """
         try:
             wraps = int(ch.timer_wraps())
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - no `timer_wraps` is the backend's answer, not a fault
             return
         while self._reported_timer_wraps < wraps:
             self._reported_timer_wraps += 1
@@ -1329,7 +1329,7 @@ class _SharedInterface:
         """
         try:
             return ch.rx_loss()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - backend's rx_loss can fail; the last known count stands
             with self._lock:
                 return self._last_rx_overruns
 

@@ -164,7 +164,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                         _log.info("client log envelope: %s", env.log.message)
             except grpc.RpcError as e:  # noqa: PERF203 - one-off
                 _log.info("session ended: %s", e)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001 - thread must survive the process; reported to the client
                 _log.exception("session pump crashed")
                 outbox.put(
                     _log_envelope(pb.LOG_LEVEL_ERROR, f"session pump crashed: {e}")
@@ -318,7 +318,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         )
         try:
             self._registry.reconfigure(cid, config)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - driver can raise anything on reopen; reported to the client
             _log.debug("ConfigureBus %s -> failed", cid, exc_info=True)
             outbox.put(
                 _log_envelope(

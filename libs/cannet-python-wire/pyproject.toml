@@ -9,18 +9,21 @@ license = { text = "MIT" }
 # Hard runtime deps, and only what the moved code actually touches.
 # `grpcio` / `protobuf` are what the checked-in gencode in `_proto/`
 # needs to load and to serve; `python-can` is the other end of the
-# `Message` <-> `Frame` seam. protobuf 6.x and grpcio 1.80+ are the
-# floor — earlier protobuf can't load gencode emitted by current
-# `grpc_tools.protoc`. No upper bounds: we want `uv lock --upgrade` to
-# pull current wheels.
+# `Message` <-> `Frame` seam. grpcio 1.84.0+ / protobuf 7.35.1+ are the
+# floor — the exact versions the checked-in gencode's own
+# `ValidateProtobufRuntimeVersion` / `GRPC_GENERATED_VERSION` checks
+# demand, read off the stubs after regenerating with the locked
+# `grpcio-tools`. No upper bounds: `uv lock --upgrade` pulls current
+# wheels, and all three Python packages are re-locked together so they
+# land on the same grpcio/protobuf/grpcio-tools/ruff version set.
 #
 # `python-can` is imported defensively in `python_can.py` for the same
 # reason the sidecar's driver does it: the sidecar must boot on a
 # machine with no vendor SDK. Declaring it here lets `uv sync` install
 # it as part of the default flow.
 dependencies = [
-    "grpcio>=1.80",
-    "protobuf>=6",
+    "grpcio>=1.84.0",
+    "protobuf>=7.35.1",
     "python-can>=4.6",
 ]
 
@@ -29,27 +32,30 @@ dependencies = [
 # and running the tests. Kept out of the default install so the runtime
 # venv stays small, matching the sidecar's and the client's split.
 #
-# ruff is held below 0.16 to match its two consumers. 0.16 *changes*
-# its default selection rather than only widening it, so the same file
-# lints differently on either side of the boundary — which is exactly
-# what a shared package must not do.
+# ruff's default rule selection changes between 0.15 and 0.16 (E4xx
+# out; I/UP/S/PL/RUF in) rather than only widening — the same file
+# would lint differently on either side of that boundary, which is
+# exactly what a shared package must not do. `[tool.ruff.lint] select`
+# below makes the previously-implicit 0.15 default (`E4`, `E7`, `E9`,
+# `F`) explicit and identical across all three packages, so the 0.16
+# uplift changes the version, not the enforced rule set.
 #
-# grpcio-tools is pinned to 1.80.x, and that pin is load-bearing:
-# **the generator must never be newer than the oldest runtime any
-# consumer locks.** Every generated stub records the toolchain that
-# emitted it and refuses to import under an older one — `_pb2.py`
-# against the protobuf runtime, `_pb2_grpc.py` against grpcio — and the
-# sidecar locks grpcio 1.80.0 / protobuf 6.33.6. Regenerating with 1.81
-# gives stubs demanding grpcio >= 1.81.1; with 1.82+, protobuf 7.x
-# gencode. Either import-errors in the sidecar and the client the
-# moment someone re-runs `scripts/regen_proto.sh`. Lifting this pin
-# means moving every consumer's grpcio and protobuf in the same change.
-# The CI gencode-drift check (ADR 0059) is what makes that a build
-# failure rather than a latent one.
+# grpcio-tools has no upper pin: **the generator and the runtimes it
+# regenerates for are re-locked together, in the same change, every
+# time.** Every generated stub records the toolchain that emitted it
+# and refuses to import under an older runtime — `_pb2.py` against the
+# protobuf runtime, `_pb2_grpc.py` against grpcio — so a grpcio-tools
+# bump always comes with the matching `grpcio`/`protobuf` floor bump
+# above, a `scripts/regen_proto.sh` run, and a re-lock of the sidecar
+# and the client to the same versions in the same change. The CI
+# `uv lock --check` step in each of the three Python jobs (added with
+# this change) is what makes a lock that fell behind a build failure
+# rather than a latent one; the gencode-drift check (ADR 0059) remains
+# the guard against a stale `_proto/` tree.
 dev = [
-    "grpcio-tools>=1.80,<1.81",
+    "grpcio-tools>=1.80",
     "pytest>=9",
-    "ruff>=0.9,<0.16",
+    "ruff>=0.16,<0.17",
     "mypy>=1.15",
 ]
 
@@ -66,6 +72,13 @@ packages = ["cannet_python_wire"]
 [tool.ruff]
 target-version = "py313"
 extend-exclude = ["cannet_python_wire/_proto"]
+
+# The rule set ruff 0.15 was enforcing by default, made explicit so a
+# ruff version bump never silently changes what's enforced (see the
+# `dev` extra comment above). Identical across all three Python
+# packages.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.13"
