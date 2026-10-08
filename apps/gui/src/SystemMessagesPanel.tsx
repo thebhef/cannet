@@ -10,7 +10,7 @@ import type { IDockviewPanelProps } from "dockview";
 
 import { Combobox } from "./Combobox";
 import { ChipButton } from "./ChipButton";
-import { hostSettings, subscribeSettings, updateSettings } from "./hostSettings";
+import { hostSettings, subscribeSettings, updateSettings, useSetting } from "./hostSettings";
 import {
   applySystemLogFilter,
   distinctSources,
@@ -57,6 +57,7 @@ interface PanelParams {
 export function SystemMessagesPanel(props: IDockviewPanelProps) {
   const { messages, clear, markRead } = useSystemLog();
   const { api } = props;
+  const datePattern = useSetting("date_time_pattern");
 
   const params = props.params as PanelParams | undefined;
   const [filterSource, setFilterSource] = useState(params?.filterSource ?? "");
@@ -149,13 +150,16 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
   // virtualizer swaps rows or the tail advances.
   const messageChars = useMemo(() => longestMessageChars(filtered), [filtered]);
 
-  const copyEntry = useCallback((m: SystemMessage) => {
-    void navigator.clipboard?.writeText(formatLogLine(m));
-  }, []);
+  const copyEntry = useCallback(
+    (m: SystemMessage) => {
+      void navigator.clipboard?.writeText(formatLogLine(m, datePattern));
+    },
+    [datePattern],
+  );
   const copyAll = useCallback(() => {
-    const text = filtered.map(formatLogLine).join("\n");
+    const text = filtered.map((m) => formatLogLine(m, datePattern)).join("\n");
     void navigator.clipboard?.writeText(text);
-  }, [filtered]);
+  }, [filtered, datePattern]);
 
   return (
     <div className="system-messages-panel">
@@ -222,7 +226,7 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
                 title="double-click to copy this entry"
               >
                 <span className="system-messages-ts">
-                  {formatLogTimestamp(m.ts_ms)}
+                  {formatLogTimestamp(m.ts_ms, datePattern)}
                 </span>
                 <span className="system-messages-source">{m.source}</span>
                 <span className="system-messages-level">{m.level}</span>

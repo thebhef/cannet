@@ -29,6 +29,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { ExportDialog } from "./ExportDialog";
+import { formatCalendarTime } from "./format";
+import { defaultSettings, updateSettings } from "./hostSettings";
 import { clearPlotWindow, publishPlotWindow } from "./plotWindow";
 import type { ExportRangeSelection } from "./exportRange";
 
@@ -309,5 +311,36 @@ describe("focus and dismissal", () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "Export…" }));
     expect(exported?.nameTemplate).toBe("{project}-{now}");
+  });
+});
+
+describe("the capture's start/end labels (ADR 0062)", () => {
+  afterEach(async () => {
+    // These two tests are the only ones in this file that touch the
+    // setting, so restore it rather than leaving a later test reading a
+    // pattern this describe block chose.
+    await updateSettings({ date_time_pattern: defaultSettings().date_time_pattern });
+  });
+
+  it("renders the default date_time_pattern", async () => {
+    await mounted();
+    const pattern = defaultSettings().date_time_pattern;
+    expect(screen.getByTestId("export-extent-start")).toHaveTextContent(
+      `start ${formatCalendarTime(START, START, pattern)}`,
+    );
+    expect(screen.getByTestId("export-extent-end")).toHaveTextContent(
+      `last message ${formatCalendarTime(START + DURATION, START, pattern)}`,
+    );
+  });
+
+  it("follows a custom date_time_pattern", async () => {
+    const custom = "dd/MM/yyyy HH:mm:ss";
+    await act(async () => {
+      await updateSettings({ date_time_pattern: custom });
+    });
+    await mounted();
+    expect(screen.getByTestId("export-extent-start")).toHaveTextContent(
+      `start ${formatCalendarTime(START, START, custom)}`,
+    );
   });
 });

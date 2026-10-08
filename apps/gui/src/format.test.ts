@@ -2,13 +2,13 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 
 import {
   formatBytes,
+  formatCalendarTime,
   formatCanIdHex,
   formatData,
   formatDurationSeconds,
   formatElapsed,
   formatFrameCount,
   formatId,
-  formatLocalTimestamp,
   formatSignalValue,
   formatTimestamp,
   fracDigitsForSpan,
@@ -212,9 +212,9 @@ describe("formatTimestamp", () => {
   });
 });
 
-describe("formatLocalTimestamp", () => {
+describe("formatCalendarTime", () => {
   // The rendered string is locale-dependent (the tooltip follows the
-  // user's locale, so these must not pin one), but the *instant* it
+  // machine's own zone, so these must not pin one), but the *instant* it
   // names is not: the same epoch second in two zones has to come out as
   // two different wall clocks, nine hours apart and across a date
   // boundary. Node re-reads `TZ` on assignment, so each test stubs the
@@ -226,41 +226,34 @@ describe("formatLocalTimestamp", () => {
   // 2023-11-14T22:13:20.123Z — 07:13 the next morning in Tokyo.
   const instant = 1_700_000_000.123;
   const anchor = 1_699_999_000;
+  const DEFAULT_PATTERN = "yyyy-MM-dd HH:mm:ss";
 
-  it("renders the instant in the machine's own time zone", () => {
-    // Matched loosely on purpose: the hour is 22 or 10 PM and the date
-    // order is 11/14 or 14/11 depending on the locale, but the minute,
-    // second, millisecond and calendar day are the locale's business
-    // either way.
+  it("renders the default pattern at the machine's own offset", () => {
     vi.stubEnv("TZ", "UTC");
-    const utc = formatLocalTimestamp(instant, anchor);
-    expect(utc).toMatch(/\b(22|10):13:20\.123\b/);
-    expect(utc).toContain("2023");
-    expect(utc).toContain("14");
+    expect(formatCalendarTime(instant, anchor, DEFAULT_PATTERN)).toBe("2023-11-14 22:13:20");
 
     vi.stubEnv("TZ", "Asia/Tokyo");
-    const tokyo = formatLocalTimestamp(instant, anchor);
-    expect(tokyo).toMatch(/\b0?7:13:20\.123\b/);
-    // Nine hours on: the next calendar day, 15 rather than 14.
-    expect(tokyo).toContain("15");
-    expect(tokyo).not.toContain("14");
+    // Nine hours on: the next calendar day, 07:13.
+    expect(formatCalendarTime(instant, anchor, DEFAULT_PATTERN)).toBe("2023-11-15 07:13:20");
   });
 
-  it("names the zone, so the reading is unambiguous", () => {
+  it("renders a custom pattern, zone name included", () => {
     vi.stubEnv("TZ", "Asia/Tokyo");
-    expect(formatLocalTimestamp(instant, anchor)).toContain("GMT+9");
+    expect(formatCalendarTime(instant, anchor, "dd/MM/yyyy HH:mm:ss.SSS zzz")).toBe(
+      "15/11/2023 07:13:20.123 GMT+9",
+    );
   });
 
   it("has no instant to name when the session has no wall-clock origin", () => {
-    expect(formatLocalTimestamp(instant, null)).toBeNull();
+    expect(formatCalendarTime(instant, null, DEFAULT_PATTERN)).toBeNull();
   });
 
   it("has no instant to name when the origin is a capture-relative timeline", () => {
     // A BLF with no measurement start time anchors the session on its
     // first frame, whose timestamps run from the file's own zero — a
     // handful of seconds, never a wall clock.
-    expect(formatLocalTimestamp(0.05, 0.05)).toBeNull();
-    expect(formatLocalTimestamp(3600, 0)).toBeNull();
+    expect(formatCalendarTime(0.05, 0.05, DEFAULT_PATTERN)).toBeNull();
+    expect(formatCalendarTime(3600, 0, DEFAULT_PATTERN)).toBeNull();
   });
 });
 

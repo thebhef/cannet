@@ -36,7 +36,8 @@ import {
   type RangeEvent,
   type RangePreset,
 } from "./exportRange";
-import { formatLocalTimestamp, hasWallClockAnchor } from "./format";
+import { formatCalendarTime, hasWallClockAnchor } from "./format";
+import { useSetting } from "./hostSettings";
 import { plotWindow } from "./plotWindow";
 import { saveCaptureExtension, type SaveFormat } from "./saveFormat";
 import { TemplateTokenHelp } from "./templateTokenHelp";
@@ -107,6 +108,7 @@ export function ExportDialog({
   } | null>(null);
   const [range, setRange] = useState<ExportRangeSelection>(WHOLE_CAPTURE);
   const [rangeError, setRangeError] = useState<string | null>(null);
+  const datePattern = useSetting("date_time_pattern");
 
   const origin = extent.sessionStartSeconds;
   const anchored = hasWallClockAnchor(origin);
@@ -313,10 +315,10 @@ export function ExportDialog({
     ? "HH:MM[:SS] (wall clock, prefixed 3d for the capture's fourth day) or seconds from the capture's start; empty = the capture's own end"
     : "Seconds from the capture's start; empty = the capture's own end";
   const startLabel = anchored
-    ? `start ${formatLocalTimestamp(origin ?? 0, origin) ?? ""}`
+    ? `start ${formatCalendarTime(origin ?? 0, origin, datePattern) ?? ""}`
     : "trace start (t = 0)";
   const endLabel = anchored
-    ? `last message ${formatLocalTimestamp(extent.liveEdgeSeconds ?? 0, origin) ?? ""}`
+    ? `last message ${formatCalendarTime(extent.liveEdgeSeconds ?? 0, origin, datePattern) ?? ""}`
     : `last message t = ${Math.round(duration)} s`;
 
   return (

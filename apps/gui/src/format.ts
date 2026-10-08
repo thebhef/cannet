@@ -1,3 +1,4 @@
+import { formatDatePattern, parseDatePattern, type Instant } from "./datePattern";
 import type { TraceFrameRecord } from "./types";
 
 /// Zero-padded hex digits for a CAN id — 8 digits for an extended
@@ -175,35 +176,51 @@ export function hasWallClockAnchor(base: number | null): boolean {
   return base !== null && base >= WALL_CLOCK_FLOOR_SECONDS;
 }
 
-/// `fractionalSecondDigits` is an ES2021 Intl option (supported by every
-/// engine this app runs in); the project's TypeScript lib is ES2020, so
-/// it is spelled out here rather than widening the lib for one call.
-const LOCAL_TIMESTAMP_OPTIONS: Intl.DateTimeFormatOptions & {
-  fractionalSecondDigits?: 1 | 2 | 3;
-} = {
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  fractionalSecondDigits: 3,
-  timeZoneName: "short",
-};
-
-/// The absolute instant a frame happened, as local date and time —
-/// the second reading of the timestamp `formatTimestamp` renders as
-/// elapsed time. Locale-aware, with the zone named so the reading is
-/// unambiguous, and milliseconds kept (the instant of a single message
-/// is the point of asking).
+/// The absolute instant a frame happened, rendered per the user's
+/// `date_time_pattern` setting (ADR 0062) — the second reading of the
+/// timestamp `formatTimestamp` renders as elapsed time (ADR 0024 rule
+/// 4). The one calendar-time formatter every display site shares: the
+/// trace, By-ID and event time-cell hovers, the plot's A/B chips and
+/// x-tick hovers, the export extent labels, the logger grid's start /
+/// end / modified columns, the System Messages column, and the BLF
+/// channel-map modal's capture start.
 ///
-/// `seconds` is the frame's own timestamp and `base` the session origin;
-/// `null` when the origin is not a wall clock (`hasWallClockAnchor`),
-/// because there is then no absolute instant to name and reading the
-/// capture-relative seconds as an epoch would invent one.
-export function formatLocalTimestamp(seconds: number, base: number | null): string | null {
+/// `seconds` is the instant to render (Unix-epoch seconds) and `base`
+/// the session origin that says whether there is a wall clock to name
+/// at all (`hasWallClockAnchor`); `null` when there is not, because
+/// reading capture-relative seconds as an epoch would invent an
+/// instant. A caller with no session concept of its own — a file's own
+/// timestamp, which is always a real instant — passes `seconds` for
+/// both.
+///
+/// `pattern` is rendered at the local offset *of that instant*
+/// (`getTimezoneOffset`'s negation), not of "now" — a historical
+/// timestamp keeps its own DST rule. `pure`: callers read the setting
+/// themselves (`useSetting("date_time_pattern")`, or `hostSettings()`
+/// outside render) so tests stay pure.
+export function formatCalendarTime(
+  seconds: number,
+  base: number | null,
+  pattern: string,
+): string | null {
   if (!hasWallClockAnchor(base)) return null;
-  return new Date(Math.round(seconds * 1000)).toLocaleString(undefined, LOCAL_TIMESTAMP_OPTIONS);
+  // Via milliseconds, not a direct `(seconds - whole) * 1e9`: at a
+  // ~1.7e9 epoch magnitude, float64 only carries the fractional second
+  // to about a microsecond, and subtracting first amplifies that into
+  // the low nanosecond digits (122999907 instead of 123000000 for
+  // ".123"). Rounding the millisecond product first is what the old
+  // `toLocaleString`-based formatter did too, and matches every
+  // caller's own precision: a trace frame's `timestamp_seconds` is
+  // this same kind of float.
+  const ms = Math.round(seconds * 1000);
+  const whole = Math.floor(ms / 1000);
+  const instant: Instant = { seconds: whole, nanos: (ms - whole * 1000) * 1e6 };
+  const offsetMinutes = -new Date(seconds * 1000).getTimezoneOffset();
+  const parsed = parseDatePattern(pattern);
+  // The host validates `date_time_pattern` on write (ADR 0062), so a
+  // stored pattern never fails to parse here; defensive only.
+  if ("error" in parsed) return null;
+  return formatDatePattern(parsed, instant, offsetMinutes);
 }
 
 /// A per-id message rate (frames/second) for the by-id "msg/s" column.

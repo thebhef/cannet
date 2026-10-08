@@ -590,6 +590,19 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "date_time_pattern",
+        backing: Backing::Field,
+        label: "Date/time pattern",
+        help: "A TR35 pattern (yyyy-MM-dd HH:mm:ss default) — every calendar time the \
+               app displays renders through it. File names and logs keep their own \
+               sortable format regardless.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Custom {
+            renderer: "date-time-pattern",
+        },
+    },
+    Spec {
         key: "dbc_auto_reload",
         backing: Backing::Field,
         label: "Reload a DBC when it changes on disk",
