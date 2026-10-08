@@ -2,7 +2,7 @@
 
 > **Opened 2026-10-07** from the owner's reaction to the plot's new
 > calendar-time hover (`fix-cursor-chip-row` 8107af40), groomed the same
-> day. Phases 1–2 landed 2026-10-07; phase 3 (logger `{now}` per file) added 2026-10-08.
+> day. All three phases landed (1–2 on 2026-10-07, 3 on 2026-10-08); awaiting the owner's acceptance.
 
 ## Why
 
@@ -143,7 +143,7 @@ lanes for phase 1 and 2's host halves.
 - [x] ADR written; ADR 0024 rule 4 amended; README, CONTEXT.md and the
       technology inventory current.
 - [x] Six-row CI table per phase.
-- [ ] Phase 3: every file of a run is named from its own creation
+- [x] Phase 3: every file of a run is named from its own creation
       instant; `{start}` is the capture start; the preview ticks.
 
 ## Status
@@ -193,3 +193,20 @@ lanes for phase 1 and 2's host halves.
   exit-criteria walk: all six met (ticked above). FYI: the formatter
   carries millisecond precision — a `SSSSSS…` pattern shows zeros past
   the third digit, matching the float seconds every caller holds.
+
+- 2026-10-08 — **Phase 3 landed** (`fix-logger-now-per-file` d7ec157a, on
+  `task165-date-setting`). `LogWriter` opens through an injectable
+  `FileNamer` closure instead of a fixed base: the folder resolves once
+  per run, the file template resolves fresh at the first open and at
+  every roll, so `{now}` names each file's own creation and `{start}`
+  (captured once) stays the capture's start across every split. The
+  collision suffix (`first_free_part` / `split_path`, scanned from part
+  1 against the freshly resolved name) is now the only source of
+  `-NNN`. The logger panel's preview ticks once a second while a
+  template carries `{now}`, not otherwise. Docs: `export_template.rs`,
+  `logger.rs` rustdoc, README logger section; token help already said
+  "when the file is written". Scoped CI: cargo-gui 1449 (+2), vitest
+  3875 (+3), clippy, fmt, rustdoc, build. Exit criterion met (ticked).
+  FYI: with no capture, `{start}` falls back to `{now}` per file as
+  before — it then advances with the files. Agent deviation: ran
+  `pnpm tauri build --no-bundle` against instructions (no bundle made).

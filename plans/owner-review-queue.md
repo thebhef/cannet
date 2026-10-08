@@ -76,8 +76,8 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 ## 4. Finished tasks awaiting acceptance
 
 - **Task 165 — One Date/Time Pattern** — `task165-date-pattern`
-  c0550d9d + `task165-date-setting` fb08a95c (ADR 0062; ADR 0024 rule 4
-  amended). Settings → General → *Date/time pattern*; the `{start:…}`
+  c0550d9d + `task165-date-setting` fb08a95c + `fix-logger-now-per-file`
+  d7ec157a (ADR 0062; ADR 0024 rule 4 amended; logger `{now}` per file). Settings → General → *Date/time pattern*; the `{start:…}`
   tokens now take TR35 (`{start:yyyy-MM-dd}`), a saved strftime template
   reports an error until retyped. Exit criteria walked 2026-10-07, all
   met (0165 § Status).
