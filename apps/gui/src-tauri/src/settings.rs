@@ -106,6 +106,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("plot_y_axis_mode", Scope::UserOverridable),
     ("dbc_auto_reload", Scope::UserOverridable),
     ("can_id_format", Scope::UserOverridable),
+    ("date_time_pattern", Scope::UserOverridable),
     ("trace_columns", Scope::UserOverridable),
     ("signal_columns", Scope::UserOverridable),
     ("float_exponential_below", Scope::UserOverridable),
@@ -422,6 +423,28 @@ pub struct Settings {
     /// The `s:` / `x:` prefix is not part of the choice and survives
     /// both: 11-bit and 29-bit ids overlap numerically.
     pub can_id_format: String,
+    /// The TR35 pattern (ADR 0062) every displayed calendar time renders
+    /// through — the trace, By-ID and event time-cell hovers, the
+    /// plot's A/B chips and x-tick hovers, the export extent labels, the
+    /// logger grid's start / end / modified columns, the System
+    /// Messages column, and the BLF channel-map modal's capture start.
+    /// Default `yyyy-MM-dd HH:mm:ss`, local time.
+    ///
+    /// The export / logger name template's own `{start:…}` / `{now:…}`
+    /// tokens (`export_template.rs`) are a *separate* pattern, typed
+    /// per template — this setting is display only, never a file name.
+    /// The From / To fields of the export range are separate again:
+    /// they are an editable input that round-trips
+    /// (`exportRange.ts::formatRangeBound`), not a display.
+    ///
+    /// Validated on write like [`Settings::can_id_format`], through
+    /// [`crate::date_pattern::DatePattern::parse_display`] — which,
+    /// unlike the file-name parser, accepts the zone name `zzz`
+    /// (ADR 0062 §3): a refused pattern is reported with its own error
+    /// and the stored value survives. The frontend renders it through
+    /// `formatDatePattern`/`formatCalendarTime`; the host never formats
+    /// a calendar time with it itself.
+    pub date_time_pattern: String,
     /// The column layout a **newly created** trace or by-ID table opens
     /// with — order, width, and which columns start hidden. `None` (the
     /// default) means the built-in layout, so a file that predates this
@@ -738,6 +761,7 @@ impl Default for Settings {
             plot_y_axis_mode: "unified".to_string(),
             dbc_auto_reload: true,
             can_id_format: "hex".to_string(),
+            date_time_pattern: "yyyy-MM-dd HH:mm:ss".to_string(),
             trace_columns: None,
             signal_columns: None,
             float_exponential_below: 1e-4,
@@ -870,6 +894,7 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
     refuse_unknown_options(&mut settings, &mut complaints);
     refuse_below_minimums(&mut settings, &mut complaints);
     refuse_bad_float_format(&mut settings, &mut complaints);
+    refuse_bad_date_pattern(&mut settings, &mut complaints);
     (settings, complaints)
 }
 
@@ -906,6 +931,25 @@ fn refuse_bad_float_format(settings: &mut Settings, complaints: &mut Vec<String>
             settings.float_mantissa_decimals, d.float_mantissa_decimals
         ));
         settings.float_mantissa_decimals = d.float_mantissa_decimals;
+    }
+}
+
+/// The `date_time_pattern` half of [`validate`]: refused with the
+/// pattern's own error (ADR 0062), reported by the field's name like
+/// every other refusal here — not a second-guessed repair, the same
+/// refuse-report-default treatment as a hand-edited `can_id_format`
+/// nothing recognizes. Validated through
+/// [`crate::date_pattern::DatePattern::parse_display`], which — unlike
+/// the file-name parser [`crate::export_template`] uses — accepts the
+/// display-only zone name `zzz`.
+fn refuse_bad_date_pattern(settings: &mut Settings, complaints: &mut Vec<String>) {
+    if let Err(e) = crate::date_pattern::DatePattern::parse_display(&settings.date_time_pattern) {
+        let default = Settings::default().date_time_pattern;
+        complaints.push(format!(
+            "date_time_pattern \"{}\" {e}; ignoring it — using the default ({default})",
+            settings.date_time_pattern
+        ));
+        settings.date_time_pattern = default;
     }
 }
 
@@ -1404,6 +1448,7 @@ mod tests {
             plot_y_axis_mode: "individual".to_string(),
             dbc_auto_reload: false,
             can_id_format: "decimal".to_string(),
+            date_time_pattern: "dd/MM/yyyy HH:mm".to_string(),
             trace_columns: Some(vec![ColumnLayout {
                 key: "data".to_string(),
                 width: 400,
@@ -1531,6 +1576,54 @@ mod tests {
         });
         assert!(accepted.float_exponential_below.abs() < f64::EPSILON);
         assert!(accepted.float_exponential_from.abs() < f64::EPSILON);
+        assert!(complaints.is_empty(), "{complaints:?}");
+    }
+
+    #[test]
+    fn a_valid_date_time_pattern_is_accepted() {
+        let (accepted, complaints) = validate(Settings {
+            date_time_pattern: "dd/MM/yyyy".to_string(),
+            ..Settings::default()
+        });
+        assert_eq!(accepted.date_time_pattern, "dd/MM/yyyy");
+        assert!(complaints.is_empty(), "{complaints:?}");
+    }
+
+    #[test]
+    fn an_invalid_date_time_pattern_is_refused_with_its_own_error() {
+        // The pattern's own error (ADR 0062), not a generic "invalid
+        // value" — and the stored value survives (ADR 0034's
+        // hand-editable contract), resolving to the default like every
+        // other refused field.
+        let (accepted, complaints) = validate(Settings {
+            date_time_pattern: "%Y-%m-%d".to_string(),
+            ..Settings::default()
+        });
+        assert_eq!(
+            accepted.date_time_pattern,
+            Settings::default().date_time_pattern
+        );
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(
+            complaints[0].contains("date_time_pattern"),
+            "{complaints:?}"
+        );
+        assert!(
+            complaints[0].contains("\"Y\" is not a date pattern field"),
+            "{complaints:?}"
+        );
+    }
+
+    #[test]
+    fn a_date_time_pattern_accepts_the_zone_name_the_file_name_parser_refuses() {
+        // The display/file-name split `date_pattern.rs`'s own tests
+        // prove at the parser level, exercised here through the
+        // setting's validation path: `zzz` is a legal display pattern.
+        let (accepted, complaints) = validate(Settings {
+            date_time_pattern: "HH:mm zzz".to_string(),
+            ..Settings::default()
+        });
+        assert_eq!(accepted.date_time_pattern, "HH:mm zzz");
         assert!(complaints.is_empty(), "{complaints:?}");
     }
 

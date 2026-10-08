@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   findLogNode,
@@ -102,13 +102,25 @@ describe("isSelectableLogNode", () => {
 });
 
 describe("formatLogTimestamp", () => {
-  it("renders a UTC ISO 8601 string at second resolution", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("renders the date_time_pattern setting, local time", () => {
+    vi.stubEnv("TZ", "UTC");
     // 1_700_000_000 s since epoch = 2023-11-14T22:13:20Z.
-    expect(formatLogTimestamp(1_700_000_000_000_000_000)).toBe("2023-11-14T22:13:20Z");
+    expect(formatLogTimestamp(1_700_000_000_000_000_000, "yyyy-MM-dd HH:mm:ss")).toBe(
+      "2023-11-14 22:13:20",
+    );
+  });
+
+  it("renders a custom pattern", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(formatLogTimestamp(1_700_000_000_000_000_000, "dd/MM/yyyy")).toBe("14/11/2023");
   });
 
   it("renders empty for an unknown timestamp (the writing row)", () => {
-    expect(formatLogTimestamp(null)).toBe("");
+    expect(formatLogTimestamp(null, "yyyy-MM-dd HH:mm:ss")).toBe("");
   });
 });
 
@@ -138,9 +150,14 @@ describe("formatLogSize", () => {
 });
 
 describe("formatLogModified", () => {
-  it("renders a local date and minute", () => {
-    const d = new Date(2026, 8, 4, 17, 22);
-    expect(formatLogModified(d.getTime())).toBe("2026-09-04 17:22");
+  it("renders the date_time_pattern setting, local time", () => {
+    const d = new Date(2026, 8, 4, 17, 22, 5);
+    expect(formatLogModified(d.getTime(), "yyyy-MM-dd HH:mm:ss")).toBe("2026-09-04 17:22:05");
+  });
+
+  it("renders a custom pattern", () => {
+    const d = new Date(2026, 8, 4, 17, 22, 5);
+    expect(formatLogModified(d.getTime(), "dd/MM/yyyy")).toBe("04/09/2026");
   });
 });
 

@@ -10,11 +10,32 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import css from "./index.css?raw";
 
+// A stand-in for the host's `settings.json`, for the one test that
+// exercises `date_time_pattern` — the modal itself calls no host
+// command of its own.
+let stored: Record<string, unknown> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+    if (cmd === "get_settings") return { ...stored };
+    if (cmd === "set_settings") {
+      stored = { ...(args?.settings as Record<string, unknown>) };
+      return { ...stored };
+    }
+    return null;
+  }),
+}));
+
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
+import { formatCalendarTime } from "./format";
+import { hydrateSettings, updateSettings } from "./hostSettings";
 import type { BlfScanResult, Bus } from "./types";
 import type { Note } from "./notes";
 
-afterEach(cleanup);
+afterEach(async () => {
+  cleanup();
+  stored = {};
+  await hydrateSettings();
+});
 
 const noop = () => {};
 
@@ -126,6 +147,40 @@ describe("BlfChannelMapModal", () => {
       />,
     );
     expect(screen.getByText(/2024/)).toBeInTheDocument();
+  });
+
+  it("follows a custom date_time_pattern setting (ADR 0062)", async () => {
+    const custom = "dd/MM/yyyy HH:mm:ss";
+    await updateSettings({ date_time_pattern: custom });
+    const startUnixNanos = Date.UTC(2024, 5, 15, 12, 0, 0) * 1_000_000;
+    render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.blf"
+        scan={scanFixture({ start_unix_nanos: startUnixNanos })}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+      />,
+    );
+    const startSeconds = startUnixNanos / 1e9;
+    expect(
+      screen.getByText(formatCalendarTime(startSeconds, startSeconds, custom)!, {
+        exact: false,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows nothing for an unset (all-zero) start time", () => {
+    render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.blf"
+        scan={scanFixture({ start_unix_nanos: 0 })}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+      />,
+    );
+    expect(screen.getByText("started —", { exact: false })).toBeInTheDocument();
   });
 
   it("hides the markers section when the scan found none", () => {
