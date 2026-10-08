@@ -7,7 +7,9 @@ appends nothing, and only a refused enqueue writes a row of its own;
 amended (2026-10-04) — PEAK's driver-side auto-reset rejected, and a
 controller refusing sends in silence is reopened; amended (2026-10-06)
 — a reopen closes before it opens and a failed open is retried, and a
-send refused bus-off arms the reset; partly superseded
+send refused bus-off arms the reset; amended (2026-10-07) by
+[ADR 0061](0061-only-the-wire-writes-data.md) — a refused send writes no
+row either; partly superseded
 (2026-10-04) by [ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md)
 — a full transmit queue that accepts nothing is flushed whatever is
 received, missed periods are counted, and the state poll runs every
@@ -45,7 +47,9 @@ The transmit scheduler's periodic-emission semantics, in four rules:
    any future route-up path that forgets the hint. On resume the grid
    re-anchors at the resume instant plus the same stagger offset.
    Manual single-shot sends while disconnected still prepare; the
-   enqueue is refused, and the send leaves a `Tx ✗` row saying so.
+   enqueue is refused, and the send leaves no row (*amended
+   2026-10-07*, [ADR 0061](0061-only-the-wire-writes-data.md);
+   it once left a `Tx ✗` row).
 
    **A bus whose peer reports its interface `unavailable` has no live
    route**, and parks with the rest. Unplugging an adapter leaves the
@@ -139,6 +143,11 @@ manufacturing a violation the sender never put on a wire.
   *replacement* for parking does not apply to it: the mark is
   host-side state read at fetch time, not a field on the stored frame,
   so no exporter and no file format ever sees it.
+
+  *Withdrawn 2026-10-07 ([ADR 0061](0061-only-the-wire-writes-data.md)):*
+  the row the mark sat on was itself an intent recorded as data. A refused send now writes no row
+  at all; its refusal is reported as a count or as the caller's wire
+  status.
 - **Event-only park resume (no probe).** A missed hint from a future
   route-up path would strand parked messages forever; the probe bounds
   that failure to ~1 s of latency.
@@ -292,9 +301,20 @@ channel accepted the frame, an answer that fails only when the channel
 is closed — so a dead bus showed healthy outgoing traffic in the trace,
 the plots, the per-message counts, the logger and saved captures. Only
 the enqueue-refused row remains (§ Rejected alternatives, the mark),
-because there the queue did say no.
+because there the queue did say no. *(Withdrawn 2026-10-07 — see the
+amendment below.)*
 
 `fps.tx` is therefore the rate the bus carried our frames at, and a
 backend that cannot echo shows no `Tx` rows. On PEAK the echo alone is
 not enough — see the bus-off amendment's last paragraph: an echo from
 an error-passive transmitter is withheld.
+
+## Amendment (2026-10-07) — a refused send writes no row either
+
+The enqueue-refused `Tx ✗` row is withdrawn by
+[ADR 0061](0061-only-the-wire-writes-data.md): only the wire writes
+data, and an enqueue answer is an intent whichever way it went. A manual send onto a bus no session
+carries, or one the session will not take, appends nothing; the caller
+gets the refusal as its wire status. A periodic batch a session has gone
+away under is dropped, and the next tick parks it (rule 3). The trace
+store now takes no row from any transmit intent.

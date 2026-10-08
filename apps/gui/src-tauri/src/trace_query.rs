@@ -28,14 +28,6 @@ use crate::ipc::{
 use crate::signal_snapshot;
 use crate::trace_store::{self, RawTraceFrame, TraceStore};
 
-/// Whether this row describes a transmit no wire took, as the marker
-/// the trace view renders. Only `Tx` rows can carry it, so an `Rx` row
-/// never pays for the lookup.
-fn tx_delivery(state: &AppState, record: &TraceFrameRecord) -> Option<&'static str> {
-    (record.direction == "Tx" && state.undelivered_tx.contains(record.index))
-        .then_some("undelivered")
-}
-
 /// Pull a `[start, end)` slice out of the trace store and decode each
 /// frame against the loaded DBCs (first that matches wins). Shared by
 /// the `fetch_trace_range` command (trace-view scrolling) and the
@@ -64,7 +56,6 @@ pub(crate) fn collect_trace_records(
             let decoded = decode_against(&model, &frame);
             let mut record = TraceFrameRecord::from_raw(absolute_index, &frame, decoded);
             record.violation = violations.get(&absolute_index).copied();
-            record.tx_delivery = tx_delivery(state, &record);
             record
         })
         .collect()
@@ -548,7 +539,6 @@ pub(crate) fn fetch_by_id_page_inner(
                     &row.frame,
                     decoded,
                 );
-                record.tx_delivery = tx_delivery(state, &record);
                 if let Some(p) = filter {
                     if !record_matches(p, &record, &ctx) {
                         return None;
@@ -1095,7 +1085,6 @@ fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<Trace
             let mut record =
                 TraceFrameRecord::from_raw(index, &frame, decode_against(&model, &frame));
             record.violation = state.verifier.violation_at(index);
-            record.tx_delivery = tx_delivery(state, &record);
             record
         })
         .collect()

@@ -506,8 +506,7 @@ impl TraceStore {
     /// bus scoping, filter predicate or per-bus database can reach.
     ///
     /// Returns the appended frame's absolute index — what the
-    /// ingest-time verifier keys its violation records on, and what a
-    /// refused send's `Tx ✗` mark is recorded against.
+    /// ingest-time verifier keys its violation records on.
     pub fn append(&self, frame: RawTraceFrame) -> Option<u64> {
         let now = Instant::now();
         let ts_ns = frame.timestamp_ns;
