@@ -266,8 +266,18 @@ now also fire on wire's paths, because a change there can break either.
    and diffs `_proto` as the drift guard.
 7. **Met** (phases 1+2): top-level README names the package; package README + `examples/rest_bus_sim.py` carry the stafl-style usage.
 
-**Caveat carried in the review queue**: the TLS handshake has no end-to-end coverage (both debug servers are plaintext).
-Awaiting owner acceptance.
+**TLS caveat ruled 2026-10-02**: "should add the integration test with TLS. Absorb into an appropriate existing PR."
+Scope: the `debug vbus` / `debug replay` subcommands take a directory to load or mint the generated identity into
+(`ServerIdentity::load_or_generate`), so a test can run a TLS-terminating debug server on loopback; the Python suite
+gains a fixture that reads the fingerprint from that directory's certificate and two tests — the pinned connect
+subscribes and receives over TLS, a wrong pin is refused at the handshake. Absorbed into `fix-fit-data-test-bound`
+(the stack's test-only fix branch, no PR yet). **Landed 2026-10-02**, amended commit `1fd2136f`
+(pre-amend `97babef0`): `debug replay` / `debug vbus` take `--tls-dir`, serving TLS on loopback with
+the identity minted there and no token (the proxy's gate is its own opt-in); `tests/test_tls_handshake.py`
+pins a session that subscribes and exchanges a frame over TLS, and a wrong pin refused with `PinMismatch`
+before any channel opens. Hand-built `ServerTarget`, since `trust.resolve` answers loopback plaintext by
+design. Server tests, clippy, fmt, rustdoc clean; client lane 147 passed, both new tests ran; CI already
+builds the server for that lane. Nothing open against this task; awaiting owner acceptance.
 
 ## Post-completion notes
 
@@ -276,3 +286,55 @@ Awaiting owner acceptance.
   sidecar-touching change) scrubbed during the wire-extraction round;
   the bitrate gap it pointed at stays tracked in `plans/backlog.md`
   itself.
+
+- 2026-10-07 — **Owner ruling (queue § 1, ruff locks aligned down):**
+  "should get fixed" — the 0.16 uplift (with the `select` stanza) is
+  ordered onto the stack → queue § 2. The cut-off sentence, completed
+  the same day: "noqa is a smell" — the rest was disappointment with the
+  regression, nothing more. Applied as: the uplift fixes what has a real
+  fix; a `noqa` survives only at a genuine boundary (a catch-all at a
+  thread or driver edge, an import after a `sys.path` edit) and states
+  its reason; the five silent teardown paths log at DEBUG. Landing on
+  `fix-python-toolchain`, together with the grpcio/protobuf re-lock.
+
+- 2026-10-07 — **Fixed, branch `fix-python-toolchain`.** Ruff 0.16.10
+  locked in all three packages, with an explicit
+  `[tool.ruff.lint] select = ["E4", "E7", "E9", "F"]` — the rule set
+  0.15's default was enforcing — identical across
+  `libs/cannet-python-wire`, `servers/cannet-local-sidecar` and
+  `clients/cannet-python-client`, so the uplift changes the version,
+  not what's enforced: `ruff check` + `ruff format --check` clean in
+  all three with no behaviour change forced by the bump.
+
+  **noqa ledger**, audited against the ruling's own boundary test
+  (catch-all at a thread/driver/process edge, or an import after a
+  deliberate `sys.path` edit): 42 `# noqa: BLE001` across the three
+  packages' own code (39 sidecar, 2 client, 1 wire) — every one sits at
+  a driver call into python-can/vendor SDKs, a worker-thread top, a
+  gRPC session top, or a process top-level handler, so all 42 survive,
+  but 25 were bare and now state why (the handful that were already
+  reasoned — `python_can.py`'s import guard,
+  `bus.py`/`session.py`'s client-side catches, a few sidecar sites —
+  were left alone). `N802`/`N815` (vendor struct/field/method names) and
+  the test suites' `E402`-after-`_ensure_on_path()` pattern are the same
+  shape of boundary and were already self-evidently reasoned (the
+  function name states why); left as-is rather than repeating identical
+  text on ~100 near-duplicate import lines.
+
+  **The five silent teardown paths** (found as `S110`/`S112` in the
+  2026-09-16 note): `driver_python_can.py` `PythonCanChannel.close()`'s
+  `bus.shutdown()`, `shared_interface.py`'s `_close_swapped` and
+  `_close_locked`'s `ch.close()` (three bare `except: pass`), and
+  `driver_python_can.py`'s `_pcan_read_int`/`_pcan_read_str` (two bare
+  `except: continue`, probing optional PCAN-Basic parameters). All five
+  now `_log.debug(...)` the exception before continuing exactly as
+  before — teardown and a tried-next-candidate probe still can't raise,
+  but neither disappears silently anymore.
+
+  Full suites green: sidecar 372 passed (one
+  `test_burst_over_cap_splits_into_multiple_envelopes` timing flake
+  under full-suite load, reproduced clean in isolation and on a
+  full-suite rerun — unrelated to this change, nothing here touches
+  `pump_batching.py` or `outbox.py`); wire 18 passed; client 151 passed
+  (plus 1 platform skip), against a debug `cannet-server` built for the
+  run. `mypy` clean in all three.
