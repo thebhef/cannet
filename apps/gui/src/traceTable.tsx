@@ -4,10 +4,10 @@ import type { ReactNode } from "react";
 import type { FuzzyWinner, SignalRecord, TraceFrameRecord } from "./types";
 import { type BusLookup, type ColumnKey, busDisplayName } from "./traceColumns";
 import {
+  formatCalendarTime,
   formatData,
   formatId,
   formatKind,
-  formatLocalTimestamp,
   formatMsgRate,
   formatTimestamp,
   hasWallClockAnchor,
@@ -126,6 +126,7 @@ export function TraceTimeCell({
   className,
   seconds,
   base,
+  pattern,
   children,
 }: {
   className: string;
@@ -134,6 +135,9 @@ export function TraceTimeCell({
   seconds: number | null;
   /// The session origin (`TraceHandle.baseTimestampSeconds`).
   base: number | null;
+  /// The `date_time_pattern` setting (ADR 0062) the tooltip renders
+  /// through.
+  pattern: string;
   /// The cell's rendered text — `cellContent`'s `time` output, so the
   /// column keeps one renderer.
   children: ReactNode;
@@ -143,7 +147,10 @@ export function TraceTimeCell({
   return (
     <span
       className={className}
-      title={(hovered && seconds !== null ? formatLocalTimestamp(seconds, base) : null) ?? undefined}
+      title={
+        (hovered && seconds !== null ? formatCalendarTime(seconds, base, pattern) : null) ??
+        undefined
+      }
       onMouseEnter={anchored ? () => setHovered(true) : undefined}
       onMouseLeave={anchored ? () => setHovered(false) : undefined}
     >
