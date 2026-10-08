@@ -51,3 +51,19 @@ day).
 ## Extensions
 
 11. Extension — include signals: allow extensions to read/write signals, messages, events.
+
+## Logger
+
+12. Owner, 2026-10-08: "in the logger, the 'now' format time seems to
+    always be the trace start time; it doesn't advance." Two places
+    behave that way, by code: (a) the panel's **preview** resolves
+    `{now}` as the host's wall clock at request time and is re-asked
+    only when the template, project, logger name or capture start
+    changes (`LoggerPanel.tsx:111-128`) — so after a capture starts it
+    shows that instant until something else changes; (b) a **run's**
+    `{now}` is resolved once in `resolve_run_path` (`logger.rs:629-658`,
+    "`{now}` names the run") and every split file reuses that base
+    (`split_path`), so a logger that starts with the capture names all
+    its files with the trace start. Wanted behaviour to decide: preview
+    ticks like the date/time pattern control; `{now}` re-resolved per
+    split file (then `{start}` names the run, `{now}` the file).
