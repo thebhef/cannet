@@ -3083,8 +3083,15 @@ The panel is the export dialog's controls, standing still:
 | **Max size** | megabytes, default 500 — the size at which the file is closed and the next one opened. |
 
 `{logger}` is a fifth token, available only inside a logger: the logger's
-own name, slugified. Its `{now}` is the moment logging *started*, not the
-moment the panel repainted, so every file of one run shares it.
+own name, slugified. Unlike an export, where `{now}` is the moment of
+that one save, a logger's `{now}` names **each file's own creation** — the
+run's first file and every later split resolve it fresh, against the
+instant that file opens — while `{start}` stays the capture's wall-clock
+start on every file of the run. A template with no `{now}` at all
+resolves to the same name every time, so a split still needs the suffix
+rule below. The **Preview** ticks once a second while the panel is open
+and a template holds `{now}`, so it reads as a clock rather than a
+snapshot from whenever it last resolved.
 
 **A logger writes Vector BLF**, and the panel says so by having no
 format control at all: a select with one choice asks a question that has
@@ -3101,11 +3108,14 @@ flag, the enabled flag **is saved with the project**: logging writes
 locally and puts nothing on a bus, so a project left with a logger
 enabled starts logging again the next time it connects.
 
-**Reaching the size cap closes the file and opens the next**, with
-`-002`, `-003`… appended to the last path segment before its extension
-(`bench.blf` → `bench-002.blf`). A run that starts where a file already
-sits takes the next suffix the same way, so a second run never
-overwrites the first.
+**Reaching the size cap closes the file and opens the next**, resolved
+the same way the first file was — fresh, against that moment. A name
+already sitting on disk (because the File template repeated, or has no
+`{now}` to begin with) takes the next suffix, `-002`, `-003`… appended to
+the last path segment before its extension (`bench.blf` →
+`bench-002.blf`), rather than being overwritten — the same rule whether
+it is the run's very first file colliding with an earlier run's, or a
+split colliding with the name it just resolved to.
 
 **The panel lists the folder's files**, recursively — a subdirectory the
 File template made (e.g. a per-start `{start}\{now}` layout) shows as a

@@ -457,7 +457,7 @@ pub async fn list_logger_files(app: AppHandle, folder: String) -> Vec<LogFileNod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::logger::LogWriter;
+    use crate::logger::{fixed_namer, LogWriter};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
@@ -478,7 +478,8 @@ mod tests {
     /// pair — built through [`LogWriter`] rather than a hand-rolled
     /// writer, so the fixture is exactly what a logger produces.
     fn write_test_blf(path: &Path, frames: &[(u64, u32)]) {
-        let mut writer = LogWriter::open(path.to_path_buf(), u64::MAX, vec!["b".into()]).unwrap();
+        let mut writer =
+            LogWriter::open(fixed_namer(path.to_path_buf()), u64::MAX, vec!["b".into()]).unwrap();
         let raw: Vec<_> = frames.iter().map(|&(ts, id)| frame(ts, id)).collect();
         writer.write(&raw).unwrap();
         writer.finish().unwrap();
