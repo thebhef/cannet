@@ -104,8 +104,24 @@ export function LoggerPanel(props: IDockviewPanelProps) {
   const folder = logger?.folder ?? "";
   const file = logger?.file ?? "";
 
+  // Owner ruling (2026-10-08): `{now}` names each file
+  // of a run at its own creation, so a preview holding one has to keep
+  // reading as a clock, not a snapshot taken when the panel opened or
+  // last edited — the tick `DateTimePatternEditor` uses for the same
+  // reason. Bounded: one interval per mounted panel, and none at all
+  // when neither template carries the token, so a logger with no
+  // `{now}` issues no extra IPC.
+  const hasNowToken = folder.includes("{now") || file.includes("{now");
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!hasNowToken) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [hasNowToken]);
+
   // Both previews are the host's, re-asked whenever a template, the
-  // logger's name, or the capture's start changes.
+  // logger's name, or the capture's start changes — and once a second
+  // while a template carries `{now}` (`tick`, above).
   const [folderPreview, setFolderPreview] = useState<TemplatePreview>(NO_PREVIEW);
   const [filePreview, setFilePreview] = useState<TemplatePreview>(NO_PREVIEW);
   useEffect(() => {
@@ -126,7 +142,7 @@ export function LoggerPanel(props: IDockviewPanelProps) {
     return () => {
       live = false;
     };
-  }, [folder, file, project, name, startSeconds]);
+  }, [folder, file, project, name, startSeconds, tick]);
 
   const patch = useCallback(
     (fields: Partial<LoggerElement>) => update(elementId, { kind: "logger", ...fields }),
