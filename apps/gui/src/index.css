@@ -5684,7 +5684,7 @@ button.color-chip {
   width: max(
     100%,
     calc(
-      7rem + 8rem + 4rem + 3 * 0.5rem + 2 * 0.5rem +
+      11rem + 8rem + 4rem + 3 * 0.5rem + 2 * 0.5rem +
         var(--system-messages-message-chars, 0) * 1ch
     )
   );
@@ -5693,8 +5693,11 @@ button.color-chip {
 .system-messages-row {
   display: grid;
   /* The message track takes at least its own text: a bare `1fr` sized it
-     to the leftover panel width, which is what truncated a long line. */
-  grid-template-columns: 7rem 8rem 4rem minmax(max-content, 1fr);
+     to the leftover panel width, which is what truncated a long line. The
+     timestamp track is widened for the `date_time_pattern` setting's
+     default (`yyyy-MM-dd HH:mm:ss`, ADR 0062) — wider than the old fixed
+     `HH:mm:ss.SSS`. */
+  grid-template-columns: 11rem 8rem 4rem minmax(max-content, 1fr);
   gap: 0.5rem;
   padding: 0 0.5rem;
   align-items: center;
@@ -6485,6 +6488,22 @@ button.color-chip {
 .column-default-row button:disabled {
   color: var(--text-dim);
   cursor: default;
+}
+/* Settings → Date/time pattern (ADR 0062): the text box plus the live
+   preview of now, in the error color when the typed pattern doesn't
+   parse. */
+.date-time-pattern {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.date-time-pattern-preview {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+.date-time-pattern-error {
+  color: var(--danger-text-muted);
+  font-size: 0.72rem;
 }
 /* Settings → Units: a gridview (ADR 0044) of dimension branches over
    unit rows, each carrying its matched strings and the two scopes those

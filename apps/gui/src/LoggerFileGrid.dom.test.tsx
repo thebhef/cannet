@@ -12,6 +12,8 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import css from "./index.css?raw";
+import { formatCalendarTime } from "./format";
+import { defaultSettings, hydrateSettings, updateSettings } from "./hostSettings";
 import { isMacPlatform, isWindowsPlatform } from "./keybindings";
 import { LOG_FILE_COLUMN_DEFS } from "./logFileColumns";
 import { revealLabel, type LogFileNode } from "./logFileGrid";
@@ -147,14 +149,43 @@ describe("LoggerFileGrid", () => {
   });
 
   it("lists a file with its columns formatted from what the host sent", async () => {
-    listing.value = [FILE];
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
-    const row = await screen.findByText("a.blf");
-    const cells = row.closest(".logger-file-row") as HTMLElement;
-    expect(within(cells).getByText("1.0 MB")).toBeInTheDocument();
-    expect(within(cells).getByText("42")).toBeInTheDocument();
-    // 1_700_000_000 s epoch = 2023-11-14T22:13:20Z.
-    expect(within(cells).getByText("2023-11-14T22:13:20Z")).toBeInTheDocument();
+    // The start/end columns render through the `date_time_pattern`
+    // setting (ADR 0062), local time — pin the zone so the assertion
+    // doesn't depend on the machine running the suite.
+    vi.stubEnv("TZ", "UTC");
+    try {
+      listing.value = [FILE];
+      render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+      const row = await screen.findByText("a.blf");
+      const cells = row.closest(".logger-file-row") as HTMLElement;
+      expect(within(cells).getByText("1.0 MB")).toBeInTheDocument();
+      expect(within(cells).getByText("42")).toBeInTheDocument();
+      // 1_700_000_000 s epoch = 2023-11-14T22:13:20Z, the default
+      // pattern (`yyyy-MM-dd HH:mm:ss`).
+      expect(within(cells).getByText("2023-11-14 22:13:20")).toBeInTheDocument();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("follows a custom date_time_pattern setting", async () => {
+    vi.stubEnv("TZ", "UTC");
+    try {
+      await hydrateSettings();
+      const custom = "dd/MM/yyyy HH:mm:ss";
+      await updateSettings({ date_time_pattern: custom });
+      listing.value = [FILE];
+      render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+      const row = await screen.findByText("a.blf");
+      const cells = row.closest(".logger-file-row") as HTMLElement;
+      const startSeconds = FILE.startNs! / 1e9;
+      expect(
+        within(cells).getByText(formatCalendarTime(startSeconds, startSeconds, custom)!),
+      ).toBeInTheDocument();
+    } finally {
+      await updateSettings({ date_time_pattern: defaultSettings().date_time_pattern });
+      vi.unstubAllEnvs();
+    }
   });
 
   it("uses the shared gridview header, and dragging its handle resizes the tracks", async () => {

@@ -33,7 +33,7 @@ import {
   xTickLabelBoxes,
   type TileLabel,
 } from "./PlotArea";
-import { formatLocalTimestamp } from "./format";
+import { formatCalendarTime } from "./format";
 import { enumSegments, mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
 import { applySampleMarkerFilter, showPointsToUplot } from "./plotPoints";
@@ -1471,26 +1471,31 @@ describe("drawTimeCursorChips", () => {
 describe("timeHoverTooltip", () => {
   /// 2023-11-14T22:06:40Z — a wall-clock session origin.
   const BASE = 1_699_999_600;
+  const PATTERN = "yyyy-MM-dd HH:mm:ss";
   const chip = { t: 3.25, left: 100, top: 210, width: 50, height: 17 };
   const tick = { t: 10, left: 300, top: 242, width: 30, height: 19 };
 
   it("names a cursor chip's time as calendar time", () => {
-    expect(timeHoverTooltip(120, 215, [chip, tick], BASE)).toBe(formatLocalTimestamp(BASE + 3.25, BASE));
+    expect(timeHoverTooltip(120, 215, [chip, tick], BASE, PATTERN)).toBe(
+      formatCalendarTime(BASE + 3.25, BASE, PATTERN),
+    );
   });
 
   it("names a tick label's split as calendar time", () => {
-    expect(timeHoverTooltip(315, 250, [chip, tick], BASE)).toBe(formatLocalTimestamp(BASE + 10, BASE));
+    expect(timeHoverTooltip(315, 250, [chip, tick], BASE, PATTERN)).toBe(
+      formatCalendarTime(BASE + 10, BASE, PATTERN),
+    );
   });
 
   it("says nothing between targets", () => {
-    expect(timeHoverTooltip(200, 215, [chip, tick], BASE)).toBeNull();
-    expect(timeHoverTooltip(120, 230, [chip, tick], BASE)).toBeNull();
+    expect(timeHoverTooltip(200, 215, [chip, tick], BASE, PATTERN)).toBeNull();
+    expect(timeHoverTooltip(120, 230, [chip, tick], BASE, PATTERN)).toBeNull();
   });
 
   it("says nothing anywhere without a wall-clock origin", () => {
     for (const base of [null, 12.5]) {
-      expect(timeHoverTooltip(120, 215, [chip, tick], base)).toBeNull();
-      expect(timeHoverTooltip(315, 250, [chip, tick], base)).toBeNull();
+      expect(timeHoverTooltip(120, 215, [chip, tick], base, PATTERN)).toBeNull();
+      expect(timeHoverTooltip(315, 250, [chip, tick], base, PATTERN)).toBeNull();
     }
   });
 });
@@ -1515,8 +1520,11 @@ describe("xTickLabelBoxes", () => {
   it("hit-tests against the label the user sees", () => {
     const BASE = 1_699_999_600;
     const [b] = xTickLabelBoxes(u(), { splits: [5], labels: ["5.00"] }, { plotLeft: 52, plotBottom: 200, measure });
-    expect(timeHoverTooltip(102, b.top + 1, [b], BASE)).toBe(formatLocalTimestamp(BASE + 5, BASE));
-    expect(timeHoverTooltip(102 + 13, b.top + 1, [b], BASE)).toBeNull();
+    const pattern = "yyyy-MM-dd HH:mm:ss";
+    expect(timeHoverTooltip(102, b.top + 1, [b], BASE, pattern)).toBe(
+      formatCalendarTime(BASE + 5, BASE, pattern),
+    );
+    expect(timeHoverTooltip(102 + 13, b.top + 1, [b], BASE, pattern)).toBeNull();
   });
 });
 

@@ -22,8 +22,10 @@
 //! the subset is an error, never a literal. Literal text is quoted
 //! (`'T'`); `''` is an apostrophe, inside quotes or out. Names are
 //! English (the TR35 root locale). The zone name `zzz` is display-only —
-//! the host has no zone-name table — so it is refused here with that
-//! reason.
+//! the host has no zone-name table — so [`DatePattern::parse`] (file
+//! names) refuses it with that reason; [`DatePattern::parse_display`]
+//! accepts it, for validating `Settings::date_time_pattern` on write
+//! only — nothing on the host ever renders one.
 
 use chrono::{DateTime, Datelike, FixedOffset, TimeZone, Timelike};
 
@@ -80,6 +82,14 @@ enum Field {
     /// `X` / `XX` / `XXX`: as `x`, but `Z` at UTC, and `X` drops zero
     /// minutes (`-07`).
     OffsetIsoX(usize),
+    /// `zzz`: the zone name (`PDT`) — accepted only by
+    /// [`DatePattern::parse_display`] (ADR 0062 §3). The host has no
+    /// zone-name table, so this exists only to let the display setting
+    /// validate on write; nothing on this side ever calls
+    /// [`DatePattern::format`] on a pattern that carries one — the
+    /// frontend's `formatDatePattern` is what actually renders a zone
+    /// name, through `Intl`.
+    ZoneName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,8 +126,9 @@ fn width_hint(letter: char) -> Option<&'static str> {
 }
 
 /// `letter` repeated `width` times as a field, or `None` when that width
-/// is not in the subset. `zzz` is not a [`Field`]: it parses (so its
-/// width errors read like every other letter's) and is then refused.
+/// is not in the subset. `zzz` maps to [`Field::ZoneName`] — reached
+/// only from [`DatePattern::parse_display`], since
+/// [`DatePattern::parse`] refuses it before calling this.
 fn field(letter: char, width: usize) -> Option<Field> {
     Some(match (letter, width) {
         ('y', 4) => Field::Year4,
@@ -133,14 +144,31 @@ fn field(letter: char, width: usize) -> Option<Field> {
         ('S', 1..=9) => Field::Fraction(width),
         ('x', 2..=3) => Field::OffsetX(width),
         ('X', 1..=3) => Field::OffsetIsoX(width),
+        ('z', 3) => Field::ZoneName,
         _ => return None,
     })
 }
 
 impl DatePattern {
-    /// Parse `pattern`, or say what is wrong with it. The first problem,
-    /// reading left to right, is the one reported.
+    /// Parse `pattern` for a file name, or say what is wrong with it. The
+    /// first problem, reading left to right, is the one reported. `zzz`
+    /// is refused — the host has no zone-name table (ADR 0062 §3).
     pub(crate) fn parse(pattern: &str) -> Result<Self, String> {
+        Self::parse_mode(pattern, false)
+    }
+
+    /// As [`parse`](Self::parse), but accepts `zzz` — the display
+    /// setting's own rule (ADR 0062 §3: the zone name is display-only).
+    /// The host never renders one itself — nothing here calls
+    /// [`format`](Self::format) on a pattern carrying [`Field::ZoneName`]
+    /// — so this exists only to validate `Settings::date_time_pattern`
+    /// on write; the frontend's `formatDatePattern` is what renders a
+    /// zone name, through `Intl`.
+    pub(crate) fn parse_display(pattern: &str) -> Result<Self, String> {
+        Self::parse_mode(pattern, true)
+    }
+
+    fn parse_mode(pattern: &str, allow_zone_name: bool) -> Result<Self, String> {
         if pattern.is_empty() {
             return Err("a date pattern must not be empty".to_string());
         }
@@ -185,7 +213,7 @@ impl DatePattern {
                          quote literal text, e.g. 'T'"
                     ));
                 };
-                if c == 'z' && width == 3 {
+                if c == 'z' && width == 3 && !allow_zone_name {
                     return Err(format!(
                         "\"{run}\" (a zone name) cannot be used in a file name — \
                          the host has no zone-name table; use xxx for the offset"
@@ -270,6 +298,9 @@ fn push_field(out: &mut String, f: Field, dt: &DateTime<FixedOffset>) {
                 write!(out, "{}", offset(dt, width == 3, width > 1))
             }
         }
+        // Never reached: nothing on the host calls `format` on a pattern
+        // `parse_display` accepted (see `Field::ZoneName`'s own doc).
+        Field::ZoneName => Ok(()),
     };
 }
 
@@ -371,6 +402,23 @@ mod tests {
                 DatePattern::parse(&case.pattern),
                 Err(v.file_name_error.clone()),
                 "pattern {:?}",
+                case.pattern
+            );
+        }
+    }
+
+    #[test]
+    fn a_zone_name_parses_in_display_mode() {
+        // The same vectors `parse` refuses (above) are exactly what
+        // `parse_display` must accept — the frontend's `zzz` acceptance
+        // (`datePattern.test.ts`) and this are held to the one list, so
+        // the display/file-name split can't drift between the two
+        // implementations.
+        let v = vectors();
+        for case in &v.display_only {
+            assert!(
+                DatePattern::parse_display(&case.pattern).is_ok(),
+                "pattern {:?} should parse in display mode",
                 case.pattern
             );
         }

@@ -13,6 +13,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { ColumnDefaultsEditor } from "./ColumnDefaultsEditor";
+import { DateTimePatternEditor } from "./DateTimePatternEditor";
 import { ProjectCachesList } from "./ProjectCachesList";
 import { ServersSection } from "./ServersSection";
 import { UnitCustomizations } from "./UnitCustomizations";
@@ -41,6 +42,11 @@ export interface CustomRendererProps {
 /// *next* one should open as. Two settings share it — the trace/by-ID
 /// column set and the signal one.
 ///
+/// `date-time-pattern` is `date_time_pattern`'s own editor (ADR 0062):
+/// a text box plus a live preview of *now*, rendered through the same
+/// `formatDatePattern` every display site shares, so what the control
+/// shows is what the setting will actually produce.
+///
 /// A setting whose editor lives elsewhere gets no renderer and no row
 /// at all — see `EDITED_ELSEWHERE` on the host. A pointer row would be
 /// a second home for one fact.
@@ -55,6 +61,9 @@ export const CUSTOM_SETTING_RENDERERS: Record<
   ),
   "unit-customizations": ({ descriptor, value, onCommit }) => (
     <UnitCustomizations descriptor={descriptor} value={value} onCommit={onCommit} />
+  ),
+  "date-time-pattern": ({ value, onCommit }) => (
+    <DateTimePatternEditor value={value} onCommit={onCommit} />
   ),
 };
 
