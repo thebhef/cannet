@@ -16,12 +16,19 @@
 //! for every logger and starts or stops the difference, and every
 //! connection-state change runs it.
 //!
+//! **Every file names its own creation.** `{now}` is resolved fresh for
+//! the first file of a run and again at every split — it names that
+//! file's own moment, not the run's start — while `{start}` is read
+//! once, before the run begins, and held fixed: it is always the
+//! capture's start (owner ruling, 2026-10-08). A template with no
+//! `{now}` therefore resolves to the same name every time.
+//!
 //! **Splitting.** A logger has a maximum file size. When the file on
-//! disk reaches it the writer closes that file and opens the next, with
-//! `-002`, `-003`… appended to the last path segment before its
-//! extension. A file already sitting where the run would start takes the
-//! next suffix the same way, so a second run on the same template never
-//! overwrites the first.
+//! disk reaches it the writer closes that file and resolves the next —
+//! same rule as above. Whatever name that resolves to, a file already
+//! sitting there (because the pattern repeated, or the template has no
+//! `{now}`) takes the next suffix, `-002`, `-003`… before the extension
+//! of the last path segment, so nothing already on disk is overwritten.
 //!
 //! **How frames are found.** The logger does not sit on the ingest path.
 //! It follows the capture model's own index: a writer thread remembers
@@ -262,10 +269,12 @@ fn anything_connected(states: &ConnectionStates) -> bool {
         .any(|s| matches!(s, BusConnState::Connected { .. }))
 }
 
-/// The `n`-th file of a run. Part 1 is `base` itself; every later part
-/// takes `-002`, `-003`… before the extension of the **last** path
-/// segment, so a template whose file part is a subpath keeps its
-/// directories intact.
+/// `base` suffixed for collision part `n`. Part 1 is `base` itself;
+/// every later part takes `-002`, `-003`… before the extension of the
+/// **last** path segment, so a template whose file part is a subpath
+/// keeps its directories intact. `base` is whatever the namer most
+/// recently resolved — not necessarily the run's first name, now that
+/// each open and roll resolves its own.
 pub(crate) fn split_path(base: &Path, part: u32) -> PathBuf {
     if part <= 1 {
         return base.to_path_buf();
@@ -292,6 +301,26 @@ pub(crate) fn first_free_part(base: &Path, from: u32, exists: &dyn Fn(&Path) -> 
     part
 }
 
+/// Names the run's next file. Called once to open the run and again at
+/// every roll, each call resolving fresh against the instant it runs —
+/// that is how `{now}` comes to name each file's own creation rather
+/// than the run's start (see the module doc). `Send` because it runs on
+/// the writer thread; boxed so a logger's production namer (closed over
+/// the resolved folder and the file template) and a test's (closed over
+/// an injected sequence of instants, never a sleep) share one shape.
+pub(crate) type FileNamer = Box<dyn FnMut() -> Result<PathBuf, String> + Send>;
+
+/// A namer that always resolves to the same path — what a template with
+/// no `{now}` does today, and what most of this module's tests want: the
+/// collision/split rule exercised without going through
+/// [`crate::export_template::resolve`]. `pub(crate)` (module level, not
+/// nested in `mod tests`) so `log_files.rs`'s own test fixture can build
+/// a [`LogWriter`] too.
+#[cfg(test)]
+pub(crate) fn fixed_namer(path: PathBuf) -> FileNamer {
+    Box::new(move || Ok(path.clone()))
+}
+
 /// The split-aware BLF sink one logging run writes through.
 ///
 /// Holds no `AppHandle`: the tests construct one, and an `AppHandle` in
@@ -299,9 +328,8 @@ pub(crate) fn first_free_part(base: &Path, from: u32, exists: &dyn Fn(&Path) -> 
 /// that binary, which then fails to load on Windows. Anything the run
 /// wants to say goes through the caller.
 pub(crate) struct LogWriter {
-    base: PathBuf,
+    namer: FileNamer,
     max_bytes: u64,
-    part: u32,
     writer: Option<BlfCaptureWriter>,
     path: PathBuf,
     /// Ordered project bus ids — a frame's bus resolves to its position
@@ -313,35 +341,43 @@ pub(crate) struct LogWriter {
 }
 
 impl LogWriter {
-    /// Open the first file of a run at `base`, creating the directories
-    /// it needs. `max_bytes` is the size at which the writer rolls to
-    /// the next file.
-    pub(crate) fn open(base: PathBuf, max_bytes: u64, buses: Vec<String>) -> Result<Self, String> {
+    /// Open the first file of a run, creating the directories it needs.
+    /// `max_bytes` is the size at which the writer rolls to the next
+    /// file; `namer` is asked for this file's name, and again for every
+    /// later roll.
+    pub(crate) fn open(
+        namer: FileNamer,
+        max_bytes: u64,
+        buses: Vec<String>,
+    ) -> Result<Self, String> {
         let mut w = Self {
-            base,
+            namer,
             max_bytes: max_bytes.max(1),
-            part: 1,
             writer: None,
             path: PathBuf::new(),
             buses,
             frame_count: 0,
             parts: Vec::new(),
         };
-        w.open_part(1)?;
+        w.open_next()?;
         Ok(w)
     }
 
-    /// Open part number `from` or the first free one after it.
-    fn open_part(&mut self, from: u32) -> Result<(), String> {
-        let part = first_free_part(&self.base, from, &|p| p.exists());
-        let path = split_path(&self.base, part);
+    /// Ask the namer for this file's name and open it — a fresh
+    /// resolve every time, so a name already sitting on disk (the
+    /// namer's pattern repeated, or it has no `{now}` at all) takes the
+    /// next `-NNN` suffix the same way at the first file and at every
+    /// roll.
+    fn open_next(&mut self) -> Result<(), String> {
+        let base = (self.namer)()?;
+        let part = first_free_part(&base, 1, &|p| p.exists());
+        let path = split_path(&base, part);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
         }
         let writer = BlfCaptureWriter::create(&path)
             .map_err(|e| format!("failed to open {} for writing: {e}", path.display()))?;
-        self.part = part;
         self.writer = Some(writer);
         self.parts.push(path.clone());
         self.path = path;
@@ -416,11 +452,12 @@ impl LogWriter {
         Ok((skipped, splits))
     }
 
-    /// Close the current file and open the next part. `Some` with the
-    /// closed part's outcome, unless there was nothing open to close.
+    /// Close the current file and open the next, resolved fresh. `Some`
+    /// with the closed part's outcome, unless there was nothing open to
+    /// close.
     fn roll(&mut self) -> Result<Option<FinishedCapture>, String> {
         let finished = self.close_current()?;
-        self.open_part(self.part + 1)?;
+        self.open_next()?;
         Ok(finished)
     }
 
@@ -564,8 +601,8 @@ fn stop_one(app: &AppHandle, runtime: &LoggerRuntime, id: &str) -> bool {
 
 /// Resolve one logger's templates and spawn its writer thread.
 fn start_one(app: &AppHandle, runtime: &LoggerRuntime, cfg: &LoggerConfig) -> bool {
-    let base = match resolve_run_path(app, runtime, cfg) {
-        Ok(base) => base,
+    let namer = match make_run_namer(app, runtime, cfg) {
+        Ok(namer) => namer,
         Err(e) => {
             runtime.lock().errors.insert(cfg.id.clone(), e.clone());
             sys_error!(app, "logger", "{name}: {e}", name = cfg.name);
@@ -574,7 +611,7 @@ fn start_one(app: &AppHandle, runtime: &LoggerRuntime, cfg: &LoggerConfig) -> bo
     };
     let max_bytes = cfg.max_file_size_mb.max(1).saturating_mul(1024 * 1024);
     let buses = runtime.lock().buses.clone();
-    let writer = match LogWriter::open(base, max_bytes, buses) {
+    let writer = match LogWriter::open(namer, max_bytes, buses) {
         Ok(writer) => writer,
         Err(e) => {
             runtime.lock().errors.insert(cfg.id.clone(), e.clone());
@@ -622,18 +659,27 @@ fn start_one(app: &AppHandle, runtime: &LoggerRuntime, cfg: &LoggerConfig) -> bo
     true
 }
 
-/// The absolute path a run's first file goes to: the folder template
-/// resolved (and rooted at the project directory when it is relative),
-/// joined with the file template, with the format's extension.
+/// Build the [`FileNamer`] a run's [`LogWriter`] is opened with.
 ///
-/// Both templates resolve against one `now` — the instant logging
-/// started — so `{now}` names the run rather than the moment each field
-/// happened to be read.
-fn resolve_run_path(
+/// The folder template resolves once, here, before the run starts —
+/// rooted at the project directory when it is relative — rather than
+/// per file: re-resolving it on every roll would cost a template parse
+/// for a field that, today, never has a reason to differ file to file
+/// within one run. The capture's wall-clock start is also read once,
+/// here, and closed over: `{start}` is the capture's start on every
+/// file of the run (falling back to that call's `{now}` on an unanchored
+/// capture, same as [`crate::export_template`]), never revisited per
+/// split.
+///
+/// The file template is the part that moves: the closure resolves it
+/// fresh against [`Local::now()`] every time it runs — the first open
+/// and every later roll — so `{now}` names that file's own creation
+/// (owner ruling, 2026-10-08).
+fn make_run_namer(
     app: &AppHandle,
     runtime: &LoggerRuntime,
     cfg: &LoggerConfig,
-) -> Result<PathBuf, String> {
+) -> Result<FileNamer, String> {
     let active = app.state::<crate::project_dir::ActiveProjectDir>().get();
     let project_dir = (!active.is_auto_located()).then(|| active.root().to_path_buf());
     // Nanoseconds since the epoch exceed `f64`'s exact integer range, so
@@ -647,25 +693,36 @@ fn resolve_run_path(
             .map(|ns| ns as f64 / 1e9)
     });
     let project = runtime.lock().project.clone();
-    let ctx = TemplateContext {
+    let folder_ctx = TemplateContext {
         project: &project,
         logger: Some(&cfg.name),
         start_seconds,
         project_dir: project_dir.as_deref(),
     };
-    let now = Local::now();
-    let folder = resolve_folder(&cfg.folder, &ctx, now)?;
-    let file = resolve(cfg.file.trim(), &ctx, now)?;
-    if file.text.trim().is_empty() {
-        return Err(
-            "the File template resolved to nothing — a logger needs a file name".to_string(),
-        );
-    }
-    // Both halves already read in this OS's separators — template
-    // resolution renders them — so the join is a plain one.
-    let mut path = PathBuf::from(folder.text).join(file.text);
-    path.set_extension("blf");
-    Ok(path)
+    let folder = resolve_folder(&cfg.folder, &folder_ctx, Local::now())?.text;
+    let file_template = cfg.file.trim().to_string();
+    let logger_name = cfg.name.clone();
+    Ok(Box::new(move || {
+        let ctx = TemplateContext {
+            project: &project,
+            logger: Some(&logger_name),
+            start_seconds,
+            // The folder is already resolved and rooted; the file
+            // template never roots a relative result on its own.
+            project_dir: None,
+        };
+        let file = resolve(&file_template, &ctx, Local::now())?;
+        if file.text.trim().is_empty() {
+            return Err(
+                "the File template resolved to nothing — a logger needs a file name".to_string(),
+            );
+        }
+        // Both halves already read in this OS's separators — template
+        // resolution renders them — so the join is a plain one.
+        let mut path = PathBuf::from(&folder).join(file.text);
+        path.set_extension("blf");
+        Ok(path)
+    }))
 }
 
 /// The writer thread: follow the capture model's index, writing whatever
@@ -870,7 +927,7 @@ mod tests {
     fn a_start_collision_takes_the_next_suffix() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("run.blf"), b"previous run").unwrap();
-        let writer = LogWriter::open(base(dir.path()), 1024 * 1024, vec![]).unwrap();
+        let writer = LogWriter::open(fixed_namer(base(dir.path())), 1024 * 1024, vec![]).unwrap();
         assert_eq!(writer.path(), dir.path().join("run-002.blf"));
         writer.finish().unwrap();
         assert_eq!(
@@ -899,7 +956,8 @@ mod tests {
     fn reaching_the_size_cap_closes_the_file_and_opens_the_next() {
         let dir = tempfile::tempdir().unwrap();
         // Below one flushed container, so the first flush trips the cap.
-        let mut writer = LogWriter::open(base(dir.path()), 4 * 1024, vec!["b".into()]).unwrap();
+        let mut writer =
+            LogWriter::open(fixed_namer(base(dir.path())), 4 * 1024, vec!["b".into()]).unwrap();
         let frames: Vec<RawTraceFrame> = (0..20_000u32)
             .map(|i| frame(1_700_000_000_000_000_000 + u64::from(i) * 1_000_000, 0x100))
             .collect();
@@ -918,12 +976,124 @@ mod tests {
         }
     }
 
+    /// A namer whose `{now}` advances by one second on every call — the
+    /// first open and every later roll — rather than a fixed, finite
+    /// list: the BLF writer's own flush cadence decides how many times a
+    /// given frame volume rolls, so a namer that could run out of
+    /// instants would make the test depend on that cadence too.
+    fn ticking_namer(
+        dir: &Path,
+        base_instant: chrono::DateTime<Local>,
+        start_seconds: Option<f64>,
+        template: &'static str,
+    ) -> FileNamer {
+        let dir_path = dir.to_path_buf();
+        let offset = std::cell::Cell::new(0i64);
+        Box::new(move || {
+            let now = base_instant + chrono::Duration::seconds(offset.get());
+            offset.set(offset.get() + 1);
+            let ctx = TemplateContext {
+                project: "p",
+                logger: None,
+                start_seconds,
+                project_dir: None,
+            };
+            let resolved = resolve(template, &ctx, now)?;
+            let mut path = dir_path.join(resolved.text);
+            path.set_extension("blf");
+            Ok(path)
+        })
+    }
+
+    /// Owner ruling (2026-10-08): `{now}` names each file of a run at
+    /// its own creation, not the run's start. A namer
+    /// whose clock is injected — never a sleep — proves a roll resolves
+    /// the file template fresh: the first two files it opens carry two
+    /// distinct `{now:HHmmss}` values, with no collision suffix between
+    /// them.
+    #[test]
+    fn a_roll_resolves_the_file_template_from_its_own_fresh_instant() {
+        use chrono::TimeZone;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base_instant = Local
+            .with_ymd_and_hms(2026, 1, 1, 10, 0, 0)
+            .single()
+            .unwrap();
+        let namer = ticking_namer(dir.path(), base_instant, None, "{now:HHmmss}");
+        let mut writer = LogWriter::open(namer, 4 * 1024, vec!["b".into()]).unwrap();
+        let frames: Vec<RawTraceFrame> = (0..20_000u32)
+            .map(|i| frame(1_700_000_000_000_000_000 + u64::from(i) * 1_000_000, 0x100))
+            .collect();
+        writer.write(&frames).unwrap();
+        assert!(
+            writer.parts().len() > 1,
+            "the cap must have split the run: {:?}",
+            writer.parts()
+        );
+        assert_eq!(writer.parts()[0], dir.path().join("100000.blf"));
+        assert_eq!(
+            writer.parts()[1],
+            dir.path().join("100001.blf"),
+            "the second file names the instant it was opened at, not the run's start: {:?}",
+            writer.parts(),
+        );
+        writer.finish().unwrap();
+    }
+
+    /// `{start}` names the capture's start on every file of a run;
+    /// `{now}` moves. Both tokens in one template prove it: the prefix
+    /// (`{start}`) stays put across a roll while the suffix (`{now}`)
+    /// advances — the namer is asked again, but `start_seconds` is
+    /// closed over once, the way [`make_run_namer`] builds it.
+    #[test]
+    fn start_stays_fixed_across_a_roll_while_now_advances() {
+        use chrono::TimeZone;
+
+        let dir = tempfile::tempdir().unwrap();
+        let start = Local
+            .with_ymd_and_hms(2026, 1, 1, 9, 0, 0)
+            .single()
+            .unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let start_seconds = start.timestamp() as f64;
+        let base_instant = Local
+            .with_ymd_and_hms(2026, 1, 1, 10, 0, 0)
+            .single()
+            .unwrap();
+        let namer = ticking_namer(
+            dir.path(),
+            base_instant,
+            Some(start_seconds),
+            "{start:HHmmss}-{now:HHmmss}",
+        );
+        let mut writer = LogWriter::open(namer, 4 * 1024, vec!["b".into()]).unwrap();
+        let frames: Vec<RawTraceFrame> = (0..20_000u32)
+            .map(|i| frame(1_700_000_000_000_000_000 + u64::from(i) * 1_000_000, 0x100))
+            .collect();
+        writer.write(&frames).unwrap();
+        assert!(
+            writer.parts().len() > 1,
+            "the cap must have split the run: {:?}",
+            writer.parts()
+        );
+        assert_eq!(writer.parts()[0], dir.path().join("090000-100000.blf"));
+        assert_eq!(
+            writer.parts()[1],
+            dir.path().join("090000-100001.blf"),
+            "the start prefix is unchanged across the roll: {:?}",
+            writer.parts(),
+        );
+        writer.finish().unwrap();
+    }
+
     /// Everything the run wrote is readable BLF once it finishes — the
     /// split is a file boundary, not a lost frame.
     #[test]
     fn every_frame_written_survives_the_split() {
         let dir = tempfile::tempdir().unwrap();
-        let mut writer = LogWriter::open(base(dir.path()), 4 * 1024, vec!["b".into()]).unwrap();
+        let mut writer =
+            LogWriter::open(fixed_namer(base(dir.path())), 4 * 1024, vec!["b".into()]).unwrap();
         let frames: Vec<RawTraceFrame> = (0..8_000u32)
             .map(|i| frame(1_700_000_000_000_000_000 + u64::from(i) * 1_000_000, 0x100))
             .collect();
@@ -952,7 +1122,8 @@ mod tests {
     #[test]
     fn finishing_a_run_reports_the_clamp_its_writer_saw() {
         let dir = tempfile::tempdir().unwrap();
-        let mut writer = LogWriter::open(base(dir.path()), 1024 * 1024, vec!["b".into()]).unwrap();
+        let mut writer =
+            LogWriter::open(fixed_namer(base(dir.path())), 1024 * 1024, vec!["b".into()]).unwrap();
         let anchor = 1_700_000_000_000_000_000u64;
         let early = anchor - 5_000_000_000; // 5 s before the anchor
         writer
@@ -974,7 +1145,8 @@ mod tests {
     #[test]
     fn a_split_part_reports_the_clamp_it_saw() {
         let dir = tempfile::tempdir().unwrap();
-        let mut writer = LogWriter::open(base(dir.path()), 4 * 1024, vec!["b".into()]).unwrap();
+        let mut writer =
+            LogWriter::open(fixed_namer(base(dir.path())), 4 * 1024, vec!["b".into()]).unwrap();
         let anchor = 1_700_000_000_000_000_000u64;
         let mut frames = vec![frame(anchor, 0x100), frame(anchor - 1_000_000_000, 0x200)];
         frames.extend((2..20_000u32).map(|i| frame(anchor + u64::from(i) * 1_000_000, 0x100)));
@@ -1002,7 +1174,7 @@ mod tests {
     fn a_file_template_subpath_creates_its_directory() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("20260906T101500").join("run.blf");
-        let writer = LogWriter::open(nested.clone(), 1024 * 1024, vec![]).unwrap();
+        let writer = LogWriter::open(fixed_namer(nested.clone()), 1024 * 1024, vec![]).unwrap();
         writer.finish().unwrap();
         assert!(nested.is_file());
     }
@@ -1088,7 +1260,8 @@ mod tests {
     #[test]
     fn a_finished_run_leaves_a_finalized_file_and_an_abandoned_one_does_not() {
         let dir = tempfile::tempdir().unwrap();
-        let mut writer = LogWriter::open(base(dir.path()), 1024 * 1024, vec!["b".into()]).unwrap();
+        let mut writer =
+            LogWriter::open(fixed_namer(base(dir.path())), 1024 * 1024, vec!["b".into()]).unwrap();
         writer
             .write(&[frame(1_700_000_000_000_000_000, 0x100)])
             .unwrap();
@@ -1100,7 +1273,12 @@ mod tests {
         );
 
         let abandoned = dir.path().join("abandoned.blf");
-        let mut writer = LogWriter::open(abandoned.clone(), 1024 * 1024, vec!["b".into()]).unwrap();
+        let mut writer = LogWriter::open(
+            fixed_namer(abandoned.clone()),
+            1024 * 1024,
+            vec!["b".into()],
+        )
+        .unwrap();
         writer
             .write(&[frame(1_700_000_000_000_000_000, 0x100)])
             .unwrap();

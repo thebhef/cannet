@@ -12,8 +12,11 @@
 //!   carries that fact so a preview can say so.
 //! - `{now}` — the instant resolution runs. Injected by the caller
 //!   ([`resolve`]'s `now` parameter) rather than read from the system
-//!   clock here, so a logger can resolve `{now}` as the moment logging
-//!   started rather than the moment the panel happens to repaint.
+//!   clock here, so a caller decides what instant that is: an export's
+//!   preview re-reads it on repaint, and a logger resolves it fresh for
+//!   every file of a run — the first and every split — naming that
+//!   file's own creation (owner ruling, 2026-10-08; see
+//!   [`crate::logger`]'s module doc for the run-naming rule).
 //!
 //! A bare `{start}` / `{now}` resolves as ISO 8601 in *basic* form with
 //! a timezone offset (`20260905T091502-0600`) — extended ISO's colons
