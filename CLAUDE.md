@@ -46,8 +46,11 @@ what order. Treat it as living documentation, not historical record.
   scope, design questions, exit criteria). Don't start a later task before
   the current one meets its exit criteria, and don't quietly expand a
   task's scope — if something needs to move, update the roadmap (and the
-  task file) first. Completed tasks are removed from the roadmap (the
-  detail stays in git history), so it lists only outstanding work.
+  task file) first. A task leaves the roadmap the moment work on it starts: its file
+  moves to `plans/tasks/pending-closeout/`, where it stays — in
+  progress, then with every exit criterion met — until the owner closes
+  it out and the file is deleted (the detail stays in git history). The
+  roadmap lists only work not yet started.
 - **`plans/technology-inventory.md`** — running list of third-party libraries,
   protocols, file formats, and drivers. **Update it whenever a dependency
   decision is made**, even if the decision is "rejected." Mark each entry as
