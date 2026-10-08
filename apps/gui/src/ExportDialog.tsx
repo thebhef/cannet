@@ -3,7 +3,7 @@
 //
 // It decides two things and nothing else. The **name** is a template
 // with a live preview — resolved by the host (`preview_export_template`)
-// rather than here, because the tokens and their strftime formats are
+// rather than here, because the tokens and their date patterns are
 // the model's, not the view's. The **range** is a pair of bounds on the
 // shared timescale (ADR 0024), both defaulting to unset: the whole
 // capture, up to wherever the live edge is when the write finishes.

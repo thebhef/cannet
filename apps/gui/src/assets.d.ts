@@ -30,3 +30,11 @@ declare module "*.js?raw" {
   const src: string;
   export default src;
 }
+
+/// Plain-text import of a `.json` file — used to read the date-pattern
+/// vector file (`datePattern.vectors.json`, which the Rust side embeds
+/// with `include_str!`) so both test suites parse the same bytes.
+declare module "*.json?raw" {
+  const src: string;
+  export default src;
+}

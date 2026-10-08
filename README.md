@@ -2960,15 +2960,26 @@ resolve host-side:
 | `{project}` | the slugified project name |
 | `{start}` | the capture's wall-clock start |
 | `{now}` | the moment of export |
-| `{start:%…}` / `{now:%…}` | either time in an explicit `strftime` format, e.g. `{start:%Y%m%d-%H%M%S}` |
+| `{start:…}` / `{now:…}` | either time in an explicit date pattern, e.g. `{start:yyyy-MM-dd}` or `{start:yyyyMMdd-HHmmss}` |
 
 A bare `{start}` / `{now}` renders as ISO 8601 in *basic* form with the
 UTC offset (`20260905T091502-0600`) — extended ISO's colons cannot
 appear in a Windows file name. On a capture with no wall-clock anchor
 `{start}` resolves as the export time and the dialog says so. An invalid
-token or format string is rejected in the preview, with the reason. The
+token or pattern is rejected in the preview, with the reason. The
 default template is `{project}-{start}`; whatever you leave it as is
 remembered for the next export, along with the folder and the format.
+
+A **date pattern** ([ADR 0062](docs/adr/0062-one-date-pattern.md)) is
+the TR35 (Unicode LDML) notation, in a fixed English subset: `yyyy` `yy` (year), `M` `MM` `MMM` `MMMM` (9, 09, Sep,
+September), `d` `dd`, `EEE` `EEEE` (Sat, Saturday), `H` `HH` (0–23), `h`
+`hh` with `a` (1–12 AM/PM), `mm`, `ss`, `S` to `SSSSSSSSS` (1–9 digits of
+the fraction, truncated), and the offset as `xx` (`-0600`), `xxx`
+(`-06:00`) or `X` / `XX` / `XXX` (the same, but `Z` at UTC). Every
+letter is a field, so literal letters are quoted — `{start:yyyyMMdd'T'HHmm}`
+— and `''` is an apostrophe; a letter outside the subset is an error,
+not a literal. A zone name (`zzz`) cannot be used in a file name: use
+`xxx`.
 
 The **range** defaults to the whole capture: both bounds empty means
 everything up to the live edge when the write finishes. A timeline over
