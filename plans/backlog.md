@@ -24,6 +24,10 @@ work or admit it isn't going to happen and delete it.
 
 ### CI / checks
 
+- `[cleanup]` **The shared tree's `target/debug` grows without bound**
+  (43 GB on 2026-09-23, `incremental/` alone 18 GB, ~580 MB free before a
+  phase build). A periodic `cargo clean` or a CI-side cap, rather than
+  each phase rediscovering it. (0155 § Status log, 2026-09-23.)
 Static and automated checks we'd like running on the repo to catch a
 class of bug before it ships, rather than relying on the next user to
 trip over it.
@@ -144,6 +148,14 @@ trip over it.
 
 ### Plot panel
 
+- `[idea]` **Bus-error episodes: extent at rest, or as link targets.** An
+  episode draws one marker at its first error; its extent (to the last
+  error) lights only on hover/select, and Link Events refuses it (the
+  notes store holds durable events only, ADR 0035/0060; episodes are not
+  exported — the error rows are). Owner, 2026-10-07: backlog for now.
+  Options when picked up: draw the extent always; or let `link_events`
+  accept an episode id it does not hold (ADR 0056 amendment). Detail:
+  0158 § Blockers, 2026-10-03.
 - `[ux]` **The plot's Shift+click gesture is undiscoverable.** Nothing
   on the plot says it exists; the README does. The prototype's hint
   line has no home in the toolbar and the shared button style has no
@@ -215,6 +227,29 @@ trip over it.
 
 ### GUI chrome and cross-cutting
 
+- `[defect]` **The logger's idle file listing has no filesystem watch** —
+  it refreshes only on `loggers-changed`, so BLFs moved into the folder
+  by hand are never noticed until something else triggers a listing.
+  `notify` is adopted already (`dbc_watcher`, `project_watch`,
+  `rbs/watch` share one watcher). Detail: 0137 § Status log, 2026-09-22.
+- `[defect]` **`litre` reaches no unit; `liter` and `L` do** — the library
+  spells it American and neither the picker's filter nor recognition
+  carries the British alternate. Detail: 0149 § Blockers / side effects.
+- `[cleanup]` **The GUI's `servers.json` writer drops JSON keys it does
+  not know** on every write; the CLI writer preserves them. Bites the day
+  the store grows a field an older GUI build rewrites away. (0144 § Status
+  log.)
+- `[model]` **MDF4 add-to-capture.** Task 164 adds BLF only (owner
+  ruling 2026-10-06). MDF4 frames could go through the same add mode;
+  held until the file-backed item below lands, because an MDF carries
+  both.
+- `[model]` **File-backed series keyed per source file.** `SignalKey::file`
+  is `(group number, signal)` and `fill_file_backed` fills a series
+  "once, completely", so two files' groups collide and a second file
+  cannot be added. Owner, 2026-10-06: *"ideally architecture wouldn't
+  force us to decide"* — namespace the key (and the pyramid manifest
+  row, and the plot picker) by source file so adding an MDF needs no
+  special case.
 - `[model]` **Calc-field overrides vs the DBC: suppression and
   no-op edits.** Two halves of one gap, backlogged together by owner
   ruling 2026-08-26 (owner-review-queue 3.7, 3.50): *"it's a similar
@@ -441,6 +476,13 @@ trip over it.
   watchdog covers the case meanwhile, and the user can reload by hand.
   (Owner ruling 2026-09-15: backlog, not in scope.)
 
+- **A math section in the View signals panel.** The panel is a
+  database-mapping surface and drops every math reference by design
+  (`viewSignalsPush.ts`); a math signal's composed-kind unit override is
+  class-locked only where the math editor opens (Signals panel, plot
+  side list, Database panel). Owner, 2026-10-02: a math row kind there
+  is backlog, not a units-task criterion.
+
 ### Graph view (and bus topology)
 
 Items surfaced during the Phase-6.5 default-receive-all / graph-view follow-up
@@ -463,6 +505,17 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
+- `[defect]` **Opening the same project twice is undefined behaviour.**
+  A launch refused its project cache (held by another cannet) boots in
+  the unsaved project directory with an in-RAM store rather than
+  staying rooted in the held one. Owner, 2026-10-07: accepted for now;
+  define the behaviour when it matters. Detail: 0156 § Status log,
+  2026-09-23 phase 2.
+- `[defect]` **`Save As` onto a held destination cache writes the project
+  file but leaves the session (and its capture) where it was**, reporting
+  the holder on the system log. Owner, 2026-10-07: backlog; failing the
+  Save As is not an acceptable alternative. Detail: 0156 § Blockers /
+  side effects, 2026-09-23 phase 2.
 - `[perf]` **Quitting within ~1 min of a large cold rebuild costs
   ~11 s of synchronous pyramid flush** (drains to ~2.5 s once the
   cadence has idled). Levers identified: raise the idle
@@ -1079,3 +1132,15 @@ next planning pass.
   dropped as spec'd (owner, 2026-09-07: YAGNI). The library's
   Quantity-multiplication machinery makes it cheap if a real need
   appears; the prototype round recorded the shape.
+
+- **Sweep the repo for upstreamable patches to third-party
+  dependencies.** Owner, 2026-09-23: out of scope today, and cannet
+  does not modify or petition its dependencies on its own — the first
+  candidate is python-can's Kvaser 32-bit receive-timer wrap, whose
+  issue draft sits in task 155's status log.
+
+- `[gui]` **`GridviewFilterBox` is bound to `useGridviewFilter`'s hook
+  object** (`.input`/`.setInput`, no `list` prop), so the Events panel's
+  tag filter (2026-10-03) had to rebuild the chip-field shape by hand
+  instead of reusing it. One shared filter-box component that takes
+  value/onChange and an optional datalist would remove the copy.

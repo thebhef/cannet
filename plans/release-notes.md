@@ -156,6 +156,20 @@ repaired something broken.
   or repaired.
 - Temperatures convert as absolute readings, so °C, °F and K are handled
   correctly rather than merely scaled.
+- **New:** every unit the unit library carries is offered — 2289 units
+  over 109 dimensions, prefixed forms included — instead of a hand-typed
+  list. A database's unit string is recognised by the library's symbol,
+  singular or plural.
+- **New:** a unit you define in the settings view's Units section may be
+  a composition of one unit: `mph = mile / hour` displays `mph`,
+  converts 1:1 with `mi/h`, and a database that writes `mph` reads as it.
+- **Changed:** the Units section is a gridview grouped by dimension, in
+  a scrolling space of its own. Dimensions open collapsed except one
+  holding a unit this project maps or composes; the filter opens what it
+  matches.
+- **Changed:** a math signal's output-unit picker offers every dimension
+  its composition can mean, the composition order's first reading
+  preselected — `N · m` opens on energy with torque beneath.
 
 ## Export
 
@@ -220,16 +234,70 @@ repaired something broken.
   `-002`, `-003`… before the extension. A run that starts where files
   already sit takes the next free suffix, so it never overwrites them.
 - **New:** the panel lists the folder's contents recursively, with columns
-  for name, size, trace start and end, duration, message count and
-  modified time. The file being written right now is the list's own live
-  row, with its size and count growing — there is no separate status line.
+  for name, size, duration, the action buttons, trace start and end,
+  message count and modified time. The file being written right now is
+  the list's own live row, with its size and count growing — there is no
+  separate status line.
+- **Fixed:** the action column was a couple of pixels narrower than
+  its own Import button, so the button clipped. It is wide enough
+  now, and still resizes like any other column.
 - **New:** importing a file from that list — the row button, its context
   menu, or Space — opens the same import flow "Import trace…" does, range
-  picker included. A folder's context menu offers Show in Explorer.
+  picker included. A folder's context menu offers the platform's own
+  reveal command — Show in Finder on macOS, Show in Explorer on
+  Windows, Show in file manager on Linux.
+- **Fixed:** a logger that has to move a frame's timestamp forward —
+  because it arrived stamped before the file's own anchor — now logs
+  the same warning Save Capture already does, both when the run
+  finishes and at every file a size cap closes along the way. It used
+  to say nothing.
 - A folder or file template may be typed with either separator and always
   resolves in the running OS's own, so the default `logs/{logger}` is one
   subdirectory on Windows and on macOS alike and a project written on
   either opens correctly on the other.
+
+## Bus faults
+
+- **Fixed:** pulling a cable no longer plays back minutes later. A fault
+  used to turn into a row for every error frame — thousands a second —
+  queued behind everything else bound for the host, so a frames/s figure
+  kept reading on a disconnected bus, error counts went on climbing after
+  the wire was back, and "recovery" showed up minutes after the fact. The
+  sidecar now counts a fault as one **bus-error episode** per blast,
+  opened at the first error frame and closed a second after the last, and
+  reports it directly: the fault reaches the screen within about a second
+  of the wire and recovery within about two.
+- **Changed:** only the first 16 error frames of each episode become
+  trace rows — the rest are counted, not shown — and both the count and
+  the cap are configurable (**Settings → Trace → Error frames kept per
+  bus-error episode**). An import behaves exactly like a live session: an
+  older capture's error rows, one per frame, fold into the same rule on
+  the way in and open as episodes plus at most 16 rows each. frames/s and
+  bus load leave error frames out entirely, so a disconnected bus reads
+  its true data rate — none — instead of an inflated one.
+- **New:** the bus-health row says what happened, in a reader's words:
+  an episode's count, rate and the kinds it counted, largest first
+  (`3,412 errors (1.4k/s): ack 3,412` on a pulled cable, `— ongoing`
+  while it hasn't closed), refused sends summarised by reason
+  instead of one row per refusal (`sends refused: N (transmit queue
+  full)`), a transmit-queue flush count, and periods the scheduler
+  couldn't offer that bus.
+- **New:** a transmit queue that has accepted nothing for a second is now
+  flushed rather than left to retransmit stale frames into a live fault —
+  the next period gets through the moment the wire can carry it, instead
+  of a channel that could refuse every send for a minute or more with
+  nothing recovering it.
+- **New:** if the sidecar ever falls more than about a second behind and
+  has to drop the oldest frames rather than deliver them late, a
+  **dropped-frames gap** marks the span on that bus's timeline. It is
+  saved with the capture and exported to BLF as a `GLOBAL_MARKER`.
+- **New:** a capture reopened after a relaunch shows its bus-error
+  episodes exactly as they read live — kinds, transmit/receive split and
+  error counters included — instead of only their count and span.
+- **Fixed:** the clock-offset measurement no longer mistakes a backed-up
+  reply for a real clock error. A round whose reply took far longer than
+  a normal step is now discarded instead of applied — it used to step the
+  whole timeline and split one fault into several, misdated episodes.
 
 ## Project panel
 
@@ -243,6 +311,261 @@ repaired something broken.
   whether that element's own buses are connected.
 - **Changed:** the two Discover buttons in connection management are now
   icon buttons.
+
+## Opening and closing
+
+- **New:** a running cannet holds its project's cache directory
+  exclusively, so opening the same project from a second instance is
+  refused rather than letting two sessions write one set of capture
+  files. The refusal names the process already holding it.
+- **Changed:** closing a project with a large capture no longer takes
+  the window down and finishes in the background. It now stays up —
+  reading **Closing — writing the capture cache…** with the step it is
+  on — until the cache is fully written, so a relaunch never races the
+  previous instance's shutdown.
+
+## Transmitting
+
+- **Fixed:** a `Tx` row is now a frame the bus carried. The trace used
+  to write a `Tx` row the moment a transmit was handed to the session,
+  so a pulled cable, an error-passive or a bus-off controller still
+  showed a healthy stream of transmits — in the trace, the plot (the
+  decoded samples came from those rows), the per-message counts, the
+  status bar's tx rate, a running logger and Save Capture. Now the
+  adapter's own echo of each frame it put on the wire is the row
+  (`receive_own_messages`, every vendor the sidecar opens), a virtual
+  bus echoes a participant's frame once another participant received
+  it, and a frame the bus never carries leaves nothing behind. The one
+  row the host still writes itself is `Tx ✗`: a transmit the session
+  refused outright (no interface, not connected). Hardware the driver
+  cannot echo shows no `Tx` rows at all. PEAK adapters echo a frame when
+  it goes onto the wire, acknowledged or not, so on PEAK (and Vector, as
+  a precaution) an echo from a controller that has gone error-passive —
+  sixteen failed transmissions in a row — is withheld: a frame
+  retransmitted into a pulled cable is not reported as sent, and the
+  rows resume within a second of the cable coming back.
+- **Changed:** the manual send no longer answers with a row index, and
+  its wire status reads `accepted` rather than `sent` — the session
+  took the frame; the bus has not spoken yet.
+
+## Plot
+
+- **Changed:** when the A, B and Δt cursor chips would overlap, they
+  draw as one row — `A | Δt | B` — centred between the cursors and kept
+  inside the plot, instead of piling up with Δt underneath. A cursor
+  scrolled out of view pins its chip to the edge on its side, so Δt and
+  both times stay readable while you zoom into part of the span; click
+  the pinned chip to pan to that cursor at the same zoom. With both
+  cursors out of view no chips draw.
+- **Changed:** time precision follows the zoom. The x-axis ticks, the
+  hover time and the A/B chips share one digit count: four decimals at
+  a one-second window, one fewer per decade zoomed out (whole seconds
+  at a day), one more per decade zoomed in. Δt follows it but never
+  drops below milliseconds. An hour-wide view no longer shows tenths of
+  a millisecond on the axis.
+- **Fixed:** the bus-error markers on the plot refresh as errors
+  arrive. They used to be asked for only when the view moved, so on a
+  stopped, paused or scrubbed-back plot a new fault showed only after a
+  pan or zoom.
+- **Changed:** `Points: On` marks every sample the plot is served, with
+  no cap. There used to be a flat 500-marker limit spread evenly along
+  the visible range, and an even stride over a min/max envelope lands
+  on one leg of it — a run of dots hugging one side of a line that
+  swings through both, which read as the plot extrapolating. The dots
+  now sit on every extreme the line passes through.
+- **Fixed:** pointing at a long capture with `Points: On` no longer
+  stalls. Moving the pointer or placing a cursor used to repaint every
+  plot's series layer, and uPlot rebuilds every series' markers on every
+  repaint, so a saturated window re-rasterized thousands of markers per
+  series per pointer move. The crosshair, the cursor lines, the hover
+  markers, the event chrome and every readout now draw on an overlay
+  canvas of their own, and only a data change repaints the series.
+  Sample markers are now solid squares in the series colour, the same
+  size as the old ring, drawn as one batched path, and markers that
+  would land on the same pixels in a column draw once. A held signal
+  gets one marker per pixel column, a noisy one its min and its max,
+  and no extreme is ever left bare.
+- **Changed:** an enum lane is an ordinary series with tiles drawn over
+  it. Its markers are the same markers every other series gets, on the
+  plotted value, in an ink that reads over the tile, and they no
+  longer appear and vanish with zoom. A state held across a wide
+  window is one tile, as before.
+- **Changed:** cursor and event readouts leave the data area. Event
+  labels sit in a band above the top plot; the A and B time readouts
+  and Δt sit between the bottom plot and its time axis; the H1 and H2
+  value readouts and ΔH sit in the value gutter beside their axis. The
+  cursor lines themselves stay where they were. A panel with events
+  gives up 34 pixels of plot height for the two bands, 47 when a label
+  wraps to two lines.
+- **Changed:** an empty plot area still draws the shared time grid and
+  ticks, and takes the A and B cursors by click. A panel with no
+  signals anywhere shows the capture's span and follows live, so a
+  fresh panel is a timeline rather than a blank.
+- **Changed:** the plot toolbar carries an **Events** chip that reveals
+  the event-kind checklist — which kinds show as markers, bus errors
+  included. The copy that lived only in the toolbar's right-click menu
+  is gone, so there is one control. Each plot keeps its own choice.
+- **Fixed:** an empty area beside a populated one no longer blanks
+  every event marker on the panel.
+- **Changed:** the plot's **Bus error** markers are episodes, not one
+  per sampled point. A fault that once painted a solid band of markers
+  across a window now draws as one, at its first error, labelled with
+  the bus, count, span and rate like any other event. When more
+  episodes intersect the visible window than fit at one marker each,
+  the gap between them doubles until they do, so a wide window reads
+  as fewer, longer episodes rather than hitting a cap. Acting on a
+  marker washes in its extent from first error to last, the same as a
+  linked pair's.
+- **New:** a colour pick in the Signals panel or on a plot series
+  swatch applies to every selected row, in one change; a right-click on
+  an unselected row makes it the selection first.
+
+## Events panel
+
+- **Changed:** the tag filter box is shaped like the trace's filter
+  box — a search icon and a `filter by tag` placeholder — instead of a
+  bare "tag" label beside the input.
+- **Changed:** the Events panel is one list again, oldest first: your
+  notes, the truncation marker and every bus's bus-error episodes (at
+  the configured gap) interleaved by time, paged from the host as the
+  trace is. The separate newest-first bus-error section below the list
+  is gone. An episode row reads `<bus>: N bus errors over S (R/s)`,
+  shows wall time on hover, cannot be edited, and can be selected —
+  selecting it draws the episode's extent on the plot while it is
+  selected. A tag filter hides episodes (they carry no tag); the
+  Diagnostics row's tooltip says the gap they are grouped at.
+- **New:** bus errors get their own paged section, below Notes and
+  comments: one row per **episode** — a burst of errors on one bus,
+  ended by a silence of at least the **episode gap** — newest first,
+  with the bus, the first error's time, the count, the span and the
+  rate. The gap is a new setting, **Trace → Bus-error episode gap**
+  (`bus_error_episode_gap_s`, 5 seconds by default, 1 to 3600). The
+  section reads a window at a time rather than holding a capture's
+  whole error history, and a change to the gap re-derives it at once.
+  This section sits on its own for now, separate from the whole
+  chronological event list.
+- **Changed:** hovering an event row's time — in the Events panel or
+  interleaved into the trace — reads the same instant as a message
+  row's hover: the local date and time. A bus-error episode row gets
+  the same hover. A capture with no wall-clock origin still shows no
+  tooltip, as before.
+
+## Settings view
+
+- **New:** Storage › Project caches names its projects. Each row leads
+  with the project name, the directory path beneath it, a chip saying
+  whether the directory is one you made (`project dir`) or one cannet
+  chose for a loose project file (`auto-located`, with the reason in its
+  tooltip), and the two-stage trash control every other removal uses.
+  Cache sizes are measured in the background and read `…` until they
+  land; the list follows a Save As at once.
+- **Fixed:** the settings view re-reads its file, its overrides and the
+  caches list whenever it is shown again, and keeps its scroll position
+  across a switch to another panel and back — its inner lists included.
+- **Changed:** the project caches list is a gridview.
+- **Changed:** the Servers rows live here, as **Connection › Servers**,
+  rather than in a panel of their own. The command palette's *Servers*
+  entry and *Manage servers…* open the settings view at that section.
+  The *Show servers* command is retired.
+
+## Trace panel
+
+- **Changed:** the `Events` chip is gone from the trace toolbar and the
+  plot toolbar. The per-kind checklist it used to hide behind sits on
+  the toolbar itself, and the chronological trace always interleaves
+  timeline events — the checklist alone decides which kinds draw
+  (every kind unticked means no event rows). The "Default events
+  overlay" setting went with it.
+- **New:** a filter box in the toolbar narrows the rows in both modes
+  as you type. It searches the bus name, the message name, its
+  transmitting ECU, its id in hex and decimal, the signal names, and
+  the label of a decoded signal's current enum value; event rows are
+  matched on their text. Fuzzy, the way the Database panel's search
+  is, and ranked the same way, so `pkstat` finds `PackStatus`.
+  Clearing the box restores the full view.
+- The filter composes with the panel's sources, show-events and
+  collapse-error-frames — it narrows further, never replaces. The
+  chronological trace stays paged end to end while a query is active:
+  the host does the matching over the whole capture, and the panel
+  still shows one page plus the live tail. Ctrl/Cmd+F focuses the
+  box. The text is remembered with the layout and never dirties the
+  project.
+- **New:** the box reports **searching…** while the host is still
+  walking a newly-typed query, then its own match count once it
+  lands, in both chronological and by-id mode.
+- **New:** a signal name or an enum value is a match in its own right.
+  Typing a fault enum's label shows exactly the frames whose decoded
+  signal carries that value across the whole history, with each row
+  opened to the matching signal and weaker message-level matches
+  hidden; in by-id mode the value is matched against the signal's whole
+  value list. A query whose best match is a message behaves as before.
+- **Changed:** a signal name is no longer part of its message's
+  searchable text, so a single fuzzy string spanning a message name and
+  a signal name no longer matches.
+
+## Responsiveness
+
+- **Fixed:** deleting or clearing a project cache of several GB,
+  opening or closing a project, Save As across volumes, loading a
+  database, changing settings, or attaching a local bus no longer
+  freezes the window while it runs. Heavy host work leaves the UI
+  thread; a test guards every synchronous command against doing so.
+- **Fixed:** the logger's file list appears at once while the files'
+  headers are read in the background, one read per file however often
+  the list refreshes, and polled panels keep one request in flight.
+- **Changed:** a manual transmit onto a full outgoing queue is refused
+  with the reason instead of waiting for room.
+
+## Connecting
+
+- **Fixed:** a bus that goes bus-off comes back on its own. Disconnect
+  the CAN side of a PEAK dongle and reconnect it and the controller
+  stayed bus-off for good — opened without PCAN's auto-reset, and
+  nothing in cannet ever reset it, while every transmit into it was
+  refused. For every vendor the sidecar now resets a controller it has
+  read bus-off for a second (Vector and Kvaser in place, anything else
+  by reopening the channel), then publishes the recovery to the
+  bus-health panel. PEAK channels deliberately open *without* PCAN's
+  own bus-off auto-reset: it fires inside the very status read the
+  sidecar polls, so bus-off was never seen, and it leaves the full
+  transmit queue stuck — a cable left out for hours came back to a
+  controller that sat silent with every send refused. As a safety net
+  for any vendor, a channel whose driver refuses sends with a full
+  transmit queue while nothing at all arrives for two seconds — not
+  even an error frame — is reopened, with one line in the system log.
+  The Vector and Kvaser paths have not met hardware yet.
+- **Fixed:** the bus-health panel no longer stays at error-passive after
+  a PEAK bus recovers. PEAK reports its error counters only inside
+  error frames, so when the errors stopped the last fault reading stood
+  forever; a status poll that sees no error frame and a clean status
+  word now clears them.
+- **New:** a bus can be set to **no interface** on purpose. Picking
+  "— no interface —" in the project panel now records that choice
+  with the project instead of deleting the binding, and a project with
+  such a bus connects: the bound buses go live, the unbound one reads
+  "unbound" in the connection chip's tooltip, the project graph and
+  the bus-health panel, and anything transmitted at it is marked
+  undelivered. A bus that simply has no binding is still refused, as
+  before — that is a bus nobody has wired up, not one set aside.
+- **New:** the Servers section of the settings view greys out a server that does not speak
+  this build's protocol, with the reason, before you can connect to
+  it; and a connection to one is refused with the same sentence
+  instead of retrying forever. See *For application developers*.
+- **Fixed:** a Kvaser interface's receive timestamps no longer jump
+  backward roughly every 12 hours. python-can's Kvaser backend's
+  receive timer rolls over every 2^32 ticks (just under 11h56m) with
+  no correction, so on a long capture the frames right after a
+  rollover arrived stamped before the session and were dropped, and
+  every frame after that read stale by a further 12 hours per
+  rollover. The sidecar now tracks and corrects the rollover itself,
+  and logs a warning each time one happens. No other interface is
+  affected.
+- **New:** a received frame the host has to drop because it is
+  stamped before the session started — the symptom of a timestamp
+  defect like the Kvaser one above — no longer passes silently. It
+  now raises a WARN in the System Messages panel, naming the bus and
+  how far before the session start the frame fell, and keeps you
+  posted while the drops continue.
 
 ## Small fixes
 
@@ -261,9 +584,28 @@ repaired something broken.
   panel.
 - **Fixed:** the Database panel's search box takes a click anywhere in the
   box it draws, not only over the first few characters.
+- **Fixed:** on Windows, the mouse pointer no longer vanishes after typing
+  in the command palette — most visibly when Enter raised the Open
+  dialog and the pointer stayed hidden over the whole window. WebView2
+  runtime 152 began honouring the Windows "Hide pointer while typing"
+  setting and keeps the pointer hidden until the webview itself sees a
+  mouse move; cannet never wanted the pointer hidden, so the window now
+  turns that feature off.
+- **Fixed:** the Database and RBS trees collapse and expand normally
+  while a filter string is present. Typing a query still opens the
+  path to every match; from then on the chevron and the arrow keys
+  work on any row, so a bus, database or ECU you are not interested in
+  folds away and stays folded until you open it or clear the filter.
 
 ## For application developers
 
+- **Changed:** `CannetBus` (python client) follows python-can's
+  `receive_own_messages` convention: a session's own echoed transmits
+  are dropped unless the bus was opened with `receive_own_messages=True`.
+- **New:** `cannet-gui --show-points <auto|off|on>` forces every plot
+  panel's show-points mode for one run without writing it back to the
+  project, so a performance reading of `Points: On` can be taken against
+  the unchanged baseline project.
 - **New:** a Python client, `clients/cannet-python-client`, registers
   cannet as a python-can interface. An application opens a remote bus with
   `can.Bus(interface="cannet", server=..., channel=...)` — no
@@ -277,3 +619,36 @@ repaired something broken.
 - Delivered frame timestamps are corrected for the peer's clock, and
   `can.detect_available_configs()` lists the interfaces every trusted
   server currently offers.
+- **New:** the wire protocol states its version, and every client
+  checks it. The protobuf package name — `cannet.v1`, already in every
+  gRPC method path — is the protocol major. Inside a major only
+  additive changes land; a breaking change is a new package served
+  beside the old one for a deprecation window, so an existing client
+  keeps working until it migrates. The rule is written in the header
+  of `cannet.proto`.
+- **New:** every server answers `ServerInfo` — the packages it serves,
+  its build version and its instance name — in a small unversioned
+  package of its own, without a token, so a client whose major the
+  server does not serve is told "serves cannet.v2; this client speaks
+  cannet.v1" rather than an opaque `UNIMPLEMENTED`, and before it is
+  asked for a credential. Servers also advertise the packages they
+  serve over mDNS as `proto=`.
+- **New:** a console script, **`cannet-client`**, does the trust
+  workflow without the GUI. `list` browses the network and merges it
+  with the trust store — one row per server with its trust state,
+  whether it is answering, and the protocol it serves; `connect`
+  walks the same paths the GUI's Servers section does (loopback in the
+  clear, a pinned server verified against its stored fingerprint, a
+  first contact shown for you to compare and confirm, an explicit
+  question before connecting unprotected) and ends by printing the
+  working `can.Bus(...)` line; `forget` removes a server's entry. It
+  writes the same `servers.json` the GUI owns, so accepting once
+  serves every client on the machine.
+- **New:** the debug servers (`debug replay`, `debug vbus`) can
+  terminate TLS instead of the clear, with `--tls-dir <path>`, for
+  testing a TLS-pinned client against them without a production
+  server.
+- CI now refuses a non-additive change inside `cannet.v1` and a
+  checked-in Python stub that no longer matches the `.proto`.
+- CI also runs `cargo fmt --all -- --check` as its own job, so a Rust
+  change that drifted from the formatter is caught before merge.
