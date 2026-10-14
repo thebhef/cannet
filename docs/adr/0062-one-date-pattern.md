@@ -5,7 +5,13 @@ now has a consumer: the `date_time_pattern` setting (ADR 0034) governs
 every displayed calendar time through `format.ts::formatCalendarTime`,
 validated on write through a display-mode parse that accepts `zzz`
 (§3). Phase 1 shipped the pattern with no reader yet; this closes that
-gap.
+gap; amended (2026-10-14) — two more display formatters render through
+it for the `time_display = calendar` reading (ADR 0024 rule 2):
+`format.ts::formatCalendarCell` (a table time cell — the whole pattern
+plus the elapsed column's fraction digits, truncated per § 1, none
+added when the pattern has its own `S` field) and
+`format.ts::calendarWindow` (a plot's tick pattern and the x-axis title
+naming the window's dates through the pattern's date part).
 
 ## Context
 

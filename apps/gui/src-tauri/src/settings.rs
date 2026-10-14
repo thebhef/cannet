@@ -107,6 +107,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("dbc_auto_reload", Scope::UserOverridable),
     ("can_id_format", Scope::UserOverridable),
     ("date_time_pattern", Scope::UserOverridable),
+    ("time_display", Scope::UserOverridable),
     ("trace_columns", Scope::UserOverridable),
     ("signal_columns", Scope::UserOverridable),
     ("float_exponential_below", Scope::UserOverridable),
@@ -445,6 +446,17 @@ pub struct Settings {
     /// `formatDatePattern`/`formatCalendarTime`; the host never formats
     /// a calendar time with it itself.
     pub date_time_pattern: String,
+    /// How every timeline view reads a frame's time — one of
+    /// [`TIME_DISPLAYS`], default `elapsed` (ADR 0024 rule 2): elapsed
+    /// time since the session origin, or the calendar time that instant
+    /// names, rendered through [`Settings::date_time_pattern`].
+    ///
+    /// App-wide policy rather than a per-view default: the same instant
+    /// must read the same in every panel, so there is no per-panel
+    /// choice. A relative timeline — a capture with no wall-clock
+    /// anchor, which names no instant — reads elapsed either way. Host
+    /// code never reads it; the frontend renders both readings.
+    pub time_display: String,
     /// The column layout a **newly created** trace or by-ID table opens
     /// with — order, width, and which columns start hidden. `None` (the
     /// default) means the built-in layout, so a file that predates this
@@ -716,6 +728,10 @@ pub const MAX_ERROR_ROW_CAP: u64 = u32::MAX as u64;
 /// spellings, since the value crosses the IPC verbatim.
 pub const CAN_ID_FORMATS: &[&str] = &["hex", "decimal"];
 
+/// The readings [`Settings::time_display`] accepts. The names cross
+/// the IPC verbatim to the frontend's views.
+pub const TIME_DISPLAYS: &[&str] = &["elapsed", "calendar"];
+
 /// The themes [`Settings::theme`] accepts. The names are the frontend's
 /// `ThemeName` spellings and the value of its `data-theme` attribute,
 /// since the value crosses the IPC verbatim.
@@ -762,6 +778,7 @@ impl Default for Settings {
             dbc_auto_reload: true,
             can_id_format: "hex".to_string(),
             date_time_pattern: "yyyy-MM-dd HH:mm:ss".to_string(),
+            time_display: "elapsed".to_string(),
             trace_columns: None,
             signal_columns: None,
             float_exponential_below: 1e-4,
@@ -994,6 +1011,12 @@ fn refuse_unknown_options(settings: &mut Settings, complaints: &mut Vec<String>)
             &mut settings.can_id_format,
             CAN_ID_FORMATS,
             d.can_id_format.clone(),
+        ),
+        (
+            "time_display",
+            &mut settings.time_display,
+            TIME_DISPLAYS,
+            d.time_display.clone(),
         ),
         ("theme", &mut settings.theme, THEMES, d.theme.clone()),
     ] {
@@ -1449,6 +1472,7 @@ mod tests {
             dbc_auto_reload: false,
             can_id_format: "decimal".to_string(),
             date_time_pattern: "dd/MM/yyyy HH:mm".to_string(),
+            time_display: "calendar".to_string(),
             trace_columns: Some(vec![ColumnLayout {
                 key: "data".to_string(),
                 width: 400,
@@ -1517,6 +1541,24 @@ mod tests {
             "{complaints:?}"
         );
         assert!(complaints[0].contains("verbose"), "{complaints:?}");
+    }
+
+    #[test]
+    fn time_display_defaults_to_elapsed_and_refuses_an_unknown_reading() {
+        assert_eq!(Settings::default().time_display, "elapsed");
+        let (accepted, complaints) = validate(Settings {
+            time_display: "wallclock".to_string(),
+            ..Settings::default()
+        });
+        assert_eq!(accepted.time_display, "elapsed");
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(complaints[0].contains("time_display"), "{complaints:?}");
+        let (accepted, complaints) = validate(Settings {
+            time_display: "calendar".to_string(),
+            ..Settings::default()
+        });
+        assert_eq!(accepted.time_display, "calendar");
+        assert!(complaints.is_empty(), "{complaints:?}");
     }
 
     #[test]

@@ -7,7 +7,10 @@ capture's origin comes from: the file states the timeline, and the
 session origin is the earliest timestamp the import brings in; amended
 (2026-10-07) — rule 4's calendar-time reading now renders through the
 user's `date_time_pattern` setting (ADR 0062) rather than a fixed
-`toLocaleString`. The history below describes the current decision;
+`toLocaleString`; amended (2026-10-14) — rule 2: every renderer shows
+the same instant, read as elapsed time or — under the app-wide
+`time_display = calendar` setting — as calendar time. The history
+below describes the current decision;
 the superseded per-trace-offset rendering is recorded under "Rejected
 alternatives."
 
@@ -24,11 +27,23 @@ origin for the whole application.
    as wall-clock seconds (Unix epoch). A buffer that has never been
    started has no start time.
 
-2. **Every renderer displays elapsed time since that origin.** A row,
-   a plot x-axis tick, an event marker — each shows
-   `frame.timestamp − session_start`. This is the only formula, and
-   there is exactly one `session_start` for the application. No trace,
-   panel, or renderer has its own zero.
+2. **Every renderer displays the same instant, as elapsed time since
+   the origin or — under `time_display = calendar` — as calendar time
+   through the date/time pattern; one app-wide choice, never per
+   view.** A row, a plot x-axis tick, an event marker — each reads
+   `frame.timestamp − session_start` as elapsed time, or names the
+   instant `frame.timestamp` through the user's `date_time_pattern`
+   (ADR 0062). That is the only formula, there is exactly one
+   `session_start` for the application, and no trace, panel, or
+   renderer has its own zero or its own reading. A relative timeline
+   (no wall-clock anchor — rule 4, `hasWallClockAnchor`) names no
+   instant, so it reads elapsed under either setting. In calendar
+   mode a table time cell shows the whole pattern plus the fraction
+   digits the elapsed column would show (`format.ts::formatCalendarCell`);
+   a plot's ticks read time of day with the leading fields the window
+   shares dropped, and its x-axis title names the window's date(s)
+   (`format.ts::calendarWindow`). Durations (Δt, a period) stay
+   durations in both readings.
 
 3. **Elapsed time renders as `[d:][hh:][mm:]ss.ffff`** — only the
    segments needed to span the magnitude, with a fractional digit
@@ -138,7 +153,9 @@ Host-side (`cannet-gui::trace_store`):
 Frontend (`apps/gui/src`):
 
 - `format.ts::formatElapsed(seconds)` renders the elapsed-time string;
-  `formatTimestamp(ts, base)` is `formatElapsed(ts − base)`.
+  `formatTimestamp(ts, base)` is `formatElapsed(ts − base)`. Under
+  `time_display = calendar`, `formatCalendarCell` and `calendarWindow`
+  render the same instants as calendar time (rule 2).
 - `useTrace` derives `baseTimestampSeconds = sessionStartSeconds` and
   every renderer subtracts it. The row table, the by-id table, and the
   events view pass it straight to `formatTimestamp`.
@@ -154,9 +171,11 @@ Frontend (`apps/gui/src`):
 
 ## Invariants
 
-- **Rendered time is `frame.timestamp − session_start`, everywhere.**
-  If two panels disagree about a frame's time, one of them is not
-  using the session origin — a bug.
+- **Rendered time is `frame.timestamp − session_start`, everywhere** —
+  read as elapsed time, or under `time_display = calendar` as the
+  instant it names; the reading is app-wide, so two panels never show
+  the same frame in different readings. If two panels disagree about a
+  frame's time, one of them is not using the session origin — a bug.
 - **Rendered time is never negative.** Frames stamped before
   `session_start` are dropped by the buffer guard; if a negative time
   appears, the guard let a stale frame through — or something that is
