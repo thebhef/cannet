@@ -308,6 +308,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "view.undo", label: "Undo view change", category: "View" },
   { id: "view.redo", label: "Redo view change", category: "View" },
   { id: "view.fullscreen", label: "Toggle full-screen view", category: "View" },
+  // Flips the app-wide `time_display` setting (ADR 0024 rule 2) — every
+  // timeline view switches together, so it is not a per-panel command.
+  { id: "view.toggleCalendarTime", label: "Toggle calendar time", category: "View" },
   {
     id: "view.exitFullscreen",
     label: "Exit full-screen view",
