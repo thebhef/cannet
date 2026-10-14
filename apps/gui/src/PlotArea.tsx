@@ -37,6 +37,7 @@ import {
   axisAutoRange,
   enumSegments,
   mergeSeries,
+  type MergedValue,
   sampleColumns,
   splitExtrapolatedRows,
   type ExtrapolatedSegment,
@@ -1152,7 +1153,7 @@ export function drawEnumTiles(
      * `u.data`. The lanes axis passes these because it plots normalized
      * lane positions, which can't be matched against a value table; the
      * single-enum axis plots raw codes already and omits it. */
-    rawValues?: (number | null)[];
+    rawValues?: MergedValue[];
     /** The stretches of this signal's window the host classified as
      * extrapolation (ADR 0026), in the plot's own time base. The tile
      * still draws — a lane's held state is information whether or not
@@ -2628,7 +2629,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // with the y columns of `u.data`. The lanes axis plots normalized
   // lane positions, so the draw hook reads its values from here to
   // match them against a value table. Null off the lanes axis.
-  const laneRawRef = useRef<(number | null)[][] | null>(null);
+  const laneRawRef = useRef<MergedValue[][] | null>(null);
   // Per signal, the merged-column stretches the host classified as
   // extrapolation (ADR 0026), same row order as `u.data`'s y columns.
   // The resample blanks them out of the solid stroke and leaves them
@@ -3143,10 +3144,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // arrays are the same rows, one derived from the other.
       //
       // Equivalent to normalising first, because `mergeSeries` derives
-      // its x column from timestamps alone and sample-and-holds values
-      // without interpolating: holding a normalised value is the same
-      // as normalising a held one. The `null` before a series' first
-      // sample must be carried through untouched.
+      // its x column from timestamps alone and only ever copies a
+      // sample's value — at its own column, or held — never
+      // interpolating: holding a normalised value is the same as
+      // normalising a held one. The `null` before a series' first
+      // sample and the `undefined` between its samples must be carried
+      // through untouched (every branch below skips `== null`).
       // The x-window the merge falls back on when a lone one-sample
       // series leaves it a single column — the only case a span is
       // consulted at all. The visible slice when there is one, else the
@@ -3158,7 +3161,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           : snapshot.firstT != null && snapshot.lastT != null
             ? { from: snapshot.firstT, to: snapshot.lastT }
             : null;
-      const mergedRaw = mergeSeries(seriesRel, span);
+      // A tile axis (lanes, a single enum) draws a stepped line and a
+      // tile per held run, so its rows are sample-and-held across every
+      // column. A line's row carries only its own samples between its
+      // first and last, so its line is straight between them whatever
+      // else shares the axis (ADR 0026).
+      const tileAxis = laneActive || enumActive;
+      const mergedRaw = mergeSeries(seriesRel, span, { hold: tileAxis });
       const xs = mergedRaw[0] as number[];
       const rawRows = mergedRaw.slice(1);
       // Extrapolated stretches (ADR 0026), differentiated two ways
@@ -3176,7 +3185,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // instead of marking it, since `enumSegments` ends a run at a
       // `null`. So a tile axis keeps its row whole and the draw hook
       // stripes the stale sub-stretch of each tile.
-      const tileAxis = laneActive || enumActive;
       extrapolatedRef.current = tileAxis
         ? []
         : splitExtrapolatedRows(xs, rawRows, seriesRel);
@@ -3186,7 +3194,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // any blanking or normalisation touches them, so it describes the
       // samples rather than whatever the merge made of them.
       sampleColumnsRef.current = sampleColumns(xs, seriesRel);
-      const displayRows: (number | null)[][] = laneActive
+      const displayRows: MergedValue[][] = laneActive
         ? (() => {
             // Hidden lanes drop out of the layout, so the visible ones
             // share the whole axis height (ADR 0026).

@@ -3117,6 +3117,53 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
+  it("hands a line's row nothing at a neighbour's columns between its own samples", async () => {
+    // ADR 0026: a ranged series' line is straight between its own
+    // consecutive samples. Held across EngineTemp's columns, EngineSpeed
+    // drew flat to t=3 and bent there into its sample at t=4 — a vertex
+    // where it has no message. `undefined` is uPlot's "nothing here,
+    // join across"; `null` would break the line instead.
+    mockSampleSeries.EngineSpeed = { t: [0, 4], v: [10, 20] };
+    mockSampleSeries.EngineTemp = { t: [1, 2, 3], v: [12, 14, 16] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "unified");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        expect(data[0]).toEqual([0, 1, 2, 3, 4]);
+        const row = data[1] ?? [];
+        expect(row[0]).not.toBeNull();
+        expect(row.slice(1, 4)).toEqual([undefined, undefined, undefined]);
+        expect(row[4]).not.toBeNull();
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("enum lanes: sample-and-holds a lane across its neighbour's columns", async () => {
+    // A lane is a stepped line under a tile per held run, and a run ends
+    // at anything that is not a value — so unlike a line's row, a lane's
+    // is held across every column its axis has.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockValueTables.EngineTemp = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 4], v: [0, 1] };
+    mockSampleSeries.EngineTemp = { t: [1, 2, 3], v: [0, 1, 2] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        expect(data[0]).toEqual([0, 1, 2, 3, 4]);
+        expect(data[1]?.every((y) => y != null)).toBe(true);
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it("enum lanes: keeps a stale lane's row whole so the tile survives to be hatched", async () => {
     // The two renderers differentiate extrapolation differently, and a
     // lane must not get the line's treatment. Blanking the row is how a
