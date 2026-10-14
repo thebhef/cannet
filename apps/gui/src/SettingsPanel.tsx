@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { SETTINGS_PANEL_ID } from "./dockLayout";
 import { usePanelCommands } from "./panelCommands";
 import { SettingsShownContext } from "./settingsShown";
 import { SettingControl } from "./settingControls";
+import { useScrollRestore } from "./useScrollRestore";
 import {
   DEVELOPER_GROUP,
   EMPTY_SCHEMA,
@@ -130,13 +131,11 @@ export function SettingsPanel({ api }: IDockviewPanelProps) {
 
   /// Where the user had scrolled to. dockview's default renderer removes
   /// a hidden panel's element from the document, and a box with no
-  /// layout keeps no scroll offset, so the view puts its own back. View
+  /// layout keeps no scroll offset, so the view puts its own back
+  /// (`useScrollRestore`, shared with the two inner row spaces). View
   /// state, held in a ref: it drives no render.
   const listRef = useRef<HTMLDivElement | null>(null);
-  const scrollTopRef = useRef(0);
-  useLayoutEffect(() => {
-    if (listRef.current) listRef.current.scrollTop = scrollTopRef.current;
-  }, [shownCount]);
+  const onListScroll = useScrollRestore(listRef, shownCount);
 
   // Debounced, so typing re-renders the input and nothing else.
   useEffect(() => {
@@ -254,13 +253,7 @@ export function SettingsPanel({ api }: IDockviewPanelProps) {
             );
           })}
         </div>
-        <div
-          className="settings-list"
-          ref={listRef}
-          onScroll={(e) => {
-            scrollTopRef.current = e.currentTarget.scrollTop;
-          }}
-        >
+        <div className="settings-list" ref={listRef} onScroll={onListScroll}>
           {shown.length === 0 && (
             <p className="settings-empty">
               {query === "" ? "No settings." : `No settings match “${query}”.`}

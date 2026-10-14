@@ -172,6 +172,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { UnitCustomizations } from "./UnitCustomizations";
 import { hydrateSettings, updateSettings, type Settings } from "./hostSettings";
 import type { SettingDescriptor } from "./settingDescriptors";
+import { SettingsShownContext } from "./settingsShown";
 
 const descriptor = { key: "unit_customizations" } as unknown as SettingDescriptor;
 
@@ -383,6 +384,43 @@ describe("the gridview", () => {
     expect(cursorId()).toBe(branchFor("current").id);
     fireEvent.keyDown(container, { key: "ArrowLeft" });
     expect(branchFor("current")).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("scroll restore across a settings-panel hide and show", () => {
+  // The settings view's own `.settings-list` already restores its
+  // scroll offset across a hide and show (dockview detaches a hidden
+  // panel's element, and a detached box keeps no scroll offset). This
+  // row space had no equivalent and reopened at the top;
+  // `useScrollRestore` fixes both from one shared mechanism — this
+  // pins it for the units row space specifically.
+  it("puts the row space's own scroll offset back when the settings view comes back into view", async () => {
+    const { rerender } = render(
+      <SettingsShownContext.Provider value={1}>
+        <UnitCustomizations descriptor={descriptor} value={PROJECT} onCommit={vi.fn()} />
+      </SettingsShownContext.Provider>,
+    );
+    await waitFor(() => expect(branchFor("voltage")).toBeInTheDocument());
+    const container = document.querySelector(".unit-customizations-grid") as HTMLElement;
+
+    container.scrollTop = 120;
+    fireEvent.scroll(container);
+
+    // dockview removes the hidden panel's element from the document; a
+    // reattached box has no scroll offset of its own until something
+    // puts it back. Simulated here since jsdom does not detach anything
+    // on its own between renders.
+    container.scrollTop = 0;
+
+    // The settings view's own visibility bump, one render later — the
+    // signal the row space has no other way to hear "shown again".
+    rerender(
+      <SettingsShownContext.Provider value={2}>
+        <UnitCustomizations descriptor={descriptor} value={PROJECT} onCommit={vi.fn()} />
+      </SettingsShownContext.Provider>,
+    );
+
+    expect(container.scrollTop).toBe(120);
   });
 });
 
