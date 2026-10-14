@@ -24,16 +24,53 @@ describe("mergeSeries", () => {
     ]);
   });
 
-  it("builds the sorted union of timestamps and sample-and-holds", () => {
+  it("builds the sorted union of timestamps and fills each row at its own samples", () => {
     // A samples at 1 and 3; B samples at 2 and 4.
     const merged = mergeSeries([
       { t: [1, 3], v: [10, 30] },
       { t: [2, 4], v: [200, 400] },
     ]);
     expect(merged[0]).toEqual([1, 2, 3, 4]);
-    // A: 10 at t=1, still 10 at t=2, 30 at t=3, still 30 at t=4
+    // A: 10 at t=1, nothing of its own at t=2, 30 at t=3, held past its
+    // last sample to the axis's last column at t=4.
+    expect(merged[1]).toEqual([10, undefined, 30, 30]);
+    // B: null before its first sample, 200 at t=2, nothing of its own at
+    // t=3, 400 at t=4.
+    expect(merged[2]).toEqual([null, 200, undefined, 400]);
+  });
+
+  it("does not let a neighbour's columns bend a series' line between its own samples", () => {
+    // A samples at 0 and 4; B at 1, 2, 3. Holding A across B's columns
+    // drew it flat to t=3 and diagonally from there into its next
+    // sample — a corner at B's timestamp, where A has no message. The
+    // row is left empty there instead (`undefined`, which uPlot's
+    // linear path joins straight across), so A's line runs straight
+    // from its sample at 0 to its sample at 4 (ADR 0026).
+    const merged = mergeSeries([
+      { t: [0, 4], v: [0, 40] },
+      { t: [1, 2, 3], v: [7, 8, 9] },
+    ]);
+    expect(merged[0]).toEqual([0, 1, 2, 3, 4]);
+    expect(merged[1]).toEqual([0, undefined, undefined, undefined, 40]);
+    expect(merged[1]).not.toContain(null);
+    // B: its leading gap is still a gap (`null`), and past its last
+    // sample it is held to the axis's last column.
+    expect(merged[2]).toEqual([null, 7, 8, 9, 9]);
+  });
+
+  it("holds every value across every column when asked to (a stepped tile axis)", () => {
+    // A lane or single-enum axis draws a stepped line and a tile per
+    // held value: a run there ends at anything that is not a value, so
+    // its rows stay sample-and-held.
+    const merged = mergeSeries(
+      [
+        { t: [1, 3], v: [10, 30] },
+        { t: [2, 4], v: [200, 400] },
+      ],
+      null,
+      { hold: true },
+    );
     expect(merged[1]).toEqual([10, 10, 30, 30]);
-    // B: null before its first sample (t=1), 200 at t=2, still 200 at t=3, 400 at t=4
     expect(merged[2]).toEqual([null, 200, 200, 400]);
   });
 
@@ -403,6 +440,27 @@ describe("splitExtrapolatedRows", () => {
     expect(segs[0]).toEqual([]);
     expect(rows[1]).toEqual([null, 8, 9]);
     expect(segs[1]).toEqual([]);
+  });
+
+  it("breaks an interior stall a neighbour has columns inside", () => {
+    // Between its own samples a series' row is empty at a neighbour's
+    // columns; inside an extrapolated stretch those columns become gaps
+    // (`null`), so the solid stroke does not join across the stall
+    // underneath its dashes.
+    const series = [
+      { t: [0, 1, 9, 10], v: [1, 2, 3, 4], extrapolated: [[1, 9] as const] },
+      { t: [0, 2, 4, 6, 8, 10], v: [0, 0, 0, 0, 0, 0] },
+    ];
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    const rows = merged.slice(1);
+    const segs = splitExtrapolatedRows(xs, rows, series);
+    expect(xs).toEqual([0, 1, 2, 4, 5, 6, 8, 9, 10]);
+    expect(rows[0]).toEqual([1, 2, null, null, null, null, null, 3, 4]);
+    expect(segs[0]).toEqual([{ i0: 1, i1: 7 }]);
+    // The stall's minted midpoint is nobody's sample: the neighbour's
+    // line joins straight across it.
+    expect(rows[1][4]).toBeUndefined();
   });
 
   it("leaves a series nobody classified exactly as the merge made it", () => {

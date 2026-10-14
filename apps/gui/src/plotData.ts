@@ -4,9 +4,10 @@
 // CAN signals are sampled at frame arrival times, so two signals on
 // different messages almost never share timestamps. uPlot wants one x
 // array with a parallel y array per series, so we build the sorted union
-// of every series' timestamps and, for each series, carry the most
-// recent value forward (sample-and-hold) — `null` before the series'
-// first sample so uPlot leaves a gap rather than drawing from zero.
+// of every series' timestamps and, for each series, fill its own sample
+// columns — `null` before the series' first sample so uPlot leaves a gap
+// rather than drawing from zero, and nothing (`undefined`) at the other
+// columns between its samples, which uPlot joins straight across.
 
 import type { SampledPoints, SignalsSample } from "./types";
 
@@ -144,10 +145,32 @@ export interface ExtrapolatedSegment {
   i1: number;
 }
 
+/** One cell of a merged row. `null` is a gap uPlot breaks the line at;
+ * `undefined` is a column the series has nothing at, which uPlot's
+ * linear path joins straight across (its own convention: `null` breaks
+ * a line, `undefined` is spanned). */
+export type MergedValue = number | null | undefined;
+
 /**
  * Merge `series` into uPlot's `[xs, ...ys]` shape. `xs` is the sorted
- * union of every series' timestamps; `ys[k][i]` is series `k`'s
- * sample-and-hold value at `xs[i]`, or `null` before its first sample.
+ * union of every series' timestamps; `ys[k][i]` is series `k`'s value at
+ * `xs[i]`:
+ *
+ * - **its own sample** where `xs[i]` is one of its timestamps;
+ * - **`undefined`** at any other column between its first and last
+ *   sample. A series' line is linear between its own consecutive
+ *   samples, whatever else shares the axis (ADR 0026): holding the
+ *   value across a neighbour's columns drew it flat up to the last of
+ *   them and diagonally from there into the next sample — a corner at
+ *   another signal's timestamp, where this one has no message;
+ * - `null` before its first sample;
+ * - its last value **held** past its last sample, out to the last
+ *   column the axis has — the tail ADR 0026 draws as extrapolation,
+ *   dashed by `splitExtrapolatedRows`.
+ *
+ * `hold` sample-and-holds every column instead, for a stepped renderer
+ * whose runs (a lane's tiles) must not end at a column that is not one
+ * of the series' own.
  *
  * With no series, returns `[[]]` — a valid empty uPlot data set.
  *
@@ -170,7 +193,9 @@ export interface ExtrapolatedSegment {
 export function mergeSeries(
   series: RawSeries[],
   span?: { from: number; to: number } | null,
-): (number | null)[][] {
+  opts?: { hold?: boolean },
+): MergedValue[][] {
+  const hold = opts?.hold === true;
   const xsSet = new Set<number>();
   for (const s of series) {
     for (const t of s.t) xsSet.add(t);
@@ -201,10 +226,10 @@ export function mergeSeries(
     xsSet.add(span.to);
   }
   const xs = [...xsSet].sort((a, b) => a - b);
-  const out: (number | null)[][] = [xs];
+  const out: MergedValue[][] = [xs];
   for (const s of series) {
     if (s.t.length === 1) {
-      out.push(new Array<number | null>(xs.length).fill(s.v[0]));
+      out.push(new Array<MergedValue>(xs.length).fill(s.v[0]));
       continue;
     }
     // The fill looks redundant — every index is assigned below — but it
@@ -212,15 +237,20 @@ export function mergeSeries(
     // holey, and holey arrays stay on a slower element kind even once
     // every hole is written. The `null` before a series' first sample
     // comes from `last`, not from this fill.
-    const ys: (number | null)[] = new Array(xs.length).fill(null);
+    const ys: MergedValue[] = new Array(xs.length).fill(null);
     let j = 0;
     let last: number | null = null;
     for (let i = 0; i < xs.length; i++) {
+      // Did this column take a sample of the series? Asked of the
+      // series' timestamps, since a column it has no sample at keeps the
+      // previous one's `last`.
+      let sampled = false;
       while (j < s.t.length && s.t[j] <= xs[i]) {
         last = s.v[j];
+        sampled = true;
         j++;
       }
-      ys[i] = last;
+      ys[i] = hold || sampled || last === null || j === s.t.length ? last : undefined;
     }
     out.push(ys);
   }
@@ -252,7 +282,7 @@ export function mergeSeries(
  */
 export function splitExtrapolatedRows(
   xs: readonly number[],
-  rows: (number | null)[][],
+  rows: MergedValue[][],
   series: readonly RawSeries[],
 ): ExtrapolatedSegment[][] {
   return rows.map((row, k) => {
@@ -300,12 +330,11 @@ export function splitExtrapolatedRows(
  * columns whose x is one of that series' own timestamps.
  *
  * `mergeSeries` materializes a value for a series at columns it never
- * measured — every column of a dense neighbour's between two of its own
- * samples, every column of an extrapolated stretch, the midpoint minted
- * to break an interior stall, and (for a one-sample series) the whole
- * grid. Held values are what makes the line continuous and the tile
- * survive; they are not readings, and a marker drawn at one claims a
- * sample that does not exist. So a marker asks this, never the row.
+ * measured — the hold past its last sample, every column of a tile
+ * axis's sample-and-hold, and (for a one-sample series) the whole grid.
+ * Held values are what makes the tail and the tile survive; they are
+ * not readings, and a marker drawn at one claims a sample that does not
+ * exist. So a marker asks this, never the row.
  *
  * **Matched on the series' own timestamps rather than on anything the
  * merge produced** — that is the seam that cannot regress when the merge
@@ -315,7 +344,7 @@ export function splitExtrapolatedRows(
  * new materializing rule cannot grow a marker. The alternative seam —
  * subtracting the extrapolated spans from the row — is a function of the
  * classification, and would still mark every held column the
- * classification does not cover (the dense neighbour's, which is most of
+ * classification does not cover (a tile axis's, which is most of
  * them).
  *
  * `xs` and each `t` are ascending, so this is one walk over both.
@@ -425,7 +454,7 @@ export function recordSignalKey(r: {
  */
 export function enumSegments(
   ts: ReadonlyArray<number>,
-  vs: ReadonlyArray<number | null>,
+  vs: ReadonlyArray<MergedValue>,
 ): Array<{ t0: number; tEnd: number; v: number }> {
   const out: Array<{ t0: number; tEnd: number; v: number }> = [];
   const n = Math.min(ts.length, vs.length);

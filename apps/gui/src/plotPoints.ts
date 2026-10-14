@@ -133,12 +133,12 @@ export function applyAutoPointFloor(
  * A marker says "there was a reading here", so it may only ever sit on a
  * column the series has a sample at — `sampleColumns` in `plotData.ts`,
  * which reads the series' raw timestamps rather than anything the merge
- * materialized. Everything else in a merged row is sample-and-hold: the
- * columns a denser neighbour contributed, the stretch past a stopped
- * series' last frame, the interior of a stall, the whole grid a
- * one-sample hline is drawn across. Marking those claims samples that do
- * not exist, and claims them most densely exactly where the plot has the
- * least data (ADR 0026).
+ * materialized. Every other value in a merged row is held: the stretch
+ * past a stopped series' last frame, the columns a denser neighbour
+ * contributed to a tile axis's row, the whole grid a one-sample hline is
+ * drawn across. Marking those claims samples that do not exist, and
+ * claims them most densely exactly where the plot has the least data
+ * (ADR 0026).
  *
  * The extrapolated stretches need no separate exclusion here, and are
  * deliberately not consulted: a stretch is extrapolation *because* the
