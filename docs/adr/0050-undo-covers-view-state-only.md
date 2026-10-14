@@ -65,7 +65,11 @@ Two further boundaries follow from the same rule:
 - **Undo never re-runs a host side effect.** Where a view change had a
   host consequence (removing a transmit element withdraws its messages
   from the host pool, removing an RBS element unloads it), undoing the
-  view change does not put the host state back.
+  view change does not put the host state back. The one withdrawal
+  undo performs is the mirror image: undoing a transmit element's
+  Duplicate removes the host frames that Duplicate cloned for the copy
+  (they exist only for it); redoing it brings back an empty transmit
+  element, as for any restored transmit.
 
 ## Why
 

@@ -440,6 +440,23 @@ describe("duplicateElement", () => {
     expect(src).toEqual(frozen);
   });
 
+  it("gives a transmit copy the cloned frame ids, never the original's", () => {
+    const src = {
+      kind: "transmit",
+      id: "x1",
+      name: "Tx",
+      sinks: ["p"],
+      frameIds: ["f1", "f2"],
+    } as Extract<ProjectElement, { kind: "transmit" }>;
+    const copy = duplicateElement(src, "x2", ["g1", "g2"]) as typeof src;
+    expect(copy).toMatchObject({ id: "x2", name: "Tx (copy)", sinks: ["p"], frameIds: ["g1", "g2"] });
+    expect(src.frameIds).toEqual(["f1", "f2"]);
+    copy.frameIds.push("g3");
+    copy.sinks.push("q");
+    expect(src.frameIds).toEqual(["f1", "f2"]);
+    expect(src.sinks).toEqual(["p"]);
+  });
+
   it("deep-copies: editing the copy's arrays never reaches the original", () => {
     const src = { kind: "trace", id: "t1", name: "T", sources: ["a"], config: { cols: [1, 2] } } as Extract<ProjectElement, { kind: "trace" }>;
     const copy = duplicateElement(src, "t2") as typeof src;

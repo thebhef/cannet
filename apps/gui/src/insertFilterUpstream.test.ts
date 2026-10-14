@@ -41,7 +41,7 @@ function fakeRegistry(initial: ProjectElement[]) {
     updateTrace: vi.fn(),
     update,
     remove: vi.fn(),
-    duplicate: vi.fn(() => ""),
+    duplicate: vi.fn(async () => ""),
   };
   return { registry, create, update, map };
 }

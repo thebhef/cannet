@@ -228,9 +228,9 @@ use trace_query::{
 #[cfg(test)]
 use trace_store::{FirstDrop, RawTraceFrame};
 use transmit_commands::{
-    clear_transmit_frames, fetch_field_validity, list_transmit_frames, remove_transmit_frame,
-    reorder_transmit_frames, run_transmit_scheduler, set_transmit_frame, start_periodic_transmit,
-    stop_periodic_transmit, transmit_frame_once,
+    clear_transmit_frames, clone_transmit_frames, fetch_field_validity, list_transmit_frames,
+    remove_transmit_frame, reorder_transmit_frames, run_transmit_scheduler, set_transmit_frame,
+    start_periodic_transmit, stop_periodic_transmit, transmit_frame_once,
 };
 #[cfg(test)]
 use transmit_commands::{
@@ -784,6 +784,7 @@ pub fn run() -> ! {
             list_transmit_frames,
             set_transmit_frame,
             remove_transmit_frame,
+            clone_transmit_frames,
             reorder_transmit_frames,
             clear_transmit_frames,
             transmit_frame_once,

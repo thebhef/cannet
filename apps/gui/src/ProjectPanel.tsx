@@ -350,7 +350,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                 onOpen={() => openElement(entry.element)}
                 onRename={(name) => reg.update(entry.element.id, { name })}
                 onRemove={() => reg.remove(entry.element.id)}
-                onDuplicate={() => reg.duplicate(entry.element.id)}
+                onDuplicate={() => void reg.duplicate(entry.element.id)}
                 onToggleLoggerEnabled={() =>
                   reg.update(entry.element.id, {
                     kind: "logger",
@@ -748,12 +748,7 @@ export function ElementRow({
       <IconButton
         name="plus"
         label="Duplicate"
-        title={
-          element.kind === "transmit"
-            ? "Duplicating a transmit element is not yet available"
-            : `Duplicate ${element.name ?? elementKindLabel(element.kind)} (undoable)`
-        }
-        disabled={element.kind === "transmit"}
+        title={`Duplicate ${element.name ?? elementKindLabel(element.kind)} (undoable)`}
         onClick={onDuplicate}
       />
       <IconButton
