@@ -583,6 +583,7 @@ pub fn run() -> ! {
         .manage(diag::DiagEnabled(diag_on))
         .manage(logger::LoggerRuntime::default())
         .manage(log_files::LogFileCache::default())
+        .manage(project_registry::ProjectCacheSizes::default())
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -777,6 +778,7 @@ pub fn run() -> ! {
                 undelivered_tx: transmit_commands::UndeliveredTx::default(),
                 filter_index_dir: Mutex::new(filter_dir),
                 filter_index: Mutex::new(None),
+                filter_index_build: Mutex::new(()),
                 import_cancel: Mutex::new(None),
                 export_cancel: Mutex::new(None),
                 live_tail_rows: std::sync::atomic::AtomicU64::new(0),

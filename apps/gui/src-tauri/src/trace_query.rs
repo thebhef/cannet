@@ -1028,6 +1028,46 @@ fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<Trace
         .collect()
 }
 
+/// Whether the index `guard` holds is the one `filter` needs, against the
+/// capture session `session`.
+fn index_is_current(
+    active: Option<&ActiveFilterIndex>,
+    filter: &FilterPredicate,
+    session: u64,
+) -> bool {
+    active.is_some_and(|a| a.predicate == *filter && a.session_start_ns == session)
+}
+
+/// An empty index for `filter`, rooted in the session's filter directory.
+/// `None` when the index files are unavailable (the caller serves an empty
+/// result).
+fn new_active_index(
+    state: &AppState,
+    filter: &FilterPredicate,
+    session: u64,
+) -> Option<ActiveFilterIndex> {
+    let index = match cannet_spill::FilterIndex::new(&*state.filter_index_dir()) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::error!("filter index unavailable ({e})");
+            return None;
+        }
+    };
+    Some(ActiveFilterIndex {
+        predicate: filter.clone(),
+        session_start_ns: session,
+        index,
+        candidates: filter::CandidateSet {
+            keys: Vec::new(),
+            membership: false,
+        },
+        decode_ids: HashSet::new(),
+        match_context: MatchContext::default(),
+        resolved_key_generation: None,
+        resolve_count: 0,
+    })
+}
+
 /// Ensure the active filter index ([`AppState::filter_index`]) is built for
 /// `filter` against the current capture session and current to the store tip,
 /// returning the held lock guard. The shared head of [`fetch_filtered_trace`]
@@ -1039,40 +1079,56 @@ fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<Trace
 /// lock is held only for the synchronous build; the index's own chunked
 /// extend releases the trace-store append lock between chunks, so ingest is
 /// not starved.
+///
+/// **A rebuild runs off the `filter_index` lock and takes it only for the
+/// swap** (ADR 0049). A predicate change walks the whole capture, and holding
+/// the lock for that parked every other filtered fetch — each one on a runtime
+/// worker — behind it. The fresh index is therefore built into a local, and
+/// installed at the end; a rebuild is serialized against another rebuild by a
+/// separate gate, so two views asking for the same new predicate still cost
+/// one walk. Whatever the build was planned against is a *hint* (ADR 0048):
+/// the swap re-reads the session under the lock and discards the fresh index
+/// if a Clear moved the capture underneath it, rather than installing one
+/// stamped against a session that is gone.
 pub(crate) fn ensure_active_filter_index<'a>(
     state: &'a AppState,
     filter: &FilterPredicate,
 ) -> Option<std::sync::MutexGuard<'a, Option<ActiveFilterIndex>>> {
-    let mut guard = state.filter_index();
     let session = state.trace_store.session_start_ns();
-    let needs_rebuild = match guard.as_ref() {
-        Some(a) => a.predicate != *filter || a.session_start_ns != session,
-        None => true,
-    };
-    if needs_rebuild {
-        let index = match cannet_spill::FilterIndex::new(&*state.filter_index_dir()) {
-            Ok(i) => i,
-            Err(e) => {
-                tracing::error!("filter index unavailable ({e})");
-                return None;
+    if !index_is_current(state.filter_index().as_ref(), filter, session) {
+        // Only one rebuild at a time, and not under the index lock: a
+        // second caller waits here, then finds the index already built.
+        let _build = state.filter_index_build();
+        let session = state.trace_store.session_start_ns();
+        if !index_is_current(state.filter_index().as_ref(), filter, session) {
+            let mut fresh = new_active_index(state, filter, session)?;
+            extend_active_index(state, filter, &mut fresh);
+            let mut guard = state.filter_index();
+            // The plan is a hint: a Clear during the build moved the
+            // capture, and an index stamped against the session that is
+            // gone must not be installed. The next call rebuilds.
+            if state.trace_store.session_start_ns() == session {
+                *guard = Some(fresh);
             }
-        };
-        *guard = Some(ActiveFilterIndex {
-            predicate: filter.clone(),
-            session_start_ns: session,
-            index,
-            candidates: filter::CandidateSet {
-                keys: Vec::new(),
-                membership: false,
-            },
-            decode_ids: HashSet::new(),
-            match_context: MatchContext::default(),
-            resolved_key_generation: None,
-            resolve_count: 0,
-        });
+        }
     }
+    let mut guard = state.filter_index();
+    if !index_is_current(guard.as_ref(), filter, state.trace_store.session_start_ns()) {
+        // The capture moved under the build (a Clear), so nothing that
+        // is installed describes the session being asked about. Serve
+        // nothing; the next call rebuilds against the new session.
+        return None;
+    }
+    extend_active_index(state, filter, guard.as_mut().expect("index is current"));
+    Some(guard)
+}
+
+/// Resolve `filter` against the current capture (only when a new id has been
+/// seen) and bring `active` current to the store tip. The body both the
+/// off-lock rebuild and the on-lock incremental extend run; the second is
+/// `O(delta)`, which is why it is cheap enough to do under the lock.
+fn extend_active_index(state: &AppState, filter: &FilterPredicate, active: &mut ActiveFilterIndex) {
     {
-        let active = guard.as_mut().expect("active filter index just set");
         let dbs = state.databases();
         // Re-resolve only when a new id has been seen. Walking every
         // loaded DBC's message and signal names on each page fetch was
@@ -1114,7 +1170,6 @@ pub(crate) fn ensure_active_filter_index<'a>(
             .trace_store
             .refresh_filter_index(&mut active.index, &candidates, &keep);
     }
-    Some(guard)
 }
 
 /// A *paged* window into the filtered chronological trace, served from the
@@ -1143,15 +1198,44 @@ pub(crate) fn ensure_active_filter_index<'a>(
 /// checkpoint is no longer needed — the parameters are accepted for IPC
 /// compatibility but unused.
 ///
-/// `async` so Tauri runs it off the main thread; the body holds no lock
-/// across an `.await` (it takes none — the index extend chunks its own
-/// trace-store locking internally).
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers)
+/// (ADR 0048): a predicate change rebuilds the index over the whole capture,
+/// which is capture-scaled work and must not hold an async-runtime worker for
+/// its duration. The body holds no lock across an `.await` (it takes none —
+/// the index extend chunks its own trace-store locking internally).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // a Tauri command — args are the IPC payload fields
-#[allow(clippy::unused_async)] // `async` makes Tauri run it off the main thread
 pub(crate) async fn fetch_filtered_trace(
     app: AppHandle,
     filter: FilterPredicate,
+    scan_start: u64,
+    scan_end: u64,
+    offset: u64,
+    limit: u64,
+    from_end: bool,
+    prev_count: Option<u64>,
+    prev_count_end: Option<u64>,
+) -> FilteredTracePage {
+    crate::sampling::off_async_workers(move || {
+        fetch_filtered_trace_blocking(
+            &app,
+            &filter,
+            scan_start,
+            scan_end,
+            offset,
+            limit,
+            from_end,
+            prev_count,
+            prev_count_end,
+        )
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fetch_filtered_trace_blocking(
+    app: &AppHandle,
+    filter: &FilterPredicate,
     scan_start: u64,
     scan_end: u64,
     offset: u64,
@@ -1169,7 +1253,7 @@ pub(crate) async fn fetch_filtered_trace(
     // Hold the active filter index for the whole call (filtered fetches are
     // infrequent and the index is cheap to serve), built for this predicate
     // and current to the store tip.
-    let Some(mut guard) = ensure_active_filter_index(state.inner(), &filter) else {
+    let Some(mut guard) = ensure_active_filter_index(state.inner(), filter) else {
         return FilteredTracePage {
             count: 0,
             start: 0,
@@ -1299,18 +1383,30 @@ pub(crate) async fn frame_indices_at_ns(app: AppHandle, timestamps: Vec<u64>) ->
 /// outside the window and the view drops it — mirroring the unfiltered merge,
 /// where out-of-window anchors are likewise dropped.
 ///
-/// `async` so Tauri runs it off the main thread; the body holds no lock
-/// across an `.await` (it takes none).
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers)
+/// (ADR 0048), for the same reason as [`fetch_filtered_trace`]: this shares
+/// its index, so it shares its rebuild.
 #[tauri::command]
-#[allow(clippy::unused_async)] // `async` makes Tauri run it off the main thread
 pub(crate) async fn filtered_positions_at_ns(
     app: AppHandle,
     filter: FilterPredicate,
     scan_start: u64,
     timestamps: Vec<u64>,
 ) -> Vec<i64> {
+    crate::sampling::off_async_workers(move || {
+        filtered_positions_at_ns_blocking(&app, &filter, scan_start, &timestamps)
+    })
+    .await
+}
+
+fn filtered_positions_at_ns_blocking(
+    app: &AppHandle,
+    filter: &FilterPredicate,
+    scan_start: u64,
+    timestamps: &[u64],
+) -> Vec<i64> {
     let state: State<'_, AppState> = app.state();
-    let Some(mut guard) = ensure_active_filter_index(state.inner(), &filter) else {
+    let Some(mut guard) = ensure_active_filter_index(state.inner(), filter) else {
         return Vec::new();
     };
     let active = guard.as_mut().expect("active filter index ensured");
@@ -1323,8 +1419,8 @@ pub(crate) async fn filtered_positions_at_ns(
     )
     .unwrap_or(i64::MAX);
     timestamps
-        .into_iter()
-        .map(|ts| {
+        .iter()
+        .map(|&ts| {
             let raw = state.trace_store.frame_index_at_ns(ts);
             i64::try_from(active.index.position_of(raw)).unwrap_or(i64::MAX) - base
         })

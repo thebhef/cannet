@@ -178,6 +178,105 @@ describe("useHostMirror", () => {
     vi.useRealTimers();
   });
 
+  it("keeps one request in flight when a fetch is slower than the poll interval", async () => {
+    // A 250 ms listing poll over a folder of large files used to start a
+    // fresh fetch every tick while the previous one was still reading,
+    // which is what saturated the machine. A tick that finds one in
+    // flight now only marks the mirror stale, and exactly one refetch
+    // follows when it lands.
+    vi.useFakeTimers();
+    const resolvers: ((v: number) => void)[] = [];
+    const fetch = vi.fn(() => new Promise<number>((resolve) => resolvers.push(resolve)));
+    renderHook(() =>
+      useHostMirror({
+        fetch,
+        fallback: 0,
+        event: "changed",
+        pollWhile: () => true,
+        pollIntervalMs: 100,
+      }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    // Ten poll ticks pass while the first fetch is still out.
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(resolvers).toHaveLength(1);
+
+    // It lands: one coalesced refetch follows, not ten.
+    await act(async () => {
+      resolvers[0]?.(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+  });
+
+  it("drops a response that lands after a newer snapshot", async () => {
+    // Newest wins. An event that carries the whole state is newer than
+    // any answer already in flight, so the late answer must not overwrite
+    // it — the "the list does not respond" half of the logger report was
+    // responses landing out of order.
+    const resolvers: ((v: number) => void)[] = [];
+    const fetch = vi.fn(() => new Promise<number>((resolve) => resolvers.push(resolve)));
+    const { result } = renderHook(() =>
+      useHostMirror<number, number>({
+        fetch,
+        fallback: 0,
+        event: "changed",
+        fromPayload: (p) => p,
+      }),
+    );
+    await waitFor(() => expect(resolvers).toHaveLength(1));
+
+    act(() => eventHandlers[0]?.({ payload: 7 }));
+    expect(result.current.value).toBe(7);
+
+    await act(async () => {
+      resolvers[0]?.(1); // the older answer, landing late
+      await Promise.resolve();
+    });
+    expect(result.current.value).toBe(7);
+  });
+
+  it("drops the answer to a fetch the consumer has since re-aimed", async () => {
+    // The consumer re-points `fetch` (the logger grid's folder changes).
+    // The request already out is for the old target; its answer is not
+    // this mirror's state any more.
+    const resolvers: ((v: string) => void)[] = [];
+    const make = () => vi.fn(() => new Promise<string>((resolve) => resolvers.push(resolve)));
+    const first = make();
+    const second = make();
+    const { result, rerender } = renderHook(
+      ({ fetch }: { fetch: () => Promise<string> }) =>
+        useHostMirror({ fetch, fallback: "", event: "changed" }),
+      { initialProps: { fetch: first as () => Promise<string> } },
+    );
+    await waitFor(() => expect(resolvers).toHaveLength(1));
+
+    rerender({ fetch: second as () => Promise<string> });
+    await act(async () => {
+      resolvers[0]?.("old"); // the first target's answer, superseded
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.value).toBe("");
+    await waitFor(() => expect(resolvers).toHaveLength(2));
+    await act(async () => {
+      resolvers[1]?.("new");
+      await Promise.resolve();
+    });
+    expect(result.current.value).toBe("new");
+  });
+
   it("unsubscribes the listener and clears the poll timer on unmount", async () => {
     vi.useFakeTimers();
     const unlisten = vi.fn();
