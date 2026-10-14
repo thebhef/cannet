@@ -2672,6 +2672,10 @@ ul.status-bar-menu .status-chip {
 .trace-panel-search-input {
   flex: 1 1 0;
 }
+.trace-panel-match-count {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
 
 /* Start / Stop / Pause / Resume / Clear chips in a trace panel's
    toolbar (the shared `TraceControls` component): a `ChipSegment` for
