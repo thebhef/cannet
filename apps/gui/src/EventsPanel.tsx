@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { emit } from "@tauri-apps/api/event";
 
+import { BusErrorEventsSection } from "./BusErrorEventsSection";
+import { useBusHealth } from "./busHealth";
 import { ChipButton } from "./ChipButton";
 import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT } from "./gotoEvent";
+import { useProjectContext } from "./projectContext";
 import { useTraceModel } from "./traceData";
 import { useNotes, useRemoveChip } from "./notesContext";
 import {
@@ -41,9 +44,20 @@ const NO_COLUMNS: readonly ColumnState[] = [];
 /// cells or not. That is why this view declares **none** — a column set is not
 /// inert here, and the default frame layout (1144 px of tracks) laid the ✎ / ×
 /// controls out ~900 px beyond a narrow panel's right edge.
-export function EventsPanel(_props: IDockviewPanelProps) {
+export function EventsPanel({ api }: IDockviewPanelProps) {
   diagCount("render.EventsPanel"); // DIAG
   const model = useTraceModel();
+  // How many times this view has been on screen, counting its first
+  // render — dockview detaches a hidden panel's element, so the
+  // bus-error section's own scroll offset needs putting back on return
+  // (`useScrollRestore.ts`, the same pattern `SettingsPanel.tsx` uses).
+  const [shownCount, setShownCount] = useState(1);
+  useEffect(() => {
+    const d = api.onDidVisibilityChange((e) => {
+      if (e.isVisible) setShownCount((n) => n + 1);
+    });
+    return () => d.dispose();
+  }, [api]);
   const {
     notes,
     renameNote,
@@ -71,7 +85,22 @@ export function EventsPanel(_props: IDockviewPanelProps) {
       visibleEvents(allEvents, kindFilter.visible).filter((e) => matchesTagQuery(e, tagQuery)),
     [allEvents, kindFilter.visible, tagQuery],
   );
-  const counts = useMemo(() => countByKind(allEvents), [allEvents]);
+  // Bus errors are a paged section below (ADR 0035 amended), not part of
+  // this whole-list view — the notes store holds authored events only,
+  // so `allEvents` never carries one. The checklist's own count is
+  // still a model fact, read off `get_bus_health`'s per-bus totals
+  // rather than left at zero: a fault is exactly what a reader most
+  // wants surfaced, including on the row that says how many there are.
+  const { buses: sessionBuses } = useProjectContext();
+  const busHealth = useBusHealth();
+  const busErrorCount = useMemo(
+    () => sessionBuses.reduce((n, b) => n + (busHealth[b.id]?.errorCount ?? 0), 0),
+    [sessionBuses, busHealth],
+  );
+  const counts = useMemo(
+    () => ({ ...countByKind(allEvents), busError: busErrorCount }),
+    [allEvents, busErrorCount],
+  );
   const tags = useMemo(() => tagsInUse(allEvents), [allEvents]);
 
   // The linking gesture is multi-select plus one control (owner ruling):
@@ -187,6 +216,13 @@ export function EventsPanel(_props: IDockviewPanelProps) {
         selectableEvents
         onEventSelectionChange={setSelected}
       />
+      {kindFilter.visible.has("busError") && (
+        <BusErrorEventsSection
+          buses={sessionBuses}
+          baseTimestamp={model.sessionStartSeconds}
+          shownCount={shownCount}
+        />
+      )}
     </div>
   );
 }

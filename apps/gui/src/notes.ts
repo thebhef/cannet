@@ -8,10 +8,12 @@ import { wheelColor } from "./palette";
 
 /// The kind of a timeline event (ADR 0035). `note` is the user-placed
 /// marker the host stores; `messageBound` is a comment attached to the
-/// message it sits beside (BLF's own `EVENT_COMMENT`); `busError` is a run
-/// of CAN bus errors the host coalesced into one event; `truncation` is the
-/// disk-spill marker synthesised here in the frontend (never sent by the
-/// host).
+/// message it sits beside (BLF's own `EVENT_COMMENT`); `busError` is one
+/// episode of a bus's error series, read off the signal-cache pyramid
+/// (ADR 0035 amended) — the plot's markers and the Events panel's paged
+/// section (`useBusErrorEvents.ts`) both build it, but it never enters
+/// this module's own event store; `truncation` is the disk-spill marker
+/// synthesised here in the frontend (never sent by the host).
 export type EventKind = "note" | "messageBound" | "busError" | "truncation";
 
 /// Where an event came from (ADR 0035). The category, not the individual
@@ -110,11 +112,10 @@ export const EVENT_KIND_GROUPS: readonly EventKindGroup[] = [
 /// each view's own (view-local) override.
 ///
 /// Everything, now that the filter is grouped. Bus errors were once
-/// filtered out by default as noise; the host coalesces a run of error
-/// frames into a single summary event (`bus_health.rs`), so a fault that
-/// produces a hundred thousand error frames produces one row — and a
-/// fault is the thing a reader most wants surfaced without going looking
-/// for it.
+/// filtered out by default as noise; a fault that produces a hundred
+/// thousand error frames is served as a bounded set of markers, each
+/// carrying a count and a span (ADR 0035 amended) — and a fault is the
+/// thing a reader most wants surfaced without going looking for it.
 export function defaultVisibleKinds(): Set<EventKind> {
   return new Set(EVENT_KINDS);
 }
