@@ -53,6 +53,9 @@ export interface ProjectContextValue {
   signalColors: Record<string, string>;
   /// Set (or clear, with `null`) one signal's color override.
   onSetSignalColor: (key: string, color: string | null) => void;
+  /// Set several signals' color overrides in one project change — the
+  /// Signals panel's name picker applied over a gridview selection.
+  onSetSignalColors: (entries: { key: string; color: string }[]) => void;
 
   onNewProject: () => void;
   onOpenProject: () => void;

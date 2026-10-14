@@ -379,11 +379,17 @@ function SignalSwatch({
   hidden,
   color,
   onToggleHidden,
+  onBeforePick,
   onPickColor,
 }: {
   hidden: boolean;
   color: string;
   onToggleHidden: () => void;
+  /** Runs before the native picker opens (ADR 0026's swatch
+   * right-click) — the row's unselected-row rule: make it the sole
+   * selection first, so `onPickColor` always has an unambiguous
+   * selection to write. */
+  onBeforePick: () => void;
   onPickColor: (hex: string) => void;
 }) {
   return (
@@ -406,6 +412,7 @@ function SignalSwatch({
       onSwatchContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
+        onBeforePick();
       }}
     />
   );
@@ -840,9 +847,6 @@ interface PlotAreaProps {
    * cell, by-id cell, another plot panel). */
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (ref: SignalRef) => void;
-  /** Set a series' color to the given `#rrggbb` value (ADR 0026
-   * per-series color picker). */
-  onSetSignalColor: (ref: SignalRef, color: string) => void;
   /** `signalKey` → how that series reads and converts for display: what
    * its declared unit string means, the family a kind-locked picker
    * offers, the spelling it reads as, and the affine carrying it there.
@@ -914,6 +918,10 @@ interface PlotAreaProps {
   /** Bulk-set the parent area's current selection hidden/shown — the
    * selection's context menu Hide / Show. */
   onSetSelectionHidden: (hidden: boolean) => void;
+  /** Bulk-set the parent area's current selection's colour pick — the
+   * swatch's right-click picker (ADR 0026), applied to the selection
+   * a right-clicked row belongs to instead of just that row. */
+  onSetSelectionColor: (color: string) => void;
   /** A selected row started a drag: fan the whole selection into the
    * drag payload instead of just the grabbed row (DatabasePanel
    * precedent, ADR 0045). */
@@ -1974,7 +1982,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onRemoveSignal,
     onDropSignal,
     onToggleHidden,
-    onSetSignalColor,
     displayUnits,
     onSetDisplayUnit,
     onSetPatterns,
@@ -1993,6 +2000,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     seriesColor,
     panelElementId,
     onSetSelectionHidden,
+    onSetSelectionColor,
     onDragSelection,
     onSortArea,
   } = p;
@@ -4877,7 +4885,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   hidden={!!s.hidden}
                   color={seriesColor(s)}
                   onToggleHidden={() => onToggleHidden(s)}
-                  onPickColor={(c) => onSetSignalColor(s, c)}
+                  onBeforePick={() => {
+                    if (!isSelected) onSelectSignal(key, { mod: false, shift: false });
+                  }}
+                  onPickColor={onSetSelectionColor}
                 />
                 {/* The app's standard disclosure (ADR 0044), leading
                     the row as it does on a Database tree row — and so

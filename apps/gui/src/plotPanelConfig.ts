@@ -218,7 +218,6 @@ export interface AxisHandlers {
   onRemoveSignal: (key: string) => void;
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (ref: SignalRef) => void;
-  onSetSignalColor: (ref: SignalRef, color: string) => void;
   /** Read one series in another unit, or as its database declared it
    * again (`null`). The picker is kind-locked, so this is always a
    * conversion the host can make. */
@@ -235,6 +234,16 @@ export interface AxisHandlers {
    * row in one persist / one resample rather than N single-row calls.
    * A no-op if the parent area's selection is empty. */
   onSetSelectionHidden: (hidden: boolean) => void;
+  /** Bulk-set the parent area's current *selection*'s colour pick in
+   * one batch — the swatch's right-click picker (ADR 0026), applied to
+   * every selected row rather than the clicked one alone. A
+   * right-click on a row outside the selection makes it the sole
+   * selection first (`PlotArea`'s row-level rule for the same
+   * gesture), so by the time this fires the selection always includes
+   * at least the clicked row. Same per-row materialization rule as
+   * `onSetSelectionHidden`: a pattern-derived row in the selection is
+   * pinned as a manual pick carrying the new color. */
+  onSetSelectionColor: (color: string) => void;
   /** A selected row started a drag: fan the whole selection into the
    * drag payload instead of just the grabbed row (DatabasePanel precedent,
    * ADR 0045). A no-op if the parent area's selection is empty. */
