@@ -932,10 +932,10 @@ where
     S::Error: fmt::Display,
 {
     let state: State<'_, AppState> = app.state();
-    // Bus errors are coalesced host-side for display (ADR 0035). The
-    // frames still go into the store below like any other frame — the
-    // summary is produced *beside* them, never instead of them, so a
-    // saved capture keeps every error frame that was received.
+    // Bus errors are tallied per bus for the health panel as they arrive.
+    // The frames still go into the store below like any other frame, so a
+    // saved capture keeps every error frame that was received — and the
+    // timeline's bus-error markers are read back out of them (ADR 0035).
     let health = app.try_state::<crate::bus_health::BusHealth>();
     let mut total: u64 = 0;
     // For replay sources (BLF, MDF) the session timeline is the file's

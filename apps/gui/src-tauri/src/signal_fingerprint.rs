@@ -34,7 +34,9 @@
 //!
 //! **File-backed series** (`FileSignalInfo`) fingerprint against their
 //! source instead ([`file_source`]): their samples were read out of a
-//! capture file and no DBC ever bore on them.
+//! capture file and no DBC ever bore on them. A bus's **error series**
+//! fingerprints against its bus and the rule that builds it
+//! ([`bus_errors`]), for the same reason.
 //!
 //! ## The hash, and why this one
 //!
@@ -84,6 +86,14 @@ const TAG_FILE: u8 = b'F';
 /// Section tag for a math signal's fingerprint, distinct in the same
 /// first byte.
 const TAG_MATH: u8 = b'M';
+/// Section tag for a bus's error series' fingerprint, distinct in the
+/// same first byte.
+const TAG_BUS_ERRORS: u8 = b'E';
+/// The rule a bus's error series is built by — one sample per error
+/// frame, carrying the running count — as a version mixed into its
+/// fingerprint. Bumping it is how a change to the rule invalidates every
+/// persisted error series rather than extending one built the old way.
+const BUS_ERRORS_RULE: u8 = 1;
 /// Section tag opening one operand of a math signal's fingerprint.
 const TAG_OPERAND: u8 = b'O';
 /// Section tag opening the winning definition's decode specification.
@@ -722,6 +732,22 @@ pub fn file_source(info: &FileSignalInfo) -> String {
     h.mix_str(&info.source_path);
     h.mix_u32(info.group);
     h.mix_str(&info.name);
+    h.finish()
+}
+
+/// The fingerprint of a bus's **error series**: the bus, and the rule
+/// the series is built by.
+///
+/// No DBC bears on it — an error frame carries no payload to decode — so
+/// nothing a DBC-set change does can move it, and a persisted error
+/// series is judged by the capture identity alone, exactly as the frames
+/// it counts are.
+#[must_use]
+pub fn bus_errors(bus_id: &str) -> String {
+    let mut h = Fnv::new();
+    h.mix_u8(TAG_BUS_ERRORS);
+    h.mix_u8(BUS_ERRORS_RULE);
+    h.mix_str(bus_id);
     h.finish()
 }
 

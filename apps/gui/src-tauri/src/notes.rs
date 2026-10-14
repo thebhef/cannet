@@ -19,12 +19,14 @@
 //! and the frontend is `{ id, timestamp_ns, label }` per note, so
 //! the path from a plot click to a saved BLF is direct.
 //!
-//! **Three categories of event share this store's delivery path**
-//! ([`EventCategory`], ADR 0035). User-authored events are the durable ones
-//! it owns; host-derived events (a coalesced run of bus errors) are computed
-//! elsewhere in the host, held apart, and never persisted or exported;
-//! frontend-derived events (the truncation marker) never reach the host at
-//! all. [`NotesStore::events`] is the merged view every surface reads.
+//! **This store holds authored events only** ([`EventCategory`], ADR
+//! 0035). A host-derived kind is refused by it: a detector's output grows
+//! with the capture, so it is a windowed series family the signal cache
+//! serves and a view pages through — a bus's error series is one
+//! ([`crate::signal_cache::SignalCacheStore::bus_error_windows`]) — never
+//! a list held here whole. Frontend-derived events (the truncation
+//! marker) never reach the host at all. So `notes-changed` fires only on
+//! an authored change.
 //!
 //! **An event may also say what it is about** ([`EventSubject`], ADR 0056):
 //! a list of structural references to messages, signals and other events.
@@ -150,9 +152,8 @@ pub struct Note {
     #[serde(default)]
     pub color: Option<String>,
     /// Optional free-text body — the "why" behind the label, which the
-    /// event view discloses on demand rather than in the row. Editable on a
-    /// user-authored event; a host-derived one fills it in with the detail
-    /// behind its summary. `#[serde(default)]` for back-compat.
+    /// event view discloses on demand rather than in the row.
+    /// `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub description: Option<String>,
     /// Optional user-defined tag — the axis the event view filters on
@@ -232,7 +233,8 @@ pub fn linked_event_ids(events: &[Note], id: &str) -> Vec<String> {
 
 /// Where a timeline event came from (ADR 0035). The category, not the
 /// individual kind, decides the event's lifecycle: whether it is editable,
-/// whether it rides the scratch, and whether it is exported.
+/// whether it rides the scratch, whether it is exported — and whether it is
+/// held here at all.
 ///
 /// The model names **three** categories. The third —
 /// *frontend-derived*, synthesized in the frontend from host data (the
@@ -244,8 +246,9 @@ pub enum EventCategory {
     /// The user placed it. Editable, persisted to the scratch, exported.
     UserAuthored,
     /// The host computed it from the frame stream. Not editable, not
-    /// persisted, not exported — it is recomputed by whatever produces it,
-    /// and the data it summarises is what gets written out.
+    /// persisted, not exported, and not held in this store: it is a
+    /// windowed series the signal cache serves, and the data it summarises
+    /// is what gets written out.
     HostDerived,
 }
 
@@ -276,10 +279,11 @@ pub enum EventKind {
     /// it a kind of its own is the record it rides, which tracks with its
     /// message rather than floating on the timeline.
     MessageBound,
-    /// A run of CAN bus errors coalesced by the host into one event with a
-    /// count and a span. Host-derived: not editable, not persisted, not
-    /// exported — the error frames it summarises stay in the capture and
-    /// are what a save writes.
+    /// CAN bus errors: a stretch of a bus's error series, with the count
+    /// and span between two served points of it. Host-derived: not
+    /// editable, not persisted, not exported, and never in this store —
+    /// the error frames it stands for stay in the capture and are what a
+    /// save writes.
     BusError,
 }
 
@@ -323,12 +327,6 @@ impl EventKind {
 /// chronological order for the event list.
 pub struct NotesStore {
     inner: Mutex<Vec<Note>>,
-    /// Host-derived events ([`EventCategory::HostDerived`]) — held apart
-    /// from `inner` so the two lifecycles cannot be confused: this list is
-    /// never persisted, never exported, and is replaced wholesale by
-    /// whatever computes it. Views see it merged with `inner` through
-    /// [`Self::events`].
-    derived: Mutex<Vec<Note>>,
     /// Scratch dir for durable-kind persistence (ADR 0002 DS-7), or `None`
     /// for the in-RAM test double. When set, every edit rewrites
     /// [`SCRATCH_NOTES_FILE`] under it. Behind its own lock because the
@@ -358,7 +356,6 @@ impl NotesStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
-            derived: Mutex::new(Vec::new()),
             scratch_dir: Mutex::new(None),
         }
     }
@@ -371,7 +368,6 @@ impl NotesStore {
     pub fn with_scratch(dir: PathBuf) -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
-            derived: Mutex::new(Vec::new()),
             scratch_dir: Mutex::new(Some(dir)),
         }
     }
@@ -406,27 +402,18 @@ impl NotesStore {
     }
 
     /// Chronological snapshot of the **durable** events — the user-authored
-    /// ones this store owns. This is what rides the scratch; it is not what
-    /// the views read (see [`Self::events`]).
+    /// ones this store owns. This is what rides the scratch.
     pub fn snapshot(&self) -> Vec<Note> {
         self.inner.lock().expect("notes mutex poisoned").clone()
     }
 
-    /// Chronological snapshot of every event the views render: the durable
-    /// ones merged with the host-derived ones. This is what `fetch_notes`
-    /// returns and what a `notes-changed` payload carries — one model, one
-    /// delivery path, whatever produced each event (ADR 0035).
+    /// Chronological snapshot of the events this store gives the views —
+    /// what `fetch_notes` returns and what a `notes-changed` payload
+    /// carries. The authored events, whole: they are bounded by what the
+    /// user wrote. Detector-derived events are not here; a view pages them
+    /// out of the signal cache per window (ADR 0035).
     pub fn events(&self) -> Vec<Note> {
-        let mut all = self.snapshot();
-        all.extend(
-            self.derived
-                .lock()
-                .expect("derived events mutex poisoned")
-                .iter()
-                .cloned(),
-        );
-        all.sort_by_key(|n| n.timestamp_ns);
-        all
+        self.snapshot()
     }
 
     /// The events Save Capture writes out: user-authored only. Host-derived
@@ -436,31 +423,6 @@ impl NotesStore {
         let mut out = self.snapshot();
         out.retain(|n| n.kind.exported());
         out
-    }
-
-    /// Replace the host-derived event set with `events` — what a host-side
-    /// detector calls when its computation changes. Non-derived kinds are
-    /// dropped: this list is not a back door into the durable store.
-    ///
-    /// The bus-error coalescer ([`crate::bus_health`]) is its caller: it
-    /// hands over the current summary set on each republication tick, and
-    /// every view updates through the existing `notes-changed` broadcast.
-    pub fn replace_derived(&self, mut events: Vec<Note>) -> Applied {
-        events.retain(|n| !n.kind.persisted());
-        events.sort_by_key(|n| n.timestamp_ns);
-        *self.derived.lock().expect("derived events mutex poisoned") = events;
-        Applied {
-            notes: self.events(),
-        }
-    }
-
-    /// Drop every host-derived event. Used by the clear / replace paths:
-    /// the frames they summarise are gone, so the summaries go with them.
-    fn clear_derived(&self) {
-        self.derived
-            .lock()
-            .expect("derived events mutex poisoned")
-            .clear();
     }
 
     /// Rewrite the scratch copy from the current notes, via atomic
@@ -484,8 +446,8 @@ impl NotesStore {
     /// `timestamp_ns`.
     pub fn add(&self, note: Note) -> Option<Applied> {
         if !note.kind.persisted() {
-            // The durable store holds user-authored events only; a
-            // host-derived one arrives through `replace_derived` (ADR 0035).
+            // The store holds user-authored events only; a host-derived
+            // one is a windowed series the signal cache serves (ADR 0035).
             tracing::warn!(kind = ?note.kind, "refusing a non-durable event in the notes store");
             return None;
         }
@@ -643,9 +605,6 @@ impl NotesStore {
     /// references are never swept: they are structural, and an unresolved
     /// one is a state the views render.
     ///
-    /// The host-derived list is not swept — it is recomputed wholesale by
-    /// whatever produces it, so an edit there would be discarded.
-    ///
     /// `None` if `id` is unknown.
     pub fn remove(&self, id: &str) -> Option<Applied> {
         {
@@ -670,17 +629,11 @@ impl NotesStore {
     pub fn clear(&self) -> Option<Applied> {
         {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
-            let derived_empty = self
-                .derived
-                .lock()
-                .expect("derived events mutex poisoned")
-                .is_empty();
-            if guard.is_empty() && derived_empty {
+            if guard.is_empty() {
                 return None;
             }
             guard.clear();
         }
-        self.clear_derived();
         self.persist();
         Some(Applied { notes: Vec::new() })
     }
@@ -695,9 +648,6 @@ impl NotesStore {
             let mut guard = self.inner.lock().expect("notes mutex poisoned");
             *guard = notes;
         }
-        // A replace swaps which capture this session holds, so the previous
-        // capture's host-derived summaries no longer describe anything.
-        self.clear_derived();
         self.persist();
         Applied {
             notes: self.events(),
@@ -730,9 +680,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
 
-/// Snapshot of the session-scoped timeline events, chronological — the
-/// durable ones and the host-derived ones together, the same set a
-/// `notes-changed` payload carries. Views call this on mount to seed their
+/// Snapshot of the session-scoped authored events, chronological — the
+/// same set a `notes-changed` payload carries. Views call this on mount to seed their
 /// event list and reconcile against `notes-changed` events.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -1136,21 +1085,6 @@ mod category_tests {
         }
     }
 
-    fn user_note(id: &str, ts: u64) -> Note {
-        Note {
-            id: id.into(),
-            timestamp_ns: ts,
-            label: "note".into(),
-            kind: EventKind::Note,
-            color: None,
-            description: None,
-            tag: None,
-            commented_event_type: None,
-            subjects: Vec::new(),
-            unknown_block_lines: Vec::new(),
-        }
-    }
-
     #[test]
     fn each_kind_declares_its_category_and_that_category_fixes_its_lifecycle() {
         assert_eq!(EventKind::Note.category(), EventCategory::UserAuthored);
@@ -1164,62 +1098,6 @@ mod category_tests {
         let s = NotesStore::new();
         assert!(s.add(bus_error("e1", 1_000)).is_none());
         assert!(s.snapshot().is_empty());
-        assert!(s.events().is_empty());
-    }
-
-    #[test]
-    fn host_derived_events_reach_the_views_but_never_the_scratch_or_an_export() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = NotesStore::with_scratch(dir.path().to_path_buf());
-        s.add(user_note("n1", 2_000)).unwrap();
-        let applied = s.replace_derived(vec![bus_error("e1", 1_000)]);
-
-        // Views see both, chronologically.
-        assert_eq!(
-            applied
-                .notes
-                .iter()
-                .map(|n| n.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["e1", "n1"],
-        );
-        assert_eq!(applied.notes, s.events());
-        // The durable snapshot and the export set see only the note.
-        assert_eq!(
-            s.snapshot()
-                .iter()
-                .map(|n| n.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["n1"],
-        );
-        assert_eq!(
-            s.exportable()
-                .iter()
-                .map(|n| n.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["n1"],
-        );
-        // And the scratch file the next session restores from holds only it.
-        let reopened = NotesStore::with_scratch(dir.path().to_path_buf());
-        assert_eq!(
-            reopened
-                .restore()
-                .expect("notes.json present")
-                .iter()
-                .map(|n| n.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["n1"],
-        );
-    }
-
-    #[test]
-    fn clearing_the_capture_drops_the_derived_events_with_it() {
-        let s = NotesStore::new();
-        s.replace_derived(vec![bus_error("e1", 1_000)]);
-        assert!(
-            s.clear().is_some(),
-            "derived-only store still has something to clear"
-        );
         assert!(s.events().is_empty());
     }
 
@@ -1507,40 +1385,5 @@ mod subject_tests {
             linked_event_ids(&s.events(), "a").is_empty(),
             "an unresolved reference names no event in this store"
         );
-    }
-
-    #[test]
-    fn a_host_derived_event_may_carry_subjects_and_still_never_be_exported() {
-        // Any category may carry subjects; the export boundary is unchanged.
-        let s = NotesStore::new();
-        let mut e = note("e1", 500);
-        e.kind = EventKind::BusError;
-        e.subjects = vec![EventSubject::Message {
-            message_id: 0x123,
-            extended: false,
-        }];
-        s.add(note("n1", 1_000)).unwrap();
-        let applied = s.replace_derived(vec![e]);
-        assert_eq!(applied.notes[0].subjects.len(), 1);
-        assert_eq!(
-            s.exportable()
-                .iter()
-                .map(|n| n.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["n1"],
-        );
-    }
-
-    #[test]
-    fn a_link_to_a_host_derived_event_reads_symmetrically_too() {
-        let s = NotesStore::new();
-        let mut e = note("e1", 500);
-        e.kind = EventKind::BusError;
-        s.replace_derived(vec![e]);
-        s.add(note("a", 1_000)).unwrap();
-        s.set_subjects("a", vec![EventSubject::Event { id: "e1".into() }])
-            .unwrap();
-        assert_eq!(ids(&linked_event_ids(&s.events(), "e1")), vec!["a"]);
-        assert_eq!(ids(&linked_event_ids(&s.events(), "a")), vec!["e1"]);
     }
 }
