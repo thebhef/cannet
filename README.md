@@ -3696,6 +3696,7 @@ with:
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
 pnpm --dir apps/gui test           # frontend unit tests (vitest)
 pnpm --dir apps/gui build          # type-checks and bundles the frontend
 ```

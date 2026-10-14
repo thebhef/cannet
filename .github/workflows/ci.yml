@@ -82,6 +82,22 @@ jobs:
       - run: setsid --wait cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  fmt:
+    name: Rust (fmt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml pins the version + clippy/rustfmt components;
+      # rustup installs exactly that, so CI matches local.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      # The pre-commit hook runs this and auto-fixes before staging; a
+      # commit made with --no-verify skips that, so this job checks
+      # independently rather than fixing in place.
+      - run: cargo fmt --all -- --check
+
   wire-breaking:
     name: Wire protocol (buf breaking)
     runs-on: ubuntu-latest
