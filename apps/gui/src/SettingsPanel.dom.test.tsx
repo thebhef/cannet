@@ -168,11 +168,18 @@ function fakePanelApi() {
         for (const fn of listeners) fn({ isVisible });
       });
     },
+    /// How the view consumes a reveal request (`params.reveal`) — it
+    /// clears the parameter so the request cannot outlive the arrival
+    /// it belongs to.
+    updateParameters: vi.fn(),
   };
 }
 
-function panelProps(api: ReturnType<typeof fakePanelApi>) {
-  return { api } as unknown as IDockviewPanelProps;
+function panelProps(
+  api: ReturnType<typeof fakePanelApi>,
+  params: Record<string, unknown> = {},
+) {
+  return { api, params } as unknown as IDockviewPanelProps;
 }
 
 /// Render the panel and wait for its asynchronous mount work (the
@@ -461,5 +468,74 @@ describe("the settings view on return", () => {
     api.setVisible(true);
 
     expect(list.scrollTop).toBe(240);
+  });
+});
+
+// Opening the view *at* a section (ADR 0041's Servers rows are the
+// case it exists for): a `reveal` parameter names a setting key, the
+// view scrolls its row into sight, and the request is consumed so a
+// layout persisted while it was set does not re-scroll on every later
+// open.
+describe("a reveal request", () => {
+  /// jsdom implements no `scrollIntoView`, so the call the view makes
+  /// is what a test can see. Installed per test and taken back off.
+  function spyScrollIntoView() {
+    const calls: Element[] = [];
+    const proto = Element.prototype as unknown as { scrollIntoView?: unknown };
+    const had = "scrollIntoView" in proto;
+    const before = proto.scrollIntoView;
+    proto.scrollIntoView = function (this: Element) {
+      calls.push(this);
+    };
+    return {
+      calls,
+      restore() {
+        if (had) proto.scrollIntoView = before;
+        else delete proto.scrollIntoView;
+      },
+    };
+  }
+
+  it("scrolls the named row into view and clears the parameter", async () => {
+    const spy = spyScrollIntoView();
+    try {
+      const api = fakePanelApi();
+      render(<SettingsPanel {...panelProps(api, { reveal: "a_view_row" })} />);
+      await screen.findByText("A hosted surface");
+      await waitFor(() => expect(spy.calls.length).toBe(1));
+      expect(spy.calls[0].id).toBe("setting-row-a_view_row");
+      expect(api.updateParameters).toHaveBeenCalledWith({ reveal: undefined });
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it("clears a search that would have hidden the row it was asked for", async () => {
+    const spy = spyScrollIntoView();
+    try {
+      const api = fakePanelApi();
+      const { rerender } = render(<SettingsPanel {...panelProps(api)} />);
+      await screen.findByText("Cache size cap");
+      await search("cadence");
+      await waitFor(() =>
+        expect(screen.queryByText("A hosted surface")).not.toBeInTheDocument(),
+      );
+      rerender(<SettingsPanel {...panelProps(api, { reveal: "a_view_row" })} />);
+      await screen.findByText("A hosted surface");
+      expect(screen.getByRole("searchbox")).toHaveValue("");
+      await waitFor(() => expect(spy.calls.length).toBe(1));
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it("scrolls nowhere when no reveal is asked for", async () => {
+    const spy = spyScrollIntoView();
+    try {
+      await renderLoaded();
+      expect(spy.calls).toEqual([]);
+    } finally {
+      spy.restore();
+    }
   });
 });

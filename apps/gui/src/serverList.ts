@@ -230,8 +230,8 @@ export function serverLabels(
 
 /// The servers a bus can be bound to: the ones the host reaches without
 /// stopping to ask (ADR 0041). A server that is only *discovered* is
-/// not one of them — it is trusted in the Servers panel first, which is
-/// where that decision belongs.
+/// not one of them — it is trusted in the Servers section first, which
+/// is where that decision lives.
 export function trustedServers(rows: readonly ServerRow[]): ServerRow[] {
   return rows.filter((r) => r.trust === "trusted");
 }

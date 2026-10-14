@@ -37,7 +37,8 @@ import {
   PROJECT_GRAPH_PANEL_ID,
   elementPanelComponent,
   elementPanelId,
-  showServersPanel,
+  SERVERS_SETTING_KEY,
+  showSettingsPanelAt,
 } from "./dockLayout";
 import {
   trustedServers,
@@ -180,7 +181,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
   // The servers this machine talks to are the host's merged list, not
   // the project's: a bus binds to one, it does not configure it
   // (ADR 0041). Only the trusted ones are a source — the rest are
-  // managed in the Servers panel.
+  // managed in the settings view's Servers section.
   const serverList = useServerList();
   const trusted = useMemo(
     () => trustedServers(serverList.servers),
@@ -442,7 +443,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   servers={trusted}
                   localVirtualBuses={p.localVirtualBuses}
                   onPick={(pick) => setBusInterface(bus, pick)}
-                  onManageServers={() => showServersPanel(containerApi)}
+                  onManageServers={() => showSettingsPanelAt(containerApi, SERVERS_SETTING_KEY)}
                   onAddVirtualBus={() => {
                     const id = newVbusId(p.localVirtualBuses.map((v) => v.id));
                     const name = `Virtual ${p.localVirtualBuses.length + 1}`;
@@ -459,7 +460,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   serverList.servers,
                   needingTrust,
                 )}
-                onManageServers={() => showServersPanel(containerApi)}
+                onManageServers={() => showSettingsPanelAt(containerApi, SERVERS_SETTING_KEY)}
               />
               {!isLocalVbus && (
                 <BusHardwareConfig
@@ -565,7 +566,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           <button
             type="button"
             data-testid="manage-servers"
-            onClick={() => showServersPanel(containerApi)}
+            onClick={() => showSettingsPanelAt(containerApi, SERVERS_SETTING_KEY)}
             title="Add, trust and forget the servers this machine talks to."
           >
             Manage servers…

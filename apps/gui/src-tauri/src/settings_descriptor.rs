@@ -692,6 +692,22 @@ const DESCRIPTORS: &[Spec] = &[
         control: interval_ms_or_off(),
     },
     Spec {
+        key: "servers",
+        // Not a field of `settings.json` either: which servers this
+        // machine trusts lives in its own per-machine store
+        // (ADR 0041), and the list over it is a management surface the
+        // settings view hosts — first in Connection, because every
+        // other row in the group presumes a server already reachable.
+        backing: Backing::View,
+        label: "Servers",
+        help: "Servers this machine can reach: the ones advertising on this network \
+               and the ones whose identity has been accepted here. Accepting a \
+               server is a decision for this machine, not for a project.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Behaviour,
+        control: Control::Custom { renderer: "servers" },
+    },
+    Spec {
         key: "sidecar_restart_budget",
         backing: Backing::Field,
         label: "Sidecar restart budget",
@@ -955,6 +971,26 @@ mod tests {
             }
         );
         assert_eq!(caches.surfaces, &[Surface::Storage]);
+    }
+
+    #[test]
+    fn the_server_list_is_a_view_row_naming_its_renderer() {
+        // ADR 0041's trust surface: the same custom-renderer shape as
+        // the cache list, filed under Connection. It is a section of
+        // the settings view, not a panel of its own, so the descriptor
+        // is what puts it on screen at all.
+        let servers = DESCRIPTORS
+            .iter()
+            .find(|s| s.key == "servers")
+            .expect("the server list has a descriptor");
+        assert_eq!(servers.backing, Backing::View);
+        assert_eq!(
+            servers.control,
+            Control::Custom {
+                renderer: "servers"
+            }
+        );
+        assert_eq!(servers.surfaces, &[Surface::Connection]);
     }
 
     #[test]
