@@ -630,17 +630,53 @@ def test_bus_kwargs_for_parses_paren_metadata() -> None:
     )
     assert m._bus_kwargs_for("pcan:PCAN_USBBUS1(h:0x51, ch:0)", cfg) == (
         "pcan",
-        {"channel": "PCAN_USBBUS1", "bitrate": 500_000},
+        {
+            "channel": "PCAN_USBBUS1",
+            "bitrate": 500_000,
+            "auto_reset": True,
+        },
     )
     assert m._bus_kwargs_for("pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:42)", cfg) == (
         "pcan",
-        {"channel": "PCAN_USBBUS1", "bitrate": 500_000},
+        {
+            "channel": "PCAN_USBBUS1",
+            "bitrate": 500_000,
+            "auto_reset": True,
+        },
     )
     # PCAN unknown-handle fallback parses to int for python-can.
     assert m._bus_kwargs_for("pcan:handle=0xFF(h:0xFF, ch:0)", cfg) == (
         "pcan",
-        {"channel": 0xFF, "bitrate": 500_000},
+        {
+            "channel": 0xFF,
+            "bitrate": 500_000,
+            "auto_reset": True,
+        },
     )
+
+
+def test_bus_kwargs_for_asks_only_peak_for_a_driver_side_bus_off_reset() -> None:
+    """PCAN-Basic holds a bus-off controller bus-off until it is reset;
+    ``auto_reset`` sets ``PCAN_BUSOFF_AUTORESET`` so the driver resets it
+    on the next status read, send or receive. python-can's Kvaser and
+    Vector backends take no such setting -- the sidecar's state poll is
+    what brings those back -- so their kwargs must not carry a key the
+    backend would silently swallow."""
+    from cannet_local_sidecar.driver import OpenConfig
+
+    m = _fresh_driver_module()
+    for listen_only in (False, True):
+        cfg = OpenConfig(listen_only=listen_only)
+        _, kwargs = m._bus_kwargs_for("pcan:PCAN_USBBUS1(h:0x51, ch:0)", cfg)
+        assert kwargs["auto_reset"] is True
+        _, kwargs = m._bus_kwargs_for("pcan:handle=0xFF(h:0xFF, ch:0)", cfg)
+        assert kwargs["auto_reset"] is True
+        for channel_id in (
+            "vector:VN1630A(SN:12345, ch:0)",
+            "kvaser:3(SN:67890, ch:1)",
+        ):
+            _, kwargs = m._bus_kwargs_for(channel_id, cfg)
+            assert "auto_reset" not in kwargs, channel_id
 
 
 def test_bus_kwargs_for_fd_routes_through_bit_timing() -> None:

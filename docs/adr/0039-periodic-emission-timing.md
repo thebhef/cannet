@@ -1,6 +1,7 @@
 # ADR 0039 — Periodic emission timing: phase stagger, drop-and-realign, park on route loss
 
-Status: accepted (2026-07-25)
+Status: accepted (2026-07-25); amended (2026-10-03) — a bus-off
+controller is brought back by a reset, not by its counters
 
 ## Decision
 
@@ -41,10 +42,14 @@ The transmit scheduler's periodic-emission semantics, in four rules:
    test is deliberately narrow: a controller over the ISO 11898-1
    **warning** limit, one that has gone **error-passive**, and even one
    that is **bus-off** all keep their routes, because each is present
-   and recovers on its own — the error counters fall on every
-   successful transmission — and parking one would freeze every
-   counter over a fault the hardware clears by itself. Only
-   `unavailable` parks, because only there is the device itself gone.
+   and comes back without the user: warning and error-passive recover
+   on their own as the error counters fall on every successful
+   transmission, and a bus-off controller is reset — by its driver
+   where the driver offers that, otherwise by the sidecar once it has
+   read bus-off for a second (§ Amendment, bus-off). Parking one would
+   freeze every counter over a fault that clears without anyone
+   acting. Only `unavailable` parks, because only there is the device
+   itself gone.
 4. **Wake contract: best-effort OS timer.** The driver blocks on the
    command channel with a deadline timeout; typical wake lateness is
    ≤2 ms (measured), and the regression guard is the perf rig's
@@ -103,9 +108,10 @@ manufacturing a violation the sender never put on a wire.
 - **Keep ticking while the route is down** (prepare + step counter,
   emit nothing). Wastes per-period wakes on a disconnected bus and
   turns every outage into a counter discontinuity at the receiver.
-- **Park on bus-off too.** A bus-off controller recovers on its own and
-  the periodics should be running when it does; parking would freeze
-  their counters across a fault the hardware clears in milliseconds.
+- **Park on bus-off too.** A bus-off controller is reset within about
+  a second (§ Amendment, bus-off) and the periodics should be running
+  when it comes back; parking would freeze their counters across a
+  fault that clears without anyone acting.
 - **Mark the tx-confirm row instead of parking, when the interface is
   gone.** For a *periodic* on a route that has gone, not transmitting is
   both smaller and more truthful than transmitting and annotating — the
@@ -124,3 +130,37 @@ manufacturing a violation the sender never put on a wire.
   that failure to ~1 s of latency.
 - **`timeBeginPeriod` / high-resolution timers.** System-wide timer and
   power cost against a measured ≤2 ms typical lateness.
+
+## Amendment (2026-10-03) — a bus-off controller is reset
+
+Rule 3 kept a bus-off bus's route on the premise that the controller
+recovers on its own as its error counters fall. They cannot: a bus-off
+controller has taken itself off the wire and transmits nothing, so
+there is no successful transmission to lower them. ISO 11898-1's own
+way back (128 occurrences of 11 recessive bits) takes milliseconds, but
+PCAN-Basic holds the controller bus-off until it is reset, and so does
+any driver that does not reset it itself — on the bench, a PEAK
+channel whose CAN side was disconnected and reconnected stayed bus-off
+for good.
+
+Bus-off is transient, and the bus comes back without user action, the
+same on every vendor:
+
+- **PEAK**: the channel is opened with `PCAN_BUSOFF_AUTORESET`, so
+  PCAN-Basic resets the controller itself when a status read, send or
+  receive sees bus-off; the sidecar reads the status every half second.
+- **Every backend**: the sidecar's state poll resets a controller it
+  has read bus-off for a second — far longer than the controller's
+  own recovery — through the driver's `reset` hook: Vector in place
+  (`xlDeactivateChannel` then `xlActivateChannel`, python-can's
+  `VectorBus.reset`), Kvaser in place (every handle off bus and on
+  again, as CANlib's `canResetBus` does), and anything without an
+  in-place reset — PEAK included, whose `CAN_Reset` clears queues and
+  does not reset the controller — by reopening the channel with its
+  current configuration. A reset that fails is retried on the next
+  poll that still reads bus-off.
+
+The poll then reads the controller active and publishes it, which is
+what the bus-health panel shows. Parking is still not the mechanism —
+the route stays up through the reset, and a periodic's counter keeps
+stepping across it as it does across any other dropped frame.
