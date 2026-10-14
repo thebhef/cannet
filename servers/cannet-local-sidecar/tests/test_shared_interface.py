@@ -1183,3 +1183,59 @@ def test_a_backend_without_the_hook_is_reopened(
         assert len(driver.opened) == 2
     finally:
         reg.unsubscribe("fake:0", outbox)
+
+
+# ---- the echo gate's count rides the rx stats line --------------------------
+
+
+class _EchoGatingChannel(_FakeChannel):
+    """A channel whose driver has dropped echoes it could not vouch for."""
+
+    def echoes_dropped(self) -> int:
+        return 7
+
+
+def test_the_rx_stats_line_reports_dropped_echoes(
+    monkeypatch: "pytest.MonkeyPatch",
+    caplog: "pytest.LogCaptureFixture",
+) -> None:
+    monkeypatch.setattr(si, "_RX_STATS_INTERVAL_NS", 1_000_000)
+    caplog.set_level(logging.INFO, logger="cannet_local_sidecar")
+    driver = _ChannelDriver(_EchoGatingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        _wait_for(lambda: bool(driver.opened))
+        driver.opened[0].enqueue(_frame(1))
+        _wait_for(
+            lambda: any(
+                "rx stats fake:0" in r.getMessage()
+                and "echoes_dropped=7" in r.getMessage()
+                for r in caplog.records
+            )
+        )
+    finally:
+        reg.unsubscribe("fake:0", a)
+
+
+def test_the_rx_stats_line_omits_the_field_where_nothing_is_gated(
+    monkeypatch: "pytest.MonkeyPatch",
+    caplog: "pytest.LogCaptureFixture",
+) -> None:
+    monkeypatch.setattr(si, "_RX_STATS_INTERVAL_NS", 1_000_000)
+    caplog.set_level(logging.INFO, logger="cannet_local_sidecar")
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        _wait_for(lambda: bool(driver.opened))
+        driver.opened[0].enqueue(_frame(1))
+        _wait_for(
+            lambda: any("rx stats fake:0" in r.getMessage() for r in caplog.records)
+        )
+    finally:
+        reg.unsubscribe("fake:0", a)
+    lines = [r.getMessage() for r in caplog.records if "rx stats" in r.getMessage()]
+    assert all("echoes_dropped" not in line for line in lines)
