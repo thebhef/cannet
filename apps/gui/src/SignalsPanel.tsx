@@ -1589,7 +1589,7 @@ function SignalRow({
         // them (ADR 0025), and the label that says so.
         if (math) {
           return (
-            <>
+            <span className="name-row">
               {math.busIds.map((busId) => (
                 <ColorChip
                   key={busId}
@@ -1598,20 +1598,24 @@ function SignalRow({
                   swatchClassName="plot-bus-swatch"
                 />
               ))}
-              <NameText name={mathBusLabel(math.busIds, lookup)} />
-            </>
+              <span className="name-row-text">
+                <NameText name={mathBusLabel(math.busIds, lookup)} />
+              </span>
+            </span>
           );
         }
         // A file-backed signal (`docs/CONTEXT.md`) has no message, so
         // this column carries its source channel group plus the badge
         // that says the row is not decoded from frames.
         return row.file_backed ? (
-          <>
-            <NameText name={row.message_name} />
+          <span className="name-row">
+            <span className="name-row-text">
+              <NameText name={row.message_name} />
+            </span>
             <span className="signal-source-badge" title={FILE_BACKED_TITLE}>
               {FILE_BACKED_BADGE}
             </span>
-          </>
+          </span>
         ) : (
           <NameText name={row.message_name} />
         );

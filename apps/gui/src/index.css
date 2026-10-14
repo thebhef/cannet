@@ -2772,6 +2772,31 @@ ul.status-bar-menu .status-chip {
   white-space: nowrap;
 }
 
+/* A name beside a fixed-width sibling (a bus dot, a CAN id, a badge): a
+   flex row whose siblings keep their width and whose `.name-row-text`
+   box alone shrinks and ellipsizes. In a block line the long-name box
+   (`.name-text`, an atomic inline-flex) no longer fits beside the
+   sibling and the line's `text-overflow` hides it whole instead of
+   ellipsizing its head. */
+.name-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.name-row > * {
+  flex: none;
+}
+.name-row > .name-row-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.name-row-lead {
+  margin-right: 0.3em;
+}
+
 /* Trace table -----------------------------------------------------------*/
 .trace {
   /* The header's and the rows' shared horizontal padding. Named because
@@ -4281,9 +4306,6 @@ button.color-chip {
 .plot-signal-message {
   font-size: 0.7rem;
   color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* Signal value→color map config panel (ADR 0029).
    `height: 100%` bounds the panel to its dock group: left at `auto` it

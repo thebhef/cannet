@@ -944,7 +944,7 @@ describe("ViewSignalsPanel mounted after the views that push", () => {
     // …and the panel, mounted afterwards, sees it.
     renderPanel();
     await waitFor(() =>
-      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument(),
+      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal, .col-vs-signal .name-row-text" })).toBeInTheDocument(),
     );
     expect(screen.getByText("Plot 1")).toBeInTheDocument();
   });
@@ -965,7 +965,7 @@ describe("ViewSignalsPanel — unrecognised units", () => {
   it("flags only the row whose unit string the host could not place", async () => {
     renderPanel();
     await waitFor(() =>
-      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument(),
+      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal, .col-vs-signal .name-row-text" })).toBeInTheDocument(),
     );
     // The badge names the string and says where to fix it.
     const flag = screen.getByRole("img", { name: /furlongs/ });
@@ -985,7 +985,7 @@ describe("ViewSignalsPanel — unrecognised units", () => {
     await waitFor(() =>
       expect(screen.queryByText("VehicleSpeed", { selector: ".col-vs-signal" })).not.toBeInTheDocument(),
     );
-    expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument();
+    expect(screen.getByText("PackVolts", { selector: ".col-vs-signal, .col-vs-signal .name-row-text" })).toBeInTheDocument();
     expect(screen.queryByText("Counter", { selector: ".col-vs-signal" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Unknown unit \(1\)/ }));
@@ -997,7 +997,7 @@ describe("ViewSignalsPanel — unrecognised units", () => {
   it("the chip's pressed state persists as panel params", async () => {
     const { api } = renderPanel();
     await waitFor(() =>
-      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument(),
+      expect(screen.getByText("PackVolts", { selector: ".col-vs-signal, .col-vs-signal .name-row-text" })).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByRole("button", { name: /Unknown unit \(1\)/ }));
     await waitFor(() =>
@@ -1018,7 +1018,7 @@ describe("ViewSignalsPanel — unrecognised units", () => {
     await waitFor(() =>
       expect(screen.queryByRole("img", { name: /furlongs/ })).not.toBeInTheDocument(),
     );
-    expect(screen.getByText("PackVolts", { selector: ".col-vs-signal" })).toBeInTheDocument();
+    expect(screen.getByText("PackVolts", { selector: ".col-vs-signal, .col-vs-signal .name-row-text" })).toBeInTheDocument();
   });
 });
 
