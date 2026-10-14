@@ -51,7 +51,7 @@ describe("plot-area drag payload", () => {
   it("round-trips the area config, its manual ranges, and the source panel", () => {
     const dt = transfer();
     const payload: PlotAreaDragPayload = {
-      area: area({ collapsed: true, patterns: ["Cell\\d+"], primarySignalKey: "k" }),
+      area: area({ patterns: ["Cell\\d+"], primarySignalKey: "k" }),
       axisScales: { a1: { max: 10 }, "a1/u:unit:V": { log: true } },
       sourcePanelId: "plot-src",
     };
@@ -66,7 +66,6 @@ describe("plot-area drag payload", () => {
     expect(back!.area.yAxisMode).toBe("per-unit");
     expect(back!.area.primarySignalKey).toBe("k");
     expect(back!.area.patterns).toEqual(["Cell\\d+"]);
-    expect(back!.area.collapsed).toBe(true);
     expect(back!.axisScales).toEqual({ a1: { max: 10 }, "a1/u:unit:V": { log: true } });
   });
 
@@ -121,14 +120,13 @@ describe("axis-scale keys of one area", () => {
 
 describe("copying an area", () => {
   it("mints a fresh id and keeps everything else", () => {
-    const src = area({ collapsed: true, patterns: ["Cell\\d+"] });
+    const src = area({ patterns: ["Cell\\d+"] });
     const copy = copyOfArea(src);
     expect(copy.id).not.toBe(src.id);
     expect(copy.id.length).toBeGreaterThan(0);
     expect(copy.signals).toEqual(src.signals);
     expect(copy.signals).not.toBe(src.signals);
     expect(copy.yAxisMode).toBe(src.yAxisMode);
-    expect(copy.collapsed).toBe(true);
     expect(copy.patterns).toEqual(["Cell\\d+"]);
     expect(copy.patterns).not.toBe(src.patterns);
   });

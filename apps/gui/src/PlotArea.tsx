@@ -638,20 +638,20 @@ interface PlotAreaProps {
    * Applied inline on the root; the browser distributes stack height
    * proportionally. Undefined falls back to the CSS default (1). */
   flexGrow?: number;
-  /** True when this axis draws nothing — the parent area is collapsed,
-   * this axis is collapsed, or every signal on the axis is hidden. The
+  /** True when this axis draws nothing — it is collapsed, or every
+   * signal on the axis is hidden. The
    * canvas collapses, so the axis claims no plot height (ADR 0026).
    * Only the all-hidden case keeps its side-panel rows (they are how a
    * hidden signal is un-hidden); a deliberate collapse reduces to a
-   * heading / label row. */
+   * label row. */
   collapsed?: boolean;
   /** True when the *solo* mask (`plotSolo.ts`), not the user's own
    * hide state, is what left this axis with nothing to draw — the
    * head toggle's inert state says so instead of blaming hidden rows. */
   collapsedBySolo?: boolean;
-  /** True when *this axis alone* is collapsed (its own disclosure, as
-   * opposed to the parent area's). Layout only: the series stay on the
-   * axis and keep their visibility (ADR 0026). */
+  /** True when this axis is collapsed by its own disclosure. Layout
+   * only: the series stay on the axis and keep their visibility
+   * (ADR 0026). */
   collapsedByAxis?: boolean;
   /** Keys ({@link signalRefKey}) of this axis's rows solo's mask is
    * hiding, from {@link soloMaskedKeys} — a row already hidden on its
@@ -693,12 +693,9 @@ interface PlotAreaProps {
   label: string;
   /** This axis's own label (the unit group, or the signal, per-unit /
    * individual modes), or `null` in unified mode where the area's name
-   * is the only label. Its presence is what gives an axis its own
-   * disclosure: in unified mode the area *is* the axis. */
+   * is the only label. Every axis head carries its own disclosure
+   * either way: in unified mode the area *is* the axis. */
   subtitle: string | null;
-  /** How many series the parent area holds — the count chip a collapsed
-   * area's heading row carries. */
-  areaSignalCount: number;
   /** True for the axis that carries the top-of-column chrome — the
    * event marker labels. That is the *highest axis with a canvas*, not
    * the first one positionally: a collapsed axis has nowhere to draw
@@ -832,9 +829,6 @@ interface PlotAreaProps {
   onSelectSignal: (key: string, modifiers: { mod: boolean; shift: boolean }) => void;
   /** Set the area's y-axis mode (unified / per-unit / individual). */
   onSetYAxisMode: (mode: YAxisMode) => void;
-  /** Collapse the parent area if expanded, expand it if collapsed —
-   * one collapse state per logical area (ADR 0026). */
-  onToggleCollapsed: () => void;
   /** Collapse / expand this derived axis alone (ADR 0026). */
   onToggleAxisCollapsed: () => void;
   onFocus: () => void;
@@ -2165,7 +2159,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     enumLanes,
     label,
     subtitle,
-    areaSignalCount,
     isFirst,
     isLast,
     focused,
@@ -2210,7 +2203,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onSetPrimarySignal,
     onSelectSignal,
     onSetYAxisMode,
-    onToggleCollapsed,
     onToggleAxisCollapsed,
     onFocus,
     onRemoveArea,
@@ -4696,18 +4688,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     return a != null && b != null ? a - b : null;
   };
 
-  /// The parent area's own collapse flag — the deliberate whole-area
-  /// collapse, as opposed to the all-hidden rule or this axis's own.
-  const areaCollapsed = area.collapsed === true;
   /// Collapsed only because nothing on the axis is drawable (every
   /// signal hidden, or masked out by solo). There is no expanded form to
   /// go to, so the head toggle is inert and the rows stay listed — they
   /// are how a hidden signal is un-hidden (ADR 0026).
-  const allHiddenCollapse = !!collapsed && !areaCollapsed && !collapsedByAxis;
-  /// This row is reduced to a single line. A *deliberate* collapse — the
-  /// area's or this axis's — gives the space back: no canvas, no rows,
-  /// no per-axis chrome, just the heading (ADR 0026).
-  const headingOnly = areaCollapsed || !!collapsedByAxis;
+  const allHiddenCollapse = !!collapsed && !collapsedByAxis;
+  /// This row is reduced to a single line. A *deliberate* collapse — this
+  /// axis's own — gives the space back: no canvas, no rows, no per-axis
+  /// chrome, just the heading (ADR 0026).
+  const headingOnly = !!collapsedByAxis;
 
   return (
     <div
@@ -4768,8 +4757,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // One handle per contiguous run of collapsed axes, on the
             // run's first axis (ADR 0026). It drags this axis's parent
             // area, the same payload the head grip carries — a
-            // collapsed area has to stay reorderable, and the empty
-            // canvas column is the obvious thing to grab. A drop lands
+            // collapsed axis has no grip of its own to grab (only the
+            // parent head has one), and the empty canvas column is the
+            // obvious thing to grab instead. A drop lands
             // on whichever area's row it was released over, so
             // targeting a specific area inside a run means dropping on
             // that area's own side-panel strip.
@@ -4842,6 +4832,30 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         ref={signalsScrollRef}
       >
         <div className="plot-area-signals-head">
+          <DisclosureToggle
+            // Leftmost on every axis head, the parent's and unified
+            // mode's single axis included (ADR 0026): collapse is per
+            // axis and nothing else. An axis whose signals are all
+            // hidden collapses on its own and has no expanded form to
+            // go to, so the toggle is inert there and says why.
+            className="plot-axis-collapse"
+            expanded={!collapsed}
+            ariaLabel={collapsed ? "expand axis" : "collapse axis"}
+            disabled={allHiddenCollapse}
+            title={
+              allHiddenCollapse
+                ? collapsedBySolo
+                  ? "no signal on this axis matches the solo pattern — clear solo to expand it"
+                  : "every signal on this axis is hidden — un-hide one to expand it"
+                : collapsed
+                  ? "expand this axis"
+                  : "collapse this axis to its label — its height goes to the axes still drawing, and its series keep running"
+            }
+            onToggle={(e) => {
+              e.stopPropagation();
+              onToggleAxisCollapsed();
+            }}
+          />
           {isParentHead && (
             // The grip alone is draggable, not the whole head: the head
             // holds a combobox and buttons, and a draggable ancestor
@@ -4858,35 +4872,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               ⠿
             </span>
           )}
-          {isParentHead && (
-            // One collapse state per logical area (ADR 0026), so the
-            // toggle renders on the parent head only — however many
-            // derived axes that area stacks. An area whose signals are
-            // all hidden collapses on its own and has no expanded form
-            // to go to (there is nothing to draw), so the toggle is
-            // inert there and says why.
-            <DisclosureToggle
-              className="plot-area-collapse"
-              expanded={!areaCollapsed && !allHiddenCollapse}
-              ariaLabel={
-                areaCollapsed || allHiddenCollapse ? "expand plot area" : "collapse plot area"
-              }
-              disabled={allHiddenCollapse}
-              title={
-                allHiddenCollapse
-                  ? collapsedBySolo
-                    ? "no signal on this area matches the solo pattern — clear solo to expand it"
-                    : "every signal on this area is hidden — un-hide one to expand it"
-                  : areaCollapsed
-                    ? "expand this plot area"
-                    : "collapse this plot area down to its heading row — it gives up everything below it"
-              }
-              onToggle={(e) => {
-                e.stopPropagation();
-                onToggleCollapsed();
-              }}
-            />
-          )}
           <span
             className="plot-area-label"
             title={(() => {
@@ -4898,62 +4883,24 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           >
             {label}
           </span>
-          {subtitle != null && !areaCollapsed && (
+          {subtitle != null && (
             <span className="plot-area-label-sep" aria-hidden="true">
               ·
             </span>
           )}
-          {subtitle != null && !areaCollapsed && (
-            // The axis's own disclosure, on the axis's own label. It
-            // exists only where an axis *has* a label of its own — in
-            // unified mode the area is the axis, and a second toggle on
-            // that row would say nothing the area's does not (ADR 0026).
-            <DisclosureToggle
-              className="plot-axis-collapse"
-              expanded={!collapsed}
-              ariaLabel={collapsed ? "expand axis" : "collapse axis"}
-              disabled={allHiddenCollapse}
-              title={
-                allHiddenCollapse
-                  ? "every signal on this axis is hidden — un-hide one to expand it"
-                  : collapsed
-                    ? "expand this axis"
-                    : "collapse this axis to its label — its height goes to the axes still drawing, and its series keep running"
-              }
-              onToggle={(e) => {
-                e.stopPropagation();
-                onToggleAxisCollapsed();
-              }}
-            />
-          )}
-          {subtitle != null && !areaCollapsed && (
+          {subtitle != null && (
             <span className="plot-area-axis-label" title={subtitle}>
               <NameText name={subtitle} title={subtitle} />
             </span>
           )}
           {headingOnly && (
             // What the collapsed row says instead of its rows: how many
-            // series it stands for. The area's total on a collapsed
-            // area, this axis's own on a collapsed axis.
+            // series it stands for — this axis's own.
             <span
               className="plot-area-count-chip"
               title="how many series this collapsed row stands for — they keep running, they just have no canvas"
             >
-              {areaCollapsed ? areaSignalCount : signals.length}{" "}
-              {(areaCollapsed ? areaSignalCount : signals.length) === 1 ? "signal" : "signals"}
-            </span>
-          )}
-          {areaCollapsed && isParentHead && patternResolutions.length > 0 && (
-            // A pattern rule is what feeds this area (ADR 0020), and its
-            // status line went with the collapse — so the match count
-            // rides the heading instead.
-            <span
-              className="plot-area-count-chip"
-              title="how many signals this area's patterns match"
-            >
-              {patternResolutions.some((r) => !r.valid)
-                ? "bad regex"
-                : `${patternResolutions.reduce((n, r) => n + r.matches.length, 0)} match`}
+              {signals.length} {signals.length === 1 ? "signal" : "signals"}
             </span>
           )}
           {soloChip && (
@@ -4976,7 +4923,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               fit y
             </button>
           )}
-          {isParentHead && !areaCollapsed && (
+          {isParentHead && (
             // `display: contents` span: keeps the trigger a direct flex
             // item of the head while swallowing clicks (the head's own
             // click handler must not fire when using the picker).
@@ -4991,7 +4938,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               />
             </span>
           )}
-          {isParentHead && !areaCollapsed && (
+          {isParentHead && (
             <button
               className="plot-area-filter"
               title={
@@ -5013,7 +4960,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               )}
             </button>
           )}
-          {removable && !areaCollapsed && (
+          {removable && (
             <button
               className="plot-area-remove"
               title="remove this plot area"

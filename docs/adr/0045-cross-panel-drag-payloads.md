@@ -42,12 +42,12 @@ only one half acts on that half.
   signals *and* its patterns.
 - If the grabbed row is in the selection, the whole selection drags
   (the file-manager convention); multi-item drag is v1 behaviour.
-- A **plot area's grip** (or the shared handle of a collapsed run)
+- A **plot area's grip** (or the shared handle of a collapsed-axis run)
   drags the whole area.
 
 **A plot-area drag sets two payloads, one gesture.** Its own mime
 (`application/x-cannet-plot-area`) carries the serialized area — series,
-patterns, y-axis mode, primary signal, collapsed flag — plus the source
+patterns, y-axis mode, primary signal — plus the source
 panel's manual y ranges (`axisScales`) for the axes that area derives,
 re-keyed if the area lands under a new id. Layout weights are not in it:
 a weight describes the stack the area came out of, not the area. The
