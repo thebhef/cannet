@@ -1440,8 +1440,11 @@ lists the elements — closing a panel doesn't destroy its element,
 reopen, **duplicate** or remove it from there. Duplicate makes a copy
 named "<name> (copy)" right after the original, opens no panel, and is one
 undo step; a plot's areas get fresh ids, an RBS copy points at the same
-file, and a logger copy starts disabled (transmit elements cannot be
-duplicated yet). **Project panel** toggles the project
+file, a logger copy starts disabled, and a transmit copy owns its own
+clones of the original's TX frames, stopped even if the original is
+transmitting (frames are cloned, never shared; undoing the duplicate
+withdraws the clones, redo brings back an empty transmit element).
+**Project panel** toggles the project
 panel itself (it's a show/hide singleton). **Database panel** opens
 (or focuses, if it's already open) the catalog of every
 signal-defining artifact the session holds — one surface, each format

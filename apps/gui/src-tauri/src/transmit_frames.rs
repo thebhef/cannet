@@ -419,6 +419,39 @@ impl TransmitFrameRegistry {
         }
     }
 
+    /// Clone each `(source_id, new_id)` pair: a new project-owned
+    /// message carrying the source's whole definition (request, period,
+    /// mode, description, calculated-field override) under `new_id`,
+    /// appended to the pool. A clone is always **stopped** with its
+    /// counter at 0 — a copy never starts transmitting on its own, even
+    /// when its source is running. All-or-nothing: an unknown or
+    /// RBS-owned source, a `new_id` already in the pool, or a repeated
+    /// `new_id` fails the whole batch before anything is inserted.
+    /// Returns the clones in input order.
+    pub fn clone_frames(
+        &mut self,
+        pairs: &[(String, String)],
+    ) -> Result<Vec<TransmitFrame>, String> {
+        let mut clones: Vec<TransmitFrame> = Vec::with_capacity(pairs.len());
+        for (source_id, new_id) in pairs {
+            let Some(i) = self.position(source_id) else {
+                return Err(format!("no transmit frame with id {source_id}"));
+            };
+            let source = &self.entries[i].frame;
+            if !source.source.is_project() {
+                return Err(format!("transmit frame {source_id} is not project-owned"));
+            }
+            if self.position(new_id).is_some() || clones.iter().any(|c| &c.id == new_id) {
+                return Err(format!("transmit frame id {new_id} already exists"));
+            }
+            let mut clone = source.clone();
+            new_id.clone_into(&mut clone.id);
+            clones.push(clone);
+        }
+        self.entries.extend(clones.iter().cloned().map(Entry::new));
+        Ok(clones)
+    }
+
     /// Remove a message, stopping its periodic first. Returns `true` if
     /// it existed.
     pub fn remove(&mut self, id: &str) -> bool {
@@ -524,6 +557,61 @@ mod tests {
             source: TransmitSource::Project,
             calc: None,
         }
+    }
+
+    #[test]
+    fn clone_frames_copies_the_definition_under_a_fresh_id_stopped() {
+        let mut reg = TransmitFrameRegistry::default();
+        let mut src = frame("a", "p", 0x123, TransmitMode::Periodic, 20);
+        src.description = "note".into();
+        src.request.data = vec![1, 2, 3];
+        reg.set(src.clone());
+        reg.begin_periodic("a").unwrap();
+        let out = reg.clone_frames(&[("a".into(), "b".into())]).unwrap();
+        assert_eq!(out.len(), 1);
+        let mut expect = src;
+        "b".clone_into(&mut expect.id);
+        assert_eq!(out[0], expect);
+        let list = reg.list();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].frame, expect);
+        // The running source stays running; the clone starts stopped.
+        assert!(list[0].running);
+        assert!(!list[1].running);
+        assert!(reg.fire_info("b").is_none());
+        // Independent entries: editing the clone leaves the source alone.
+        reg.set(frame("b", "p", 0x999, TransmitMode::Manual, 0));
+        assert_eq!(reg.list()[0].frame.request.id, 0x123);
+    }
+
+    #[test]
+    fn clone_frames_fails_whole_batch_on_unknown_source_or_taken_id() {
+        let mut reg = TransmitFrameRegistry::default();
+        reg.set(frame("a", "p", 0x100, TransmitMode::Manual, 0));
+        let err = reg
+            .clone_frames(&[("a".into(), "b".into()), ("nope".into(), "c".into())])
+            .unwrap_err();
+        assert!(err.contains("nope"));
+        assert_eq!(reg.list().len(), 1, "nothing inserted on failure");
+        assert!(reg.clone_frames(&[("a".into(), "a".into())]).is_err());
+        assert!(reg
+            .clone_frames(&[("a".into(), "b".into()), ("a".into(), "b".into())])
+            .is_err());
+        assert_eq!(reg.list().len(), 1);
+    }
+
+    #[test]
+    fn clone_frames_refuses_an_rbs_owned_source() {
+        let mut reg = TransmitFrameRegistry::default();
+        let mut f = frame("r", "p", 0x100, TransmitMode::Manual, 0);
+        f.source = TransmitSource::Rbs {
+            element: "e".into(),
+            bus: "p".into(),
+            ecu: "E".into(),
+            message: "M".into(),
+        };
+        reg.set(f);
+        assert!(reg.clone_frames(&[("r".into(), "c".into())]).is_err());
     }
 
     #[test]

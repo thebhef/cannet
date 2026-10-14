@@ -165,6 +165,26 @@ pub(crate) fn set_transmit_frame(
     emit_transmit_frames_changed(&app);
 }
 
+/// Clone TX messages for Duplicate. `pairs` is `(source id, new id)`;
+/// each new message carries the source's whole definition under the
+/// fresh id and is **stopped**, even when its source is running — a
+/// duplicate never starts transmitting by itself. All-or-nothing: any
+/// unknown source or taken id fails the batch with nothing inserted.
+/// Returns the clones in input order. Duplicate clones frames, never
+/// shares them.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn clone_transmit_frames(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pairs: Vec<(String, String)>,
+) -> Result<Vec<transmit_frames::TransmitFrame>, String> {
+    let clones = state.transmit_frames().clone_frames(&pairs)?;
+    refresh_calc_resolutions(&app);
+    emit_transmit_frames_changed(&app);
+    Ok(clones)
+}
+
 /// Remove a TX message, unscheduling its periodic first.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]

@@ -598,7 +598,7 @@ describe("ElementRow", () => {
     expect(onDuplicate).toHaveBeenCalledTimes(1);
   });
 
-  it("disables Duplicate on a transmit row, saying why", () => {
+  it("offers Duplicate on a transmit row like any other", () => {
     const onDuplicate = vi.fn();
     render(
       <ElementRow
@@ -615,10 +615,10 @@ describe("ElementRow", () => {
       />,
     );
     const btn = screen.getByRole("button", { name: "Duplicate" });
-    expect(btn).toBeDisabled();
-    expect(btn.getAttribute("title")).toMatch(/not yet/i);
+    expect(btn).toBeEnabled();
+    expect(btn.getAttribute("title")).toBe("Duplicate Tx 1 (undoable)");
     fireEvent.click(btn);
-    expect(onDuplicate).not.toHaveBeenCalled();
+    expect(onDuplicate).toHaveBeenCalledTimes(1);
   });
 
   it("offers Open when no panel exists and Focus when one does", () => {
