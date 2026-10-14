@@ -1022,7 +1022,8 @@ const HOVER_MARKER_RADIUS_PX = 3;
  * A linked pair's extent, as an event-colored wash at low opacity
  * (owner ruling, ADR 0056).
  *
- * **Nothing at rest.** `extents` is empty unless one of a pair is
+ * **Nothing at rest.** `extents` is empty unless one of a pair — or a
+ * bus-error episode, whose extent is its first error to its last — is
  * hovered or selected, so at rest this paints not one pixel and the plot
  * shows exactly what it always showed: the marker lines.
  *
@@ -1344,6 +1345,9 @@ const X_AXIS_SIZE_PX = 34 + TIME_CURSOR_GUTTER_PX;
 /** The band uPlot reserves for that label. */
 const X_AXIS_LABEL_SIZE_PX = 16;
 
+/** Horizontal padding (CSS px) inside a chip, either side of its text. */
+const CHIP_PAD_X_PX = 4;
+
 /** Draw one chip — a filled, outlined box of `lines` lines of text,
  * centred vertically on `cy` and hung off `x` by its centre or its left
  * edge. The shape the cursor readouts, the Δ chips and the event labels
@@ -1353,7 +1357,7 @@ function drawChip(
   lines: readonly string[],
   o: { x: number; anchor: "center" | "left"; cy: number; color: string; ratio: number },
 ): void {
-  const padX = 4 * o.ratio;
+  const padX = CHIP_PAD_X_PX * o.ratio;
   const h = CANVAS_CHIP_LINE_PX * o.ratio;
   const tw = Math.max(...lines.map((l) => ctx.measureText(l).width));
   const boxH = h * lines.length;
@@ -1400,6 +1404,16 @@ function measureMarkerLabel(text: string): number {
     if (markerMeasureCtx) markerMeasureCtx.font = MARKER_LABEL_FONT;
   }
   return markerMeasureCtx ? markerMeasureCtx.measureText(text).width : text.length * 5.7;
+}
+
+/** The narrowest an event label chip draws (CSS px): {@link drawChip}'s
+ * padding either side and one character of the marker-label font. The
+ * chips are painted on the canvas, so this — not a stylesheet — is
+ * where a chip's minimum width lives; a plot has room for its width
+ * over this many markers. */
+export function eventChipMinWidthPx(): number {
+  const charW = measureMarkerLabel(MARKER_LABEL_WIDTH_SAMPLE) / MARKER_LABEL_WIDTH_SAMPLE.length;
+  return 2 * CHIP_PAD_X_PX + charW;
 }
 
 /** The labels a set of plot events puts in the top gutter. What the

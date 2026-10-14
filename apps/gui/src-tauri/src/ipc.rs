@@ -1280,27 +1280,6 @@ pub struct SampledPoints {
     pub extrapolated: Vec<[f64; 2]>,
 }
 
-/// One bus's error series over a served window, as parallel arrays:
-/// `t[i]` is the frame time in seconds of the bus's `v[i]`th error frame.
-/// Consecutive entries give an exact count (`v[i+1] - v[i]`) and span
-/// (`t[i+1] - t[i]`) at whatever level the window was read off
-/// (`crate::sampling::bus_error_series`).
-#[derive(serde::Serialize, Clone, Debug, PartialEq)]
-pub struct BusErrorPoints {
-    pub t: Vec<f64>,
-    pub v: Vec<f64>,
-}
-
-/// `bus_error_series`'s answer: one [`BusErrorPoints`] per requested bus,
-/// in request order, and whether every one of them had caught up with the
-/// capture when it answered (ADR 0049) — `false` while a series is still
-/// being built, in which case each window is the prefix built so far.
-#[derive(serde::Serialize, Clone, Debug, PartialEq)]
-pub struct BusErrorWindows {
-    pub series: Vec<BusErrorPoints>,
-    pub complete: bool,
-}
-
 /// One bus-error **episode** as `bus_error_episodes` serves it: a burst of
 /// errors on `bus` in which each followed the last by less than the
 /// episode gap (`crate::bus_error_episodes`). Times are absolute seconds;
@@ -1328,6 +1307,21 @@ pub struct BusErrorEpisodePage {
     pub count: u64,
     pub start: u64,
     pub episodes: Vec<BusErrorEpisode>,
+    pub complete: bool,
+}
+
+/// `bus_error_episodes_in_window`'s answer: the episodes intersecting a
+/// plot's window, chronological by first time, at most the marker budget
+/// of them; the gap they are folded at — the asked-for gap, or that
+/// doubled until the window's episodes fit; the error frames they hold,
+/// summed; and whether the series and their episode lists had caught up
+/// with the capture (ADR 0049).
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BusErrorEpisodeWindow {
+    pub episodes: Vec<BusErrorEpisode>,
+    pub gap_seconds: f64,
+    pub error_count: u64,
     pub complete: bool,
 }
 

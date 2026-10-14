@@ -260,22 +260,31 @@ signal cache, and views page it; authored events stay whole.**
   decreases, so the pyramid's min/max fold keeps each bucket's first and
   last sample, and every served point — at whatever level the window
   chose — carries the exact total at its time. Any two consecutive
-  served points are one marker's worth: count is the value difference,
-  span the time difference, rate their ratio. A zoomed-out window shows
-  fewer, larger episodes; zooming in resolves them. The plot has no gap
-  rule and no cap: nothing is evicted.
-- **A list reads episodes at a gap the reader sets** (owner ruling
-  2026-09-24). A marker per served point suits a plot, which zooms; a
-  list does not, and individual errors are not worth a row each. So the
-  Events panel lists a bus's **episodes**: bursts in which each error
+  served points give an exact count, span and rate. Nothing is evicted.
+- **Views read episodes at a gap the reader sets** (owner rulings
+  2026-09-24, and 2026-10-02 for the plot). Individual errors are not
+  worth a row or a marker each. So the Events panel lists, and the plot
+  marks, a bus's **episodes**: bursts in which each error
   follows the last by less than `bus_error_episode_gap_s` (default 5 s,
   minimum 1 s), a silence of at least the gap ending one. The host
   derives them from the series' level 0, incrementally, holds the list
   beside the series (bounded by capture time ÷ gap, rebuilt from level 0
   rather than persisted) and serves it paged by offset, newest first,
   with its count; the view pages it and derives nothing. An episode's id
-  is its last error's, `bus-error:{bus}:{n}` — the same id the plot's
-  marker for that error carries.
+  is its last error's, `bus-error:{bus}:{n}`, on the plot as in the list.
+- **A plot marker is an episode, in the events' own style** (owner
+  ruling 2026-10-02). The plot asks for the episodes intersecting its
+  window, at most as many as chips fit across it, and draws each as any
+  event is drawn — one marker at the first error, labelled with the bus,
+  count, span and rate, coloured by its kind and nothing else — its
+  extent from first error to last drawn as a linked pair's is, while it
+  is acted on ([ADR 0056](0056-an-event-subject-is-a-structural-reference.md)).
+  When more intersect the window than fit, the **gap doubles** until they
+  do: episodes at `2g` are exactly the gap-`g` episodes merged wherever
+  one ends less than `2g` before the next begins, so the host merges the
+  window's slice of the held list rather than refolding errors, and says
+  which gap it answered at. A long window reads as fewer, longer
+  episodes, never as a cap.
 - **The event store holds authored events only**, and `notes-changed`
   fires only on an authored change. A host-derived kind keeps its
   category and its lifecycle (not editable, not persisted, not exported
