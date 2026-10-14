@@ -1858,12 +1858,16 @@ writes, so the panel teaches the file.
   timeline view reads time since the session started. `calendar`
   switches them all at once to calendar time through the date/time
   pattern; the command palette's **Toggle calendar time** flips it. The
-  trace, By-ID, Events and Signals time cells read it today: the whole
+  trace, By-ID, Events and Signals time cells read it: the whole
   pattern plus the same fraction digits the elapsed cell shows, with
   the elapsed time on hover (and the calendar time on hover while the
-  setting is `elapsed`). The plots follow in a later change. A capture
-  with no wall-clock start time names no instant and stays elapsed
-  either way.
+  setting is `elapsed`). The plots read it too: x ticks show the time
+  of day, the x-axis label names the window's date(s) (`Time on
+  <date>`, `Time on <d1> and <d2>`, `Time between <first>, <last>`),
+  the A/B chips and panel cursor readouts show the calendar cell, and
+  the tick and chip hover shows the elapsed time; Δt stays a duration.
+  A capture with no wall-clock start time names no instant and stays
+  elapsed either way.
 - **Bus-error episode gap.** **Trace → Bus-error episode gap**
   (`bus_error_episode_gap_s`, in seconds) is how long a bus must fall
   silent before the Events panel starts a new bus-error episode: 5 by
