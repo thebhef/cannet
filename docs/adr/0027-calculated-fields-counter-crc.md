@@ -17,7 +17,9 @@ a rest-of-bus-simulation row ([ADR 0028](0028-rest-of-bus-simulation.md))
 
 The host has a single transmit model (`TransmitFrameRegistry` + the
 host scheduler thread); every transmit-side feature is a client of
-it. A registry entry optionally carries a resolved calculated-fields
+it. Duplicating a transmit element clones its frames into new registry
+entries (stopped, counters at 0) — frames are never shared between
+elements. A registry entry optionally carries a resolved calculated-fields
 config; the scheduler's fire path applies it on each send:
 
 1. counter ← (counter + increment) mod (rollover + 1), partial-encoded

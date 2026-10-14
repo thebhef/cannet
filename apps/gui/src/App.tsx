@@ -1043,14 +1043,28 @@ export function App() {
     },
     [registry, beginGesture, endGesture],
   );
+  // The host frames each Duplicate cloned, by the copy's element id, so
+  // undoing the duplicate withdraws them with the copy.
+  const duplicatedFramesRef = useRef(new Map<string, string[]>());
   const duplicateElementById = useCallback(
-    (id: string): string => {
+    async (id: string): Promise<string> => {
       const source = registry.find((e) => e.element.id === id);
-      // A transmit element's frames live in the shared host TX pool; a
-      // structural copy would share them, so it is refused here until
-      // the frames are cloned host-side.
-      if (!source || source.element.kind === "transmit") return "";
+      if (!source) return "";
       const newId = crypto.randomUUID();
+      // A transmit element's frames live in the shared host TX pool, so
+      // its copy owns clones of them (stopped, whatever the originals are
+      // doing) under fresh ids; a failed clone adds nothing.
+      let newFrameIds: string[] = [];
+      if (source.element.kind === "transmit") {
+        newFrameIds = source.element.frameIds.map(() => crypto.randomUUID());
+        const pairs = source.element.frameIds.map((fid, i) => [fid, newFrameIds[i]]);
+        try {
+          await invoke("clone_transmit_frames", { pairs });
+        } catch {
+          return "";
+        }
+        duplicatedFramesRef.current.set(newId, newFrameIds);
+      }
       // The copy is element churn inside one undo step, like a remove —
       // and it joins the gesture it was made in (a create inside one is
       // part of that step).
@@ -1063,7 +1077,7 @@ export function App() {
           if (i < 0) return prev;
           const next = prev.slice();
           next.splice(i + 1, 0, {
-            element: duplicateElement(prev[i].element, newId),
+            element: duplicateElement(prev[i].element, newId, newFrameIds),
             trace: newElementTrace(),
           });
           return next;
@@ -1170,6 +1184,24 @@ export function App() {
       for (const { id, patch } of plan.patches) updateElement(id, patch);
       if (plan.creates.length > 0 || plan.removes.length > 0) {
         restoreElementSet(plan.creates, plan.removes);
+      }
+      // Undoing a transmit Duplicate drops the copy; the host frames it
+      // cloned go with it, unless another element still groups one.
+      // Withdrawal only — undo never puts anything on, or back on, the
+      // bus (ADR 0050).
+      for (const removedId of plan.removes) {
+        const cloned = duplicatedFramesRef.current.get(removedId);
+        if (!cloned) continue;
+        duplicatedFramesRef.current.delete(removedId);
+        const kept = new Set<string>();
+        for (const e of registryRef.current) {
+          if (e.element.kind === "transmit" && !plan.removes.includes(e.element.id)) {
+            for (const fid of e.element.frameIds) kept.add(fid);
+          }
+        }
+        for (const fid of cloned) {
+          if (!kept.has(fid)) void invoke("remove_transmit_frame", { id: fid }).catch(() => {});
+        }
       }
     } finally {
       applyingElementsRef.current = false;
