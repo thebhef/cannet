@@ -127,6 +127,12 @@ class _SharedInterface:
         # says 0 -- so this is tri-state on purpose and the wire field
         # is left unset for ``None``.
         self._last_rx_overruns: Optional[int] = None
+        # Rollovers of the backend's own receive timer already reported
+        # to subscribers. The driver corrects the stamps; this is what
+        # turns each correction into one operator-visible line, and it
+        # is only ever compared against the *current* channel's count,
+        # so it resets with the baseline below.
+        self._reported_timer_wraps = 0
         # Transmit-side counters, emitted alongside the rx stats on the
         # rx pump's periodic tick. `transmit` runs on gRPC handler
         # threads while the tick reads/resets on the rx thread, so a
@@ -411,6 +417,11 @@ class _SharedInterface:
         # field says "since it was opened", so the baseline drops the
         # previous channel's total rather than carrying it forward.
         self._last_rx_overruns = None
+        # Same reasoning, and the stakes are higher: a fresh channel's
+        # timer-rollover count starts at zero too, so a report left at
+        # the old channel's total would swallow the new channel's first
+        # rollover entirely.
+        self._reported_timer_wraps = 0
 
     def _current_channel(self) -> Optional[drv.OpenChannel]:
         with self._lock:
@@ -650,6 +661,7 @@ class _SharedInterface:
             ch = self._current_channel()
             if ch is None:
                 continue
+            self._report_timer_wraps(ch)
             try:
                 st = ch.state()
             except Exception as e:  # noqa: BLE001
@@ -670,6 +682,37 @@ class _SharedInterface:
                 st.tec,
                 st.rec,
                 self._read_rx_overruns(ch),
+            )
+
+    def _report_timer_wraps(self, ch: drv.OpenChannel) -> None:
+        """Emit one WARNING ``LogMessage`` per rollover of the channel's
+        receive timer that subscribers have not been told about yet.
+
+        The driver corrects the timestamps on its own receive thread
+        (python-can's Kvaser backend reads a 32-bit tick counter and
+        adds no rollover handling of its own), which leaves nothing in
+        the frame stream to show that it happened -- a corrected capture
+        looks exactly like one that never wrapped. The count is the only
+        evidence, so the state poll reads it on its own cadence, the
+        same way it reads the overrun count, and the operator's system
+        log carries a line per rollover. A rollover is an 11 h 56 m
+        event, so reporting it up to half a second late costs nothing
+        and keeps the receive thread in its recv loop.
+
+        Backends with no rollovers to report have no ``timer_wraps`` at
+        all; the read failing is that answer, not a fault.
+        """
+        try:
+            wraps = int(ch.timer_wraps())
+        except Exception:  # noqa: BLE001
+            return
+        while self._reported_timer_wraps < wraps:
+            self._reported_timer_wraps += 1
+            self._broadcast_error(
+                pb.LOG_LEVEL_WARN,
+                f"{self._channel_id}: adapter receive timer wrapped "
+                f"(#{self._reported_timer_wraps} since open); receive "
+                f"timestamps after it are being corrected",
             )
 
     def _read_rx_overruns(self, ch: drv.OpenChannel) -> Optional[int]:

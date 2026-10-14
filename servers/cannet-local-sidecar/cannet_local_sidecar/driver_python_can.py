@@ -120,6 +120,27 @@ _PCAN_RX_OVERRUN_MASK = _PCAN_ERROR_OVERRUN | _PCAN_ERROR_QOVERRUN
 _PCAN_ERR_REC_OFFSET = 2
 _PCAN_ERR_TEC_OFFSET = 3
 
+#: Kvaser's receive timer, and why the sidecar has to unwrap it.
+#:
+#: ``canReadWait`` reports a frame's arrival as a 32-bit count of
+#: ``TIMESTAMP_RESOLUTION`` = 10 µs ticks, and python-can's Kvaser
+#: backend returns ``ticks * 1e-5 + self._timestamp_offset`` with no
+#: wrap handling (4.6.1, and ``main`` as of 2026-09-23). The count
+#: therefore rolls over every ``2**32`` ticks — 42,949.67296 s, a
+#: little under 11 h 56 m — and every receive timestamp after the roll
+#: is that much earlier than the one before it. Downstream that reads
+#: as frames arriving before the session began, which ADR 0024 makes
+#: fatal: a trace has one origin and everything is elapsed time from
+#: it. A capture on a Leaf v3 lost 4 h 46 m of receive to exactly this.
+#:
+#: The correction is a running count of rollovers, applied to every
+#: later stamp. A new stamp more than half a period behind the last one
+#: is a rollover; anything less is ordinary receive-queue reordering,
+#: which is microseconds wide, not hours.
+_KVASER_TICK_S = 10 / 1_000_000.0
+_KVASER_WRAP_PERIOD_S = (1 << 32) * _KVASER_TICK_S
+_KVASER_WRAP_THRESHOLD_S = _KVASER_WRAP_PERIOD_S / 2
+
 #: Vector XL chip-state constants, copied from python-can's own
 #: ``can.interfaces.vector.xldefine``. Spelled out here for the same
 #: reason PEAK's are: this module has to load on a machine with no
@@ -405,6 +426,18 @@ class PythonCanChannel:
         # episode is a rising edge -- see `_note_pcan_overrun`.
         self._pcan_overruns = 0
         self._pcan_in_overrun = False
+        # python-can's Kvaser backend is the only one that holds this:
+        # the open-time correction it adds to the wrapping 32-bit tick
+        # count. Its presence is what marks a bus whose stamps need
+        # unwrapping -- see `_KVASER_WRAP_PERIOD_S`.
+        self._is_kvaser = hasattr(bus, "_timestamp_offset")
+        # The last *raw* stamp this channel was handed, and how many
+        # rollovers have been seen since it was opened. The comparison
+        # has to be against the raw value: the corrected one climbs past
+        # the counter's range, so a second rollover would never look
+        # like one.
+        self._kvaser_last_raw_s: Optional[float] = None
+        self._kvaser_wraps = 0
 
     def recv(self, timeout_s: float) -> Optional[Frame]:
         if self._closed:
@@ -417,10 +450,55 @@ class PythonCanChannel:
         self._unreachable = False
         if msg is None:
             return None
+        if self._is_kvaser:
+            self._unwrap_kvaser_timestamp(msg)
         frame = message_to_frame(msg)
         if self._is_pcan and frame.kind == FrameKind.ERROR:
             self._note_pcan_counters(frame.data)
         return frame
+
+    def _unwrap_kvaser_timestamp(self, msg) -> None:
+        """Undo the rollover of Kvaser's 32-bit receive timer, in place
+        on the message python-can just handed back.
+
+        The message is corrected *before* the wire mapper reads it, not
+        after: the mapper rejects a stamp more than a day from the wall
+        clock as driver garbage and substitutes the current time, and a
+        stamp two rollovers stale (23 h 51 m) is inside that window
+        while a third is not. Correcting first means the mapper only
+        ever judges a stamp that is meant to be believable.
+
+        A message with no stamp at all is left alone and does not become
+        the anchor: python-can leaves ``timestamp`` at 0.0 where a
+        backend does not stamp, and reading that as a rollback of the
+        whole Unix epoch would invent a wrap on the spot.
+        """
+        raw = float(getattr(msg, "timestamp", 0.0) or 0.0)
+        if not raw:
+            return
+        last = self._kvaser_last_raw_s
+        if last is not None and raw < last - _KVASER_WRAP_THRESHOLD_S:
+            self._kvaser_wraps += 1
+            _log.warning(
+                "%s: receive timer wrapped (%d since open); adding "
+                "%.5f s to later timestamps",
+                self.channel_id,
+                self._kvaser_wraps,
+                self._kvaser_wraps * _KVASER_WRAP_PERIOD_S,
+            )
+        self._kvaser_last_raw_s = raw
+        if self._kvaser_wraps:
+            msg.timestamp = raw + self._kvaser_wraps * _KVASER_WRAP_PERIOD_S
+
+    def timer_wraps(self) -> int:
+        """Rollovers of the backend's own receive timer since this
+        channel was opened.
+
+        Only the Kvaser backend has one; every other bus this driver
+        opens answers 0 for the life of the channel, because its stamps
+        never needed correcting rather than because nobody looked.
+        """
+        return self._kvaser_wraps
 
     def _note_pcan_counters(self, data: bytes) -> None:
         """Record the error counters carried by a PEAK error frame.

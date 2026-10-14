@@ -148,6 +148,26 @@ The sidecar implements the **hardware-server wire model** described in
   backend that does not watch for receive loss, which is a different
   answer from zero: zero is the reading that says a capture is the
   whole of what the bus sent.
+- **Receive timestamps are the backend's, with one correction.** A
+  frame's `timestamp_ns` is whatever the vendor driver stamped it
+  with, converted to Unix-epoch nanoseconds — except on **Kvaser**,
+  where the driver unwraps a rollover before the frame reaches the
+  wire. `canReadWait` reports arrival as a 32-bit count of 10 µs
+  ticks, and python-can (4.6.1, and `main` as of 2026-09-23) returns
+  `ticks × 10 µs + offset` with no rollover handling, so every stamp
+  after `2**32` ticks — 42,949.67296 s, just under 11 h 56 m — is
+  that much earlier than the one before it. On a long capture that
+  reads downstream as frames arriving before the session began, and
+  they are dropped. The sidecar keeps the last raw stamp per open
+  channel and counts a rollover when a new one falls more than half a
+  period behind (ordinary receive-queue reordering is microseconds
+  wide, not hours); each rollover adds one period to every later
+  stamp and emits one WARNING `LogMessage` naming the interface, so
+  the operator's system log records that it happened. The count
+  restarts at zero on each open, because python-can re-derives its
+  offset from the live timer every time the bus is opened. No other
+  backend is touched — a hardware stamp that is right is left alone.
+  An upstream python-can issue tracks the defect.
 - `Body::ClockProbe { t1 }` is answered with
   `Body::ClockReply { t1, t2, t3 }` — the sidecar's own wall-clock
   receive and send stamps, from the same `time.time_ns()` clock that
@@ -159,7 +179,10 @@ The sidecar implements the **hardware-server wire model** described in
 ## Swap the driver library
 
 `driver.py` defines a small adapter protocol (`list_channels`,
-`open`, `recv`, `send`, `state`, `rx_loss`, `close`); the default
+`open`, `recv`, `send`, `state`, `rx_loss`, `timer_wraps`, `close`);
+`rx_loss` and `timer_wraps` are optional — a driver that omits them is
+read as one that does not watch for receive loss and one whose
+backends' timestamps never roll over. The default
 implementation in `driver_python_can.py` wraps `python-can`. To use
 something else:
 
