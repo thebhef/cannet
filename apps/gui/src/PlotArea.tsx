@@ -5217,7 +5217,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                           title={`${rowLabel} — drag to another plot area`}
                         />
                       </span>
-                      <span className="plot-signal-message" title={messageLabelFor(s)}>
+                      <span className="plot-signal-message name-row" title={messageLabelFor(s)}>
                         {/* A math series has no bus of its own, so its
                             chips are the buses feeding it — one each,
                             transitively, as the host resolved them
@@ -5231,7 +5231,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                             swatchClassName="plot-bus-swatch"
                           />
                         ))}
-                        <NameText name={messageLabelFor(s)} />
+                        <span className="name-row-text">
+                          <NameText name={messageLabelFor(s)} />
+                        </span>
                       </span>
                     </div>
                     <div className="plot-signal-readout">

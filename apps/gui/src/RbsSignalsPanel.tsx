@@ -481,8 +481,14 @@ function RbsSignalRowLine({
           case "msg":
             return (
               <span className={className}>
-                0x{formatCanIdHex(row.messageId, row.extended)}{" "}
-                <NameText name={row.messageName ?? ""} />
+                <span className="name-row">
+                  <span className="name-row-lead">
+                    0x{formatCanIdHex(row.messageId, row.extended)}
+                  </span>
+                  <span className="name-row-text">
+                    <NameText name={row.messageName ?? ""} />
+                  </span>
+                </span>
               </span>
             );
           case "signal":
