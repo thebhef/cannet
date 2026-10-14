@@ -149,7 +149,7 @@ static LAST_UI_HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 /// frontend stalled. Generously above the 1 Hz cadence: a few dropped
 /// seconds is ordinary jank on a loaded machine, and this number is
 /// supposed to name a window that has stopped responding.
-const UI_HEARTBEAT_STALL_MS: u64 = 5_000;
+pub(crate) const UI_HEARTBEAT_STALL_MS: u64 = 5_000;
 
 /// Record the frontend's latest JS-heap size (bytes), and stamp the
 /// report as this process's UI liveness heartbeat. Called from the
@@ -167,6 +167,19 @@ pub fn record_js_heap(bytes: u64) {
 
 /// How long ago the frontend last reported in, in ms, or `None` if it
 /// never has.
+///
+/// **A slowly climbing `ui_last_ms` across consecutive health lines is
+/// aliasing, not a slowdown.** This is the age of the last heartbeat at
+/// the moment the sampler happens to tick, and the two run on
+/// independent clocks: the heartbeat is a 1 Hz `setInterval` in the
+/// renderer, while the sampler sleeps [`health_interval`] *plus* its
+/// own sampling work, so its period is a little over the nominal one.
+/// Each tick therefore lands slightly later in the heartbeat's cycle
+/// than the last, and the reported age climbs by that difference every
+/// time — until it passes one heartbeat period and wraps back to near
+/// zero. A monotonic climb ending in a wrap says nothing about either
+/// side's health; only an age that stays high says that, which is what
+/// [`ui_liveness`] judges.
 fn ui_heartbeat_age_ms() -> Option<u64> {
     match LAST_UI_HEARTBEAT.load(Ordering::Relaxed) {
         0 => None,
