@@ -2227,11 +2227,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [elementId],
   );
 
-  /// A plot-area drag was released on `targetAreaId`. A drag that
-  /// started in this panel is the stack reorder it has always been; one
-  /// from another plot panel brings the area here — a **move** by
-  /// default, a **copy** while Ctrl is held (read from the drop event,
-  /// so the decision is the one the user was holding when they let go).
+  /// A plot-area drag was released on `targetAreaId`. Without the copy
+  /// modifier (Alt on macOS, Ctrl elsewhere), a drag that started in
+  /// this panel is the stack reorder; one from another plot panel brings
+  /// the area here as a **move**. With the modifier, either source is a
+  /// **copy** (read from the drop event, so the decision is the one the
+  /// user was holding when they let go).
   ///
   /// A move keeps the area's id, so its manual y ranges land under the
   /// keys they already had; a copy is a second area, so its ranges are
@@ -2239,7 +2240,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// describe the stack the area left, not the area.
   const dropArea = useCallback(
     (payload: PlotAreaDragPayload, targetAreaId: string, copy: boolean) => {
-      if (payload.sourcePanelId === elementId) {
+      if (payload.sourcePanelId === elementId && !copy) {
         reorderArea(payload.area.id, targetAreaId);
         return;
       }

@@ -75,7 +75,12 @@ import {
   type XSync,
 } from "./plotPanelConfig";
 import { litLast, wrapMarkerLabel, type PlotExtent } from "./plotEvents";
-import { parsePlotAreaDragData, type PlotAreaDragPayload } from "./plotAreaTransfer";
+import {
+  copyModifierLabel,
+  isCopyDrag,
+  parsePlotAreaDragData,
+  type PlotAreaDragPayload,
+} from "./plotAreaTransfer";
 import {
   applyAutoPointFloor,
   applySampleMarkerFilter,
@@ -343,12 +348,12 @@ function signalDrop(
  * Deliberately no per-`dragover` state: an insertion marker would be a
  * React commit per mouse move over a canvas whose resample loop is
  * already paced against its own render cost. The drag ghost plus the
- * "move" cursor carry the affordance; the areas are large enough that
+ * "move"/"copy" cursor carry the affordance; the areas are large enough that
  * which one the pointer is over is unambiguous. */
 function areaDragOver(e: DragEvent<HTMLElement>): void {
   if (!isAreaDrag(e)) return;
   e.preventDefault();
-  e.dataTransfer.dropEffect = "move";
+  e.dataTransfer.dropEffect = isCopyDrag(e) ? "copy" : "move";
 }
 
 /** Is the drag in flight a plot-area drag? Read from the mime list,
@@ -367,10 +372,10 @@ function areaDrop(
   const payload = parsePlotAreaDragData(e.dataTransfer.getData(PLOT_AREA_DND_MIME));
   if (!payload) return false;
   e.preventDefault();
-  // Ctrl is read *at the drop*, not at the grab: the user decides
-  // move-vs-copy while dragging, and the modifier they are holding when
-  // they let go is the answer.
-  onDropArea(payload, e.ctrlKey);
+  // The copy modifier is read *at the drop*, not at the grab: the user
+  // decides move-vs-copy while dragging, and the modifier they are
+  // holding when they let go is the answer.
+  onDropArea(payload, isCopyDrag(e));
   return true;
 }
 
@@ -4766,7 +4771,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             <div
               className="plot-area-collapsed-handle"
               aria-label="reorder collapsed plot area"
-              title="drag to reorder this plot area, or to move it to another plot panel (Ctrl to copy)"
+              title={`drag to reorder this plot area, or to move it to another plot panel (${copyModifierLabel()} to copy)`}
               draggable
               onDragStart={(e) => onDragArea(e.dataTransfer)}
             />
@@ -4865,7 +4870,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             <span
               className="plot-area-grip"
               aria-label="reorder plot area"
-              title="drag to reorder this plot area, or to move it to another plot panel (Ctrl to copy)"
+              title={`drag to reorder this plot area, or to move it to another plot panel (${copyModifierLabel()} to copy)`}
               draggable
               onDragStart={(e) => onDragArea(e.dataTransfer)}
             >
