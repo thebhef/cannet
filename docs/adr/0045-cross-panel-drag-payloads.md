@@ -72,16 +72,23 @@ through the explicit materialize path — never silently by drop.
 | Signal(s) | add series | one TX frame per distinct message | add to manual picks | add + assign to that section |
 | Message | add all its signals as series | one TX frame | add its signals to picks | add + assign |
 | Pattern(s) | append to area patterns, live | rejected (no concrete message set) | new section carrying the patterns | merge into target section |
-| Plot area | reorder (same panel) / move here, Ctrl to copy | as its signal half, above | as its signal half, above | as its signal half, above |
+| Plot area | reorder (same panel) / move here; copy modifier: copy here | as its signal half, above | as its signal half, above | as its signal half, above |
 
-**A plot area dropped on another plot panel moves; Ctrl copies.** The
-area leaves its source panel and lands at the drop position in the
-target's stack, keeping its id — so its manual ranges land under the
-keys they already had. Holding Ctrl *at the drop* (the modifier the
-user was holding when they let go, not when they grabbed) makes it a
-copy under a fresh id, ranges re-keyed to match, and the source keeps
-its own. A drop back on the panel the drag started in is the stack
-reorder it has always been, Ctrl or no Ctrl. A panel that gives up its
+**A plot area dropped on another plot panel moves; the copy modifier
+copies — on this panel too.** The copy modifier is Alt on macOS and
+Ctrl elsewhere (one helper, `isCopyDrag`, reads it from the event).
+Without it, the area leaves its source panel and lands at the drop
+position in the target's stack, keeping its id — so its manual ranges
+land under the keys they already had — and a drop back on the panel the
+drag started in is the stack reorder. Holding the modifier *at the
+drop* (the one the user was holding when they let go, not when they
+grabbed) makes it a copy under a fresh id, ranges re-keyed to match,
+inserted at the drop position, and the source keeps its own; this holds
+for a drop inside the source panel as well (the platform's baseline
+copy-drag behaviour). `dragover` reads the modifier on every event and
+sets `dropEffect` to `copy` while it is held and `move` otherwise, so
+the pointer shows which will happen and follows a mid-drag toggle. The
+grip's tooltip names the platform's modifier. A panel that gives up its
 last area keeps a fresh empty one — there has to be something to drop
 into.
 

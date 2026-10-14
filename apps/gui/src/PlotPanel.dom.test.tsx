@@ -7316,17 +7316,61 @@ describe("PlotPanel area drag between panels", () => {
     });
   });
 
-  it("keeps a same-panel drop a reorder, Ctrl or no Ctrl", () => {
+  it("keeps a plain same-panel drop a reorder", () => {
     const { apiA } = renderTwoPanels(SOURCE, TARGET);
     const dt = areaDragTransfer();
     const grips = within(screen.getByTestId("panel-a")).getAllByLabelText("reorder plot area");
     fireEvent.dragStart(grips[1], { dataTransfer: dt });
     const first = screen.getByTestId("panel-a").querySelectorAll(".plot-area")[0];
     fireEvent.dragOver(first, { dataTransfer: dt });
-    fireEvent.drop(first, { dataTransfer: dt, ctrlKey: true });
+    dropWithCtrl(first, dt, false);
 
     expect(stackOf("panel-a")).toEqual([["Other"], ["Cell1"]]);
     expect(lastPersist(apiA).areas!.map((a) => a.id)).toEqual(["a2", "a1"]);
+  });
+
+  it("copies on a same-panel modifier drop: fresh id, original kept", () => {
+    const { apiA } = renderTwoPanels(SOURCE, TARGET);
+    const dt = areaDragTransfer();
+    const grips = within(screen.getByTestId("panel-a")).getAllByLabelText("reorder plot area");
+    fireEvent.dragStart(grips[1], { dataTransfer: dt });
+    const first = screen.getByTestId("panel-a").querySelectorAll(".plot-area")[0];
+    fireEvent.dragOver(first, { dataTransfer: dt });
+    dropWithCtrl(first, dt, true);
+
+    // The copy of "Other" landed above the drop target; both originals stay.
+    expect(stackOf("panel-a")).toEqual([["Other"], ["Cell1"], ["Other"]]);
+    const ids = lastPersist(apiA).areas!.map((a) => a.id);
+    expect(ids).toHaveLength(3);
+    expect(ids[1]).toBe("a1");
+    expect(ids[2]).toBe("a2");
+    expect(ids[0]).not.toBe("a2");
+    // Its range travelled under the fresh id; the original's stayed.
+    expect(lastPersist(apiA).axisScales).toMatchObject({ a2: { max: 99 }, [ids[0]]: { max: 99 } });
+  });
+
+  it("sets the dragover cursor from the copy modifier, every dragover", () => {
+    renderTwoPanels(SOURCE, TARGET);
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(within(screen.getByTestId("panel-a")).getAllByLabelText("reorder plot area")[0], {
+      dataTransfer: dt,
+    });
+    const target = screen.getByTestId("panel-b").querySelectorAll(".plot-area")[0];
+    const over = (ctrlKey: boolean) => {
+      const ev = createEvent.dragOver(target, { dataTransfer: dt });
+      Object.defineProperty(ev, "ctrlKey", { value: ctrlKey });
+      fireEvent(target, ev);
+      return dt.dropEffect;
+    };
+    expect(over(false)).toBe("move");
+    expect(over(true)).toBe("copy");
+    expect(over(false)).toBe("move");
+  });
+
+  it("names the platform's copy modifier on the grip", () => {
+    renderTwoPanels(SOURCE, TARGET);
+    const grip = within(screen.getByTestId("panel-a")).getAllByLabelText("reorder plot area")[0];
+    expect(grip.getAttribute("title")).toMatch(/[(](Alt|Ctrl) to copy[)]$/);
   });
 
   it("leaves both panels alone when the drag is cancelled", () => {
