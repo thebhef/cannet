@@ -35,7 +35,15 @@ import { useTrace } from "./trace";
 import { PERF_TITLE, PlotToolbar } from "./PlotToolbar";
 import { useNotes } from "./notesContext";
 import { authorEvent, timelineEvents, type EventSubject } from "./notes";
-import { plotEventExtents, plotTimelineEvents, subjectsForSelection, type PlotExtent } from "./plotEvents";
+import {
+  busErrorTimelineEvents,
+  plotEventExtents,
+  plotEventsFromTimeline,
+  plotTimelineEvents,
+  subjectsForSelection,
+  type PlotExtent,
+} from "./plotEvents";
+import { useBusErrorMarkers } from "./useBusErrorMarkers";
 import {
   eventHighlight,
   highlightsSeries,
@@ -241,6 +249,17 @@ function targetLagFor(fetchIntervalMs: number): number {
     Math.max(FOLLOW_TARGET_LAG_MIN_S, (FOLLOW_TARGET_LAG_TICKS * fetchIntervalMs) / 1000),
   );
 }
+
+/** Fraction of the visible span fetched beyond each edge of the
+ * `bus_error_series` query — the same reason and the same fraction as
+ * the series resample's own margin (`PlotArea.tsx`'s
+ * `FETCH_MARGIN_FRACTION`): the window slides between fetches, so a
+ * slice cut exactly to it is already stale by the time it renders. */
+const BUS_ERROR_MARKER_MARGIN_FRACTION = 0.2;
+/** Floor for the bus-error query's `maxPoints` (one point per plot
+ * pixel — see the point-budget note where it is used), for early-mount
+ * or degenerate-width panels. */
+const MIN_BUS_ERROR_MARKER_POINTS = 64;
 
 // Pattern-selection helpers live in `./signalSelection` so the
 // pure-logic tests can import them without dragging uplot into a jsdom run.
@@ -656,6 +675,41 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // default draws no cursor here until this panel is told to show it.
   const eventKinds = useEventKindFilter();
 
+  // Bus-error markers (ADR 0035 amended): a windowed query
+  // over every session bus's error series (`buses` below, from the
+  // project — the same session-wide scope every other event kind
+  // already has here: `sessionNotes` isn't filtered to what this panel
+  // plots either, so a bus error explains a gap on a panel showing only
+  // an unrelated signal just as a note does). `request` is driven from
+  // `onAreaResampled`, at the same per-area resample cadence the
+  // series fetch already runs at, rather than a poller of its own.
+  const { state: busErrorState, request: requestBusErrors } = useBusErrorMarkers();
+  const busesRef = useRef(buses);
+  useEffect(() => {
+    busesRef.current = buses;
+  }, [buses]);
+  const fetchBusErrorMarkers = useCallback(() => {
+    const base = baseSecondsRef.current;
+    const vis = xSyncRef.current;
+    if (base == null || vis.xMin == null || vis.xMax == null || vis.xMax <= vis.xMin) return;
+    const busIds = busesRef.current.map((b) => b.id);
+    if (busIds.length === 0) return;
+    const span = vis.xMax - vis.xMin;
+    const pad = span * BUS_ERROR_MARKER_MARGIN_FRACTION;
+    // One point per plot pixel — the panel's own rendered width, the
+    // same choice the series fetch makes off its canvas width
+    // (`PlotArea.tsx`'s `maxPts`). The panel, not a single area, because
+    // this is one query for the whole plot (every area shares the x
+    // axis the markers draw on).
+    const widthPx = panelRef.current?.clientWidth || 600;
+    requestBusErrors({
+      buses: busIds,
+      fromSeconds: base + vis.xMin - pad,
+      toSeconds: base + vis.xMax + pad,
+      maxPoints: Math.max(MIN_BUS_ERROR_MARKER_POINTS, Math.round(widthPx)),
+    });
+  }, [requestBusErrors]);
+
   // Per-area last-sampled series (only kept while the measurement strip
   // is on — it's the only consumer; the side-panel values come from the
   // area's own ref) and a perf read-out.
@@ -955,9 +1009,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
       slideRafRef.current = requestAnimationFrame(() => {
         slideRafRef.current = 0;
         slideXWindow();
+        // Same cadence as the window slide above — every area's resample
+        // settling once per frame — rather than a separate poller for
+        // the bus-error markers.
+        fetchBusErrorMarkers();
       });
     },
-    [slideXWindow],
+    [slideXWindow, fetchBusErrorMarkers],
   );
   useEffect(
     () => () => {
@@ -2618,18 +2676,45 @@ export function PlotPanel(props: IDockviewPanelProps) {
       ),
     [sessionNotes, model.truncationTsNs, baseSeconds, eventKinds.visible, themeName],
   );
+  // Bus-error markers (ADR 0035 amended): the windowed query's series,
+  // walked into one `TimelineEvent` per delta (`busErrorTimelineEvents`)
+  // and projected the same way `notes` is — same origin, same
+  // visibility filter (the Diagnostics row hides these too), same kind
+  // color. Authored notes and bus-error markers merge into `events`
+  // below — the one timeline-event list `PlotArea` renders, so there is
+  // no second marker renderer.
+  const busErrorEvents = useMemo(
+    () => busErrorTimelineEvents(busErrorState.series),
+    [busErrorState.series],
+  );
+  const busErrorMarkers = useMemo<NoteEvent[]>(
+    () =>
+      plotEventsFromTimeline(busErrorEvents, baseSeconds, eventKinds.visible, (k) =>
+        k === "busError" ? theme().eventBusError : undefined,
+      ),
+    [busErrorEvents, baseSeconds, eventKinds.visible, themeName],
+  );
   const events = useMemo<NoteEvent[]>(
-    () => [{ id: "__t0", t: 0, label: "T0" }, ...notes],
-    [notes],
+    () => [{ id: "__t0", t: 0, label: "T0" }, ...notes, ...busErrorMarkers],
+    [notes, busErrorMarkers],
   );
   // What acting on an event is lighting up right now (ADR 0056), and the
   // three things this panel draws from it. All three are empty at rest,
   // which is what keeps the plot at rest looking exactly as it did: the
   // marker lines, and nothing else.
   const activeEvents = useActiveEventIds();
+  // Authored notes plus whatever bus-error markers are currently in view
+  // (paged: a link to one outside the served window reads as
+  // unresolved, the same as a reference to any event this list does not
+  // hold — `notes.ts`'s `linkedEventIds`) — the one list highlight
+  // resolution and the per-kind counts below both read.
+  const allTimelineEvents = useMemo(
+    () => [...timelineEvents(sessionNotes, model.truncationTsNs), ...busErrorEvents],
+    [sessionNotes, model.truncationTsNs, busErrorEvents],
+  );
   const highlight = useMemo(
-    () => eventHighlight(timelineEvents(sessionNotes, model.truncationTsNs), activeEvents),
-    [sessionNotes, model.truncationTsNs, activeEvents],
+    () => eventHighlight(allTimelineEvents, activeEvents),
+    [allTimelineEvents, activeEvents],
   );
   /// The bands: a linked pair's extent, on the same origin and in the
   /// same colors as the marker lines that bound it.
@@ -2666,11 +2751,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return m;
   }, [highlight, derivedAreaConfigs]);
   // What the kind filter is hiding, counted off the *unfiltered* set so a
-  // kind with something to show says so even while it is off.
-  const eventKindCounts = useMemo(
-    () => countByKind(timelineEvents(sessionNotes, model.truncationTsNs)),
-    [sessionNotes, model.truncationTsNs],
-  );
+  // kind with something to show says so even while it is off. Bus
+  // errors are the one kind whose count is not "how many markers are
+  // drawn" — a marker at a coarse zoom level can fold many errors into
+  // one delta — so it is overridden with the model fact the query
+  // already carries: the served window's last running count minus its
+  // boundary sample, summed per bus (never re-derived — CLAUDE.md § GUI
+  // architecture).
+  const eventKindCounts = useMemo(() => {
+    const counts = countByKind(allTimelineEvents);
+    counts.busError = busErrorState.series.reduce(
+      (sum, s) => sum + (s.v.length > 0 ? s.v[s.v.length - 1] - s.v[0] : 0),
+      0,
+    );
+    return counts;
+  }, [allTimelineEvents, busErrorState.series]);
   // Cursor *positions* render in the trace's elapsed-time format
   // (ADR 0024 — one string for one timeline position across views), with
   // precision adapted to the shared x-window's span like the axis ticks.
