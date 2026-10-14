@@ -934,6 +934,7 @@ impl RawStore for DiskRawStore {
 #[allow(clippy::cast_possible_truncation)] // small loop counters into u8/u32 payloads
 mod tests {
     use super::*;
+    use crate::scratch_lock::{ScratchLock, ScratchLockError};
     use cannet_core::{CanFdFlags, CanFramePayload, Direction};
     use tempfile::TempDir;
 
@@ -1630,7 +1631,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "reproduces a known defect: no reopen yet refuses a directory another mapping still holds"]
     fn a_reopened_store_never_truncates_a_segment_another_store_still_holds() {
         // The by-id half of the same defect the sample sequence carries:
         // two live stores over one scratch directory, which is what two
@@ -1640,16 +1640,21 @@ mod tests {
         // The first store is ahead of the manifest: it grew its by-id
         // chain for id 7 into segment 1 *after* the flush that recorded
         // the chain's length, so the segment file exists and is mapped
-        // while the manifest still describes a one-segment chain. The
-        // second store reopens from that manifest (ADR 0002 DS-7), so its
-        // chain is one segment short, and its next append for id 7 calls
-        // `create_segment` on the path the first store maps: Windows
+        // while the manifest still describes a one-segment chain. A
+        // second store reopening from that manifest (ADR 0002 DS-7) would
+        // come back one segment short, and its next append for id 7 would
+        // call `create_segment` on the path the first store maps: Windows
         // refuses (ERROR_USER_MAPPED_FILE, 1224) and the append panics,
         // while POSIX truncates the file under the live mapping.
+        //
+        // The scratch lock (ADR 0002 DS-7) is what makes that
+        // unreachable: the session holding the directory holds the lock,
+        // and the second session is refused before it opens anything.
         //
         // Default sizing, so only the by-id family has to grow — the
         // meta and payload segments stay inside segment 0 throughout.
         let dir = TempDir::new().unwrap();
+        let held_lock = ScratchLock::acquire(dir.path(), Path::new("held.cannet_prj")).unwrap();
         let mut held = DiskRawStore::new(dir.path()).unwrap();
         // 64 postings exactly fill by-id segment 0 for id 7.
         for i in 0u32..64 {
@@ -1660,19 +1665,18 @@ mod tests {
         held.append(frame(64, 7));
         assert_eq!(held.len(), 65);
 
-        let mut reopened = DiskRawStore::reopen(dir.path())
-            .unwrap()
-            .expect("manifest present");
-        assert_eq!(reopened.len(), 64, "the manifest is one append behind");
+        let err = ScratchLock::acquire(dir.path(), Path::new("second.cannet_prj"))
+            .expect_err("the directory is held");
+        match &err {
+            ScratchLockError::Held(h) => {
+                assert_eq!(
+                    h.as_ref().expect("the holder record is readable").pid,
+                    std::process::id()
+                );
+            }
+            ScratchLockError::Io(e) => panic!("expected a held directory, got {e}"),
+        }
 
-        let grew = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            reopened.append(frame(65, 7));
-        }));
-        assert!(
-            grew.is_ok(),
-            "growing a by-id chain into a segment another store maps \
-             panicked (Windows refuses to truncate a mapped file)"
-        );
         // And the store that still holds the mapping can still read the
         // posting it wrote there.
         let got: Vec<usize> = held
@@ -1685,6 +1689,19 @@ mod tests {
             (0..65).collect::<Vec<_>>(),
             "the held store's by-id segment 1 was truncated under its mapping"
         );
+
+        // Released, the directory opens for the next session and the
+        // reopen-then-grow that used to panic is the only live chain.
+        drop(held);
+        drop(held_lock);
+        let _next = ScratchLock::acquire(dir.path(), Path::new("second.cannet_prj"))
+            .expect("the released directory opens");
+        let mut reopened = DiskRawStore::reopen(dir.path())
+            .unwrap()
+            .expect("manifest present");
+        assert_eq!(reopened.len(), 64, "the manifest is one append behind");
+        reopened.append(frame(65, 7));
+        assert_eq!(reopened.len(), 65);
     }
 
     #[test]

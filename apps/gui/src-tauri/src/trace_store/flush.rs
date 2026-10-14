@@ -649,6 +649,17 @@ fn move_scratch_files(from: &Path, to: &Path) {
         if !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
+        // The cache lock belongs to the *directory*, not to the capture
+        // in it (ADR 0002 DS-7): both ends have their own, and this
+        // session is holding the one it is moving out of. Carrying it
+        // across would drop the destination's own lock file on top of the
+        // one this session is holding there.
+        if cannet_spill::SCRATCH_LOCK_FILES
+            .iter()
+            .any(|n| entry.file_name() == std::ffi::OsStr::new(n))
+        {
+            continue;
+        }
         if let Err(e) = std::fs::rename(entry.path(), to.join(entry.file_name())) {
             tracing::warn!(
                 file = %entry.path().display(),
