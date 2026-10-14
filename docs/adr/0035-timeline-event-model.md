@@ -1,6 +1,9 @@
 # ADR 0035 — Timeline events: one host-side model for markers across every timeseries view
 
-Status: accepted (2026-06-28)
+Status: accepted (2026-06-28); amended (2026-10-04) by
+[ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md) —
+bus-error episodes are reported by the sidecar and feed the bus-error
+series; a capture holds at most N error frames per episode
 
 ## Context
 
@@ -212,6 +215,13 @@ Two consequences worth stating outright:
   is not exported, precisely so the file never carries a lossy restatement
   of records it already holds. Degrading data on the way to disk is the one
   failure this codebase has already decided it will not accept.
+
+  *Amended by
+  [ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md):*
+  the capture holds the first N error frames of each episode (the
+  error-row cap, applied by the sidecar at acquisition) and the episode
+  counts the rest. Those rows are what a save writes, and
+  the event is still not exported.
 - **The delivery path is shared and the storage is not.** Views read one
   merged, chronological event set regardless of category, so a new category
   costs no view any new plumbing. Only the host-side store distinguishes
@@ -256,6 +266,14 @@ signal cache, and views page it; authored events stay whole.**
   restored with the capture ([ADR 0047](0047-persisted-signal-pyramids.md)),
   front-trimmed with the scratch cap. A view asks for a bus set over a
   window at a point budget.
+
+  *Amended by
+  [ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md):*
+  the series is fed by the sidecar's episode reports — each contributes
+  the bus's running total at its first and last error — not by one
+  sample per error frame, since the capture holds only the first N of
+  each episode as rows. Imports feed it through the
+  same episode builder.
 - **Thinned by level, never merged by a rule.** The series never
   decreases, so the pyramid's min/max fold keeps each bucket's first and
   last sample, and every served point — at whatever level the window

@@ -63,6 +63,16 @@ directly.
 _Avoid_: "sidecar file" — that unrelated term names the forbidden
 companion-file pattern (ADR 0010).
 
+**Control lane** / **data lane**:
+The two halves of a session's stream from a sidecar to the host. The
+data lane carries frames, bounded per interface; when it overflows,
+the oldest frames are dropped and a **dropped-frames gap** reports
+them. The control lane carries what describes the bus — controller
+state, **bus-error episodes**, refused-send summaries, the clock, logs
+— keeps only the latest of each per interface, and is always delivered
+first, so a fault reaches the screen however far behind the frames
+are (ADR 0060).
+
 **Servers section**:
 The **Connection › Servers** section of the settings view, listing every
 server this machine knows about — what is advertising on the network
@@ -149,11 +159,13 @@ before by less than the **episode gap** (`bus_error_episode_gap_s`,
 default 5 s, minimum 1 s), and a silence of at least the gap ends it.
 It is known by its first and last error — so it carries a count, a
 span and a rate — and its id is its last error's ordinal on the bus.
-The host derives the episodes from the bus's error series; the
+The sidecar counts the errors and reports each episode as it happens,
+at a 1 s gap, with counts by kind (ACK, bit, form, …) and the error
+counters (ADR 0060); the host merges those at the reader's gap. The
 **Events panel** lists each as a row among the authored events (not
 editable, but selectable) and the plot draws one marker each (at a
-doubled gap when more fall in its window than fit). Individual error
-frames are trace rows, not episodes.
+doubled gap when more fall in its window than fit). Only the first
+error frames of an episode are trace rows — see **error-row cap**.
 _Avoid_: "run" — the removed coalescer's word, at a fixed 1 s gap.
 
 **Capture**:
@@ -190,6 +202,16 @@ they arrive — the decoded-signal cache and the latest-by-id index.
 Bounded and rebuildable from the raw store; never a second source of
 truth.
 
+**Dropped-frames gap**:
+A span of a bus's timeline whose frames never reached the host: the
+sidecar's **data lane** overflowed and it dropped the oldest frames
+rather than deliver them late, and said how many and over what span.
+Shown on the timeline as an event, so a trace that is missing frames
+says so; a durable event, saved with the capture and exported as a
+`GLOBAL_MARKER`, since nothing can recompute it from the frames.
+_Avoid_: "overrun" — that is the vendor driver's own receive queue
+overflowing, before the sidecar reads anything.
+
 **Encoding fingerprint**:
 A short hash of everything decode reads for one signal — start bit,
 width, byte order, signedness, factor, offset, float kind, mux arm and
@@ -201,6 +223,13 @@ valid when the DBC set changes. Deliberately outside it, because none
 of them changes a decoded number: value tables and attributes, what
 else the winning database is assigned to, and the databases behind it
 that supply no sample (ADR 0054).
+
+**Error-row cap**:
+How many error frames of each **bus-error episode** become trace rows
+— the first N (default 16, set per interface); the rest are only
+counted in the episode. It resets when the episode ends, so every
+blast gets its first N rows. Live captures and imports apply it alike,
+and a save writes the rows the trace holds.
 
 **File-backed signal**:
 A signal imported from a capture file as an already-decoded value
