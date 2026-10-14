@@ -19,6 +19,7 @@
  * Pure except for the claim registry, which is a plain
  * subscriber map with no React in it.
  */
+import { isMacPlatform } from "./keybindings";
 import { axisScalesFromRaw, type AxisScales } from "./plotAxisScale";
 import { PLOT_AREA_DND_MIME, areasFromParams, type PlotAreaConfig } from "./plotPanelConfig";
 
@@ -35,7 +36,7 @@ export interface PlotAreaDragPayload {
 }
 
 /** Write a plot-area drag onto the event's `DataTransfer`. Both drop
- * effects are allowed so the copy cursor is available for a Ctrl-drag;
+ * effects are allowed so the copy cursor is available for a copy-drag;
  * which one applies is decided at drop time, from the drop event. */
 export function setPlotAreaDragData(
   e: { dataTransfer: DataTransfer },
@@ -101,7 +102,23 @@ export function rekeyAxisScales(
   return out;
 }
 
-/** A copy of an area under a fresh id — a Ctrl-drag between panels, so
+/** Is the platform's copy modifier held on this drag event? Alt on
+ * macOS, Ctrl elsewhere (ADR 0045). Read on every `dragover` for the
+ * cursor and again at the drop for the verdict. */
+export function isCopyDrag(
+  e: { altKey: boolean; ctrlKey: boolean },
+  isMac: boolean = isMacPlatform(),
+): boolean {
+  return isMac ? e.altKey : e.ctrlKey;
+}
+
+/** The modifier's name as a tooltip spells it: "Alt" on macOS, "Ctrl"
+ * elsewhere. */
+export function copyModifierLabel(isMac: boolean = isMacPlatform()): string {
+  return isMac ? "Alt" : "Ctrl";
+}
+
+/** A copy of an area under a fresh id — a modifier-drag, so
  * source and copy are two areas and not one shared identity. */
 export function copyOfArea(area: PlotAreaConfig): PlotAreaConfig {
   return {
