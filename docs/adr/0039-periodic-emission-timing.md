@@ -2,8 +2,10 @@
 
 Status: accepted (2026-07-25); amended (2026-10-03) — a bus-off
 controller is brought back by a reset, not by its counters; amended
-(2026-10-04) — PEAK's driver-side auto-reset rejected, and a controller
-refusing sends in silence is reopened
+(2026-10-03) — a `Tx` row is a frame the bus carried: an accepted send
+appends nothing, and only a refused enqueue writes a row of its own;
+amended (2026-10-04) — PEAK's driver-side auto-reset rejected, and a
+controller refusing sends in silence is reopened
 
 ## Decision
 
@@ -24,23 +26,22 @@ The transmit scheduler's periodic-emission semantics, in four rules:
    not step (ADR 0027) and the receiver sees sequential counters with
    a longer gap — no manufactured end-to-end violation.
 3. **Route down: park.** A periodic whose bus has no live route is
-   parked: no preparation (counter frozen), no tx-confirm trace rows,
-   no per-period wakes. It resumes promptly when the route returns —
+   parked: no preparation (counter frozen), nothing offered to the
+   wire, no per-period wakes. It resumes promptly when the route returns —
    a `RoutesChanged` hint sent from the session-registration seam
    (`AppState::register_session`) wakes the scheduler immediately, and
    a ~1 s retry probe (armed only while something is parked) backstops
    any future route-up path that forgets the hint. On resume the grid
    re-anchors at the resume instant plus the same stagger offset.
-   Manual single-shot sends while disconnected still prepare and
-   append their trace row — an analyzer shows its own transmits.
+   Manual single-shot sends while disconnected still prepare; the
+   enqueue is refused, and the send leaves a `Tx ✗` row saying so.
 
    **A bus whose peer reports its interface `unavailable` has no live
    route**, and parks with the rest. Unplugging an adapter leaves the
    session, the subscription and the binding exactly as they were, so
    nothing else in the route notices; without this the scheduler goes
-   on transmitting into a driver that cannot carry the frames, and
-   every one of them still appends a tx-confirm row. A trace that shows
-   traffic no wire carried is wrong data, not a missing indicator. The
+   on handing frames to a driver that cannot carry them, stepping
+   counters for frames no bus will see. The
    test is deliberately narrow: a controller over the ISO 11898-1
    **warning** limit, one that has gone **error-passive**, and even one
    that is **bus-off** all keep their routes, because each is present
@@ -114,19 +115,19 @@ manufacturing a violation the sender never put on a wire.
   a second (§ Amendment, bus-off) and the periodics should be running
   when it comes back; parking would freeze their counters across a
   fault that clears without anyone acting.
-- **Mark the tx-confirm row instead of parking, when the interface is
+- **Mark the transmit's row instead of parking, when the interface is
   gone.** For a *periodic* on a route that has gone, not transmitting is
   both smaller and more truthful than transmitting and annotating — the
   frame still would not have been sent, so the park stands.
 
   A mark does exist, for the cases the park does not cover: a manual
   send onto a bus no session carries, and a session that refuses the
-  frame. Those transmits are attempted, so a row has to land, and a row
-  that lands has to say whether a wire took it. The objection that
-  killed the mark as a *replacement* for parking does not apply to it:
-  the mark is host-side state read at fetch time, not a field on the
-  stored frame, so no exporter and no file format ever sees it, and a
-  saved capture is byte-for-byte what it was.
+  frame. There the enqueue said no, and these are the only transmits
+  that write a row of their own — reading `Tx ✗`, so it cannot pass
+  for a frame the bus carried. The objection that killed the mark as a
+  *replacement* for parking does not apply to it: the mark is
+  host-side state read at fetch time, not a field on the stored frame,
+  so no exporter and no file format ever sees it.
 - **Event-only park resume (no probe).** A missed hint from a future
   route-up path would strand parked messages forever; the probe bounds
   that failure to ~1 s of latency.
@@ -206,3 +207,29 @@ poll without one reads the counters as 0, and echoes flow again. Vector
 carries the same gate as a precaution (its documentation does not say
 whether a transmit receipt waits for the acknowledge); Kvaser does not,
 because CANlib documents its echo as a successful transmission.
+
+## Amendment (2026-10-03) — only the wire writes the `Tx` row
+
+A transmit the session accepts appends nothing. The frame enters the
+trace when the bus carries it: every python-can bus the sidecar opens
+asks for the driver's post-transmission echo (`receive_own_messages`,
+off only for listen-only), the echo arrives on the receive path as a
+`DIRECTION_TX` frame, and the ingest path appends it as a `Tx` row —
+counted, decoded, plotted, logged and saved like any frame. The
+virtual bus echoes a participant's own frame the same way (ADR 0021).
+A frame the bus will not carry — a pulled cable, a dead bus — leaves
+no row and is not retried; the controller's own retry of the frame it
+holds is the hardware's business. Every session on a shared adapter
+receives the echo, as `Tx`: the sessions on one adapter are one node.
+
+The send-time row this replaces was appended whenever the session's
+channel accepted the frame, an answer that fails only when the channel
+is closed — so a dead bus showed healthy outgoing traffic in the trace,
+the plots, the per-message counts, the logger and saved captures. Only
+the enqueue-refused row remains (§ Rejected alternatives, the mark),
+because there the queue did say no.
+
+`fps.tx` is therefore the rate the bus carried our frames at, and a
+backend that cannot echo shows no `Tx` rows. On PEAK the echo alone is
+not enough — see the bus-off amendment's last paragraph: an echo from
+an error-passive transmitter is withheld.

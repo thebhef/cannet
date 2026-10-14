@@ -25,9 +25,9 @@ config; the scheduler's fire path applies it on each send:
 2. CRC computed over the configured range of the **updated** buffer
    (so a range covering the counter sees the new value),
    partial-encoded into the destination signal;
-3. the frame is sent. The synthesized `Tx` row carries the final
-   bytes, so trace decode and plots show the real field values with
-   no special handling.
+3. the frame is sent. Its `Tx` row — the bus's echo, once the bus
+   carried it — carries the final bytes, so trace decode and plots
+   show the real field values with no special handling.
 
 **The counter advances once per prepared send — every scheduler tick
 and every manual send — regardless of whether the frame reaches the

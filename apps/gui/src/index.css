@@ -6224,10 +6224,10 @@ button.color-chip {
   font-style: italic;
 }
 
-/* A transmit no wire took. The row is still shown — an analyzer shows
-   its own transmits — but it is not evidence that a bus carried
-   anything, so it reads as unlike a confirmed transmit as the direction
-   column can make it. */
+/* A transmit no wire took — a refused send, the one transmit that
+   writes its own row. It is not evidence that a bus carried anything,
+   so it reads as unlike an echoed transmit as the direction column can
+   make it. */
 .trace-row-undelivered-tx .col-dir {
   color: var(--warn-text);
   font-style: italic;

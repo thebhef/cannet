@@ -114,9 +114,12 @@ moment of subscription) plus pushes on subsequent transitions.
 - `FrameBatch(interface_id, frames…)` from a client → TX on the
   physical bus.
 - `FrameBatch(interface_id, frames…)` from the server → physical
-  RX. Whether a client's own TX echoes back to it depends on the
-  underlying driver (SocketCAN loopback semantics vs vendor
-  driver semantics); cannet doesn't normalize this.
+  RX, plus the driver's echo of each frame the adapter transmitted
+  as `DIRECTION_TX`. The sidecar opens every python-can bus with
+  `receive_own_messages` (off only for listen-only), so the echo is
+  the record that the bus carried a transmit; every client subscribed
+  to the interface receives it — the sessions on one adapter are one
+  node. A backend that cannot echo reports no transmits.
 
 Error frames round-trip as `CanFramePayload::Error` per
 [ADR 0021's *Error model*](0021-virtual-bus-server.md), so a
@@ -193,8 +196,6 @@ one wide one with relay semantics.
 - **`ConfigureBus` conflict semantics under multi-client.** What
   python-can actually does when two clients race. Observe; ADR if
   we need to formalize.
-- **TX echo to the sending client.** SocketCAN and vendor drivers
-  diverge; whether to normalize is open.
 - **Per-interface stats surface.** Frame rates, dropped counts,
   bus load — useful for the GUI but not in this ADR. To be added
   when there's a concrete consumer.

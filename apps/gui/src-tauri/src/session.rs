@@ -779,10 +779,10 @@ fn connect_local_vbus(
 /// Adapter: a [`cannet_core::LocalSource`] satisfies
 /// [`cannet_core::CanFrameSource`] by waiting for the next
 /// `ParticipantEvent::Frame` and stamping the configured channel on
-/// the frame before passing it up. Frame events from the source
-/// arrive with `Direction::Rx` (the bus already flipped direction on
-/// fan-out — see `SharedBus::deliver_to_others`); the trace store
-/// records them as the receiving project bus's `Rx` row.
+/// the frame before passing it up. Other participants' frames arrive
+/// with `Direction::Rx` and this participant's own, echoed back once
+/// the bus carried them, with `Direction::Tx`; the trace store records
+/// each as the project bus's row in that direction.
 pub(crate) struct LocalSourceFrameSource {
     pub(crate) source: cannet_core::LocalSource,
     pub(crate) channel: u8,
@@ -976,7 +976,7 @@ where
                         health.clear();
                     }
                 }
-                if matches!(raw.payload, cannet_core::CanFramePayload::Error) {
+                if is_bus_fault(&raw) {
                     if let (Some(health), Some(bus_id)) = (health.as_ref(), raw.bus_id.as_deref()) {
                         health.observe_error(bus_id, raw.timestamp_ns);
                     }
@@ -1014,6 +1014,15 @@ where
     let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
     let _ = app.emit("log-finished", LogFinished::Ok { total, count });
     anchor
+}
+
+/// Whether an ingested frame counts toward the bus-health error tally:
+/// an error frame the bus reported. The echo of an error frame we sent
+/// ourselves (`Direction::Tx`) is a stimulus, not a fault the bus
+/// suffered; it is stored like any frame but not tallied.
+pub(crate) fn is_bus_fault(raw: &RawTraceFrame) -> bool {
+    matches!(raw.payload, cannet_core::CanFramePayload::Error)
+        && raw.direction == cannet_core::Direction::Rx
 }
 
 /// Keep `anchor` — and the trace store's session origin — at the
@@ -1093,8 +1102,8 @@ pub(crate) fn resolve_bus_route(
 ///
 /// The subscription, the binding and the session all survive an adapter
 /// being unplugged, so nothing else in the route makes it stop
-/// resolving — and a route that keeps resolving keeps appending
-/// tx-confirm rows for frames no wire ever carried. This is the one
+/// resolving — and a route that keeps resolving keeps offering frames
+/// to an adapter that can carry none of them. This is the one
 /// signal that says the far end is gone, and it is deliberately narrow:
 /// a controller over the warning limit, error-passive or even bus-off is
 /// present and recovers on its own as its counters fall, so it keeps its

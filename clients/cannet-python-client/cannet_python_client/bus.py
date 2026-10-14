@@ -110,6 +110,14 @@ class CannetBus(can.BusABC):
     :param timeout:
         How long to wait for a factory allocation, and for the
         certificate probe on a pinned server.
+    :param can_filters:
+        python-can's receive filters, applied in software (the wire
+        carries no filter envelope).
+    :param receive_own_messages:
+        Deliver this bus's own transmits. The server reports each frame
+        the bus carried for this session back to it as a transmit echo
+        (``is_rx == False``); as in python-can, those are dropped unless
+        this is ``True``.
     """
 
     def __init__(
@@ -121,8 +129,10 @@ class CannetBus(can.BusABC):
         data_bitrate: int | None = None,
         timeout: float = _session.DEFAULT_OPEN_TIMEOUT_S,
         can_filters: Any = None,
+        receive_own_messages: bool = False,
         **kwargs: Any,
     ) -> None:
+        self._receive_own_messages = receive_own_messages
         try:
             target: ServerTarget = resolve(server)
         except TrustError as exc:
@@ -211,6 +221,10 @@ class CannetBus(can.BusABC):
             message = self._session.recv(timeout)
         except SessionError as exc:
             raise can.CanOperationError(str(exc)) from exc
+        # Our own echo, not asked for: report nothing, and BusABC.recv
+        # goes on waiting out the rest of the timeout.
+        if message is not None and not message.is_rx and not self._receive_own_messages:
+            return None, False
         # `False`: the wire carries no filter envelope, so `can_filters`
         # is applied by BusABC in software.
         return message, False
