@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
-import type { SignalRecord, TraceFrameRecord } from "./types";
+import type { FuzzyWinner, SignalRecord, TraceFrameRecord } from "./types";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import {
@@ -38,7 +38,7 @@ import {
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { TraceTimeCell, cellContent } from "./traceTable";
+import { TraceTimeCell, cellContent, disclosedSignals, queryOpensDisclosure } from "./traceTable";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import type { ByIdSnapshotRecord } from "./types";
 import { diagCount } from "./diag"; // DIAG
@@ -53,10 +53,27 @@ export function byIdRowKey(f: TraceFrameRecord): string {
   return `${f.bus_id}:${f.id}:${f.extended ? "x" : "s"}`;
 }
 
-/// The decoded signals a row discloses — rows of the space in their own
-/// right (ADR 0044), empty for a row that discloses nothing.
-function signalsOf(r: ByIdSnapshotRecord | null): readonly SignalRecord[] {
-  return r?.frame.decoded?.signals ?? [];
+/// The signals a row discloses — rows of the space in their own right
+/// (ADR 0044): every decoded signal, or, under a signal or value
+/// winner, only the ones the host named in `matching_signals`. See
+/// `disclosedSignals`.
+function signalsOf(
+  r: ByIdSnapshotRecord | null,
+  fuzzyWinner: FuzzyWinner | null | undefined,
+): readonly SignalRecord[] {
+  return disclosedSignals(r?.frame, fuzzyWinner);
+}
+
+/// Whether the query forces this row's disclosure open (ADR 0044): a
+/// signal or value winner, and the host admitted this row with at
+/// least one matching signal. Layered over the user's own fold set
+/// (`expanded`) rather than written into it, so it never survives a
+/// message winner or a cleared query.
+function queryForcesOpen(
+  r: ByIdSnapshotRecord | null,
+  fuzzyWinner: FuzzyWinner | null | undefined,
+): boolean {
+  return queryOpensDisclosure(fuzzyWinner) && signalsOf(r, fuzzyWinner).length > 0;
 }
 
 const EMPTY_RUNS: readonly OpenContentRun[] = [];
@@ -89,6 +106,11 @@ interface ByIdTableProps {
   /// config — so which messages are open survives a reopen.
   expanded: ReadonlySet<string>;
   onToggleExpand: (rowKey: string) => void;
+  /// The active query's winner (ADR 0044), from the page envelope these
+  /// rows came from. A signal or value winner forces every admitted
+  /// row's disclosure open onto its `matching_signals`, layered over
+  /// `expanded` rather than written into it — see `queryForcesOpen`.
+  fuzzyWinner?: FuzzyWinner | null;
 }
 
 /// The per-message-ID body: a sortable trace header over a virtualized
@@ -118,6 +140,7 @@ export function ByIdTable({
   busLookup,
   expanded,
   onToggleExpand,
+  fuzzyWinner,
 }: ByIdTableProps) {
   diagCount("render.ByIdTable"); // DIAG
   // Absolute row at the top of the viewport — the single source of truth
@@ -141,21 +164,26 @@ export function ByIdTable({
   const rowHeightAt = useCallback(
     (absIdx: number) => {
       const r = getRow(absIdx);
-      if (!r || !expanded.has(byIdRowKey(r.frame))) return ROW_HEIGHT;
-      return expandedRowHeight(r.frame.decoded?.signals.length ?? 0);
+      if (!r) return ROW_HEIGHT;
+      const open = queryForcesOpen(r, fuzzyWinner) || expanded.has(byIdRowKey(r.frame));
+      return open ? expandedRowHeight(signalsOf(r, fuzzyWinner).length) : ROW_HEIGHT;
     },
     // `version` is a dep so a page landing / live refresh re-derives the
     // heights even though it isn't read directly (what `getRow` answers
     // changes behind it).
-    [getRow, expanded, version],
+    [getRow, expanded, version, fuzzyWinner],
   );
 
   // What the expanded rows add to the snapshot's height, so the scroll
-  // range covers them. Bounded work over the id space, and only when
-  // something is expanded — the common case skips the walk entirely.
+  // range covers them. Bounded work over the id space, skipped only
+  // when nothing is expanded and the query is forcing nothing open —
+  // the common case.
   const extraHeight = useMemo(
-    () => (expanded.size === 0 ? 0 : expandedExtraHeight(count, rowHeightAt)),
-    [expanded, count, rowHeightAt],
+    () =>
+      expanded.size === 0 && !queryOpensDisclosure(fuzzyWinner)
+        ? 0
+        : expandedExtraHeight(count, rowHeightAt),
+    [expanded, count, rowHeightAt, fuzzyWinner],
   );
 
   const {
@@ -199,19 +227,19 @@ export function ByIdTable({
   // landing (or a live refresh) re-derives it, since the content it
   // gates changes behind `getRow`.
   const openRuns = useMemo<readonly OpenContentRun[]>(() => {
-    if (expanded.size === 0) return EMPTY_RUNS;
+    if (expanded.size === 0 && !queryOpensDisclosure(fuzzyWinner)) return EMPTY_RUNS;
     const out: OpenContentRun[] = [];
     for (let i = 0; i < rows; i++) {
       const abs = firstVisibleRow + i;
       if (abs >= count) break;
       const r = getRow(abs);
-      if (r && expanded.has(byIdRowKey(r.frame))) {
-        out.push({ index: abs, content: signalsOf(r).length });
+      if (r && (queryForcesOpen(r, fuzzyWinner) || expanded.has(byIdRowKey(r.frame)))) {
+        out.push({ index: abs, content: signalsOf(r, fuzzyWinner).length });
       }
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, firstVisibleRow, count, getRow, expanded, version]);
+  }, [rows, firstVisibleRow, count, getRow, expanded, version, fuzzyWinner]);
   const contentSpace = useMemo<ContentRowSpace>(
     () => contentRowSpace(count, openRuns),
     [count, openRuns],
@@ -231,7 +259,7 @@ export function ByIdTable({
       if (!r) return null;
       const id = byIdRowKey(r.frame);
       if (pos.content != null) {
-        const sig = signalsOf(r)[pos.content];
+        const sig = signalsOf(r, fuzzyWinner)[pos.content];
         // Depth 1, so Left walks out of a disclosed row to the message
         // that disclosed it.
         return sig == null
@@ -248,7 +276,7 @@ export function ByIdTable({
     // `version` is a dep for the same reason as everywhere else here:
     // what `getRow` answers changes behind it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [contentSpace, getRow, version],
+    [contentSpace, getRow, version, fuzzyWinner],
   );
   // The scaffold's live geometry, read by `scrollToRow` without making
   // the adapter a fresh object on every scroll.
@@ -320,7 +348,7 @@ export function ByIdTable({
         const rowKey = byIdRowKey(r.frame);
         if (rowKey === id) return contentSpace.indexOf({ index: i, content: null });
         if (!id.startsWith(`${rowKey}/`)) continue;
-        const k = signalsOf(r).findIndex((sig) => contentRowId(rowKey, sig.name) === id);
+        const k = signalsOf(r, fuzzyWinner).findIndex((sig) => contentRowId(rowKey, sig.name) === id);
         if (k >= 0) return contentSpace.indexOf({ index: i, content: k });
       }
       return -1;
@@ -333,12 +361,20 @@ export function ByIdTable({
         const i = indexOf(id);
         return i < 0 ? null : rowModelAt(i);
       },
-      isExpanded: (id) => expanded.has(id),
+      isExpanded: (id) => {
+        // `id` here is always a message row's own id: a disclosed
+        // signal line is never `expandable` (`rowModelAt` above), and
+        // `gridviewRows.ts` gates a call on that.
+        const i = indexOf(id);
+        const pos = i < 0 ? null : contentSpace.at(i);
+        const r = pos ? getRow(pos.index) : null;
+        return r != null && (queryForcesOpen(r, fuzzyWinner) || expanded.has(id));
+      },
       scrollToRow,
       setExpanded: setRowExpanded,
       isSelectable: () => true,
     };
-  }, [contentSpace, count, getRow, rowModelAt, expanded, scrollToRow, setRowExpanded]);
+  }, [contentSpace, count, getRow, rowModelAt, expanded, scrollToRow, setRowExpanded, fuzzyWinner]);
   // Namespaces this instance's row DOM ids, so two by-id tables on
   // screen can't name each other's rows.
   const instanceId = useId();
@@ -393,8 +429,7 @@ export function ByIdTable({
 
   // Signal count for expanded-row sizing; a not-yet-loaded row sizes as
   // a plain row.
-  const signalCount = (absIdx: number) =>
-    getRow(absIdx)?.frame.decoded?.signals.length ?? 0;
+  const signalCount = (absIdx: number) => signalsOf(getRow(absIdx), fuzzyWinner).length;
   const placements = buildPlacements(
     firstVisibleRow,
     count,
@@ -485,7 +520,7 @@ export function ByIdTable({
                   {isExpanded &&
                     rowKey != null &&
                     row?.frame.decoded &&
-                    signalsOf(row).map((sig, k) => {
+                    signalsOf(row, fuzzyWinner).map((sig, k) => {
                       const id = contentRowId(rowKey, sig.name);
                       return (
                         <DecodedSignalCell

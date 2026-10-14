@@ -715,6 +715,9 @@ export function TracePanel(props: IDockviewPanelProps) {
           eventActions={eventActions}
           scrollTarget={scrollTarget}
           onFrameContextMenu={handleFrameContextMenu}
+          // The unfiltered window carries no fuzzy query at all; only
+          // the filtered path's page envelope can name a winner.
+          fuzzyWinner={chronoFiltered ? filtered.fuzzyWinner : null}
         />
       )}
       {mode === "by-id" && (
@@ -734,6 +737,7 @@ export function TracePanel(props: IDockviewPanelProps) {
           busLookup={lookup}
           expanded={expanded}
           onToggleExpand={onToggleExpand}
+          fuzzyWinner={byId.fuzzyWinner}
         />
       )}
     </div>
