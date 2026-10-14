@@ -12,9 +12,11 @@
 //!    per-`(source, template)` rate limiter so a runaway emitter can
 //!    only contribute a few entries per second.
 //!
-//! Sources are short stable strings (`"project"`, `"dbc"`,
-//! `"connection"`, `"blf-import"`, `"plot"`; vendor sidecars will use
-//! `"sidecar:<vendor>"`). Levels are
+//! Sources are short stable strings — `"blf-import"`, `"capture"`,
+//! `"connection"`, `"dbc"`, `"dbc-watch"`, `"health"`, `"logger"`,
+//! `"mdf-import"`, `"plot"`, `"project"`, `"rbs"`, `"server"`,
+//! `"session"`, `"settings"`, `"state"`, `"transmit"`, `"virtual-bus"`
+//! among them — and vendor sidecars use `"sidecar:<vendor>"`. Levels are
 //! [`LogLevel::Debug`] / `Info` / `Warn` / `Error`.
 //!
 //! The split between the bottom two is by *cause*, not by importance:
