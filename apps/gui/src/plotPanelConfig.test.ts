@@ -135,7 +135,6 @@ describe("areasFromParams", () => {
     const areas = areasFromParams([{ id: "a", signals: [], yMode: { min: 0, max: 100 } }]);
     expect(areas[0]).not.toHaveProperty("yMode");
     expect(Object.keys(areas[0]).sort()).toEqual([
-      "collapsed",
       "id",
       "patterns",
       "primarySignalKey",
@@ -144,12 +143,10 @@ describe("areasFromParams", () => {
     ]);
   });
 
-  it("keeps a persisted collapsed flag, and only a literal `true`", () => {
-    expect(areasFromParams([{ id: "a", signals: [], collapsed: true }])[0].collapsed).toBe(true);
-    // Anything else is "not collapsed" — the flag is absent on every
-    // area nobody collapsed, so the persisted blob stays sparse.
-    expect(areasFromParams([{ id: "a", signals: [], collapsed: "yes" }])[0].collapsed).toBeUndefined();
-    expect(areasFromParams([{ id: "a", signals: [] }])[0].collapsed).toBeUndefined();
+  it("drops a persisted per-area `collapsed` flag on read (collapse is per axis)", () => {
+    const [area] = areasFromParams([{ id: "a", signals: [], collapsed: true }]);
+    expect(area).not.toHaveProperty("collapsed");
+    expect(Object.keys(area)).not.toContain("collapsed");
   });
 
   it("synthesizes an id when missing", () => {
