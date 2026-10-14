@@ -1437,7 +1437,11 @@ panel for it (in by-ID mode — toggle it anytime); the new trace starts
 **empty and stopped** (hit **Start** to begin capturing), regardless of
 what's already in the session buffer. The project panel
 lists the elements — closing a panel doesn't destroy its element,
-reopen or remove it from there. **Project panel** toggles the project
+reopen, **duplicate** or remove it from there. Duplicate makes a copy
+named "<name> (copy)" right after the original, opens no panel, and is one
+undo step; a plot's areas get fresh ids, an RBS copy points at the same
+file, and a logger copy starts disabled (transmit elements cannot be
+duplicated yet). **Project panel** toggles the project
 panel itself (it's a show/hide singleton). **Database panel** opens
 (or focuses, if it's already open) the catalog of every
 signal-defining artifact the session holds — one surface, each format

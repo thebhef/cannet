@@ -158,6 +158,7 @@ import {
   type ElementRegistry,
   type RegistryEntry,
   applyElementPatch,
+  duplicateElement,
   isProjectElement,
   normalizeElement,
 } from "./projectElements";
@@ -1039,6 +1040,38 @@ export function App() {
       } finally {
         endGesture();
       }
+    },
+    [registry, beginGesture, endGesture],
+  );
+  const duplicateElementById = useCallback(
+    (id: string): string => {
+      const source = registry.find((e) => e.element.id === id);
+      // A transmit element's frames live in the shared host TX pool; a
+      // structural copy would share them, so it is refused here until
+      // the frames are cloned host-side.
+      if (!source || source.element.kind === "transmit") return "";
+      const newId = crypto.randomUUID();
+      // The copy is element churn inside one undo step, like a remove —
+      // and it joins the gesture it was made in (a create inside one is
+      // part of that step).
+      beginGesture();
+      try {
+        if (gestureRef.current) gestureRef.current.created.push(newId);
+        pendingElementEditRef.current = true;
+        setRegistry((prev) => {
+          const i = prev.findIndex((e) => e.element.id === id);
+          if (i < 0) return prev;
+          const next = prev.slice();
+          next.splice(i + 1, 0, {
+            element: duplicateElement(prev[i].element, newId),
+            trace: newElementTrace(),
+          });
+          return next;
+        });
+      } finally {
+        endGesture();
+      }
+      return newId;
     },
     [registry, beginGesture, endGesture],
   );
@@ -3728,8 +3761,9 @@ export function App() {
       updateTrace,
       update: updateElement,
       remove: removeElement,
+      duplicate: duplicateElementById,
     }),
-    [registry, create, ensure, updateTrace, updateElement, removeElement],
+    [registry, create, ensure, updateTrace, updateElement, removeElement, duplicateElementById],
   );
 
   const remoteConnected = Array.from(remoteSessions.values()).some(
