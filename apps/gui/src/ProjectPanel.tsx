@@ -350,6 +350,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                 onOpen={() => openElement(entry.element)}
                 onRename={(name) => reg.update(entry.element.id, { name })}
                 onRemove={() => reg.remove(entry.element.id)}
+                onDuplicate={() => reg.duplicate(entry.element.id)}
                 onToggleLoggerEnabled={() =>
                   reg.update(entry.element.id, {
                     kind: "logger",
@@ -674,7 +675,8 @@ function CollapsibleSection({
 /// input bound to the element's model-owned `name` (the project panel
 /// is the canonical edit surface — ADR 0019); a play/stop run toggle
 /// on a logger or RBS row; Focus/Open as the `enter` icon (one "take
-/// me to it" affordance); and Remove as a single-click trash icon —
+/// me to it" affordance); Duplicate (a copy right after it, undoable);
+/// and Remove as a single-click trash icon —
 /// element removal rides the registry's undo (`App.tsx`'s
 /// `removeElement`), so it needs no arm step, unlike the bus and DBC
 /// rows' `TwoStageRemoveButton`. The kind isn't repeated on the row —
@@ -686,6 +688,7 @@ export function ElementRow({
   onOpen,
   onRename,
   onRemove,
+  onDuplicate,
   onToggleLoggerEnabled,
 }: {
   element: ProjectElement;
@@ -697,6 +700,9 @@ export function ElementRow({
   onOpen: () => void;
   onRename: (name: string) => void;
   onRemove: () => void;
+  /// Makes a copy of this element (`ElementRegistry.duplicate`). Not offered
+  /// on a transmit row yet — see the button.
+  onDuplicate: () => void;
   /// Flips a logger element's `enabled` bit — the same field its own
   /// panel's checkbox writes (`LoggerPanel.tsx`). Ignored for every
   /// other kind.
@@ -738,6 +744,17 @@ export function ElementRow({
             : "Open this element's panel"
         }
         onClick={panel ? () => panel.api.setActive() : onOpen}
+      />
+      <IconButton
+        name="plus"
+        label="Duplicate"
+        title={
+          element.kind === "transmit"
+            ? "Duplicating a transmit element is not yet available"
+            : `Duplicate ${element.name ?? elementKindLabel(element.kind)} (undoable)`
+        }
+        disabled={element.kind === "transmit"}
+        onClick={onDuplicate}
       />
       <IconButton
         name="clear"

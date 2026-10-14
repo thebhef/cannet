@@ -82,6 +82,7 @@ function renderRow() {
       onOpen={() => {}}
       onRename={() => {}}
       onRemove={() => {}}
+      onDuplicate={() => {}}
       onToggleLoggerEnabled={() => {}}
     />,
   );

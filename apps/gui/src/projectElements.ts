@@ -1,6 +1,9 @@
 import { createContext, useContext } from "react";
 
+import { elementKindLabel } from "./elementLabel";
 import { normalizeLoggerFields } from "./logger";
+import { copyOfArea, rekeyAxisScales } from "./plotAreaTransfer";
+import type { PlotAreaConfig } from "./plotPanelConfig";
 import type { ColorRule, GeneratorRule, ProjectElement, ProjectElementKind } from "./types";
 import type { TraceState } from "./trace";
 
@@ -58,6 +61,10 @@ export interface ElementRegistry {
   /// isn't a panel persisting its own view config, so every mounted
   /// panel showing the element resyncs from it.
   update(id: string, patch: Partial<ProjectElement>, writer?: string): void;
+  /// Duplicate an element ([`duplicateElement`]): the copy lands directly
+  /// after the original, opens no panel, and the whole thing is one undo
+  /// step. Returns the copy's id (`""` for an unknown id).
+  duplicate(id: string): string;
   /// Remove an element and close its panel, if any.
   remove(id: string): void;
 }
@@ -372,4 +379,46 @@ function wouldCycle(
     }
   }
   return false;
+}
+
+/// The plot `config` blobs keyed by an area id (or an area's derived
+/// axis id, `${areaId}/…` — `plotAxisDerivation.ts`).
+const AREA_KEYED_CONFIG = ["axisScales", "axisWeights", "axisCollapsed", "cursorYByArea"] as const;
+
+/// A copy of a plot element's `config` whose areas carry fresh ids, with
+/// every per-area map re-keyed onto them so the copy's state follows its
+/// own areas and nothing is shared with the original.
+function plotConfigCopy(config: Record<string, unknown>): Record<string, unknown> {
+  const out = structuredClone(config);
+  if (!Array.isArray(out.areas)) return out;
+  const areas = (out.areas as PlotAreaConfig[]).map((a) => {
+    const copy = copyOfArea(a);
+    for (const key of AREA_KEYED_CONFIG) {
+      const rec = out[key];
+      if (rec && typeof rec === "object") {
+        out[key] = rekeyAxisScales(rec as never, a.id, copy.id);
+      }
+    }
+    return copy;
+  });
+  out.areas = areas;
+  return out;
+}
+
+/// The element a Duplicate makes from `source`: a structural deep copy
+/// under `newId`, named `<name> (copy)`. Per kind: a `plot`'s areas are
+/// re-keyed ([`plotConfigCopy`]); an `rbs` copies only its `path`
+/// reference (the host loads per element id, so the copy loads like any
+/// element opened with that path); a `logger` is copied disabled, so a
+/// duplicate never starts a second writer on the same file by itself.
+/// A `transmit`'s `frameIds` index the shared host TX pool; copying them
+/// would share frames, so the caller must not duplicate one until the
+/// host frames are cloned.
+export function duplicateElement(source: ProjectElement, newId: string): ProjectElement {
+  const copy = structuredClone(source);
+  copy.id = newId;
+  copy.name = `${source.name ?? elementKindLabel(source.kind)} (copy)`;
+  if (copy.kind === "plot" && copy.config) copy.config = plotConfigCopy(copy.config);
+  if (copy.kind === "logger") copy.enabled = false;
+  return copy;
 }

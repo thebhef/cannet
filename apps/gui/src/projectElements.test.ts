@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyElementPatch,
+  duplicateElement,
   isProjectElement,
   normalizeElement,
 } from "./projectElements";
@@ -427,5 +428,77 @@ describe("applyElementPatch", () => {
     expect(
       after[1].element.kind === "filter" ? after[1].element.sources : null,
     ).toEqual(["A"]);
+  });
+});
+
+describe("duplicateElement", () => {
+  it("gives the copy a fresh id and the name '<original> (copy)', leaving the original alone", () => {
+    const src = { kind: "filter", id: "f1", name: "Brake", sources: ["t1"] } as unknown as ProjectElement;
+    const frozen = JSON.parse(JSON.stringify(src));
+    const copy = duplicateElement(src, "f2");
+    expect(copy).toMatchObject({ kind: "filter", id: "f2", name: "Brake (copy)", sources: ["t1"] });
+    expect(src).toEqual(frozen);
+  });
+
+  it("deep-copies: editing the copy's arrays never reaches the original", () => {
+    const src = { kind: "trace", id: "t1", name: "T", sources: ["a"], config: { cols: [1, 2] } } as Extract<ProjectElement, { kind: "trace" }>;
+    const copy = duplicateElement(src, "t2") as typeof src;
+    copy.sources.push("b");
+    (copy.config!.cols as number[]).push(3);
+    expect(src.sources).toEqual(["a"]);
+    expect(src.config).toEqual({ cols: [1, 2] });
+  });
+
+  it("falls back to the kind label when the original has no name", () => {
+    const src = { kind: "colormap", id: "c1" } as unknown as ProjectElement;
+    expect(duplicateElement(src, "c2").name).toBe("Color Map (copy)");
+  });
+
+  it("re-keys every plot area id, and the per-area state keyed by it", () => {
+    const src = {
+      kind: "plot",
+      id: "p1",
+      name: "Plot 1",
+      sources: ["*"],
+      config: {
+        areas: [
+          { id: "a1", signals: [{ signalName: "s" }] },
+          { id: "a2", signals: [], patterns: ["x"] },
+        ],
+        axisScales: { a1: { min: 1 }, "a2/V": { log: true } },
+        axisWeights: { a1: 2 },
+        axisCollapsed: { "a2/V": true },
+        cursorYByArea: { a1: { h1: 1, h2: 2 } },
+        followLive: true,
+      },
+    } as unknown as ProjectElement;
+    const frozen = JSON.parse(JSON.stringify(src));
+    const copy = duplicateElement(src, "p2") as unknown as { config: Record<string, unknown> };
+    const areas = copy.config.areas as { id: string; patterns?: string[] }[];
+    expect(areas).toHaveLength(2);
+    const [n1, n2] = [areas[0].id, areas[1].id];
+    expect(new Set([n1, n2, "a1", "a2"]).size).toBe(4);
+    expect(areas[1].patterns).toEqual(["x"]);
+    expect(copy.config.axisScales).toEqual({ [n1]: { min: 1 }, [`${n2}/V`]: { log: true } });
+    expect(copy.config.axisWeights).toEqual({ [n1]: 2 });
+    expect(copy.config.axisCollapsed).toEqual({ [`${n2}/V`]: true });
+    expect(copy.config.cursorYByArea).toEqual({ [n1]: { h1: 1, h2: 2 } });
+    expect(copy.config.followLive).toBe(true);
+    expect(src).toEqual(frozen);
+  });
+
+  it("copies an rbs element's path reference", () => {
+    const src = { kind: "rbs", id: "r1", name: "Rig", path: "/sims/a.cannet_rbs" } as unknown as ProjectElement;
+    expect(duplicateElement(src, "r2")).toMatchObject({ id: "r2", path: "/sims/a.cannet_rbs", name: "Rig (copy)" });
+  });
+
+  it("copies a logger disabled, even when the original is logging", () => {
+    const src = {
+      kind: "logger", id: "l1", name: "Log", enabled: true,
+      folder: "f", file: "x", format: "blf", maxFileSizeMb: 5,
+    } as unknown as ProjectElement;
+    const copy = duplicateElement(src, "l2");
+    expect(copy).toMatchObject({ enabled: false, folder: "f", file: "x" });
+    expect((src as { enabled: boolean }).enabled).toBe(true);
   });
 });
