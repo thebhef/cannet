@@ -1898,3 +1898,109 @@ describe("the marker path uPlot actually builds", () => {
     expect(squares.length).toBeGreaterThan(100);
   });
 });
+
+describe("the line path uPlot builds over a merged row", () => {
+  // A ranged series is drawn with uPlot's default linear path over the
+  // merged grid. This drives the real builder — a recording `Path2D`
+  // is the instrument — so the claim checked is the drawn line itself:
+  // its vertices sit at the series' own samples, whatever else shares
+  // the axis (ADR 0026).
+
+  type PathOp = { op: string; args: number[] };
+
+  /** Build a real uPlot over `data`, draw only series 1's line (every
+   * other series hidden, no markers), and return that line's path
+   * operations plus the gaps uPlot clipped out of it. */
+  async function lineOf(
+    data: (number | null | undefined)[][],
+  ): Promise<{ ops: PathOp[]; gaps: unknown[]; xPos: (x: number) => number }> {
+    // One op list per path: the line's stroke is the first path the
+    // series builds; a fill or a gap clip would be paths of their own.
+    const paths: PathOp[][] = [];
+    class RecordingPath2D {
+      ops: PathOp[] = [];
+      constructor() {
+        paths.push(this.ops);
+      }
+      rect() {}
+      arc() {}
+      closePath() {}
+      moveTo(...args: number[]) {
+        this.ops.push({ op: "moveTo", args });
+      }
+      lineTo(...args: number[]) {
+        this.ops.push({ op: "lineTo", args });
+      }
+    }
+    (globalThis as unknown as { Path2D: unknown }).Path2D = RecordingPath2D;
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
+      const self = this;
+      return new Proxy({} as Record<string, unknown>, {
+        get(t, k) {
+          if (k === "canvas") return self;
+          if (k === "measureText") return () => ({ width: 10 });
+          if (k in t) return t[k as string];
+          return () => {};
+        },
+        set(t, k, v) {
+          t[k as string] = v;
+          return true;
+        },
+      });
+    } as unknown as HTMLCanvasElement["getContext"];
+
+    const uPlotCtor = (await import("uplot")).default;
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const series: uPlot.Series[] = [{}];
+    for (let k = 1; k < data.length; k++) {
+      series.push({ show: k === 1, points: { show: false } });
+    }
+    const u = new uPlotCtor(
+      { width: 600, height: 300, scales: { x: { time: false } }, series },
+      data as uPlot.AlignedData,
+      root,
+    );
+    // The first draw is committed in a microtask after construction.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const built = (u.series[1] as unknown as { _paths?: { gaps?: unknown[] | null } })._paths;
+    const gaps = built?.gaps ?? [];
+    const ops = paths.find((p) => p.length > 0) ?? [];
+    const xPos = (x: number) => Math.round(u.valToPos(x, "x", true));
+    u.destroy();
+    root.remove();
+    return { ops, gaps, xPos };
+  }
+
+  it("bends only at the series' own samples, not at a neighbour's columns", async () => {
+    // A samples at 0 and 4; B at 1, 2, 3. A held across B's columns drew
+    // flat to t=3 and then diagonally into 40 — a corner where A has no
+    // message.
+    const series = [
+      { t: [0, 4], v: [0, 40] },
+      { t: [1, 2, 3], v: [10, 20, 30] },
+    ];
+    const merged = mergeSeries(series);
+    const { ops, gaps, xPos } = await lineOf(merged);
+    const vertices = ops.filter((o) => o.op === "lineTo" || o.op === "moveTo");
+    expect(vertices.map((o) => Math.round(o.args[0]))).toEqual([xPos(0), xPos(4)]);
+    // A straight join, not a broken line: nothing was clipped out.
+    expect(gaps).toEqual([]);
+  });
+
+  it("still breaks the solid line across an extrapolated stall", async () => {
+    // The dashes are drawn over a stall the solid stroke must not cover,
+    // so the blanked stretch stays a gap even with a neighbour's columns
+    // inside it.
+    const series = [
+      { t: [0, 1, 9, 10], v: [1, 2, 3, 4], extrapolated: [[1, 9] as const] },
+      { t: [0, 2, 4, 6, 8, 10], v: [0, 0, 0, 0, 0, 0] },
+    ];
+    const merged = mergeSeries(series);
+    const rows = merged.slice(1);
+    splitExtrapolatedRows(merged[0] as number[], rows, series);
+    const { ops, gaps } = await lineOf([merged[0], ...rows]);
+    expect(ops.filter((o) => o.op === "lineTo" || o.op === "moveTo")).toHaveLength(4);
+    expect(gaps).toHaveLength(1);
+  });
+});
