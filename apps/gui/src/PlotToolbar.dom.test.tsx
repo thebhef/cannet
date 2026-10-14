@@ -29,7 +29,6 @@ function spies() {
     onShowPoints: vi.fn(),
     onCursorMode: vi.fn(),
     onClearCursors: vi.fn(),
-    onShowEvents: vi.fn(),
     onOpenMenu: vi.fn(),
     onPattern: vi.fn(),
     onStep: vi.fn(),
@@ -79,8 +78,6 @@ function props(s: Spies, over: Partial<PlotToolbarProps> = {}): PlotToolbarProps
     cursorMode: "off",
     onCursorMode: s.onCursorMode,
     onClearCursors: s.onClearCursors,
-    showEvents: false,
-    onShowEvents: s.onShowEvents,
     eventsChecklist: <div data-testid="events-checklist" />,
     perfText: null,
     onOpenMenu: s.onOpenMenu,
@@ -113,7 +110,6 @@ const BAR: readonly [string, string][] = [
   ["Y Cursors", "y cursors — horizontal H1 / H2 lines placed on click"],
   ["Notes", "notes — click places a timeline note"],
   ["Clear Cursors", "clear measurement cursors"],
-  ["Events", "which kinds of timeline events draw as markers here"],
 ];
 
 /// Every chip on the bar, in DOM order — including the run controls
@@ -305,37 +301,25 @@ describe("PlotToolbar", () => {
     expect(s.onOpenMenu).toHaveBeenCalledWith({ x: 40, y: 12 });
   });
 
-  describe("the Events chip", () => {
-    // The trace panel's own chip-reveals-checklist pattern (ADR 0035):
-    // the chip only opens/closes the control, the panel's checklist
-    // decides what actually shows.
-    it("reflects whether the checklist is open, and asks to flip it", () => {
-      const s = renderBar({ showEvents: false });
-      const chip = screen.getByRole("button", { name: "Events" });
-      expect(chip).toHaveAttribute("aria-pressed", "false");
-      fireEvent.click(chip);
-      expect(s.onShowEvents).toHaveBeenCalledWith(true);
-
-      const on = renderBar({ showEvents: true });
-      expect(screen.getByRole("button", { name: "Events" })).toHaveAttribute(
-        "aria-pressed",
-        "true",
-      );
-      fireEvent.click(screen.getByRole("button", { name: "Events" }));
-      expect(on.onShowEvents).toHaveBeenCalledWith(false);
-    });
-
-    it("shows the panel's checklist only while open", () => {
-      renderBar({ showEvents: false });
-      expect(screen.queryByTestId("events-checklist")).toBeNull();
-      renderBar({ showEvents: true });
+  describe("the event-kind checklist", () => {
+    // Owner ruling 2026-10-03: the redundant disclosure chip is gone —
+    // both the plot and the trace behave as if it were permanently
+    // pressed, so the checklist is always on the bar and there is no
+    // "Events" button to find.
+    it("is on the bar without any click", () => {
+      renderBar();
       expect(screen.getByTestId("events-checklist")).toBeInTheDocument();
     });
 
-    it("carries the checklist as its own bar item, after the chip", () => {
-      const { onOpenMenu: _drop, ...rest } = props(spies(), { showEvents: true });
+    it("carries no Events button", () => {
+      renderBar();
+      expect(screen.queryByRole("button", { name: "Events" })).toBeNull();
+    });
+
+    it("is its own bar item", () => {
+      const { onOpenMenu: _drop, ...rest } = props(spies());
       const keys = plotToolbarItems(rest).map((i) => i.key);
-      expect(keys.indexOf("events")).toBeLessThan(keys.indexOf("events-checklist"));
+      expect(keys).toContain("events-checklist");
     });
   });
 
@@ -391,7 +375,7 @@ describe("PlotToolbar", () => {
         "points",
         "cursor-mode",
         "clear-cursors",
-        "events",
+        "events-checklist",
       ]);
     });
 
