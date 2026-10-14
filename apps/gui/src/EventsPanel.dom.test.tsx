@@ -41,6 +41,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { EventsPanel } from "./EventsPanel";
+import { formatLocalTimestamp } from "./format";
 import { GOTO_EVENT } from "./gotoEvent";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { TraceDataProvider, type TraceData } from "./traceData";
@@ -102,6 +103,11 @@ const projectCtx: ProjectContextValue = {
 };
 
 const CAN1: Bus = { id: "b1", name: "CAN1" };
+
+/// A wall-clock session origin (2023-11-14T22:06:40Z), for the bus-error
+/// section's time-cell hover test — `traceData.sessionStartSeconds` (0)
+/// is below `WALL_CLOCK_FLOOR_SECONDS`, so it never anchors on its own.
+const SESSION_START = 1_699_999_600;
 
 const notesCtx = (notes: Note[]): NotesContextValue => ({
   notes,
@@ -762,6 +768,26 @@ describe("EventsPanel bus-error section", () => {
     );
     expect(screen.getByText("boom")).toBeInTheDocument();
     await waitFor(() => expect(rows().length).toBe(1));
+  });
+
+  it("shows an episode row's local date and time on hover (owner ruling 2026-09-25)", async () => {
+    busErrorFixture = hostEpisodes(1);
+    renderPanel([], { ...traceData, sessionStartSeconds: SESSION_START }, [CAN1]);
+    await waitFor(() => expect(rows().length).toBe(1));
+
+    const cell = rows()[0].querySelector(".bus-error-event-time") as HTMLElement;
+    fireEvent.mouseOver(cell);
+    expect(cell).toHaveAttribute("title", formatLocalTimestamp(1_000, SESSION_START)!);
+  });
+
+  it("shows no tooltip on an episode row without a wall-clock origin", async () => {
+    busErrorFixture = hostEpisodes(1);
+    renderPanel([], traceData, [CAN1]); // sessionStartSeconds: 0 — capture-relative
+    await waitFor(() => expect(rows().length).toBe(1));
+
+    const cell = rows()[0].querySelector(".bus-error-event-time") as HTMLElement;
+    fireEvent.mouseOver(cell);
+    expect(cell).not.toHaveAttribute("title");
   });
 
   it("hides on request, like every other Diagnostics-group kind", async () => {
