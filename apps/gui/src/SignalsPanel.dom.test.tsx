@@ -82,10 +82,12 @@ let ROWS: SignalSnapshotRecord[] = DEFAULT_ROWS;
 // the surfaces that resolve patterns against it need one.
 let CATALOG: SignalDescriptorRecord[] = [];
 
+let storedSettings: Record<string, unknown> = {};
 const invokeCalls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     invokeCalls.push({ cmd, args });
+    if (cmd === "get_settings") return { ...storedSettings };
     if (cmd === "list_signals") return CATALOG;
     if (cmd === "fetch_signal_page") return { count: ROWS.length, start: 0, rows: ROWS };
     return undefined;
@@ -96,6 +98,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { SignalsPanel } from "./SignalsPanel";
+import { defaultSettings, hydrateSettings } from "./hostSettings";
+import { formatCalendarCell, formatCalendarTime } from "./format";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
@@ -573,5 +577,45 @@ describe("SignalsPanel with long names", () => {
       rows[0].querySelector(".col-signal .name-text")!.getAttribute("title"),
     ).toBe(`${LONG_SIGNAL_NAME} — drag to a plot; right-click to recolor`);
     expect(rows[1].querySelector(".name-text")).toBeNull();
+  });
+});
+
+describe("SignalsPanel time column", () => {
+  const START = 1_699_999_600;
+  const INSTANT = START + 200.25;
+  const row = (): SignalSnapshotRecord => ({ ...DEFAULT_ROWS[0], time_seconds: INSTANT });
+  const timeCell = () => document.querySelector(".trace-row .col-time") as HTMLElement;
+
+  beforeEach(() => {
+    traceData.sessionStartSeconds = START;
+    ROWS = [row()];
+  });
+  afterEach(() => {
+    traceData.sessionStartSeconds = 0;
+  });
+
+  it("reads elapsed with a calendar hover by default", async () => {
+    storedSettings = {};
+    await hydrateSettings();
+    renderPanel();
+    await waitFor(() => expect(timeCell()).toBeTruthy());
+    expect(timeCell().textContent).toBe("3:20.2500");
+    fireEvent.mouseOver(timeCell());
+    expect(timeCell()).toHaveAttribute(
+      "title",
+      formatCalendarTime(INSTANT, START, defaultSettings().date_time_pattern)!,
+    );
+  });
+
+  it("reads calendar text with an elapsed hover under time_display", async () => {
+    storedSettings = { time_display: "calendar" };
+    await hydrateSettings();
+    renderPanel();
+    await waitFor(() => expect(timeCell()).toBeTruthy());
+    expect(timeCell().textContent).toBe(
+      formatCalendarCell(INSTANT, START, defaultSettings().date_time_pattern, 4)!,
+    );
+    fireEvent.mouseOver(timeCell());
+    expect(timeCell()).toHaveAttribute("title", "3:20.2500");
   });
 });

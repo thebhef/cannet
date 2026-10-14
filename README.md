@@ -1855,12 +1855,15 @@ writes, so the panel teaches the file.
   editable From / To fields keep their own formats — this setting is
   display only.
 - **Time display.** **`time_display`** is `elapsed` by default — every
-  timeline view reads time since the session started. `calendar` is
-  meant to switch them all at once (trace, By-ID, Events, Signals,
-  plots) to calendar time through the date/time pattern; the command
-  palette's **Toggle calendar time** flips it. A capture with no
-  wall-clock start time names no instant and stays elapsed either
-  way. The setting exists ahead of its views: none reads it yet.
+  timeline view reads time since the session started. `calendar`
+  switches them all at once to calendar time through the date/time
+  pattern; the command palette's **Toggle calendar time** flips it. The
+  trace, By-ID, Events and Signals time cells read it today: the whole
+  pattern plus the same fraction digits the elapsed cell shows, with
+  the elapsed time on hover (and the calendar time on hover while the
+  setting is `elapsed`). The plots follow in a later change. A capture
+  with no wall-clock start time names no instant and stays elapsed
+  either way.
 - **Bus-error episode gap.** **Trace → Bus-error episode gap**
   (`bus_error_episode_gap_s`, in seconds) is how long a bus must fall
   silent before the Events panel starts a new bus-error episode: 5 by

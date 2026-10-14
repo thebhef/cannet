@@ -29,7 +29,7 @@ import {
   type SignalColumnState,
   type SignalSortState,
 } from "./signalColumns";
-import { formatMsgRate, formatTimestamp } from "./format";
+import { formatMsgRate } from "./format";
 import { buildColorResolver } from "./colorMap";
 import { SignalValueCell } from "./SignalValueCell";
 import { SignalPatternEditor, type PatternGrip } from "./SignalPatternEditor";
@@ -77,6 +77,7 @@ import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { diagCount } from "./diag"; // DIAG
 import { NameText } from "./NameText";
+import { TraceTimeCell } from "./traceTable";
 
 /// This panel's persisted view config: the selection, the column
 /// layout, and the sections — see {@link useElementPanel}. The fold set
@@ -1689,7 +1690,8 @@ function SignalRow({
       case "rate":
         return row.rate != null ? formatMsgRate(row.rate) : "";
       case "time":
-        return row.time_seconds != null ? formatTimestamp(row.time_seconds, baseTimestamp) : "";
+        // Drawn by `TraceTimeCell` in `renderCell` below.
+        return null;
       case "count":
         return row.count != null ? row.count.toLocaleString() : "";
       case "value":
@@ -1733,7 +1735,17 @@ function SignalRow({
         right: 0,
         height: mathOpen ? expandedRowHeight(mathEditorLines(math)) : ROW_HEIGHT,
       }}
-      renderCell={(column, className) => <span className={className}>{cell(column)}</span>}
+      renderCell={(column, className) =>
+        column === "time" ? (
+          <TraceTimeCell
+            className={className}
+            seconds={row?.time_seconds ?? null}
+            base={baseTimestamp}
+          />
+        ) : (
+          <span className={className}>{cell(column)}</span>
+        )
+      }
     >
       {/* The shared editor, disclosed under the row that opened it —
           in place on this surface, never a dialog (owner ruling). The
