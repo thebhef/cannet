@@ -223,13 +223,65 @@ describe("the project cache list", () => {
 
   // Owner ruling 2026-09-21: just the name and why — no further
   // affordance on an auto-located row beyond the existing Save as….
-  it("explains in the auto-located badge's tooltip why the directory is in cache space", async () => {
+  // Owner review 2026-09-22 (a): the tooltip belongs on the location
+  // chip, not the state badge — see the chip tests below for why, and
+  // for the active-and-auto-located row this test used to leave out.
+  it("explains in the location chip's tooltip why the directory is in cache space", async () => {
     rows = [row({ root: "/cache/projects/bbb", state: "auto-located", auto_located: true })];
     await renderList();
 
-    const badge = screen.getByText("auto-located");
-    expect(badge).toHaveAttribute("title", expect.stringContaining(".cannet/"));
-    expect(badge).toHaveAttribute("title", expect.stringContaining("Save as…"));
+    const chip = screen.getByText("auto-located");
+    expect(chip).toHaveAttribute("title", expect.stringContaining(".cannet/"));
+    expect(chip).toHaveAttribute("title", expect.stringContaining("Save as…"));
+  });
+
+  // Owner review, 2026-09-22 (a): the auto-located tooltip goes on every
+  // auto-located row, the active one included — before this, the tooltip
+  // was keyed on `row.state === "auto-located"`, which an active row
+  // never carries (its state is "active" whatever its location), so
+  // observation 3's row (opened straight from a loose project file) wore
+  // no tooltip at all.
+  it("puts the auto-located tooltip on the active row too, when it is auto-located", async () => {
+    rows = [row({ root: "/cache/projects/aaa", state: "active", auto_located: true })];
+    await renderList();
+
+    const chip = screen.getByText("auto-located");
+    expect(chip).toHaveAttribute("title", expect.stringContaining(".cannet/"));
+    expect(chip).toHaveAttribute("title", expect.stringContaining("Save as…"));
+  });
+
+  // Owner review, 2026-09-22 (b): every row wears a location chip beside
+  // its state badge, so a Save As reads `active · project dir` and the
+  // owner's "it's picked it up" feedback has somewhere to land beyond the
+  // Save as… tooltip.
+  it("wears a project dir chip when the location is not auto-located, with no tooltip", async () => {
+    rows = [row({ root: "/work/rig", auto_located: false })];
+    await renderList();
+
+    const chip = screen.getByText("project dir");
+    expect(chip).not.toHaveAttribute("title");
+  });
+
+  // The state badge no longer repeats what the chip now says: a
+  // not-currently-active auto-located row used to read
+  // "auto-located · auto-located".
+  it("doesn't repeat the location on the state badge", async () => {
+    rows = [row({ root: "/cache/projects/bbb", state: "auto-located", auto_located: true })];
+    await renderList();
+
+    expect(screen.getAllByText("auto-located")).toHaveLength(1);
+    expect(screen.getByText("known")).toBeInTheDocument();
+  });
+
+  // Owner review, 2026-09-22 (c): the header's Clear all no longer wears
+  // the red-on-gray danger styling; it reads as a normal button.
+  it("doesn't style Clear all data caches as dangerous", async () => {
+    rows = [row({ root: "/a" })];
+    await renderList();
+
+    expect(screen.getByRole("button", { name: "Clear all data caches" })).not.toHaveClass(
+      "danger",
+    );
   });
 
   // Owner ruling 2026-09-21: Delete is the shared two-stage trash

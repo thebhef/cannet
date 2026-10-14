@@ -77,7 +77,11 @@ export async function clearAllProjectCaches(): Promise<void> {
   await invoke("clear_all_project_caches");
 }
 
-/// What the row's badge reads.
+/// What the row's badge reads. `auto-located` reads as `known`: the
+/// location chip beside the badge (`locationLabel`) is what now says a
+/// row is auto-located, so the badge saying it too would put
+/// "auto-located · auto-located" on the same row for no added
+/// information — the badge's job is the state, not the location.
 export function badgeLabel(state: ProjectCacheState): string {
   switch (state) {
     case "active":
@@ -85,12 +89,21 @@ export function badgeLabel(state: ProjectCacheState): string {
     case "missing":
       return "project gone";
     case "auto-located":
-      return "auto-located";
+      return "known";
     case "orphaned":
       return "no project file";
     case "known":
       return "known";
   }
+}
+
+/// What the row's location chip reads, beside the state badge
+/// (owner review, 2026-09-22): `auto-located` for cache space,
+/// `project dir` for a directory the user made. Distinct from
+/// `badgeLabel`, which is about the row's *state* (active, missing, …)
+/// and no longer repeats the location.
+export function locationLabel(row: ProjectCacheRow): string {
+  return row.auto_located ? "auto-located" : "project dir";
 }
 
 /// Clear is offered wherever there is something to empty — and means the

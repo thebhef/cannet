@@ -10,6 +10,7 @@ import {
   canDelete,
   canSaveAs,
   loadProjectCaches,
+  locationLabel,
   offersSaveAs,
   type ProjectCacheRow,
 } from "./projectCaches";
@@ -31,9 +32,17 @@ describe("project cache rows", () => {
   it("names each badge", () => {
     expect(badgeLabel("active")).toBe("active");
     expect(badgeLabel("missing")).toBe("project gone");
-    expect(badgeLabel("auto-located")).toBe("auto-located");
+    // The badge no longer says "auto-located": the location chip
+    // (`locationLabel`) carries that now, so the state badge reads the
+    // same as `known` for either kind of not-currently-active directory.
+    expect(badgeLabel("auto-located")).toBe("known");
     expect(badgeLabel("orphaned")).toBe("no project file");
     expect(badgeLabel("known")).toBe("known");
+  });
+
+  it("names the location chip from auto_located, not state", () => {
+    expect(locationLabel(row({ auto_located: true }))).toBe("auto-located");
+    expect(locationLabel(row({ auto_located: false }))).toBe("project dir");
   });
 
   // ADR 0042 §5: Delete is unavailable for the open project, whose store
