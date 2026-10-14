@@ -524,12 +524,15 @@ trace as though it had been sent. A controller over the warning limit,
 one that has gone error-passive, and even one that is bus-off all keep
 their periodics running. The first two recover by themselves as their
 counters fall. A bus-off controller cannot — it transmits nothing, so
-its counters never fall — and it is **reset without user action**: a
-PEAK adapter's driver resets its own (`PCAN_BUSOFF_AUTORESET`), and the
+its counters never fall — and it is **reset without user action**: the
 sidecar resets any controller still bus-off after a second, in place on
-Vector and Kvaser and by reopening the channel elsewhere. The row then
-reads bus-off followed by the recovered state, and the sidecar's log
-carries one line per reset.
+Vector and Kvaser and by reopening the channel elsewhere (PEAK
+included). The row then reads bus-off followed by the recovered state,
+and the sidecar's log carries one line per reset. The sidecar also
+reopens a channel whose driver is refusing sends because its transmit
+queue is full while nothing at all — not even an error frame — has
+arrived for two seconds: that controller has stopped transmitting
+without reporting bus-off, and only a reopen restarts it.
 
 **Absent is not zero anywhere in that panel.** An in-process virtual bus
 has no configurable bitrate and therefore no defined load; a bus with no
