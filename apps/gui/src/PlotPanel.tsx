@@ -45,6 +45,7 @@ import {
   type PlotExtent,
 } from "./plotEvents";
 import { useBusErrorMarkers } from "./useBusErrorMarkers";
+import { useBusHealth } from "./busHealth";
 import {
   eventHighlight,
   highlightsSeries,
@@ -687,6 +688,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, [buses]);
   const episodeGapSeconds = useSetting("bus_error_episode_gap_s");
   const episodeGapRef = useRef(episodeGapSeconds);
+  // The host's error count over the plotted buses. It moves when a bus
+  // faults, so it is both the trigger that asks again for a window
+  // nobody pans and the token that keeps that ask from being memoised.
+  const busHealth = useBusHealth();
+  const busErrorsSeen = buses.reduce((n, b) => n + (busHealth[b.id]?.errorCount ?? 0), 0);
+  const busErrorsSeenRef = useRef(busErrorsSeen);
   const fetchBusErrorMarkers = useCallback(() => {
     const base = baseSecondsRef.current;
     const vis = xSyncRef.current;
@@ -707,6 +714,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       toSeconds: base + vis.xMax + pad,
       gapSeconds: episodeGapRef.current,
       maxMarkers: Math.max(1, Math.floor(widthPx / eventChipMinWidthPx())),
+      errorsSeen: busErrorsSeenRef.current,
     });
   }, [requestBusErrors]);
   // A gap change asks again at once: the fetch otherwise runs only off
@@ -717,6 +725,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
     episodeGapRef.current = episodeGapSeconds;
     fetchBusErrorMarkers();
   }, [episodeGapSeconds, fetchBusErrorMarkers]);
+  // New errors ask again too, with the window unmoved: otherwise a
+  // stopped, paused or scrubbed-back plot shows them only after a pan.
+  useEffect(() => {
+    if (busErrorsSeenRef.current === busErrorsSeen) return;
+    busErrorsSeenRef.current = busErrorsSeen;
+    fetchBusErrorMarkers();
+  }, [busErrorsSeen, fetchBusErrorMarkers]);
 
   // Per-area last-sampled series (only kept while the measurement strip
   // is on — it's the only consumer; the side-panel values come from the

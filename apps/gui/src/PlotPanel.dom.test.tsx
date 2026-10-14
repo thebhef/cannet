@@ -323,6 +323,10 @@ const mockBusErrorEpisodes: Record<
 /// reports `complete: false` (ADR 0049) — a list still being built.
 /// Prefixed `mock` for the hoisted factory.
 const mockBusErrorComplete = { value: true };
+/// The fake host's per-bus health map, as `get_bus_health` serves it —
+/// only `errorCount` matters here. Prefixed `mock` for the hoisted
+/// factory.
+const mockBusHealth: Record<string, { errorCount: number; errorRate: number }> = {};
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals")
@@ -385,6 +389,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         complete: mockBusErrorComplete.value,
       };
     }
+    if (cmd === "get_bus_health") return { ...mockBusHealth };
     if (cmd === "list_math_signals") return mockMathSignals;
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     if (cmd === "get_settings") return { ...mockSettings };
@@ -459,11 +464,14 @@ function mockDisplayUnits(args: {
 // test can deliver it the way the host's watcher does; everything else
 // just needs a resolved unsubscriber.
 let dbcChangedHandlers: Array<() => void> = [];
+let busHealthHandlers: Array<() => void> = [];
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (name: string, handler: () => void) => {
     if (name === "dbc-changed") dbcChangedHandlers.push(handler);
+    if (name === "bus-health-changed") busHealthHandlers.push(handler);
     return () => {
       dbcChangedHandlers = dbcChangedHandlers.filter((h) => h !== handler);
+      busHealthHandlers = busHealthHandlers.filter((h) => h !== handler);
     };
   }),
 }));
@@ -949,6 +957,7 @@ afterEach(async () => {
   mockUplotPointsShow.answer = false;
   for (const k of Object.keys(mockBusErrorEpisodes)) delete mockBusErrorEpisodes[k];
   mockBusErrorComplete.value = true;
+  for (const k of Object.keys(mockBusHealth)) delete mockBusHealth[k];
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
   // Awaited: an un-awaited publish here can resolve inside a later
   // test's own `hydrateSettings()` call and clobber settings that
@@ -9108,6 +9117,35 @@ describe("bus-error markers", () => {
       expect(resampled()).toBe(r0);
       expect(last().fromSeconds).toBe(before.fromSeconds);
       expect(last().toSeconds).toBe(before.toSeconds);
+    });
+  });
+
+  it("a bus fault asks again for the unmoved window, without a pan or zoom", async () => {
+    await withSizedCanvas(async () => {
+      mockBusErrorEpisodes["b1"] = [{ firstT: 1, lastT: 2, count: 3, lastOrdinal: 3 }];
+      mockBusHealth["b1"] = { errorCount: 3, errorRate: 0 };
+      const rebuiltBefore = diagCounts().get("uplot.resizeTick.postMount") ?? 0;
+      await mountAndSetRange("0 5");
+      // Past the mount's one-shot rebuild, so no area resample is left
+      // to carry a fetch along by accident.
+      await settleMountedAreas(rebuiltBefore, 1);
+      type Args = { fromSeconds: number; toSeconds: number };
+      const calls0 = busErrorCalls().length;
+      const before = busErrorCalls()[calls0 - 1][1] as Args;
+      const resampled = () => diagCounts().get("plot.areaResampled") ?? 0;
+      const r0 = resampled();
+
+      // The host sees more errors and says so — the window stays put.
+      mockBusErrorEpisodes["b1"] = [{ firstT: 1, lastT: 4, count: 9, lastOrdinal: 9 }];
+      mockBusHealth["b1"] = { errorCount: 9, errorRate: 0 };
+      await act(async () => {
+        for (const h of [...busHealthHandlers]) h();
+      });
+      await waitFor(() => expect(busErrorCalls().length).toBe(calls0 + 1));
+      expect(resampled()).toBe(r0);
+      const after = busErrorCalls()[calls0][1] as Args;
+      expect(after.fromSeconds).toBe(before.fromSeconds);
+      expect(after.toSeconds).toBe(before.toSeconds);
     });
   });
 
