@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 //
-// The Events panel's bus-error section adapter: pages `bus_error_series`
-// through the shared windowed-source primitive (`useWindowedQuery`),
-// merges and sorts episodes across buses, grows its point budget on
-// request, and reports ADR 0049 partial answers. `invoke` is mocked, so
-// this exercises the lifecycle in isolation from the host — the episode
-// math itself is `plotEvents.test.ts`'s job.
+// The Events panel's bus-error section adapter: pages the host's episode
+// list (`bus_error_episodes`) by offset through the shared windowed-source
+// primitive (`useWindowedQuery`), re-derives on a gap change, and reports
+// ADR 0049 partial answers. `invoke` is mocked, so this exercises the
+// lifecycle in isolation from the host — the episodes themselves are
+// `signal_cache.rs`'s tests.
 
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,22 +15,39 @@ import { act, renderHook } from "@testing-library/react";
 // these tests need a host to hydrate it from — the same setup
 // `useWindowedQuery.test.ts` uses.
 let stored: Record<string, unknown> = {};
-let busErrorFixture: unknown = { series: [], complete: true };
+/// The host's episode list for the mocked serve, newest first, and
+/// whether it says it is complete.
+let hostEpisodes: { bus: string; lastOrdinal: number }[] = [];
+let hostComplete = true;
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => {
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "get_settings") return { ...stored };
-    if (cmd === "bus_error_series") return busErrorFixture;
+    if (cmd === "bus_error_episodes") {
+      const offset = Number(args?.offset ?? 0);
+      const limit = Number(args?.limit ?? 0);
+      return {
+        count: hostEpisodes.length,
+        start: offset,
+        episodes: hostEpisodes.slice(offset, offset + limit).map((e, i) => ({
+          bus: e.bus,
+          firstT: 2_000 - offset - i,
+          lastT: 2_000.5 - offset - i,
+          count: 3,
+          span: 0.5,
+          rate: 6,
+          lastOrdinal: e.lastOrdinal,
+        })),
+        complete: hostComplete,
+      };
+    }
     return null;
   }),
 }));
 
 const { invoke } = await import("@tauri-apps/api/core");
 const mockInvoke = vi.mocked(invoke);
-const {
-  useBusErrorEvents,
-  BUS_ERROR_INITIAL_BUDGET,
-  BUS_ERROR_MAX_BUDGET,
-} = await import("./useBusErrorEvents");
+const { useBusErrorEvents } = await import("./useBusErrorEvents");
+const { PAGE_ROWS } = await import("./useWindowedQuery");
 const { hydrateSettings } = await import("./hostSettings");
 const { TraceDataProvider } = await import("./traceData");
 type TraceData = import("./traceData").TraceData;
@@ -51,10 +68,11 @@ function wrapper(data: TraceData = traceData) {
 
 beforeEach(async () => {
   stored = {};
-  busErrorFixture = { series: [], complete: true };
+  hostEpisodes = [];
+  hostComplete = true;
   await hydrateSettings();
   // Cleared after hydration's own `get_settings` round-trip, so a
-  // test's call-count assertions count only its own `bus_error_series`
+  // test's call-count assertions count only its own `bus_error_episodes`
   // invocations.
   mockInvoke.mockClear();
   vi.useFakeTimers();
@@ -70,89 +88,103 @@ async function flush() {
   });
 }
 
+/// `n` episodes, newest first, on `b1` — each ending on an ordinal that
+/// falls going down the list, as the host's do.
+function episodes(n: number) {
+  return Array.from({ length: n }, (_, i) => ({ bus: "b1", lastOrdinal: 3 * (n - i) }));
+}
+
+function episodeCalls() {
+  return mockInvoke.mock.calls.filter((c) => c[0] === "bus_error_episodes");
+}
+
 describe("useBusErrorEvents", () => {
   it("asks nothing and holds no rows for an empty bus list", async () => {
-    const { result } = renderHook(() => useBusErrorEvents([]), { wrapper: wrapper() });
+    const { result } = renderHook(() => useBusErrorEvents([], 5), { wrapper: wrapper() });
     await flush();
-    expect(mockInvoke).not.toHaveBeenCalledWith("bus_error_series", expect.anything());
-    expect(result.current.rows).toEqual([]);
+    expect(episodeCalls()).toHaveLength(0);
+    expect(result.current.count).toBe(0);
   });
 
-  it("fetches the session start through the live edge at the initial budget", async () => {
-    busErrorFixture = { series: [{ t: [1_000, 1_002], v: [1, 2] }], complete: true };
-    const { result } = renderHook(() => useBusErrorEvents(["b1"]), { wrapper: wrapper() });
+  it("pages the newest episodes first, at the configured gap", async () => {
+    hostEpisodes = episodes(3);
+    const { result } = renderHook(() => useBusErrorEvents(["b1"], 5), { wrapper: wrapper() });
     await flush();
 
-    expect(mockInvoke).toHaveBeenCalledWith("bus_error_series", {
+    expect(mockInvoke).toHaveBeenCalledWith("bus_error_episodes", {
       buses: ["b1"],
-      fromSeconds: 1_000,
-      toSeconds: Number.MAX_SAFE_INTEGER,
-      maxPoints: BUS_ERROR_INITIAL_BUDGET,
+      gapSeconds: 5,
+      offset: 0,
+      limit: PAGE_ROWS,
     });
-    expect(result.current.rows).toEqual([
-      { id: "bus-error:b1:2", bus: "b1", timestampNs: 1_002_000_000_000, count: 1, spanSeconds: 2 },
-    ]);
+    expect(result.current.count).toBe(3);
+    expect(result.current.getRow(0)).toEqual({
+      id: "bus-error:b1:9",
+      bus: "b1",
+      firstSeconds: 2_000,
+      count: 3,
+      spanSeconds: 0.5,
+      rate: 6,
+    });
+    expect(result.current.getRow(2)?.id).toBe("bus-error:b1:3");
     expect(result.current.complete).toBe(true);
   });
 
-  it("merges and sorts episodes chronologically across buses", async () => {
-    busErrorFixture = {
-      series: [
-        { t: [1_000, 1_005], v: [1, 2] },
-        { t: [1_000, 1_001, 1_003], v: [4, 5, 6] },
-      ],
-      complete: true,
-    };
-    const { result } = renderHook(() => useBusErrorEvents(["b1", "b2"]), { wrapper: wrapper() });
+  it("fetches a deeper page by offset, down to the oldest episode", async () => {
+    hostEpisodes = episodes(5_000);
+    const { result } = renderHook(() => useBusErrorEvents(["b1"], 1), { wrapper: wrapper() });
     await flush();
+    expect(result.current.count).toBe(5_000);
+    expect(result.current.getRow(4_999)).toBeNull();
 
-    expect(result.current.rows.map((r) => r.id)).toEqual([
-      "bus-error:b2:5",
-      "bus-error:b2:6",
-      "bus-error:b1:2",
-    ]);
+    act(() => result.current.ensureVisible(4_990, 5_000));
+    await flush();
+    const last = episodeCalls()[episodeCalls().length - 1][1] as { offset: number };
+    expect(last.offset).toBeGreaterThan(0);
+    expect(last.offset).toBeLessThanOrEqual(4_990);
+    // The oldest single episode: the capture's first three errors.
+    expect(result.current.getRow(4_999)?.id).toBe("bus-error:b1:3");
   });
 
-  it("shows what it has quietly on a partial (`complete: false`) answer", async () => {
-    busErrorFixture = { series: [{ t: [1_000, 1_001], v: [1, 2] }], complete: false };
-    const { result } = renderHook(() => useBusErrorEvents(["b1"]), { wrapper: wrapper() });
-    await flush();
-
-    expect(result.current.rows).toHaveLength(1);
-    expect(result.current.complete).toBe(false);
-  });
-
-  it("grows the point budget on request, up to the ceiling", async () => {
-    busErrorFixture = { series: [{ t: [1_000, 1_001], v: [1, 2] }], complete: true };
-    const { result } = renderHook(() => useBusErrorEvents(["b1"]), { wrapper: wrapper() });
-    await flush();
-    expect(mockInvoke).toHaveBeenCalledTimes(1);
-
-    act(() => result.current.growBudget());
-    await flush();
-    expect(mockInvoke).toHaveBeenLastCalledWith("bus_error_series", {
-      buses: ["b1"],
-      fromSeconds: 1_000,
-      toSeconds: Number.MAX_SAFE_INTEGER,
-      maxPoints: BUS_ERROR_INITIAL_BUDGET * 2,
+  it("re-derives from the top when the gap changes", async () => {
+    hostEpisodes = episodes(10);
+    const { result, rerender } = renderHook(({ gap }) => useBusErrorEvents(["b1"], gap), {
+      wrapper: wrapper(),
+      initialProps: { gap: 5 },
     });
+    await flush();
+    expect(result.current.count).toBe(10);
 
-    // Growing repeatedly never exceeds the ceiling.
-    for (let i = 0; i < 20; i++) {
-      act(() => result.current.growBudget());
-      await flush();
-    }
-    const lastCall = mockInvoke.mock.calls[mockInvoke.mock.calls.length - 1];
-    expect((lastCall[1] as { maxPoints: number }).maxPoints).toBe(BUS_ERROR_MAX_BUDGET);
+    hostEpisodes = episodes(40);
+    rerender({ gap: 1 });
+    await flush();
+    expect(mockInvoke).toHaveBeenLastCalledWith("bus_error_episodes", {
+      buses: ["b1"],
+      gapSeconds: 1,
+      offset: 0,
+      limit: PAGE_ROWS,
+    });
+    expect(result.current.count).toBe(40);
   });
 
-  it("reports full resolution once a served window answers under budget", async () => {
-    // Two episodes served against a budget of 100 — the host had
-    // nothing more to coarsen, so growing further would repeat the
-    // query for the same answer.
-    busErrorFixture = { series: [{ t: [1_000, 1_001], v: [1, 2] }], complete: true };
-    const { result } = renderHook(() => useBusErrorEvents(["b1"]), { wrapper: wrapper() });
+  it("shows what it has on a partial answer and keeps asking", async () => {
+    hostEpisodes = episodes(2);
+    hostComplete = false;
+    const { result } = renderHook(() => useBusErrorEvents(["b1"], 5), { wrapper: wrapper() });
     await flush();
-    expect(result.current.atFullResolution).toBe(true);
+    expect(result.current.count).toBe(2);
+    expect(result.current.complete).toBe(false);
+    const asked = episodeCalls().length;
+
+    // Nothing else marks a stopped capture stale; the partial answer
+    // itself does, so the next refresh tick asks again.
+    hostEpisodes = episodes(4);
+    hostComplete = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(episodeCalls().length).toBeGreaterThan(asked);
+    expect(result.current.count).toBe(4);
+    expect(result.current.complete).toBe(true);
   });
 });

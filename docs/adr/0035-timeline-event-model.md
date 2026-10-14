@@ -262,8 +262,20 @@ signal cache, and views page it; authored events stay whole.**
   chose — carries the exact total at its time. Any two consecutive
   served points are one marker's worth: count is the value difference,
   span the time difference, rate their ratio. A zoomed-out window shows
-  fewer, larger episodes; zooming in resolves them. There is no gap rule
-  and no cap: nothing is evicted.
+  fewer, larger episodes; zooming in resolves them. The plot has no gap
+  rule and no cap: nothing is evicted.
+- **A list reads episodes at a gap the reader sets** (owner ruling
+  2026-09-24). A marker per served point suits a plot, which zooms; a
+  list does not, and individual errors are not worth a row each. So the
+  Events panel lists a bus's **episodes**: bursts in which each error
+  follows the last by less than `bus_error_episode_gap_s` (default 5 s,
+  minimum 1 s), a silence of at least the gap ending one. The host
+  derives them from the series' level 0, incrementally, holds the list
+  beside the series (bounded by capture time ÷ gap, rebuilt from level 0
+  rather than persisted) and serves it paged by offset, newest first,
+  with its count; the view pages it and derives nothing. An episode's id
+  is its last error's, `bus-error:{bus}:{n}` — the same id the plot's
+  marker for that error carries.
 - **The event store holds authored events only**, and `notes-changed`
   fires only on an authored change. A host-derived kind keeps its
   category and its lifecycle (not editable, not persisted, not exported

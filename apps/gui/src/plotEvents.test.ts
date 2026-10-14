@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { defaultVisibleKinds, type EventKind, type Note } from "./notes";
 import {
-  busErrorEpisodes,
+  busErrorSpans,
   busErrorMarkerLabel,
   busErrorTimelineEvents,
   plotEventExtents,
@@ -59,13 +59,13 @@ describe("plotTimelineEvents", () => {
   });
 });
 
-describe("busErrorEpisodes", () => {
+describe("busErrorSpans", () => {
   it("carries bus, count and span as their own fields, not just a label", () => {
     // Shared by the plot's markers (busErrorTimelineEvents) and the
     // Events panel's paged section (useBusErrorEvents) — this is the one
     // place the delta math lives, so the two surfaces can't disagree.
     const series: BusErrorSeries[] = [{ bus: "b1", t: [0, 1, 3], v: [10, 11, 14] }];
-    expect(busErrorEpisodes(series)).toEqual([
+    expect(busErrorSpans(series)).toEqual([
       { id: "bus-error:b1:11", bus: "b1", timestampNs: 1e9, count: 1, spanSeconds: 1 },
       { id: "bus-error:b1:14", bus: "b1", timestampNs: 3e9, count: 3, spanSeconds: 2 },
     ]);
@@ -73,7 +73,7 @@ describe("busErrorEpisodes", () => {
 
   it("is what busErrorTimelineEvents' labels are built from", () => {
     const series: BusErrorSeries[] = [{ bus: "b1", t: [0, 1, 3], v: [10, 11, 14] }];
-    const episodes = busErrorEpisodes(series);
+    const episodes = busErrorSpans(series);
     const events = busErrorTimelineEvents(series);
     expect(events.map((e) => e.label)).toEqual(
       episodes.map((e) => busErrorMarkerLabel(e.count, e.spanSeconds)),

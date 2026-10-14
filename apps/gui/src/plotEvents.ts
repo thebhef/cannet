@@ -60,7 +60,7 @@ export interface BusErrorSeries {
   v: readonly number[];
 }
 
-/// The label a bus-error marker carries: the episode a delta between two
+/// The label a bus-error marker carries: the errors a delta between two
 /// served points describes (ADR 0035 amended) — count, span and rate.
 /// `spanSeconds` is `0` only when two errors land at the same instant, in
 /// which case rate has nothing to divide by.
@@ -71,22 +71,22 @@ export function busErrorMarkerLabel(count: number, spanSeconds: number): string 
   return `${countText} over ${formatDurationSeconds(spanSeconds)} (${rateText})`;
 }
 
-/// One episode: the delta between two consecutive points of a bus's
-/// served error series — the walk starts at index 1, so the served
+/// One plot marker's worth: the delta between two consecutive points of
+/// a bus's served error series — the walk starts at index 1, so the served
 /// window's boundary sample before it (index 0) supplies the first
-/// delta and yields no episode of its own. `id` is `bus-error:{bus}:{n}`,
+/// delta and yields no span of its own. `id` is `bus-error:{bus}:{n}`,
 /// `n` the point's own running-count value: stable across zoom and
 /// restore, since every served point at every pyramid level is a real
 /// level-0 sample (ADR 0035 amended).
 ///
-/// Any two consecutive served points are an exact episode regardless of
+/// Any two consecutive served points are an exact span regardless of
 /// the pyramid level the window was read off, so this never merges or
 /// re-derives a count — it only reads the deltas the host already gave it
 /// (CLAUDE.md § GUI architecture: domain computation belongs in the
-/// model). Shared by the plot's markers (`busErrorTimelineEvents`) and
-/// the Events panel's paged section (`useBusErrorEvents`), so the two
-/// surfaces can never disagree on what an episode is.
-export interface BusErrorEpisode {
+/// model). Not a bus-error *episode* (CONTEXT.md): a span's extent is
+/// whatever the zoom resolved, while the Events panel lists the host's
+/// episodes at the configured gap (`useBusErrorEvents`).
+export interface BusErrorSpan {
   id: string;
   bus: string;
   timestampNs: number;
@@ -94,8 +94,8 @@ export interface BusErrorEpisode {
   spanSeconds: number;
 }
 
-export function busErrorEpisodes(series: readonly BusErrorSeries[]): BusErrorEpisode[] {
-  const out: BusErrorEpisode[] = [];
+export function busErrorSpans(series: readonly BusErrorSeries[]): BusErrorSpan[] {
+  const out: BusErrorSpan[] = [];
   for (const s of series) {
     for (let i = 1; i < s.t.length; i++) {
       out.push({
@@ -110,10 +110,10 @@ export function busErrorEpisodes(series: readonly BusErrorSeries[]): BusErrorEpi
   return out;
 }
 
-/// {@link busErrorEpisodes}, projected onto the plot's `TimelineEvent`
-/// shape — one marker per episode, labelled with its count/span/rate.
+/// {@link busErrorSpans}, projected onto the plot's `TimelineEvent`
+/// shape — one marker per span, labelled with its count/span/rate.
 export function busErrorTimelineEvents(series: readonly BusErrorSeries[]): TimelineEvent[] {
-  return busErrorEpisodes(series).map((e) => ({
+  return busErrorSpans(series).map((e) => ({
     id: e.id,
     timestampNs: e.timestampNs,
     label: busErrorMarkerLabel(e.count, e.spanSeconds),
