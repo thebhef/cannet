@@ -62,14 +62,22 @@ function groupCount(group: EventKindGroup, counts: Record<string, number>): numb
 export function EventKindFilter({
   state,
   counts,
+  titles,
 }: {
   state: EventKindFilterState;
   counts: Record<string, number>;
+  /// A surface's own tooltip for a row, by group label — for what only
+  /// that surface knows about the kinds under it.
+  titles?: Readonly<Record<string, string>>;
 }) {
   return (
     <div className="event-kind-filter" role="group" aria-label="event kinds">
       {EVENT_KIND_GROUPS.map((group) => (
-        <label key={group.label} className="event-kind-filter-row" title={`${group.label} — ${group.title}`}>
+        <label
+          key={group.label}
+          className="event-kind-filter-row"
+          title={titles?.[group.label] ?? `${group.label} — ${group.title}`}
+        >
           <input
             type="checkbox"
             aria-label={group.label}

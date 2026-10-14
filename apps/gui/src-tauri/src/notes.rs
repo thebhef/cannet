@@ -48,6 +48,7 @@
 //! (ADR 0035); the BLF path stays the export/import home.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -239,8 +240,10 @@ pub fn linked_event_ids(events: &[Note], id: &str) -> Vec<String> {
 /// The model names **three** categories. The third —
 /// *frontend-derived*, synthesized in the frontend from host data (the
 /// disk-spill truncation marker, from the store's low-water mark) — has no
-/// variant here on purpose: those kinds never cross the wire and never
+/// variant here on purpose: those kinds are never sent as events and never
 /// reach this store, so a host-side value of that category cannot exist.
+/// (The Events panel's page, [`crate::events_page`], carries only the
+/// marker's place in the list; the frontend still draws it.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventCategory {
     /// The user placed it. Editable, persisted to the scratch, exported.
@@ -333,6 +336,9 @@ pub struct NotesStore {
     /// session can move to a different project directory mid-flight
     /// ([`Self::reroot`], ADR 0042).
     scratch_dir: Mutex<Option<PathBuf>>,
+    /// Bumped on every edit — what tells a view paging the events
+    /// (`events_page`) that the list it holds a page of has changed.
+    revision: AtomicU64,
 }
 
 /// What [`NotesStore::apply`] returns so the host can decide
@@ -357,6 +363,7 @@ impl NotesStore {
         Self {
             inner: Mutex::new(Vec::new()),
             scratch_dir: Mutex::new(None),
+            revision: AtomicU64::new(0),
         }
     }
 
@@ -369,6 +376,7 @@ impl NotesStore {
         Self {
             inner: Mutex::new(Vec::new()),
             scratch_dir: Mutex::new(Some(dir)),
+            revision: AtomicU64::new(0),
         }
     }
 
@@ -425,11 +433,20 @@ impl NotesStore {
         out
     }
 
+    /// How many edits the store has taken: it moves on every one, so two
+    /// equal readings bracket an unchanged list.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
+    }
+
     /// Rewrite the scratch copy from the current notes, via atomic
-    /// temp-file + rename. Called after every mutation; a no-op without a
-    /// scratch dir. A write failure is logged, not propagated — a dropped
-    /// scratch write is a durability gap, not a reason to fail the edit.
+    /// temp-file + rename. Called after every mutation — so it is also
+    /// where [`Self::revision`] moves; the scratch write itself is a
+    /// no-op without a scratch dir. A write failure is logged, not
+    /// propagated — a dropped scratch write is a durability gap, not a
+    /// reason to fail the edit.
     fn persist(&self) {
+        self.revision.fetch_add(1, Ordering::Relaxed);
         let Some(dir) = self.scratch_dir() else {
             return;
         };
