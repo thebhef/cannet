@@ -192,6 +192,7 @@ fn configure_bus_envelope_round_trips() {
         speed_bps: 500_000,
         fd_data_speed_bps: 2_000_000,
         fd_enabled: true,
+        error_row_cap: None,
     };
     let envelope = proto::Envelope {
         body: Some(proto::envelope::Body::ConfigureBus(cfg.clone())),
@@ -237,6 +238,7 @@ fn interface_state_envelope_round_trips_every_controller_state() {
             tec: 0x80,
             rec: 0x40,
             rx_overruns: None,
+            as_of_ns: 0,
         };
         let envelope = proto::Envelope {
             body: Some(proto::envelope::Body::InterfaceState(s.clone())),
@@ -397,6 +399,135 @@ fn clock_probe_and_reply_round_trip_their_epoch_stamps() {
     assert_eq!(r.t3, 1_760_000_004_000_050_000);
 }
 
+// ---------- Bus-fault reporting (ADR 0060) ----------
+
+#[test]
+fn bus_error_episode_envelope_round_trips() {
+    use prost::Message;
+    let episode = proto::BusErrorEpisode {
+        interface_id: "peak:0".into(),
+        seq: 3,
+        first_ns: 1_000,
+        last_ns: 2_000,
+        count: 42,
+        count_by_kind: Some(proto::ErrorKindCounts {
+            ack: 10,
+            bit: 5,
+            form: 1,
+            stuff: 2,
+            crc: 0,
+            other: 0,
+            unknown: 0,
+        }),
+        tx_count: 30,
+        rx_count: 12,
+        tec: 128,
+        rec: 0,
+        open: true,
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::BusErrorEpisode(episode.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::BusErrorEpisode(e) => assert_eq!(e, episode),
+        other => panic!("expected BusErrorEpisode, got {other:?}"),
+    }
+}
+
+#[test]
+fn tx_refusals_envelope_round_trips() {
+    use prost::Message;
+    let refusals = proto::TxRefusals {
+        interface_id: "pcan:0".into(),
+        reason: proto::TxRefusalReason::QueueFull.into(),
+        count: 800,
+        first_ns: 1_000,
+        last_ns: 5_000,
+        last_message: "The transmit queue is full".into(),
+        flush_count: 2,
+        last_flush_ns: 4_500,
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::TxRefusals(refusals.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::TxRefusals(r) => assert_eq!(r, refusals),
+        other => panic!("expected TxRefusals, got {other:?}"),
+    }
+}
+
+#[test]
+fn frames_dropped_envelope_round_trips() {
+    use prost::Message;
+    let dropped = proto::FramesDropped {
+        interface_id: "vector:0".into(),
+        count: 10_000,
+        first_ns: 1_000,
+        last_ns: 9_000,
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::FramesDropped(dropped.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::FramesDropped(d) => assert_eq!(d, dropped),
+        other => panic!("expected FramesDropped, got {other:?}"),
+    }
+}
+
+#[test]
+fn interface_state_as_of_ns_round_trips() {
+    use prost::Message;
+    let s = proto::InterfaceState {
+        interface_id: "peak:0".into(),
+        state: proto::ControllerState::Warning.into(),
+        tec: 96,
+        rec: 0,
+        rx_overruns: None,
+        as_of_ns: 123_456_789,
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::InterfaceState(s.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::InterfaceState(d) => assert_eq!(d, s),
+        other => panic!("expected InterfaceState, got {other:?}"),
+    }
+}
+
+#[test]
+fn configure_bus_error_row_cap_round_trips_and_stays_unset_by_default() {
+    use prost::Message;
+    let with_cap = proto::ConfigureBus {
+        interface_id: "peak:0".into(),
+        speed_bps: 500_000,
+        fd_data_speed_bps: 0,
+        fd_enabled: false,
+        error_row_cap: Some(4),
+    };
+    let decoded = proto::ConfigureBus::decode(with_cap.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.error_row_cap, Some(4));
+
+    // Unset means "use the server's default (16)" (ADR 0060 rule 2) —
+    // the field must round-trip as absent, not as zero.
+    let without_cap = proto::ConfigureBus {
+        interface_id: "peak:0".into(),
+        speed_bps: 500_000,
+        fd_data_speed_bps: 0,
+        fd_enabled: false,
+        error_row_cap: None,
+    };
+    let decoded = proto::ConfigureBus::decode(without_cap.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.error_row_cap, None);
+}
+
 #[test]
 fn an_envelope_variant_this_build_does_not_know_decodes_as_no_body() {
     // The compatibility claim the clock envelopes rest on: a peer built
@@ -432,6 +563,7 @@ fn an_absent_receive_overrun_count_does_not_round_trip_as_zero() {
         tec: 0,
         rec: 0,
         rx_overruns: None,
+        as_of_ns: 0,
     };
     let watched = proto::InterfaceState {
         rx_overruns: Some(0),
