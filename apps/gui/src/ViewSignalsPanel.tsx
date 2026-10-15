@@ -704,14 +704,29 @@ function ViewSignalRowLine({
           case "signal":
             return (
               <span className={className}>
-                <NameText name={row.signalName} />
-                <UnknownUnitFlag unit={row.unit} shown={row.unitUnrecognized} />
+                {row.unitUnrecognized ? (
+                  <span className="name-row">
+                    <span className="name-row-text">
+                      <NameText name={row.signalName} />
+                    </span>
+                    <UnknownUnitFlag unit={row.unit} shown />
+                  </span>
+                ) : (
+                  <NameText name={row.signalName} />
+                )}
               </span>
             );
           case "msg":
             return (
               <span className={className}>
-                0x{formatCanIdHex(row.messageId, row.extended)} <NameText name={row.messageName} />
+                <span className="name-row">
+                  <span className="name-row-lead">
+                    0x{formatCanIdHex(row.messageId, row.extended)}
+                  </span>
+                  <span className="name-row-text">
+                    <NameText name={row.messageName} />
+                  </span>
+                </span>
               </span>
             );
           case "unit":

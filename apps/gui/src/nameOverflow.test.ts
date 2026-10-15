@@ -65,7 +65,7 @@ const SURFACES: Surface[] = [
   { what: "a disclosed signal's name in an expanded trace row", clips: ".signal-name" },
   { what: "a disclosed signal's value and `VAL_` label", clips: ".signal-value" },
   { what: "the plot legend's signal name", clips: ".plot-signal-name" },
-  { what: "the plot legend's message name", clips: ".plot-signal-message" },
+  { what: "the plot legend's message name", clips: ".name-row > .name-row-text" },
   { what: "a plot area's axis label", clips: ".plot-area-axis-label" },
   { what: "the transmit panel's signal names", clips: ".tx-signal-row .tx-col-name" },
   { what: "the transmit panel's message name", clips: ".tx-row-identity .tx-dbc-name" },
@@ -77,6 +77,7 @@ const SURFACES: Surface[] = [
   { what: "the project graph's node names", clips: ".graph-node-title" },
   { what: "the project graph's node subtitles", clips: ".graph-node-sub" },
   { what: "the colormap editor's enum labels", clips: ".colormap-enum-label" },
+  { what: "a Signals / View Signals / RBS Signals row's message cell, beside its id, dots or badge", clips: ".name-row > .name-row-text" },
   { what: "the goto palette's entries", clips: ".palette-item-label" },
 ];
 
@@ -122,5 +123,22 @@ describe("the long-name renderer", () => {
 
   it("is capped by its container, never by its content", () => {
     expect(declares(".name-text", "max-width", "100%")).toBe(true);
+  });
+});
+
+describe("a name beside a fixed-width sibling", () => {
+  // The plot legend's message line is bus dot(s) + one long `NameText`.
+  // In a block-level line the `inline-flex` name box is an atomic inline
+  // that no longer fits once a dot precedes it, and the line's
+  // `text-overflow` hides it whole — the label vanishes instead of
+  // shrinking. The line must be a flex row: dots fixed, the text box the
+  // only thing that shrinks, so the name's own head ellipsis gives way.
+  it("keeps the plot legend's dots fixed and lets only the text shrink", () => {
+    expect(declares(".name-row", "display", "flex")).toBe(true);
+    expect(declares(".name-row > *", "flex", "none")).toBe(true);
+    expect(declares(".name-row > .name-row-text", "min-width", "0")).toBe(true);
+    expect(declares(".name-row > .name-row-text", "flex", "0 1 auto")).toBe(true);
+    expect(declarationsFor(".name-row")).not.toContain("text-overflow");
+    expect(declarationsFor(".plot-signal-message")).not.toContain("text-overflow");
   });
 });

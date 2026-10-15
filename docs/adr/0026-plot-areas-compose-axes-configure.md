@@ -190,7 +190,10 @@ tooltip. Enum labels are prose, read left to right, with their
 distinguishing word at the front, so they keep ordinary end-ellipsis
 and a tooltip — on the canvas as much as in the DOM, which is what
 `fitTileLabel` does for a lane tile. A name's rendered width comes from
-the column model and never from the name.
+the column model and never from the name. A name that
+sits beside a fixed-width sibling (the legend's bus dots, a CAN id) is in a `.name-row` flex row
+whose text box alone shrinks: `NameText` is an atomic inline, and a block
+line's `text-overflow` hides an atomic inline whole rather than shrinking it.
 
 **A tile label is drawn on a box whose opacity the theme carries.** The
 box is filled in the canvas chip color — effectively the canvas color,
