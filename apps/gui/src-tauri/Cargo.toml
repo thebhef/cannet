@@ -100,12 +100,12 @@ runtime_units = { version = "0.6", default-features = false, features = [
     "std",
     "All",
 ] }
-# Export / logger name-template resolution (`export_template.rs`): an
-# explicit `{start:%…}` / `{now:%…}` format passes straight through to
-# chrono's strftime formatter, and the bare-token ISO-8601-basic form
-# is `chrono`'s own `%z` offset. `clock` is needed here (unlike
-# `cannet-log`'s direct use, which only formats an epoch value) because
-# a template's `{now}` reads the live local wall clock.
+# Calendar arithmetic for date patterns (`date_pattern.rs`, which
+# renders the `{start:…}` / `{now:…}` name-template tokens — the
+# pattern itself is hand-rolled TR35, ADR 0062, not chrono's strftime).
+# `clock` is needed here (unlike `cannet-log`'s direct use, which only
+# formats an epoch value) because a template's `{now}` reads the live
+# local wall clock and its offset.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 [dev-dependencies]

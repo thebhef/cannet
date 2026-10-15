@@ -17,10 +17,10 @@
 //!
 //! A bare `{start}` / `{now}` resolves as ISO 8601 in *basic* form with
 //! a timezone offset (`20260905T091502-0600`) — extended ISO's colons
-//! cannot appear in a Windows file name. `{start:<fmt>}` / `{now:<fmt>}`
-//! pass `<fmt>` straight through to `chrono`'s strftime formatter: no
-//! subset, so anything chrono accepts is accepted here, and anything it
-//! doesn't is rejected with a message naming the format string.
+//! cannot appear in a Windows file name. `{start:<pattern>}` /
+//! `{now:<pattern>}` render the time per a date pattern
+//! ([`crate::date_pattern`], ADR 0062) — `{start:yyyy-MM-dd}` — and an
+//! invalid pattern is rejected with the pattern's own error.
 //!
 //! Folder text resolves through the same token syntax
 //! ([`resolve_folder`]); the one folder-specific rule is that a
@@ -36,9 +36,10 @@
 
 use std::path::{Path, PathBuf, MAIN_SEPARATOR, MAIN_SEPARATOR_STR};
 
-use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use tauri::Manager;
+
+use crate::date_pattern::DatePattern;
 
 /// Everything a template needs to resolve, independent of the wall
 /// clock (which [`resolve`] takes separately, so a logger can inject
@@ -138,29 +139,16 @@ fn local_from_epoch_seconds(secs: f64) -> DateTime<Local> {
         .with_timezone(&Local)
 }
 
-/// `dt` formatted per `fmt`, or the bare ISO-8601-basic form
-/// (`20260905T091502-0600`) when `fmt` is `None`. `%z` is chrono's
-/// `+HHMM` offset with no colon, which is exactly the basic form's
-/// offset — no separate implementation needed for the bare case.
-const BARE_FORMAT: &str = "%Y%m%dT%H%M%S%z";
+/// The bare `{start}` / `{now}` form: ISO 8601 basic with the offset
+/// (`20260905T091502-0600`) — extended ISO's colons cannot appear in a
+/// Windows file name.
+const BARE_PATTERN: &str = "yyyyMMdd'T'HHmmssxx";
 
+/// `dt` formatted per the date pattern `fmt`, or the bare ISO-8601-basic
+/// form when `fmt` is `None`.
 fn format_datetime(dt: DateTime<Local>, fmt: Option<&str>) -> Result<String, String> {
-    let Some(fmt) = fmt else {
-        return Ok(dt.format(BARE_FORMAT).to_string());
-    };
-    if fmt.is_empty() {
-        return Err("a time format after \":\" must not be empty".to_string());
-    }
-    // `StrftimeItems` parses lazily and reports an invalid specifier as
-    // `Item::Error` rather than an `Err` from `new` — checked up front
-    // so the format call below can't hit chrono's `to_string` panic on
-    // a bad specifier.
-    if StrftimeItems::new(fmt).any(|item| matches!(item, Item::Error)) {
-        return Err(format!(
-            "\"{fmt}\" is not a strftime format chrono understands"
-        ));
-    }
-    Ok(dt.format_with_items(StrftimeItems::new(fmt)).to_string())
+    let pattern = DatePattern::parse(fmt.unwrap_or(BARE_PATTERN))?;
+    Ok(pattern.format(&dt))
 }
 
 /// One `{token}` or `{token:fmt}` resolved to text.
@@ -187,6 +175,7 @@ fn resolve_token(
                 now
             };
             format_datetime(dt, fmt)
+                .map_err(|e| format!("{{{token}:{}}}: {e}", fmt.unwrap_or_default()))
         }
         other => Err(format!(
             "\"{{{other}}}\" is not a token this template understands \
@@ -443,35 +432,49 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_format_passes_straight_through_to_chrono() {
+    fn an_explicit_date_pattern_renders_the_time() {
         let start = Local
             .with_ymd_and_hms(2026, 9, 5, 9, 15, 2)
             .single()
             .unwrap();
-        let r = resolve(
-            "{start:%Y%m%d-%H%M%S}",
-            &ctx("p", None, Some(epoch_seconds(start))),
+        let ctx = ctx("p", None, Some(epoch_seconds(start)));
+        let r = resolve("{start:yyyy-MM-dd}", &ctx, fixed_now()).unwrap();
+        assert_eq!(r.text, "2026-09-05");
+        let r = resolve("{start:yyyyMMdd-HHmmss}", &ctx, fixed_now()).unwrap();
+        assert_eq!(r.text, "20260905-091502");
+        let r = resolve("{now:EEEE 'at' h a}", &ctx, fixed_now()).unwrap();
+        assert_eq!(r.text, "Saturday at 9 AM");
+    }
+
+    #[test]
+    fn an_old_strftime_template_reports_the_pattern_error() {
+        // No legacy path (ADR 0062): a template saved in strftime fails
+        // to resolve, in the preview and when a logger opens its file,
+        // until it is retyped as a date pattern.
+        let err = resolve("{start:%Y-%m-%d}", &ctx("p", None, None), fixed_now()).unwrap_err();
+        assert!(err.starts_with("{start:%Y-%m-%d}: "), "{err}");
+        assert!(err.contains("\"Y\" is not a date pattern field"), "{err}");
+        let preview: TemplatePreview = resolve(
+            "{project}-{start:%Y%m%d}",
+            &ctx("p", None, None),
             fixed_now(),
         )
-        .unwrap();
-        assert_eq!(r.text, "20260905-091502");
+        .into();
+        assert!(preview.resolved.is_none());
+        assert!(preview.error.is_some_and(|e| e.contains("\"Y\"")));
     }
 
     #[test]
-    fn chronos_full_strftime_is_available_not_just_a_subset() {
-        // `%A` (full weekday name) is outside the old JS-prototype
-        // subset (%Y %y %m %d %H %M %S %z %Z %%) but is ordinary chrono
-        // strftime, and ruling 23 says the format passes straight
-        // through with no subset.
-        let now = fixed_now();
-        let r = resolve("{now:%A}", &ctx("p", None, None), now).unwrap();
-        assert_eq!(r.text, now.format("%A").to_string());
+    fn a_zone_name_is_refused_in_a_file_name_with_the_reason() {
+        let err = resolve("{now:HH-mm zzz}", &ctx("p", None, None), fixed_now()).unwrap_err();
+        assert!(err.contains("use xxx"), "{err}");
     }
 
     #[test]
-    fn an_unknown_strftime_specifier_is_a_polished_error() {
-        let err = resolve("{now:%Q}", &ctx("p", None, None), fixed_now()).unwrap_err();
-        assert!(err.contains("%Q"), "{err}");
+    fn an_invalid_pattern_names_the_token_and_the_problem() {
+        let err = resolve("{now:yyy}", &ctx("p", None, None), fixed_now()).unwrap_err();
+        assert!(err.starts_with("{now:yyy}: "), "{err}");
+        assert!(err.contains("use yy or yyyy"), "{err}");
     }
 
     #[test]
@@ -493,7 +496,7 @@ mod tests {
             .single()
             .unwrap();
         let r = resolve(
-            "{project}-{start:%Y%m%d}-run",
+            "{project}-{start:yyyyMMdd}-run",
             &ctx("Bench Rig", None, Some(epoch_seconds(start))),
             fixed_now(),
         )
@@ -560,6 +563,15 @@ mod tests {
             Path::new(&r.text),
             tmp.path().join("logs/bench-rig/front-ecu")
         );
+    }
+
+    #[test]
+    fn an_old_strftime_folder_template_reports_the_pattern_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = ctx("p", None, None);
+        ctx.project_dir = Some(tmp.path());
+        let err = resolve_folder("logs/{now:%Y}", &ctx, fixed_now()).unwrap_err();
+        assert!(err.contains("\"Y\" is not a date pattern field"), "{err}");
     }
 
     #[test]
