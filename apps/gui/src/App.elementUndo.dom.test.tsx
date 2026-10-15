@@ -486,6 +486,46 @@ describe("element undo", () => {
     expect(() => elementRow("Plot 1")).toThrow();
   }, 30_000);
 
+  it("duplicating an element lands the copy right after it, opens no panel, and is one step", async () => {
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(addPanelChip("Plot Panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
+    });
+    await act(async () => {
+      fireEvent.click(toolbarChip("Project"));
+    });
+    const names = () =>
+      Array.from(document.querySelectorAll<HTMLInputElement>(".project-element input")).map(
+        (i) => i.value,
+      );
+    const tabsBefore = tabTitles();
+
+    await act(async () => {
+      fireEvent.click(buttonIn(elementRow("Plot 1"), "Duplicate"));
+    });
+    const after = names();
+    expect(after.indexOf("Plot 1 (copy)")).toBe(after.indexOf("Plot 1") + 1);
+    expect(tabTitles()).toEqual(tabsBefore);
+
+    // One chord takes the copy away; redo brings it back.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (names().includes("Plot 1 (copy)")) throw new Error("undo left the copy");
+    });
+    expect(names()).toContain("Plot 1");
+    await act(async () => {
+      key({ key: "y", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (!names().includes("Plot 1 (copy)")) throw new Error("redo did not restore the copy");
+    });
+  }, 30_000);
+
   it("returns a plot area dragged between two panels in one chord", async () => {
     await mountApp();
     // Two plot panels in two different dockview groups, so both stay
