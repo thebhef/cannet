@@ -5,7 +5,9 @@ controller is brought back by a reset, not by its counters; amended
 (2026-10-03) — a `Tx` row is a frame the bus carried: an accepted send
 appends nothing, and only a refused enqueue writes a row of its own;
 amended (2026-10-04) — PEAK's driver-side auto-reset rejected, and a
-controller refusing sends in silence is reopened; partly superseded
+controller refusing sends in silence is reopened; amended (2026-10-06)
+— a reopen closes before it opens and a failed open is retried, and a
+send refused bus-off arms the reset; partly superseded
 (2026-10-04) by [ADR 0060](0060-a-bus-fault-is-an-episode-the-sidecar-reports.md)
 — a full transmit queue that accepts nothing is flushed whatever is
 received, missed periods are counted, and the state poll runs every
@@ -219,6 +221,34 @@ rule 5) reads the counters as 0, and echoes flow again. Vector
 carries the same gate as a precaution (its documentation does not say
 whether a transmit receipt waits for the acknowledge); Kvaser does not,
 because CANlib documents its echo as a successful transmission.
+
+## Amendment (2026-10-06) — close before open; a refusal re-arms the reset
+
+**A reopen closes the old channel before it opens the fresh one.** The
+reopen used to open first and close second, which no PEAK channel
+survives: PCAN-Basic answers `CAN_Initialize` on a handle the process
+still holds with `PCAN_ERROR_INITIALIZE`. On the owner's bench a
+bus-off PCAN-USB FD channel failed that way on every pass, with the
+cable long since back; closing first brought it back in about 1.5 s on
+each of three pulls. The order applies to every reopen — the bus-off
+reset, the silent-queue reopen, the stuck-queue flush's fallback, and a
+bus configuration change, which makes the same `CAN_Initialize` — and
+is vendor-neutral.
+
+**An open that fails after the close leaves the interface without a
+channel**, never with the closed one current: that one read active,
+disarmed the reset, and spun the receive loop on reads that return at
+once. Without a channel the interface publishes `unavailable`, refuses
+sends (`closed`, naming the open's error), and the state poll retries
+the open every pass until it succeeds.
+
+**A send the driver refuses as bus-off counts as a bus-off reading**,
+whatever the state read says, for as long as such refusals keep coming
+and nothing is accepted. A status word and a write can disagree — after
+a failed open PEAK's status word reads not-initialised while the writes
+still say bus-off — and the write is the one being refused. PEAK says so
+in `PCAN_ERROR_BUSOFF`'s text; no bus-off send code is known for Kvaser
+or Vector, whose reset stays armed by the state read alone.
 
 ## Amendment (2026-10-03) — only the wire writes the `Tx` row
 
