@@ -53,6 +53,14 @@ describe("hostSettings", () => {
     expect(hostSettings()).toEqual(defaultSettings());
   });
 
+  it("defaults the error-row cap to the sidecar's own default (ADR 0060)", () => {
+    // `16` is Vector's NACK-filter precedent — the same figure the
+    // sidecar's own `DEFAULT_ERROR_ROW_CAP` carries, so a settings panel
+    // that has never written this key still shows the cap that is
+    // actually in effect.
+    expect(defaultSettings().error_row_cap).toBe(16);
+  });
+
   // The whole point of routing writes through here: the cache is a *read*
   // convenience, never the base of a write. A hand-edit (or another panel's
   // write) since the last hydrate must survive the next patch.
