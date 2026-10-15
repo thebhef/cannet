@@ -443,7 +443,8 @@ and a bulk action acts on. Ephemeral — never persisted.
 **Date/time pattern**:
 The `date_time_pattern` setting (ADR 0062): one TR35 pattern every
 displayed calendar time renders through — a trace or By-ID row's
-time-cell hover, the plot's A/B chip and x-tick hovers, the export
+time-cell hover, the plot's A/B chip and x-tick hovers (each is the
+other reading while `time_display` is `calendar`), the export
 extent labels, the logger grid's start / end / modified columns, the
 System Messages column, and the BLF channel-map modal's capture
 start. Default `yyyy-MM-dd HH:mm:ss`, local time; the settings panel
