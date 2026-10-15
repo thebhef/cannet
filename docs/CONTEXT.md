@@ -168,6 +168,42 @@ doubled gap when more fall in its window than fit). Only the first
 error frames of an episode are trace rows — see **error-row cap**.
 _Avoid_: "run" — the removed coalescer's word, at a fixed 1 s gap.
 
+**Add to capture**:
+Importing a BLF *into* the open capture rather than in place of it —
+the second mode of the import chip beside **Import** (which replaces).
+The file joins the capture's calendar axis: the origin moves earlier
+if the file starts earlier, and each bus's frames are admitted only at
+or after that bus's **coverage**, the rest trimmed and reported by the
+**trace import census**. The capture's identity (and so its signal
+pyramids) survives. _Avoid_: "merge" — nothing is interleaved or
+deduplicated; the frames are appended like live traffic.
+
+**Append** (connect):
+Connecting without clearing the capture — Ctrl/Cmd+click on the
+connect chip, or the `connection.append` command. Live frames continue
+the capture after the gap, whether it was stopped by Disconnect,
+restored from the scratch after a relaunch or crash, or assembled by
+**Reload all**; a timeline event marks each continuation. Plain
+**Connect** still starts a fresh capture unless the *Connect appends by
+default* setting swaps the two. _Avoid_: "reconnect" (there is no
+such action), "resume" (the RBS **Run** flag's word).
+
+**Coverage** (of a bus):
+The `[earliest, latest]` timestamp span the capture holds for one bus,
+kept by the capture model as frames arrive and persisted with the
+scratch. It gates every **Add to capture** and **Append**: a bus's
+series must stay in time order for its signal pyramids to serve, so
+new frames for a bus are admitted only at or after its coverage's
+latest timestamp. Per bus, never per capture: files for different
+buses over the same period both fit.
+
+**Reload all** (logger):
+The logger grid's context-menu action that clears the capture and then
+adds every file in that logger's folder, oldest first, skipping files
+still being written. Its sibling **Import selected** adds the
+selected files to the capture without clearing. _Avoid_: "reload"
+alone — that is what a webview or a DBC does.
+
 **Capture**:
 The recorded stream of CAN frames from one session, of indefinite
 length. The live capture and a saved `.blf` are the same logical thing

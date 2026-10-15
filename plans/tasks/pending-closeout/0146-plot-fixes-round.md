@@ -1103,3 +1103,17 @@ Harness note: the first attempt on this build timed out at
 (`ui_last_ms` 336, one health tick in 17 s) and the second connected
 but captured 0 frames because `--rbs-run-on-start` was omitted; the
 third, with the flag, is the reading above.
+
+- 2026-10-07 — **Owner rulings (queue § 1).** Enum tiles under the line
+  and its markers: accepted ("this seems like it's working fine"). A lane
+  under `Points: auto` losing its marker exemption: accepted, on the
+  confirmation asked for — yes, an enum lane is now governed by the same
+  merged-density rule and minimum-sample-count floor as any numeric
+  series on a shared axis (phase 2 status log). A wide `ΔH` chip clipped
+  at the gutter: accepted. The ~1.5-column held-code loss: **not
+  accepted — fix before shipping.** "It's ok to lose codes that are
+  extremely narrow, but if there was a transition there we should make
+  sure it shows up when zoomed way out; wouldn't want the enum to show
+  that it stayed the same value the whole time, but I don't expect 1 px
+  wide transient values to be legible either." → queue § 2. Three items
+  deleted, one moved.
