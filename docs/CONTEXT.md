@@ -354,8 +354,16 @@ _Avoid_: "checksum signal" — the mechanism covers counters too.
 A trace row in the `Tx` direction is a frame the bus carried for us —
 the driver's echo of our own transmit, arriving on the receive path —
 and a send the bus never carries leaves none.
-_Avoid_: "tx-confirm" — nothing is confirmed at send time; the one
-exception, a send refused at enqueue, reads `Tx ✗`.
+_Avoid_: "tx-confirm" — nothing is confirmed at send time, and a send
+refused at enqueue leaves no row either (ADR 0061).
+
+**Only the wire writes data**:
+The rule that a row, count, sample, rate, logger or export record comes
+only from what the wire reported — a received frame or the driver's
+echo — never from a transmit **intent** (an enqueue answer, a `send()`
+return, a route being up). See ADR 0061.
+_Avoid_: "delivered" / "undelivered" for a transmit — delivery is the
+wire's to report; "sent" for an accepted enqueue — say "accepted".
 
 **Rest-of-bus simulation (RBS)**:
 Transmitting a configured set of DBC messages on a cadence with live,

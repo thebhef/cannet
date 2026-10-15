@@ -285,7 +285,6 @@ fn snap(id: u32, channel: u8, rate: f64, bus: &str) -> ByIdSnapshot {
             decoded: None,
             bus_id: bus.into(),
             violation: None,
-            tx_delivery: None,
             matching_signals: Vec::new(),
         },
         rate,
@@ -760,7 +759,6 @@ pub(crate) fn test_state() -> AppState {
         math_model: Mutex::new(None),
         project_bus_names: Mutex::new(Vec::new()),
         databases: Mutex::new(Vec::new()),
-        undelivered_tx: transmit_commands::UndeliveredTx::default(),
         descriptor_snapshot: Mutex::new(None),
         split_messages: Mutex::new(None),
         remote_sessions: Mutex::new(HashMap::new()),
@@ -2400,10 +2398,33 @@ fn encode_frame_inner_errors_when_no_dbc_matches() {
     assert!(err.contains("no DBC matches"));
 }
 
+/// Every place a stored row reaches a reader: the store itself, the
+/// per-id view's counts, and the tx rate behind `fps.tx`. The logger and
+/// Save Capture write from the store's rows, so an empty store is an
+/// empty file for both.
+fn assert_no_bus_fact(state: &AppState) {
+    assert_eq!(state.trace_store.len(), 0, "no row");
+    let by_id = crate::trace_query::fetch_by_id_page_inner(
+        state,
+        None,
+        0,
+        u64::MAX,
+        None,
+        None,
+        &std::collections::HashMap::new(),
+        0,
+        0,
+    );
+    assert_eq!(by_id.count, 0, "no per-message count");
+    let (_, tx_fps) = state.trace_store.frames_per_second_by_direction();
+    assert!(tx_fps.abs() < f64::EPSILON, "no tx rate: {tx_fps}");
+}
+
 #[test]
-fn a_send_no_session_carries_is_refused_and_leaves_its_tx_x_row() {
-    // The enqueue said no, so the row stays: the one transmit the trace
-    // records without the wire, and it is marked as such.
+fn a_send_no_session_carries_is_refused_and_leaves_no_row() {
+    // Only the wire writes data (ADR 0061): the enqueue said no, and an
+    // enqueue answer is an intent. The refusal is the wire status the
+    // caller gets back; the store, the counts and the rate are untouched.
     let state = test_state();
     let req = ipc::TransmitRequest {
         bus_id: "p".into(),
@@ -2421,14 +2442,7 @@ fn a_send_no_session_carries_is_refused_and_leaves_its_tx_x_row() {
         "expected NotConnected, got {:?}",
         result.wire_status,
     );
-    // The trace store now has exactly one frame, with Direction::Tx
-    // and the payload we asked for, marked undelivered.
-    assert_eq!(state.trace_store.len(), 1);
-    let only = state.trace_store.slice(0, 1).pop().unwrap();
-    assert_eq!(only.direction, Direction::Tx);
-    assert_eq!(only.id, 0x123);
-    assert!(matches!(&only.payload, CanFramePayload::Classic(d) if d == &[1, 2, 3, 4]));
-    assert!(state.undelivered_tx.contains(0));
+    assert_no_bus_fact(&state);
 }
 
 #[test]
@@ -2480,32 +2494,6 @@ fn the_capture_keeps_every_error_frame_the_view_collapses() {
 }
 
 #[test]
-fn a_refused_send_leaves_a_row_that_says_so() {
-    // A send no session would take is the one transmit the host writes
-    // into the trace itself, and the row is marked so it cannot read as
-    // a frame the bus carried.
-    let state = test_state();
-    let req = ipc::TransmitRequest {
-        bus_id: "p".into(),
-        id: 0x123,
-        extended: false,
-        kind: ipc::TransmitKind::Classic,
-        data: vec![1, 2, 3, 4],
-        brs: false,
-        esi: false,
-        dlc: 0,
-    };
-    transmit_frame_inner(&state, &req).unwrap();
-    assert_eq!(state.trace_store.len(), 1, "the refused row lands");
-    assert!(
-        state.undelivered_tx.contains(0),
-        "no session carried bus p, so nothing reached a wire",
-    );
-    let rows = crate::trace_query::collect_trace_records(&state, 0, 1);
-    assert_eq!(rows[0].tx_delivery, Some("undelivered"));
-}
-
-#[test]
 fn an_accepted_send_appends_no_row() {
     // Only the wire writes data. A session accepting the frame says
     // nothing about the bus carrying it — the row, its count and its
@@ -2551,18 +2539,15 @@ fn an_accepted_send_appends_no_row() {
         "expected Accepted, got {:?}",
         result.wire_status,
     );
-    assert_eq!(state.trace_store.len(), 0, "an accepted send is not a row");
-    assert!(!state.undelivered_tx.contains(0));
-    let (_, tx_fps) = state.trace_store.frames_per_second_by_direction();
-    assert!(tx_fps.abs() < f64::EPSILON, "no echo, no tx rate: {tx_fps}");
+    assert_no_bus_fact(&state);
 }
 
 #[test]
-fn a_transmit_onto_a_gone_adapter_marks_its_row() {
+fn a_transmit_onto_a_gone_adapter_leaves_no_row() {
     // The owner's hardware reading: the binding survives the adapter
-    // being unplugged, so the route keeps resolving and the tx count
-    // keeps rising. The count is honest only if the rows say the wire
-    // never took them.
+    // being unplugged, and the tx count kept rising. The count is
+    // honest only if a send the wire never took writes nothing (ADR
+    // 0061).
     let state = test_state();
     state.remote_sessions.lock().unwrap().insert(
         "tcp://host:1".into(),
@@ -2578,41 +2563,34 @@ fn a_transmit_onto_a_gone_adapter_marks_its_row() {
         esi: false,
         dlc: 0,
     };
-    transmit_frame_inner(&state, &req).unwrap();
-    assert_eq!(state.trace_store.len(), 1);
-    assert!(state.undelivered_tx.contains(0));
-}
-
-#[test]
-fn undelivered_marks_do_not_grow_without_bound() {
-    // The marks are held per row index, and a bus that is down stays
-    // down at the scheduler's tick rate — so the set is run-length
-    // encoded and its runs are capped. A dead bus is one run however
-    // long it lasts.
-    let marks = crate::transmit_commands::UndeliveredTx::default();
-    for i in 0..100_000u64 {
-        marks.mark(i);
-    }
-    assert_eq!(marks.runs(), 1, "one uninterrupted outage is one run");
-    assert!(marks.contains(0) && marks.contains(99_999));
-    for i in 0..crate::transmit_commands::MAX_UNDELIVERED_RUNS * 4 {
-        marks.mark(200_000 + (i as u64) * 2);
-    }
+    let result = transmit_frame_inner(&state, &req).unwrap();
     assert!(
-        marks.runs() <= crate::transmit_commands::MAX_UNDELIVERED_RUNS,
-        "a flapping bus is capped, as the store's own ring is",
+        matches!(result.wire_status, ipc::TransmitWireStatus::Failed { .. }),
+        "{:?}",
+        result.wire_status,
     );
+    assert_no_bus_fact(&state);
 }
 
 #[test]
-fn clearing_the_capture_clears_the_undelivered_marks() {
-    // The marks address rows by index, so a new capture's row 0 would
-    // otherwise inherit the last one's verdict.
+fn a_periodic_batch_the_session_refuses_leaves_no_row() {
+    // The scheduler's path to the same rule: the route resolves (the
+    // controller is reachable) but the session takes none of the batch —
+    // here an in-process session with no participant on the channel.
+    // The prepared frames are dropped; no row, count or rate (ADR 0061).
     let state = test_state();
-    state.undelivered_tx.mark(0);
-    assert!(state.undelivered_tx.contains(0));
-    state.undelivered_tx.clear();
-    assert!(!state.undelivered_tx.contains(0));
+    state.remote_sessions().insert(
+        "tcp://host:1".into(),
+        session_with_controller("p", "PCAN_USBBUS1", Some(1)),
+    );
+    running_row(&state, "on-p", "p", 0x100);
+    let mut schedule = transmit_scheduler::PeriodicSchedule::new();
+    let start = std::time::Instant::now();
+    schedule.schedule("on-p".into(), start);
+    let due = schedule.take_due(start);
+    let fired = transmit_commands::fire_due(&state, &mut schedule, due, start, &|_, _, _| {});
+    assert_eq!(fired, 1, "the period was prepared and offered");
+    assert_no_bus_fact(&state);
 }
 
 #[test]
@@ -8766,12 +8744,12 @@ fn a_bus_off_controller_still_has_a_route() {
 
 #[test]
 fn transmitting_onto_an_unavailable_interface_says_why() {
-    // The manual single-shot onto a gone adapter is refused, so it
-    // still leaves its marked `Tx ✗` row (ADR 0039) — and the wire
-    // status has to name the reason. Before, the bus fell through
-    // to the generic "not bound on any active server", which is false:
-    // it is bound, and the binding is the problem's context, not its
-    // cause.
+    // The manual single-shot onto a gone adapter is refused, and the
+    // wire status — the refusal's only answer to the caller, since a
+    // refused send leaves no row (ADR 0061) — has to name the reason.
+    // Before, the bus fell through to the generic "not bound on any
+    // active server", which is false: it is bound, and the binding is
+    // the problem's context, not its cause.
     let state = test_state();
     state.remote_sessions.lock().unwrap().insert(
         "tcp://host:1".into(),
@@ -8799,8 +8777,7 @@ fn transmitting_onto_an_unavailable_interface_says_why() {
         !message.contains("not bound"),
         "the bus is bound; the adapter is gone: {message}",
     );
-    assert_eq!(state.trace_store.len(), 1, "the refused row lands");
-    assert!(state.undelivered_tx.contains(0));
+    assert_eq!(state.trace_store.len(), 0, "a refused send is not a row");
 }
 
 #[test]
@@ -9934,7 +9911,7 @@ fn a_full_request_channel_misses_its_buses_periods_and_stalls_no_other_bus() {
         matches!(got, Some(cannet_core::ParticipantEvent::Frame { ref frame, .. }) if frame.id.raw() == 0x200),
         "{got:?}",
     );
-    // The missed period wrote nothing: no row, no refusal mark.
+    // The missed period wrote nothing: no row.
     assert_eq!(state.trace_store.len(), 0);
     // Both stay on the schedule, one period on.
     let next = schedule.next_deadline().unwrap();
