@@ -86,6 +86,7 @@ const SYNCHRONOUS_COMMANDS: &[&str] = &[
     "clear_system_log",
     "clear_transmit_frames",
     "clear_view_signals",
+    "clone_transmit_frames",
     "create_local_virtual_bus",
     "describe_note",
     "detach_local_bus_bridge",

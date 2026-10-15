@@ -56,7 +56,7 @@ export function makeLiveRegistry(elements: ProjectElement[]) {
           ),
         update,
         remove: () => {},
-        duplicate: () => "",
+        duplicate: async () => "",
       }),
       [entries, update],
     );
