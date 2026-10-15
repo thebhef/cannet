@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import {
+  calendarWindow,
   formatBytes,
+  formatCalendarCell,
   formatCalendarTime,
   formatCanIdHex,
   formatData,
@@ -254,6 +256,131 @@ describe("formatCalendarTime", () => {
     // handful of seconds, never a wall clock.
     expect(formatCalendarTime(0.05, 0.05, DEFAULT_PATTERN)).toBeNull();
     expect(formatCalendarTime(3600, 0, DEFAULT_PATTERN)).toBeNull();
+  });
+});
+
+describe("formatCalendarCell", () => {
+  // Pinned to UTC: the cell renders the machine's own zone, and these
+  // vectors are exact strings.
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+  // 2023-11-14T22:13:20Z.
+  const base = 1_700_000_000;
+  const PATTERN = "yyyy-MM-dd HH:mm:ss";
+
+  it("renders the whole pattern, then the elapsed column's fraction", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(formatCalendarCell(base + 0.12345, base, PATTERN, 4)).toBe("2023-11-14 22:13:20.1234");
+    expect(formatCalendarCell(base + 0.5, base, "dd/MM/yyyy HH:mm:ss", 4)).toBe(
+      "14/11/2023 22:13:20.5000",
+    );
+  });
+
+  it("truncates the fraction, so a time never reads as the next second", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(formatCalendarCell(base + 0.99999, base, PATTERN, 4)).toBe("2023-11-14 22:13:20.9999");
+  });
+
+  it("appends nothing at zero fraction digits", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(formatCalendarCell(base + 0.5, base, PATTERN, 0)).toBe("2023-11-14 22:13:20");
+  });
+
+  it("gives a pattern that has its own S field no second fraction", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(formatCalendarCell(base + 0.12345, base, "HH:mm:ss.SSS", 4)).toBe("22:13:20.123");
+    // How a plot tick renders: `calendarWindow`'s pattern, no extra digits.
+    expect(formatCalendarCell(base + 0.12345, base, "mm:ss.SSSS", 0)).toBe("13:20.1234");
+  });
+
+  it("renders the machine's own zone", () => {
+    vi.stubEnv("TZ", "Asia/Tokyo");
+    expect(formatCalendarCell(base + 0.25, base, PATTERN, 4)).toBe("2023-11-15 07:13:20.2500");
+  });
+
+  it("has nothing to show without a wall-clock anchor", () => {
+    expect(formatCalendarCell(base, null, PATTERN, 4)).toBeNull();
+    expect(formatCalendarCell(3.5, 0, PATTERN, 4)).toBeNull();
+  });
+});
+
+describe("calendarWindow", () => {
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+  // 2023-11-14T22:13:20Z.
+  const base = 1_700_000_000;
+  const PATTERN = "yyyy-MM-dd HH:mm:ss";
+  const DAY = 86_400;
+
+  it("drops the hour when the whole window sits in one hour", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(calendarWindow(base, base + 1, base, PATTERN)).toEqual({
+      tickPattern: "mm:ss.SSSS",
+      title: "Time on 2023-11-14",
+    });
+    // Zoomed in: more fraction digits, never fewer than minutes.
+    expect(calendarWindow(base, base + 0.0625, base, PATTERN)).toEqual({
+      tickPattern: "mm:ss.SSSSSS",
+      title: "Time on 2023-11-14",
+    });
+  });
+
+  it("keeps the hour once the window crosses one", () => {
+    vi.stubEnv("TZ", "UTC");
+    // 22:59:59 to 23:00:01.
+    expect(calendarWindow(base + 2_799, base + 2_801, base, PATTERN)).toEqual({
+      tickPattern: "HH:mm:ss.SSSS",
+      title: "Time on 2023-11-14",
+    });
+  });
+
+  it("names both dates of a window across midnight", () => {
+    vi.stubEnv("TZ", "UTC");
+    // 22:13:20 to 00:13:20 the next day.
+    expect(calendarWindow(base, base + 7_200, base, PATTERN)).toEqual({
+      tickPattern: "HH:mm:ss.S",
+      title: "Time on 2023-11-14 and 2023-11-15",
+    });
+  });
+
+  it("names the end dates of a window over three or more", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(calendarWindow(base, base + 3 * DAY, base, PATTERN)).toEqual({
+      tickPattern: "HH:mm:ss",
+      title: "Time between 2023-11-14, 2023-11-17",
+    });
+  });
+
+  it("renders dates through the date part of the user's pattern", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(calendarWindow(base, base + 1, base, "EEE dd MMM yyyy, HH:mm:ss")?.title).toBe(
+      "Time on Tue 14 Nov 2023",
+    );
+    // A time field inside the date run reads as a plain space.
+    expect(calendarWindow(base, base + 1, base, "dd HH:mm MMM")?.title).toBe("Time on 14 Nov");
+  });
+
+  it("falls back to yyyy-MM-dd when the pattern has no date field", () => {
+    vi.stubEnv("TZ", "UTC");
+    expect(calendarWindow(base, base + 1, base, "HH:mm:ss.SSS")?.title).toBe(
+      "Time on 2023-11-14",
+    );
+  });
+
+  it("reads dates in the machine's own zone", () => {
+    vi.stubEnv("TZ", "Asia/Tokyo");
+    // 07:13:20 to 08:13:20 on the 15th, local.
+    expect(calendarWindow(base, base + 3_600, base, PATTERN)).toEqual({
+      tickPattern: "HH:mm:ss.S",
+      title: "Time on 2023-11-15",
+    });
+  });
+
+  it("has nothing to show without a wall-clock anchor", () => {
+    expect(calendarWindow(base, base + 1, null, PATTERN)).toBeNull();
+    expect(calendarWindow(0, 10, 0, PATTERN)).toBeNull();
   });
 });
 
