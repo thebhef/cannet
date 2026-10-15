@@ -60,6 +60,27 @@
 //! measurement — silence is a lost round, not a retraction — and is
 //! re-probed on the next tick. [`ClockRecord::silent_rounds`] is how a
 //! consumer tells a fresh number from an old one.
+//!
+//! ## A round that cannot be trusted is silent too (ADR 0060 rule 8)
+//!
+//! A round whose best δ still exceeds the step threshold (see
+//! `STEP_THRESHOLD_NS` below) is discarded exactly like one with no
+//! replies at all: the last measurement stands, and `silent_rounds`
+//! counts it. This is the backstop for when the control lane that
+//! normally keeps replies prompt (ADR 0060 rule 3) is itself backed up
+//! — a round delayed that far is not a small path asymmetry to average
+//! away, it is a measurement that cannot be trusted, and applying it
+//! would step the timeline onto a number that is itself stale. A
+//! session tells this case apart from a true silence (its own private
+//! `RoundOutcome`) so it can log it once per run of discarded rounds
+//! rather than once per round.
+//!
+//! The session also guards against a reply arriving for the *wrong*
+//! round: a `ClockReply` whose `t1` precedes the current round's first
+//! probe belongs to an earlier round — one whose own deadline already
+//! closed it — and is correlated out rather than folded into a
+//! measurement it has nothing to do with. With replies on the control
+//! lane this almost never fires; it exists for when it does.
 //! ## Applying it: slewed, not stepped
 //!
 //! `OffsetSlew` is what actually corrects frames, and it deliberately
@@ -93,6 +114,23 @@ pub struct ClockOffset {
     /// How many exchanges completed. The measurement is the best of
     /// these, not their average.
     pub samples: u32,
+}
+
+/// What closing a probe round concluded (ADR 0060 rule 8).
+///
+/// [`Self::Measured`] is the only outcome that should retarget the
+/// slew. The other two both leave the last measurement standing, for
+/// different reasons a caller may want to tell apart: no reply arrived
+/// at all, versus one arrived but was too delayed to trust.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoundOutcome {
+    /// A fresh, trustworthy measurement was recorded.
+    Measured(ClockOffset),
+    /// No reply arrived this round.
+    NoReplies,
+    /// A reply arrived, but its round-trip delay exceeded
+    /// [`STEP_THRESHOLD_NS`] — discarded as silent rather than applied.
+    DelayExceeded { delay_ns: i64 },
 }
 
 /// The state of a session's clock measurement.
@@ -262,40 +300,63 @@ impl SessionClock {
     }
 
     /// Close a probe round: fold `samples` down to one measurement and
-    /// record it, or account for a round nobody answered.
+    /// record it, or account for a round that settled nothing.
     ///
-    /// Returns the new measurement when there is one, so the caller can
-    /// retarget the slew — the two are one decision and should not be
-    /// able to drift apart.
+    /// Returns what the round concluded, so the caller can retarget the
+    /// slew only on [`RoundOutcome::Measured`] — the two are one
+    /// decision and should not be able to drift apart.
     ///
-    /// A silent round is only [`ClockProbeStatus::Unsupported`] when it
-    /// is also the *first* success-less state: a peer that has answered
-    /// before demonstrably speaks the protocol, so its silence keeps the
-    /// last measurement rather than discarding it.
-    pub(crate) fn settle_round(&self, samples: &[ClockSample], now_ns: u64) -> Option<ClockOffset> {
-        let best = best_sample(samples).map(|best| ClockOffset {
-            offset_ns: best.offset_ns,
-            delay_ns: best.delay_ns,
-            samples: u32::try_from(samples.len()).unwrap_or(u32::MAX),
-        });
-        let Ok(mut state) = self.0.state.lock() else {
-            return best;
+    /// A round is settled only on [`RoundOutcome::Measured`]; both
+    /// [`RoundOutcome::NoReplies`] and [`RoundOutcome::DelayExceeded`]
+    /// are a *silent* round for the stored state (ADR 0060 rule 8): the
+    /// last measurement stands, `silent_rounds` advances, and the round
+    /// is [`ClockProbeStatus::Unsupported`] only when it is also the
+    /// *first* success-less round — a peer that has answered before
+    /// demonstrably speaks the protocol, so its silence keeps the last
+    /// measurement rather than discarding it.
+    pub(crate) fn settle_round(&self, samples: &[ClockSample], now_ns: u64) -> RoundOutcome {
+        let raw_best = best_sample(samples);
+        let trustworthy = raw_best.filter(|b| i128::from(b.delay_ns) <= STEP_THRESHOLD_NS);
+        let samples_len = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+
+        let silent_outcome = |best: Option<ClockSample>| {
+            best.map_or(RoundOutcome::NoReplies, |b| RoundOutcome::DelayExceeded {
+                delay_ns: b.delay_ns,
+            })
         };
+
+        let Ok(mut state) = self.0.state.lock() else {
+            return match trustworthy {
+                Some(best) => RoundOutcome::Measured(ClockOffset {
+                    offset_ns: best.offset_ns,
+                    delay_ns: best.delay_ns,
+                    samples: samples_len,
+                }),
+                None => silent_outcome(raw_best),
+            };
+        };
+
         state.rounds = state.rounds.saturating_add(1);
-        if let Some(offset) = best {
+        if let Some(best) = trustworthy {
+            let offset = ClockOffset {
+                offset_ns: best.offset_ns,
+                delay_ns: best.delay_ns,
+                samples: samples_len,
+            };
             state.status = ClockProbeStatus::Measured(offset);
             state.measured_at_ns = Some(now_ns);
             state.silent_rounds = 0;
             if state.start.is_none() {
                 state.start = Some(offset);
             }
+            RoundOutcome::Measured(offset)
         } else {
             state.silent_rounds = state.silent_rounds.saturating_add(1);
             if state.start.is_none() {
                 state.status = ClockProbeStatus::Unsupported;
             }
+            silent_outcome(raw_best)
         }
-        best
     }
 
     /// Whether any round has ever produced a measurement — the test for
@@ -327,6 +388,10 @@ pub(crate) enum ProbeStep {
 pub(crate) struct ProbeRounds {
     in_round: bool,
     armed: bool,
+    /// `t1` of the first probe sent in the currently open round, for
+    /// correlating replies (ADR 0060 rule 8). `None` before the first
+    /// probe of a round has gone out.
+    first_probe_t1: Option<u64>,
 }
 
 impl ProbeRounds {
@@ -335,6 +400,7 @@ impl ProbeRounds {
         Self {
             in_round: true,
             armed: true,
+            first_probe_t1: None,
         }
     }
 
@@ -348,6 +414,25 @@ impl ProbeRounds {
     /// Whether the timer is still worth polling at all.
     pub(crate) fn armed(&self) -> bool {
         self.armed
+    }
+
+    /// Record that a probe stamped `t1` went out in the currently open
+    /// round. Only the first call per round has any effect — later
+    /// probes in the same burst do not move the correlation point.
+    pub(crate) fn record_probe_sent(&mut self, t1: u64) {
+        if self.first_probe_t1.is_none() {
+            self.first_probe_t1 = Some(t1);
+        }
+    }
+
+    /// Whether a `ClockReply` echoing `reply_t1` belongs to the
+    /// currently open round (ADR 0060 rule 8): a round must be open,
+    /// and a probe must already have gone out that this reply's `t1`
+    /// is no earlier than. A reply arriving before this round sent any
+    /// probe at all cannot be answering one of them, so it reads as
+    /// out of round rather than as a reply nothing has correlated yet.
+    pub(crate) fn reply_in_round(&self, reply_t1: u64) -> bool {
+        self.in_round() && self.first_probe_t1.is_some_and(|first| reply_t1 >= first)
     }
 
     /// The timer fired: close the open round or open the next one, and
@@ -371,6 +456,9 @@ impl ProbeRounds {
             }
         } else {
             self.in_round = true;
+            // A fresh round has sent no probes yet, so nothing from a
+            // previous round's correlation point may carry over.
+            self.first_probe_t1 = None;
             ProbeStep::AwaitReplies
         }
     }
@@ -666,7 +754,7 @@ mod tests {
     fn settling_with_no_samples_reports_the_peer_as_unsupported() {
         let clock = SessionClock::pending();
         assert_eq!(clock.status(), ClockProbeStatus::Pending);
-        assert_eq!(clock.settle_round(&[], T1), None);
+        assert_eq!(clock.settle_round(&[], T1), RoundOutcome::NoReplies);
         assert_eq!(clock.status(), ClockProbeStatus::Unsupported);
         assert!(clock.offset().is_none());
     }
@@ -775,6 +863,93 @@ mod tests {
         assert_eq!(clock.record().status, ClockProbeStatus::Unsupported);
     }
 
+    // ---------- the δ guard (ADR 0060 rule 8) ----------
+
+    #[test]
+    fn a_round_whose_best_delay_exceeds_the_step_threshold_produces_no_offset_change_and_no_step() {
+        let clock = SessionClock::pending();
+        clock.settle_round(&round(4_000_000_000), T1);
+        let outcome = clock.settle_round(
+            &[ClockSample {
+                offset_ns: 1,
+                delay_ns: i64::try_from(STEP_THRESHOLD_NS).unwrap() + 1,
+            }],
+            T1 + 1,
+        );
+        assert_eq!(
+            outcome,
+            RoundOutcome::DelayExceeded {
+                delay_ns: i64::try_from(STEP_THRESHOLD_NS).unwrap() + 1,
+            },
+        );
+        // The stale measurement stands: a caller that only retargets on
+        // `Measured` never sees the untrustworthy offset, so the slew
+        // never steps onto it.
+        assert_eq!(clock.offset().unwrap().offset_ns, 4_000_000_000);
+        let record = clock.record();
+        assert_eq!(record.silent_rounds, 1);
+        assert_eq!(record.rounds, 2);
+    }
+
+    #[test]
+    fn a_delayed_round_with_no_prior_measurement_is_unsupported_not_measured() {
+        // The first round a peer ever answers is also subject to the
+        // guard: an untrustworthy first reply must not be promoted to
+        // `start`, or a session would report a clock offset it never
+        // actually measured.
+        let clock = SessionClock::pending();
+        let outcome = clock.settle_round(
+            &[ClockSample {
+                offset_ns: 1,
+                delay_ns: i64::try_from(STEP_THRESHOLD_NS).unwrap() + 1,
+            }],
+            T1,
+        );
+        assert!(matches!(outcome, RoundOutcome::DelayExceeded { .. }));
+        assert!(!clock.ever_measured());
+        assert_eq!(clock.record().status, ClockProbeStatus::Unsupported);
+    }
+
+    #[test]
+    fn a_normal_round_still_settles_after_a_discarded_one() {
+        // The control: the guard discards only the round it applies to
+        // -- a good round right after a bad one must measure normally.
+        let clock = SessionClock::pending();
+        clock.settle_round(
+            &[ClockSample {
+                offset_ns: 1,
+                delay_ns: i64::try_from(STEP_THRESHOLD_NS).unwrap() + 1,
+            }],
+            T1,
+        );
+        let outcome = clock.settle_round(&round(123), T1 + 1);
+        assert_eq!(
+            outcome,
+            RoundOutcome::Measured(ClockOffset {
+                offset_ns: 123,
+                delay_ns: 10,
+                samples: 1,
+            }),
+        );
+        assert_eq!(clock.offset().unwrap().offset_ns, 123);
+        assert_eq!(clock.record().silent_rounds, 0);
+    }
+
+    #[test]
+    fn an_exact_threshold_delay_still_settles() {
+        // The boundary is inclusive for trust, matching the slew's own
+        // "an error at the threshold still slews" boundary.
+        let clock = SessionClock::pending();
+        let outcome = clock.settle_round(
+            &[ClockSample {
+                offset_ns: 7,
+                delay_ns: i64::try_from(STEP_THRESHOLD_NS).unwrap(),
+            }],
+            T1,
+        );
+        assert!(matches!(outcome, RoundOutcome::Measured(_)));
+    }
+
     // ---------- the round cadence ----------
 
     #[test]
@@ -828,6 +1003,58 @@ mod tests {
             assert_eq!(rounds.advance(true), ProbeStep::WaitForNextRound);
         }
         assert!(rounds.armed());
+    }
+
+    // ---------- round correlation (ADR 0060 rule 8) ----------
+
+    #[test]
+    fn a_reply_from_before_the_rounds_first_probe_is_not_in_round() {
+        let mut rounds = ProbeRounds::new();
+        rounds.record_probe_sent(100);
+        assert!(
+            !rounds.reply_in_round(50),
+            "predates the round's first probe"
+        );
+        assert!(rounds.reply_in_round(100), "echoes the first probe itself");
+        assert!(
+            rounds.reply_in_round(150),
+            "a later probe in the same round"
+        );
+    }
+
+    #[test]
+    fn a_reply_arriving_before_any_probe_went_out_this_round_is_not_in_round() {
+        // Nothing has been sent yet this round, so any reply received
+        // must be answering a probe from an earlier, already-closed
+        // round -- a late straggler, the case rule 8 exists for.
+        let rounds = ProbeRounds::new();
+        assert!(!rounds.reply_in_round(1));
+    }
+
+    #[test]
+    fn a_late_reply_from_a_previous_round_is_ignored_once_a_new_round_opens() {
+        let mut rounds = ProbeRounds::new();
+        rounds.record_probe_sent(100);
+        // Close this round and open the next.
+        rounds.advance(true); // round -> gap
+        rounds.advance(true); // gap -> new round
+        rounds.record_probe_sent(500);
+        assert!(
+            !rounds.reply_in_round(100),
+            "a reply stamped for the previous round's probe must not join this one",
+        );
+        assert!(rounds.reply_in_round(500));
+    }
+
+    #[test]
+    fn a_reply_is_not_in_round_between_rounds() {
+        let mut rounds = ProbeRounds::new();
+        rounds.record_probe_sent(100);
+        rounds.advance(true); // closes the round; now in the gap
+        assert!(
+            !rounds.reply_in_round(100),
+            "no round is open, so nothing can be in it",
+        );
     }
 
     #[test]
