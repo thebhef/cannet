@@ -55,22 +55,25 @@
 //! on any relaunch over the same capture whatever the DBC set has become
 //! ([`SignalCacheStore::restore`]).
 //!
-//! **A bus's error series** is a third frame-derived provenance, and the
-//! one detector output this store serves (ADR 0035). It holds one sample
-//! per error frame on the bus — the frame's time and the running count of
-//! error frames on that bus so far — so it is non-decreasing, and the
-//! min/max fold keeps every bucket's first and last sample: every point a
-//! serve returns, at whatever level, is a real sample carrying the exact
-//! total at its time. Two consecutive served points are therefore an
-//! exact episode — the count between them is the value difference, the
-//! span the time difference — and a busy window is thinned by pyramid
-//! level rather than merged by a rule
-//! ([`SignalCacheStore::bus_error_windows`]). Error frames carry no
-//! message worth indexing, so the catch-up finds them by their error flag
-//! and bus rather than off the by-id index; everything past that is the
-//! same pyramid, the same bounded serve, the same persistence, restore,
-//! front-trim and sweep. No DBC bears on it, so a DBC-set change leaves
-//! it alone, and no signal listing offers it.
+//! **A bus's error series** is a third provenance, and the one detector
+//! output this store serves (ADR 0035). It is **filled by the sidecar's
+//! bus-error episode reports** (ADR 0060), not by the frames: only the
+//! first few error frames of each episode are trace rows, so the rows
+//! cannot say how many there were. Each report contributes the bus's
+//! running error total at its first and latest error
+//! ([`SignalCacheStore::record_bus_errors`], fed by
+//! `crate::bus_error_episodes::BusErrorReports`), so the series is
+//! non-decreasing, and the min/max fold keeps every bucket's first and
+//! last sample: every point a serve returns, at whatever level, is a real
+//! sample carrying the exact total at its time. Two consecutive served
+//! points are therefore an exact count and span, and a busy window is
+//! thinned by pyramid level rather than merged by a rule
+//! ([`SignalCacheStore::bus_error_windows`]). No frame fills it, so like
+//! a file-backed series it is never caught up and is complete as it
+//! stands, and it comes back from disk on any relaunch over the same
+//! capture; past that it is the same pyramid, the same paged serve, the
+//! same persistence, front-trim and sweep. No DBC bears on it, so a
+//! DBC-set change leaves it alone, and no signal listing offers it.
 //!
 //! A batch of queries ([`SignalCacheStore::slice_many`],
 //! [`SignalCacheStore::min_max_many`] — what a plot fetch sends) is
@@ -451,7 +454,8 @@ impl SignalCache {
     /// total. Read off the widen-only extent rather than the newest
     /// level-0 sample because the extent survives a front-trim that
     /// empties level 0 ([`Self::evict_below`]) and rides the manifest
-    /// ([`Self::row`]), so the count never restarts.
+    /// ([`Self::row`]), so the count never restarts
+    /// ([`SignalCacheStore::bus_error_total`]).
     fn error_count(&self) -> f64 {
         self.extent().map_or(0.0, |(_, hi)| hi)
     }
@@ -942,22 +946,13 @@ impl SignalCache {
 pub const BUS_ERROR_SIGNAL: &str = "bus errors";
 
 /// What one catch-up group scans — the unit a single pass over the trace
-/// store serves, shared by every series it fills.
-///
-/// A decoded series reads the frames of its message, which the store's
-/// by-id index finds without touching anything else. A bus's error
-/// series cannot ride that index: an error frame's arbitration id is
-/// whatever the controller reported, so the error frames of a bus are
-/// not the frames of any one id. They are found by **the error flag and
-/// the bus** instead — every error series in a batch shares one scan of
-/// the chunk for error frames, and each takes the ones on its own bus
-/// ([`scan_chunk`]).
+/// store serves, shared by every series it fills: the frames of one
+/// message, which the store's by-id index finds without touching
+/// anything else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum ScanUnit {
     /// The frames of one `(message_id, extended)`, off the by-id index.
     Message { message_id: u32, extended: bool },
-    /// Every error frame, whatever its id.
-    BusErrors,
 }
 
 /// One member of a shared catch-up: the facts that stay **per series**
@@ -996,11 +991,6 @@ struct GroupCatchUp<'a> {
 /// One decoded sample waiting for the cache lock: the store frame index
 /// it came from, so the append can re-apply the per-target cursor gate
 /// against the cursor as it stands *then*, and the point itself.
-///
-/// For a bus's error series `value` is unused: the sample's value is the
-/// bus's running error count, which only the cache knows, so it is
-/// assigned when the sample is appended
-/// ([`SignalCacheStore::advance_group`]).
 struct ChunkSample {
     index: usize,
     t_seconds: f64,
@@ -1037,16 +1027,9 @@ struct ChunkSample {
 /// `out` is index-parallel with `targets` and cleared here, so the
 /// caller reuses one set of buffers across the whole scan.
 ///
-/// A [`ScanUnit::BusErrors`] group decodes nothing: a target takes every
-/// **error frame on its own bus** — the frame's error flag and its bus,
-/// never its id — and each one is a sample whose value the append
-/// assigns ([`scan_error_chunk`]).
-///
 /// Returns how many store frames the chunk cost — what the scan spent,
-/// and so what a serve's budget is charged ([`ServeLimit`]). For a
-/// message that is the frames the by-id index materialized; for the
-/// error frames it is the whole chunk, since finding them reads every
-/// frame in it.
+/// and so what a serve's budget is charged ([`ServeLimit`]): the frames
+/// the by-id index materialized.
 fn scan_chunk(
     unit: ScanUnit,
     targets: &[GroupTarget<'_>],
@@ -1058,13 +1041,10 @@ fn scan_chunk(
     for samples in out.iter_mut() {
         samples.clear();
     }
-    let (message_id, extended) = match unit {
-        ScanUnit::Message {
-            message_id,
-            extended,
-        } => (message_id, extended),
-        ScanUnit::BusErrors => return scan_error_chunk(targets, chunk, fetch, out),
-    };
+    let ScanUnit::Message {
+        message_id,
+        extended,
+    } = unit;
     let mut scanned = 0;
     // Scratch reused across frames so the per-frame loop allocates
     // nothing: which targets want a value from the frame in hand, the
@@ -1154,36 +1134,6 @@ fn scan_chunk(
         }
     }
     scanned
-}
-
-/// [`scan_chunk`] for a [`ScanUnit::BusErrors`] group: every error frame
-/// in the chunk, handed to each target on the frame's bus that has not
-/// already counted it. The error flag is tested here as well as by the
-/// fetch, so what makes a frame count is stated in one place whatever
-/// the fetch returns.
-fn scan_error_chunk(
-    targets: &[GroupTarget<'_>],
-    chunk: std::ops::Range<usize>,
-    fetch: &impl Fn(ScanUnit, usize, usize) -> Vec<(usize, RawTraceFrame)>,
-    out: &mut [Vec<ChunkSample>],
-) -> usize {
-    for (index, frame) in fetch(ScanUnit::BusErrors, chunk.start, chunk.end) {
-        if !matches!(frame.payload, cannet_core::CanFramePayload::Error) {
-            continue;
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let t_seconds = (frame.timestamp_ns as f64) / 1e9;
-        for (i, t) in targets.iter().enumerate() {
-            if index >= t.next_index && frame.bus_id.as_deref() == Some(t.bus_id) {
-                out[i].push(ChunkSample {
-                    index,
-                    t_seconds,
-                    value: 0.0,
-                });
-            }
-        }
-    }
-    chunk.len()
 }
 
 /// Smallest live slot `k` in `[first_slot, level.len())` whose `t_seconds`
@@ -1392,8 +1342,9 @@ impl SignalKey {
                 message_id: self.slot,
                 extended: self.extended,
             }),
-            SignalOrigin::BusErrors => Some(ScanUnit::BusErrors),
-            SignalOrigin::File | SignalOrigin::Math => None,
+            // A bus's error series is filled by the episode reports,
+            // never by the frames (ADR 0060).
+            SignalOrigin::BusErrors | SignalOrigin::File | SignalOrigin::Math => None,
         }
     }
 
@@ -2408,20 +2359,17 @@ impl ServeLimit {
 }
 
 /// Read one chunk of a [`ScanUnit`]'s frames out of the trace store — the
-/// production form of [`scan_chunk`]'s `fetch` seam. A message's frames
-/// come off the by-id index; the error frames off a scan of the chunk,
-/// which materializes only the frames it keeps.
+/// production form of [`scan_chunk`]'s `fetch` seam: a message's frames,
+/// off the by-id index.
 fn store_fetch(
     store: &TraceStore,
 ) -> impl Fn(ScanUnit, usize, usize) -> Vec<(usize, RawTraceFrame)> + '_ {
-    |unit, from, to| match unit {
-        ScanUnit::Message {
+    |unit, from, to| {
+        let ScanUnit::Message {
             message_id,
             extended,
-        } => store.matching_frames_indexed(message_id, extended, from, to),
-        ScanUnit::BusErrors => store.frames_at(&store.scan_chunk(from, to, |f| {
-            matches!(f.payload, cannet_core::CanFramePayload::Error)
-        })),
+        } = unit;
+        store.matching_frames_indexed(message_id, extended, from, to)
     }
 }
 
@@ -3161,7 +3109,11 @@ impl SignalCacheStore {
         let mut rebuilt = 0usize;
         let mut rebuilt_bytes = 0u64;
         for row in manifest.signals {
-            if row.file.is_some() {
+            // A file-backed series and a bus's error series were filled
+            // from outside the frames — a file, the episode reports — so
+            // they answer to the capture, not to the frames' window or to
+            // any DBC, and nothing could rebuild them.
+            if row.file.is_some() || row.bus_errors {
                 if same_capture {
                     file_rows.push(row);
                 }
@@ -3190,14 +3142,10 @@ impl SignalCacheStore {
             } else {
                 // The definition was edited away, or is gone entirely.
                 // This session owes the decode either way — but the
-                // samples are worth keeping against its return. A bus's
-                // error series has no definition to return, so it is
-                // not parked.
+                // samples are worth keeping against its return.
                 rebuilt += 1;
                 rebuilt_bytes += row.bytes();
-                if !row.bus_errors {
-                    park_rows.push(row);
-                }
+                park_rows.push(row);
             }
         }
         let restored_dbc = reopen_set(&caches.root, &dbc_rows);
@@ -3626,8 +3574,7 @@ impl SignalCacheStore {
             for key in &keys {
                 // The bus reads back as the invariant it is rather than
                 // as a case: `group_keys` yields frame-filled keys only,
-                // and every one of those names a bus ([`SignalKey::dbc`],
-                // [`SignalKey::bus_errors`]).
+                // and every one of those names a bus ([`SignalKey::dbc`]).
                 let (Some(bus_id), Some(cache)) = (key.bus_id.as_deref(), caches.by_key.get(*key))
                 else {
                     targets.clear();
@@ -3720,23 +3667,11 @@ impl SignalCacheStore {
             let Some(cache) = caches.by_key.get_mut(*key) else {
                 continue;
             };
-            // A bus's error series counts: each error frame's sample is
-            // the running total so far, seeded from what the cache
-            // already holds — so the count carries across chunks, across
-            // a restore and across a front-trim alike.
-            let mut count = key.is_bus_errors().then(|| cache.error_count());
             for s in &group.samples[i] {
                 if s.index < cache.next_index {
                     continue;
                 }
-                let value = match count.as_mut() {
-                    Some(n) => {
-                        *n += 1.0;
-                        *n
-                    }
-                    None => s.value,
-                };
-                cache.push_sample(s.t_seconds, value);
+                cache.push_sample(s.t_seconds, s.value);
             }
             // Never *lower* a cursor that started ahead of the group's.
             cache.next_index = cache.next_index.max(to);
@@ -3852,14 +3787,13 @@ impl SignalCacheStore {
     /// `buses` — the whole of what a view needs to draw a bus's error
     /// markers, and to list them, for one window.
     ///
-    /// A bus's error series holds one sample per error frame on the bus,
-    /// `(frame time, running count of error frames on the bus so far)`,
-    /// and is served like any other series: caught up off the lock
-    /// within the serve's budget (ADR 0048, ADR 0049 — so
-    /// [`ServedWindows::complete`] is `false` while the series is still
-    /// behind the capture), read off the coarsest pyramid level still
-    /// above the budget, persisted and restored with the others (ADR
-    /// 0047).
+    /// A bus's error series holds `(time, running count of error frames on
+    /// the bus so far)` at each reported episode's first and latest error
+    /// ([`Self::record_bus_errors`]), and is served like any other
+    /// series: read off the coarsest pyramid level still above the
+    /// budget, persisted and restored with the others (ADR 0047). Nothing
+    /// catches it up — the reports fill it as they arrive — so it is
+    /// always [`ServedWindows::complete`].
     ///
     /// **The delta property.** The series is non-decreasing, so the
     /// pyramid's min/max fold keeps each bucket's first and last sample
@@ -3890,12 +3824,59 @@ impl SignalCacheStore {
         self.serve_keys(&keys, from_seconds, to_seconds, max_points, store, &dbs)
     }
 
+    /// Append `points` — `(seconds, the bus's running error total)`, as
+    /// `crate::bus_error_episodes::BusErrorReports::apply` produces them
+    /// — to `bus`'s error series, creating it on first use (ADR 0060).
+    ///
+    /// The series is non-decreasing in both time and value, which every
+    /// search over it relies on (`partition_by_t`); a point that would
+    /// step back in either is held at the series' last one instead. The
+    /// fold above level 0 runs here, so a serve never pays for it, and the
+    /// episode list beside the series is caught up at its next read.
+    pub fn record_bus_errors(&self, bus: &str, points: &[(f64, f64)]) {
+        if points.is_empty() {
+            return;
+        }
+        let key = self.ensure_bus_error_caches(&[bus]).remove(0);
+        let Some(key) = key else { return };
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let Some(cache) = caches.by_key.get_mut(&key) else {
+            return;
+        };
+        let (mut t_floor, mut v_floor) = cache
+            .latest()
+            .map_or((f64::NEG_INFINITY, f64::NEG_INFINITY), |p| {
+                (p.t_seconds, p.value)
+            });
+        v_floor = v_floor.max(cache.error_count());
+        for &(t, v) in points {
+            t_floor = t_floor.max(t);
+            v_floor = v_floor.max(v);
+            cache.push_sample(t_floor, v_floor);
+        }
+        cache.fold();
+        caches.dirty = true;
+        caches.episode_revision += 1;
+    }
+
+    /// Every error frame `bus`'s series has counted, or `0` for a bus with
+    /// none — what a fresh report store continues from over a restored
+    /// capture, so the series never steps back.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn bus_error_total(&self, bus: &str) -> u64 {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        caches
+            .by_key
+            .get(&SignalKey::bus_errors(bus.to_string()))
+            .map_or(0, |c| c.error_count() as u64)
+    }
+
     /// The episodes of `buses` at `gap_seconds` that intersect
     /// `[from_seconds, to_seconds]`, at most `max_markers` of them — what
     /// a plot draws one marker each for.
     ///
     /// Read off the same per-bus episode list the Events panel's page
-    /// merges ([`Self::with_episodes`]), caught up the same way (so the
+    /// merges ([`Self::with_episodes`]), folded the same way (so the
     /// list is never rebuilt for asking at the same gap). The window is a binary search on each
     /// bus's chronological list; when more episodes intersect it than
     /// `max_markers`, the gap doubles and the slice merges at it until
@@ -3913,9 +3894,8 @@ impl SignalCacheStore {
         to_seconds: f64,
         gap_seconds: f64,
         max_markers: usize,
-        store: &TraceStore,
     ) -> EpisodeWindow {
-        self.with_episodes(buses, gap_seconds, store, |lists, complete| {
+        self.with_episodes(buses, gap_seconds, |lists, complete| {
             let fitted = bus_error_episodes::fit_window(
                 lists,
                 gap_seconds,
@@ -3932,10 +3912,10 @@ impl SignalCacheStore {
         })
     }
 
-    /// Catch `buses`' error series and their episode lists at
-    /// `gap_seconds` up within one serve's budget, then hand `read` each
-    /// bus's list (in `buses` order, oldest first) and whether every one
-    /// had reached the capture's end — under one hold of the cache lock.
+    /// Fold `buses`' episode lists at `gap_seconds` up to their error
+    /// series within one serve's budget, then hand `read` each bus's list
+    /// (in `buses` order, oldest first) and whether every one had reached
+    /// the end of its series — under one hold of the cache lock.
     ///
     /// An episode is a burst of errors on one bus in which each error
     /// follows the last by less than the gap; a silence of at least the
@@ -3945,9 +3925,9 @@ impl SignalCacheStore {
     /// the series.
     ///
     /// The episodes are derived from the bus's error series
-    /// ([`Self::bus_error_windows`]'s), so the series is caught up first,
-    /// within the serve's budget like any other (ADR 0048, ADR 0049).
-    /// Each bus's list is then folded **incrementally** from level 0: a
+    /// ([`Self::bus_error_windows`]'s), which the episode reports fill
+    /// as they arrive ([`Self::record_bus_errors`]). Each bus's list is
+    /// folded **incrementally** from level 0: a
     /// cursor at the next unfolded slot means the live edge appends
     /// without a rescan. A list that does not exist yet — the first ask,
     /// a restore (the list is never persisted), a clear — or that was
@@ -3961,16 +3941,12 @@ impl SignalCacheStore {
         &self,
         buses: &[&str],
         gap_seconds: f64,
-        store: &TraceStore,
         read: impl FnOnce(&[&[Episode]], bool) -> R,
     ) -> R {
         let keys = self.ensure_bus_error_caches(buses);
-        let store_len = store.len();
         let budget = self.serve_limit();
-        let dbs = DecodeModel::plain(Vec::new());
-        self.catch_up_keys(&keys, store_len, &dbs, &store_fetch(store), &budget);
-        // At least one step per serve, so a serve that the catch-up has
-        // already spent still makes progress on the episodes.
+        // At least one step per serve, so a serve whose budget is already
+        // spent still makes progress on the episodes.
         loop {
             let (folded, done) = self.fold_episodes(&keys, gap_seconds);
             if done || budget.spend(folded) {
@@ -3992,7 +3968,7 @@ impl SignalCacheStore {
                 }
             })
             .collect();
-        read(&lists, folded_all && caught_up(&caches, &keys, store_len))
+        read(&lists, folded_all)
     }
 
     /// One bounded step of [`Self::with_episodes`]' derivation: under
@@ -4646,7 +4622,9 @@ fn caught_up(caches: &Caches, keys: &[Option<SignalKey>], store_len: usize) -> b
 /// [`MATH_MAX_DEPTH`] against a hand-edited cycle, exactly as the
 /// fingerprint's is.
 fn key_caught_up(caches: &Caches, key: &SignalKey, store_len: usize, depth: usize) -> bool {
-    if key.is_file_backed() {
+    // Neither a file-backed series nor a bus's error series is filled by
+    // a catch-up: each is complete as it stands.
+    if key.is_file_backed() || key.is_bus_errors() {
         return true;
     }
     let Some(cache) = caches.by_key.get(key) else {
@@ -6434,9 +6412,7 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         let queries: Vec<CacheQuery<'_>> = ids.iter().map(|id| query_on(*id, "X")).collect();
         let fetch = |unit: ScanUnit, from: usize, to: usize| {
-            let ScanUnit::Message { message_id: id, .. } = unit else {
-                return Vec::new();
-            };
+            let ScanUnit::Message { message_id: id, .. } = unit;
             (from..to)
                 .filter(|&i| many_group_message_at(i) == Some(id))
                 .map(|i| {
@@ -6509,9 +6485,7 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         let asked = std::cell::RefCell::new(Vec::new());
         let fetch = |unit: ScanUnit, from: usize, to: usize| {
-            let ScanUnit::Message { message_id: id, .. } = unit else {
-                return Vec::new();
-            };
+            let ScanUnit::Message { message_id: id, .. } = unit;
             asked.borrow_mut().push(id);
             // Four incumbent messages round-robin over the capture, and
             // the newcomer's rides the same cadence in the fifth slot.
@@ -11424,15 +11398,17 @@ mod tests {
 
     // ---- A bus's error series ---------------------------------------
     //
-    // One sample per error frame, carrying the bus's running error count
-    // — so any two consecutive served points, at any level, give the
-    // exact count and span between them. These pin that property and the
-    // cache machinery the series rides: catch-up, persistence, restore,
-    // clear, sweep and front-trim.
+    // `(time, the bus's running error count)` points, recorded from the
+    // bus-error episode reports (ADR 0060) — so any two consecutive
+    // served points, at any level, give the exact count and span between
+    // them. These pin that property and the cache machinery the series
+    // rides: the record, persistence, restore, clear, sweep and
+    // front-trim. The fixtures record one point per error, the finest a
+    // report stream can be, so every exactness check below is at its
+    // tightest.
 
     /// An error frame on `bus`. Its id varies with `ts_ns` on purpose: a
-    /// controller's error frame carries whatever id it reports, so the
-    /// series must find error frames by their flag and bus, never by id.
+    /// controller's error frame carries whatever id it reports.
     fn err_frame(ts_ns: u64, bus: &str) -> RawTraceFrame {
         RawTraceFrame {
             timestamp_ns: ts_ns,
@@ -11448,19 +11424,37 @@ mod tests {
     /// The two buses the generated captures fault on.
     const ERR_BUSES: [&str; 2] = ["ea", "eb"];
 
+    /// Record `frames`' error frames into their buses' error series, one
+    /// point each — `(its time, its ordinal on the bus)`, counting on
+    /// from what the series already holds, as the report store does.
+    #[allow(clippy::cast_precision_loss)]
+    fn record_errors(store: &SignalCacheStore, frames: &[RawTraceFrame]) {
+        let mut totals: HashMap<String, u64> = HashMap::new();
+        for f in frames {
+            if !matches!(f.payload, CanFramePayload::Error) {
+                continue;
+            }
+            let bus = f.bus_id.clone().unwrap();
+            let n = totals
+                .entry(bus.clone())
+                .or_insert_with(|| store.bus_error_total(&bus));
+            *n += 1;
+            store.record_bus_errors(&bus, &[(secs(f.timestamp_ns), *n as f64)]);
+        }
+    }
+
     /// A capture of `errors` error frames alternating between the two
     /// [`ERR_BUSES`], each preceded by a data frame on [`TEST_BUS`] —
-    /// and, on that bus, a data frame with an error frame's id — so the
-    /// error frames are a minority of the store interleaved with frames
-    /// that must not count. Every frame is 1 ms after the last, and every
-    /// `episode` errors per bus a 2 s quiet gap opens, so the capture
-    /// holds `errors / (2 × episode)` episodes per bus.
+    /// and, on that bus, a data frame with an error frame's id. Every
+    /// frame is 1 ms after the last, and every `episode` errors per bus a
+    /// 2 s quiet gap opens, so the capture holds `errors / (2 × episode)`
+    /// episodes per bus.
     ///
-    /// Returns the store and, per bus, the frame time (ns) of each of its
-    /// error frames in order — the `n`th of which the series must carry
-    /// as the value `n`.
-    fn error_capture(errors: usize, episode: usize) -> (TraceStore, [Vec<u64>; 2]) {
-        let store = TraceStore::new();
+    /// Returns the frames and, per bus, the frame time (ns) of each of
+    /// its error frames in order — the `n`th of which the series must
+    /// carry as the value `n`.
+    fn error_capture(errors: usize, episode: usize) -> (Vec<RawTraceFrame>, [Vec<u64>; 2]) {
+        let mut frames = Vec::new();
         let mut expected = [Vec::new(), Vec::new()];
         let mut t = S;
         for e in 0..errors {
@@ -11468,15 +11462,22 @@ mod tests {
             if bus == 0 && e > 0 && (e / 2) % episode == 0 {
                 t += 2 * S;
             }
-            store.append(val_frame(t, u16::try_from(e % 251).unwrap()));
+            frames.push(val_frame(t, u16::try_from(e % 251).unwrap()));
             t += 1_000_000;
-            store.append(dummy(t, 0, vec![0; 8]));
+            frames.push(dummy(t, 0, vec![0; 8]));
             t += 1_000_000;
-            store.append(err_frame(t, ERR_BUSES[bus]));
+            frames.push(err_frame(t, ERR_BUSES[bus]));
             expected[bus].push(t);
             t += 1_000_000;
         }
-        (store, expected)
+        (frames, expected)
+    }
+
+    /// A store over `frames`, its error series recorded.
+    fn recorded(dir: &Path, frames: &[RawTraceFrame]) -> SignalCacheStore {
+        let store = SignalCacheStore::new_unbounded(dir);
+        record_errors(&store, frames);
+        store
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -11533,10 +11534,11 @@ mod tests {
 
     #[test]
     #[allow(clippy::cast_precision_loss)]
-    fn a_bus_error_series_counts_the_error_frames_on_its_own_bus_and_nothing_else() {
-        let (trace, expected) = error_capture(40, 5);
+    fn a_bus_error_series_is_what_was_recorded_for_its_own_bus_and_nothing_else() {
+        let (frames, expected) = error_capture(40, 5);
+        let trace = trace_of(&frames);
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
+        let store = recorded(dir.path(), &frames);
         let served =
             store.bus_error_windows(&["ea", "eb", TEST_BUS], f64::MIN, f64::MAX, 0, &trace);
         assert!(served.complete);
@@ -11551,8 +11553,44 @@ mod tests {
                 .collect();
             assert_eq!(served.series[bus], want, "bus {}", ERR_BUSES[bus]);
         }
-        // The data bus carries id-0 data frames and no error frames.
+        // The data bus carries id-0 data frames and no reports.
         assert!(served.series[2].is_empty());
+    }
+
+    #[test]
+    fn the_error_frames_in_the_trace_never_fill_a_bus_error_series() {
+        // The capture holds only the first few error frames of each
+        // episode (ADR 0060's error-row cap), so counting the rows would
+        // undercount every fault: the reports fill the series, and a
+        // serve over a trace full of error frames adds nothing — and
+        // owes nothing, so it is complete at once.
+        let (frames, _) = error_capture(300, 10);
+        let trace = trace_of(&frames);
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_chunk_at_a_time(dir.path());
+        let served = store.bus_error_windows(&ERR_BUSES, f64::MIN, f64::MAX, 0, &trace);
+        assert!(served.complete, "nothing to catch up");
+        assert!(served.series.iter().all(Vec::is_empty));
+        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0).count, 0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_point_that_would_step_back_is_held_at_the_last_one() {
+        // Every search over a level assumes it non-decreasing in time
+        // (`partition_by_t`), and the exactness property assumes it
+        // non-decreasing in value.
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        store.record_bus_errors("ea", &[(10.0, 5.0), (9.0, 7.0), (11.0, 6.0)]);
+        let served = store.bus_error_windows(&["ea"], f64::MIN, f64::MAX, 0, &TraceStore::new());
+        let got: Vec<(f64, f64)> = served.series[0]
+            .iter()
+            .map(|p| (p.t_seconds, p.value))
+            .collect();
+        assert_eq!(got, vec![(10.0, 5.0), (10.0, 7.0), (11.0, 7.0)]);
+        assert_eq!(store.bus_error_total("ea"), 7);
+        assert_eq!(store.bus_error_total("nobody"), 0);
     }
 
     #[test]
@@ -11563,11 +11601,11 @@ mod tests {
         clippy::float_cmp
     )]
     fn fifty_thousand_errors_serve_within_budget_with_exact_deltas_at_every_level() {
-        // 25 000 errors per bus in 500 episodes each, amid 100 000 frames
-        // that must not count.
-        let (trace, expected) = error_capture(50_000, 50);
+        // 25 000 errors per bus in 500 episodes each.
+        let (frames, expected) = error_capture(50_000, 50);
+        let trace = TraceStore::new();
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
+        let store = recorded(dir.path(), &frames);
         let full = store.bus_error_windows(&ERR_BUSES, f64::MIN, f64::MAX, 0, &trace);
         assert!(full.complete);
         for (bus, times) in expected.iter().enumerate() {
@@ -11633,21 +11671,21 @@ mod tests {
         // Ten thousand episodes of three errors each on one bus. Each one
         // is served, at a zoom around it, as exactly its own three errors —
         // none is evicted to make room for a later one.
-        let trace = TraceStore::new();
+        let mut frames = Vec::new();
         let mut t = S;
         let mut episodes = Vec::new();
         for _ in 0..10_000 {
             let start = t;
             for _ in 0..3 {
-                trace.append(err_frame(t, "ea"));
+                frames.push(err_frame(t, "ea"));
                 t += 1_000_000;
             }
             episodes.push((secs(start), secs(t)));
             t += 2 * S;
         }
+        let trace = TraceStore::new();
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let _ = store.bus_error_windows(&["ea"], f64::MIN, f64::MAX, 50, &trace);
+        let store = recorded(dir.path(), &frames);
         for (from, to) in episodes {
             let served = store.bus_error_windows(&["ea"], from - 0.5, to + 0.5, 50, &trace);
             let window = &served.series[0];
@@ -11660,107 +11698,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_bus_error_series_and_a_decoded_signal_catch_up_in_one_batch() {
-        // The key rides the catch-up's grouping as its own scan unit: one
-        // shared error scan per chunk for every error series in the batch,
-        // beside the decoded signal's by-id fetch.
-        let (trace, expected) = error_capture(300, 10);
-        let db = load_dbc();
-        let dbs = &on_test_bus(&[&db]);
-        let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let mut keys = store.ensure_caches(&[query_on(256, "X")], dbs);
-        keys.extend(store.ensure_bus_error_caches(&ERR_BUSES));
-        let units = std::cell::RefCell::new(Vec::new());
-        store.catch_up_keys(
-            &keys,
-            trace.len(),
-            dbs,
-            &|unit, from, to| {
-                units.borrow_mut().push(unit);
-                store_fetch(&trace)(unit, from, to)
-            },
-            &store.serve_limit(),
-        );
-        let units = units.into_inner();
-        assert_eq!(
-            units.iter().filter(|u| **u == ScanUnit::BusErrors).count(),
-            1,
-            "one error scan for both buses: {units:?}",
-        );
-        assert_eq!(
-            units
-                .iter()
-                .filter(|u| matches!(u, ScanUnit::Message { .. }))
-                .count(),
-            1,
-        );
-        with_cache(&store, named(keys[0].as_ref()), |c| {
-            assert_eq!(c.sample_count(), 300);
-        });
-        for (bus, times) in expected.iter().enumerate() {
-            with_cache(&store, named(keys[bus + 1].as_ref()), |c| {
-                assert_eq!(c.sample_count(), times.len());
-                assert_exact(&c.all_samples(), times);
-            });
-        }
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)] // counts are exact integers in an f64
-    fn a_cold_bus_error_series_answers_partially_until_it_catches_up() {
-        let (trace, expected) = error_capture(20_000, 100);
-        let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_chunk_at_a_time(dir.path());
-        let first = store.bus_error_windows(&ERR_BUSES, f64::MIN, f64::MAX, 200, &trace);
-        assert!(
-            !first.complete,
-            "a chunk of a {}-frame capture",
-            trace.len()
-        );
-        let mut rounds = 1;
-        let done = loop {
-            let served = store.bus_error_windows(&ERR_BUSES, f64::MIN, f64::MAX, 200, &trace);
-            rounds += 1;
-            // A partial answer is a prefix, and exact as far as it goes.
-            for (bus, times) in expected.iter().enumerate() {
-                assert_exact(&served.series[bus], times);
-            }
-            if served.complete {
-                break served;
-            }
-        };
-        assert!(rounds > 2);
-        for (bus, times) in expected.iter().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
-            let total = times.len() as f64;
-            assert_eq!(done.series[bus].last().unwrap().value, total);
-        }
-    }
-
-    /// Serve both [`ERR_BUSES`]' error series to completion over `trace`
-    /// and return each one's total.
-    fn error_totals(store: &SignalCacheStore, trace: &TraceStore) -> Vec<f64> {
-        loop {
-            let served = store.bus_error_windows(&ERR_BUSES, f64::MIN, f64::MAX, 50, trace);
-            if served.complete {
-                return served
-                    .series
-                    .iter()
-                    .map(|w| w.last().map_or(0.0, |p| p.value))
-                    .collect();
-            }
-        }
+    /// Both [`ERR_BUSES`]' error series' totals.
+    fn error_totals(store: &SignalCacheStore) -> Vec<f64> {
+        let served =
+            store.bus_error_windows(&ERR_BUSES, f64::MIN, f64::MAX, 50, &TraceStore::new());
+        assert!(served.complete);
+        served
+            .series
+            .iter()
+            .map(|w| w.last().map_or(0.0, |p| p.value))
+            .collect()
     }
 
     #[test]
     fn a_persisted_bus_error_series_comes_back_and_keeps_counting() {
-        let (trace, expected) = error_capture(2_000, 20);
+        let (frames, expected) = error_capture(2_000, 20);
+        let trace = trace_of(&frames);
         let root = TempDir::new().unwrap();
         let v = validity("cap", 0);
-        let store = SignalCacheStore::new_unbounded(root.path());
-        let totals = error_totals(&store, &trace);
+        let store = recorded(root.path(), &frames);
+        let totals = error_totals(&store);
         assert!(store.persist(&v, &no_dbcs(), Harden::All));
         drop(store);
 
@@ -11772,69 +11729,67 @@ mod tests {
         assert_eq!(counts(outcome), (2, 0, 0));
         assert!(!reopened.rebuilding(trace.len()));
         let served = reopened.bus_error_windows(&ERR_BUSES, f64::MIN, f64::MAX, 0, &trace);
-        assert!(served.complete, "reopened at the tip, nothing to decode");
+        assert!(served.complete, "reopened whole, nothing to decode");
         for (bus, times) in expected.iter().enumerate() {
             assert_exact(&served.series[bus], times);
         }
-        assert_eq!(error_totals(&reopened, &trace), totals);
+        assert_eq!(error_totals(&reopened), totals);
 
-        // The capture grows: the count carries on from the restored
-        // pyramid's total rather than restarting.
-        let t = trace.frame_timestamps(0, trace.len()).1.unwrap() + S;
-        trace.append(err_frame(t, "ea"));
-        trace.append(err_frame(t + 1_000_000, "ea"));
-        let grown = error_totals(&reopened, &trace);
-        assert_eq!(grown, vec![totals[0] + 2.0, totals[1]]);
+        // More errors are reported: the count carries on from the
+        // restored pyramid's total rather than restarting.
+        let t = frames.last().unwrap().timestamp_ns + S;
+        record_errors(
+            &reopened,
+            &[err_frame(t, "ea"), err_frame(t + 1_000_000, "ea")],
+        );
+        assert_eq!(error_totals(&reopened), vec![totals[0] + 2.0, totals[1]]);
     }
 
     #[test]
-    fn a_rejected_bus_error_series_rebuilds_off_the_serve_to_the_same_totals() {
-        let (trace, expected) = error_capture(20_000, 100);
+    fn a_bus_error_series_answers_to_its_capture_and_not_to_the_frames_window() {
+        // Nothing could rebuild it from the frames, so a moved low-water
+        // mark — which sends a decoded series back to the frames — keeps
+        // it, as it keeps a file-backed one; another capture drops it.
+        let (frames, _) = error_capture(2_000, 20);
         let root = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(root.path());
-        let totals = error_totals(&store, &trace);
+        let store = recorded(root.path(), &frames);
+        let totals = error_totals(&store);
         assert!(store.persist(&validity("cap", 0), &no_dbcs(), Harden::All));
         drop(store);
 
-        // A different low-water mark: the frames under the set are not
-        // the frames it counted, so the whole set goes.
         let reopened = SignalCacheStore::new_chunk_at_a_time(root.path());
-        let outcome = reopened.restore(&validity("cap", 1), &no_dbcs(), trace.len());
-        assert_eq!(counts(outcome), (0, 2, 0));
-        assert!(reopened.rebuilding(trace.len()), "a cold rebuild is owed");
-        let first = reopened.bus_error_windows(&ERR_BUSES, f64::MIN, f64::MAX, 50, &trace);
-        assert!(!first.complete, "the rebuild answers partially first");
-        for (bus, times) in expected.iter().enumerate() {
-            assert_exact(&first.series[bus], times);
-        }
-        assert_eq!(error_totals(&reopened, &trace), totals);
-        #[allow(clippy::cast_precision_loss)]
-        let counted: Vec<f64> = expected.iter().map(|t| t.len() as f64).collect();
-        assert_eq!(totals, counted, "every error counted, across every chunk");
-        assert!(!reopened.rebuilding(trace.len()), "and then it is done");
+        let outcome = reopened.restore(&validity("cap", 1), &no_dbcs(), frames.len());
+        assert_eq!(counts(outcome), (2, 0, 0));
+        assert_eq!(error_totals(&reopened), totals);
+        drop(reopened);
+
+        let other = SignalCacheStore::new_chunk_at_a_time(root.path());
+        let outcome = other.restore(&validity("another", 1), &no_dbcs(), frames.len());
+        assert_eq!(counts(outcome), (0, 0, 0));
+        assert_eq!(error_totals(&other), vec![0.0, 0.0]);
     }
 
     #[test]
-    fn clearing_drops_the_bus_error_series_and_the_next_serve_rebuilds_it() {
-        let (trace, _) = error_capture(500, 10);
+    fn clearing_drops_the_bus_error_series() {
+        let (frames, _) = error_capture(500, 10);
         let root = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(root.path());
-        let totals = error_totals(&store, &trace);
+        let store = recorded(root.path(), &frames);
         store.persist(&validity("cap", 0), &no_dbcs(), Harden::All);
         store.clear();
         assert!(store.caches.lock().unwrap().by_key.is_empty());
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-        assert_eq!(error_totals(&store, &trace), totals);
+        assert_eq!(error_totals(&store), vec![0.0, 0.0]);
     }
 
     #[test]
     fn a_dbc_change_and_its_sweep_leave_a_live_bus_error_series_alone() {
-        let (trace, _) = error_capture(500, 10);
+        let (frames, _) = error_capture(500, 10);
+        let trace = trace_of(&frames);
         let db = load_dbc();
         let dbs = &on_test_bus(&[&db]);
         let root = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(root.path());
-        let totals = error_totals(&store, &trace);
+        let store = recorded(root.path(), &frames);
+        let totals = error_totals(&store);
         let decoded = store.slice(
             Some(TEST_BUS),
             256,
@@ -11856,8 +11811,7 @@ mod tests {
         store.sweep_unreferenced();
         let files = files_under(root.path());
         assert!(files.iter().any(|f| f.starts_with(&base)), "{files:?}");
-        with_cache(&store, &key, |c| assert_eq!(c.next_index, trace.len()));
-        assert_eq!(error_totals(&store, &trace), totals);
+        assert_eq!(error_totals(&store), totals);
     }
 
     #[test]
@@ -11865,17 +11819,20 @@ mod tests {
         // The scratch cap trims every pyramid with the raw store. A trim
         // that empties the error series' level 0 must not restart the
         // count: it carries on from the all-time total.
-        let (trace, expected) = error_capture(400, 10);
+        let (frames, expected) = error_capture(400, 10);
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let totals = error_totals(&store, &trace);
+        let store = recorded(dir.path(), &frames);
+        let totals = error_totals(&store);
         let edge = secs(*expected[0].last().unwrap()) + 1.0;
         store.evict_below(edge);
         let key = SignalKey::bus_errors("ea".into());
         with_cache(&store, &key, |c| assert_eq!(c.sample_count(), 0));
-        let t = trace.frame_timestamps(0, trace.len()).1.unwrap() + S;
-        trace.append(err_frame(t, "ea"));
-        let served = store.bus_error_windows(&["ea"], f64::MIN, f64::MAX, 0, &trace);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let total = totals[0] as u64;
+        assert_eq!(store.bus_error_total("ea"), total);
+        let t = frames.last().unwrap().timestamp_ns + S;
+        record_errors(&store, &[err_frame(t, "ea")]);
+        let served = store.bus_error_windows(&["ea"], f64::MIN, f64::MAX, 0, &TraceStore::new());
         assert_eq!(
             served.series[0],
             vec![SamplePoint {
@@ -11902,9 +11859,8 @@ mod tests {
         gap: f64,
         offset: usize,
         limit: usize,
-        trace: &TraceStore,
     ) -> EpisodePage {
-        store.with_episodes(buses, gap, trace, |lists, complete| {
+        store.with_episodes(buses, gap, |lists, complete| {
             let timelines: Vec<&dyn crate::events_page::Timeline> = lists
                 .iter()
                 .map(|l| l as &dyn crate::events_page::Timeline)
@@ -11922,14 +11878,9 @@ mod tests {
 
     /// Every episode of `buses` at `gap`, oldest first, served to
     /// completion in one page.
-    fn all_episodes(
-        store: &SignalCacheStore,
-        buses: &[&str],
-        gap: f64,
-        trace: &TraceStore,
-    ) -> EpisodePage {
+    fn all_episodes(store: &SignalCacheStore, buses: &[&str], gap: f64) -> EpisodePage {
         loop {
-            let page = episode_page(store, buses, gap, 0, usize::MAX, trace);
+            let page = episode_page(store, buses, gap, 0, usize::MAX);
             if page.complete {
                 return page;
             }
@@ -11978,10 +11929,9 @@ mod tests {
         errors.push((34_999 * MS, "eb"));
         errors.sort_unstable();
         let frames: Vec<RawTraceFrame> = errors.iter().map(|&(t, b)| err_frame(t, b)).collect();
-        let trace = trace_of(&frames);
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let page = all_episodes(&store, &ERR_BUSES, 5.0, &trace);
+        let store = recorded(dir.path(), &frames);
+        let page = all_episodes(&store, &ERR_BUSES, 5.0);
         assert_eq!(page.count, 6);
         assert_eq!(
             rows_ms(&page),
@@ -11998,17 +11948,17 @@ mod tests {
         assert_eq!(burst.count(), 5);
         assert!((burst.span() - 0.4).abs() < 1e-9);
         assert!((burst.rate().unwrap() - 12.5).abs() < 1e-6);
-        // The id is a real sample: the series' `last_n`th error is at the
+        // The id is a real sample: the series' `last_n`th point is at the
         // episode's last time.
-        let series = store.bus_error_windows(&["eb"], f64::MIN, f64::MAX, 0, &trace);
+        let series = store.bus_error_windows(&["eb"], f64::MIN, f64::MAX, 0, &TraceStore::new());
         let (_, e) = page.episodes[3];
         let sample = series.series[0][usize::try_from(e.last_n).unwrap() - 1];
         assert!((sample.t_seconds - e.last_t).abs() < 1e-12);
     }
 
-    /// Bursts of varied size and spacing on both [`ERR_BUSES`], amid data
-    /// frames on [`TEST_BUS`]: some quiet gaps are under five seconds and
-    /// some over, so a five-second gap merges some bursts and not others.
+    /// Bursts of varied size and spacing on both [`ERR_BUSES`]: some
+    /// quiet gaps are under five seconds and some over, so a five-second
+    /// gap merges some bursts and not others.
     fn varied_bursts() -> Vec<RawTraceFrame> {
         const MS: u64 = 1_000_000;
         let mut frames = Vec::new();
@@ -12030,25 +11980,22 @@ mod tests {
         let frames = varied_bursts();
         let whole = {
             let dir = TempDir::new().unwrap();
-            let store = SignalCacheStore::new_unbounded(dir.path());
-            rows_ms(&all_episodes(&store, &ERR_BUSES, 5.0, &trace_of(&frames)))
+            rows_ms(&all_episodes(
+                &recorded(dir.path(), &frames),
+                &ERR_BUSES,
+                5.0,
+            ))
         };
-        // Grown in three steps, the middle one ending inside a burst: the
-        // open episode is extended rather than started again.
-        let trace = TraceStore::new();
+        // Recorded in three steps, the middle one ending inside a burst:
+        // the open episode is extended rather than started again.
         let dir = TempDir::new().unwrap();
         let store = SignalCacheStore::new_unbounded(dir.path());
         let cuts = [0, frames.len() / 3 + 1, 2 * frames.len() / 3, frames.len()];
         for pair in cuts.windows(2) {
-            for f in &frames[pair[0]..pair[1]] {
-                trace.append(f.clone());
-            }
-            let _ = all_episodes(&store, &ERR_BUSES, 5.0, &trace);
+            record_errors(&store, &frames[pair[0]..pair[1]]);
+            let _ = all_episodes(&store, &ERR_BUSES, 5.0);
         }
-        assert_eq!(
-            rows_ms(&all_episodes(&store, &ERR_BUSES, 5.0, &trace)),
-            whole
-        );
+        assert_eq!(rows_ms(&all_episodes(&store, &ERR_BUSES, 5.0)), whole);
         assert!(
             whole.len() > 20 && whole.len() < 300,
             "{} episodes",
@@ -12078,11 +12025,10 @@ mod tests {
             }
         }
         frames.sort_by_key(|f| f.timestamp_ns);
-        let trace = trace_of(&frames);
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
+        let store = recorded(dir.path(), &frames);
         let window = |buses: &[&str], from: f64, to: f64, gap: f64, max: usize| loop {
-            let w = store.bus_error_episodes_in_window(buses, from, to, gap, max, &trace);
+            let w = store.bus_error_episodes_in_window(buses, from, to, gap, max);
             if w.complete {
                 return w;
             }
@@ -12101,35 +12047,31 @@ mod tests {
         assert_eq!(many.error_count, 1_200);
         // The held list stays at the asked-for gap: paging it still sees
         // all 400.
-        assert_eq!(
-            all_episodes(&store, &ERR_BUSES[1..], 1.0, &trace).count,
-            400
-        );
+        assert_eq!(all_episodes(&store, &ERR_BUSES[1..], 1.0).count, 400);
     }
 
     #[test]
     fn a_gap_change_re_derives_the_episodes() {
         // 50 episodes per bus two seconds apart; a five-second gap sees
         // one episode per bus.
-        let (trace, _) = error_capture(2_000, 20);
+        let (frames, _) = error_capture(2_000, 20);
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let at_one = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        let store = recorded(dir.path(), &frames);
+        let at_one = all_episodes(&store, &ERR_BUSES, 1.0);
         assert_eq!(at_one.count, 100);
-        let at_five = all_episodes(&store, &ERR_BUSES, 5.0, &trace);
+        let at_five = all_episodes(&store, &ERR_BUSES, 5.0);
         assert_eq!(at_five.count, 2);
         for (_, e) in &at_five.episodes {
             assert_eq!(e.count(), 1_000);
         }
-        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0, &trace), at_one);
+        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0), at_one);
     }
 
     #[test]
     fn paging_episodes_by_offset_is_stable_and_oldest_first() {
-        let trace = trace_of(&varied_bursts());
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let whole = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        let store = recorded(dir.path(), &varied_bursts());
+        let whole = all_episodes(&store, &ERR_BUSES, 1.0);
         assert!(whole
             .episodes
             .windows(2)
@@ -12137,7 +12079,7 @@ mod tests {
         let mut paged = Vec::new();
         let mut offset = 0;
         loop {
-            let page = episode_page(&store, &ERR_BUSES, 1.0, offset, 7, &trace);
+            let page = episode_page(&store, &ERR_BUSES, 1.0, offset, 7);
             assert!(page.complete);
             assert_eq!(page.count, whole.count);
             if page.episodes.is_empty() {
@@ -12148,29 +12090,28 @@ mod tests {
         }
         assert_eq!(paged, whole.episodes);
         // Asking again for the same offset is the same rows.
-        let again = episode_page(&store, &ERR_BUSES, 1.0, 13, 7, &trace);
+        let again = episode_page(&store, &ERR_BUSES, 1.0, 13, 7);
         assert_eq!(again.episodes, whole.episodes[13..20]);
     }
 
     #[test]
     #[allow(clippy::cast_precision_loss)]
     fn ten_thousand_episodes_at_a_one_second_gap_are_all_listed() {
-        // Phase one's fixture: three errors a millisecond apart, then two
-        // seconds of quiet, ten thousand times.
-        let trace = TraceStore::new();
+        // Three errors a millisecond apart, then two seconds of quiet,
+        // ten thousand times.
+        let mut frames = Vec::new();
         let mut t = S;
         for _ in 0..10_000 {
             for _ in 0..3 {
-                trace.append(err_frame(t, "ea"));
+                frames.push(err_frame(t, "ea"));
                 t += 1_000_000;
             }
             t += 2 * S;
         }
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let _ = store.bus_error_windows(&["ea"], f64::MIN, f64::MAX, 50, &trace);
+        let store = recorded(dir.path(), &frames);
         let started = Instant::now();
-        let first = episode_page(&store, &["ea"], 1.0, 0, 100, &trace);
+        let first = episode_page(&store, &["ea"], 1.0, 0, 100);
         let derived_in = started.elapsed();
         assert!(first.complete);
         assert_eq!(first.count, 10_000);
@@ -12182,7 +12123,7 @@ mod tests {
         let mut seen = 0u64;
         let mut offset = 0;
         while offset < first.count {
-            let page = episode_page(&store, &["ea"], 1.0, offset, 1_000, &trace);
+            let page = episode_page(&store, &["ea"], 1.0, offset, 1_000);
             for (_, e) in &page.episodes {
                 assert_eq!(e.count(), 3);
                 // Oldest first: the kth row from the top ends on the
@@ -12199,50 +12140,50 @@ mod tests {
     #[test]
     fn a_restored_series_rebuilds_its_episodes_off_the_serve() {
         // 25 000 errors per bus: more than one derivation step's worth.
-        let (trace, _) = error_capture(50_000, 50);
+        let (frames, _) = error_capture(50_000, 50);
         let root = TempDir::new().unwrap();
         let v = validity("cap", 0);
-        let store = SignalCacheStore::new_unbounded(root.path());
-        let before = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        let store = recorded(root.path(), &frames);
+        let before = all_episodes(&store, &ERR_BUSES, 1.0);
         assert_eq!(before.count, 1_000);
         assert!(store.persist(&v, &no_dbcs(), Harden::All));
         drop(store);
 
         let reopened = SignalCacheStore::new_chunk_at_a_time(root.path());
         assert_eq!(
-            counts(reopened.restore(&v, &no_dbcs(), trace.len())),
+            counts(reopened.restore(&v, &no_dbcs(), frames.len())),
             (2, 0, 0)
         );
-        let first = episode_page(&reopened, &ERR_BUSES, 1.0, 0, usize::MAX, &trace);
+        let first = episode_page(&reopened, &ERR_BUSES, 1.0, 0, usize::MAX);
         assert!(!first.complete, "the list is rebuilt a step at a time");
         assert!(first.count < before.count, "{} so far", first.count);
-        assert_eq!(all_episodes(&reopened, &ERR_BUSES, 1.0, &trace), before);
+        assert_eq!(all_episodes(&reopened, &ERR_BUSES, 1.0), before);
     }
 
     #[test]
-    fn clearing_drops_the_episodes_and_the_next_serve_rebuilds_them() {
-        let (trace, _) = error_capture(2_000, 20);
+    fn clearing_drops_the_episodes() {
+        let (frames, _) = error_capture(2_000, 20);
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let before = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        let store = recorded(dir.path(), &frames);
+        let before = all_episodes(&store, &ERR_BUSES, 1.0);
+        assert_eq!(before.count, 100);
         store.clear();
         assert!(store.caches.lock().unwrap().by_key.is_empty());
-        let empty = TraceStore::new();
-        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0, &empty).count, 0);
-        store.clear();
-        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0, &trace), before);
+        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0).count, 0);
+        record_errors(&store, &frames);
+        assert_eq!(all_episodes(&store, &ERR_BUSES, 1.0), before);
     }
 
     #[test]
     fn a_front_trim_drops_the_episodes_that_ended_before_it() {
-        let (trace, expected) = error_capture(2_000, 20);
+        let (frames, expected) = error_capture(2_000, 20);
         let dir = TempDir::new().unwrap();
-        let store = SignalCacheStore::new_unbounded(dir.path());
-        let before = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        let store = recorded(dir.path(), &frames);
+        let before = all_episodes(&store, &ERR_BUSES, 1.0);
         // Past the tenth episode on each bus.
         let edge = secs(expected[1][10 * 20 - 1]) + 0.5;
         store.evict_below(edge);
-        let after = all_episodes(&store, &ERR_BUSES, 1.0, &trace);
+        let after = all_episodes(&store, &ERR_BUSES, 1.0);
         assert_eq!(after.count, before.count - 20);
         assert_eq!(
             after.episodes[..],

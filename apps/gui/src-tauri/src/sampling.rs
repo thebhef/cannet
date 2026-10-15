@@ -14,10 +14,11 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::app_state::AppState;
 use crate::bus_error_episodes::Episode;
+use crate::bus_health::BusHealth;
 use crate::events_page::{EventsQuery, EventsRow, ListedKind};
 use crate::ipc::{
-    BusErrorEpisode, BusErrorEpisodeWindow, DecimatedRange, EventsPage, EventsPageRow,
-    SampledPoints, SignalExtent, SignalQuery,
+    BusErrorDetail, BusErrorEpisode, BusErrorEpisodeWindow, DecimatedRange, EventsPage,
+    EventsPageRow, SampledPoints, SignalExtent, SignalQuery,
 };
 use crate::settings::{MAX_BUS_ERROR_EPISODE_GAP_S, MIN_BUS_ERROR_EPISODE_GAP_S};
 use crate::signal_cache::CacheQuery;
@@ -385,6 +386,7 @@ pub(crate) async fn events_page(
 ) -> EventsPage {
     off_async_workers(move || {
         let state: State<'_, AppState> = app.state();
+        let health = app.try_state::<BusHealth>();
         let refs: Vec<&str> = buses.iter().map(String::as_str).collect();
         #[allow(clippy::cast_precision_loss)]
         let gap = gap_seconds.clamp(
@@ -417,7 +419,7 @@ pub(crate) async fn events_page(
                         EventsPageRow::Truncation { timestamp_ns }
                     }
                     EventsRow::BusError(bus, e) => {
-                        EventsPageRow::BusError(wire_episode(&buses[bus], &e))
+                        EventsPageRow::BusError(wire_episode(&buses[bus], &e, health.as_deref()))
                     }
                 })
                 .collect(),
@@ -454,6 +456,7 @@ pub(crate) async fn bus_error_episodes_in_window(
 ) -> BusErrorEpisodeWindow {
     off_async_workers(move || {
         let state: State<'_, AppState> = app.state();
+        let health = app.try_state::<BusHealth>();
         let refs: Vec<&str> = buses.iter().map(String::as_str).collect();
         #[allow(clippy::cast_precision_loss)]
         let gap = gap_seconds.clamp(
@@ -466,13 +469,12 @@ pub(crate) async fn bus_error_episodes_in_window(
             to_seconds,
             gap,
             max_markers.max(1) as usize,
-            &state.trace_store,
         );
         BusErrorEpisodeWindow {
             episodes: window
                 .episodes
                 .iter()
-                .map(|(bus, e)| wire_episode(&buses[*bus], e))
+                .map(|(bus, e)| wire_episode(&buses[*bus], e, health.as_deref()))
                 .collect(),
             gap_seconds: window.gap_seconds,
             error_count: window.error_count,
@@ -482,8 +484,10 @@ pub(crate) async fn bus_error_episodes_in_window(
     .await
 }
 
-/// One episode on `bus`, as the wire carries it.
-fn wire_episode(bus: &str, e: &Episode) -> BusErrorEpisode {
+/// One episode on `bus`, as the wire carries it, with what the reports
+/// it was built from say about it (ADR 0060) when `health` holds them.
+pub(crate) fn wire_episode(bus: &str, e: &Episode, health: Option<&BusHealth>) -> BusErrorEpisode {
+    let detail = health.and_then(|h| h.reports().detail(bus, e.first_t, e.last_t));
     BusErrorEpisode {
         bus: bus.to_string(),
         first_t: e.first_t,
@@ -492,6 +496,15 @@ fn wire_episode(bus: &str, e: &Episode) -> BusErrorEpisode {
         span: e.span(),
         rate: e.rate(),
         last_ordinal: e.last_n,
+        ongoing: detail.is_some_and(|d| d.ongoing),
+        detail: detail.map(|d| BusErrorDetail {
+            count_by_kind: d.count_by_kind.into(),
+            tx_count: d.tx_count,
+            rx_count: d.rx_count,
+            tec: d.tec,
+            rec: d.rec,
+        }),
+        text: crate::event_text::bus_error_text(bus, e, detail.as_ref()),
     }
 }
 
