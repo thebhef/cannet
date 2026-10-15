@@ -23,7 +23,7 @@ import type {
   Bus,
   BusConnStates,
   BusErrorEpisodeHealth,
-  BusErrorKindTally,
+  BusErrorKindCount,
   BusHealthMap,
   BusHealthRecord,
   BusRefusal,
@@ -148,8 +148,8 @@ export interface BusHealthRow {
   /// rule 5) — the peer has stopped refreshing it. `false` for a bus
   /// with no controller at all.
   controllerStale: boolean;
-  /// The newest bus-error episode's own count, rate and dominant kind,
-  /// worded for a reader — `null` where the bus has none to report.
+  /// The newest bus-error episode's own count, rate and kinds, worded
+  /// for a reader — `null` where the bus has none to report.
   /// Built from `countByKind` and the row's own `errorRate`, which the
   /// host already computes over this episode's span; nothing here
   /// re-derives a rate or a count.
@@ -233,45 +233,22 @@ export function formatRate(rate: number): string {
   return rate.toFixed(1);
 }
 
-/// The kinds in the fixed order a tie favors the earliest of (ADR 0060's
-/// own tie-break, `event_text.rs::bus_error_text`: "most common first;
-/// ties keep the list's order" — `ack` leads because it is the one kind
-/// that names a pulled cable outright).
-const ERROR_KIND_ORDER: readonly (keyof BusErrorKindTally)[] = [
-  "ack",
-  "bit",
-  "form",
-  "stuff",
-  "crc",
-  "other",
-  "unknown",
-];
-
-/// Which kind the episode's own breakdown names most, and how many —
-/// reading the counts the host already tallied, never recomputing one.
-function dominantErrorKind(tally: BusErrorKindTally): { kind: string; n: number } {
-  let best: keyof BusErrorKindTally = ERROR_KIND_ORDER[0];
-  for (const k of ERROR_KIND_ORDER) if (tally[k] > tally[best]) best = k;
-  return { kind: best, n: tally[best] };
-}
-
-/// How an episode's dominant kind reads: `ack` is the one-line diagnosis
-/// of a pulled cable (ADR 0060 consequences — "no other node is
-/// acknowledging"); every other kind just names itself. `""` when the
-/// breakdown is all zero, which a live episode never is.
-function kindPhrase(tally: BusErrorKindTally): string {
-  const { kind, n } = dominantErrorKind(tally);
-  if (n === 0) return "";
-  return kind === "ack" ? ", mostly ack: no other node acknowledging" : `, mostly ${kind}`;
+/// An episode's kinds as the row lists them: plainly, in the order the
+/// host sends them (largest first, only the kinds counted) —
+/// `: ack 3,410, bit 2`. `""` when none were counted, which a live
+/// episode never is.
+function kindList(kinds: readonly BusErrorKindCount[]): string {
+  if (kinds.length === 0) return "";
+  return `: ${kinds.map((k) => `${k.kind} ${k.count.toLocaleString()}`).join(", ")}`;
 }
 
 /// The newest bus-error episode's own line: its count, its rate — the
 /// row's own `errorRate`, which the host already computes over this
-/// episode's span (`bus_health.rs`'s own comment on the field) — and
-/// which kind predominates.
+/// episode's span (`bus_health.rs`'s own comment on the field) — and its
+/// kinds, largest first.
 function errorEpisodeLine(episode: BusErrorEpisodeHealth, rate: number): string {
   const count = episode.count === 1 ? "1 error" : `${episode.count.toLocaleString()} errors`;
-  return `${count} (${formatRate(rate)}/s)${kindPhrase(episode.countByKind)}`;
+  return `${count} (${formatRate(rate)}/s)${kindList(episode.countByKind)}`;
 }
 
 /// "sends refused: N (reason)" for one refusal reason — the

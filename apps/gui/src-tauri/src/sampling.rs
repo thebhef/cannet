@@ -496,9 +496,9 @@ pub(crate) fn wire_episode(bus: &str, e: &Episode, health: Option<&BusHealth>) -
         span: e.span(),
         rate: e.rate(),
         last_ordinal: e.last_n,
-        ongoing: detail.is_some_and(|d| d.ongoing),
-        detail: detail.map(|d| BusErrorDetail {
-            count_by_kind: d.count_by_kind.into(),
+        ongoing: detail.as_ref().is_some_and(|d| d.ongoing),
+        detail: detail.as_ref().map(|d| BusErrorDetail {
+            count_by_kind: crate::ipc::kind_counts(&d.kinds),
             tx_count: d.tx_count,
             rx_count: d.rx_count,
             tec: d.tec,

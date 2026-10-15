@@ -590,14 +590,17 @@ within about a second of the wire. When more episodes fall in the
 visible window than fit across the plot at one chip's width each, the
 gap doubles until they fit — so a fault that produces a hundred thousand
 error frames is one marker, and a long window reads as fewer, longer
-episodes rather than hitting a cap.
+episodes rather than hitting a cap. Each reported episode's kinds,
+directions and counters persist with the error series, so a capture
+restored after a relaunch reads the same episodes it showed live.
 
 **The bus-health row carries its own episode, refusal, flush and
 missed-period lines, worded for a reader.** Under the error tally, a bus
-with an episode to report shows its count, rate and dominant kind —
-`3,412 errors (1.4k/s), mostly ack: no other node acknowledging` on a
-pulled cable, `— ongoing` appended while the fault has not closed; any
-other kind just names itself. A bus the peer has refused sends on shows
+with an episode to report shows its count, rate and the kinds it
+counted, largest first — `3,412 errors (1.4k/s): ack 3,412` on a pulled
+cable, `ack 3,410, bit 2` where two kinds were seen — with `— ongoing`
+appended while the fault has not closed. A bus the peer has refused
+sends on shows
 `sends refused: N (<reason>)` per reason — `transmit queue full`,
 `interface closed`, `bus is listen-only`, `frame incompatible with the
 bus mode`, or a peer old enough to report only per-frame — with a
