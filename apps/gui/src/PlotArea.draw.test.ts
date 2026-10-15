@@ -28,8 +28,12 @@ import {
   drawValueCursorChips,
   drawXAxisTimeLabel,
   eventChipGutterPx,
+  routeCursorChipClick,
+  timeHoverTooltip,
+  xTickLabelBoxes,
   type TileLabel,
 } from "./PlotArea";
+import { formatLocalTimestamp } from "./format";
 import { enumSegments, mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
 import { applySampleMarkerFilter, showPointsToUplot } from "./plotPoints";
@@ -1258,7 +1262,11 @@ describe("drawTimeCursorChips", () => {
 
   it("draws A and B below the plot box, in the gutter above the tick labels", () => {
     const r = recorder();
-    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 3 });
+    // Far enough apart (80 px of separation) that the three boxes'
+    // natural positions don't collide under the harness's 6 px/char
+    // measureText — see "puts each chip at its own cursor" below for
+    // the exact widths.
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 19 });
     const texts = r.ops.filter((o) => o.op === "fillText");
     expect(texts.map((o) => String(o.args[0]).slice(0, 2))).toEqual(["Δt", "A ", "B "]);
     // Every one of them inside the gutter band and none above it — i.e.
@@ -1273,26 +1281,115 @@ describe("drawTimeCursorChips", () => {
 
   it("clips to the gutter band", () => {
     const r = recorder();
-    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 3 });
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 19 });
     expect(r.ops.find((o) => o.op === "rect")?.args).toEqual([0, 210, 400, 17]);
-  });
-
-  it("draws Δt first, so a narrow span leaves the two readings on top", () => {
-    const r = recorder();
-    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 1.02 });
-    const texts = r.ops.filter((o) => o.op === "fillText").map((o) => String(o.args[0]));
-    expect(texts[0].startsWith("Δt")).toBe(true);
-    expect(texts).toHaveLength(3);
   });
 
   it("puts each chip at its own cursor and Δt between them", () => {
     const r = recorder();
-    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 3 });
+    // A "1.000" (7 chars → 50 px wide) and B "19.000" (8 chars → 56 px)
+    // are 180 px apart at cursor A=10 px, cursor B=190 px — comfortably
+    // past every pairwise box-collision threshold (the widest, A-to-Δt,
+    // needs only 100 px — see the row test below for a span that doesn't
+    // clear it).
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 19 });
     const at = (prefix: string) =>
       r.ops.find((o) => o.op === "fillText" && String(o.args[0]).startsWith(prefix))?.args[1];
     expect(at("A ")).toBe(10);
-    expect(at("B ")).toBe(30);
-    expect(at("Δt")).toBe(20);
+    expect(at("B ")).toBe(190);
+    expect(at("Δt")).toBe(100);
+  });
+
+  it("collides into one row — A, Δt, B, left to right — centred on the cursor midpoint", () => {
+    const r = recorder();
+    // A=19, B=21: only 20 px apart, well inside the ~100 px a chip pair
+    // needs to clear each other at this font. The row's own width (164
+    // px) still fits inside the 400 px box without hitting an edge, so
+    // this isolates the collision-row layout from the edge-clamp below.
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 19, cursorXb: 21 });
+    const textOps = r.ops.filter((o) => o.op === "fillText");
+    expect(textOps.map((o) => String(o.args[0]).slice(0, 2))).toEqual(["A ", "Δt", "B "]);
+    const xs = textOps.map((o) => o.args[1] as number);
+    expect(xs[0]).toBeLessThan(xs[1]);
+    expect(xs[1]).toBeLessThan(xs[2]);
+    // The row's own bounding box — not the padded text positions — is
+    // what's centred on the cursor midpoint (200 px).
+    const rects = r.ops.filter((o) => o.op === "fillRect");
+    const left = Math.min(...rects.map((o) => o.args[0] as number));
+    const right = Math.max(...rects.map((o) => (o.args[0] as number) + (o.args[2] as number)));
+    expect((left + right) / 2).toBeCloseTo(200, 0);
+  });
+
+  it("clamps the collision row so it doesn't run off the plot's left edge", () => {
+    const r = recorder();
+    // A=1, B=3: the same narrow, colliding span as the row test above,
+    // but centred near x=0 — the row's natural centring would start it
+    // well left of the plot box, so it clamps to the box's own left
+    // edge instead of running off it.
+    drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 3 });
+    const rects = r.ops.filter((o) => o.op === "fillRect");
+    const left = Math.min(...rects.map((o) => o.args[0] as number));
+    expect(left).toBe(box.left);
+  });
+
+  it("formats Δt at the ticks' precision, never coarser than milliseconds", () => {
+    const deltaOf = (rec: ReturnType<typeof recorder>) =>
+      rec.ops.find((o) => o.op === "fillText" && String(o.args[0]).startsWith("Δt"))?.args[0];
+    // xDigits 1 is coarser than milliseconds — Δt floors at 3 anyway,
+    // because the span is what the cursors were placed to measure.
+    const r1 = recorder();
+    drawTimeCursorChips(r1.ctx, u(), { ...box, xDigits: 1, cursorXa: 0, cursorXb: 1.2346 });
+    expect(deltaOf(r1)).toBe("Δt 1.235 s");
+    // xDigits 4 is finer than milliseconds — Δt follows it up.
+    const r2 = recorder();
+    drawTimeCursorChips(r2.ctx, u(), { ...box, xDigits: 4, cursorXa: 0, cursorXb: 1.23456 });
+    expect(deltaOf(r2)).toBe("Δt 1.2346 s");
+  });
+
+  // A chip's box is the `fillRect` two ops before its own `fillText` —
+  // `drawChip` always emits that pair (fillRect, strokeRect) right
+  // before the text — so this reads a chip's actual drawn box
+  // regardless of whether it ended up centred or pinned to an edge.
+  const chipBox = (r: ReturnType<typeof recorder>, prefix: string) => {
+    const i = r.ops.findIndex((o) => o.op === "fillText" && String(o.args[0]).startsWith(prefix));
+    const rect = r.ops[i - 2];
+    return { x: rect.args[0] as number, width: rect.args[2] as number };
+  };
+
+  it("pins a cursor scrolled past the right edge there, Δt following it in, and reports the box", () => {
+    const r = recorder();
+    // A=5 (50 px, on screen) and B=100 (1000 px, far past the 400 px
+    // box) are 95 s apart but nowhere near colliding once B is pinned —
+    // see "puts each chip at its own cursor" for the collision math.
+    const hit = drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 5, cursorXb: 100 });
+    const at = (prefix: string) =>
+      r.ops.find((o) => o.op === "fillText" && String(o.args[0]).startsWith(prefix))?.args[1] as number;
+    expect(at("A ")).toBe(50);
+    // B's chip is left-anchored once pinned, so its *box* — not its
+    // (now left-edge) text position — is what ends flush with the
+    // plot's right edge.
+    const bBox = chipBox(r, "B ");
+    expect(bBox.x + bBox.width).toBe(box.left + box.width);
+    // Δt still centres on the midpoint of where the chips actually
+    // are (50 and the 400 px edge B is pinned to), not of the cursors'
+    // true, off-screen positions.
+    expect(at("Δt")).toBe((50 + box.width) / 2);
+    // The returned pinned box is what a click routes against — device
+    // px here (`ratio: 1`), so it matches B's drawn box directly.
+    const aBox = chipBox(r, "A ");
+    expect(hit).toEqual([
+      { cursor: "a", t: 5, pinned: false, left: aBox.x, top: box.gutterTop, width: aBox.width, height: box.gutter },
+      { cursor: "b", t: 100, pinned: true, left: bBox.x, top: box.gutterTop, width: bBox.width, height: box.gutter },
+    ]);
+  });
+
+  it("draws nothing when both cursors are scrolled off — there's no span left to show", () => {
+    const r = recorder();
+    // A=-1 (−10 px, past the left edge) and B=41 (410 px, past the
+    // right edge): both ends of the span are out of view.
+    const hit = drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: -1, cursorXb: 41 });
+    expect(r.ops).toEqual([]);
+    expect(hit).toEqual([]);
   });
 
   it("says nothing about a cursor that is not placed", () => {
@@ -1307,10 +1404,154 @@ describe("drawTimeCursorChips", () => {
     expect(r.ops).toEqual([]);
   });
 
-  it("skips a cursor outside this area's window", () => {
+  it("draws nothing for a lone cursor outside this area's window — no span, same rule as both off", () => {
     const r = recorder();
-    drawTimeCursorChips(r.ctx, u(), { ...box, width: 15, cursorXa: 9, cursorXb: null });
-    expect(r.ops.filter((o) => o.op === "fillText")).toEqual([]);
+    const hit = drawTimeCursorChips(r.ctx, u(), { ...box, width: 15, cursorXa: 9, cursorXb: null });
+    expect(r.ops).toEqual([]);
+    expect(hit).toEqual([]);
+  });
+
+  // Every cursor chip drawn reports its box (CSS px), so the gutter's
+  // hover can name that cursor's calendar time (ADR 0024). Δt never
+  // does: a duration has no instant.
+  const drawnBox = (r: ReturnType<typeof recorder>, prefix: string) => {
+    const b = chipBox(r, prefix);
+    return { left: b.x, top: box.gutterTop, width: b.width, height: box.gutter };
+  };
+
+  it("reports a lone cursor's chip box, unpinned", () => {
+    const r = recorder();
+    const boxes = drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: null, cursorXb: 7 });
+    expect(boxes).toEqual([{ cursor: "b", t: 7, pinned: false, ...drawnBox(r, "B ") }]);
+  });
+
+  it("reports both chips of a separated pair, and nothing for Δt", () => {
+    const r = recorder();
+    const boxes = drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 1, cursorXb: 19 });
+    expect(boxes).toEqual([
+      { cursor: "a", t: 1, pinned: false, ...drawnBox(r, "A ") },
+      { cursor: "b", t: 19, pinned: false, ...drawnBox(r, "B ") },
+    ]);
+  });
+
+  it("reports the chips where the collision row actually put them", () => {
+    const r = recorder();
+    const boxes = drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: 19, cursorXb: 21 });
+    expect(boxes).toEqual([
+      { cursor: "a", t: 19, pinned: false, ...drawnBox(r, "A ") },
+      { cursor: "b", t: 21, pinned: false, ...drawnBox(r, "B ") },
+    ]);
+  });
+
+  it("flags the pinned chip of a collision row, which the click still routes to", () => {
+    const r = recorder();
+    // A=-0.5 is just off the left edge, B=1 just inside: they collide,
+    // so the row draws, with A pinned.
+    const boxes = drawTimeCursorChips(r.ctx, u(), { ...box, cursorXa: -0.5, cursorXb: 1 });
+    expect(boxes).toEqual([
+      { cursor: "a", t: -0.5, pinned: true, ...drawnBox(r, "A ") },
+      { cursor: "b", t: 1, pinned: false, ...drawnBox(r, "B ") },
+    ]);
+    const pan = vi.fn();
+    const pinned = boxes.find((b) => b.pinned) ?? null;
+    const a = drawnBox(r, "A ");
+    expect(routeCursorChipClick(pinned, a.left + 1, a.top + 1, { min: 0, max: 10 }, 5, pan)).toBe(true);
+    // Recentred on A (t = -0.5), clamped at the timeline start like any pan.
+    expect(pan).toHaveBeenCalledWith(0, 10);
+  });
+
+  it("reports CSS px at a pixel ratio above 1", () => {
+    const r = recorder();
+    const boxes = drawTimeCursorChips(r.ctx, u(), { ...box, ratio: 2, gutterTop: 420, gutter: 34, cursorXa: 1, cursorXb: null });
+    const b = chipBox(r, "A ");
+    expect(boxes).toEqual([{ cursor: "a", t: 1, pinned: false, left: b.x / 2, top: 210, width: b.width / 2, height: 17 }]);
+  });
+});
+
+describe("timeHoverTooltip", () => {
+  /// 2023-11-14T22:06:40Z — a wall-clock session origin.
+  const BASE = 1_699_999_600;
+  const chip = { t: 3.25, left: 100, top: 210, width: 50, height: 17 };
+  const tick = { t: 10, left: 300, top: 242, width: 30, height: 19 };
+
+  it("names a cursor chip's time as calendar time", () => {
+    expect(timeHoverTooltip(120, 215, [chip, tick], BASE)).toBe(formatLocalTimestamp(BASE + 3.25, BASE));
+  });
+
+  it("names a tick label's split as calendar time", () => {
+    expect(timeHoverTooltip(315, 250, [chip, tick], BASE)).toBe(formatLocalTimestamp(BASE + 10, BASE));
+  });
+
+  it("says nothing between targets", () => {
+    expect(timeHoverTooltip(200, 215, [chip, tick], BASE)).toBeNull();
+    expect(timeHoverTooltip(120, 230, [chip, tick], BASE)).toBeNull();
+  });
+
+  it("says nothing anywhere without a wall-clock origin", () => {
+    for (const base of [null, 12.5]) {
+      expect(timeHoverTooltip(120, 215, [chip, tick], base)).toBeNull();
+      expect(timeHoverTooltip(315, 250, [chip, tick], base)).toBeNull();
+    }
+  });
+});
+
+describe("xTickLabelBoxes", () => {
+  // fakeU: 1 unit = 10 px from the plot box's left edge.
+  const u = () => fakeU([[0, 1, 2, 3]], [{}]);
+  const measure = (s: string) => s.length * 6;
+
+  it("centres a box on each split, in the tick-value band below the time-cursor gutter", () => {
+    const boxes = xTickLabelBoxes(u(), { splits: [1, 5], labels: ["1", "5.00"] }, { plotLeft: 52, plotBottom: 200, measure });
+    expect(boxes.map((b) => b.t)).toEqual([1, 5]);
+    expect(boxes[0]).toMatchObject({ left: 62 - 3, width: 6 });
+    expect(boxes[1]).toMatchObject({ left: 102 - 12, width: 24 });
+    for (const b of boxes) {
+      // Below the tick marks, the gap and the cursor gutter...
+      expect(b.top).toBeGreaterThan(200 + 15);
+      expect(b.height).toBeGreaterThan(0);
+    }
+  });
+
+  it("hit-tests against the label the user sees", () => {
+    const BASE = 1_699_999_600;
+    const [b] = xTickLabelBoxes(u(), { splits: [5], labels: ["5.00"] }, { plotLeft: 52, plotBottom: 200, measure });
+    expect(timeHoverTooltip(102, b.top + 1, [b], BASE)).toBe(formatLocalTimestamp(BASE + 5, BASE));
+    expect(timeHoverTooltip(102 + 13, b.top + 1, [b], BASE)).toBeNull();
+  });
+});
+
+describe("routeCursorChipClick", () => {
+  // CSS px, matching a `drawTimeCursorChips` pinned-chip return at some
+  // `ratio` other than 1 — the hit-test and the pan it produces don't
+  // care which.
+  const hit = { cursor: "b" as const, t: 42, left: 100, top: 210, width: 56, height: 17 };
+
+  it("ignores a click when nothing is pinned", () => {
+    const pan = vi.fn();
+    expect(routeCursorChipClick(null, 110, 215, { min: 0, max: 10 }, 5, pan)).toBe(false);
+    expect(pan).not.toHaveBeenCalled();
+  });
+
+  it("ignores a click outside the pinned box", () => {
+    const pan = vi.fn();
+    // Just past the box's right edge and just above its top.
+    expect(routeCursorChipClick(hit, hit.left + hit.width + 1, hit.top, { min: 0, max: 10 }, 5, pan)).toBe(false);
+    expect(routeCursorChipClick(hit, hit.left, hit.top - 1, { min: 0, max: 10 }, 5, pan)).toBe(false);
+    expect(pan).not.toHaveBeenCalled();
+  });
+
+  it("pans to the pinned cursor's time, span unchanged, on a hit — inclusive of the box's own edges", () => {
+    const pan = vi.fn();
+    // A 10 s-wide window, hitting the box's exact top-left corner.
+    expect(routeCursorChipClick(hit, hit.left, hit.top, { min: 0, max: 10 }, 5, pan)).toBe(true);
+    // t=42, span 10 → centred window [37, 47].
+    expect(pan).toHaveBeenCalledWith(37, 47);
+  });
+
+  it("falls back to the given default width when the current scale is degenerate", () => {
+    const pan = vi.fn();
+    expect(routeCursorChipClick(hit, hit.left, hit.top, { min: null, max: null }, 5, pan)).toBe(true);
+    expect(pan).toHaveBeenCalledWith(42 - 2.5, 42 + 2.5);
   });
 });
 
