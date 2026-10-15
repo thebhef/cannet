@@ -112,6 +112,12 @@ def _configure_to_open_config(cfg: pb.ConfigureBus) -> drv.OpenConfig:
     )
 
 
+def _configure_error_row_cap(cfg: pb.ConfigureBus) -> Optional[int]:
+    """The error-row cap a ``ConfigureBus`` asks for (ADR 0060 rule 2),
+    or ``None`` when it leaves the field unset -- the server's default."""
+    return int(cfg.error_row_cap) if cfg.HasField("error_row_cap") else None
+
+
 def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
     if name == drv.STATE_WARNING:
         return pb.CONTROLLER_STATE_WARNING
@@ -131,6 +137,7 @@ def _interface_state(
     tec: int,
     rec: int,
     rx_overruns: Optional[int],
+    as_of_ns: Optional[int] = None,
 ) -> pb.InterfaceState:
     """One ``InterfaceState`` message, leaving ``rx_overruns`` **unset**
     where the backend reports no receive loss at all.
@@ -139,12 +146,16 @@ def _interface_state(
     for loss and has seen none says zero, a backend that does not watch
     says nothing — and the difference only survives the encoding if the
     optional field is genuinely left unset.
+
+    ``as_of_ns`` is when the reading was taken, on the same wall clock
+    as the frames (ADR 0060 rule 5); it defaults to now.
     """
     msg = pb.InterfaceState(
         interface_id=channel_id,
         state=state,
         tec=tec,
         rec=rec,
+        as_of_ns=_now_ns() if as_of_ns is None else as_of_ns,
     )
     if rx_overruns is not None:
         msg.rx_overruns = rx_overruns

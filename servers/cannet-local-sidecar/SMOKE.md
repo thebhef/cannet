@@ -52,7 +52,11 @@ simply skips that vendor and the others still work.
      event struct on the FD queue, so a classic run does not cover it.
      **This is the one part of the Vector path that has never been run
      against hardware** — it was implemented from the XL API's field
-     definitions and unit-tested against faked chip-state events.
+     definitions and unit-tested against faked chip-state events. On
+     the FD run the sidecar log's `rx stats` line should also show a
+     non-zero `errors=` rate while the cable is out: the FD error
+     events are consumed as bus-error episodes (ADR 0060), likewise
+     unverified against hardware.
 - **Loopback option**: a Vector device with two channels can echo TX
   on channel 0 to RX on channel 1. Bind both as separate logical
   buses for a single-device smoke.
@@ -93,7 +97,14 @@ simply skips that vendor and the others still work.
 - **Channel id format**: `pcan:<channel_name>` (for example
   `pcan:PCAN_USBBUS1`).
 - **Smoke**: same shape as Vector. Use PEAK's `PCAN-View` tool to
-  confirm the install.
+  confirm the install. For the cable pull (step 6), the sidecar log
+  should show, per channel, `rx stats … errors=` near the error-frame
+  rate and `tx stats … offered=` / `refused=` while sends are refused;
+  once a channel has refused everything for a second, one INFO line
+  "… refused every send with its transmit queue full …; flushed its
+  transmit queue" per run (ADR 0060). With the cable back, `errors=`
+  falls to 0 and `queued_to_driver=` climbs back to the offered rate
+  within about two seconds.
 - **Last verified**: <date> by <handle>.
 
 ---

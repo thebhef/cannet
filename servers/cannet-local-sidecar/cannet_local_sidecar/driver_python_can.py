@@ -35,13 +35,21 @@ still enumerate. The wire-level surface stays vendor-agnostic.
 
 from __future__ import annotations
 
+import collections
 import ctypes
 import logging
+import time
 from typing import Iterable, List, Optional, Sequence
 
 from cannet_python_wire import frame_to_message, message_to_frame
 
 from .driver import (
+    REFUSAL_CLOSED,
+    REFUSAL_INCOMPATIBLE,
+    REFUSAL_LISTEN_ONLY,
+    REFUSAL_OTHER,
+    REFUSAL_QUEUE_FULL,
+    BusError,
     Channel,
     ControllerState,
     Frame,
@@ -116,21 +124,60 @@ _PCAN_RX_OVERRUN_MASK = _PCAN_ERROR_OVERRUN | _PCAN_ERROR_QOVERRUN
 #: payload. Measured on a PCAN-USB FD at the bench: byte 3 stepped by
 #: exactly 8 per failed transmission and pinned at 128 — the transmit
 #: error counter, by its own arithmetic — while byte 2 stayed 0 on a
-#: channel that was only transmitting. Byte 1 is an error-type code
-#: nothing here reads.
+#: channel that was only transmitting.
 _PCAN_ERR_REC_OFFSET = 2
 _PCAN_ERR_TEC_OFFSET = 3
+#: Byte 0 of a PEAK error frame is the direction (0: the error was
+#: detected while transmitting, otherwise while receiving) and byte 1
+#: the position in the frame where it was detected, coded by segment.
+_PCAN_ERR_DIRECTION_OFFSET = 0
+_PCAN_ERR_POSITION_OFFSET = 1
+#: The positions that are the acknowledge slot (0x19) and the
+#: acknowledge delimiter (0x1B). An error there is a frame nobody
+#: acknowledged -- the one-line diagnosis of a pulled cable. 0x19 is
+#: what the bench's open-circuit captures carry in byte 1.
+_PCAN_ERR_ACK_POSITIONS = frozenset({0x19, 0x1B})
+#: The error frame's ID is PEAK's error type (ADR 0060 rule 1). ID 0 is
+#: not an error at all but an update of the counters, and is not
+#: counted.
+_PCAN_ERR_KIND_BY_ID = {1: "bit", 2: "form", 4: "stuff", 8: "other"}
 
 #: The highest transmit error counter that is not yet error-passive under
 #: ISO 11898-1 -- the limit ``state_from_counters`` applies. An echo
 #: arriving above it is withheld; see ``PythonCanChannel._echo_unproven``.
 _ERROR_PASSIVE_TEC = 127
 
-#: How a backend says its transmit queue is full, lower-cased. python-can
-#: raises PEAK's ``PCAN_ERROR_QXMTFULL`` as a ``PcanCanOperationError``
-#: carrying only PCAN-Basic's error text -- no code -- so the text is
-#: all there is to match. See ``_send_refused_queue_full``.
-_QUEUE_FULL_TEXTS = ("transmit queue is full",)
+#: How a backend says its transmit queue is full (ADR 0060 rule 4).
+#: python-can raises PEAK's refusals as a ``PcanCanOperationError``
+#: carrying only PCAN-Basic's error text -- no code -- so for PEAK the
+#: text is all there is to match: ``PCAN_ERROR_QXMTFULL`` ("The transmit
+#: queue is full") and ``PCAN_ERROR_XMTFULL`` ("Transmit buffer in CAN
+#: controller is full"), lower-cased. Kvaser and Vector carry the
+#: driver's own code on the exception's ``error_code``: CANlib's
+#: ``canERR_TXBUFOFL`` (-13) and the XL library's
+#: ``XL_ERR_QUEUE_IS_FULL`` (11). See ``_send_refusal_reason``.
+_QUEUE_FULL_TEXTS = (
+    "transmit queue is full",
+    "transmit buffer in can controller is full",
+)
+_KVASER_ERR_TXBUFOFL = -13
+_XL_ERR_QUEUE_IS_FULL = 11
+
+#: How PCAN-Basic words a Read that returned a bus-status result
+#: (``PCAN_ERROR_BUSOFF``, ``PCAN_ERROR_BUSPASSIVE``), lower-cased, and
+#: the state each one is. python-can raises those reads like any other
+#: failure; they are fault readings, not a lost adapter (ADR 0060
+#: rule 5). See ``PythonCanChannel._pcan_recv_fault``.
+_PCAN_RECV_FAULT_TEXTS = (
+    ("bus-off", STATE_BUS_OFF),
+    ("error passive", STATE_PASSIVE),
+)
+#: How long ``recv`` waits (within its timeout) after such a read before
+#: returning empty-handed. A bus-off controller answers every Read with
+#: the status at once, so without a pause the receive loop would spin
+#: for as long as the fault lasts. Short enough that frames arriving
+#: meanwhile only wait in the driver's queue for it.
+_PCAN_RECV_FAULT_PAUSE_S = 0.01
 
 #: Kvaser's receive timer, and why the sidecar has to unwrap it.
 #:
@@ -180,6 +227,27 @@ _XL_EVENT_TAG_CHIP_STATE = 4
 #: on the CAN FD queue, which is a different event struct with its own
 #: union member.
 _XL_CANFD_EVENT_TAG_CHIP_STATE = 1033
+#: ``XL_CAN_EV_TAG_RX_ERROR`` / ``XL_CAN_EV_TAG_TX_ERROR`` — an error
+#: the controller detected while receiving / transmitting, on the CAN
+#: FD queue. python-can turns neither into a ``Message``; it hands them
+#: to ``handle_canfd_event``, where they are kept (ADR 0060 rule 1).
+_XL_CANFD_EVENT_TAG_RX_ERROR = 1025
+_XL_CANFD_EVENT_TAG_TX_ERROR = 1026
+#: ``XL_CANFD_RX_EV_ERROR_errorCode`` → error kind. A NACK error is the
+#: transmitter's view of an acknowledge nobody gave, so it is ``ack``
+#: like the acknowledge error itself; overload and exception errors
+#: have no kind of their own on the wire and count as ``other``.
+_XL_CAN_ERRC_KIND = {
+    1: "bit",
+    2: "form",
+    3: "stuff",
+    4: "other",
+    5: "crc",
+    6: "ack",
+    7: "ack",
+    8: "other",
+    9: "other",
+}
 
 #: Kvaser CANlib circuit-status flags, as ``canReadStatus`` reports them
 #: (``canstat.h``: ``canSTAT_ERROR_PASSIVE`` 0x1, ``canSTAT_BUS_OFF``
@@ -222,6 +290,34 @@ def _pcan_status_state(status: int) -> str:
     if status & _PCAN_ERROR_BUSWARNING:
         return STATE_WARNING
     return STATE_ACTIVE
+
+
+def _pcan_bus_error(can_id: int, data: bytes) -> BusError:
+    """What a PEAK error frame says (ADR 0060 rule 1): the kind from its
+    ID -- ``bit``, ``form``, ``stuff``, ``other`` -- unless the bit
+    position is the acknowledge slot or delimiter, which is ``ack``; the
+    direction from byte 0; REC and TEC from bytes 2 and 3. An ID-0 frame
+    is a counter update: it carries the counters and is not counted.
+
+    A payload too short for a field leaves that field unknown -- every
+    PEAK error frame observed carried four bytes, and a shorter one is a
+    layout we do not have, not a controller reporting zero.
+    """
+    tec = rec = None
+    if len(data) > _PCAN_ERR_TEC_OFFSET:
+        rec, tec = data[_PCAN_ERR_REC_OFFSET], data[_PCAN_ERR_TEC_OFFSET]
+    if can_id == 0:
+        return BusError(tec=tec, rec=rec, counted=False)
+    direction = None
+    if len(data) > _PCAN_ERR_DIRECTION_OFFSET:
+        direction = "tx" if data[_PCAN_ERR_DIRECTION_OFFSET] == 0 else "rx"
+    kind = _PCAN_ERR_KIND_BY_ID.get(can_id, "unknown")
+    if (
+        len(data) > _PCAN_ERR_POSITION_OFFSET
+        and data[_PCAN_ERR_POSITION_OFFSET] in _PCAN_ERR_ACK_POSITIONS
+    ):
+        kind = "ack"
+    return BusError(kind=kind, direction=direction, tec=tec, rec=rec)
 
 
 def _xl_chip_state_state(bus_status: int) -> str:
@@ -427,9 +523,28 @@ def _chip_state_vector_bus_class() -> type:
                 self.chip_state = _xl_chip_state_reading(event.tagData.chipState)  # type: ignore[attr-defined]
 
         def handle_canfd_event(self, event: object) -> None:
-            if getattr(event, "tag", None) == _XL_CANFD_EVENT_TAG_CHIP_STATE:
+            tag = getattr(event, "tag", None)
+            if tag == _XL_CANFD_EVENT_TAG_CHIP_STATE:
                 self.chip_state = _xl_chip_state_reading(
                     event.tagData.canChipState  # type: ignore[attr-defined]
+                )
+            elif tag in (_XL_CANFD_EVENT_TAG_RX_ERROR, _XL_CANFD_EVENT_TAG_TX_ERROR):
+                # Kept for ``PythonCanChannel.recv`` to hand back as an
+                # error frame: ``(direction, errorCode, timestamp_s)``,
+                # stamped the way python-can stamps messages. Bounded by
+                # what one ``recv`` call can see -- the error rate times
+                # its timeout -- because the channel hands back every
+                # pending event before it reads again.
+                events = self.__dict__.get("error_events")
+                if events is None:
+                    events = self.__dict__["error_events"] = collections.deque()
+                events.append(
+                    (
+                        "rx" if tag == _XL_CANFD_EVENT_TAG_RX_ERROR else "tx",
+                        int(event.tagData.canError.errorCode),  # type: ignore[attr-defined]
+                        event.timeStamp * 1e-9  # type: ignore[attr-defined]
+                        + float(getattr(self, "_time_offset", 0.0) or 0.0),
+                    )
                 )
 
         def request_chip_state(self) -> None:
@@ -570,18 +685,37 @@ class PythonCanChannel:
         # like one.
         self._kvaser_last_raw_s: Optional[float] = None
         self._kvaser_wraps = 0
+        # The Vector FD error event behind the last error frame `recv`
+        # returned, so `classify_error` -- called right after, on the
+        # same thread -- can answer for it.
+        self._fd_error_frame: Optional[Frame] = None
+        self._fd_error: Optional[BusError] = None
+        # A fault state a PEAK read reported (see `_pcan_recv_fault`),
+        # for the next state poll to floor its reading with.
+        self._recv_fault_state: Optional[str] = None
 
     def recv(self, timeout_s: float) -> Optional[Frame]:
         if self._closed:
             return None
+        pending = self._pending_fd_error()
+        if pending is not None:
+            return pending
         try:
             msg = self._bus.recv(timeout=timeout_s)  # type: ignore[attr-defined]
-        except Exception:
-            self._unreachable = True
-            raise
+        except Exception as e:
+            fault = self._pcan_recv_fault(e)
+            if fault is None:
+                self._unreachable = True
+                raise
+            # A fault reading, not a lost adapter: the state poll
+            # publishes it, and the bus keeps its route.
+            self._recv_fault_state = fault
+            self._unreachable = False
+            time.sleep(min(timeout_s, _PCAN_RECV_FAULT_PAUSE_S))
+            return None
         self._unreachable = False
         if msg is None:
-            return None
+            return self._pending_fd_error()
         if self._is_kvaser:
             self._unwrap_kvaser_timestamp(msg)
         frame = message_to_frame(msg)
@@ -595,6 +729,104 @@ class PythonCanChannel:
             self._echoes_dropped += 1
             return None
         return frame
+
+    def _pcan_recv_fault(self, error: Exception) -> Optional[str]:
+        """The fault state a failed PEAK read reported, or ``None`` when
+        the failure is anything else.
+
+        python-can's ``PcanBus`` raises on every Read result other than
+        a frame, an empty queue, invalid data or a light/heavy bus error
+        -- so a Read that returned ``PCAN_ERROR_BUSOFF`` or
+        ``PCAN_ERROR_BUSPASSIVE`` raises, carrying only PCAN-Basic's
+        text. That is the controller reporting a fault, which the state
+        poll publishes; treating it as a device that has gone would read
+        ``unavailable`` and park the bus's periodic transmits (ADR 0060
+        rule 5, ADR 0039 rule 3).
+        """
+        if not self._is_pcan:
+            return None
+        text = str(error).lower()
+        for needle, state in _PCAN_RECV_FAULT_TEXTS:
+            if needle in text:
+                return state
+        return None
+
+    def _pending_fd_error(self) -> Optional[Frame]:
+        """The oldest Vector FD error event not yet handed back, as an
+        error frame, or ``None``. The event has no frame of its own in
+        the wire model, so it takes the shape every other vendor's error
+        frame has -- no ID, no payload -- with the event's own stamp."""
+        if not self._is_vector:
+            return None
+        events = getattr(self._bus, "error_events", None)
+        if not events:
+            return None
+        direction, code, stamp_s = events.popleft()
+        assert can is not None
+        frame = message_to_frame(
+            can.Message(  # type: ignore[union-attr]
+                timestamp=stamp_s,
+                arbitration_id=0,
+                is_extended_id=False,
+                is_error_frame=True,
+                is_rx=True,
+                dlc=0,
+                data=b"",
+            )
+        )
+        self._fd_error_frame = frame
+        self._fd_error = BusError(
+            kind=_XL_CAN_ERRC_KIND.get(code, "unknown"), direction=direction
+        )
+        return frame
+
+    def classify_error(self, frame: Frame) -> BusError:
+        """Kind, direction and counters of an error frame :meth:`recv`
+        just returned (ADR 0060 rule 1): PEAK from the frame itself (see
+        :func:`_pcan_bus_error`), a Vector FD error event from its
+        ``errorCode``, and everything else -- Vector classic, whose
+        error-frame flag carries no kind, and Kvaser, whose kind flags
+        python-can discards -- as ``unknown``."""
+        if self._is_pcan:
+            return _pcan_bus_error(frame.can_id, frame.data)
+        if frame is self._fd_error_frame and self._fd_error is not None:
+            return self._fd_error
+        return BusError()
+
+    def flush_tx(self) -> bool:
+        """Empty the transmit queue without re-initialising the
+        controller (ADR 0060 rule 7); ``False`` where this backend has no
+        such flush, and the caller reopens instead.
+
+        - **PEAK**: python-can's ``PcanBus.reset`` -- ``CAN_Reset``,
+          which empties the transmit *and* receive queues and, in
+          PCAN-Basic's own words, does not reset the controller.
+        - **Kvaser**: python-can's ``KvaserBus.flush_tx_buffer`` --
+          ``canIoCtl(canIOCTL_FLUSH_TX_BUFFER)``.
+        - **Vector**: ``xlCanFlushTransmitQueue`` through the XL handle,
+          which only some devices support; one that refuses it is
+          reopened. **Never** python-can's ``VectorBus.flush_tx_buffer``:
+          it transmits a frame of its own.
+        """
+        if self._closed:
+            return False
+        bus = self._bus
+        if self._is_pcan:
+            return bool(bus.reset())  # type: ignore[attr-defined]
+        if self._is_vector:
+            xl = getattr(bus, "xldriver", None)
+            flush = getattr(xl, "xlCanFlushTransmitQueue", None)
+            if not callable(flush):
+                return False
+            try:
+                flush(bus.port_handle, bus.mask)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 - not supported by this device
+                return False
+            return True
+        if self._is_kvaser:
+            bus.flush_tx_buffer()  # type: ignore[attr-defined]
+            return True
+        return False
 
     def _echo_unproven(self) -> bool:
         """Whether an echo of our own frame, arriving now, would claim a
@@ -713,7 +945,7 @@ class PythonCanChannel:
         Costs an increment and two array reads on the receive thread,
         which matters: the measured rate on that fault was about 5,200
         error frames a second. Nothing is published from here — the state poll reads
-        the latest pair on its own 500 ms cadence, which is where the
+        the latest pair on its own 250 ms cadence, which is where the
         coalescing happens.
 
         A payload too short to hold them leaves the last reading in
@@ -728,15 +960,15 @@ class PythonCanChannel:
 
     def send(self, frame: Frame) -> None:
         if self._closed:
-            raise TxRejected("channel closed")
+            raise TxRejected("channel closed", reason=REFUSAL_CLOSED)
         if self._listen_only:
-            raise TxRejected("listen-only configuration")
+            raise TxRejected("listen-only configuration", reason=REFUSAL_LISTEN_ONLY)
         self._reject_if_incompatible(frame)
         msg = frame_to_message(frame)
         try:
             self._bus.send(msg)  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
-            raise TxRejected(str(e), queue_full=_send_refused_queue_full(e)) from e
+            raise TxRejected(str(e), reason=_send_refusal_reason(e)) from e
 
     def _reject_if_incompatible(self, frame: Frame) -> None:
         """Refuse frame shapes that would make python-can raise inside a
@@ -754,10 +986,14 @@ class PythonCanChannel:
         if frame.kind == FrameKind.ERROR:
             return
         if frame.kind == FrameKind.FD and not self._fd:
-            raise TxRejected(f"FD frame on classic-mode bus {self.channel_id}")
+            raise TxRejected(
+                f"FD frame on classic-mode bus {self.channel_id}",
+                reason=REFUSAL_INCOMPATIBLE,
+            )
         if frame.kind == FrameKind.REMOTE and self._fd:
             raise TxRejected(
-                f"remote (RTR) frame not supported on FD-mode bus {self.channel_id}"
+                f"remote (RTR) frame not supported on FD-mode bus {self.channel_id}",
+                reason=REFUSAL_INCOMPATIBLE,
             )
         if frame.kind == FrameKind.REMOTE:
             return
@@ -766,12 +1002,14 @@ class PythonCanChannel:
             raise TxRejected(
                 f"payload {len(frame.data)} bytes exceeds {max_bytes}-byte "
                 f"limit ({'FD' if self._fd else 'classic'} bus "
-                f"{self.channel_id})"
+                f"{self.channel_id})",
+                reason=REFUSAL_INCOMPATIBLE,
             )
         if frame.dlc and frame.dlc != len(frame.data):
             raise TxRejected(
                 f"dlc={frame.dlc} differs from data length "
-                f"{len(frame.data)} (bus {self.channel_id})"
+                f"{len(frame.data)} (bus {self.channel_id})",
+                reason=REFUSAL_INCOMPATIBLE,
             )
 
     def state(self) -> ControllerState:
@@ -826,8 +1064,8 @@ class PythonCanChannel:
         an acknowledge (see :meth:`_echo_unproven`).
 
         **A poll interval without an error frame clears them.** At the
-        ~1,600 frames/s this tool runs, half a second with no error
-        frame is hundreds of error-free frames or a silent bus, either
+        ~1,600 frames/s this tool runs, a 250 ms poll interval with no
+        error frame is hundreds of error-free frames or a silent bus, either
         of which the controller's own counters fall through; and during
         a real fault error frames arrive with every retransmission, so
         the pair never goes a whole interval unrefreshed. The clear is
@@ -860,9 +1098,17 @@ class PythonCanChannel:
         match: those are multi-bit values that overlap each other, and a
         masked test there would read a busy transmit queue as a missing
         adapter.
+
+        **A read that reported a bus status is a floor too.** When a
+        ``recv`` failed because PCAN-Basic answered the Read with
+        bus-off or error-passive (see :meth:`_pcan_recv_fault`), that
+        reading is combined in once, by the next poll.
         """
         rec, tec = self._counters
         from_counters = state_from_counters(tec, rec)
+        recv_fault, self._recv_fault_state = self._recv_fault_state, None
+        if recv_fault is not None:
+            from_counters = worse_state(from_counters, recv_fault)
         status_read = getattr(self._bus, "status", None)
         if not callable(status_read):
             return ControllerState(state=from_counters, tec=tec, rec=rec)
@@ -884,7 +1130,7 @@ class PythonCanChannel:
         ):
             self._counters = (0, 0)
             rec = tec = 0
-            from_counters = STATE_ACTIVE
+            from_counters = recv_fault or STATE_ACTIVE
         self._pcan_error_frames_polled = error_frames
         state = worse_state(from_status, from_counters)
         return ControllerState(state=state, tec=tec, rec=rec)
@@ -961,7 +1207,7 @@ class PythonCanChannel:
         The request is placed first and the *previous* answer read: the
         XL driver replies asynchronously, as an event on the same queue
         the messages arrive on, so a reading is always one poll old. At
-        the state pump's 500 ms cadence that is half a second, and the
+        the state pump's 250 ms cadence that is a quarter of a second, and the
         publish-on-change gate above it coalesces unchanged readings the
         same way it does PEAK's.
 
@@ -1500,14 +1746,21 @@ def _bus_kwargs_for(channel_id: str, config: OpenConfig):
     raise KeyError(channel_id)
 
 
-def _send_refused_queue_full(error: Exception) -> bool:
-    """Whether a backend's send failure says its transmit queue is full.
+def _send_refusal_reason(error: Exception) -> str:
+    """Why a backend refused a send: queue-full by the driver's own code
+    where python-can carries one (Kvaser, Vector), by PCAN-Basic's text
+    where it does not (PEAK); anything else is ``other``.
 
-    The one place backend error text is read for this; the wire layer
-    sees only :attr:`TxRejected.queue_full`.
+    The one place backend error codes and text are read for this; the
+    wire layer sees only :attr:`TxRejected.reason`.
     """
+    code = getattr(error, "error_code", None)
+    if code in (_KVASER_ERR_TXBUFOFL, _XL_ERR_QUEUE_IS_FULL):
+        return REFUSAL_QUEUE_FULL
     text = str(error).lower()
-    return any(t in text for t in _QUEUE_FULL_TEXTS)
+    if any(t in text for t in _QUEUE_FULL_TEXTS):
+        return REFUSAL_QUEUE_FULL
+    return REFUSAL_OTHER
 
 
 def _disable_pcan_status_frames(bus) -> None:
@@ -1525,7 +1778,7 @@ def _disable_pcan_status_frames(bus) -> None:
     from a real ``can_id=1, dlc=4`` wire frame.
 
     PCAN-Basic exposes the same fault-confinement information through
-    ``CAN_GetStatus``, which the sidecar already polls every 500 ms (see
+    ``CAN_GetStatus``, which the sidecar already polls every 250 ms (see
     :class:`cannet_local_sidecar.server._SharedInterface._state_pump`), so
     disabling the queued status frames loses no observable signal — it
     only stops the synthetic frame.
