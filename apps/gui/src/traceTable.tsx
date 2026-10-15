@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import type { FuzzyWinner, SignalRecord, TraceFrameRecord } from "./types";
 import { type BusLookup, type ColumnKey, busDisplayName } from "./traceColumns";
 import {
+  ELAPSED_FRAC_DIGITS,
+  formatCalendarCell,
   formatCalendarTime,
   formatData,
   formatId,
@@ -13,6 +15,7 @@ import {
   hasWallClockAnchor,
   type CanIdFormat,
 } from "./format";
+import { useSetting } from "./hostSettings";
 import { NameText } from "./NameText";
 
 /// What a bus error frame reads as in the message column, and the row
@@ -68,7 +71,6 @@ export function cellContent(
   key: ColumnKey,
   frame: TraceFrameRecord | null,
   absoluteIndex: number,
-  baseTimestamp: number | null,
   idFormat: CanIdFormat,
   busLookup: BusLookup,
   rate?: number,
@@ -81,7 +83,8 @@ export function cellContent(
   if (!frame) return null;
   switch (key) {
     case "time":
-      return formatTimestamp(frame.timestamp_seconds, baseTimestamp);
+      // Drawn by `TraceTimeCell`, which owns the elapsed/calendar switch.
+      return null;
     case "bus":
       return busDisplayName(frame.bus_id, busLookup);
     case "ecu":
@@ -109,11 +112,23 @@ export function cellContent(
   }
 }
 
-/// The `time` cell of a trace-style row: the elapsed-time text ADR 0024
-/// specifies, plus — while the pointer is on it — a native `title` with
-/// the same instant read as a local date and time. A session with no
-/// wall-clock origin (a log with no start time) has no absolute instant
-/// to name, so it gets no tooltip and no hover state at all.
+/// The time cell of every table that shows a message or event time
+/// (trace, By-ID, Events, Signals): one implementation, so the same
+/// instant reads the same string in all of them (ADR 0024 rule 2).
+///
+/// The on-screen text is chosen by the app-wide `time_display` setting:
+/// elapsed since the session origin (`formatTimestamp`), or — under
+/// `calendar` — the whole `date_time_pattern` plus the same fraction
+/// digits (`formatCalendarCell`). A session with no wall-clock origin
+/// has no instant to name, so it stays elapsed under either setting. The
+/// native `title`, while the pointer is on the cell, is the *other*
+/// reading of the same instant: calendar time over an elapsed cell,
+/// elapsed time over a calendar one. A cell with no wall-clock origin
+/// gets no tooltip and no hover state at all.
+///
+/// Both settings are read here rather than passed down: `useSetting`
+/// re-renders this cell through the memoised rows that host it, so no
+/// row component has to carry them as props.
 ///
 /// The tooltip string is derived from hover state during render rather
 /// than written to the node on the pointer event, for two reasons. The
@@ -126,35 +141,37 @@ export function TraceTimeCell({
   className,
   seconds,
   base,
-  pattern,
-  children,
 }: {
   className: string;
   /// The row's own timestamp in Unix-epoch seconds, or `null` for a row
-  /// whose frame hasn't loaded yet.
+  /// whose frame hasn't loaded yet (an empty cell).
   seconds: number | null;
   /// The session origin (`TraceHandle.baseTimestampSeconds`).
   base: number | null;
-  /// The `date_time_pattern` setting (ADR 0062) the tooltip renders
-  /// through.
-  pattern: string;
-  /// The cell's rendered text — `cellContent`'s `time` output, so the
-  /// column keeps one renderer.
-  children: ReactNode;
 }) {
+  const pattern = useSetting("date_time_pattern");
+  const calendarMode = useSetting("time_display") === "calendar";
   const [hovered, setHovered] = useState(false);
   const anchored = seconds !== null && hasWallClockAnchor(base);
+  const elapsed = seconds !== null ? formatTimestamp(seconds, base) : "";
+  let text = elapsed;
+  let title: string | undefined;
+  if (seconds !== null) {
+    if (calendarMode) {
+      text = formatCalendarCell(seconds, base, pattern, ELAPSED_FRAC_DIGITS) ?? elapsed;
+      if (hovered) title = elapsed;
+    } else if (hovered) {
+      title = formatCalendarTime(seconds, base, pattern) ?? undefined;
+    }
+  }
   return (
     <span
       className={className}
-      title={
-        (hovered && seconds !== null ? formatCalendarTime(seconds, base, pattern) : null) ??
-        undefined
-      }
+      title={title}
       onMouseEnter={anchored ? () => setHovered(true) : undefined}
       onMouseLeave={anchored ? () => setHovered(false) : undefined}
     >
-      {children}
+      {text}
     </span>
   );
 }
