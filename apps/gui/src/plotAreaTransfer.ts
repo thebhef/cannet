@@ -4,7 +4,7 @@
  * learns the area it gave up.
  *
  * A plot-area drag writes the whole serialized area — series, patterns,
- * y-axis mode, primary signal, collapsed flag — plus the *source
+ * y-axis mode, primary signal — plus the *source
  * panel's* manual y ranges for the axes that area derives, so a move
  * lands looking like what left. Layout weights are not part of it: they
  * describe the stack the area came out of, not the area.

@@ -416,16 +416,12 @@ interface DerivedAreaConfig {
   subtitle: string | null;
   enumLanes: boolean;
   /// This axis draws nothing, so it's excluded from the fit-to-panel
-  /// height distribution and its canvas collapses (ADR 0026). Three ways
-  /// to get here: the user collapsed the parent *area* (one flag, every
-  /// derived axis of that area), the user collapsed this one axis, or
-  /// every signal on this axis is hidden. Only the last keeps its rows
-  /// in the side panel — they are how a hidden signal is un-hidden; the
-  /// two deliberate collapses reduce to a heading / label row.
+  /// height distribution and its canvas collapses (ADR 0026). Two ways
+  /// to get here: the user collapsed this axis, or every signal on it is
+  /// hidden. Only the latter keeps its rows in the side panel — they are
+  /// how a hidden signal is un-hidden; the deliberate collapse reduces
+  /// to a label row.
   collapsed: boolean;
-  /// The parent area's own collapse flag drove it (as opposed to the
-  /// all-hidden rule) — what the head toggle can undo.
-  collapsedByFlag: boolean;
   /// This axis's own collapse (`axisCollapsed`, keyed by derived-axis
   /// id) drove it — layout only: the series stay on the axis and keep
   /// their visibility, they just have no canvas to draw on.
@@ -490,7 +486,6 @@ function deriveAreaConfigs(
       yAxisMode: a.yAxisMode,
       primarySignalKey: a.primarySignalKey,
       patterns: i === 0 ? a.patterns : undefined,
-      collapsed: a.collapsed,
     };
     const allHidden = signals.length > 0 && signals.every((s) => s.hidden);
     const byAxis = axisCollapsed[ax.id] === true;
@@ -500,12 +495,10 @@ function deriveAreaConfigs(
       isFirstOfParent: i === 0,
       subtitle: ax.subtitle,
       enumLanes: ax.kind === "enum-lanes",
-      collapsed: a.collapsed === true || byAxis || allHidden,
-      collapsedByFlag: a.collapsed === true,
+      collapsed: byAxis || allHidden,
       collapsedByAxis: byAxis,
       // An axis whose only reason to be blank is the solo mask — it
-      // collapses like any all-hidden axis, but says why, and its area's
-      // persisted `collapsed` stays untouched.
+      // collapses like any all-hidden axis, but says why.
       collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
       soloMaskedKeys: soloMask ? soloMaskedKeys(a.id, ax.signals, soloMask) : EMPTY_KEY_SET,
       soloOffPageKeys: soloMask
@@ -1295,15 +1288,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, []);
   const setAreaYAxisMode = useCallback((id: string, mode: YAxisMode) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yAxisMode: mode } : a)));
-  }, []);
-  /// Collapse / expand a whole logical area (ADR 0026). Stored on the
-  /// area, so every axis it derives shares one collapse state and the
-  /// setting persists with the panel. Expanding drops the flag rather
-  /// than storing `false`, keeping the persisted blob sparse.
-  const toggleAreaCollapsed = useCallback((id: string) => {
-    setAreas((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, collapsed: a.collapsed ? undefined : true } : a)),
-    );
   }, []);
   /// Collapse / expand one *derived axis* (ADR 0026). Layout only — the
   /// axis's series keep their membership and their visibility, they just
@@ -2365,10 +2349,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
       // which is a fresh `Set` whenever the match list is recomputed.
       const soloMatchedForArea = soloMask ? soloAllMatched : EMPTY_KEY_SET;
       const soloMatchCount = soloAreaMatchCounts.get(a.id) ?? 0;
+      // Only this area's collapsed axes key its memo, so collapsing an
+      // axis of one area leaves every other area's derived config (and
+      // its memoised `PlotArea`) untouched.
+      const collapsedOfArea = Object.keys(axisCollapsed)
+        .filter((id) => id === a.id || id.startsWith(`${a.id}/`))
+        .sort()
+        .join(" ");
       out.push(
         ...derivedAreaMemo.get(
           a.id,
-          [a, enumKeys, soloMask, soloMatchedForArea, soloMatchCount, axisCollapsed, unitOfSeries],
+          [a, enumKeys, soloMask, soloMatchedForArea, soloMatchCount, collapsedOfArea, unitOfSeries],
           () =>
             deriveAreaConfigs(
               a,
@@ -2546,7 +2537,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
             setAreaPrimarySignal,
             selectSignal,
             setAreaYAxisMode,
-            toggleAreaCollapsed,
             toggleAxisCollapse,
             removeArea,
             dragArea,
@@ -2567,7 +2557,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
             onSetPrimarySignal: (k) => setAreaPrimarySignal(parent.id, k),
             onSelectSignal: (key, modifiers) => selectSignal(parent.id, key, modifiers),
             onSetYAxisMode: (mode) => setAreaYAxisMode(parent.id, mode),
-            onToggleCollapsed: () => toggleAreaCollapsed(parent.id),
             onToggleAxisCollapsed: () => toggleAxisCollapse(axisId),
             onFocus: () => setFocusedAreaId(parent.id),
             onRemoveArea: () => removeArea(parent.id),
@@ -2598,7 +2587,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setAreaPrimarySignal,
     selectSignal,
     setAreaYAxisMode,
-    toggleAreaCollapsed,
     toggleAxisCollapse,
     removeArea,
     dragArea,
@@ -2618,19 +2606,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (w: number) => setSignalsWidth(Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, w))),
     [],
   );
-  /// The axes that actually render. A collapsed *area* is one heading
-  /// row, however many axes it derives — so its non-head axes are not
-  /// rendered at all. They stay in `derivedAreaConfigs` (and so in
-  /// `derivedAxisIds`), which is what keeps their weights and manual
-  /// ranges alive across the collapse round-trip.
-  const renderedAxes = useMemo(
-    () => derivedAreaConfigs.filter((d) => d.isFirstOfParent || !d.collapsedByFlag),
-    [derivedAreaConfigs],
-  );
   /// Collapsed-ness of the rendered stack, positionally — what
   /// `splitterPartnerAbove` reads to pair splitters across collapsed
   /// axes.
-  const collapsedFlags = useMemo(() => renderedAxes.map((d) => d.collapsed), [renderedAxes]);
+  const collapsedFlags = useMemo(() => derivedAreaConfigs.map((d) => d.collapsed), [derivedAreaConfigs]);
   /// Which collapsed axis heads each contiguous run of them — one
   /// shared drag handle per run rather than one per axis (ADR 0026).
   const runHeadFlags = useMemo(() => collapsedRunHeads(collapsedFlags), [collapsedFlags]);
@@ -2931,7 +2910,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       )}
 
       <div className="plot-panel-areas">
-        {renderedAxes.map((d, idx) => {
+        {derivedAreaConfigs.map((d, idx) => {
           // Cursor Y is per-derived-axis (so each axis can carry its
           // own H1/H2). Look it up by the derived id.
           const yc = cursorYByArea[d.area.id];
@@ -2951,7 +2930,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // remove the only handle for resizing either side of it.
           const handlers = areaHandlers.get(d.area.id)!;
           const aboveIdx = splitterPartnerAbove(collapsedFlags, idx);
-          const above = aboveIdx == null ? null : renderedAxes[aboveIdx];
+          const above = aboveIdx == null ? null : derivedAreaConfigs[aboveIdx];
           const showSplitter = above != null;
           return (
             <Fragment key={d.area.id}>
@@ -3042,7 +3021,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 yScale={axisScales[d.area.id]}
               label={areaLabels.get(parent.id) ?? "Area"}
               subtitle={d.subtitle}
-              areaSignalCount={parent.signals.length}
               isFirst={idx === topAxisIdx}
               isLast={idx === bottomAxisIdx}
               // Focus marks the *logical area* the toolbar's "add

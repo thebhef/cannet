@@ -3562,7 +3562,7 @@ button.color-chip {
 .plot-area.collapsed .plot-area-signals {
   max-height: 8rem;
 }
-/* A *deliberate* collapse — the area's own toggle, or one axis's — is
+/* A *deliberate* collapse — one axis's own toggle — is
    one row: the heading, and nothing under it. There is no row list to
    bound, so drop the scroll cap and let the strip be exactly as tall as
    its head (ADR 0026). */
@@ -3827,34 +3827,21 @@ button.color-chip {
   cursor: grabbing;
 }
 
-/* Collapse / expand the whole plot area (ADR 0026). Sits on the parent
-   head beside the grip, so it stays reachable in the collapsed strip.
-   Hit area, ink and rotation are DisclosureToggle's; this keeps only
-   the site's own spacing and hover color. */
-.plot-area-collapse {
-  color: var(--text-dim);
-  padding: 0 0.2rem 0 0;
-}
-
-.plot-area-collapse:hover:not(:disabled) {
-  color: var(--text-muted);
-}
-
-/* Collapse / expand one derived axis (ADR 0026). It sits with the
-   axis's own label rather than with the area's grip, because that is the
-   thing it collapses — the area's toggle is the one beside the grip. */
+/* Collapse / expand one derived axis (ADR 0026) — the only collapse
+   there is. The leftmost element of every axis head, ahead of the
+   parent head's grip. Hit area, ink and rotation are DisclosureToggle's;
+   this keeps only the site's own spacing and hover color. */
 .plot-axis-collapse {
   color: var(--text-dim);
-  padding: 0 0.1rem 0 0.2rem;
+  padding: 0 0.2rem 0 0;
 }
 
 .plot-axis-collapse:hover:not(:disabled) {
   color: var(--text-muted);
 }
 
-/* Separates the area's name from the axis's own label. Decorative — the
-   axis disclosure sits between the two, so this is only the visual join
-   the concatenated label used to carry. */
+/* Separates the area's name from the axis's own label. Decorative — only the
+   visual join the concatenated label used to carry. */
 .plot-area-label-sep {
   color: var(--text-faint);
   padding-left: 0.25rem;
