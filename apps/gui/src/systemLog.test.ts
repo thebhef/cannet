@@ -204,10 +204,20 @@ describe("reconcileSnapshot", () => {
 
 describe("formatLogLine", () => {
   it("renders timestamp, level, source, and message", () => {
-    const line = formatLogLine(msg(0, "dbc", "warn", "boom", Date.UTC(2026, 4, 15, 12, 34, 56, 789)));
-    // Locale-independent: the level + source + message check; the
-    // exact "HH:MM:SS.SSS" string depends on the runner's timezone.
+    const line = formatLogLine(
+      msg(0, "dbc", "warn", "boom", Date.UTC(2026, 4, 15, 12, 34, 56, 789)),
+      defaultSettings().date_time_pattern,
+    );
+    // Locale-independent: the level + source + message check; the exact
+    // rendering of the default `date_time_pattern` depends on the
+    // runner's timezone (asserted in full in `format.test.ts`).
     expect(line).toMatch(/\[WARN\] dbc: boom$/);
+  });
+
+  it("shows milliseconds only when the pattern carries a fraction field", () => {
+    const m = msg(0, "dbc", "warn", "boom", Date.UTC(2026, 4, 15, 12, 34, 56, 789));
+    expect(formatLogLine(m, "HH:mm:ss")).not.toContain(".789");
+    expect(formatLogLine(m, "HH:mm:ss.SSS")).toContain(".789");
   });
 });
 

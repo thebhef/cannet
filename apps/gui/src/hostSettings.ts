@@ -161,6 +161,12 @@ export interface Settings {
   /// the frontend's `CanIdFormat`. App-wide: the trace and by-ID tables
   /// read it and pass it to their rows.
   can_id_format: string;
+  /// The TR35 pattern (ADR 0062) every displayed calendar time renders
+  /// through — `formatCalendarTime` in `format.ts` is the one formatter
+  /// every site shares. Default `yyyy-MM-dd HH:mm:ss`, local time. File
+  /// names, logs and the export range's editable From/To fields keep
+  /// their own formats regardless.
+  date_time_pattern: string;
   /// The column layout a *newly created* trace or by-ID table opens
   /// with; `null` = the app's built-in layout. Round-tripped by the
   /// host without interpretation — the column key set is declared here
@@ -250,6 +256,7 @@ export function defaultSettings(): Settings {
     plot_y_axis_mode: "unified",
     dbc_auto_reload: true,
     can_id_format: "hex",
+    date_time_pattern: "yyyy-MM-dd HH:mm:ss",
     trace_columns: null,
     signal_columns: null,
     float_exponential_below: 1e-4,

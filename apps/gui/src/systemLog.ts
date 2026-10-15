@@ -4,6 +4,7 @@
 // over it. This module is the pure logic — sorting / filtering —
 // that the panel and unit tests share.
 
+import { formatCalendarTime } from "./format";
 import { hostSettings } from "./hostSettings";
 import type { SystemMessage, SystemLogLevel } from "./types";
 
@@ -157,15 +158,14 @@ export function clearSystemLogMirror(mirror: SystemLogMirror): SystemLogMirror {
 }
 
 /// Format a Unix-epoch ms timestamp for display in the panel's
-/// timestamp column. Uses 24-hour local time with millisecond
-/// precision — the panel's font is monospace so the columns align.
-export function formatLogTimestamp(tsMs: number): string {
-  const d = new Date(tsMs);
-  const pad = (n: number, w = 2) => n.toString().padStart(w, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(
-    d.getMilliseconds(),
-    3,
-  )}`;
+/// timestamp column, through the `date_time_pattern` setting (ADR
+/// 0062) like every other calendar time — milliseconds show only when
+/// `pattern` carries a fraction field (`S`…). `seconds` is passed as
+/// its own anchor, like `logFileGrid.ts`'s formatters: a logged
+/// message's timestamp is always a real instant.
+export function formatLogTimestamp(tsMs: number, pattern: string): string {
+  const seconds = tsMs / 1000;
+  return formatCalendarTime(seconds, seconds, pattern) ?? "";
 }
 
 /// Character count of the longest message in `messages`.
@@ -186,8 +186,8 @@ export function longestMessageChars(messages: readonly SystemMessage[]): number 
 }
 
 /// Render one message as plain text for copy-entry / copy-all.
-export function formatLogLine(m: SystemMessage): string {
-  return `${formatLogTimestamp(m.ts_ms)} [${m.level.toUpperCase()}] ${m.source}: ${m.message}`;
+export function formatLogLine(m: SystemMessage, pattern: string): string {
+  return `${formatLogTimestamp(m.ts_ms, pattern)} [${m.level.toUpperCase()}] ${m.source}: ${m.message}`;
 }
 
 /// Count entries at or above `warn` past `sinceSeq`. The bulk recount

@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Combobox } from "./Combobox";
 import { DisclosureToggle } from "./DisclosureToggle";
 import type { BlfScanResult, Bus, DecodedMessageGroup } from "./types";
-import { formatElapsed } from "./format";
+import { formatCalendarTime, formatElapsed } from "./format";
+import { useSetting } from "./hostSettings";
 import { useGridview } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
 
@@ -92,6 +93,7 @@ export function BlfChannelMapModal(props: {
     signalCount,
   } = props;
   const { channels, markers } = scan;
+  const datePattern = useSetting("date_time_pattern");
   const [choices, setChoices] = useState<Record<number, ChannelChoice>>(() => {
     // Default seed: channel N → project bus at position N. The host
     // writes captures by re-channeling frames in the project's bus
@@ -131,6 +133,10 @@ export function BlfChannelMapModal(props: {
   const durationSeconds = hasSpan
     ? elapsedSeconds(scan.last_timestamp_ns as number, originNs)
     : 0;
+  // `start_unix_nanos` is its own anchor — a BLF scan's capture start is
+  // always a real instant, never a capture-relative one.
+  const startSeconds = scan.start_unix_nanos / 1e9;
+  const startedLabel = formatCalendarTime(startSeconds, startSeconds, datePattern) ?? "—";
 
   // --- import time range ---
   // Kept as display-relative seconds (0..durationSeconds) so the
@@ -268,7 +274,7 @@ export function BlfChannelMapModal(props: {
           {scan.frame_count.toLocaleString()} frame{scan.frame_count === 1 ? "" : "s"}
           {hasSpan ? ` · ${formatElapsed(durationSeconds, 3)}` : ""}
           {" · started "}
-          {new Date(scan.start_unix_nanos / 1e6).toLocaleString()}
+          {startedLabel}
         </p>
         {(hasSignals || hasMessages) && (
           <div className="blf-map-contents">
