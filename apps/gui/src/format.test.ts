@@ -271,15 +271,39 @@ describe("formatCalendarCell", () => {
 
   it("renders the whole pattern, then the elapsed column's fraction", () => {
     vi.stubEnv("TZ", "UTC");
-    expect(formatCalendarCell(base + 0.12345, base, PATTERN, 4)).toBe("2023-11-14 22:13:20.1234");
+    expect(formatCalendarCell(base + 0.12345, base, PATTERN, 4)).toBe("2023-11-14 22:13:20.1235");
     expect(formatCalendarCell(base + 0.5, base, "dd/MM/yyyy HH:mm:ss", 4)).toBe(
       "14/11/2023 22:13:20.5000",
     );
   });
 
-  it("truncates the fraction, so a time never reads as the next second", () => {
+  it("rounds the fraction, carrying into every field above it", () => {
     vi.stubEnv("TZ", "UTC");
-    expect(formatCalendarCell(base + 0.99999, base, PATTERN, 4)).toBe("2023-11-14 22:13:20.9999");
+    expect(formatCalendarCell(base + 0.99994, base, PATTERN, 4)).toBe("2023-11-14 22:13:20.9999");
+    // second, minute, hour, day, year
+    expect(formatCalendarCell(base + 0.99996, base, PATTERN, 4)).toBe("2023-11-14 22:13:21.0000");
+    expect(formatCalendarCell(base + 39.99996, base, PATTERN, 4)).toBe("2023-11-14 22:14:00.0000");
+    expect(formatCalendarCell(base + 1599.99996, base, PATTERN, 4)).toBe("2023-11-14 22:40:00.0000");
+    expect(formatCalendarCell(base + 6399.99996, base, PATTERN, 4)).toBe("2023-11-15 00:00:00.0000");
+    const newYearsEve = 1_798_761_599; // 2026-12-31T23:59:59Z
+    expect(formatCalendarCell(newYearsEve + 0.99996, newYearsEve, PATTERN, 4)).toBe(
+      "2027-01-01 00:00:00.0000",
+    );
+  });
+
+  it("carries the appended fraction into the am/pm flip", () => {
+    vi.stubEnv("TZ", "UTC");
+    const noon = 1_788_609_599; // 2026-09-05T11:59:59Z
+    expect(formatCalendarCell(noon + 0.99996, noon, "h:mm:ss a", 4)).toBe("12:00:00 PM.0000");
+  });
+
+  it("agrees with the elapsed column in the last digit", () => {
+    vi.stubEnv("TZ", "UTC");
+    for (const frac of [0.12346, 0.123449, 0.99996, 0.00004, 0.00006]) {
+      const elapsed = formatElapsed(frac).replace(/^.*\./, "");
+      const calendar = formatCalendarCell(base + frac, base, PATTERN, 4)!.replace(/^.*\./, "");
+      expect(calendar).toBe(elapsed);
+    }
   });
 
   it("appends nothing at zero fraction digits", () => {
@@ -291,7 +315,7 @@ describe("formatCalendarCell", () => {
     vi.stubEnv("TZ", "UTC");
     expect(formatCalendarCell(base + 0.12345, base, "HH:mm:ss.SSS", 4)).toBe("22:13:20.123");
     // How a plot tick renders: `calendarWindow`'s pattern, no extra digits.
-    expect(formatCalendarCell(base + 0.12345, base, "mm:ss.SSSS", 0)).toBe("13:20.1234");
+    expect(formatCalendarCell(base + 0.12345, base, "mm:ss.SSSS", 0)).toBe("13:20.1235");
   });
 
   it("renders the machine's own zone", () => {

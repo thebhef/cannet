@@ -8,7 +8,7 @@ validated on write through a display-mode parse that accepts `zzz`
 gap; amended (2026-10-14) — two more display formatters render through
 it for the `time_display = calendar` reading (ADR 0024 rule 2):
 `format.ts::formatCalendarCell` (a table time cell — the whole pattern
-plus the elapsed column's fraction digits, truncated per § 1, none
+plus the elapsed column's fraction digits, rounded per § 1, none
 added when the pattern has its own `S` field) and
 `format.ts::calendarWindow` (a plot's tick pattern and the x-axis title
 naming the window's dates through the pattern's date part).
@@ -43,7 +43,7 @@ implementation on each side, and the two must not drift.
    | day | `d`, `dd`; `EEE` (Mon), `EEEE` (Monday) |
    | hour | `H`, `HH` (0–23); `h`, `hh` (1–12) with `a` (AM/PM) |
    | minute / second | `mm`, `ss` |
-   | fraction | `S` … `SSSSSSSSS` (1–9 digits, truncated) |
+   | fraction | `S` … `SSSSSSSSS` (1–9 digits, rounded) |
    | offset | `xx` (`-0700`), `xxx` (`-07:00`), `X` / `XX` / `XXX` (`Z` at UTC) |
    | zone name | `zzz` (`PDT`) — display only |
 
@@ -52,14 +52,17 @@ implementation on each side, and the two must not drift.
    never a literal. Literal text is quoted (`'T'`); `''` is an
    apostrophe. Names are English (the TR35 root locale) — there is no
    locale layer, and one predictable rendering is the point.
-   Fractions truncate rather than round, so a time never reads as a
-   later second than the one it is in.
+   Fractions round (half up) to the field's digit count, on the instant
+   before any field is split, so a carry runs through the second, minute,
+   hour, day, year and the 12-hour flip. The elapsed column rounds too,
+   so the two readings of a time agree in their last digit. (Owner
+   ruling 2026-10-19; fractions previously truncated.)
 
 2. **Two implementations, one vector file.** The host's
    `apps/gui/src-tauri/src/date_pattern.rs` renders file names; the
    frontend's `apps/gui/src/datePattern.ts` renders display. Both test
    suites read `apps/gui/src/datePattern.vectors.json` (the host through
-   `include_str!`): every token, quoting, truncated fractions, offsets at
+   `include_str!`): every token, quoting, rounded fractions and their carries, offsets at
    UTC and on both sides of it (including half- and quarter-hour
    offsets), and the error cases **with their exact messages** — so the
    two sides refuse a pattern in the same words. Each vector carries an
