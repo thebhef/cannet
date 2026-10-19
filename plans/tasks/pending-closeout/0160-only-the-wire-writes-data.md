@@ -196,3 +196,5 @@ come from an intent.
   (the rule holds), not a bus fact. The Duplicate that fails silently on
   a stale frame id (168 phase 2) takes the same surface. To groom before
   launch: when the indicator clears (next successful send, recommended).
+- 2026-10-19 — **Owner ruling:** the failed-send indicator clears on the
+  next successful send. Design complete; awaiting the go to launch.
