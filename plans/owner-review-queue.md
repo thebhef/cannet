@@ -7,46 +7,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-- **168 — undo withdraws the host frames a Duplicate cloned.** ADR
-  0050 ("undo covers view state only, never re-runs a host side
-  effect") gained one sentence: undoing a transmit Duplicate removes
-  the frames it cloned (withdrawal only, skipping any another element
-  still groups); redo restores an empty transmit element as before.
-  Without it the clones were orphaned in the pool and in saved
-  projects. Undoing it: drop the `applyElementHistory` block and the
-  sentence, accept orphans. Yes/no.
-- **167 — the appended fraction when the pattern's last field is not
-  `ss`.** `formatCalendarCell` appends `.ffff` after the *whole*
-  pattern (Q2, literally); `dd/MM/yyyy HH:mm` then reads
-  `…12:34.1234`, a fraction of a minute. Default pattern unaffected.
-  Recommend: append only when the pattern ends in a seconds field,
-  else no fraction (the user chose a coarser pattern). Yes/no.
-- **167 — elapsed rounds, calendar truncates.** `formatElapsed` rounds
-  its last digit; calendar cells truncate (ADR 0062 § 1), so the same
-  frame can differ by one in its last digit between the two readings.
-  Recommend: `formatElapsed` truncates too (a time never reads later
-  than it is), one behaviour change across every elapsed display.
-  Yes/no.
-- **ruff rule set (fix-python-toolchain, f0faf9cb).** The branch pins
-  `[tool.ruff.lint] select = ["E4","E7","E9","F"]` — ruff's pre-0.16
-  default — under which 160 existing `noqa` directives suppress nothing
-  (`ruff check --select RUF100`: wire 12, sidecar 143, client 5). Ruff
-  0.16's own default (`--isolated`) finds wire 14 / sidecar 362 /
-  client 6, 356 of 382 auto-fixable, ~34 by hand. **A (recommended):**
-  adopt the 0.16 default, listed explicitly; dead `noqa`s go via
-  `RUF100`; ~1 h amend. **B:** keep the frozen set, add `RUF100`, delete
-  the 160 dead comments; ~15 min. Asked 2026-10-07; not a gate — rows 2–4
-  proceed. Detail: 0136 § Post-completion notes.
-
-- **160 phase 2: a manual send onto an unbound bus now gives no
-  feedback.** With the `Tx ✗` row gone, the only record of a host-side
-  refusal (no route, closed session, full request channel) is the
-  `wire_status` the command returns — and `TransmitPanel.tsx:315`
-  discards it. The bus-health refusal count (ADR 0060) holds only the
-  peer's refusals. Options: show the returned refusal in the transmit
-  panel (recommended — it is the answer the user asked for, not a bus
-  fact); and/or a host-side refusal count on bus health. Detail: 0160
-  § Status log, 2026-10-07.
+- **167 — the same row's last digit can differ between its two
+  readings.** With *Time display* = elapsed, a time cell (trace, By-ID,
+  Events, Signals) shows `12.3456` with the last digit **rounded**
+  (`format.ts::formatElapsed`). Switch the setting to calendar and the
+  same cell shows `…:12.3455` — the calendar formatter **truncates**
+  (ADR 0062 § 1: a time never reads later than it is). Recommend:
+  elapsed truncates too, so both readings of one frame agree. Yes/no.
 
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
@@ -69,14 +36,23 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   Database and trace views "but is slow, and maybe could yield some
   results early." The haystack change itself is kept. (0153 § Status
   log, 2026-10-07.) Needs grooming.
-- **The ruff 0.16 uplift** with the `[tool.ruff.lint] select` stanza —
-  "should get fixed"; "noqa is a smell" — a `noqa` survives only at a
-  genuine boundary with its reason stated, silent teardowns log at
-  DEBUG. (0136 § Post-completion notes, 2026-10-07.) In progress on
-  `fix-python-toolchain` with the item above.
-
-  
-- manually captured: saving cache message is shown on exit even if we just reloaded the cache and closed the project, which seems completely unnecessary
+- **The ruff 0.16 uplift** landed on `fix-python-toolchain` (#556) with
+  the version bumped and the rule set frozen at 0.15's default. Owner
+  2026-10-19: adopt 0.16's default and fix the code to satisfy it, no
+  suppressions. 379 findings (wire 14 / sidecar 359 / client 6; 353
+  auto-fixable, 120 of them dead `noqa`s). Launched 2026-10-19 on
+  `fix-ruff-default-rules` above the stack. (0136 § Post-completion
+  notes.)
+- **A failed manual send is reported** (owner 2026-10-19, was § 1): a
+  system-log row plus an indicator on the transmit element shown while
+  its last send attempt failed. The same surface takes the Duplicate
+  that fails silently on a stale frame id (168 phase 2, was § 3). To
+  groom: one question on the indicator's reset. (0160 § Status log.)
+- **The closing window says it is writing the capture on every exit**,
+  even when the project was opened from its cache and nothing was
+  captured (owner, captured by hand). `closing.rs::run_shutdown` flushes
+  unconditionally unless *Clear scratch cache on exit* is on; no
+  "nothing changed since load" check exists. Not started.
 
 ## 3. Fix later
 
@@ -100,31 +76,23 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   investigated. Awaits the owner: chase it (repeat-run under load) or
   watch.
 
-- **Duplicate fails silently on a stale transmit frame id** (168 phase
-  2, 2026-10-14): `clone_transmit_frames` is atomic, so one
-  `frameIds` entry no longer in the host pool makes the whole Duplicate
-  do nothing, with no message — the frontend has no error path for a
-  failed command (same class as the manual-send gap in § 1). Candidate:
-  one shared "command failed" surface (system log row + toast) both
-  can use.
-
 ## 4. Finished tasks awaiting acceptance
 
-- **Task 168 — Duplicate a Project Element** — `task168-duplicate`
-  d4dcf138 → `task168-duplicate-transmit` b378b2d7 (ADR 0027 and ADR
+- **Task 168 — Duplicate a Project Element** — #568 →
+  #569 (ADR 0027 and ADR
   0050 amended; new host command `clone_transmit_frames`). Project
   panel → element row → Duplicate. All 4 exit criteria met 2026-10-14
-  (0168 § Exit criteria). § 1 carries the ADR 0050 sentence; § 3 the
-  silent-failure finding.
-- **Task 167 — Calendar Time in Every View** — `task167-time-display`
-  f02433f4 → `task167-tables` 3f042314 → `task167-plot` eaa65a22 (ADR
+  (0168 § Exit criteria). ADR 0050 sentence accepted 2026-10-19;
+  the silent failure is § 2's reporting item.
+- **Task 167 — Calendar Time in Every View** — #565 →
+  #566 → #567 (ADR
   0024 rule 2 amended; ADR 0062 status). Settings → General → *Time
   display*, or the palette's *Toggle calendar time*. All 5 exit
-  criteria met 2026-10-14 (0167 § Exit criteria). § 1 carries two
-  readings on the appended fraction; perf reading owed with 166's.
-- **Task 166 — Plot Panel Fixes** — `task166-axis-collapse` e7f941f9
-  → `task166-label-ellipsis` 15b27cb4 → `task166-copy-drag` b24d62fc →
-  `task166-own-sample-lines` d40c57d8 (ADR 0026 and ADR 0045 amended).
+  criteria met 2026-10-14 (0167 § Exit criteria). The fraction stays
+  as specced (2026-10-19); § 1 carries the rounding question; perf
+  reading owed with 166's.
+- **Task 166 — Plot Panel Fixes** — #561 → #562 →
+  #563 → #564 (ADR 0026 and ADR 0045 amended).
   All 5 exit criteria met 2026-10-14 (0166 § Exit criteria). Your run
   is the check for three things jsdom cannot see: the label ellipsis in
   a real browser, the macOS Alt-drag copy and its cursor, and the
@@ -265,8 +233,6 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   and `fix-plot-square-markers`, after the owner reported `Points: On`
   unusable on a long trace; owner verified the pair on that project the
   same day (detail: 0146 § Status log, 2026-09-21).
-
-
 
 ## 5. Housekeeping owed at close-out
 
