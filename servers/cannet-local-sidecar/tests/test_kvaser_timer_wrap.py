@@ -20,7 +20,6 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 
 def _ensure_on_path() -> None:
@@ -29,7 +28,7 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-from cannet_local_sidecar.driver_python_can import (  # noqa: E402
+from cannet_local_sidecar.driver_python_can import (
     _KVASER_WRAP_PERIOD_S,
     PythonCanChannel,
 )
@@ -70,7 +69,7 @@ class _PlainBus:
         self._stamps = list(stamps)
         self.state = "ACTIVE"
 
-    def recv(self, timeout: float) -> Optional[_Msg]:
+    def recv(self, timeout: float) -> _Msg | None:
         if not self._stamps:
             return None
         return _Msg(self._stamps.pop(0))

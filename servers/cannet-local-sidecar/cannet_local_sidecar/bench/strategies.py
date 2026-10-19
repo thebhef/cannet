@@ -26,7 +26,7 @@ runs on hardware and on :mod:`.fake`.
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from .. import driver as drv
 
@@ -58,8 +58,8 @@ class Strategy:
     """
 
     name: str
-    recover: Optional[Recover]
-    on_open: Optional[OnOpen] = None
+    recover: Recover | None
+    on_open: OnOpen | None = None
     pcan_only: bool = False
 
 

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -35,10 +34,9 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-from cannet_local_sidecar import driver as drv  # noqa: E402
-from cannet_local_sidecar import driver_python_can as dpc  # noqa: E402
-from cannet_local_sidecar.driver_python_can import PythonCanChannel  # noqa: E402
-
+from cannet_local_sidecar import driver as drv
+from cannet_local_sidecar import driver_python_can as dpc
+from cannet_local_sidecar.driver_python_can import PythonCanChannel
 
 # ----- Fakes shaped like the XL structs --------------------------------------
 
@@ -48,9 +46,9 @@ class _ChipState:
     both structs share, in the order the header declares them."""
 
     def __init__(self, bus_status: int, tx: int, rx: int) -> None:
-        self.busStatus = bus_status  # noqa: N815 - the XL field's own name
-        self.txErrorCounter = tx  # noqa: N815
-        self.rxErrorCounter = rx  # noqa: N815
+        self.busStatus = bus_status
+        self.txErrorCounter = tx
+        self.rxErrorCounter = rx
 
 
 class _TagData:
@@ -61,18 +59,18 @@ class _TagData:
 class _ClassicEvent:
     """``XLevent``: the chip state lands in ``tagData.chipState``."""
 
-    def __init__(self, tag: int, chip_state: Optional[_ChipState] = None) -> None:
+    def __init__(self, tag: int, chip_state: _ChipState | None = None) -> None:
         self.tag = tag
-        self.tagData = _TagData(chipState=chip_state)  # noqa: N815
+        self.tagData = _TagData(chipState=chip_state)
 
 
 class _FdEvent:
     """``XLcanRxEvent``: the chip state lands in ``tagData.canChipState``,
     a different union member with the same three leading fields."""
 
-    def __init__(self, tag: int, chip_state: Optional[_ChipState] = None) -> None:
+    def __init__(self, tag: int, chip_state: _ChipState | None = None) -> None:
         self.tag = tag
-        self.tagData = _TagData(canChipState=chip_state)  # noqa: N815
+        self.tagData = _TagData(canChipState=chip_state)
 
 
 class _VectorBus:
@@ -87,7 +85,7 @@ class _VectorBus:
 
     def __init__(
         self,
-        chip_state: Optional[tuple[int, int, int]] = None,
+        chip_state: tuple[int, int, int] | None = None,
         *,
         request_raises: bool = False,
     ) -> None:

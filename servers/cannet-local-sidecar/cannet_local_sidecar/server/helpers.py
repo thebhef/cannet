@@ -15,7 +15,6 @@ import importlib
 import logging
 import os
 import time
-from typing import Optional
 
 from cannet_python_wire._proto import cannet_pb2 as pb
 
@@ -65,7 +64,7 @@ def _now_ns() -> int:
     return time.time_ns()
 
 
-def _log_envelope(level: "pb.LogLevel.V", message: str) -> pb.Envelope:
+def _log_envelope(level: pb.LogLevel.V, message: str) -> pb.Envelope:
     return pb.Envelope(
         log=pb.LogMessage(
             timestamp_ns=_now_ns(),
@@ -92,7 +91,7 @@ def _clock_reply_envelope(t1: int, t2: int) -> pb.Envelope:
     return pb.Envelope(clock_reply=pb.ClockReply(t1=t1, t2=t2, t3=_now_ns()))
 
 
-def _error_envelope(code: "pb.Error.Code.V", message: str) -> pb.Envelope:
+def _error_envelope(code: pb.Error.Code.V, message: str) -> pb.Envelope:
     return pb.Envelope(error=pb.Error(code=code, message=message))
 
 
@@ -112,13 +111,13 @@ def _configure_to_open_config(cfg: pb.ConfigureBus) -> drv.OpenConfig:
     )
 
 
-def _configure_error_row_cap(cfg: pb.ConfigureBus) -> Optional[int]:
+def _configure_error_row_cap(cfg: pb.ConfigureBus) -> int | None:
     """The error-row cap a ``ConfigureBus`` asks for (ADR 0060 rule 2),
     or ``None`` when it leaves the field unset -- the server's default."""
     return int(cfg.error_row_cap) if cfg.HasField("error_row_cap") else None
 
 
-def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
+def _state_name_to_proto(name: str) -> pb.ControllerState.V:
     if name == drv.STATE_WARNING:
         return pb.CONTROLLER_STATE_WARNING
     if name == drv.STATE_PASSIVE:
@@ -133,11 +132,11 @@ def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
 def _interface_state(
     *,
     channel_id: str,
-    state: "pb.ControllerState.V",
+    state: pb.ControllerState.V,
     tec: int,
     rec: int,
-    rx_overruns: Optional[int],
-    as_of_ns: Optional[int] = None,
+    rx_overruns: int | None,
+    as_of_ns: int | None = None,
 ) -> pb.InterfaceState:
     """One ``InterfaceState`` message, leaving ``rx_overruns`` **unset**
     where the backend reports no receive loss at all.

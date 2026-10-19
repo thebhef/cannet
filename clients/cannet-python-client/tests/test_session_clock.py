@@ -17,11 +17,10 @@ import grpc
 import pytest
 from cannet_python_wire._proto import cannet_pb2 as pb
 from cannet_python_wire._proto import cannet_pb2_grpc as pb_grpc
+from conftest import add_server_info
 
 from cannet_python_client import clock, trust
 from cannet_python_client.session import Session
-
-from conftest import add_server_info  # noqa: E402 - pytest rootdir
 
 FACTORY = "virtual:bus0"
 

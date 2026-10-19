@@ -48,7 +48,7 @@ class FakeServerInfo(info_grpc.CannetInfoServicer):
     def __init__(self, packages: Sequence[str] = (PROTOCOL_PACKAGE,)) -> None:
         self._packages = list(packages)
 
-    def ServerInfo(  # noqa: N802 — the gRPC method name is the wire's
+    def ServerInfo(
         self, request: info_pb.ServerInfoRequest, context: grpc.ServicerContext
     ) -> info_pb.ServerInfoResponse:
         return info_pb.ServerInfoResponse(

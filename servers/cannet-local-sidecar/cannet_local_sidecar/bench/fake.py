@@ -33,7 +33,7 @@ import collections
 import dataclasses
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from .. import driver as drv
 from ..driver_python_can import PythonCanChannel, _disable_pcan_status_frames
@@ -261,22 +261,22 @@ class _FakeBasic:
     def __init__(self, wire: FakeWire) -> None:
         self._wire = wire
 
-    def Initialize(self, handle, rate, *_args) -> int:  # noqa: N802 - PCAN-Basic's name
+    def Initialize(self, handle, rate, *_args) -> int:
         return self._wire.initialize(handle)
 
-    def InitializeFD(self, handle, bitrate) -> int:  # noqa: N802
+    def InitializeFD(self, handle, bitrate) -> int:
         return self._wire.initialize(handle)
 
-    def Uninitialize(self, handle) -> int:  # noqa: N802
+    def Uninitialize(self, handle) -> int:
         return self._wire.uninitialize(handle)
 
-    def Reset(self, handle) -> int:  # noqa: N802
+    def Reset(self, handle) -> int:
         return self._wire.reset(handle)
 
-    def GetStatus(self, handle) -> int:  # noqa: N802
+    def GetStatus(self, handle) -> int:
         return self._wire.status(handle)
 
-    def SetValue(self, handle, param, value) -> int:  # noqa: N802
+    def SetValue(self, handle, param, value) -> int:
         from can.interfaces.pcan.basic import (  # type: ignore[import-untyped]
             PCAN_BUSOFF_AUTORESET,
             PCAN_PARAMETER_ON,
@@ -348,7 +348,7 @@ class FakeDriver:
             raise KeyError(channel_id)
         try:
             bus = FakePcanBus(self.wire, channel_id, fd=config.fd)
-        except Exception as e:  # noqa: BLE001 - fake mirrors the driver edge; re-raised as OSError
+        except Exception as e:
             raise OSError(f"open {channel_id}: {e}") from e
         _disable_pcan_status_frames(bus)
         return PythonCanChannel(
@@ -449,10 +449,10 @@ def apply(wire: FakeWire, step: Apply, under_test: str) -> None:
 
 
 __all__ = [
+    "SCENARIOS",
     "FakeDriver",
     "FakePcanBus",
     "FakeWire",
-    "SCENARIOS",
     "Scenario",
     "apply",
 ]

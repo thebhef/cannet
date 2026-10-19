@@ -37,11 +37,11 @@ from .shared_interface import _InterfaceRegistry as _InterfaceRegistry
 from .shared_interface import _SharedInterface as _SharedInterface
 
 __all__ = [
-    "CannetServerService",
     "DEFAULT_DRIVER_MODULE",
     "DRIVER_MODULE_ENV",
-    "ServerInfoService",
     "WIRE_SOURCE",
+    "CannetServerService",
+    "ServerInfoService",
     "bind_with_retry",
     "load_driver",
     "serve",

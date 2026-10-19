@@ -63,7 +63,7 @@ from cannet_python_wire._proto import cannet_pb2_grpc as pb_grpc
 from . import clock, tls
 from .trust import ServerTarget
 
-_log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 #: Scheme of the virtual-bus factory ids defined by ADR 0021. A bare
 #: id under it is a factory; the allocated participants and the bridges
@@ -522,7 +522,9 @@ class Session:
         except grpc.RpcError as exc:
             if not self._closing.is_set():
                 self._fail(SessionError(f"the session stream failed: {exc}"))
-        except Exception as exc:  # noqa: BLE001 - never lose the reason
+        # never lose the reason
+        except Exception as exc:
+            _logger.exception("session stream failed")
             self._fail(SessionError(f"the session stream failed: {exc!r}"))
         finally:
             self._inbox.put(_EndOfStream)
@@ -540,7 +542,7 @@ class Session:
         elif body == "interface_state":
             self.controller_state = envelope.interface_state.state
         elif body == "log":
-            _log.log(
+            _logger.log(
                 _LOG_LEVELS.get(envelope.log.level, logging.INFO),
                 "%s: %s",
                 envelope.log.source,
@@ -599,7 +601,7 @@ class Session:
             # second, and a line each would bury everything else in the
             # application's log.
             first = self.rejections.record(error.code, error.message)
-            _log.log(
+            _logger.log(
                 logging.WARNING if first else logging.DEBUG,
                 "server reported a per-frame error (%s): %s",
                 pb.Error.Code.Name(error.code),

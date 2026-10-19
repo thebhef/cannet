@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 
 import grpc
-
 from cannet_python_wire import PROTOCOL_PACKAGE
 from cannet_python_wire._proto import cannet_info_pb2 as info_pb
 from cannet_python_wire._proto import cannet_info_pb2_grpc as info_pb_grpc
@@ -38,7 +37,7 @@ class ServerInfoService(info_pb_grpc.CannetInfoServicer):
     def __init__(self, *, instance_name: str = "") -> None:
         self._instance_name = instance_name
 
-    def ServerInfo(  # noqa: N802 — the gRPC method name is the wire's
+    def ServerInfo(
         self, request: info_pb.ServerInfoRequest, context: grpc.ServicerContext
     ) -> info_pb.ServerInfoResponse:
         _log.debug("ServerInfo -> %s", PROTOCOL_PACKAGE)

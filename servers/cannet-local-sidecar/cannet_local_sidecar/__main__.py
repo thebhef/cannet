@@ -59,12 +59,9 @@ import logging.handlers
 import signal
 import sys
 import threading
-import traceback
 from pathlib import Path
-from typing import Optional
 
 from . import __version__
-
 
 # Banner logger — see module docstring. Configured once at import time
 # so even pre-`main` failures (rare, but possible if a side-effect
@@ -104,7 +101,7 @@ LOG_FILE_BACKUP_COUNT = 4
 NOISY_PER_FRAME_LOGGERS = ("can.pcan",)
 
 
-def _configure_logging(level: str, log_file: Optional[str]) -> Optional[Path]:
+def _configure_logging(level: str, log_file: str | None) -> Path | None:
     """Wire up the two sinks; return the logfile path actually opened.
 
     ``level`` governs **stderr only**. When ``log_file`` is given, the
@@ -297,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
         BANNER.info("sidecar\tlogfile\t%s", log_path)
     try:
         return _run(args)
-    except Exception as e:  # noqa: BLE001 — top-level last-chance handler
+    # top-level last-chance handler
+    except Exception as e:
         # Two records: a single-line structured error banner so the
         # host's classifier promotes it to Error level, and a
         # full multi-line traceback through the default logging tree
@@ -306,9 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             "sidecar\terror\t%s",
             f"{type(e).__name__}: {e}".replace("\n", " "),
         )
-        logging.getLogger("cannet_local_sidecar").error(
-            "sidecar fatal error\n%s", traceback.format_exc()
-        )
+        logging.getLogger("cannet_local_sidecar").exception("sidecar fatal error")
         return 1
 
 

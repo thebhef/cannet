@@ -24,7 +24,7 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_local_sidecar import __main__ as entry  # noqa: E402
+from cannet_local_sidecar import __main__ as entry
 
 
 @pytest.fixture(autouse=True)

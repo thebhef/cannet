@@ -27,7 +27,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -40,11 +39,12 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_local_sidecar import driver as drv  # noqa: E402
-from cannet_local_sidecar import server as srv  # noqa: E402
-from cannet_local_sidecar.server import shared_interface as si  # noqa: E402
-from cannet_local_sidecar.server.outbox import SessionOutbox  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire._proto import cannet_pb2 as pb
+
+from cannet_local_sidecar import driver as drv
+from cannet_local_sidecar import server as srv
+from cannet_local_sidecar.server import shared_interface as si
+from cannet_local_sidecar.server.outbox import SessionOutbox
 
 
 def _frame(i: int) -> drv.Frame:
@@ -70,7 +70,7 @@ class _FakeChannel:
     def __init__(self, channel_id: str = "fake:0", *, echo: bool = True) -> None:
         self.channel_id = channel_id
         self._echo = echo
-        self._q: "queue.Queue[drv.Frame]" = queue.Queue()
+        self._q: queue.Queue[drv.Frame] = queue.Queue()
         self._state = drv.ControllerState()
         self.closed = threading.Event()
         self.sent: list[drv.Frame] = []
@@ -78,7 +78,7 @@ class _FakeChannel:
     def enqueue(self, frame: drv.Frame) -> None:
         self._q.put(frame)
 
-    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+    def recv(self, timeout_s: float) -> drv.Frame | None:
         try:
             return (
                 self._q.get(timeout=timeout_s)
@@ -133,7 +133,7 @@ def _wait_for(predicate, *, timeout_s: float = 2.0, poll_s: float = 0.01) -> Non
 
 
 def _drain(
-    outbox: "queue.Queue",
+    outbox: queue.Queue,
     *,
     kind: str,
     count: int = 1,
@@ -536,7 +536,7 @@ class _ReopenFailsDriver:
     def __init__(self, channel_id: str = "fake:0") -> None:
         self._channel_id = channel_id
         self.opens = 0
-        self.first: Optional[_FakeChannel] = None
+        self.first: _FakeChannel | None = None
 
     def list_channels(self):
         return [drv.Channel(id=self._channel_id, display_name="fake")]
@@ -551,7 +551,7 @@ class _ReopenFailsDriver:
         raise OSError("reopen boom")
 
 
-def _new_shared() -> "srv._SharedInterface":
+def _new_shared() -> srv._SharedInterface:
     return srv._SharedInterface(
         driver=_FakeDriver(), channel_id="fake:0", initial_config=drv.OpenConfig()
     )
@@ -615,7 +615,7 @@ class _CloseRacingChannel(_FakeChannel):
         super().__init__(channel_id=channel_id)
         self.in_recv = threading.Event()
 
-    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+    def recv(self, timeout_s: float) -> drv.Frame | None:
         self.in_recv.set()
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
@@ -634,7 +634,7 @@ class _AlwaysFailingRecvChannel(_FakeChannel):
     """A channel whose reads fail for a reason that is *not* the close —
     a genuine driver fault the operator has to hear about."""
 
-    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+    def recv(self, timeout_s: float) -> drv.Frame | None:
         time.sleep(0.01)
         raise OSError("bus off, or the cable fell out")
 
@@ -656,7 +656,7 @@ class _ChannelDriver(_FakeDriver):
 
 
 def test_nominal_close_does_not_warn_about_the_read_it_interrupted(
-    caplog: "pytest.LogCaptureFixture",
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The last unsubscribe closes the channel out from under a reader
     that is already inside ``recv``. That read failing is the close doing
@@ -680,7 +680,7 @@ def test_nominal_close_does_not_warn_about_the_read_it_interrupted(
 
 
 def test_reconfigure_swap_does_not_warn_about_the_read_it_interrupted(
-    caplog: "pytest.LogCaptureFixture",
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A ``ConfigureBus`` on an open interface closes the old channel out
     from under a reader already inside ``recv()`` -- the same race as a
@@ -708,7 +708,7 @@ def test_reconfigure_swap_does_not_warn_about_the_read_it_interrupted(
 
 
 def test_a_read_failure_outside_a_close_still_warns(
-    caplog: "pytest.LogCaptureFixture",
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The counterpart guard: silencing the close race must not silence a
     real driver fault on an interface nobody asked to close."""
@@ -743,7 +743,7 @@ class _DyingChannel(_FakeChannel):
         self.dead = threading.Event()
         self.recv_calls = 0
 
-    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+    def recv(self, timeout_s: float) -> drv.Frame | None:
         self.recv_calls += 1
         if self.dead.is_set():
             time.sleep(0.01)
@@ -800,7 +800,7 @@ def test_an_interface_that_comes_back_is_reported_active_again() -> None:
 
 
 def test_a_persistent_read_failure_is_logged_once_not_at_the_retry_rate(
-    caplog: "pytest.LogCaptureFixture",
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The rx pump retries a failed read every 100 ms forever. Logging
     each attempt put ten lines a second into the operator's System
@@ -867,7 +867,7 @@ class _CountingChannel(_FakeChannel):
             raise OSError("device removed")
         return super().state()
 
-    def rx_loss(self) -> Optional[int]:
+    def rx_loss(self) -> int | None:
         if self.fail.is_set():
             raise OSError("device removed")
         return self.overruns
@@ -959,7 +959,7 @@ class _WrappingChannel(_FakeChannel):
         return self.wraps
 
 
-def _wrap_warnings(outbox: "queue.Queue", *, timeout_s: float = 3.0) -> list:
+def _wrap_warnings(outbox: queue.Queue, *, timeout_s: float = 3.0) -> list:
     """Every WARNING ``LogMessage`` about a timer rollover seen on
     ``outbox`` within ``timeout_s``. Drains for the whole window rather
     than stopping at the first, so "exactly one" is testable."""
@@ -1059,7 +1059,7 @@ _BUS_OFF = drv.ControllerState(state=drv.STATE_BUS_OFF, tec=256, rec=0)
 
 
 @pytest.fixture
-def latched(monkeypatch: "pytest.MonkeyPatch"):
+def latched(monkeypatch: pytest.MonkeyPatch):
     """A subscribed interface on a ``_LatchingChannel`` whose state poll
     is driven by hand, against an injected clock, so the threshold is
     exercised without sleeping through it: the pump thread's own cadence
@@ -1076,7 +1076,7 @@ def latched(monkeypatch: "pytest.MonkeyPatch"):
         reg.unsubscribe("fake:0", outbox)
 
 
-def _states(outbox: "SessionOutbox") -> list[int]:
+def _states(outbox: SessionOutbox) -> list[int]:
     out = []
     while True:
         try:
@@ -1096,7 +1096,7 @@ def _transitions(states: list[int]) -> list[int]:
 def test_a_bus_off_controller_is_reset_once_the_threshold_passes_and_not_before(
     latched,
 ) -> None:
-    driver, shared, outbox = latched
+    driver, shared, _outbox = latched
     ch = driver.opened[0]
     ch.set_state(_BUS_OFF)
     after = si._BUS_OFF_RESET_AFTER_S
@@ -1115,7 +1115,7 @@ def test_a_controller_that_recovers_before_the_threshold_is_left_alone(
     milliseconds, so a bus-off reading that clears by itself must not be
     reset -- and the clear re-arms the count, so a second bus-off is
     timed from its own start rather than the first one's."""
-    driver, shared, outbox = latched
+    driver, shared, _outbox = latched
     ch = driver.opened[0]
     after = si._BUS_OFF_RESET_AFTER_S
 
@@ -1151,10 +1151,10 @@ def test_the_recovery_is_published_so_bus_health_shows_it(latched) -> None:
 
 
 def test_a_reset_that_raises_is_retried_on_the_next_pass_and_warned_once(
-    latched, caplog: "pytest.LogCaptureFixture"
+    latched, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
-    driver, shared, outbox = latched
+    driver, shared, _outbox = latched
     ch = driver.opened[0]
     ch.set_state(_BUS_OFF)
     ch.fail_resets = 2
@@ -1175,10 +1175,10 @@ def test_a_reset_that_raises_is_retried_on_the_next_pass_and_warned_once(
 
 
 def test_each_reset_logs_one_info_line(
-    latched, caplog: "pytest.LogCaptureFixture"
+    latched, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG, logger="cannet_local_sidecar")
-    driver, shared, outbox = latched
+    driver, shared, _outbox = latched
     ch = driver.opened[0]
     ch.set_state(_BUS_OFF)
     shared._poll_state(ch, now_s=0.0)
@@ -1221,7 +1221,7 @@ def test_a_backend_with_no_in_place_reset_is_reopened(latched) -> None:
 
 
 def test_a_backend_without_the_hook_is_reopened(
-    monkeypatch: "pytest.MonkeyPatch",
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The hook is optional, like ``timer_wraps``: an alternative driver
     # that has never heard of it still gets its bus back.
@@ -1266,7 +1266,7 @@ class _ExclusiveDriver(_ChannelDriver):
 
 
 @pytest.fixture
-def exclusive(monkeypatch: "pytest.MonkeyPatch"):
+def exclusive(monkeypatch: pytest.MonkeyPatch):
     """A subscribed interface on an ``_ExclusiveDriver``, its state poll
     driven by hand against an injected clock."""
     monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
@@ -1286,7 +1286,7 @@ def test_a_bus_off_reopen_closes_the_old_channel_before_opening_the_fresh_one(
 ) -> None:
     """The reopen used to open the fresh channel while still holding the
     old one, which PEAK refuses on every attempt (ADR 0039)."""
-    driver, shared, outbox = exclusive
+    driver, shared, _outbox = exclusive
     ch = driver.opened[0]
     ch.set_state(_BUS_OFF)
     shared._poll_state(ch, now_s=0.0)
@@ -1299,7 +1299,7 @@ def test_a_bus_off_reopen_closes_the_old_channel_before_opening_the_fresh_one(
 def test_a_reconfigure_closes_the_old_channel_before_opening_the_fresh_one(
     exclusive,
 ) -> None:
-    driver, shared, outbox = exclusive
+    driver, shared, _outbox = exclusive
     shared.reconfigure(drv.OpenConfig(bitrate_bps=250_000))
     assert driver.opened[0].closed.is_set()
     assert shared._current_channel() is driver.opened[1]
@@ -1307,7 +1307,7 @@ def test_a_reconfigure_closes_the_old_channel_before_opening_the_fresh_one(
 
 
 def test_a_reopen_that_fails_leaves_no_channel_and_is_retried_each_pass(
-    exclusive, caplog: "pytest.LogCaptureFixture"
+    exclusive, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The open after the close can fail too. The closed channel must not
     stay current -- it would read active, disarm the reset, and spin the
@@ -1354,7 +1354,7 @@ def test_a_reopen_that_fails_leaves_no_channel_and_is_retried_each_pass(
 
 
 def test_the_pumps_retry_a_failed_reopen_without_spinning(
-    monkeypatch: "pytest.MonkeyPatch",
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The same, on the pumps' own cadence: the interface comes back by
     itself, and while it has no channel the receive pump waits rather
@@ -1406,7 +1406,7 @@ def test_sends_refused_bus_off_arm_the_reset_whatever_the_state_reads(
     minutes while nothing tried again. A refusal is the driver saying
     bus-off, so it arms the reset even when the state read says active
     -- or unavailable, as PEAK's status word does after a failed open."""
-    driver, shared, outbox = exclusive
+    driver, shared, _outbox = exclusive
     ch = driver.opened[0]
     ch.set_state(reading)
     after = si._BUS_OFF_RESET_AFTER_S
@@ -1422,7 +1422,7 @@ def test_sends_refused_bus_off_arm_the_reset_whatever_the_state_reads(
 def test_a_bus_off_refusal_followed_by_an_accepted_send_does_not_arm(
     exclusive,
 ) -> None:
-    driver, shared, outbox = exclusive
+    driver, shared, _outbox = exclusive
     ch = driver.opened[0]
     shared._note_tx_refused(ch, _REFUSED_BUS_OFF, now_s=0.0)
     shared._note_tx_accepted(ch, now_s=0.1)
@@ -1440,7 +1440,7 @@ _QUEUE_FULL = drv.TxRejected(
 
 
 @pytest.fixture
-def silent(monkeypatch: "pytest.MonkeyPatch"):
+def silent(monkeypatch: pytest.MonkeyPatch):
     """A subscribed interface on a plain fake channel, its state poll and
     its rx/refusal notes driven by hand against an injected clock."""
     monkeypatch.setattr(si, "_STATE_POLL_INTERVAL_S", 3600.0)
@@ -1456,7 +1456,7 @@ def silent(monkeypatch: "pytest.MonkeyPatch"):
 
 
 def test_queue_full_refusals_with_two_seconds_of_silence_reopen_the_channel(
-    silent, caplog: "pytest.LogCaptureFixture"
+    silent, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A controller PEAK's driver reset behind our back sits idle with
     its transmit queue full: no error frames, no data, every send
@@ -1564,7 +1564,7 @@ class _QueueFullChannel(_FakeChannel):
         raise _QUEUE_FULL
 
 
-def test_the_pumps_feed_the_rule(monkeypatch: "pytest.MonkeyPatch") -> None:
+def test_the_pumps_feed_the_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     """The tx pump records a queue-full refusal from the current channel
     and the rx pump records each frame it reads, on the monotonic clock
     the state pump passes to the poll."""
@@ -1600,8 +1600,8 @@ class _EchoGatingChannel(_FakeChannel):
 
 
 def test_the_rx_stats_line_reports_dropped_echoes(
-    monkeypatch: "pytest.MonkeyPatch",
-    caplog: "pytest.LogCaptureFixture",
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(si, "_RX_STATS_INTERVAL_NS", 1_000_000)
     caplog.set_level(logging.INFO, logger="cannet_local_sidecar")
@@ -1624,8 +1624,8 @@ def test_the_rx_stats_line_reports_dropped_echoes(
 
 
 def test_the_rx_stats_line_omits_the_field_where_nothing_is_gated(
-    monkeypatch: "pytest.MonkeyPatch",
-    caplog: "pytest.LogCaptureFixture",
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(si, "_RX_STATS_INTERVAL_NS", 1_000_000)
     caplog.set_level(logging.INFO, logger="cannet_local_sidecar")

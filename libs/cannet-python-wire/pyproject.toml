@@ -32,13 +32,9 @@ dependencies = [
 # and running the tests. Kept out of the default install so the runtime
 # venv stays small, matching the sidecar's and the client's split.
 #
-# ruff's default rule selection changes between 0.15 and 0.16 (E4xx
-# out; I/UP/S/PL/RUF in) rather than only widening — the same file
-# would lint differently on either side of that boundary, which is
-# exactly what a shared package must not do. `[tool.ruff.lint] select`
-# below makes the previously-implicit 0.15 default (`E4`, `E7`, `E9`,
-# `F`) explicit and identical across all three packages, so the 0.16
-# uplift changes the version, not the enforced rule set.
+# ruff's rule set is its own default selection, which differs between
+# 0.15 and 0.16, so the pin below is what keeps a shared package linting
+# the same file the same way everywhere.
 #
 # grpcio-tools has no upper pin: **the generator and the runtimes it
 # regenerates for are re-locked together, in the same change, every
@@ -73,12 +69,10 @@ packages = ["cannet_python_wire"]
 target-version = "py313"
 extend-exclude = ["cannet_python_wire/_proto"]
 
-# The rule set ruff 0.15 was enforcing by default, made explicit so a
-# ruff version bump never silently changes what's enforced (see the
-# `dev` extra comment above). Identical across all three Python
-# packages.
-[tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+# Lint rules: ruff's own default selection. The `ruff>=0.16,<0.17` pin
+# fixes which default applies, identically across all three Python
+# packages. Fix the code to satisfy it; do not add `ignore`,
+# `per-file-ignores` or `noqa` to get around it.
 
 [tool.mypy]
 python_version = "3.13"
