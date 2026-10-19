@@ -15,7 +15,7 @@
 //! | day | `d`, `dd`; `EEE` (Mon), `EEEE` (Monday) |
 //! | hour | `H`, `HH` (0–23); `h`, `hh` (1–12), `a` (AM/PM) |
 //! | minute / second | `mm`, `ss` |
-//! | fraction | `S` … `SSSSSSSSS` (1–9 digits, truncated) |
+//! | fraction | `S` … `SSSSSSSSS` (1–9 digits, rounded) |
 //! | offset | `xx` (`-0700`), `xxx` (`-07:00`), `X` / `XX` / `XXX` (`Z` at UTC) |
 //!
 //! Letters are reserved as TR35 reserves them: an ASCII letter outside
@@ -75,7 +75,7 @@ enum Field {
     AmPm,
     Minute,
     Second,
-    /// `S`…`SSSSSSSSS`: digits of the fraction, truncated.
+    /// `S`…`SSSSSSSSS`: digits of the fraction, rounded.
     Fraction(usize),
     /// `xx` (`-0700`) / `xxx` (`-07:00`): never `Z`.
     OffsetX(usize),
@@ -240,7 +240,20 @@ impl DatePattern {
 
     /// `dt` rendered per this pattern, in `dt`'s own offset.
     pub(crate) fn format<Tz: TimeZone>(&self, dt: &DateTime<Tz>) -> String {
-        let dt = dt.fixed_offset();
+        let mut dt = dt.fixed_offset();
+        // Round to the pattern's finest `S` field first, so a carry
+        // reaches every other field (ADR 0062 § 1).
+        let digits = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Field(Field::Fraction(d)) => Some(*d),
+                _ => None,
+            })
+            .max();
+        if let Some(digits) = digits {
+            dt = round_fraction(dt, digits);
+        }
         let mut out = String::new();
         for item in &self.items {
             match item {
@@ -250,6 +263,18 @@ impl DatePattern {
         }
         out
     }
+}
+
+/// `dt` rounded (half up) to `digits` fractional digits, carrying into
+/// the whole seconds. A leap second (nanoseconds past 1e9) is left as is.
+fn round_fraction(dt: DateTime<FixedOffset>, digits: usize) -> DateTime<FixedOffset> {
+    let nanos = i64::from(dt.nanosecond());
+    if nanos >= 1_000_000_000 {
+        return dt;
+    }
+    let unit = 10_i64.pow(u32::try_from(9 - digits).unwrap_or(0));
+    let rounded = (nanos + unit / 2) / unit * unit;
+    dt + chrono::TimeDelta::nanoseconds(rounded - nanos)
 }
 
 fn push_field(out: &mut String, f: Field, dt: &DateTime<FixedOffset>) {
