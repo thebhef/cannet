@@ -361,3 +361,8 @@ builds the server for that lane. Nothing open against this task; awaiting owner 
   and survive under the 2026-10-07 boundary ruling; 10 `WPS433` noqas (a
   code ruff lacks) and one `F401` noqa went. Wire 18, sidecar 372,
   client 151 tests pass; mypy clean; comment-references grep clean.
+
+- 2026-10-19 — **Owner ruling: no `noqa` comments.** "I don't want dozens
+  of noqa comments… there's nothing sacred in this codebase." The 41
+  `noqa: BLE001` go: each catch-all handler satisfies BLE001 by logging
+  with `.exception()` or re-raising. Amend on `fix-ruff-default-rules`.
