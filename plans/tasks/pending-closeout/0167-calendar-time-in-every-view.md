@@ -192,6 +192,22 @@ Branches beneath `doc-closeout-2`, sequential in the shared tree.
   or day must be right); `formatElapsed` unchanged (it rounds already).
   Tests at the carry boundaries in both languages.
 
+- 2026-10-19 — **Phase 4 landed** on `task167-fractions-round`
+  (`3869d814`). Fractions round half up to the finest `S` width (or the
+  appended `.ffff`'s four digits) by rounding the instant before fields
+  are split, in both `datePattern.ts` and `date_pattern.rs`, so carries
+  propagate: second, minute, hour, day, year, and the am/pm flip.
+  `formatElapsed` unchanged. ADR 0062 § 1, its table row and
+  cross-references, and the README date-pattern entry say round, with
+  the dated ruling. Shared vectors gained 9 carry/tie cases; three
+  existing vectors moved to rounded values. A frontend test asserts
+  elapsed and calendar agree on the last digit near `.xxxx5`. CI: cargo
+  test -p cannet-gui 1455/1455, clippy `-D warnings`, fmt, vitest
+  3946/3946, build, grep 0 hits; Python and perf lanes skipped
+  (formatter-only diff). Deviation: tests written with the code, not
+  red-first. Call: several `S` fields in one pattern round to the
+  widest; a leap-second instant is left unrounded.
+
 ## Blockers / side effects
 
 - **Perf reading owed (2026-10-14).** Phase 3 touched the plot's
@@ -200,4 +216,4 @@ Branches beneath `doc-closeout-2`, sequential in the shared tree.
 - **FYI:** in calendar mode the A/B chips carry the whole pattern plus
   `.ffff` (Q2 applied to every table-like reading), so they are wide.
 - **FYI:** ticks are always 24-hour `HH`, even under an `h a` pattern.
-- Rounding ruled 2026-10-19 (both round) → phase 4.
+- Rounding ruled 2026-10-19 (both round) → phase 4, landed.

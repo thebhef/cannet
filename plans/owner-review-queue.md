@@ -28,7 +28,7 @@ overseer: you are declining the complication. Current code = whole pattern then 
 owner: "calendar cells?"
 overseer: the time cells in the trace, By-ID, Events and Signals tables when *Time display* is calendar. They truncate the fraction (ADR 0062); the elapsed reading of the same cell rounds, so one row can read `.3456` elapsed and `.3455` calendar. Yes = elapsed truncates too, so both agree.
 owner: I'm inclined to 'both round' instead of 'both truncate'. should be consistent though.
-overseer: ruling noted: both round. Scope: ADR 0062 section 1 amended, the TS calendar formatter (`format.ts`) and the host's (`date_pattern.rs`, logger/export names) round the instant before splitting fields so a carry into the next second is correct. Go given 2026-10-19; runs after the ruff noqa removal.
+overseer: ruling noted: both round. Scope: ADR 0062 section 1 amended, the TS calendar formatter (`format.ts`) and the host's (`date_pattern.rs`, logger/export names) round the instant before splitting fields so a carry into the next second is correct. Done, `task167-fractions-round` (3869d814): both round, carries propagate, ADR 0062 amended.
 
 - **ruff rule set (fix-python-toolchain, #556).**
 owner: what is that rule, anyway? what version before/after, what default changed?
@@ -113,8 +113,8 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   (0168 § Exit criteria). ADR 0050 sentence accepted 2026-10-19;
   the silent failure is § 2's reporting item.
 - **Task 167 — Calendar Time in Every View** — #565 →
-  #566 → #567 (ADR
-  0024 rule 2 amended; ADR 0062 status). Settings → General → *Time
+  #566 → #567 → `task167-fractions-round` 3869d814 (ADR
+  0024 rule 2 amended; ADR 0062 status, then § 1 fractions round). Settings → General → *Time
   display*, or the palette's *Toggle calendar time*. All 5 exit
   criteria met 2026-10-14 (0167 § Exit criteria). The fraction stays
   as specced (2026-10-19); § 1 carries the rounding question; perf
