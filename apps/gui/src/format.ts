@@ -1,6 +1,7 @@
 import {
   formatDatePattern,
   parseDatePattern,
+  roundInstant,
   type DatePattern,
   type Instant,
 } from "./datePattern";
@@ -237,7 +238,7 @@ export function formatCalendarTime(
 /// in force at that instant. Rounded to the microsecond first — at a
 /// ~1.7e9 epoch magnitude a float64 carries the fractional second to
 /// about 0.2 µs, so finer digits are float noise, and truncating noise
-/// would turn `.1235` into `.1234999…`. Whole seconds and fraction come
+/// would turn `.1235` into `.1234999…` (the fraction is rounded after). Whole seconds and fraction come
 /// from the same rounded integer, so they can never disagree.
 function localInstant(seconds: number): { instant: Instant; offsetMinutes: number } {
   const micros = Math.round(seconds * 1e6);
@@ -257,9 +258,10 @@ const hasField = (pattern: DatePattern, letters: string) =>
 /// shows, so switching readings neither gains nor loses precision.
 /// `2023-11-14 22:13:20.1234` for the default pattern at 4 digits.
 ///
-/// The fraction is **truncated**, not rounded, like the pattern's own
-/// `S` field (ADR 0062 § 1): a time never reads as a later second than
-/// the one it is in. A pattern that already carries an `S…` field
+/// The instant is **rounded** to `fracDigits` before any field is split,
+/// like the pattern's own `S` field (ADR 0062 § 1), so the last digit
+/// agrees with the elapsed column and a carry reaches the seconds,
+/// minutes and beyond. A pattern that already carries an `S…` field
 /// renders its own fraction and is given no second one — the user chose
 /// that precision. `fracDigits` 0 appends nothing. The fraction is
 /// appended after the *whole* pattern, wherever its seconds field sits.
@@ -278,9 +280,12 @@ export function formatCalendarCell(
   const parsed = parseDatePattern(pattern);
   // The host validates `date_time_pattern` on write (ADR 0062); defensive.
   if ("error" in parsed) return null;
-  const { instant, offsetMinutes } = localInstant(seconds);
+  const local = localInstant(seconds);
+  const { offsetMinutes } = local;
+  const appends = fracDigits > 0 && !hasField(parsed, "S");
+  const instant = appends ? roundInstant(local.instant, fracDigits) : local.instant;
   const text = formatDatePattern(parsed, instant, offsetMinutes);
-  if (fracDigits <= 0 || hasField(parsed, "S")) return text;
+  if (!appends) return text;
   return `${text}.${String(instant.nanos).padStart(9, "0").slice(0, fracDigits)}`;
 }
 
