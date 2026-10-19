@@ -23,13 +23,13 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-import grpc  # noqa: E402
+import grpc
+from cannet_python_wire._proto import cannet_info_pb2 as info_pb
+from cannet_python_wire._proto import cannet_info_pb2_grpc as info_grpc
 
-from cannet_local_sidecar import __version__  # noqa: E402
-from cannet_local_sidecar import server as srv  # noqa: E402
-from cannet_python_wire._proto import cannet_info_pb2 as info_pb  # noqa: E402
-from cannet_python_wire._proto import cannet_info_pb2_grpc as info_grpc  # noqa: E402
-from cannet_local_sidecar.driver import Channel, Driver  # noqa: E402
+from cannet_local_sidecar import __version__
+from cannet_local_sidecar import server as srv
+from cannet_local_sidecar.driver import Channel, Driver
 
 
 class _NoChannels(Driver):

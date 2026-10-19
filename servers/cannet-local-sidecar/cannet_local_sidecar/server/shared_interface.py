@@ -29,7 +29,6 @@ import logging
 import queue
 import threading
 import time
-from typing import Optional
 
 from cannet_python_wire import frame_to_proto
 from cannet_python_wire._proto import cannet_pb2 as pb
@@ -43,7 +42,7 @@ from .helpers import (
 )
 from .outbox import SessionOutbox
 
-_log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 #: Pump drains for at most this many nanoseconds after the first
@@ -164,16 +163,16 @@ class _SharedInterface:
         # ``_lock``, never while holding it.
         self._open_lock = threading.Lock()
         self._config = initial_config
-        self._channel: Optional[drv.OpenChannel] = None
+        self._channel: drv.OpenChannel | None = None
         # Why a subscribed interface has no channel: a reopen closed the
         # old channel and the open after it raised. ``None`` otherwise.
         # While it is set the state poll retries the open every pass.
-        self._reopen_error: Optional[str] = None
+        self._reopen_error: str | None = None
         # The channel most recently swapped away by `reconfigure` and
         # not yet garbage-collected -- lets `_rx_pump` recognise a
         # `recv()` failure on it as the close doing its job, not a
         # fault. See `reconfigure` for why this can't reuse `_stop`.
-        self._reconfigure_closing_channel: Optional[drv.OpenChannel] = None
+        self._reconfigure_closing_channel: drv.OpenChannel | None = None
         # Ordered subscriber list; values are gRPC-Session outboxes.
         # We keep it as a list (not a set) so iteration order is
         # deterministic for tests.
@@ -182,9 +181,9 @@ class _SharedInterface:
         # across reopens: a reset or flush mid-fault is the same blast.
         self._episodes = EpisodeAccumulator(channel_id)
         self._stop = threading.Event()
-        self._rx_thread: Optional[threading.Thread] = None
-        self._pack_thread: Optional[threading.Thread] = None
-        self._state_thread: Optional[threading.Thread] = None
+        self._rx_thread: threading.Thread | None = None
+        self._pack_thread: threading.Thread | None = None
+        self._state_thread: threading.Thread | None = None
         # Internal handoff queue between the rx reader thread and the
         # packager thread. The reader's only job is to call
         # ``ch.recv`` and ``put`` the raw ``Frame`` here as fast as
@@ -195,7 +194,7 @@ class _SharedInterface:
         # microsecond-apart timestamps. Doing protobuf encoding and
         # outbox fan-out on a separate thread is what keeps the reader
         # in its tight recv loop.
-        self._rx_queue: "queue.Queue[drv.Frame]" = queue.Queue()
+        self._rx_queue: queue.Queue[drv.Frame] = queue.Queue()
         # Last-pushed state, used by the state pump to decide whether
         # to emit a fresh ``InterfaceState`` envelope.
         self._last_state: pb.ControllerState.V = pb.CONTROLLER_STATE_ACTIVE
@@ -206,10 +205,10 @@ class _SharedInterface:
         # different answers -- a backend that watches and has seen none
         # says 0 -- so this is tri-state on purpose and the wire field
         # is left unset for ``None``.
-        self._last_rx_overruns: Optional[int] = None
+        self._last_rx_overruns: int | None = None
         # Monotonic time of the last `InterfaceState` publish, for the
         # heartbeat. Owned by the state poll.
-        self._last_publish_s: Optional[float] = None
+        self._last_publish_s: float | None = None
         # Rollovers of the backend's own receive timer already reported
         # to subscribers. The driver corrects the stamps; this is what
         # turns each correction into one operator-visible line, and it
@@ -221,7 +220,7 @@ class _SharedInterface:
         # clears it, so a bus that recovers and drops again is timed from
         # its new start; a reset that fails leaves it, so the next pass
         # that still reads bus-off tries again.
-        self._bus_off_since: Optional[float] = None
+        self._bus_off_since: float | None = None
         # Whether the current bus-off run has already had a reset fail,
         # so a reset that keeps failing warns once per run, not per pass.
         self._bus_off_reset_failing = False
@@ -229,7 +228,7 @@ class _SharedInterface:
         # refused as bus-off (``TxRejected.bus_off``), or ``None``; an
         # accepted send clears it. Written by the tx pump, read by the
         # state poll, which counts it as a bus-off reading (ADR 0039).
-        self._bus_off_refused: Optional[tuple[drv.OpenChannel, float]] = None
+        self._bus_off_refused: tuple[drv.OpenChannel, float] | None = None
         # When the rx pump last read anything off the channel (monotonic
         # seconds), and the channel and time of the latest send its
         # driver refused with a full transmit queue. Written by the rx
@@ -239,7 +238,7 @@ class _SharedInterface:
         # the same silence. The refusal carries its channel so that one
         # from a channel already reopened never condemns the fresh one.
         self._last_rx_s = 0.0
-        self._queue_full_refused: Optional[tuple[drv.OpenChannel, float]] = None
+        self._queue_full_refused: tuple[drv.OpenChannel, float] | None = None
         # Whether the current run of queue-full reopens has already had
         # one fail, so a failure that repeats warns once per run.
         self._queue_full_reopen_failing = False
@@ -247,7 +246,7 @@ class _SharedInterface:
         # last accepted send (or last flush), or ``None``: how long it
         # has refused everything (ADR 0060 rule 7). Written by the tx
         # pump, read and cleared by the state poll.
-        self._queue_full_since: Optional[tuple[drv.OpenChannel, float]] = None
+        self._queue_full_since: tuple[drv.OpenChannel, float] | None = None
         # Whether this run of flushes -- flushes with no accepted send
         # between them -- has logged its info line, and whether a flush
         # in it has failed, so each says so once per run.
@@ -292,16 +291,16 @@ class _SharedInterface:
         # on hardware. The queue is bounded, and a full queue refuses the
         # frame at once rather than blocking the reader -- saturation
         # stays visible, and stays this interface's alone.
-        self._tx_queue: "queue.Queue[Optional[tuple[drv.Frame, SessionOutbox]]]" = (
+        self._tx_queue: queue.Queue[tuple[drv.Frame, SessionOutbox] | None] = (
             queue.Queue(maxsize=_TX_QUEUE_MAX)
         )
-        self._tx_thread: Optional[threading.Thread] = None
+        self._tx_thread: threading.Thread | None = None
 
     @property
     def channel_id(self) -> str:
         return self._channel_id
 
-    def set_error_row_cap(self, cap: Optional[int]) -> None:
+    def set_error_row_cap(self, cap: int | None) -> None:
         """The error-row cap for this interface's next episodes (ADR 0060
         rule 2); ``None`` is the default. An open episode keeps its own."""
         self._episodes.set_cap(cap)
@@ -389,7 +388,7 @@ class _SharedInterface:
                 self._tx_refused += 1
             raise
 
-    def _no_channel_refusal(self, reopen_error: Optional[str]) -> drv.TxRejected:
+    def _no_channel_refusal(self, reopen_error: str | None) -> drv.TxRejected:
         """The refusal of a send offered while there is no channel: the
         interface is closed, or -- ``reopen_error`` set -- a reopen
         closed the old channel and could not open the fresh one, which
@@ -436,9 +435,11 @@ class _SharedInterface:
                 self._note_tx_refused(ch, e, now_s=time.monotonic())
                 outbox.refuse(cid, e.reason, str(e))
                 continue
-            except Exception as e:  # noqa: BLE001 - worker must survive
+            # worker must survive
+            except Exception as e:
+                _logger.debug("worker must survive", exc_info=True)
                 msg = f"send on {cid} failed: {e}"
-                _log.warning(msg)
+                _logger.warning(msg)
                 self._count_tx_refused()
                 outbox.refuse(cid, drv.REFUSAL_OTHER, msg)
                 continue
@@ -448,15 +449,13 @@ class _SharedInterface:
             with self._tx_stats_lock:
                 self._tx_count += 1
                 self._tx_count_total += 1
-                if send_ns > self._tx_max_send_ns:
-                    self._tx_max_send_ns = send_ns
+                self._tx_max_send_ns = max(self._tx_max_send_ns, send_ns)
                 # Idle since the previous send completed - the
                 # frame-delivery gap, uncontaminated by this or the
                 # prior send's duration.
                 if self._tx_last_done_ns:
                     gap_ns = t0 - self._tx_last_done_ns
-                    if gap_ns > self._tx_max_gap_ns:
-                        self._tx_max_gap_ns = gap_ns
+                    self._tx_max_gap_ns = max(self._tx_max_gap_ns, gap_ns)
                 self._tx_last_done_ns = done
 
     def reconfigure(self, new_config: drv.OpenConfig) -> None:
@@ -483,36 +482,37 @@ class _SharedInterface:
                 unchanged = old is not None and new_config == self._config
                 self._config = new_config
             if old is None:
-                _log.debug(
+                _logger.debug(
                     "reconfigure %s deferred to next open: %r",
                     self._channel_id,
                     new_config,
                 )
                 return
             if unchanged:
-                _log.debug(
+                _logger.debug(
                     "reconfigure %s: open config unchanged, not reopening: %r",
                     self._channel_id,
                     new_config,
                 )
                 return
-            _log.debug("reopening %s with %r", self._channel_id, new_config)
+            _logger.debug("reopening %s with %r", self._channel_id, new_config)
             try:
                 self._replace_channel(old)
-            except Exception as e:  # noqa: BLE001 - driver can raise anything on reopen; reported, not raised
+            # driver can raise anything on reopen; reported, not raised
+            except Exception as e:
                 msg = f"reconfigure {self._channel_id} failed: {e}"
-                _log.warning(msg)
+                _logger.warning(msg)
                 # The traceback goes to the debug sink only: the warning
                 # above is what stderr (and so the System Messages panel)
                 # already carried, and raising the file's detail must not
                 # raise the panel's.
-                _log.debug("reconfigure %s failed", self._channel_id, exc_info=True)
+                _logger.debug("reconfigure %s failed", self._channel_id, exc_info=True)
                 self._broadcast_error(pb.LOG_LEVEL_ERROR, msg)
                 return
             with self._lock:
                 self._reset_state_baseline_locked()
 
-    def _replace_channel(self, old: Optional[drv.OpenChannel]) -> drv.OpenChannel:
+    def _replace_channel(self, old: drv.OpenChannel | None) -> drv.OpenChannel:
         """Close ``old`` -- the current channel, or ``None`` when a failed
         reopen left none -- then open a fresh channel with the current
         config and make it the current one. The caller holds
@@ -566,8 +566,9 @@ class _SharedInterface:
     def _close_swapped(old: drv.OpenChannel) -> None:
         try:
             old.close()
-        except Exception as e:  # noqa: BLE001 - closing; nothing left to do but log
-            _log.debug("close of swapped-out channel failed: %s", e)
+        # closing; nothing left to do but log
+        except Exception as e:
+            _logger.debug("close of swapped-out channel failed: %s", e, exc_info=True)
 
     # ---- internal --------------------------------------------------------
 
@@ -576,9 +577,9 @@ class _SharedInterface:
         # call: when the driver refuses (or hangs), this line is the
         # last thing in the file and names the channel and parameters
         # that did it. The caller logs the traceback.
-        _log.debug("opening %s with %r", self._channel_id, self._config)
+        _logger.debug("opening %s with %r", self._channel_id, self._config)
         self._channel = self._driver.open(self._channel_id, self._config)
-        _log.debug("opened %s", self._channel_id)
+        _logger.debug("opened %s", self._channel_id)
         self._stop.clear()
         self._reset_state_baseline_locked()
         self._last_rx_s = time.monotonic()
@@ -614,7 +615,7 @@ class _SharedInterface:
         self._tx_thread.start()
 
     def _close_locked(self) -> None:
-        _log.debug("closing %s", self._channel_id)
+        _logger.debug("closing %s", self._channel_id)
         self._stop.set()
         # Nobody left to reopen it for: the retry ends here.
         self._reopen_error = None
@@ -629,8 +630,11 @@ class _SharedInterface:
         if ch is not None:
             try:
                 ch.close()
-            except Exception as e:  # noqa: BLE001 - closing; nothing left to do but log
-                _log.debug("close of %s failed: %s", self._channel_id, e)
+            # closing; nothing left to do but log
+            except Exception as e:
+                _logger.debug(
+                    "close of %s failed: %s", self._channel_id, e, exc_info=True
+                )
 
     def _reset_state_baseline_locked(self) -> None:
         """Pin the controller-state baseline to ACTIVE / 0 / 0 so the
@@ -649,7 +653,7 @@ class _SharedInterface:
         # rollover entirely.
         self._reported_timer_wraps = 0
 
-    def _current_channel(self) -> Optional[drv.OpenChannel]:
+    def _current_channel(self) -> drv.OpenChannel | None:
         with self._lock:
             return self._channel
 
@@ -657,7 +661,7 @@ class _SharedInterface:
         with self._lock:
             return list(self._outboxes)
 
-    def _broadcast_error(self, level: "pb.LogLevel.V", message: str) -> None:
+    def _broadcast_error(self, level: pb.LogLevel.V, message: str) -> None:
         """Fan a ``LogMessage`` envelope out to every subscribed outbox.
 
         Builds the envelope once and puts it on each subscriber's outbox.
@@ -685,7 +689,9 @@ class _SharedInterface:
         if callable(classify):
             try:
                 err = classify(frame)
-            except Exception:  # noqa: BLE001 - one frame, not the pump
+            # one frame, not the pump
+            except Exception:
+                _logger.debug("one frame, not the pump", exc_info=True)
                 err = drv.BusError()
         row, reports = self._episodes.on_error(err, frame.timestamp_ns, now_s)
         self._publish_episodes(reports)
@@ -731,7 +737,12 @@ class _SharedInterface:
                     continue
                 try:
                     frame = ch.recv(timeout_s=0.25)
-                except Exception as e:  # noqa: BLE001 - driver edge; branches on cause below, always logged
+                # driver edge; branches on cause below, always logged
+                except Exception as e:
+                    _logger.debug(
+                        "driver edge; branches on cause below, always logged",
+                        exc_info=True,
+                    )
                     if self._stop.is_set():
                         # The close we were told about (``_stop`` is set
                         # before the channel is closed) landed while this
@@ -740,7 +751,7 @@ class _SharedInterface:
                         # PCAN_ERROR_INITIALIZE rather than returning
                         # empty-handed. That is the close working, not a
                         # fault, so it stays out of the operator's log.
-                        _log.debug("rx for %s ended at close: %s", cid, e)
+                        _logger.debug("rx for %s ended at close: %s", cid, e)
                         break
                     with self._lock:
                         swapped_away = ch is self._reconfigure_closing_channel
@@ -748,7 +759,7 @@ class _SharedInterface:
                         # Same race as the close above, minus the
                         # shutdown: the interface stays open on the new
                         # channel, so keep pumping rather than breaking.
-                        _log.debug("rx for %s ended at reconfigure swap: %s", cid, e)
+                        _logger.debug("rx for %s ended at reconfigure swap: %s", cid, e)
                         continue
                     # One line per episode. The retry below runs at
                     # 10 Hz for as long as the fault lasts, and the
@@ -759,7 +770,7 @@ class _SharedInterface:
                     # still reported.
                     if not read_failing:
                         read_failing = True
-                        _log.warning("rx for %s failed: %s", cid, e)
+                        _logger.warning("rx for %s failed: %s", cid, e)
                     if self._stop.wait(0.1):
                         break
                     continue
@@ -802,10 +813,10 @@ class _SharedInterface:
                         self._tx_refused = 0
                     if read > 0 or tx > 0 or offered > 0:
 
-                        def per_s(n: int) -> float:
+                        def per_s(n: int, secs: float = secs) -> float:
                             return n / secs if secs > 0 else 0.0
 
-                        _log.info(
+                        _logger.info(
                             "rx stats %s: read=%.0f/s total=%d queue=%d "
                             "errors=%.0f/s echoes=%.0f/s%s",
                             cid,
@@ -816,7 +827,7 @@ class _SharedInterface:
                             per_s(echoes),
                             _echoes_dropped_field(ch),
                         )
-                        _log.info(
+                        _logger.info(
                             "tx stats %s: queued_to_driver=%.0f/s total=%d "
                             "offered=%.0f/s refused=%.0f/s "
                             "max_send=%.2f ms max_gap=%.2f ms",
@@ -830,8 +841,9 @@ class _SharedInterface:
                         )
                     read = errors = echoes = 0
                     next_stats_ns = now_ns + _RX_STATS_INTERVAL_NS
-        except Exception as e:  # noqa: BLE001 - thread must survive the process; logged and reported
-            _log.warning("rx pump for %s crashed: %s", cid, e)
+        # thread must survive the process; logged and reported
+        except Exception as e:
+            _logger.exception("rx pump for %s crashed", cid)
             self._broadcast_error(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}")
 
     def _pack_pump(self) -> None:
@@ -857,7 +869,7 @@ class _SharedInterface:
             except ValueError as e:
                 dropped += 1
                 if dropped == 1:
-                    _log.warning("dropping unencodable frame on %s: %s", cid, e)
+                    _logger.warning("dropping unencodable frame on %s: %s", cid, e)
                     self._broadcast_error(
                         pb.LOG_LEVEL_ERROR,
                         f"dropping unencodable frame on {cid}: {e} "
@@ -892,20 +904,21 @@ class _SharedInterface:
                 )
                 for ob in self._outbox_snapshot():
                     ob.put(env)
-        except Exception as e:  # noqa: BLE001 - thread must survive the process; logged and reported
-            _log.warning("pack pump for %s crashed: %s", cid, e)
+        # thread must survive the process; logged and reported
+        except Exception as e:
+            _logger.exception("pack pump for %s crashed", cid)
             self._broadcast_error(
                 pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}"
             )
 
     def _publish_state(
         self,
-        mapped: "pb.ControllerState.V",
+        mapped: pb.ControllerState.V,
         tec: int,
         rec: int,
-        rx_overruns: Optional[int] = None,
+        rx_overruns: int | None = None,
         *,
-        now_s: Optional[float] = None,
+        now_s: float | None = None,
     ) -> None:
         """Broadcast an :class:`InterfaceState` if this differs from the
         last one published, or if the last one is a heartbeat old. The
@@ -991,8 +1004,9 @@ class _SharedInterface:
                     return
             try:
                 self._replace_channel(None)
-            except Exception as e:  # noqa: BLE001 - retried next pass, the poll's own cadence
-                _log.debug("reopen of %s failed again: %s", cid, e)
+            # retried next pass, the poll's own cadence
+            except Exception as e:
+                _logger.debug("reopen of %s failed again: %s", cid, e, exc_info=True)
                 self._publish_state(
                     pb.CONTROLLER_STATE_UNAVAILABLE, 0, 0, None, now_s=now_s
                 )
@@ -1003,13 +1017,13 @@ class _SharedInterface:
         self._flush_failing = False
         since = self._bus_off_since
         if since is not None:
-            _log.info(
+            _logger.info(
                 "%s was bus-off for %.1f s; reopened the channel", cid, now_s - since
             )
             self._bus_off_since = None
             self._bus_off_reset_failing = False
         else:
-            _log.info("%s reopened the channel after a failed open", cid)
+            _logger.info("%s reopened the channel after a failed open", cid)
 
     def _poll_state(self, ch: drv.OpenChannel, *, now_s: float) -> None:
         """One pass of the state poll: read the controller, publish what
@@ -1039,12 +1053,13 @@ class _SharedInterface:
         )
         try:
             st = ch.state()
-        except Exception as e:  # noqa: BLE001 - controller read failing is unreachable, not silence
+        # controller read failing is unreachable, not silence
+        except Exception as e:
             # A controller read that fails is not silence: the
             # driver could not reach the interface. Publishing that
             # is the whole point of the poll — swallowing it left an
             # unplugged adapter reading error-active forever.
-            _log.debug("state poll for %s failed: %s", cid, e)
+            _logger.debug("state poll for %s failed: %s", cid, e, exc_info=True)
             self._publish_state(
                 pb.CONTROLLER_STATE_UNAVAILABLE,
                 0,
@@ -1118,26 +1133,30 @@ class _SharedInterface:
             in_place = bool(flush()) if callable(flush) else False
             if not in_place and not self._reopen(ch):
                 return
-        except Exception as e:  # noqa: BLE001 - flush/reopen can fail for any reason; retried next pass
+        # flush/reopen can fail for any reason; retried next pass
+        except Exception as e:
+            _logger.debug(
+                "flush/reopen can fail for any reason; retried next pass", exc_info=True
+            )
             if not self._flush_failing:
                 self._flush_failing = True
-                _log.warning("transmit-queue flush of %s failed: %s", cid, e)
+                _logger.warning("transmit-queue flush of %s failed: %s", cid, e)
             else:
-                _log.debug("transmit-queue flush of %s failed again: %s", cid, e)
+                _logger.debug("transmit-queue flush of %s failed again: %s", cid, e)
             return
         self._queue_full_since = None
         self._flush_failing = False
         how = "flushed its transmit queue" if in_place else "reopened the channel"
         if not self._flush_run_logged:
             self._flush_run_logged = True
-            _log.info(
+            _logger.info(
                 "%s refused every send with its transmit queue full for %.1f s; %s",
                 cid,
                 now_s - since[1],
                 how,
             )
         else:
-            _log.debug("%s still refusing queue-full; %s again", cid, how)
+            _logger.debug("%s still refusing queue-full; %s again", cid, how)
         now_ns = time.time_ns()
         for ob in self._outbox_snapshot():
             ob.note_flush(cid, now_ns=now_ns)
@@ -1161,7 +1180,11 @@ class _SharedInterface:
                 # channel gets its own count.
                 self._bus_off_since = None
                 return
-        except Exception as e:  # noqa: BLE001 - reset/reopen can fail for any reason; retried next pass
+        # reset/reopen can fail for any reason; retried next pass
+        except Exception as e:
+            _logger.debug(
+                "reset/reopen can fail for any reason; retried next pass", exc_info=True
+            )
             # Retried on the next pass -- the poll's own cadence, never a
             # tighter loop: a reset that raised, on the next pass that
             # still reads bus-off; an open that raised after the close,
@@ -1170,11 +1193,11 @@ class _SharedInterface:
             # the rest go to the debug sink.
             if not self._bus_off_reset_failing:
                 self._bus_off_reset_failing = True
-                _log.warning("bus-off reset of %s failed: %s", cid, e)
+                _logger.warning("bus-off reset of %s failed: %s", cid, e)
             else:
-                _log.debug("bus-off reset of %s failed again: %s", cid, e)
+                _logger.debug("bus-off reset of %s failed again: %s", cid, e)
             return
-        _log.info(
+        _logger.info(
             "%s was bus-off for %.1f s; %s",
             cid,
             held_s,
@@ -1265,15 +1288,19 @@ class _SharedInterface:
         try:
             if not self._reopen(ch):
                 return True
-        except Exception as e:  # noqa: BLE001 - reopen can fail for any reason; retried next pass
+        # reopen can fail for any reason; retried next pass
+        except Exception as e:
+            _logger.debug(
+                "reopen can fail for any reason; retried next pass", exc_info=True
+            )
             if not self._queue_full_reopen_failing:
                 self._queue_full_reopen_failing = True
-                _log.warning("queue-full reopen of %s failed: %s", cid, e)
+                _logger.warning("queue-full reopen of %s failed: %s", cid, e)
             else:
-                _log.debug("queue-full reopen of %s failed again: %s", cid, e)
+                _logger.debug("queue-full reopen of %s failed again: %s", cid, e)
             return True
         self._queue_full_reopen_failing = False
-        _log.info(
+        _logger.info(
             "%s refused sends with its transmit queue full and received "
             "nothing for %.1f s; reopened the channel",
             cid,
@@ -1301,7 +1328,11 @@ class _SharedInterface:
         """
         try:
             wraps = int(ch.timer_wraps())
-        except Exception:  # noqa: BLE001 - no `timer_wraps` is the backend's answer, not a fault
+        # no `timer_wraps` is the backend's answer, not a fault
+        except Exception:
+            _logger.debug(
+                "no `timer_wraps` is the backend's answer, not a fault", exc_info=True
+            )
             return
         while self._reported_timer_wraps < wraps:
             self._reported_timer_wraps += 1
@@ -1312,7 +1343,7 @@ class _SharedInterface:
                 f"timestamps after it are being corrected",
             )
 
-    def _read_rx_overruns(self, ch: drv.OpenChannel) -> Optional[int]:
+    def _read_rx_overruns(self, ch: drv.OpenChannel) -> int | None:
         """The channel's rx-overrun count, or the last one published if
         this read failed.
 
@@ -1329,7 +1360,11 @@ class _SharedInterface:
         """
         try:
             return ch.rx_loss()
-        except Exception:  # noqa: BLE001 - backend's rx_loss can fail; the last known count stands
+        # backend's rx_loss can fail; the last known count stands
+        except Exception:
+            _logger.debug(
+                "backend's rx_loss can fail; the last known count stands", exc_info=True
+            )
             with self._lock:
                 return self._last_rx_overruns
 
@@ -1354,7 +1389,7 @@ class _InterfaceRegistry:
         self._configs: dict[str, drv.OpenConfig] = {}
         # Error-row caps from `ConfigureBus` (ADR 0060 rule 2), kept like
         # the configs so a cap that arrives before the open applies to it.
-        self._caps: dict[str, Optional[int]] = {}
+        self._caps: dict[str, int | None] = {}
 
     def subscribe(
         self,
@@ -1400,7 +1435,7 @@ class _InterfaceRegistry:
                 if cur is shared and not cur.has_subscribers():
                     self._interfaces.pop(channel_id, None)
 
-    def set_error_row_cap(self, channel_id: str, cap: Optional[int]) -> None:
+    def set_error_row_cap(self, channel_id: str, cap: int | None) -> None:
         """The error-row cap for ``channel_id`` (ADR 0060 rule 2);
         ``None`` restores the default. Takes effect from the interface's
         next bus-error episode, and is remembered for its next open."""

@@ -30,7 +30,7 @@ class FrameKind(enum.Enum):
     ERROR = "error"
 
     @classmethod
-    def from_flags(cls, *, is_error: bool, is_remote: bool, is_fd: bool) -> "FrameKind":
+    def from_flags(cls, *, is_error: bool, is_remote: bool, is_fd: bool) -> FrameKind:
         """Collapse a backend's independent frame-type booleans (e.g.
         python-can's ``Message.is_error_frame`` / ``is_remote_frame`` /
         ``is_fd``) into a single kind, applying the
