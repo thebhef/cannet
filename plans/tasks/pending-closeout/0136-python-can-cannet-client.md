@@ -338,3 +338,13 @@ builds the server for that lane. Nothing open against this task; awaiting owner 
   `pump_batching.py` or `outbox.py`); wire 18 passed; client 151 passed
   (plus 1 platform skip), against a debug `cannet-server` built for the
   run. `mypy` clean in all three.
+
+- 2026-10-19 — **Owner ruling (queue § 1, rule set): adopt ruff 0.16's
+  default and fix the code to satisfy it — no suppressions.** The
+  frozen `select = ["E4", "E7", "E9", "F"]` goes; the 0.16 default is
+  listed explicitly instead. Counted with `ruff check --isolated` at
+  0.16.10 (generated stubs excluded): wire 14, sidecar 359, client 6 —
+  UP045/UP037/UP006 modern annotations (183), RUF100 dead `noqa` (120),
+  I001 import order (23), the rest single digits (RUF059, B023,
+  PLC0414, ISC004, RUF012, SIM115, SIM117, UP035…). Landing on
+  `fix-ruff-default-rules` above the stack rather than amending #556.

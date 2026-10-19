@@ -176,6 +176,13 @@ Branches beneath `doc-closeout-2`, sequential in the shared tree.
   repaint — small, on the overlay path; the owed perf reading is the
   check.
 
+- 2026-10-19 — **Owner ruling (queue § 1): the appended fraction stays
+  exactly as Q2 specced** — the whole pattern, then `.ffff`, whatever
+  the pattern's last field is; no override of the pattern the user set
+  ("I didn't spec that"). The recommendation to drop the fraction after
+  a non-seconds pattern is withdrawn. The rounding question (elapsed
+  rounds, calendar truncates) is re-put in plain words.
+
 ## Blockers / side effects
 
 - **Perf reading owed (2026-10-14).** Phase 3 touched the plot's
@@ -184,5 +191,5 @@ Branches beneath `doc-closeout-2`, sequential in the shared tree.
 - **FYI:** in calendar mode the A/B chips carry the whole pattern plus
   `.ffff` (Q2 applied to every table-like reading), so they are wide.
 - **FYI:** ticks are always 24-hour `HH`, even under an `h a` pattern.
-- **Queue § 1:** the two Q2 readings (fraction after a pattern not
-  ending in seconds; elapsed rounds vs calendar truncates).
+- **Queue § 1:** elapsed rounds vs calendar truncates (the fraction
+  placement was ruled as specced, 2026-10-19).
