@@ -671,9 +671,17 @@ pub(crate) fn emit_system_log(
 ) {
     let state: State<'_, AppState> = app.state();
     if let Some(entry) = state.system_log.push(source, level, message) {
-        // Mirror every rung message to the rolling tmp log so the stream
-        // survives a crash that the panic hook can't catch (see `crash.rs`).
-        crash::persist_message(&entry);
-        let _ = app.emit("system-log-appended", entry);
+        broadcast_system_entry(app, entry);
     }
+}
+
+/// Mirror an already-pushed entry to the rolling tmp log and broadcast
+/// it as `system-log-appended`. For call sites that push through
+/// `AppState::system_log` themselves so the push stays testable
+/// without an `AppHandle`.
+pub(crate) fn broadcast_system_entry(app: &AppHandle, entry: SystemMessage) {
+    // Mirror every rung message to the rolling tmp log so the stream
+    // survives a crash that the panic hook can't catch (see `crash.rs`).
+    crash::persist_message(&entry);
+    let _ = app.emit("system-log-appended", entry);
 }

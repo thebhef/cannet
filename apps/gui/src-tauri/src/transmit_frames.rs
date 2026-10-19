@@ -397,6 +397,13 @@ impl TransmitFrameRegistry {
             .map(|i| self.entries[i].frame.request.bus_id.clone())
     }
 
+    /// The message's description (its name), if it exists.
+    #[must_use]
+    pub fn description(&self, id: &str) -> Option<String> {
+        self.position(id)
+            .map(|i| self.entries[i].frame.description.clone())
+    }
+
     /// Insert a new message or update an existing one in place. If the
     /// update parks the message (`Manual` mode or `cycle_ms == 0`), it
     /// is marked stopped; the scheduler drops it on its next tick (the

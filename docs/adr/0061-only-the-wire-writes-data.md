@@ -70,7 +70,10 @@ through the controller's counters as well as the echo.
   against "did the wire report this?".
 - A manual send onto an unbound bus, or a periodic batch a session has
   gone away under, leaves nothing in the trace. Its only record is the
-  answer above.
+  answer above, reported to the user through the system log (one row
+  naming the frame, bus and reason) and the transmit element's
+  "last send failed" indicator, which the frame's next accepted send
+  clears — never as data.
 - `fps.tx`, per-message counts and bus load read zero on a bus that
   carries nothing, whatever cannet tried to send.
 
