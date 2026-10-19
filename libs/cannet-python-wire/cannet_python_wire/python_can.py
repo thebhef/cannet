@@ -14,13 +14,16 @@ error on the way in. Only :func:`frame_to_message` needs the library;
 
 from __future__ import annotations
 
+import logging
 import time
 
 from .frame import Frame, FrameKind
 
 try:  # python-can may be absent in a fresh / replaced venv.
     import can  # type: ignore[import-untyped]
-except Exception:  # noqa: BLE001 - swallow any import-time error.
+# swallow any import-time error.
+except Exception:
+    logging.getLogger(__name__).debug("python-can unavailable", exc_info=True)
     can = None  # type: ignore[assignment]
 
 #: How far from the current wall clock a driver-supplied timestamp may

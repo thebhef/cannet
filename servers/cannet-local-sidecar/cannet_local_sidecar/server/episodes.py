@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Optional
 
 from cannet_python_wire._proto import cannet_pb2 as pb
 
@@ -72,13 +71,13 @@ class EpisodeAccumulator:
         self._lock = threading.Lock()
         self._cap = cap
         self._seq = 0
-        self._cur: Optional[_Episode] = None
+        self._cur: _Episode | None = None
         # The latest counters known, from an error frame or the state
         # poll, for an episode whose frames carry none.
         self._tec = 0
         self._rec = 0
 
-    def set_cap(self, cap: Optional[int]) -> None:
+    def set_cap(self, cap: int | None) -> None:
         """The error-row cap for episodes that open from now on; ``None``
         restores the default. An open episode keeps the cap it opened
         with."""

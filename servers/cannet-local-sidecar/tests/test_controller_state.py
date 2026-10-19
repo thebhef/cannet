@@ -27,10 +27,11 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-from cannet_local_sidecar import driver as drv  # noqa: E402
-from cannet_local_sidecar.driver_python_can import PythonCanChannel  # noqa: E402
-from cannet_local_sidecar.server.helpers import _state_name_to_proto  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire._proto import cannet_pb2 as pb
+
+from cannet_local_sidecar import driver as drv
+from cannet_local_sidecar.driver_python_can import PythonCanChannel
+from cannet_local_sidecar.server.helpers import _state_name_to_proto
 
 
 class _PlainBus:
@@ -50,7 +51,6 @@ class _PlainBus:
     def recv(self, timeout: float) -> None:
         if self._raises:
             raise OSError("device removed")
-        return None
 
     def shutdown(self) -> None:
         pass

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 import grpc
 from cannet_python_wire import proto_to_frame
@@ -49,7 +49,7 @@ from .info import ServerInfoService
 from .outbox import SessionOutbox
 from .shared_interface import _InterfaceRegistry
 
-_log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 class CannetServerService(pb_grpc.CannetServerServicer):
@@ -74,9 +74,9 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         self, request: pb.ListInterfacesRequest, context: grpc.ServicerContext
     ) -> pb.InterfaceList:
         ifaces = enumerate_interfaces(self._driver)
-        _log.info("ListInterfaces -> %d channels", len(ifaces))
+        _logger.info("ListInterfaces -> %d channels", len(ifaces))
         # The count alone can't answer "is the channel I want missing?".
-        _log.debug(
+        _logger.debug(
             "ListInterfaces -> %s",
             [
                 (i.id, i.display_name, "fd" if i.fd_capable else "classic")
@@ -91,7 +91,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         context: grpc.ServicerContext,
     ) -> Iterator[pb.InterfaceList]:
         """See :func:`.enumeration.watch_interfaces`."""
-        _log.debug("WatchInterfaces stream opened")
+        _logger.debug("WatchInterfaces stream opened")
         try:
             yield from watch_interfaces(
                 self._driver,
@@ -99,7 +99,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                 recheck_interval_s=self._watch_recheck_interval_s,
             )
         finally:
-            _log.debug("WatchInterfaces stream closed")
+            _logger.debug("WatchInterfaces stream closed")
 
     # ----- Session ----------------------------------------------------------
 
@@ -123,7 +123,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             # A session ending is a disconnect for every interface it
             # still held — the reason a channel went quiet.
             if subscribed:
-                _log.debug("Session closing; releasing %s", sorted(subscribed))
+                _logger.debug("Session closing; releasing %s", sorted(subscribed))
             for cid in list(subscribed):
                 self._registry.unsubscribe(cid, outbox)
             subscribed.clear()
@@ -131,7 +131,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
 
         def request_pump() -> None:
             try:
-                _log.debug("Session opened")
+                _logger.debug("Session opened")
                 # Greeting log: lets the host show a "sidecar:python-can
                 # connected" message in System Messages without a side
                 # channel.
@@ -159,13 +159,14 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                         # boundary `_handle_tx` documents.
                         outbox.put(_clock_reply_envelope(env.clock_probe.t1, _now_ns()))
                     elif body == "error":
-                        _log.info("client error envelope: %s", env.error.message)
+                        _logger.info("client error envelope: %s", env.error.message)
                     elif body == "log":
-                        _log.info("client log envelope: %s", env.log.message)
-            except grpc.RpcError as e:  # noqa: PERF203 - one-off
-                _log.info("session ended: %s", e)
-            except Exception as e:  # noqa: BLE001 - thread must survive the process; reported to the client
-                _log.exception("session pump crashed")
+                        _logger.info("client log envelope: %s", env.log.message)
+            except grpc.RpcError as e:
+                _logger.info("session ended: %s", e)
+            # thread must survive the process; reported to the client
+            except Exception as e:
+                _logger.exception("session pump crashed")
                 outbox.put(
                     _log_envelope(pb.LOG_LEVEL_ERROR, f"session pump crashed: {e}")
                 )
@@ -187,14 +188,16 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         outbox: SessionOutbox,
     ) -> None:
         cid = sub.interface_id
-        _log.debug("Subscribe interface_id=%s", cid)
+        _logger.debug("Subscribe interface_id=%s", cid)
         if cid in subscribed:
-            _log.debug("Subscribe %s -> ok (already subscribed in this session)", cid)
+            _logger.debug(
+                "Subscribe %s -> ok (already subscribed in this session)", cid
+            )
             return  # idempotent within a session
         try:
             self._registry.subscribe(cid, outbox)
         except KeyError:
-            _log.debug("Subscribe %s -> unknown interface", cid, exc_info=True)
+            _logger.debug("Subscribe %s -> unknown interface", cid, exc_info=True)
             outbox.put(
                 _error_envelope(
                     pb.Error.CODE_UNKNOWN_INTERFACE, f"unknown interface {cid}"
@@ -206,7 +209,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             # refuses to open (the one dead channel on an otherwise
             # working card) leaves the driver's own traceback behind,
             # not just the one-line message the client is sent.
-            _log.debug("Subscribe %s -> open failed", cid, exc_info=True)
+            _logger.debug("Subscribe %s -> open failed", cid, exc_info=True)
             outbox.put(_log_envelope(pb.LOG_LEVEL_ERROR, f"open {cid} failed: {e}"))
             outbox.put(
                 _error_envelope(
@@ -215,7 +218,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             )
             return
         subscribed.add(cid)
-        _log.debug("Subscribe %s -> ok", cid)
+        _logger.debug("Subscribe %s -> ok", cid)
 
     def _handle_unsubscribe(
         self,
@@ -224,13 +227,13 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         outbox: SessionOutbox,
     ) -> None:
         cid = unsub.interface_id
-        _log.debug("Unsubscribe interface_id=%s", cid)
+        _logger.debug("Unsubscribe interface_id=%s", cid)
         if cid not in subscribed:
-            _log.debug("Unsubscribe %s -> not subscribed in this session", cid)
+            _logger.debug("Unsubscribe %s -> not subscribed in this session", cid)
             return
         self._registry.unsubscribe(cid, outbox)
         subscribed.discard(cid)
-        _log.debug("Unsubscribe %s -> ok", cid)
+        _logger.debug("Unsubscribe %s -> ok", cid)
 
     def _handle_tx(
         self,
@@ -306,7 +309,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         # Requested (as it came off the wire) alongside applied (what the
         # driver is handed): a bitrate that silently doesn't take is
         # otherwise indistinguishable from one that was never asked for.
-        _log.debug(
+        _logger.debug(
             "ConfigureBus interface_id=%s requested=speed_bps=%d "
             "fd_data_speed_bps=%d fd_enabled=%s error_row_cap=%s applied=%r",
             cid,
@@ -318,8 +321,9 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         )
         try:
             self._registry.reconfigure(cid, config)
-        except Exception as e:  # noqa: BLE001 - driver can raise anything on reopen; reported to the client
-            _log.debug("ConfigureBus %s -> failed", cid, exc_info=True)
+        # driver can raise anything on reopen; reported to the client
+        except Exception as e:
+            _logger.debug("ConfigureBus %s -> failed", cid, exc_info=True)
             outbox.put(
                 _log_envelope(
                     pb.LOG_LEVEL_ERROR,
@@ -327,13 +331,13 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                 )
             )
         else:
-            _log.debug("ConfigureBus %s -> ok", cid)
+            _logger.debug("ConfigureBus %s -> ok", cid)
 
 
 def serve(
     address: str,
     *,
-    driver: Optional[drv.Driver] = None,
+    driver: drv.Driver | None = None,
     fallback_attempts: int = 3,
 ) -> tuple[grpc.Server, str]:
     """Build and start a gRPC server bound near ``address``.
@@ -378,7 +382,7 @@ def bind_with_retry(
         try:
             bound_port = server.add_insecure_port(f"{host}:{requested_port}")
         except RuntimeError as e:
-            _log.warning(
+            _logger.warning(
                 "bind to requested port %d failed (%s); falling back to a random port",
                 requested_port,
                 e,
@@ -390,7 +394,7 @@ def bind_with_retry(
         try:
             bound_port = server.add_insecure_port(f"{host}:0")
         except RuntimeError as e:
-            _log.warning("random-port bind attempt %d failed: %s", attempt, e)
+            _logger.warning("random-port bind attempt %d failed: %s", attempt, e)
             continue
         if bound_port != 0:
             return f"{host}:{bound_port}"

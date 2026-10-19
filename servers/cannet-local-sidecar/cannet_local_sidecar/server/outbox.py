@@ -51,8 +51,8 @@ import itertools
 import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Union
 
 from cannet_python_wire._proto import cannet_pb2 as pb
 
@@ -119,7 +119,7 @@ class _Keyed:
 
     order: int
     env: pb.Envelope
-    carry: Optional[pb.BusErrorEpisode] = None
+    carry: pb.BusErrorEpisode | None = None
 
     def out(self) -> pb.Envelope:
         if self.carry is None:
@@ -153,12 +153,12 @@ _REASON_TO_PROTO = {
     drv.REFUSAL_OTHER: pb.TX_REFUSAL_REASON_OTHER,
 }
 
-_Key = Union[tuple[str], tuple[str, str], tuple[str, str, int]]
+_Key = tuple[str] | tuple[str, str] | tuple[str, str, int]
 
 
 @dataclass
 class _DataLane:
-    batches: "collections.deque[tuple[int, pb.Envelope, int]]" = field(
+    batches: collections.deque[tuple[int, pb.Envelope, int]] = field(
         default_factory=collections.deque
     )
     frames: int = 0
@@ -184,14 +184,14 @@ class SessionOutbox:
         self._cond = threading.Condition()
         self._order = itertools.count()
         self._keyed: dict[_Key, _Keyed] = {}
-        self._logs: "collections.deque[tuple[int, pb.Envelope]]" = collections.deque()
+        self._logs: collections.deque[tuple[int, pb.Envelope]] = collections.deque()
         self._logs_dropped = 0
         self._data: dict[str, _DataLane] = {}
         self._tallies: dict[tuple[str, str], _Tally] = {}
         # Per interface: when its refusals were last reported, and the
         # summaries of a burst not yet handed out.
         self._reported_s: dict[str, float] = {}
-        self._ready: "collections.deque[pb.Envelope]" = collections.deque()
+        self._ready: collections.deque[pb.Envelope] = collections.deque()
         self._closed = False
         #: High-water marks, for the load harness and the stats a
         #: post-mortem wants: the most control-lane slots (keyed + log)
@@ -203,7 +203,7 @@ class SessionOutbox:
 
     # ----- producers --------------------------------------------------------
 
-    def put(self, env: Optional[pb.Envelope]) -> None:
+    def put(self, env: pb.Envelope | None) -> None:
         """Route ``env`` to its lane. ``None`` closes the outbox."""
         with self._cond:
             if env is None:
@@ -221,7 +221,7 @@ class SessionOutbox:
         reason: str,
         message: str,
         *,
-        now_ns: Optional[int] = None,
+        now_ns: int | None = None,
     ) -> None:
         """Count one refused transmit on ``interface_id`` (ADR 0060 rule
         4). ``reason`` is one of the driver's ``REFUSAL_*`` names."""
@@ -237,7 +237,7 @@ class SessionOutbox:
             tally.last_message = message
             self._cond.notify_all()
 
-    def note_flush(self, interface_id: str, *, now_ns: Optional[int] = None) -> None:
+    def note_flush(self, interface_id: str, *, now_ns: int | None = None) -> None:
         """Count one transmit-queue flush on ``interface_id`` (ADR 0060
         rule 7); it rides that interface's queue-full ``TxRefusals``."""
         t = time.time_ns() if now_ns is None else now_ns
@@ -251,7 +251,7 @@ class SessionOutbox:
 
     # ----- the consumer ---------------------------------------------------
 
-    def get(self, block: bool = True, timeout: Optional[float] = None):
+    def get(self, block: bool = True, timeout: float | None = None):
         """The next envelope: control before data. ``None`` once the
         outbox is closed and empty. Raises :class:`queue.Empty` when
         ``timeout`` (or a non-blocking call) finds nothing."""
@@ -316,8 +316,7 @@ class SessionOutbox:
 
     def _note_control_depth_locked(self) -> None:
         depth = len(self._keyed) + len(self._logs)
-        if depth > self.peak_control:
-            self.peak_control = depth
+        self.peak_control = max(self.peak_control, depth)
 
     def _put_keyed_locked(self, key: _Key, env: pb.Envelope) -> None:
         slot = self._keyed.get(key)
@@ -370,8 +369,7 @@ class SessionOutbox:
                 first_ns = frames[0].timestamp_ns
             last_ns = frames[-1].timestamp_ns
             count += m
-        if lane.frames > self.peak_data_frames:
-            self.peak_data_frames = lane.frames
+        self.peak_data_frames = max(self.peak_data_frames, lane.frames)
         if count:
             self.dropped_frames_total += count
             self._note_dropped_locked(batch.interface_id, count, first_ns, last_ns)
@@ -436,10 +434,10 @@ class SessionOutbox:
                     tally.flush_count = 0
         return self._ready.popleft() if self._ready else None
 
-    def _refusal_wait_locked(self, now: float) -> Optional[float]:
+    def _refusal_wait_locked(self, now: float) -> float | None:
         """Seconds until the next pending refusal report is due, or
         ``None`` with nothing pending."""
-        wait: Optional[float] = None
+        wait: float | None = None
         for (iface, _), tally in self._tallies.items():
             last = self._reported_s.get(iface)
             if not tally.pending() or last is None:
@@ -448,7 +446,7 @@ class SessionOutbox:
             wait = left if wait is None else min(wait, left)
         return wait
 
-    def _next_locked(self, now: float) -> tuple[Optional[pb.Envelope], Optional[float]]:
+    def _next_locked(self, now: float) -> tuple[pb.Envelope | None, float | None]:
         """The next envelope to send, or ``(None, wait)`` where ``wait``
         is how long until a refusal report falls due (``None``: nothing
         is pending at all)."""
@@ -463,7 +461,7 @@ class SessionOutbox:
             return env, None
         return None, self._refusal_wait_locked(now)
 
-    def _next_control_locked(self) -> Optional[pb.Envelope]:
+    def _next_control_locked(self) -> pb.Envelope | None:
         if self._logs_dropped and self._logs:
             dropped, self._logs_dropped = self._logs_dropped, 0
             return _log_envelope(
@@ -485,8 +483,8 @@ class SessionOutbox:
         del self._keyed[key]
         return slot.out()
 
-    def _next_data_locked(self) -> Optional[pb.Envelope]:
-        best: Optional[_DataLane] = None
+    def _next_data_locked(self) -> pb.Envelope | None:
+        best: _DataLane | None = None
         for lane in self._data.values():
             if lane.batches and (
                 best is None or lane.batches[0][0] < best.batches[0][0]
