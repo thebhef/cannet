@@ -28,6 +28,8 @@ let SIGNALS: SignalDescriptorRecord[] = [];
 // populate this to exercise an enum row's fetched datalist/commit path.
 const VALUE_TABLES: Record<string, { raw: number; label: string }[]> = {};
 const calls: Array<{ cmd: string; args: unknown }> = [];
+// What `transmit_frame_once` answers, by frame id (accepted by default).
+let SEND_STATUS: Record<string, unknown> = {};
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
@@ -45,6 +47,13 @@ vi.mock("@tauri-apps/api/core", () => ({
         return VALUE_TABLES[(args as { signalName?: string })?.signalName ?? ""] ?? [];
       case "encode_frame":
         return { bytes: [0] };
+      case "transmit_frame_once":
+        return {
+          wire_status: SEND_STATUS[(args as { id: string }).id] ?? {
+            kind: "accepted",
+            interface_id: "if0",
+          },
+        };
       default:
         return undefined;
     }
@@ -166,6 +175,7 @@ beforeEach(() => {
   POOL = [];
   DESCRIBE = null;
   SIGNALS = [];
+  SEND_STATUS = {};
   for (const k of Object.keys(VALUE_TABLES)) delete VALUE_TABLES[k];
   calls.length = 0;
 });
@@ -791,6 +801,44 @@ describe("TransmitPanel on the gridview", () => {
     await waitFor(() =>
       expect(lastCall("transmit_frame_once")?.args).toMatchObject({ id: "b" }),
     );
+  });
+
+  describe("the last-send-failed indicator", () => {
+    const failed = (i: number) => tiles()[i].querySelector(".tx-send-failed");
+    const sendCursor = async (downs: number) => {
+      for (let i = 0; i < downs; i++) fireEvent.keyDown(list(), { key: "ArrowDown" });
+      fireEvent.keyDown(list(), { key: " " });
+      await act(async () => {});
+    };
+
+    it("a refused send marks the frame with the reason; an accepted one clears it", async () => {
+      POOL = [frame("a")];
+      SEND_STATUS = { a: { kind: "failed", message: "bus b1 is not bound on any active server" } };
+      renderPanel("el", ["a"]);
+      await waitFor(() => expect(tiles()).toHaveLength(1));
+      expect(failed(0)).toBeNull();
+      await sendCursor(1);
+      await waitFor(() => expect(failed(0)).not.toBeNull());
+      expect(failed(0)).toHaveAttribute("title", expect.stringContaining("not bound"));
+      SEND_STATUS = {};
+      await sendCursor(0);
+      await waitFor(() => expect(failed(0)).toBeNull());
+    });
+
+    it("another frame's success does not clear a frame's indicator", async () => {
+      POOL = [frame("a"), frame("b")];
+      SEND_STATUS = { a: { kind: "not_connected" } };
+      renderPanel("el", ["a", "b"]);
+      await waitFor(() => expect(tiles()).toHaveLength(2));
+      await sendCursor(1);
+      await waitFor(() => expect(failed(0)).not.toBeNull());
+      await sendCursor(1); // cursor to b, accepted
+      await waitFor(() =>
+        expect(lastCall("transmit_frame_once")?.args).toMatchObject({ id: "b" }),
+      );
+      expect(failed(0)).not.toBeNull();
+      expect(failed(1)).toBeNull();
+    });
   });
 
   it("Space starts and stops a periodic row instead of sending it", async () => {

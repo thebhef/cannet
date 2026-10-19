@@ -5303,6 +5303,10 @@ button.color-chip {
 .tx-row-identity .tx-warn {
   outline: 1px solid var(--warn-outline);
 }
+.tx-row-identity .tx-send-failed {
+  color: var(--warn-text-em);
+  cursor: help;
+}
 .tx-row-identity .tx-dbc-name {
   color: var(--text-muted);
   font-size: 0.78rem;
