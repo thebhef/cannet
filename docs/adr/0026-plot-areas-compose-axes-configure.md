@@ -265,10 +265,14 @@ where there is one.
 served, plotted and marked exactly as a numeric stepped series is; the
 tiles are an overlay the frontend computes from runs of equal
 consecutive **served** values. Nothing about a lane reaches back into
-the model: the serve keeps each bucket's first and last sample beside
-its extremes, so a held run arrives whole, and building tiles from it
-is shaping already-paged data for the renderer rather than re-deriving a
-model fact.
+the model: the serve keeps each column's first and last sample beside
+its extremes, so a run held for a column arrives with its code, and
+building tiles from it is shaping already-paged data for the renderer
+rather than re-deriving a model fact. A served run narrower than a
+device pixel draws as a one-CSS-pixel tick in its accent, the full tile
+band tall, on the lanes axis and on the single-enum ribbon alike: it is
+the mark that the value changed there, and a fill that thin would
+antialias to nothing.
 
 A lane drew its own sample markers before this, because uPlot's point
 layer could not serve one: its `auto` rule reads the density of the
@@ -489,22 +493,57 @@ The host still decimates each series; the frontend merge now targets a
 per-axis scale set instead of a single shared y scale. ADR 0007's data
 pipeline is unchanged; this is a usage decision on top of it.
 
-**One serve summarises a window for every render mode: each bucket's
-first, last, min and max sample.** A plain min/max envelope keeps a
-bucket's argmin and argmax *by value*, which summarises a measurement
-well and loses a held state — a code held across the middle of a bucket
-whose neighbours carry both a lower and a higher one is neither, so it
-is dropped outright. Measured on a 100 Hz enum series at one bucket per
-canvas pixel column, a state held for up to **3.21 columns** was served
-with no sample carrying its code at all: absent, not coarse, so nothing
-a renderer did downstream could put it back. Keeping the bucket's first
-and last sample beside its extremes closes that by construction —
-a run that crosses a bucket boundary owns the last sample of the bucket
-it leaves and the first of the one it enters — and it is what a
-**stepped** line needs anyway, since a step renderer holds a value to
-the next sample and a bucket's last sample is where its step ends. The
-answer is bounded by `4 × max_points` instead of `2 × max_points`,
-which is what that costs.
+**One serve summarises a window for every render mode: each served
+column's first, last, min and max sample.** A column is
+`window / max_points` — one canvas pixel, since the budget is the pixel
+width and the fetch window is padded by the same fraction. A plain
+min/max envelope keeps a column's argmin and argmax *by value*, which
+summarises a measurement well and loses a held state — a code held
+across the middle of a column whose neighbours carry both a lower and a
+higher one is neither, so it is dropped outright. Measured on a 100 Hz
+enum series cycling its codes, a state held for up to **3.21 columns**
+was served with no sample carrying its code at all: absent, not coarse,
+so nothing a renderer did downstream could put it back. Keeping the
+column's first and last sample beside its extremes closes that — a run
+whose hold covers a column edge owns the last sample before it or the
+first after it — and it is what a **stepped** line needs anyway, since a
+step renderer holds a value to the next sample and a column's last
+sample is where its step ends. The answer is bounded by
+`4 × max_points` instead of `2 × max_points`, which is what that costs.
+
+The serve guarantees, in served columns, at every zoom:
+
+- **A run held for at least one column is served with its code**, at
+  every alignment against the column grid. Two things had to hold for
+  that once the serve reads a pyramid level rather than raw samples.
+  The columns are of *time*, not of points — a pyramid level folds a
+  flat bucket to one point and a busy one to two, so a bucket of points
+  can be a fraction of a pixel in one place and several in another, and
+  a held run arriving as one point mid-bucket was dropped at up to 1.49
+  columns. And every gap between the level's points wider than a column
+  is refined from the finer levels, because a run with no point of the
+  slice inside it lies inside one gap, and beside a burst of changes a
+  coarse level's gaps run to several columns (a 2.2-column run was lost
+  on a level-3 read). Every pyramid point is a real sample, so a run
+  held for a column cannot hide in a gap no wider than one.
+- **A narrower run may lose its code, never its change**: the serve
+  changes value in the column where the raw series did, or the one
+  beside it. The pyramid's min/max fold keeps two different values of
+  any bucket that changed, but each at its own timestamp from anywhere in
+  its bucket; placing the change in exactly its own column needs a raw
+  read at every column edge, which at a wide zoom is the whole capture.
+  One column of placement is one pixel, and the frontend draws a
+  sub-pixel run as a tick (above), so no zoom level shows an enum as
+  holding one value across a stretch where it did not.
+
+Both cost the serve, not the pyramid: the fold is unchanged. On the
+measuring scenario (100 Hz, 301.3 s, 2248 columns) the served window
+went from 5651 to 5986 points and the points read stayed 7536; on a
+level-3 read the refinement reads about four times the level's points,
+bounded per refined gap. Folding first and last into the pyramid as
+well was measured and rejected: it cost 2.3× the pyramid and made the
+largest lost run *wider* (4.78 columns), because a fatter level pushes
+the serve's level choice one level coarser.
 
 So the host is told a window and a point budget, never a render mode.
 The alternative — a second, categorical reduction the caller asks for

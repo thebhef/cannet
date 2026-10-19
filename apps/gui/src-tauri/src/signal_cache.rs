@@ -608,17 +608,31 @@ impl SignalCache {
     /// Reads the coarsest pyramid level whose in-window point count still
     /// exceeds `max_points` (so the next coarser level would drop below
     /// it), slices that level to the window with two boundary points on
-    /// each side, and clamps to `max_points` via
-    /// [`signal_sampler::decimate_min_max`], which keeps each bucket's
-    /// first and last sample beside its min and max — so the answer
-    /// holds at most `4 * max_points` points and a run of equal values
-    /// spanning two buckets always survives it, which is what lets an
-    /// enum lane read this one serve rather than a categorical one of
-    /// its own (ADR 0026). The
+    /// each side, refines every gap in it wider than one served column
+    /// from the finer levels ([`Self::refine_gaps`]), and clamps to
+    /// `max_points` time columns via [`signal_sampler::decimate_min_max`],
+    /// which keeps each column's first and last point beside its min and
+    /// max — so the answer holds at most `4 * max_points` points. The
     /// chosen level holds at most `~PYRAMID_BRANCH × max_points` points in
-    /// the window, so this is `O(max_points)` regardless of capture
-    /// length. `max_points == 0` disables decimation and returns the raw
-    /// level-0 window slice.
+    /// the window, and the refinement adds a bounded number per column,
+    /// so this is `O(max_points)` regardless of capture length.
+    /// `max_points == 0` disables decimation and returns the raw level-0
+    /// window slice.
+    ///
+    /// **What survives, stated in served columns** (one column is
+    /// `(to - from) / max_points`, one canvas pixel — ADR 0026):
+    ///
+    /// - a run of equal values held for **at least one column** is
+    ///   served with at least one point carrying its value, at every
+    ///   alignment and at every level the serve reads — which is what
+    ///   lets an enum lane read this one serve rather than a categorical
+    ///   one of its own;
+    /// - a **narrower** run may lose its value, but not the fact that the
+    ///   value changed: the serve changes value in that column or the one
+    ///   beside it. A min/max fold keeps two different values of any
+    ///   bucket that changed, so the change stays — but as the bucket's
+    ///   extremes, each at its own timestamp from anywhere in the bucket,
+    ///   which is the one column of placement the guarantee allows.
     ///
     /// The slice comes through [`Self::level_points`], so a read off a
     /// coarse level still reaches the series' newest sample rather than
@@ -627,18 +641,82 @@ impl SignalCache {
     /// enough to push the read several folds up, and a live plot that
     /// ends seconds short of the live edge is the symptom. The splice
     /// costs fewer than [`PYRAMID_BRANCH`] points per level below the one
-    /// read, and the decimation keeps its last bucket's final sample, so
+    /// read, and the decimation keeps its last column's final point, so
     /// the live edge survives it.
     fn window(&self, from: f64, to: f64, max_points: usize) -> Vec<SamplePoint> {
         if self.levels[0].live_len() == 0 {
             return Vec::new();
         }
-        let slice = self.level_points(self.serve_level(from, to, max_points), from, to);
+        let level = self.serve_level(from, to, max_points);
+        let slice = self.level_points(level, from, to);
         if max_points == 0 {
-            slice
-        } else {
-            signal_sampler::decimate_min_max(&slice, max_points)
+            return slice;
         }
+        let (Some(first), Some(last)) = (slice.first(), slice.last()) else {
+            return slice;
+        };
+        // The column the decimation will bin into: the same clamp to the
+        // series' own span it applies.
+        #[allow(clippy::cast_precision_loss)]
+        let column = (to.min(last.t_seconds) - from.max(first.t_seconds)) / max_points as f64;
+        let slice = self.refine_gaps(slice, level, column);
+        signal_sampler::decimate_min_max(&slice, from, to, max_points)
+    }
+
+    /// Splice finer-level points into every gap of `slice` (read off
+    /// `level`) wider than `column`, one level at a time down to level 0,
+    /// until no gap is wider than a column or level 0 is reached.
+    ///
+    /// Every pyramid point is a real sample, so a run of equal raw values
+    /// that holds no point of the slice lies strictly inside one gap; a
+    /// run held for a column or longer therefore cannot hide in a gap no
+    /// wider than a column, and once it holds a point the time-column
+    /// decimation keeps one of its points. A level's in-window count says
+    /// only that its points are *on average* closer than a column: a
+    /// level folds a flat bucket to one point and a busy one to two, so
+    /// beside a burst of changes the gaps can run to several columns, and
+    /// a held run in one was lost at 2.2 columns wide on a level-3 read.
+    ///
+    /// The cost is bounded per gap, not per window. A gap at level `j + 1`
+    /// spans at most two of its buckets, which is sixteen level-`j`
+    /// points, so each refined gap adds at most that many per level; and a
+    /// gap is refined only while it is wider than a column, so a long flat
+    /// stretch stops refining at the level whose spacing first drops under
+    /// a column rather than descending to its raw samples.
+    fn refine_gaps(
+        &self,
+        mut slice: Vec<SamplePoint>,
+        level: usize,
+        column: f64,
+    ) -> Vec<SamplePoint> {
+        if column.is_nan() || column <= 0.0 {
+            return slice;
+        }
+        for finer in (0..level).rev() {
+            if !slice
+                .windows(2)
+                .any(|w| w[1].t_seconds - w[0].t_seconds > column)
+            {
+                break;
+            }
+            let seq = &self.levels[finer];
+            let mut out = Vec::with_capacity(slice.len());
+            for (i, &p) in slice.iter().enumerate() {
+                out.push(p);
+                let Some(next) = slice.get(i + 1) else { break };
+                if next.t_seconds - p.t_seconds <= column {
+                    continue;
+                }
+                for k in partition_by_t(seq, p.t_seconds)..partition_by_t(seq, next.t_seconds) {
+                    let (t_seconds, value) = seq.get(k);
+                    if t_seconds > p.t_seconds {
+                        out.push(SamplePoint { t_seconds, value });
+                    }
+                }
+            }
+            slice = out;
+        }
+        slice
     }
 
     /// The level [`Self::window`] reads `[from, to)` off at `max_points`:
@@ -3795,7 +3873,7 @@ impl SignalCacheStore {
     /// message.
     ///
     /// The reduction is the same whatever the requesting view draws: a
-    /// window is served as each bucket's first, last, min and max, which
+    /// window is served as each column's first, last, min and max, which
     /// keeps a spike for a line and a held run for an enum lane (ADR
     /// 0026). The host is told the window and the point budget, never a
     /// render mode.
@@ -3834,7 +3912,7 @@ impl SignalCacheStore {
     /// over how long — `b.t - a.t`. A view labels a marker with that
     /// count, that span and their ratio; it never counts anything
     /// itself. A window's points are bounded by `2 × max_points` (the
-    /// reduction keeps a bucket's first, last, min and max, and for a
+    /// reduction keeps a column's first, last, min and max, and for a
     /// non-decreasing series the first is the min and the last the
     /// max).
     ///
@@ -5710,28 +5788,50 @@ mod tests {
             .any(|p| (p.t_seconds - (spike_at * S) as f64 / 1e9).abs() < 0.5),);
     }
 
-    /// A **held** code survives the one serve at every alignment of the
-    /// run against the bucket grid — the guarantee an enum lane rests on
-    /// now that it reads the same serve a line does (ADR 0026).
+    /// Build a 100 Hz series of `values` sample by sample, folding as a
+    /// live catch-up does, and serve it whole at `max_points` — the
+    /// shape every held-code test below reads. Returns the serve and the
+    /// window's upper edge (one second past the newest sample, so the
+    /// window is padded the way the plot pads it).
+    #[allow(clippy::cast_precision_loss)]
+    fn serve_codes(
+        dir: &Path,
+        base: &str,
+        values: &[f64],
+        max_points: usize,
+    ) -> (Vec<SamplePoint>, f64) {
+        let mut cache = SignalCache::new(dir, base, None);
+        for (i, &v) in values.iter().enumerate() {
+            cache.push_sample(i as f64 / 100.0, v);
+            cache.fold();
+        }
+        let to = cache.latest().expect("series has samples").t_seconds + 1.0;
+        (cache.window(0.0, to, max_points), to)
+    }
+
+    /// A **held** code that spans one served column survives the serve
+    /// with its code, at every alignment of the run against the column
+    /// grid and at every pyramid depth the serve reads — the guarantee
+    /// an enum lane and the single-enum ribbon rest on (ADR 0026).
     ///
     /// The scenario is the one the categorical serve was introduced
-    /// against: a 100 Hz code series cycling `0..=5` on every sample
-    /// over a 301.3 s window at a budget of 2248 points, with one held
-    /// run of code 3 in the middle. Code 3 is the adversarial value —
-    /// strictly between the codes its bucket neighbours carry, so
-    /// neither the bucket's argmin nor its argmax, which is exactly what
-    /// a min/max envelope on its own discards.
+    /// against: a 100 Hz code series cycling `0..=5` on every sample,
+    /// with one held run of code 3 in the middle. Code 3 is the
+    /// adversarial value — strictly between the codes its neighbours
+    /// carry, so neither a bucket's argmin nor its argmax, which is
+    /// exactly what a min/max envelope discards.
     ///
     /// `max_points` is one point per canvas pixel column, and the fetch
     /// window is padded by the same fraction the budget is, so
-    /// `window / max_points` is one pixel column: here 134 ms. Before
-    /// the serve kept each bucket's first and last sample beside its
-    /// extremes, a run up to **3.21 columns** wide was served with no
-    /// sample carrying its code at all — absent, not coarse, so no
-    /// renderer downstream could put it back. With them, the largest
-    /// run lost at any alignment measures **1.49 columns**; the residual
-    /// is the pyramid fold's, not the decimation's, and closing it costs
-    /// 2.3× the pyramid for *worse* fidelity, so it stands.
+    /// `window / max_points` is one served column. Two depths:
+    ///
+    /// - **301.3 s at 2248 points** (one column is 13.4 samples), served
+    ///   off pyramid level 1. Decimating by point index rather than by
+    ///   time column lost a run up to 1.49 columns wide here.
+    /// - **80 s at 75 points** (one column is 108 samples), served off
+    ///   level 3, where a level point's gap to its neighbour can exceed a
+    ///   column. Without refining those gaps from the finer levels a run
+    ///   of 2.2 columns vanished.
     #[test]
     #[allow(
         clippy::float_cmp,
@@ -5739,58 +5839,153 @@ mod tests {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    fn a_held_code_two_pixel_columns_wide_survives_the_serve_at_every_alignment() {
-        const HZ: f64 = 100.0;
-        const SPAN_SECONDS: f64 = 301.3;
-        const MAX_POINTS: usize = 2248;
+    fn a_held_code_one_served_column_wide_survives_the_serve_at_every_alignment() {
+        // (samples, budget, hold lengths, offsets swept, offset step)
+        type Case = (
+            usize,
+            usize,
+            &'static [usize],
+            std::ops::Range<usize>,
+            usize,
+        );
         const HELD_CODE: f64 = 3.0;
-        let n = (SPAN_SECONDS * HZ) as usize;
-        let column_seconds = SPAN_SECONDS / MAX_POINTS as f64;
         let dir = TempDir::new().unwrap();
-
-        // `hold` samples of `HELD_CODE` starting `offset` samples into
-        // the second half of the capture; everything else cycles.
-        let serve = |base: &str, hold: usize, offset: usize| -> (Vec<SamplePoint>, f64, f64) {
-            let start = n / 2 + offset;
-            let mut cache = SignalCache::new(dir.path(), base, None);
-            for i in 0..n {
-                let value = if i >= start && i < start + hold {
-                    HELD_CODE
-                } else {
-                    (i % 6) as f64
-                };
-                cache.push_sample(i as f64 / HZ, value);
-                cache.fold();
-            }
-            let tip = cache.latest().expect("series has samples").t_seconds;
-            let served = cache.window(0.0, tip + 1.0, MAX_POINTS);
-            (served, start as f64 / HZ, (start + hold) as f64 / HZ)
-        };
-        let carries_the_code = |served: &[SamplePoint], from: f64, to: f64| -> usize {
-            served
-                .iter()
-                .filter(|p| p.value == HELD_CODE && p.t_seconds >= from && p.t_seconds < to)
-                .count()
-        };
-
-        // Control: no hold at all. The window holds 30 130 samples
-        // against a 2248-point budget, so it is served decimated — and
-        // bounded by the reduction's `4 · max_points`.
-        let (control, _, _) = serve("control", 0, 0);
-        assert!(control.len() > MAX_POINTS, "{} points", control.len());
-        assert!(control.len() <= 4 * MAX_POINTS, "{} points", control.len());
-
-        // Every hold from two pixel columns up survives, at every
-        // alignment: 21 samples is 1.57 columns, and the sweep runs past
-        // the 3.21-column run the envelope-only serve used to lose.
-        for hold in [21usize, 28, 43, 44] {
-            for offset in 0..48 {
-                let (served, from, to) = serve(&format!("h{hold}o{offset}"), hold, offset);
+        let cases: [Case; 2] = [
+            (30_130, 2248, &[14, 21, 28, 43], 0..48, 1),
+            (8000, 75, &[109, 130], 0..130, 2),
+        ];
+        for (n, max_points, holds, offsets, step) in cases {
+            let control: Vec<f64> = (0..n).map(|i| (i % 6) as f64).collect();
+            let (control_serve, to) =
+                serve_codes(dir.path(), &format!("c{n}"), &control, max_points);
+            let column = to / max_points as f64;
+            // Served decimated, and bounded by the reduction's four points
+            // per column.
+            assert!(control_serve.len() > max_points);
+            assert!(
+                control_serve.len() <= 4 * max_points,
+                "{}",
+                control_serve.len()
+            );
+            for &hold in holds {
                 assert!(
-                    carries_the_code(&served, from, to) > 0,
-                    "a {:.2}-column hold was dropped at offset {offset}",
-                    (to - from) / column_seconds,
+                    hold as f64 / 100.0 >= column,
+                    "hold {hold} is under a column"
                 );
+                for offset in offsets.clone().step_by(step) {
+                    let start = n / 2 + offset;
+                    let values: Vec<f64> = (0..n)
+                        .map(|i| {
+                            if (start..start + hold).contains(&i) {
+                                HELD_CODE
+                            } else {
+                                (i % 6) as f64
+                            }
+                        })
+                        .collect();
+                    let (served, _) = serve_codes(
+                        dir.path(),
+                        &format!("n{n}h{hold}o{offset}"),
+                        &values,
+                        max_points,
+                    );
+                    let (from, until) = (start as f64 / 100.0, (start + hold) as f64 / 100.0);
+                    assert!(
+                        served.iter().any(|p| p.value == HELD_CODE
+                            && p.t_seconds >= from
+                            && p.t_seconds < until),
+                        "a {:.2}-column hold at {max_points} points was dropped at offset {offset}",
+                        (until - from) / column,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Where the code is too narrow to survive, **the change still
+    /// does**: every served column in which the raw series changed value
+    /// has a served value change in that column or the one beside it, so
+    /// no zoom level draws an enum as holding one value across a stretch
+    /// where it did not (ADR 0026). And every run spanning a column
+    /// keeps its code, over data that is not adversarial by construction.
+    ///
+    /// Random held codes `0..=5` of up to three columns each, every one
+    /// followed by a blip narrower than a column, at the two depths of
+    /// the test above. A served change can land one column off because
+    /// a pyramid point is a bucket's extreme, carrying that sample's own
+    /// timestamp from anywhere in its bucket; closing that last column
+    /// needs a level-0 read at every column edge, which is the full
+    /// capture at a wide zoom.
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn every_raw_change_shows_as_a_served_change_within_a_column() {
+        let dir = TempDir::new().unwrap();
+        for (n, max_points) in [(30_130usize, 2248usize), (8000, 75)] {
+            for seed in 0..6u64 {
+                let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                let mut rnd = move || {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    x
+                };
+                let column_samples = (n + 100) as u64 / max_points as u64;
+                let mut values = Vec::with_capacity(n);
+                while values.len() < n {
+                    let hold = 1 + rnd() % (3 * column_samples);
+                    let code = (rnd() % 6) as f64;
+                    values.extend(std::iter::repeat_n(code, hold as usize));
+                    let blip = 1 + rnd() % (column_samples - 1);
+                    let code = (rnd() % 6) as f64;
+                    values.extend(std::iter::repeat_n(code, blip as usize));
+                }
+                values.truncate(n);
+                let (served, to) = serve_codes(
+                    dir.path(),
+                    &format!("r{max_points}s{seed}"),
+                    &values,
+                    max_points,
+                );
+                let column = to / max_points as f64;
+                let column_of = |t: f64| (t / column).floor() as i64;
+                let served_changes: std::collections::BTreeSet<i64> = served
+                    .windows(2)
+                    .filter(|w| w[1].value != w[0].value)
+                    .map(|w| column_of(w[1].t_seconds))
+                    .collect();
+                for i in 1..n {
+                    if values[i] == values[i - 1] {
+                        continue;
+                    }
+                    let c = column_of(i as f64 / 100.0);
+                    assert!(
+                        (c - 1..=c + 1).any(|k| served_changes.contains(&k)),
+                        "seed {seed} at {max_points} points: column {c} changed but the serve holds",
+                    );
+                }
+                // Runs whose hold spans a column keep their code.
+                let mut start = 0;
+                for i in 1..=n {
+                    if i < n && values[i] == values[start] {
+                        continue;
+                    }
+                    let (from, until) = (start as f64 / 100.0, i as f64 / 100.0);
+                    if until - from >= column {
+                        assert!(
+                            served.iter().any(|p| p.value == values[start]
+                                && p.t_seconds >= from
+                                && p.t_seconds < until),
+                            "seed {seed} at {max_points} points: a {:.2}-column run lost its code",
+                            (until - from) / column,
+                        );
+                    }
+                    start = i;
+                }
             }
         }
     }
@@ -5896,9 +6091,10 @@ mod tests {
             &store,
             dbs,
         );
-        // Both honour the budget…
-        assert!(fit.len() <= 2 * max_points + 2);
-        assert!(zoom.len() <= 2 * max_points + 2);
+        // Both honour the budget — four points per served column at most
+        // (first, last, min, max)…
+        assert!(fit.len() <= 4 * max_points, "{}", fit.len());
+        assert!(zoom.len() <= 4 * max_points, "{}", zoom.len());
         // …and the zoomed window's samples all fall in range (plus the ±2
         // boundary), confirming it's a window slice, not the whole series.
         let in_range = zoom
@@ -11712,7 +11908,7 @@ mod tests {
                 assert!(served.complete);
                 for (bus, times) in expected.iter().enumerate() {
                     let window = &served.series[bus];
-                    // The reduction keeps a bucket's first, last, min and
+                    // The reduction keeps a column's first, last, min and
                     // max; for a non-decreasing series the first is the
                     // min and the last the max.
                     assert!(
