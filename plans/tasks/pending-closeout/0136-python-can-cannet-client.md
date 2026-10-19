@@ -348,3 +348,16 @@ builds the server for that lane. Nothing open against this task; awaiting owner 
   I001 import order (23), the rest single digits (RUF059, B023,
   PLC0414, ISC004, RUF012, SIM115, SIM117, UP035…). Landing on
   `fix-ruff-default-rules` above the stack rather than amending #556.
+
+- 2026-10-19 — **Fixed, branch `fix-ruff-default-rules` (58768168).**
+  The frozen `[tool.ruff.lint] select` is gone from all three packages;
+  ruff's own default applies, frozen by the `ruff>=0.16,<0.17` pin, and
+  the code was changed to satisfy it: 14 / 359 / 6 findings to zero,
+  no `ignore`, no `per-file-ignores`, no unsafe fixes. By hand: B023 (a
+  closure in `shared_interface.py` binds `secs` as a default argument),
+  SIM115 (the bench events file opens with `Path.open`), RUF059, RUF012,
+  SIM117, ISC004, PLC0414. Finding: BLE001 is in the 0.16 default, so
+  the 41 reasoned `noqa: BLE001` at driver/thread/process edges are live
+  and survive under the 2026-10-07 boundary ruling; 10 `WPS433` noqas (a
+  code ruff lacks) and one `F401` noqa went. Wire 18, sidecar 372,
+  client 151 tests pass; mypy clean; comment-references grep clean.
