@@ -147,7 +147,7 @@ pub fn run(ex: &LoadedExample, cfg: &SignalBenchConfig) -> SignalBenchReport {
     // purely the materialize-and-decimate cost.
     let t = Instant::now();
     let raw = caches.slice(bus, id, ext, sig, f64::MIN, f64::MAX, 0, &store, &scopes);
-    let naive = signal_sampler::decimate_min_max(&raw, cfg.max_points);
+    let naive = signal_sampler::decimate_min_max(&raw, f64::MIN, f64::MAX, cfg.max_points);
     let serve_naive_ms = ms(t);
     let matches = raw.len();
     let _ = naive;

@@ -48,8 +48,9 @@ use crate::signal_sampler;
 /// that fetch is min/max-decimated rather than shipping a point per
 /// frame; on an incremental tick it passes `0` (the slice is already
 /// small, and the caller re-decimates its own accumulated series).
-/// The reduction keeps each bucket's first, last, min and max sample, so
-/// a spike survives for a line and a held run survives for an enum lane
+/// The reduction keeps each served column's first, last, min and max
+/// sample, so a spike survives for a line and a held run survives for an
+/// enum lane
 /// — one serve for every render mode, and no flag from the caller
 /// saying which it is (ADR 0026).
 ///
