@@ -311,8 +311,32 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   const runningByIdRef = useRef(runningById);
   runningByIdRef.current = runningById;
 
+  // Why each frame's last manual send failed, keyed by frame id. A
+  // refusal sets it; the next accepted send of that frame clears it.
+  // View-local: the host reports the refusal in the system log too.
+  const [sendFailures, setSendFailures] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
   const sendOnce = useCallback((id: string) => {
-    void invoke("transmit_frame_once", { id }).catch(() => {});
+    const record = (reason: string | null) =>
+      setSendFailures((prev) => {
+        if ((prev.get(id) ?? null) === reason) return prev;
+        const next = new Map(prev);
+        if (reason === null) next.delete(id);
+        else next.set(id, reason);
+        return next;
+      });
+    void invoke<{ wire_status?: { kind: string; message?: string } }>(
+      "transmit_frame_once",
+      { id },
+    )
+      .then((result) => {
+        const status = result?.wire_status;
+        if (status?.kind === "accepted") record(null);
+        else if (status?.kind === "not_connected") record("no server is connected");
+        else if (status?.kind === "failed") record(status.message ?? "send failed");
+      })
+      .catch((err) => record(String(err)));
   }, []);
   const isConnected = useCallback(
     (busId: string | null) => busId !== null && project.connectedBusIds.includes(busId),
@@ -532,6 +556,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
             onRemove={() => removeFrame(f.id)}
             onReorder={reorderFrames}
             onSend={() => sendOnce(f.id)}
+            sendFailure={sendFailures.get(f.id) ?? null}
             onStartCyclic={() => startCyclic(f.id)}
             onStopCyclic={() => stopCyclic(f.id)}
             cyclicActive={runningById.get(f.id) ?? false}

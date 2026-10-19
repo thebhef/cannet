@@ -2573,6 +2573,65 @@ fn a_transmit_onto_a_gone_adapter_leaves_no_row() {
 }
 
 #[test]
+fn a_refused_manual_send_is_one_system_log_row_and_no_data() {
+    // The refusal is reported through the system log (and the element's
+    // indicator), never as data (ADR 0061): exactly one log row naming
+    // the frame, bus and reason; no trace row, count or rate.
+    let state = test_state();
+    running_row(&state, "f1", "p", 0x123);
+    state.transmit_frames().stop_periodic("f1");
+    let (result, entry) = transmit_commands::send_once_logged(&state, "f1").unwrap();
+    assert!(matches!(
+        result.wire_status,
+        ipc::TransmitWireStatus::NotConnected
+    ));
+    let entry = entry.expect("a refusal is logged");
+    assert!(entry.message.contains("0x123"), "{}", entry.message);
+    assert!(entry.message.contains("bus p"), "{}", entry.message);
+    assert!(entry.message.contains("refused"), "{}", entry.message);
+    assert_eq!(state.system_log.snapshot().len(), 1, "exactly one row");
+    assert_no_bus_fact(&state);
+}
+
+#[test]
+fn a_duplicate_that_fails_is_a_system_log_row_naming_element_and_frame() {
+    let state = test_state();
+    let err = state
+        .transmit_frames()
+        .clone_frames(&[("gone".into(), "new".into())])
+        .unwrap_err();
+    let entry = transmit_commands::log_failed_clone(&state, Some("Engine"), &err).expect("logged");
+    assert!(entry.message.contains("Engine"), "{}", entry.message);
+    assert!(entry.message.contains("gone"), "{}", entry.message);
+    assert_eq!(state.system_log.snapshot().len(), 1);
+}
+
+#[test]
+fn a_periodic_batch_the_session_refuses_is_reported_once() {
+    let state = test_state();
+    state.remote_sessions().insert(
+        "tcp://host:1".into(),
+        session_with_controller("p", "PCAN_USBBUS1", Some(1)),
+    );
+    running_row(&state, "on-p", "p", 0x100);
+    let mut schedule = transmit_scheduler::PeriodicSchedule::new();
+    let start = std::time::Instant::now();
+    schedule.schedule("on-p".into(), start);
+    let due = schedule.take_due(start);
+    let reports: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    transmit_commands::fire_due(
+        &state,
+        &mut schedule,
+        due,
+        start,
+        &|_, _, _| {},
+        &|bus, _| reports.lock().unwrap().push(bus.to_string()),
+    );
+    assert_eq!(*reports.lock().unwrap(), vec!["p".to_string()]);
+    assert_no_bus_fact(&state);
+}
+
+#[test]
 fn a_periodic_batch_the_session_refuses_leaves_no_row() {
     // The scheduler's path to the same rule: the route resolves (the
     // controller is reachable) but the session takes none of the batch —
@@ -2588,7 +2647,8 @@ fn a_periodic_batch_the_session_refuses_leaves_no_row() {
     let start = std::time::Instant::now();
     schedule.schedule("on-p".into(), start);
     let due = schedule.take_due(start);
-    let fired = transmit_commands::fire_due(&state, &mut schedule, due, start, &|_, _, _| {});
+    let fired =
+        transmit_commands::fire_due(&state, &mut schedule, due, start, &|_, _, _| {}, &|_, _| {});
     assert_eq!(fired, 1, "the period was prepared and offered");
     assert_no_bus_fact(&state);
 }
@@ -9891,7 +9951,7 @@ fn a_full_request_channel_misses_its_buses_periods_and_stalls_no_other_bus() {
         }
     };
     let due = schedule.take_due(start);
-    let fired = transmit_commands::fire_due(&state, &mut schedule, due, start, &record);
+    let fired = transmit_commands::fire_due(&state, &mut schedule, due, start, &record, &|_, _| {});
 
     assert_eq!(fired, 1, "only the free bus's period was prepared");
     assert_eq!(

@@ -56,6 +56,9 @@ interface FrameRowProps {
   onRemove: () => void;
   onReorder: (draggedId: string, beforeId: string | null) => void;
   onSend: () => void;
+  /// Why this frame's last manual send was refused; null once a send is
+  /// accepted (or before any failed).
+  sendFailure: string | null;
   onStartCyclic: () => void;
   onStopCyclic: () => void;
   cyclicActive: boolean;
@@ -77,6 +80,7 @@ export function TransmitFrameRow({
   onRemove,
   onReorder,
   onSend,
+  sendFailure,
   onStartCyclic,
   onStopCyclic,
   cyclicActive,
@@ -230,6 +234,16 @@ export function TransmitFrameRow({
             onStopCyclic={onStopCyclic}
             cyclicActive={cyclicActive}
           />
+          {sendFailure !== null && (
+            <span
+              className="tx-send-failed"
+              role="img"
+              aria-label="last send failed"
+              title={`Last send failed: ${sendFailure}`}
+            >
+              {"⚠"}
+            </span>
+          )}
           <input
             className="tx-name"
             type="text"

@@ -2338,7 +2338,12 @@ Where a sent frame goes:
   session would not take it — leaves no row either: only the wire
   writes data ([ADR 0061](docs/adr/0061-only-the-wire-writes-data.md)).
   A periodic the host could not offer shows as a **missed periods**
-  count on the bus-health row.
+  count on the bus-health row. A refused manual send is reported in
+  **System messages** (frame, bus and reason) and by a warning mark on
+  the frame's row in the transmit panel, hover text the reason, which
+  clears at that frame's next accepted send. A Duplicate refused
+  because a frame id is stale copies nothing and says so in System
+  messages.
 - The far end can still refuse a frame it accepted from us. `TX_REJECTED`
   and its two siblings (`NOT_SUBSCRIBED`, `NO_ACKNOWLEDGER`) arrive later
   on the receive stream and belong to no single row, so they are tallied
