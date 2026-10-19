@@ -178,11 +178,93 @@ pub(crate) fn clone_transmit_frames(
     app: AppHandle,
     state: State<'_, AppState>,
     pairs: Vec<(String, String)>,
+    element_name: Option<String>,
 ) -> Result<Vec<transmit_frames::TransmitFrame>, String> {
-    let clones = state.transmit_frames().clone_frames(&pairs)?;
+    let outcome = state.transmit_frames().clone_frames(&pairs);
+    let clones = match outcome {
+        Ok(clones) => clones,
+        Err(err) => {
+            if let Some(entry) = log_failed_clone(state.inner(), element_name.as_deref(), &err) {
+                crate::emitters::broadcast_system_entry(&app, entry);
+            }
+            return Err(err);
+        }
+    };
     refresh_calc_resolutions(&app);
     emit_transmit_frames_changed(&app);
     Ok(clones)
+}
+
+/// Record a refused Duplicate in the system log, naming the element and
+/// the registry's reason (which names the missing frame id). The refusal
+/// is otherwise invisible: the batch is all-or-nothing, so one stale id
+/// makes the whole Duplicate do nothing.
+pub(crate) fn log_failed_clone(
+    state: &AppState,
+    element_name: Option<&str>,
+    reason: &str,
+) -> Option<crate::system_log::SystemMessage> {
+    let element = element_name.map_or_else(String::new, |n| format!(" of \"{n}\""));
+    state.system_log.push(
+        "transmit",
+        crate::system_log::LogLevel::Warn,
+        format!("Duplicate{element} failed, nothing was copied: {reason}"),
+    )
+}
+
+/// Record a refused send in the system log: the frame by name (or id),
+/// its CAN id and bus, and the reason. A refusal is reported here and on
+/// the element's indicator, never as data (ADR 0061).
+pub(crate) fn log_refused_send(
+    state: &AppState,
+    frame_name: &str,
+    request: &ipc::TransmitRequest,
+    status: &ipc::TransmitWireStatus,
+) -> Option<crate::system_log::SystemMessage> {
+    let reason = match status {
+        ipc::TransmitWireStatus::Accepted { .. } => return None,
+        ipc::TransmitWireStatus::NotConnected => "no server is connected",
+        ipc::TransmitWireStatus::Failed { message } => message.as_str(),
+    };
+    state.system_log.push(
+        "transmit",
+        crate::system_log::LogLevel::Warn,
+        format!(
+            "send of \"{frame_name}\" (0x{:X} on bus {}) refused: {reason}",
+            request.id, request.bus_id
+        ),
+    )
+}
+
+/// The manual send behind [`transmit_frame_once`]: the transmit
+/// primitive plus the system-log row for a refusal. Returns the row so
+/// the command can broadcast it.
+pub(crate) fn send_once_logged(
+    state: &AppState,
+    id: &str,
+) -> Result<
+    (
+        ipc::TransmitResult,
+        Option<crate::system_log::SystemMessage>,
+    ),
+    String,
+> {
+    let (request, description) = {
+        let mut registry = state.transmit_frames();
+        let request = registry
+            .send_request(id)
+            .ok_or_else(|| format!("no transmit frame with id {id}"))?;
+        let description = registry.description(id).unwrap_or_default();
+        (request, description)
+    };
+    let result = transmit_frame_inner(state, &request)?;
+    let name = if description.is_empty() {
+        id
+    } else {
+        description.as_str()
+    };
+    let entry = log_refused_send(state, name, &request, &result.wire_status);
+    Ok((result, entry))
 }
 
 /// Remove a TX message, unscheduling its periodic first.
@@ -220,14 +302,15 @@ pub(crate) fn clear_transmit_frames(app: AppHandle, state: State<'_, AppState>) 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn transmit_frame_once(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ipc::TransmitResult, String> {
-    let request = state
-        .transmit_frames()
-        .send_request(&id)
-        .ok_or_else(|| format!("no transmit frame with id {id}"))?;
-    transmit_frame_inner(state.inner(), &request)
+    let (result, entry) = send_once_logged(state.inner(), &id)?;
+    if let Some(entry) = entry {
+        crate::emitters::broadcast_system_entry(&app, entry);
+    }
+    Ok(result)
 }
 
 /// Start a message's periodic schedule. Rejects non-periodic messages
@@ -620,11 +703,24 @@ pub(crate) fn run_transmit_scheduler(
         let fire_start = std::time::Instant::now();
         let due_entries = schedule.take_due(now);
         let health = app.try_state::<crate::bus_health::BusHealth>();
-        let fired = fire_due(&state, &mut schedule, due_entries, now, &|bus, kind, n| {
-            if let Some(health) = health.as_ref() {
-                health.record_missed(bus, kind, n);
-            }
-        });
+        let fired = fire_due(
+            &state,
+            &mut schedule,
+            due_entries,
+            now,
+            &|bus, kind, n| {
+                if let Some(health) = health.as_ref() {
+                    health.record_missed(bus, kind, n);
+                }
+            },
+            &|bus, reason| {
+                crate::sys_warn!(
+                    app,
+                    "transmit",
+                    "periodic send onto bus {bus} refused: {reason}"
+                );
+            },
+        );
         if fired > 0 {
             diag.record_fire(fire_start.elapsed(), fired);
         }
@@ -689,6 +785,7 @@ pub(crate) fn fire_due(
     due: Vec<(String, std::time::Instant)>,
     now: std::time::Instant,
     missed: &dyn Fn(&str, crate::bus_health::MissedPeriod, u64),
+    refused: &dyn Fn(&str, &str),
 ) -> usize {
     use crate::bus_health::MissedPeriod;
     if due.is_empty() {
@@ -784,9 +881,18 @@ pub(crate) fn fire_due(
         }
         let frames: Vec<cannet_core::CanFrame> = prepared.into_iter().map(|(_, f)| f).collect();
         // A refused batch is dropped: it is an intent, not a bus fact,
-        // and writes no row, count or sample (ADR 0061).
-        if let (Some(tx), Some(reserved)) = (tx, reserved) {
-            let _ = tx.send_reserved(reserved, channel, &interface_id, &frames);
+        // and writes no row, count or sample (ADR 0061). It is reported
+        // to the system log through `refused`, once per batch.
+        let refusal = match (tx, reserved) {
+            (Some(tx), Some(reserved)) => tx
+                .send_reserved(reserved, channel, &interface_id, &frames)
+                .err(),
+            _ => Some("the session has gone".to_string()),
+        };
+        if let (Some(reason), Some(entry)) = (refusal, entries.first()) {
+            if !frames.is_empty() {
+                refused(&entry.bus, &reason);
+            }
         }
     }
     fired
