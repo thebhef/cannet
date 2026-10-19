@@ -7,39 +7,7 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-- **168 — undo withdraws the host frames a Duplicate cloned.** ADR 0050
-  gained one sentence: undoing a transmit Duplicate removes the frames
-  it cloned. Yes/no.
-owner: clarify - this is just the implied "stop sending the message when we remove the transmit message?" obviously necessary if so.
-overseer: nearly. Remove already withdraws an element's frames; this is the same rule for *undo* of a Duplicate. The clones are created stopped, so it is pool/saved-project residue that leaves, not a running send. Taking it as yes.
-owner: confirm it doesn't alter the message buffer.
-overseer: confirmed. `remove_transmit_frame` stops the frame's schedule and drops its pool entry (`transmit_frames.rs::remove`); the capture store is never touched. Same path Remove uses.
-
-- **167 — the appended fraction when the pattern's last field is not
-  `ss`.** The code appends `.ffff` after the whole pattern, as Q2 said.
-  I recommended dropping it after a coarser pattern. Yes/no.
-owner: i don't see why we'd ever override the pattern the user set. convince me this is necessary - I didn't spec that.
-overseer: it is not necessary. The code already does exactly what you spec'd; the item was my suggestion to deviate. Withdrawn, nothing changes.
-owner: so the suggestion I'm declining is to complicate the date/time string formatting, or the current implementation is such?
-overseer: you are declining the complication. Current code = whole pattern then `.ffff`, nothing else. Settled.
-
-- **167 — elapsed rounds, calendar truncates.** Yes/no on elapsed
-  truncating too.
-owner: "calendar cells?"
-overseer: the time cells in the trace, By-ID, Events and Signals tables when *Time display* is calendar. They truncate the fraction (ADR 0062); the elapsed reading of the same cell rounds, so one row can read `.3456` elapsed and `.3455` calendar. Yes = elapsed truncates too, so both agree.
-owner: I'm inclined to 'both round' instead of 'both truncate'. should be consistent though.
-overseer: ruling noted: both round. Scope: ADR 0062 section 1 amended, the TS calendar formatter (`format.ts`) and the host's (`date_pattern.rs`, logger/export names) round the instant before splitting fields so a carry into the next second is correct. Done, `task167-fractions-round` (3869d814): both round, carries propagate, ADR 0062 amended.
-
-- **ruff rule set (fix-python-toolchain, #556).**
-owner: what is that rule, anyway? what version before/after, what default changed?
-overseer: `[tool.ruff.lint] select` is the list of lint families enforced. Before: ruff 0.15, default `E4 E7 E9 F`. After: 0.16, whose default drops `E4` and adds import order (I), modern syntax (UP), pylint (PL), bugbear (B) and ruff's own (RUF). #556 pinned the old list so the bump changed nothing. Done per your note: `fix-ruff-default-rules` (58768168) drops the list, runs the 0.16 default under the `<0.17` pin, 379 findings fixed in code, no `ignore`. The 41 reasoned `noqa: BLE001` at driver/thread edges survive your 2026-10-07 boundary ruling; say if those should go too.
-owner: I don't want dozens of noqa comments. ... there's nothing sacred in this codebase.
-overseer: the 41 `noqa: BLE001` go. BLE001 is satisfied without a comment when the handler logs with `.exception()` or re-raises, which is what those thread/driver tops should do anyway. Done, eb744f6b: zero `noqa` left; the catch-alls log their traceback instead.
-
-- **160 phase 2: a manual send onto an unbound bus now gives no
-  feedback.**
-owner: system log + some indicator on the tx element that is displayed if the last tx attempt failed.
-overseer: recorded as the design (0160 § Status log). Not launched. One detail before it is: the indicator clears on the next successful send (recommended) or only by hand.
+(none)
 
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
