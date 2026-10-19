@@ -34,7 +34,7 @@ overseer: ruling noted: both round. Scope: ADR 0062 section 1 amended, the TS ca
 owner: what is that rule, anyway? what version before/after, what default changed?
 overseer: `[tool.ruff.lint] select` is the list of lint families enforced. Before: ruff 0.15, default `E4 E7 E9 F`. After: 0.16, whose default drops `E4` and adds import order (I), modern syntax (UP), pylint (PL), bugbear (B) and ruff's own (RUF). #556 pinned the old list so the bump changed nothing. Done per your note: `fix-ruff-default-rules` (58768168) drops the list, runs the 0.16 default under the `<0.17` pin, 379 findings fixed in code, no `ignore`. The 41 reasoned `noqa: BLE001` at driver/thread edges survive your 2026-10-07 boundary ruling; say if those should go too.
 owner: I don't want dozens of noqa comments. ... there's nothing sacred in this codebase.
-overseer: the 41 `noqa: BLE001` go. BLE001 is satisfied without a comment when the handler logs with `.exception()` or re-raises, which is what those thread/driver tops should do anyway. Queued on the same branch as soon as the shared tree is free (the enum phase holds it now).
+overseer: the 41 `noqa: BLE001` go. BLE001 is satisfied without a comment when the handler logs with `.exception()` or re-raises, which is what those thread/driver tops should do anyway. Done, eb744f6b: zero `noqa` left; the catch-alls log their traceback instead.
 
 - **160 phase 2: a manual send onto an unbound bus now gives no
   feedback.**
@@ -66,10 +66,10 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   results early." The haystack change itself is kept. (0153 § Status
   log, 2026-10-07.) Needs grooming.
 - **The ruff 0.16 uplift** — done 2026-10-19 on `fix-ruff-default-rules`
-  (58768168, above the stack): ruff's own default applies under the
-  `>=0.16,<0.17` pin, 379 findings fixed, no `ignore`; the 41 reasoned
-  `noqa: BLE001` at driver/thread/process edges survive per the
-  2026-10-07 boundary ruling. Delete on acceptance. (0136 §
+  (eb744f6b, above the stack): ruff's own default applies under the
+  `>=0.16,<0.17` pin, 379 findings fixed, no `ignore`, no `noqa` (the
+  41 catch-alls log their traceback instead; module loggers renamed
+  `_log` → `_logger`). Delete on acceptance. (0136 §
   Post-completion notes.)
 - **A failed manual send is reported** (owner 2026-10-19, was § 1): a
   system-log row plus an indicator on the transmit element shown while
