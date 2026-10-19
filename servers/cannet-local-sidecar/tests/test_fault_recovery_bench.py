@@ -33,8 +33,8 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-from cannet_local_sidecar.bench import fake  # noqa: E402
-from cannet_local_sidecar.bench.fault_recovery import (  # noqa: E402
+from cannet_local_sidecar.bench import fake
+from cannet_local_sidecar.bench.fault_recovery import (
     Bench,
     BenchConfig,
     run_trial,

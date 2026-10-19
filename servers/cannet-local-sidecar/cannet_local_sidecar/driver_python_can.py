@@ -39,7 +39,7 @@ import collections
 import ctypes
 import logging
 import time
-from typing import Iterable, List, Optional, Sequence
+from collections.abc import Iterable, Sequence
 
 from cannet_python_wire import frame_to_message, message_to_frame
 
@@ -49,23 +49,23 @@ from .driver import (
     REFUSAL_LISTEN_ONLY,
     REFUSAL_OTHER,
     REFUSAL_QUEUE_FULL,
+    STATE_ACTIVE,
+    STATE_BUS_OFF,
+    STATE_PASSIVE,
+    STATE_UNAVAILABLE,
+    STATE_WARNING,
     BusError,
     Channel,
     ControllerState,
     Frame,
     FrameKind,
     OpenConfig,
-    STATE_ACTIVE,
-    STATE_BUS_OFF,
-    STATE_PASSIVE,
-    STATE_UNAVAILABLE,
-    STATE_WARNING,
     TxRejected,
     state_from_counters,
     worse_state,
 )
 
-_log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 try:  # python-can may be absent in a fresh / replaced venv.
@@ -73,7 +73,9 @@ try:  # python-can may be absent in a fresh / replaced venv.
 
     _HAVE_PYTHON_CAN = True
     _IMPORT_ERROR = ""
-except Exception as _e:  # noqa: BLE001 - swallow any import-time error.
+# swallow any import-time error.
+except Exception as _e:
+    _logger.debug("swallow any import-time error.", exc_info=True)
     can = None  # type: ignore[assignment]
     _HAVE_PYTHON_CAN = False
     _IMPORT_ERROR = repr(_e)
@@ -378,7 +380,9 @@ class _KvaserApi:
 
     def __init__(self) -> None:
         from can.interfaces.kvaser import canlib as kv  # type: ignore[import-untyped]
-        from can.interfaces.kvaser import constants as kvc  # type: ignore[import-untyped]
+        from can.interfaces.kvaser import (
+            constants as kvc,  # type: ignore[import-untyped]
+        )
 
         lib = getattr(kv, "__canlib", None)
         if lib is None:
@@ -436,7 +440,7 @@ class _KvaserApi:
             self._kv.canBusOn(h)
 
 
-_kvaser_api_instance: Optional[_KvaserApi] = None
+_kvaser_api_instance: _KvaserApi | None = None
 
 
 def _kvaser_api() -> _KvaserApi:
@@ -465,7 +469,7 @@ def _xl_chip_state_reading(chip_state: object) -> tuple[int, int, int]:
 #: Built once, on first Vector open. Importing python-can's Vector
 #: backend probes for the XL library, so the sidecar must not pay for it
 #: — or depend on it — at module load.
-_vector_bus_class: Optional[type] = None
+_vector_bus_class: type | None = None
 
 
 def _chip_state_vector_bus_class() -> type:
@@ -510,7 +514,7 @@ def _chip_state_vector_bus_class() -> type:
         #: ``(busStatus, tec, rec)``, or ``None`` until the first answer
         #: arrives. A class attribute so it reads correctly before
         #: anything has been received.
-        chip_state: Optional[tuple[int, int, int]] = None
+        chip_state: tuple[int, int, int] | None = None
 
         #: How many events the XL driver has handed us with its
         #: queue-overflow flag set, i.e. how many times it has told us
@@ -596,7 +600,7 @@ class PythonCanDriver:
 
     def __init__(self) -> None:
         if not _HAVE_PYTHON_CAN:
-            _log.warning(
+            _logger.warning(
                 "python-can not importable (%s); reporting zero channels",
                 _IMPORT_ERROR,
             )
@@ -604,13 +608,13 @@ class PythonCanDriver:
     def list_channels(self) -> Iterable[Channel]:
         if not _HAVE_PYTHON_CAN:
             return []
-        out: List[Channel] = []
+        out: list[Channel] = []
         out.extend(_list_vector())
         out.extend(_list_kvaser())
         out.extend(_list_pcan())
         return out
 
-    def open(self, channel_id: str, config: OpenConfig) -> "PythonCanChannel":
+    def open(self, channel_id: str, config: OpenConfig) -> PythonCanChannel:
         if not _HAVE_PYTHON_CAN:
             raise KeyError(channel_id)
         interface, kwargs = _bus_kwargs_for(channel_id, config)
@@ -619,7 +623,7 @@ class PythonCanDriver:
                 bus = _open_vector_bus(kwargs)
             else:
                 bus = can.interface.Bus(interface=interface, **kwargs)  # type: ignore[union-attr]
-        except Exception as e:  # noqa: BLE001 - backend's own exception type; re-raised as OSError
+        except Exception as e:
             raise OSError(f"open {channel_id}: {e}") from e
         if interface == "pcan":
             _disable_pcan_status_frames(bus)
@@ -693,18 +697,18 @@ class PythonCanChannel:
         # has to be against the raw value: the corrected one climbs past
         # the counter's range, so a second rollover would never look
         # like one.
-        self._kvaser_last_raw_s: Optional[float] = None
+        self._kvaser_last_raw_s: float | None = None
         self._kvaser_wraps = 0
         # The Vector FD error event behind the last error frame `recv`
         # returned, so `classify_error` -- called right after, on the
         # same thread -- can answer for it.
-        self._fd_error_frame: Optional[Frame] = None
-        self._fd_error: Optional[BusError] = None
+        self._fd_error_frame: Frame | None = None
+        self._fd_error: BusError | None = None
         # A fault state a PEAK read reported (see `_pcan_recv_fault`),
         # for the next state poll to floor its reading with.
-        self._recv_fault_state: Optional[str] = None
+        self._recv_fault_state: str | None = None
 
-    def recv(self, timeout_s: float) -> Optional[Frame]:
+    def recv(self, timeout_s: float) -> Frame | None:
         if self._closed:
             return None
         pending = self._pending_fd_error()
@@ -740,7 +744,7 @@ class PythonCanChannel:
             return None
         return frame
 
-    def _pcan_recv_fault(self, error: Exception) -> Optional[str]:
+    def _pcan_recv_fault(self, error: Exception) -> str | None:
         """The fault state a failed PEAK read reported, or ``None`` when
         the failure is anything else.
 
@@ -761,7 +765,7 @@ class PythonCanChannel:
                 return state
         return None
 
-    def _pending_fd_error(self) -> Optional[Frame]:
+    def _pending_fd_error(self) -> Frame | None:
         """The oldest Vector FD error event not yet handed back, as an
         error frame, or ``None``. The event has no frame of its own in
         the wire model, so it takes the shape every other vendor's error
@@ -830,7 +834,9 @@ class PythonCanChannel:
                 return False
             try:
                 flush(bus.port_handle, bus.mask)  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001 - not supported by this device
+            # not supported by this device
+            except Exception:
+                _logger.debug("not supported by this device", exc_info=True)
                 return False
             return True
         if self._is_kvaser:
@@ -919,7 +925,7 @@ class PythonCanChannel:
         last = self._kvaser_last_raw_s
         if last is not None and raw < last - _KVASER_WRAP_THRESHOLD_S:
             self._kvaser_wraps += 1
-            _log.warning(
+            _logger.warning(
                 "%s: receive timer wrapped (%d since open); adding "
                 "%.5f s to later timestamps",
                 self.channel_id,
@@ -977,7 +983,7 @@ class PythonCanChannel:
         msg = frame_to_message(frame)
         try:
             self._bus.send(msg)  # type: ignore[attr-defined]
-        except Exception as e:  # noqa: BLE001 - backend's own exception type; re-raised as TxRejected
+        except Exception as e:
             raise TxRejected(
                 str(e),
                 reason=_send_refusal_reason(e),
@@ -1057,7 +1063,12 @@ class PythonCanChannel:
             return self._kvaser_state()
         try:
             raw = self._bus.state  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001 - backend's `.state` getter can raise anything; read as unreachable
+        # backend's `.state` getter can raise anything; read as unreachable
+        except Exception:
+            _logger.debug(
+                "backend's `.state` getter can raise anything; read as unreachable",
+                exc_info=True,
+            )
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         name = getattr(raw, "name", str(raw)).upper()
@@ -1128,7 +1139,11 @@ class PythonCanChannel:
             return ControllerState(state=from_counters, tec=tec, rec=rec)
         try:
             status = int(status_read())
-        except Exception:  # noqa: BLE001 - PCAN-Basic status read can raise; read as unreachable
+        # PCAN-Basic status read can raise; read as unreachable
+        except Exception:
+            _logger.debug(
+                "PCAN-Basic status read can raise; read as unreachable", exc_info=True
+            )
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         self._unreachable = False
@@ -1171,7 +1186,7 @@ class PythonCanChannel:
             self._pcan_overruns += 1
         self._pcan_in_overrun = in_overrun
 
-    def rx_loss(self) -> Optional[int]:
+    def rx_loss(self) -> int | None:
         """Receive overruns reported since this channel was opened, or
         ``None`` where the backend reports none of them.
 
@@ -1232,7 +1247,11 @@ class PythonCanChannel:
         """
         try:
             self._bus.request_chip_state()  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001 - XL driver's request can raise; read as unreachable
+        # XL driver's request can raise; read as unreachable
+        except Exception:
+            _logger.debug(
+                "XL driver's request can raise; read as unreachable", exc_info=True
+            )
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         self._unreachable = False
@@ -1256,7 +1275,9 @@ class PythonCanChannel:
             api = _kvaser_api()
             status = api.read_status(handle)
             tec, rec = api.read_error_counters(handle)
-        except Exception:  # noqa: BLE001 - CANlib read can raise; read as unreachable
+        # CANlib read can raise; read as unreachable
+        except Exception:
+            _logger.debug("CANlib read can raise; read as unreachable", exc_info=True)
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         self._unreachable = False
@@ -1306,14 +1327,17 @@ class PythonCanChannel:
         self._closed = True
         try:
             self._bus.shutdown()  # type: ignore[attr-defined]
-        except Exception as e:  # noqa: BLE001 - closing; nothing left to do but log
-            _log.debug("shutdown of %s failed: %s", self.channel_id, e)
+        # closing; nothing left to do but log
+        except Exception as e:
+            _logger.debug(
+                "shutdown of %s failed: %s", self.channel_id, e, exc_info=True
+            )
 
 
 # ----- Vendor enumeration helpers --------------------------------------------
 
 
-def _vector_driver_version(vector_canlib) -> Optional[str]:
+def _vector_driver_version(vector_canlib) -> str | None:
     """The XL driver library's version, from ``xlGetDriverConfig``.
 
     python-can already makes that call — ``_get_xl_driver_config`` opens
@@ -1335,14 +1359,18 @@ def _vector_driver_version(vector_canlib) -> Optional[str]:
         return None
     try:
         packed = int(read().dllVersion)
-    except Exception:  # noqa: BLE001 - driver-config read can raise; version then reports absent
+    # driver-config read can raise; version then reports absent
+    except Exception:
+        _logger.debug(
+            "driver-config read can raise; version then reports absent", exc_info=True
+        )
         return None
     if packed <= 0:
         return None
     return f"{(packed >> 24) & 0xFF}.{(packed >> 16) & 0xFF}.{packed & 0xFFFF}"
 
 
-def _list_vector() -> List[Channel]:
+def _list_vector() -> list[Channel]:
     """Vector XL channels via python-can's ``vector`` backend.
 
     ``VectorChannelConfig`` (the NamedTuple python-can returns from
@@ -1371,8 +1399,15 @@ def _list_vector() -> List[Channel]:
       OR the two CAN-FD support flags to decide ``fd_capable``.
     """
     try:
-        from can.interfaces.vector import canlib as vector_canlib  # type: ignore[import-untyped]
-    except Exception:  # noqa: BLE001 - Vector backend/XL library absent or broken; reports zero channels
+        from can.interfaces.vector import (
+            canlib as vector_canlib,  # type: ignore[import-untyped]
+        )
+    # Vector backend/XL library absent or broken; reports zero channels
+    except Exception:
+        _logger.debug(
+            "Vector backend/XL library absent or broken; reports zero channels",
+            exc_info=True,
+        )
         return []
     # CAN-FD capability flags from xldefine.XL_ChannelCapabilities.
     # Looked up lazily because importing xldefine pulls the vxlapi
@@ -1404,19 +1439,29 @@ def _list_vector() -> List[Channel]:
                 0,
             )
         )
-    except Exception:  # noqa: BLE001 - xldefine lookup can fail on some platforms; falls back to the permissive default
+    # xldefine lookup can fail on some platforms; falls back to the permissive default
+    except Exception:
+        _logger.debug(
+            "xldefine lookup can fail on some platforms; falls back to the permissive default",
+            exc_info=True,
+        )
         fd_mask = 0
         can_cap_mask = 0
     try:
         configs = vector_canlib.get_channel_configs()
-    except Exception as e:  # noqa: BLE001 - vendor enumeration can fail in many ways; logged and skipped
-        _log.info("vector enumeration failed (%s); skipping", e)
+    # vendor enumeration can fail in many ways; logged and skipped
+    except Exception as e:
+        _logger.debug(
+            "vendor enumeration can fail in many ways; logged and skipped",
+            exc_info=True,
+        )
+        _logger.info("vector enumeration failed (%s); skipping", e)
         return []
     # One driver-config read for the whole enumeration: the version is
     # the library's, not the channel's, and the call opens and closes
     # the XL driver each time it is made.
     driver_version = _vector_driver_version(vector_canlib)
-    out: List[Channel] = []
+    out: list[Channel] = []
     for cfg in configs or []:
         hw_type = getattr(cfg, "hw_type", None)
         if hw_type is not None and int(hw_type) == 0:
@@ -1468,7 +1513,7 @@ def _list_vector() -> List[Channel]:
     return out
 
 
-def _list_kvaser() -> List[Channel]:
+def _list_kvaser() -> list[Channel]:
     """Kvaser CANlib channels.
 
     Channel *discovery* is delegated to python-can's own detector
@@ -1492,10 +1537,14 @@ def _list_kvaser() -> List[Channel]:
         return []
     try:
         detected = can.detect_available_configs(interfaces=["kvaser"])
-    except Exception as e:  # noqa: BLE001 - CANlib detection can fail in many ways; logged and skipped
-        _log.info("kvaser enumeration failed (%s); skipping", e)
+    # CANlib detection can fail in many ways; logged and skipped
+    except Exception as e:
+        _logger.debug(
+            "CANlib detection can fail in many ways; logged and skipped", exc_info=True
+        )
+        _logger.info("kvaser enumeration failed (%s); skipping", e)
         return []
-    out: List[Channel] = []
+    out: list[Channel] = []
     for cfg in detected:
         # The global index is what an open takes; an entry without one
         # can't be opened, so it isn't offered.
@@ -1536,8 +1585,9 @@ def _pcan_read_int(api, handle, pcan_basic, *param_names: str, default: int = 0)
             continue
         try:
             err, val = api.GetValue(handle, param)
-        except Exception as e:  # noqa: BLE001 - optional parameter, tried next
-            _log.debug("PCAN-Basic GetValue(%s) failed: %s", pname, e)
+        # optional parameter, tried next
+        except Exception as e:
+            _logger.debug("PCAN-Basic GetValue(%s) failed: %s", pname, e, exc_info=True)
             continue
         if err == 0 and val is not None:
             return int(getattr(val, "value", val))
@@ -1554,15 +1604,16 @@ def _pcan_read_str(api, handle, pcan_basic, *param_names: str) -> str:
             continue
         try:
             err, val = api.GetValue(handle, param)
-        except Exception as e:  # noqa: BLE001 - optional parameter, tried next
-            _log.debug("PCAN-Basic GetValue(%s) failed: %s", pname, e)
+        # optional parameter, tried next
+        except Exception as e:
+            _logger.debug("PCAN-Basic GetValue(%s) failed: %s", pname, e, exc_info=True)
             continue
         if err == 0 and val:
             return _decode_pcan_bytes(val)
     return ""
 
 
-def _list_pcan() -> List[Channel]:
+def _list_pcan() -> list[Channel]:
     """PEAK PCAN-Basic channels.
 
     Channel *discovery* is delegated to python-can's own detector
@@ -1587,8 +1638,12 @@ def _list_pcan() -> List[Channel]:
     if not _HAVE_PYTHON_CAN:
         return []
     try:
-        from can.interfaces.pcan import basic as pcan_basic  # type: ignore[import-untyped]
-    except Exception:  # noqa: BLE001 - PEAK backend absent; reports zero channels
+        from can.interfaces.pcan import (
+            basic as pcan_basic,  # type: ignore[import-untyped]
+        )
+    # PEAK backend absent; reports zero channels
+    except Exception:
+        _logger.debug("PEAK backend absent; reports zero channels", exc_info=True)
         return []
     PCANBasic = getattr(pcan_basic, "PCANBasic", None)
     if PCANBasic is None:
@@ -1596,10 +1651,14 @@ def _list_pcan() -> List[Channel]:
     try:
         detected = can.detect_available_configs(interfaces=["pcan"])
         api = PCANBasic()
-    except Exception as e:  # noqa: BLE001 - PEAK enumeration can fail in many ways; logged and skipped
-        _log.info("pcan enumeration failed (%s); skipping", e)
+    # PEAK enumeration can fail in many ways; logged and skipped
+    except Exception as e:
+        _logger.debug(
+            "PEAK enumeration can fail in many ways; logged and skipped", exc_info=True
+        )
+        _logger.info("pcan enumeration failed (%s); skipping", e)
         return []
-    out: List[Channel] = []
+    out: list[Channel] = []
     for cfg in detected:
         # `channel` is the slot constant name python-can opens with
         # (e.g. "PCAN_USBBUS1"); resolve it back to the numeric handle

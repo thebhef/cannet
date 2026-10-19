@@ -30,7 +30,7 @@ from . import session as _session
 from .session import BusConfig, PerFrameErrors, Session, SessionError
 from .trust import ServerTarget, TrustEntry, TrustError, read_servers, resolve
 
-_log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 #: Wire ``ControllerState`` -> python-can ``BusState``.
 #:
@@ -77,8 +77,11 @@ def _detect_configs(
         try:
             target = resolve(address, servers=servers)
             interfaces = _session.list_interfaces(target, timeout)
-        except Exception:  # noqa: BLE001 - an unreachable server contributes nothing
-            _log.debug("cannet detection: could not reach %r", address, exc_info=True)
+        # an unreachable server contributes nothing
+        except Exception:
+            _logger.debug(
+                "cannet detection: could not reach %r", address, exc_info=True
+            )
             continue
         configs.extend(
             {"interface": "cannet", "channel": interface.id, "server": address}

@@ -28,8 +28,9 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_local_sidecar import server as srv  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire._proto import cannet_pb2 as pb
+
+from cannet_local_sidecar import server as srv
 
 
 def test_log_envelope_timestamp_is_wall_clock() -> None:

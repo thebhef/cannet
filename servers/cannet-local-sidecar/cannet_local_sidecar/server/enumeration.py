@@ -11,7 +11,7 @@ picked up by an explicit ``ListInterfaces`` pull instead.
 from __future__ import annotations
 
 import threading
-from typing import Iterator
+from collections.abc import Iterator
 
 import grpc
 from cannet_python_wire._proto import cannet_pb2 as pb

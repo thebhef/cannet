@@ -23,9 +23,10 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_local_sidecar import server as srv  # noqa: E402
-from cannet_local_sidecar.server.outbox import SessionOutbox  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire._proto import cannet_pb2 as pb
+
+from cannet_local_sidecar import server as srv
+from cannet_local_sidecar.server.outbox import SessionOutbox
 
 
 def test_handle_tx_rejects_unspecified_kind_frame() -> None:

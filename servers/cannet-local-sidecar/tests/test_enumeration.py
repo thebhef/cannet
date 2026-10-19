@@ -60,7 +60,7 @@ def _remove_fake_modules(*names: str) -> None:
 def _fresh_driver_module():
     """Reimport ``driver_python_can`` so module-level ``import can``
     state doesn't surprise us across tests."""
-    import cannet_local_sidecar.driver_python_can as m  # noqa: WPS433
+    import cannet_local_sidecar.driver_python_can as m
 
     return importlib.reload(m)
 
@@ -152,7 +152,7 @@ def _uninstall_fake_vector() -> None:
     # The driver caches the chip-state subclass it builds, so a class
     # derived from the fake base above would outlive the fake module and
     # be handed to the next test. Drop it with the modules it came from.
-    import cannet_local_sidecar.driver_python_can as m  # noqa: WPS433
+    import cannet_local_sidecar.driver_python_can as m
 
     m._vector_bus_class = None
 
@@ -316,7 +316,7 @@ def _install_fake_kvaser(per_index):
     Returns the original ``can.detect_available_configs`` for restoration
     via :func:`_uninstall_fake_kvaser`.
     """
-    import can  # noqa: WPS433
+    import can
 
     detected = [
         {
@@ -338,7 +338,7 @@ def _install_fake_kvaser(per_index):
 
 
 def _uninstall_fake_kvaser(original_detect) -> None:
-    import can  # noqa: WPS433
+    import can
 
     can.detect_available_configs = original_detect
 
@@ -398,7 +398,7 @@ def test_kvaser_skips_channels_without_an_index() -> None:
     so it must not be listed."""
     original = _install_fake_kvaser([])
     try:
-        import can  # noqa: WPS433
+        import can
 
         can.detect_available_configs = lambda interfaces=None: [
             {"interface": "kvaser", "channel": "not-an-index"},
@@ -432,7 +432,7 @@ def _install_fake_pcan(devices, detected=None):
     Returns the original ``can.detect_available_configs`` for restoration
     via :func:`_uninstall_fake_pcan`.
     """
-    import can  # noqa: WPS433
+    import can
 
     PCAN_CONTROLLER_NUMBER = "controller_number"
     PCAN_DEVICE_ID = "device_id"
@@ -441,7 +441,7 @@ def _install_fake_pcan(devices, detected=None):
     PCAN_FIRMWARE_VERSION = "firmware_version"
 
     class _Api:
-        def GetValue(self, handle, what):  # noqa: N802 - matches PCANBasic
+        def GetValue(self, handle, what):
             h = int(getattr(handle, "value", handle))
             dev = devices.get(h)
             if dev is None:
@@ -501,7 +501,7 @@ def _install_fake_pcan(devices, detected=None):
 
 
 def _uninstall_fake_pcan(original_detect) -> None:
-    import can  # noqa: WPS433
+    import can
 
     can.detect_available_configs = original_detect
     _remove_fake_modules("can.interfaces.pcan", "can.interfaces.pcan.basic")
@@ -522,7 +522,7 @@ def test_pcan_enumerates_via_python_can_detector() -> None:
     )
     try:
         m = _fresh_driver_module()
-        import can.interfaces.pcan.basic as basic  # noqa: WPS433
+        from can.interfaces.pcan import basic
 
         assert not hasattr(basic, "PCAN_ATTACHED_CHANNELS")
         chans = m._list_pcan()
@@ -782,7 +782,7 @@ def _stub_can_interface_bus(bus_factory):
     the original so the caller can restore it. Used by the open-path
     tests to substitute a stub bus without involving any real hardware
     SDK."""
-    import can.interface  # noqa: WPS433 - ensure submodule attribute exists
+    import can.interface
 
     original = can.interface.Bus
     can.interface.Bus = bus_factory
@@ -790,7 +790,7 @@ def _stub_can_interface_bus(bus_factory):
 
 
 def _restore_can_interface_bus(original) -> None:
-    import can.interface  # noqa: WPS433
+    import can.interface
 
     can.interface.Bus = original
 
@@ -810,13 +810,13 @@ def test_open_pcan_disables_status_frames() -> None:
     fake_param = object()
     fake_off = object()
     mod_basic = sys.modules["can.interfaces.pcan.basic"]
-    setattr(mod_basic, "PCAN_ALLOW_STATUS_FRAMES", fake_param)
-    setattr(mod_basic, "PCAN_PARAMETER_OFF", fake_off)
+    mod_basic.PCAN_ALLOW_STATUS_FRAMES = fake_param
+    mod_basic.PCAN_PARAMETER_OFF = fake_off
 
     setvalue_calls: list[tuple[object, object, object]] = []
 
     class _PcanApi:
-        def SetValue(self, handle, param, value):  # noqa: N802 - matches PCANBasic
+        def SetValue(self, handle, param, value):
             setvalue_calls.append((handle, param, value))
             return 0
 
@@ -947,7 +947,7 @@ def _install_fake_driver_config(dll_version: int) -> None:
     canlib = sys.modules["can.interfaces.vector.canlib"]
 
     class _DriverConfig:
-        dllVersion = dll_version  # noqa: N815 - the XL field's own name
+        dllVersion = dll_version
 
     canlib._get_xl_driver_config = lambda: _DriverConfig()
 
@@ -995,7 +995,7 @@ def test_vector_driver_version_absent_when_the_xl_driver_will_not_say() -> None:
         assert chan.driver_name == "Vector XL Driver Library"
         assert chan.serial_number == "999"
 
-        import can.interfaces.vector.canlib as canlib  # noqa: WPS433
+        from can.interfaces.vector import canlib
 
         def _boom():
             raise OSError("XL library not found")
