@@ -36,13 +36,12 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   Database and trace views "but is slow, and maybe could yield some
   results early." The haystack change itself is kept. (0153 § Status
   log, 2026-10-07.) Needs grooming.
-- **The ruff 0.16 uplift** landed on `fix-python-toolchain` (#556) with
-  the version bumped and the rule set frozen at 0.15's default. Owner
-  2026-10-19: adopt 0.16's default and fix the code to satisfy it, no
-  suppressions. 379 findings (wire 14 / sidecar 359 / client 6; 353
-  auto-fixable, 120 of them dead `noqa`s). Launched 2026-10-19 on
-  `fix-ruff-default-rules` above the stack. (0136 § Post-completion
-  notes.)
+- **The ruff 0.16 uplift** — done 2026-10-19 on `fix-ruff-default-rules`
+  (58768168, above the stack): ruff's own default applies under the
+  `>=0.16,<0.17` pin, 379 findings fixed, no `ignore`; the 41 reasoned
+  `noqa: BLE001` at driver/thread/process edges survive per the
+  2026-10-07 boundary ruling. Delete on acceptance. (0136 §
+  Post-completion notes.)
 - **A failed manual send is reported** (owner 2026-10-19, was § 1): a
   system-log row plus an indicator on the transmit element shown while
   its last send attempt failed. The same surface takes the Duplicate
