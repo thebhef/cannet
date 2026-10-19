@@ -39,12 +39,12 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
   41 catch-alls log their traceback instead; module loggers renamed
   `_log` → `_logger`). Delete on acceptance. (0136 §
   Post-completion notes.)
-- **A failed manual send is reported** (owner 2026-10-19, was § 1): a
-  system-log row plus an indicator on the transmit element shown while
-  its last send attempt failed. The same surface takes the Duplicate
-  that fails silently on a stale frame id (168 phase 2, was § 3). The
-  indicator clears on the next successful send (ruled 2026-10-19).
-  Groomed; awaiting the go. (0160 § Status log.)
+- **A failed manual send is reported** — done 2026-10-19 on
+  `task160-failed-send-feedback` (fa96488d): a system-log warn row on a
+  refused manual send, refused periodic batch, or failed Duplicate; a
+  warning mark on the frame's row in the transmit panel until its next
+  accepted send. Your check: send once on a frame whose bus is not
+  connected. Delete on acceptance. (0160 § Status log.)
 - **The closing window says it is writing the capture on every exit**,
   even when the project was opened from its cache and nothing was
   captured (owner, captured by hand). `closing.rs::run_shutdown` flushes
