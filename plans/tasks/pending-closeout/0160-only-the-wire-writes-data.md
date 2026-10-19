@@ -198,3 +198,19 @@ come from an intent.
   launch: when the indicator clears (next successful send, recommended).
 - 2026-10-19 — **Owner ruling:** the failed-send indicator clears on the
   next successful send. Design complete; awaiting the go to launch.
+
+- 2026-10-19 — **Failed-send reporting landed** on
+  `task160-failed-send-feedback` (`fa96488d`). The host writes a
+  `transmit` warn row at the point of refusal: the manual send (frame,
+  CAN id, bus, reason), the scheduler's refused periodic batch (bus,
+  reason), and a failed Duplicate (element name plus the registry's
+  reason naming the missing frame id). No trace row, count, rate or
+  sample. The transmit panel keeps a per-frame-id map of the last send
+  failure and shows a warning mark on the frame row, reason as hover
+  text; the next accepted send of that frame clears it, another frame's
+  success does not. The Project panel's element row is not marked. The
+  stale `frameIds` entry remains (unruled). ADR 0061, README and
+  CONTEXT.md say a refusal is reported through the system log and the
+  indicator, never as data. Scoped CI green: gui 1458 tests, clippy,
+  fmt, pnpm 3948 tests, build; no perf run (no hot path). Deviation:
+  tests written with the code, not red-first.
