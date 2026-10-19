@@ -366,3 +366,14 @@ builds the server for that lane. Nothing open against this task; awaiting owner 
   of noqa comments… there's nothing sacred in this codebase." The 41
   `noqa: BLE001` go: each catch-all handler satisfies BLE001 by logging
   with `.exception()` or re-raising. Amend on `fix-ruff-default-rules`.
+
+- 2026-10-19 — **Amended, `fix-ruff-default-rules` (eb744f6b): no `noqa`
+  remains.** The 41 BLE001 catch-alls log their traceback instead —
+  `.exception()` at thread/process tops (the rx/pack pumps and the
+  sidecar's last-chance handler now emit ERROR with a traceback where
+  they printed a warning), `.debug(..., exc_info=True)` at probe and
+  teardown sites. Finding: ruff's BLE001 recognises only loggers named
+  like `logger`, so the `_log` module loggers became `_logger`. No
+  exception types narrowed (vendor SDKs raise anything). Wire 18,
+  sidecar 372, client 151 tests; ruff, format, mypy clean in all three;
+  comment-references grep clean.
