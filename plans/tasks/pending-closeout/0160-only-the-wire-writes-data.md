@@ -189,3 +189,10 @@ come from an intent.
   an unbound bus now gives the user no feedback at all — and the
   bus-health refusal count (ADR 0060) holds only the peer's refusals, not
   the host's (no route, closed session, full request channel). Queue § 1.
+
+- 2026-10-19 — **Owner ruling (queue § 1 → § 2): a failed manual send
+  is reported** as a system-log row plus an indicator on the transmit
+  element, shown while its last send attempt failed. Not a trace row
+  (the rule holds), not a bus fact. The Duplicate that fails silently on
+  a stale frame id (168 phase 2) takes the same surface. To groom before
+  launch: when the indicator clears (next successful send, recommended).

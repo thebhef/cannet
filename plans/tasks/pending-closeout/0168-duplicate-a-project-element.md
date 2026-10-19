@@ -116,9 +116,19 @@ Branches beneath `doc-closeout-2`, sequential in the shared tree.
   user-visible message — the frontend has no error-reporting path for
   a failed command; same class as the manual-send gap, queued § 3).
 
+- 2026-10-19 — **Owner ruling (queue § 1): the ADR 0050 sentence
+  stands.** Asked whether this was just "stop sending the message when
+  we remove the transmit message" — nearly: Remove already withdraws an
+  element's host frames (`App.tsx::removeElement`); this is the same
+  rule applied to *undoing a Duplicate*, whose clones are created
+  stopped, so what leaves with the copy is pool and saved-project
+  residue, not a running send. "Obviously necessary if so."
+
 ## Blockers / side effects
 
 - **Duplicate icon is `plus`** — the icon set has no copy glyph. FYI;
   a dedicated glyph is a one-SVG change if wanted.
-- **Silent failure on a stale frame id** (phase 2 finding) — queue § 3.
-- **ADR 0050 amended** (undo withdraws cloned frames) — queue § 1.
+- **Silent failure on a stale frame id** (phase 2 finding) — folded
+  into the failed-send reporting item, queue § 2 (2026-10-19).
+- **ADR 0050 amended** (undo withdraws cloned frames) — accepted
+  2026-10-19.
