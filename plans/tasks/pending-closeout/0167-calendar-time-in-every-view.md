@@ -183,6 +183,15 @@ Branches beneath `doc-closeout-2`, sequential in the shared tree.
   a non-seconds pattern is withdrawn. The rounding question (elapsed
   rounds, calendar truncates) is re-put in plain words.
 
+- 2026-10-19 — **Owner ruling (queue § 1): elapsed and calendar both
+  round.** "I'm inclined to 'both round' instead of 'both truncate'.
+  should be consistent though." Go given the same day. Phase 4: ADR 0062
+  § 1 amended (fractions round), the `format.ts` calendar formatter and
+  the host's `date_pattern.rs` round the instant to the fraction's
+  digits before splitting fields (a carry into the next second, minute
+  or day must be right); `formatElapsed` unchanged (it rounds already).
+  Tests at the carry boundaries in both languages.
+
 ## Blockers / side effects
 
 - **Perf reading owed (2026-10-14).** Phase 3 touched the plot's
@@ -191,5 +200,4 @@ Branches beneath `doc-closeout-2`, sequential in the shared tree.
 - **FYI:** in calendar mode the A/B chips carry the whole pattern plus
   `.ffff` (Q2 applied to every table-like reading), so they are wide.
 - **FYI:** ticks are always 24-hour `HH`, even under an `h a` pattern.
-- **Queue § 1:** elapsed rounds vs calendar truncates (the fraction
-  placement was ruled as specced, 2026-10-19).
+- Rounding ruled 2026-10-19 (both round) → phase 4.
