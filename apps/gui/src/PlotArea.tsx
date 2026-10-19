@@ -1195,8 +1195,9 @@ export function drawHoverMarkers(
  * The segments are runs of equal consecutive **served** values
  * (`enumSegments`), which is shaping already-paged data for the
  * renderer rather than re-deriving a model fact: the serve keeps each
- * bucket's first and last sample beside its extremes, so a held run
- * arrives whole (ADR 0026).
+ * column's first and last sample beside its extremes, so a run held for
+ * a column arrives with its code, and a narrower one leaves a value
+ * change that draws as a one-pixel tick (ADR 0026).
  *
  * **Draws under the series layer, and returns its labels rather than
  * drawing them.** The tiles are ~65-85 % opaque, so anything under them
@@ -1257,6 +1258,19 @@ export function drawEnumTiles(
     if (segW <= 0) continue;
     // Enum codes are integers, but arrive as f64 from the host.
     const raw = Math.round(seg.v);
+    const mapColor = o.target ? o.resolveColor(o.target, raw) : null;
+    const accent = mapColor ?? o.accent;
+    // A run narrower than a device pixel would antialias to nothing, and
+    // it is the mark that the value changed here: the serve keeps a value
+    // change in every column where one happened even when the code is too
+    // narrow to keep (ADR 0026). So it draws as a tick one CSS pixel wide
+    // in its accent, the full band tall, kept inside the visible region:
+    // never a tile, and never a label.
+    if (segW < o.ratio) {
+      ctx.fillStyle = accent;
+      ctx.fillRect(Math.min(visStart, o.left + o.width - o.ratio), o.bandTop, o.ratio, bandH);
+      continue;
+    }
     // Cut to what the visible part of the tile can hold. A `VAL_` label
     // has no length limit, so this is the common case, not the corner:
     // without it the tile draws mute.
@@ -1266,10 +1280,8 @@ export function drawEnumTiles(
     const labelX = fitted
       ? tileLabelX({ lo: x0, hi: x1 }, { lo: o.left, hi: o.left + o.width }, tw, padX)
       : null;
-    const mapColor = o.target ? o.resolveColor(o.target, raw) : null;
     // ~65-85% fills keep the stepped line faintly visible underneath.
     const fill = mapColor ? colorMapLaneFill(mapColor) : theme().laneFillDefault;
-    const accent = mapColor ?? o.accent;
     // The label's ink is measured against the ground this tile paints,
     // not assumed to be the accent: the fill is a tint of the accent, so
     // on a light theme the two collapse into each other (ADR 0026).
