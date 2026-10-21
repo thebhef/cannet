@@ -82,7 +82,9 @@ as commits on it and are squashed to one before submit.
   failure but is real: a `VAL_` table with two sentinel entries
   (`254 Error`, `255 SNA`) makes the signal an enum, so in per-unit mode
   it leaves its unit axis for the enum lanes, where min/max is inert —
-  owner decision (queue § 1). Frontend lanes green (3953 tests); no
+  out of scope by the owner's opening ruling (SNA handling is not this
+  task); the queue entry filed for it was withdrawn 2026-10-20. No code
+  touches the classification. Frontend lanes green (3953 tests); no
   Rust or Python in the diff.
 - 2026-10-20 — **Phases 2+3 landed** (b36eaf78). The paused auto range
   and Fit Y scan only samples inside the visible x-window
