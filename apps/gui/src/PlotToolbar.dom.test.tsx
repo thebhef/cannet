@@ -25,6 +25,7 @@ function spies() {
     onAddArea: vi.fn(),
     onFitX: vi.fn(),
     onFitY: vi.fn(),
+    onIgnoreManualY: vi.fn(),
     onFollowLive: vi.fn(),
     onShowPoints: vi.fn(),
     onCursorMode: vi.fn(),
@@ -59,6 +60,8 @@ function props(s: Spies, over: Partial<PlotToolbarProps> = {}): PlotToolbarProps
     onAddArea: s.onAddArea,
     onFitX: s.onFitX,
     onFitY: s.onFitY,
+    ignoreManualY: false,
+    onIgnoreManualY: s.onIgnoreManualY,
     followLive: true,
     onFollowLive: s.onFollowLive,
     showPoints: "auto",
@@ -103,6 +106,7 @@ const BAR: readonly [string, string][] = [
   ["All Data", "widen the window to the whole session buffer and fit the x-axis to it"],
   ["Fit Data", "fit x axis to the data"],
   ["Fit Y", "fit each y axis to its visible data"],
+  ["Ignore Manual Axes", "ignore manual y bounds"],
   ["Add Plot Area", "add plot area"],
   ["Follow Live", "follow the live edge"],
   ["Show Points", null as unknown as string],
@@ -182,6 +186,22 @@ describe("PlotToolbar", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Follow Live" }));
     expect(off.onFollowLive).toHaveBeenCalledWith(true);
+  });
+
+  it("says whether manual y bounds are ignored, and toggles it", () => {
+    const s = renderBar();
+    const chip = screen.getByRole("button", { name: "Ignore Manual Axes" });
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(chip);
+    expect(s.onIgnoreManualY).toHaveBeenCalledWith(true);
+
+    const on = renderBar({ ignoreManualY: true });
+    expect(screen.getByRole("button", { name: "Ignore Manual Axes" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Ignore Manual Axes" }));
+    expect(on.onIgnoreManualY).toHaveBeenCalledWith(false);
   });
 
   it("cycles the points setting through its three states on one chip", () => {
@@ -367,6 +387,7 @@ describe("PlotToolbar", () => {
         "run",
         "fit-x",
         "fit-y",
+        "ignore-manual-y",
         "solo:field",
         "solo:paging",
         "solo:clear",
@@ -492,10 +513,10 @@ describe("PlotToolbar when it runs out of room", () => {
       "run",
       "fit-x",
       "fit-y",
+      "ignore-manual-y",
       "solo:field",
       "solo:paging",
       "solo:clear",
-      "add-area",
     ]);
     fireEvent.click(screen.getByRole("button", { name: "More Plot Controls" }));
     const menu = document.querySelector(".plot-toolbar-overflow .chip-menu-list")!;
@@ -531,12 +552,12 @@ describe("PlotToolbar when it runs out of room", () => {
   });
 
   it("gives up the solo cluster last of all, and whole", () => {
-    // 500px is room for four items and the spill control — but the
-    // fourth is the first third of the solo cluster, so the whole of it
-    // goes and three items stay.
+    // 600px is room for five items and the spill control — but the
+    // fifth is the first third of the solo cluster, so the whole of it
+    // goes and four items stay.
     renderAt(5000);
-    resizeTo(500);
-    expect(onBar()).toEqual(["run", "fit-x", "fit-y"]);
+    resizeTo(600);
+    expect(onBar()).toEqual(["run", "fit-x", "fit-y", "ignore-manual-y"]);
   });
 
   it("must not clip: a bar with `overflow: hidden` swallows its own menu", () => {

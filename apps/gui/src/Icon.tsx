@@ -71,6 +71,7 @@ export const ICON_NAMES = [
   "stop",
   "fit-x",
   "fit-y",
+  "pin-off",
   "search",
   "cursors-clear",
   "cursor-x",
@@ -191,6 +192,11 @@ export const ICON_REGISTRY: Readonly<Record<IconName, readonly IconShape[]>> = {
   stop: [{ tag: "rect", x: 3.5, y: 3.5, width: 7, height: 7 }],
   "fit-x": [{ tag: "path", d: "M1.5 7h11M3.5 4.5L1.5 7l2 2.5M10.5 4.5l2 2.5-2 2.5" }],
   "fit-y": [{ tag: "path", d: "M7 1.5v11M4.5 3.5L7 1.5l2.5 2M4.5 10.5l2.5 2 2.5-2" }],
+  // A push pin — a manual bound pins an axis — struck through.
+  "pin-off": [
+    { tag: "path", d: "M5 1.5h4M5.8 1.5v3.5L3.5 8h7L8.2 5V1.5M7 8v4.5" },
+    { tag: "path", d: "M1.5 1.5l11 11" },
+  ],
   search: [
     { tag: "circle", cx: 6, cy: 6, r: 4 },
     { tag: "path", d: "M9 9l3.5 3.5" },
