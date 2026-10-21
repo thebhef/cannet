@@ -128,3 +128,23 @@ and `loadProgressReadout` in `statusLine.ts`; `LoadProgressChip`.
 ## Status log
 
 - 2026-10-21 groomed (Q1 → A); phases 1–2 defined; awaiting go.
+- 2026-10-21 phase 1 landed on `fix-startup-restore-feedback` as
+  bd57ed1b (one commit, nothing to squash; parent `fix-plot-y-scale`,
+  `doc-closeout-2` restacked on top).
+    - Spill: `open_segments(paths, on_file)` per-file callback;
+      `DiskRawStore::reopen_reporting` (`ReopenPass`/`ReopenProgress`);
+      `SampleSeq::reopen_many_reporting` and `reopen_file_count`.
+    - Host: `try_reload_reporting`, `restore_reporting` (plans both
+      pyramid sets before mapping either), `RESTORE_PROGRESS` with
+      `RestoreProgress`/`RestoreReporter` (0 of N unpaced, 100 ms
+      paced, N of N at the phase's end, nothing for empty phases).
+    - Deviation accepted: `open_segments` changed signature (crate-
+      private, no non-reporting caller remained); public wrappers kept.
+    - Tests: each file reported once on threaded and single-file paths;
+      reporter shape and pacing; end-to-end three-phase order against
+      on-disk file counts.
+    - Reload cost with/without the seam, 2088 files, debug, medians of
+      15: 113.0 vs 109.4 ms and 102.5 vs 101.3 ms (noise).
+    - Lanes green: fmt, clippy, test, doc for cannet-spill and
+      cannet-gui; frontend declared unreachable. Review: clean;
+      comment-references grep clean.
