@@ -82,6 +82,18 @@ as commits on it and are squashed to one before submit.
    skip rule removes that path; a test covers single-click Fit Y on an
    unpinned axis.
 
+5. **Drop the notice; add an "ignore manual axes" toolbar chip**
+   (owner 2026-10-20). A toggle chip with a simple icon (a pin with a
+   slash), pressed while on. While on, every manual min/max is
+   **ignored, not cleared**: each axis draws and fits as automatic (the
+   paused hold, Fit Y, follow-live behave as on an unpinned axis);
+   turning it off restores the pinned bounds untouched. Persisted with
+   the panel config like the other toolbar chips. The 5-second Fit Y
+   notice from phase 4 is removed; Fit Y still skips a pinned axis
+   while the chip is off.
+   → verify: pin an axis, toggle on — it fits with the rest and Fit Y
+   refits it; toggle off — the pinned bounds apply again, unchanged.
+
 ## Exit criteria
 
 - Paused: the y range holds what follow-live last showed (or the
@@ -92,6 +104,8 @@ as commits on it and are squashed to one before submit.
   than ten signals, with the SNA spike present; a bound survives
   dismissing the menu by clicking elsewhere.
 - The y-axis menu lists max above min.
+- The "ignore manual axes" chip, while on, makes every axis automatic
+  without clearing a bound; off restores them. No Fit Y notice.
 - Tests cover each of the above; ADR 0026 / 0025 and the README match.
 
 ## Status log
@@ -141,3 +155,6 @@ as commits on it and are squashed to one before submit.
 - 2026-10-20 — **Re-squashed** to one commit 3a65abe5 on `fix-plot-y-scale`
   (pre-squash tips 4a946585, 8889b5ec); `doc-closeout-2` restacked.
   Every exit criterion met; awaiting acceptance (queue § 4).
+- 2026-10-20 — **Owner ruling:** drop the 5-second notice; add an
+  "ignore manual axes" toggle chip (simple icon) whose on state ignores
+  manual bounds without clearing them. Phase 5 groomed above; launched.
