@@ -152,6 +152,9 @@ export interface PlotPanelParams {
    * only where the user overrode something, so an axis that is
    * autoscaling and linear has none. */
   axisScales?: unknown;
+  /** Every manual y bound is ignored, not cleared, while this is on
+   * (ADR 0026). Sparse: absent = off. */
+  ignoreManualY?: unknown;
 }
 
 /** The area→panel reporting surface: the readouts and data an area
