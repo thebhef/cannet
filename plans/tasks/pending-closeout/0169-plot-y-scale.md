@@ -158,3 +158,14 @@ as commits on it and are squashed to one before submit.
 - 2026-10-20 — **Owner ruling:** drop the 5-second notice; add an
   "ignore manual axes" toggle chip (simple icon) whose on state ignores
   manual bounds without clearing them. Phase 5 groomed above; launched.
+- 2026-10-20 — **Phase 5 landed** (248dd05c). The Fit Y notice is gone.
+  An "ignore manual y bounds" chip (`pin-off` icon, pressed while on)
+  makes every axis automatic for draw, paused hold and Fit Y without
+  writing `axisScales`; off restores the stored bounds unchanged. The
+  y-axis menu still edits the stored bounds and says they are ignored.
+  Saved sparsely as `ignoreManualY` like `showPoints` (no schema bump).
+  ADR 0026, README and the prototype icon inventory amended. Frontend
+  lanes green (3968 tests).
+- 2026-10-20 — **Re-squashed** to one commit 6b4bf445 on `fix-plot-y-scale`
+  (pre-squash tips 3a65abe5, 248dd05c); `doc-closeout-2` restacked.
+  Every exit criterion met; awaiting acceptance (queue § 4).
