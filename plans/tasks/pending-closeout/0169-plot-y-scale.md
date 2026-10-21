@@ -215,3 +215,15 @@ as commits on it and are squashed to one before submit.
 - 2026-10-20 — **Owner feedback on phase 6:** right idea; clear styling
   unpolished; the ignored hint drives the width and collapses the menu
   when clicked. Phase 7 groomed above; launched.
+- 2026-10-20 — **Phase 7 landed** (12be4af8). The y-axis menu has a
+  fixed 12 rem width with one hint line always present ("empty =
+  automatic", the log-axis rule, or "manual bounds are ignored");
+  "clear all bounds" and "apply manual bounds" (last row, only while the
+  chip is on) are full-width rows like the selection menu's; each
+  field's × is a trailing icon inside the input, shown only while the
+  field holds a value. Behaviour unchanged. ADR 0026 and README
+  reworded. Frontend lanes green (3975 tests).
+- 2026-10-20 — **Re-squashed** to one commit a0093bc2 on `fix-plot-y-scale`
+  (pre-squash tips 59068726, 12be4af8); `doc-closeout-2` restacked.
+  Every exit criterion met; awaiting acceptance (queue § 4). NSIS
+  bundle ordered by the owner for a hands-on check.
