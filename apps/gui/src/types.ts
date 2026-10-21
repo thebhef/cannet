@@ -154,6 +154,21 @@ export type LoadProgress =
   | { phase: "census"; bytes_read: number; total_bytes: number }
   | { phase: "import"; frames: number; total_frames: number };
 
+/// How far the reload of a prior capture has got (`restore-progress`,
+/// mirrors `capture.rs::RestoreProgress`). The reload's whole cost is
+/// mapping segment files, and each phase knows how many it will map
+/// before it maps the first, so every report is determinate against its
+/// own phase's total. The phases run in this order: the by-id index,
+/// the frames (metadata, then payload — the total grows once, when the
+/// payload count becomes known), then the signal caches. Each phase's
+/// first report is 0 of N and its last N of N; a restore with nothing to
+/// reload emits nothing at all (ADR 0002 DS-7).
+export interface RestoreProgress {
+  phase: "capture_index" | "capture_frames" | "signal_caches";
+  files_opened: number;
+  total_files: number;
+}
+
 /// The step the host's shutdown sequence is on (`closing-progress`,
 /// mirrors `closing.rs::ClosingProgress`). Once the window's close is
 /// decided the host runs the sequence behind the still-open window and
