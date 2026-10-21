@@ -2018,8 +2018,20 @@ resample at the end.
   plain label when the pointer leaves. (Cursors A and B already label
   their own lines with their times.) The signal-panel head shows
   the H1/H2 Y-cursor values + ΔH when those are placed; y scales are
-  always auto-derived (per ADR 0026) and **fit y** refits the
-  auto-norm latch to the visible window. Signals are added by **drag**
+  auto-derived (per ADR 0026) — following live, from each signal's
+  all-time extent; paused, the range showing when follow-live went off
+  holds across pan and zoom until **fit y** (the samples on screen
+  only, so a spike just past the window's edge does not set the scale),
+  **fit data**, or a manual bound changes it. Right-clicking the y axis
+  sets a manual max and min (max listed on top; a × in a field clears it,
+  **clear all bounds** both) or a log scale; **fit
+  y** leaves an axis with a manual bound as set. The **ignore manual y
+  bounds** chip beside **fit y** (a struck-through pin) sets every
+  manual min and max aside while it is on — each axis draws and fits as
+  automatic — and turning it off puts the bounds back unchanged (the
+  axis menu offers **apply manual bounds** while it is on); it is
+  saved with the panel. Signals are
+  added by **drag**
   — from the Database panel, the signal view, the trace, or another plot
   area or panel — or by an area's **patterns…** regex editor; there is
   no separate add-signal picker. **Drag a signal row** to re-order it,

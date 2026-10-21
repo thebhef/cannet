@@ -3667,6 +3667,9 @@ button.color-chip {
   z-index: 50;
   display: flex;
   flex-direction: column;
+  /* Fixed, sized by the bound rows: the hint wraps inside it rather than
+     widening the menu, so its text can change without a resize. */
+  width: 12rem;
   gap: 0.25rem;
   padding: 0.4rem;
   background: var(--surface-raised);
@@ -3688,20 +3691,71 @@ button.color-chip {
 .plot-axis-menu-row > span {
   flex: 0 0 2rem;
 }
+/* A bound field: the input plus, while it holds a value, a trailing ×
+   laid over the input's right padding. */
+.plot-axis-menu-row > .plot-axis-menu-field {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .plot-axis-menu-row input[type="text"],
 .plot-axis-menu-row input:not([type]) {
   flex: 1 1 auto;
-  width: 6rem;
+  width: 100%;
+  min-width: 0;
   background: var(--surface-sunken);
   border: 1px solid var(--border-strong);
   border-radius: 3px;
   color: var(--text-secondary);
   font: inherit;
-  padding: 0.1rem 0.25rem;
+  padding: 0.1rem 1.2rem 0.1rem 0.25rem;
 }
 .plot-axis-menu-hint {
   color: var(--text-faint);
   font-style: italic;
+  white-space: normal;
+}
+.plot-axis-menu-clear {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.plot-axis-menu-clear:hover {
+  color: var(--text-secondary);
+}
+/* "clear all bounds" and "apply manual bounds": action rows at the menu's
+   foot, the same row look as `.plot-selection-menu-action` (full width,
+   divider above, hover fill). The menu's gap stands in for its margin. */
+.plot-axis-menu-action {
+  display: block;
+  width: 100%;
+  padding: 0.25rem 0.4rem;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-default);
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.plot-axis-menu-action:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.plot-axis-menu-action:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* The signal-row selection's context menu: bulk Hide /

@@ -9,6 +9,7 @@ import {
   sampleColumns,
   signalKey,
   splitExtrapolatedRows,
+  windowExtent,
 } from "./plotData";
 
 describe("mergeSeries", () => {
@@ -519,6 +520,35 @@ describe("sampleColumns", () => {
     const series = [{ t: [0, 1], v: [1, 2] }, { t: [], v: [] }];
     const merged = mergeSeries(series);
     expect(sampleColumns(merged[0] as number[], series)[1]).toEqual([]);
+  });
+});
+
+describe("windowExtent", () => {
+  // A paused or zoomed plot fits y to what is on screen (ADR 0026); the
+  // served slice runs past the visible window on both sides, so the scan
+  // must stop at the window's edges.
+  const ser = { t: [8, 10, 12, 15, 20, 22], v: [9000, 3700, 3712, 3724, 3705, -9000] };
+
+  it("takes the min/max of the samples inside the window, edges included", () => {
+    expect(windowExtent(ser, 10, 20)).toEqual({ lo: 3700, hi: 3724 });
+  });
+
+  it("scans the whole slice when there is no window", () => {
+    expect(windowExtent(ser, null, null)).toEqual({ lo: -9000, hi: 9000 });
+  });
+
+  it("falls back to the whole slice when no sample lies inside the window", () => {
+    // Zoomed in between two samples: the line drawn across the canvas
+    // still comes from the slice, so it still gets a scale.
+    expect(windowExtent(ser, 13, 14)).toEqual({ lo: -9000, hi: 9000 });
+  });
+
+  it("returns one value as a degenerate extent, for the axis to widen", () => {
+    expect(windowExtent(ser, 14, 16)).toEqual({ lo: 3724, hi: 3724 });
+  });
+
+  it("returns null for an empty series", () => {
+    expect(windowExtent({ t: [], v: [] }, 0, 1)).toBeNull();
   });
 });
 
