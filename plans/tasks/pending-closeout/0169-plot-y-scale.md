@@ -188,3 +188,13 @@ as commits on it and are squashed to one before submit.
 - 2026-10-20 — **Owner order:** per-field clear buttons and a clear-all
   in the manual limits menu; re-enable the limits from the menu while
   the chip ignores them. Phase 6 groomed above; launched.
+- 2026-10-20 — **Phase 6 landed** (d0b9a8fa). The y-axis menu has a ×
+  per bound row (disabled while that bound is automatic) and a "clear
+  all" (min and max, a log axis's held min included; log stays; the
+  sparse entry drops when empty). While the ignore chip is on, the
+  hint's "apply manual bounds" turns it off without closing the menu;
+  `axisScales` is not written. ADR 0026 and README amended. Frontend
+  lanes green (3973 tests).
+- 2026-10-20 — **Re-squashed** to one commit 4797c8a3 on `fix-plot-y-scale`
+  (pre-squash tips 6b4bf445, d0b9a8fa); `doc-closeout-2` restacked.
+  Every exit criterion met; awaiting acceptance (queue § 4).
