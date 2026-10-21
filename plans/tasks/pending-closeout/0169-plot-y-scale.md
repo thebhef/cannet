@@ -94,6 +94,20 @@ as commits on it and are squashed to one before submit.
    → verify: pin an axis, toggle on — it fits with the rest and Fit Y
    refits it; toggle off — the pinned bounds apply again, unchanged.
 
+6. **Clear buttons in the y-axis menu; re-enable bounds from it**
+   (owner 2026-10-20). Each editable bound field gets a clear button
+   (× inside the row, disabled when the field is already automatic),
+   plus one "clear all" for the axis's bounds. While the "ignore manual
+   y bounds" chip is on, the menu's hint line offers to turn the chip
+   off — the bounds the user is looking at apply again — without
+   leaving the menu. Overseer's reading of "when ignore is disabled,
+   allow re-enabling it from the y axis limit view": the limits are
+   what the chip disables, so the menu re-enables the limits by turning
+   the chip off.
+   → verify: × clears one bound and the axis goes automatic on that
+   side; clear all empties both; the hint's control turns the chip off
+   and the stored bounds apply.
+
 ## Exit criteria
 
 - Paused: the y range holds what follow-live last showed (or the
@@ -106,6 +120,8 @@ as commits on it and are squashed to one before submit.
 - The y-axis menu lists max above min.
 - The "ignore manual axes" chip, while on, makes every axis automatic
   without clearing a bound; off restores them. No Fit Y notice.
+- The y-axis menu clears one bound or both with a button, and turns the
+  ignore chip off while it is on.
 - Tests cover each of the above; ADR 0026 / 0025 and the README match.
 
 ## Status log
@@ -169,3 +185,6 @@ as commits on it and are squashed to one before submit.
 - 2026-10-20 — **Re-squashed** to one commit 6b4bf445 on `fix-plot-y-scale`
   (pre-squash tips 3a65abe5, 248dd05c); `doc-closeout-2` restacked.
   Every exit criterion met; awaiting acceptance (queue § 4).
+- 2026-10-20 — **Owner order:** per-field clear buttons and a clear-all
+  in the manual limits menu; re-enable the limits from the menu while
+  the chip ignores them. Phase 6 groomed above; launched.
