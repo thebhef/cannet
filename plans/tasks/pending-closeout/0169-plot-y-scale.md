@@ -72,4 +72,15 @@ as commits on it and are squashed to one before submit.
 
 ## Status log
 
-(empty)
+- 2026-10-20 — **Phase 1 landed** (175c90e6 on `fix-plot-y-scale`).
+  H1 confirmed: a bound typed and then left by clicking outside the
+  menu was lost (the outside `mousedown` unmounts the box before blur).
+  Fixed: `useDismissableMenu` tells its caller why it closed; the
+  y-axis menu commits changed drafts on an outside close and still
+  abandons them on Escape. The 12-signal SNA fixture pins the axis to
+  exactly `[min, max]` (not a cause). H2 is not a cause of the pinning
+  failure but is real: a `VAL_` table with two sentinel entries
+  (`254 Error`, `255 SNA`) makes the signal an enum, so in per-unit mode
+  it leaves its unit axis for the enum lanes, where min/max is inert —
+  owner decision (queue § 1). Frontend lanes green (3953 tests); no
+  Rust or Python in the diff.
