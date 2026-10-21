@@ -71,6 +71,16 @@ as commits on it and are squashed to one before submit.
    unchanged. ADR 0026's automatic-range paragraph amended.
    → verify: pause, then zoom/pan — the axis does not move; Fit Y fits
    the window; Fit Data refits; turning follow-live off causes no jump.
+   **Fit Y skips pinned axes** (owner 2026-10-20): an axis with a
+   manual min or max is left exactly as set; only unpinned axes refit.
+   After a Fit Y, a notice shown for **5 seconds** names the pinned
+   axes it left alone; nothing is shown when none is pinned. Owner
+   observation on the repro: today Fit Y unpins an axis only on the
+   **second** click — the first clears the stored bounds, but the fit on
+   that tick still reads the old bounds through `yScaleRef`, which
+   updates on the next render, and a paused plot has no next tick. The
+   skip rule removes that path; a test covers single-click Fit Y on an
+   unpinned axis.
 
 ## Exit criteria
 
@@ -112,7 +122,9 @@ as commits on it and are squashed to one before submit.
   `fix-plot-y-scale` (pre-squash tips 175c90e6, b36eaf78);
   `doc-closeout-2` restacked on it. Every exit criterion met; awaiting
   acceptance (queue § 4).
-- 2026-10-20 — **Owner ruling after the repro:** manual limits are
+- 2026-10-20 — **Owner rulings after the repro:** manual limits are
   good; the implicit per-tick autoscale when paused is not wanted —
-  paused autoscale is on demand only. Hold = the range showing at the
-  moment follow-live went off. Phase 4 groomed above; not started.
+  paused autoscale is on demand only; hold = the range showing at the
+  moment follow-live went off. Fit Y skips pinned axes and names them in
+  a 5-second notice. Observation: unpinning via Fit Y takes two clicks
+  today. Phase 4 groomed above; launched 2026-10-20.
