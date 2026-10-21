@@ -75,11 +75,13 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
 ## 4. Finished tasks awaiting acceptance
 
-- **169 plot y scale** — `fix-plot-y-scale` 4a946585, beneath
-  `doc-closeout-2`: paused fit and Fit Y scan only on-screen samples,
-  a bound typed and left by clicking away is kept, max listed above
-  min. Follow-live unchanged (ruling 2026-10-20). Your check: paused,
-  zoom until the SNA spike is just off an edge — the axis fits the rest.
+- **169 plot y scale** — `fix-plot-y-scale` 3a65abe5, beneath
+  `doc-closeout-2`: a paused axis holds its range until Fit Y, Fit Data
+  or a manual bound; Fit Y skips pinned axes and names them for 5 s; a
+  bound left by clicking away is kept; max listed above min. Follow-live
+  unchanged (ruling 2026-10-20). Your check on the repro: pause, zoom —
+  the axis stays; Fit Y fits; pin the axis, Fit Y — it stays and the
+  notice names it.
 - **Task 168 — Duplicate a Project Element** — #568 →
   #569 (ADR 0027 and ADR
   0050 amended; new host command `clone_transmit_frames`). Project
