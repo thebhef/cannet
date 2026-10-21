@@ -32,7 +32,9 @@ mod scratch_lock;
 mod seg;
 mod seg_chain;
 
-pub use disk::{is_raw_frame_segment, DiskConfig, DiskRawStore, ReopenStats};
+pub use disk::{
+    is_raw_frame_segment, DiskConfig, DiskRawStore, ReopenPass, ReopenProgress, ReopenStats,
+};
 pub use filter_index::FilterIndex;
 pub use mem::MemRawStore;
 pub use sample_seq::{SampleSeq, SAMPLE_ENTRY_BYTES};
