@@ -84,3 +84,15 @@ as commits on it and are squashed to one before submit.
   it leaves its unit axis for the enum lanes, where min/max is inert —
   owner decision (queue § 1). Frontend lanes green (3953 tests); no
   Rust or Python in the diff.
+- 2026-10-20 — **Phases 2+3 landed** (b36eaf78). The paused auto range
+  and Fit Y scan only samples inside the visible x-window
+  (`plotData.ts::windowExtent`); a series with none on screen falls back
+  to its served slice, a single sample is widened as before. Follow-live
+  and the fetch margin unchanged. The y-axis menu lists max above min.
+  ADR 0026 and README amended. Frontend lanes green (3960 tests).
+  Left as is: a log axis's smallest-positive scan still covers the whole
+  slice.
+- 2026-10-20 — **Squashed** to one commit 4a946585 on
+  `fix-plot-y-scale` (pre-squash tips 175c90e6, b36eaf78);
+  `doc-closeout-2` restacked on it. Every exit criterion met; awaiting
+  acceptance (queue § 4).

@@ -82,6 +82,12 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
 ## 4. Finished tasks awaiting acceptance
 
+- **169 plot y scale** — `fix-plot-y-scale` 4a946585, beneath
+  `doc-closeout-2`: paused fit and Fit Y scan only on-screen samples,
+  a bound typed and left by clicking away is kept, max listed above
+  min. Follow-live unchanged (ruling 2026-10-20). Your check: paused,
+  zoom until the SNA spike is just off an edge — the axis fits the rest.
+  § 1 carries the sentinel-table enum question.
 - **Task 168 — Duplicate a Project Element** — #568 →
   #569 (ADR 0027 and ADR
   0050 amended; new host command `clone_transmit_frames`). Project
