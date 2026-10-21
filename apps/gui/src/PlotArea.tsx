@@ -40,6 +40,7 @@ import {
   type MergedValue,
   sampleColumns,
   splitExtrapolatedRows,
+  windowExtent,
   type ExtrapolatedSegment,
   type ExtrapolatedSpan,
   type RawSeries,
@@ -554,36 +555,58 @@ function DisplayUnitChip({
 const DEFAULT_Y_GUTTER_PX = 52;
 
 /**
- * The y axis's own context menu (ADR 0026): a manual min, a manual max
- * and a log-scale toggle for one derived axis.
+ * The y axis's own context menu (ADR 0026): a manual max above a manual
+ * min — the order the axis reads, top to bottom — and a log-scale
+ * toggle for one derived axis.
  *
  * Both bounds default to **empty, meaning automatic** — the axis keeps
  * the auto-scaling it has always done — so a user who never opens this
  * sees no change, and clearing a field puts the axis back. Committing
  * follows the repo's one inline-edit precedent (`EventRow`): Enter and
  * blur commit, and the menu's Escape dismisses without committing the
- * draft.
+ * draft. Clicking outside the menu commits every changed draft: the menu
+ * closes on that `mousedown`, which unmounts the boxes before the
+ * browser blurs them, so blur alone would drop a bound typed and then
+ * left by clicking away.
  *
  * The min box is absent while log is on: a log axis cannot render zero
  * or negatives, so rather than accept a min and then reject it the min
  * becomes derived. The value the user typed is *held* by the store, so
  * turning log back off returns it.
+ *
+ * A field holding a value carries a trailing × that clears it (the same
+ * commit an emptied field makes), and the "clear all bounds" row clears
+ * both — the held log-axis min included; the log flag is not a bound and
+ * stays. While the panel ignores manual bounds, the one hint line says so
+ * and an "apply manual bounds" row, last, stops ignoring them without
+ * leaving the menu. The menu has a fixed width and exactly one hint line
+ * whatever it reads, so turning the chip off from here neither resizes
+ * nor reflows it.
  */
 function YAxisScaleMenu({
   position,
   scale,
+  boundsIgnored,
+  onApplyBounds,
   onSet,
   onClose,
 }: {
   position: { x: number; y: number };
   scale: AxisScale | undefined;
+  /** The panel's "ignore manual y bounds" chip is on: the boxes still
+   * show and edit what is stored, and a hint says it is not applied. */
+  boundsIgnored: boolean;
+  /** Turn the panel's "ignore manual y bounds" chip off, so the stored
+   * bounds apply again. */
+  onApplyBounds: () => void;
   onSet: (patch: AxisScalePatch) => void;
   onClose: () => void;
 }) {
-  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
   const log = !!scale?.log;
-  const [minDraft, setMinDraft] = useState(scale?.min == null ? "" : String(scale.min));
-  const [maxDraft, setMaxDraft] = useState(scale?.max == null ? "" : String(scale.max));
+  const minText = scale?.min == null ? "" : String(scale.min);
+  const maxText = scale?.max == null ? "" : String(scale.max);
+  const [minDraft, setMinDraft] = useState(minText);
+  const [maxDraft, setMaxDraft] = useState(maxText);
   const commit = (which: "min" | "max", text: string) => {
     const t = text.trim();
     if (t === "") {
@@ -595,21 +618,48 @@ function YAxisScaleMenu({
     // committed as a clear — the user is mid-edit, not asking for auto.
     if (Number.isFinite(v)) onSet({ [which]: v });
   };
-  const boundRow = (which: "min" | "max", draft: string, setDraft: (s: string) => void) => (
-    <label className="plot-axis-menu-row">
-      <span>{which}</span>
-      <input
-        aria-label={`y axis ${which === "min" ? "minimum" : "maximum"}`}
-        placeholder="auto"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit(which, draft);
-        }}
-        onBlur={() => commit(which, draft)}
-      />
-    </label>
-  );
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, (reason) => {
+    if (reason === "outside") {
+      // The min box is absent on a log axis, so its draft is not an edit.
+      if (!log && minDraft !== minText) commit("min", minDraft);
+      if (maxDraft !== maxText) commit("max", maxDraft);
+    }
+    onClose();
+  });
+  const boundRow = (which: "min" | "max", draft: string, setDraft: (s: string) => void) => {
+    const name = `y axis ${which === "min" ? "minimum" : "maximum"}`;
+    return (
+      <label className="plot-axis-menu-row">
+        <span>{which}</span>
+        <span className="plot-axis-menu-field">
+          <input
+            aria-label={name}
+            placeholder="auto"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit(which, draft);
+            }}
+            onBlur={() => commit(which, draft)}
+          />
+          {(scale?.[which] != null || draft !== "") && (
+            <button
+              type="button"
+              className="plot-axis-menu-clear"
+              aria-label={`clear ${name}`}
+              title={`clear the ${which} (automatic)`}
+              onClick={() => {
+                setDraft("");
+                onSet({ [which]: null });
+              }}
+            >
+              <Icon name="x" />
+            </button>
+          )}
+        </span>
+      </label>
+    );
+  };
   return (
     <div
       ref={menuRef}
@@ -618,8 +668,8 @@ function YAxisScaleMenu({
       onContextMenu={(e) => e.preventDefault()}
     >
       <div className="plot-axis-menu-title">y axis</div>
-      {!log && boundRow("min", minDraft, setMinDraft)}
       {boundRow("max", maxDraft, setMaxDraft)}
+      {!log && boundRow("min", minDraft, setMinDraft)}
       <label className="plot-axis-menu-row">
         <input
           type="checkbox"
@@ -630,8 +680,35 @@ function YAxisScaleMenu({
         <span>log scale</span>
       </label>
       <div className="plot-axis-menu-hint">
-        {log ? "min is the smallest positive value" : "empty = automatic"}
+        {boundsIgnored
+          ? "manual bounds are ignored"
+          : log
+            ? "min is the smallest positive value"
+            : "empty = automatic"}
       </div>
+      <button
+        type="button"
+        className="plot-axis-menu-action"
+        aria-label="clear all y axis bounds"
+        disabled={scale?.min == null && scale?.max == null && minDraft === "" && maxDraft === ""}
+        onClick={() => {
+          setMinDraft("");
+          setMaxDraft("");
+          onSet({ min: null, max: null });
+        }}
+      >
+        clear all bounds
+      </button>
+      {boundsIgnored && (
+        <button
+          type="button"
+          className="plot-axis-menu-action"
+          title="turn the ignore manual y bounds chip off"
+          onClick={onApplyBounds}
+        >
+          apply manual bounds
+        </button>
+      )}
     </div>
   );
 }
@@ -952,6 +1029,14 @@ interface PlotAreaProps {
    * axis is fully automatic (ADR 0026). The panel holds the sparse
    * store keyed by derived-axis id. */
   yScale?: AxisScale;
+  /** The panel's "ignore manual y bounds" chip is on: draw and fit as
+   * though {@link yScale} held no min or max (the log flag still
+   * applies — it is not a bound). The menu keeps showing and editing
+   * the stored bounds (ADR 0026). */
+  ignoreManualY?: boolean;
+  /** Set the panel's "ignore manual y bounds" chip; the y-axis menu
+   * turns it off to apply the stored bounds again. */
+  onIgnoreManualY: (on: boolean) => void;
   /** Set / clear one of those settings. A `null` bound is a clear. */
   onSetYScale: (patch: AxisScalePatch) => void;
   /** Keys of this area's *manual* picks — how the row renderer tells
@@ -2330,6 +2415,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onSetPatterns,
     onMaterializePatterns,
     yScale,
+    ignoreManualY,
+    onIgnoreManualY,
     onSetYScale,
     selectedKeys,
     manualKeys,
@@ -2455,11 +2542,18 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   /** Per-signal y-range pinned by a manual Fit Y (signal key → [lo, hi]
    * snapshot of the rendered extent at the moment Fit Y was hit). Only
    * read while {@link manualFitYRef} is set — it's a view-local user
-   * override of the display, not model state. The widen-only auto-norm
-   * latch that used to live here is gone: in follow-live the y-extent
-   * now comes from the host's `signal_min_max` (ADR 0025), and a paused/
-   * zoomed view fits the visible slice each tick. */
+   * override of the display, not model state. In follow-live the
+   * y-extent otherwise comes from the host's `signal_min_max` (ADR 0025);
+   * paused, from {@link heldRangesRef}. */
   const manualRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
+  /** Per-signal y-range a paused axis holds (ADR 0026), in the unit the
+   * signal *decodes* in so a display-unit pick carries it like the
+   * host's extent. Every follow-live tick rewrites it with the extents
+   * it draws, so turning follow-live off keeps exactly that range; a
+   * paused tick only reads it, seeding a missing entry (a plot that
+   * starts paused, a signal added while paused, the refit after Fit
+   * Data) from the samples on screen. Cleared by Fit Data. */
+  const heldRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
   /** True while a manual Fit Y override is active — the per-tick
    * normalisation in `resample` reads {@link manualRangesRef} instead of
    * the host extent. Cleared by Fit Data. */
@@ -2468,7 +2562,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   const jankRef = useRef(emptyJankMeter());
   /** The y-range actually used to normalise each signal on the most
    * recent resample — the widen-only latch, the manual Fit Y pin, or
-   * the !follow-live visible-fit, whichever was active. Surfaced in
+   * the !follow-live hold, whichever was active. Surfaced in
    * the side-panel rows so users can see what range the auto-norm is
    * operating against. */
   const effectiveRangesRef = useRef<Map<string, ResolvedAxisRange>>(new Map());
@@ -2794,7 +2888,16 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * them rather than offering something inert, and any setting a mode
    * change left behind is ignored while the axis renders that way. */
   const yScaleSettable = !laneMode && !enumMode;
-  const effectiveYScale = yScaleSettable ? yScale : undefined;
+  // With manual bounds ignored, the axis is automatic in every respect —
+  // the draw, the paused hold, Fit Y's pin check — because each of them
+  // reads this, not the stored setting.
+  const effectiveYScale = !yScaleSettable
+    ? undefined
+    : ignoreManualY
+      ? yScale?.log
+        ? { log: true }
+        : undefined
+      : yScale;
   // Read through a ref for the same reason the enum state is: the
   // resample callback is deps-stable and would otherwise close over the
   // setting as it was when the signal set last changed.
@@ -2969,7 +3072,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // not part of the windowed `DecimatedRange` — so it rides the
       // sample's round-trip as a sidecar (no extra wall-clock) and fires
       // only on a real fetch. Skip it when a manual Fit Y is pinned, when
-      // paused/zoomed (the visible slice is fit instead), or in enum mode
+      // paused/zoomed (the held range is used instead), or in enum mode
       // (no normalisation).
       const enumActivePre = enumModeRef.current && valueTableRef.current != null;
       // Lane axes get their y from the value tables, not observed data
@@ -3153,9 +3256,18 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       //    window still sets the scale and the y-axis never "snaps
       //    back" — and it's a host-owned model fact (ADR 0025), not a
       //    range latched in a React ref.
-      //  * **Follow-live OFF** — the visible slice's own min/max,
-      //    recomputed each tick so a zoomed-in pan fills the canvas
-      //    with its local detail (shaping already-paged data).
+      //  * **Follow-live OFF** — the range the axis was showing when
+      //    follow-live went off, held across pan and zoom
+      //    (`heldRangesRef`): paused, the scale changes only when asked
+      //    (Fit Y, Fit Data, a manual bound). Each follow-live tick
+      //    rewrites the hold with the extents it draws. A signal with
+      //    no held range — the plot started paused, the signal was added
+      //    while paused, Fit Data just cleared the hold — is seeded once
+      //    from the min/max of its samples inside the visible x-window;
+      //    the served slice's fetch margin is excluded, so a spike just
+      //    off screen does not set the scale (`windowExtent`). A partial
+      //    serve (ADR 0049) seeds nothing: the seed waits for the
+      //    complete answer.
       //
       // Two rules apply to every one of those branches:
       //
@@ -3176,38 +3288,37 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       //    minimum range by `axisAutoRange` so it still reads as that
       //    value (ADR 0026).
       const ranges = new Map<string, { lo: number; hi: number }>();
-      signals.forEach((s, i) => {
+      const held = lr.followLive ? new Map<string, { lo: number; hi: number }>() : heldRangesRef.current;
+      signals.forEach((s) => {
         if (s.hidden) return;
         const key = signalRefKey(s);
         if (manualFitYRef.current) {
           const m = manualRangesRef.current.get(key);
           if (m) ranges.set(key, m);
-          return;
+          // Paused, a signal Fit Y never saw takes the held path below.
+          if (m || lr.followLive) return;
         }
+        // Host and held ranges are in the unit the signal decodes in,
+        // and the axis scales to the unit the series is *drawn* in — so
+        // a converted series' range goes through the very same affine
+        // its values do.
+        let r: { lo: number; hi: number } | null | undefined;
         if (lr.followLive) {
           const e = hostExtents?.get(key);
-          // The host's extent is in the unit the signal decodes in, and
-          // the axis scales to the unit the series is *drawn* in — so a
-          // converted series' all-time extent goes through the very same
-          // affine its values do.
-          if (e) {
-            ranges.set(
-              key,
-              convertExtent({ lo: e.lo, hi: e.hi }, displayAffineOf(displayUnitsRef.current, key)),
-            );
+          if (e) r = { lo: e.lo, hi: e.hi };
+        } else {
+          r = held.get(key);
+          if (!r) {
+            const { xMin, xMax } = xSyncRef.current;
+            const raw = snapshot.byKey.get(key);
+            r = raw ? windowExtent(raw, xMin, xMax) : null;
           }
-          return;
         }
-        const ser = seriesRel[i];
-        if (ser.v.length === 0) return;
-        let lo = Infinity;
-        let hi = -Infinity;
-        for (const v of ser.v) {
-          if (v < lo) lo = v;
-          if (v > hi) hi = v;
-        }
-        if (Number.isFinite(lo) && Number.isFinite(hi)) ranges.set(key, { lo, hi });
+        if (!r) return;
+        if (lr.followLive || snapshot.complete) held.set(key, r);
+        ranges.set(key, convertExtent(r, displayAffineOf(displayUnitsRef.current, key)));
       });
+      if (lr.followLive && !manualFitYRef.current) heldRangesRef.current = held;
       // One scale for the axis (ADR 0026): the per-signal latches above
       // feed `axisAutoRange`, which unions them into the single range
       // every series here is normalised by — so the range the axis
@@ -4540,14 +4651,16 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     void resampleRef.current();
   }, [modelEpoch]);
 
-  // Panel asked us to refit y — drop any manual Fit Y override so the
-  // next tick uses the host extent (follow-live) / visible slice fresh.
+  // Panel asked us to refit y — drop any manual Fit Y override and the
+  // paused hold, so the next tick uses the host extent (follow-live) or
+  // re-seeds the hold from the samples then on screen.
   useEffect(() => {
     manualRangesRef.current = new Map();
     manualFitYRef.current = false;
+    heldRangesRef.current = new Map();
   }, [resetYEpoch]);
 
-  /** Manual Fit Y: snapshot the *currently rendered* extent of each
+  /** Manual Fit Y: snapshot the on-screen extent of each
    * series and pin it as the auto-norm range until Fit Data is hit.
    * Useful when the live capture has wide outliers but the user wants
    * the visible region's detail to fill the canvas. */
@@ -4556,33 +4669,31 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     // (ADR 0026) — Fit Y has nothing to snapshot and must not leave a
     // stale manual latch that survives a mode switch.
     if (laneModeRef.current) return;
-    // Fit Y *clears* a manual range rather than writing the fitted
-    // numbers into it. Under a sparse store "fit y" and "clear the
-    // fields" are the same intent — go back to automatic — and seeding
-    // the fields would silently pin every axis the user ever fitted.
-    // The log flag is not a range and survives: fitting a log axis to
-    // its visible data is still a log axis.
-    onSetYScale({ min: null, max: null });
+    // A manual bound is the user's own statement of this axis's scale,
+    // so Fit Y leaves a pinned axis exactly as set — neither clearing
+    // the bound nor re-latching under it (ADR 0026); the panel names
+    // the axes it skipped. A log flag alone is not a pin.
+    const pin = yScaleRef.current;
+    if (pin?.min != null || pin?.max != null) return;
     const sm = seriesRef.current;
+    const { xMin, xMax } = xSyncRef.current;
     const next = new Map<string, { lo: number; hi: number }>();
     for (const [key, ser] of sm) {
-      if (ser.v.length === 0) continue;
-      let lo = Infinity;
-      let hi = -Infinity;
-      for (const v of ser.v) {
-        if (v < lo) lo = v;
-        if (v > hi) hi = v;
-      }
-      // A constant series (`hi === lo`) is kept: it still has to
+      // Only the samples on screen, as the paused auto fit does. A
+      // constant series (`hi === lo`) is kept: it still has to
       // contribute its value to the axis's union, the same way the
       // auto path does.
-      if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
-      next.set(key, { lo, hi });
+      const r = windowExtent(ser, xMin, xMax);
+      if (r) next.set(key, r);
     }
     manualRangesRef.current = next;
     manualFitYRef.current = true;
+    // Re-normalise from the window already cached: a stopped or parked
+    // window's request is memoised, so a plain resample answers
+    // "unchanged" and would keep the old scale on screen.
+    repaintFromCacheRef.current = true;
     void resampleRef.current();
-  }, [onSetYScale]);
+  }, [xSyncRef]);
   // Wire the toolbar's "fit y" button to this area's `fitY`. Skip the
   // first run so we don't fire one on initial mount.
   const fitYEpochPrevRef = useRef(fitYEpoch);
@@ -4892,7 +5003,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       {axisMenu && (
         <YAxisScaleMenu
           position={axisMenu}
-          scale={effectiveYScale}
+          scale={yScale}
+          boundsIgnored={!!ignoreManualY}
+          onApplyBounds={() => onIgnoreManualY(false)}
           onSet={onSetYScale}
           onClose={() => setAxisMenu(null)}
         />

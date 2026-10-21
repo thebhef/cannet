@@ -76,6 +76,28 @@ so an axis nobody pinned carries no setting at all. The old per-*area*
 `yMode` fixed range stays removed and is not migrated onto it: an area
 is not an axis, so an old range has no axis to land on.
 
+**The automatic range depends on whether the plot follows live.**
+Following live, an axis scales to its signals' all-time extents, which
+the host owns ([ADR 0025](0025-frontend-windowed-source-contract.md)),
+so a peak that has scrolled away still sets the scale and the axis
+never snaps back. **Paused, the range holds until asked:** turning
+follow-live off keeps the range the axis was showing at that moment,
+and panning or zooming does not move it. It changes only on demand —
+**Fit Y** (the samples on screen), **Fit Data** (x and y refit to the
+data), or a manual bound. A plot that starts paused (a project saved
+that way, a fresh import), a signal added while paused, and the refit
+after Fit Data take their range once from **the samples on screen**:
+those whose time lies inside the visible x-window. The slice the host
+serves runs a margin past each edge so the window can slide between
+fetches, and that margin is not on screen — a spike just past an edge
+does not set the scale. A series with no sample inside the window
+(zoomed in between two samples) falls back to its whole served slice,
+so the line crossing the canvas still has a scale. Fit Y pins its
+on-screen extent until the next Fit Data, following live or not.
+While the toolbar's **ignore manual y bounds** chip is on, every axis
+takes this automatic range — draw, paused hold and Fit Y alike — and
+no bound is cleared.
+
 **A log scale is a property of the axis, not of a signal.** A log
 scale changes how a range maps to pixels, and every series drawn on an
 axis shares that mapping — so two same-unit signals collected onto one
@@ -745,19 +767,35 @@ below:
   — it was a per-*area* range, so there is no axis it can be said to
   have meant.
 - **Manual y control** is a context menu on the axis itself:
-  right-clicking the y gutter offers a min, a max and a log toggle for
-  that derived axis. Both bounds default to empty, meaning the
-  auto-derived scale, so an axis nobody opens the menu on is unchanged.
+  right-clicking the y gutter offers a max, a min below it (the order
+  the axis reads) and a log toggle for that derived axis. Both bounds
+  default to empty, meaning the auto-derived scale, so an axis nobody
+  opens the menu on is unchanged.
   The settings live in `plotAxisScale.ts` (`AxisScale` + the
   precedence and decade maths, under unit tests) and are persisted
   sparsely as the panel's `axisScales`, keyed by derived-axis id.
   Pruning is on `retainedAxisIds` — every id an area's signals could
   mint in *any* mode — so a setting survives a mode change and retires
   with its signals; a per-unit entry outlives all but the last signal
-  of its unit. **Fit Y clears** a manual range rather than writing the
-  fitted numbers into it: under a sparse store the two are the same
-  intent. The menu is omitted on enum-lanes and single-enum axes,
-  whose geometry comes from a value table rather than a value range.
+  of its unit. **Fit Y skips a pinned axis**: an axis with a manual
+  min or max is left exactly as set — the bound is neither cleared nor
+  overwritten with fitted numbers — and only unpinned axes refit; a log
+  flag alone is not a pin. The toolbar's **ignore manual y bounds**
+  chip (a struck-through pin, pressed while on) sets every manual min
+  and max aside without clearing it: each axis draws, holds and fits
+  as an unpinned one would, and turning the chip off applies the
+  stored bounds again unchanged. The log flag is not a bound and still
+  applies. The axis menu keeps showing and editing the stored bounds;
+  its one hint line then says they are ignored, and an **apply manual
+  bounds** row, last, turns the chip off so the stored bounds apply
+  again without leaving the menu. A field holding a value shows a ×
+  inside it that clears that bound (the same as emptying the field),
+  and a **clear all bounds** row clears both — a log axis's held min
+  included, the log flag not. The menu has a fixed width and always
+  exactly one hint line, so neither changes its size. The chip persists with the
+  panel as `ignoreManualY`, sparsely (absent = off). The menu is
+  omitted on enum-lanes and single-enum axes, whose geometry comes
+  from a value table rather than a value range.
 - **Per-series color picker** is on each signal-row's swatch
   (right-click opens the browser's native picker). What it writes is
   the series' `colorPick` — the *only* color a plot stores. A
