@@ -108,6 +108,20 @@ as commits on it and are squashed to one before submit.
    side; clear all empties both; the hint's control turns the chip off
    and the stored bounds apply.
 
+7. **Menu polish** (owner 2026-10-20: the clear styling is odd, the
+   ignored-hint stretches the menu and collapses it on click). The menu
+   has a fixed width sized by the bound rows; the hint wraps inside it
+   and never drives the width. One hint slot is always present
+   ("empty = automatic" / "min is the smallest positive value" on a
+   log axis / "manual bounds are ignored" while the chip is on), so the
+   height does not jump either. "clear all bounds" and "apply manual
+   bounds" are full-width action rows at the foot, styled like the
+   selection menu's rows; the apply row exists only while the chip is
+   on. The per-field × is a trailing icon inside the field at its
+   right edge, input height, shown only while the field holds a value.
+   → verify: the menu's width is the same with and without the hint;
+   the rows look like the selection menu's; × appears only with a value.
+
 ## Exit criteria
 
 - Paused: the y range holds what follow-live last showed (or the
@@ -198,3 +212,6 @@ as commits on it and are squashed to one before submit.
 - 2026-10-20 — **Re-squashed** to one commit 59068726 on `fix-plot-y-scale`
   (pre-squash tips 6b4bf445, d0b9a8fa); `doc-closeout-2` restacked.
   Every exit criterion met; awaiting acceptance (queue § 4).
+- 2026-10-20 — **Owner feedback on phase 6:** right idea; clear styling
+  unpolished; the ignored hint drives the width and collapses the menu
+  when clicked. Phase 7 groomed above; launched.
