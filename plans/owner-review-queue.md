@@ -75,6 +75,16 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
 ## 4. Finished tasks awaiting acceptance
 
+- **170 startup restore feedback** — `fix-startup-restore-feedback`
+  fd32b6c6 (one commit; phases 1–2 landed as bd57ed1b and 4bc98c4e).
+  Check: relaunch over a project with a large prior capture — the
+  status bar shows **Restoring prior capture…** with a determinate bar
+  and `capture index n / N files`, then `capture frames`, then `signal
+  caches`, from the first mapped file until the frames land; open a
+  project with no prior capture — no chip. `cannet.log` `restored …
+  in X ms` before/after should match within noise. Needs a fresh
+  build; the NSIS installer from 169 predates it.
+
 - **169 plot y scale** — `fix-plot-y-scale` a0093bc2, beneath
   `doc-closeout-2`: a paused axis holds its range until Fit Y, Fit Data
   or a manual bound; Fit Y skips pinned axes; an "ignore manual y

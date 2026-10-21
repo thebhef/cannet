@@ -113,16 +113,16 @@ and `loadProgressReadout` in `statusLine.ts`; `LoadProgressChip`.
 
 ## Exit criteria
 
-- [ ] A relaunch over a prior capture shows **Restoring prior
+- [x] (code + dom tests; owner hands-on pending) A relaunch over a prior capture shows **Restoring prior
       capture…** with a determinate bar from the first mapped file to
       the command's return; an open with nothing to restore shows no
       chip.
-- [ ] The three phases report in order against their own file totals
+- [x] The three phases report in order against their own file totals
       at the live-update cadence; the final report of each is N of N.
-- [ ] Reload cost unchanged within noise (in-process spill test;
+- [x] (in-process; owner log line pending) Reload cost unchanged within noise (in-process spill test;
       owner's `restored … in X ms` log line as the integrated check).
-- [ ] README describes the chip; rustdoc covers the seam and record.
-- [ ] One commit on `fix-startup-restore-feedback`, lanes green,
+- [x] README describes the chip; rustdoc covers the seam and record.
+- [x] One commit on `fix-startup-restore-feedback`, lanes green,
       `comment-references` grep clean.
 
 ## Status log
@@ -148,3 +148,25 @@ and `loadProgressReadout` in `statusLine.ts`; `LoadProgressChip`.
     - Lanes green: fmt, clippy, test, doc for cannet-spill and
       cannet-gui; frontend declared unreachable. Review: clean;
       comment-references grep clean.
+- 2026-10-21 phase 2 landed as 4bc98c4e (pre-squash c272d42c) on top of
+  bd57ed1b.
+    - `types.ts` `RestoreProgress`; `statusLine.ts` `ProgressReport`
+      restore variant, readout "<capture index|capture frames|signal
+      caches> n / N files", zero total -> null (indeterminate).
+    - `App.tsx`: `restore-progress` listener + `restoreProgress` state,
+      cleared in the restore closure's `finally` (invoke still not
+      awaited); `restoreRunRef` ignores late reports and keeps an older
+      restore from clearing a newer one's chip. Chip "Restoring prior
+      capture…" beside the load chip, shares the `.cache-rebuild` rule.
+    - Tests: 5 readout cases; `App.restoreProgress.dom.test.tsx` (4):
+      appear/leave on resolve, leave on reject, late report ignored
+      (fails with the guard removed), nothing to restore -> no chip.
+    - README relaunch paragraph describes the chip.
+    - Lanes: frontend test (254 files / 3984) + build green; no lint
+      script exists in `apps/gui`; Rust/python lanes unreachable.
+      Review: clean; comment-references grep clean.
+- 2026-10-21 both phases squashed to one commit **fd32b6c6** on
+  `fix-startup-restore-feedback` (pre-squash tips bd57ed1b, 4bc98c4e);
+  `doc-closeout-2` restacked. Exit criteria walked above; the owner's
+  hands-on check and log-line comparison are what remain. Queue § 4
+  entry filed. No release build made (none ordered).

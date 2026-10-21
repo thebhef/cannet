@@ -22,65 +22,77 @@ The development path for the 0.10.x releases: correctness, rework,
 stability, project health. In order of work, first at the top. None
 started.
 
-1. [Task 128 — Shared-Layer Holdouts](0128-shared-layer-holdouts.md)
+1. [Task 171 — Decoding Views Must Not Block on the Filter Build](0171-decoding-views-block-on-the-filter-build.md)
+   — the 2026-10-26 four-day Kvaser session: the first error frame
+   armed the trace's default error-frame collapse, whose
+   non-narrowable predicate built a filter index over 451 M frames
+   while holding the DBC mutex; every decoding view (the signals
+   panel first) blocked on it for the rest of the session and
+   Disconnect did not cancel it. Release the mutex before the walk,
+   make the build cancellable, collapse error frames without a
+   capture walk, log lock waits and builds. Opened from the owner's
+   log review 2026-10-26; **needs grilling** (four questions).
+2. [Task 128 — Shared-Layer Holdouts](0128-shared-layer-holdouts.md)
    — the last cleanup items the 2026-08-27 run surfaced, opened at the
    owner's instruction while walking its open items: `serverList.ts`'s
    two hooks onto `useHostMirror` via a `fromPayload` ignore signal
    (ruled: option a — no behaviour change), Escape reaching a
    portalled dropdown before the fullscreen binding, and the columned
    gridviews' missing ARIA roles.
-2. [Task 119 — Example DBCs for the Duplicate-Id Collision](0119-duplicate-id-example-dbcs.md)
+3. [Task 119 — Example DBCs for the Duplicate-Id Collision](0119-duplicate-id-example-dbcs.md)
     — two DBCs that collide on one bus plus a project assigning both, so
     the owner can review what the Database panel marks. **A deliverable
     to review against, not a behaviour change.** From queue item 1.33a;
     ruled 2026-08-25. Two open questions.
-3. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
+4. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
     — the user-reachable empty-view defect Task 78 phase 1 attributed
     (restore a prior capture, then import: the view stays empty while
     the store refills), plus making `--app-data-dir` isolate the
     capture scratch as ADR 0031 claims. Opened by owner ruling
     2026-08-15; kept as scoped, both halves, by owner ruling
     2026-08-19.
-4. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+5. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
     — the hardware/virtual-bus verify-and-fix pass (post-clear negative
     timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
     plot-color bug and the `decimatePoints` dead-code removal.
-5. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
+6. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
     — the small findings the retiring 70–78 task files recorded in
     passing, collected as one groomable pass: the project-command test
     harness gap, the rebuild-chip rough edges, the unattributed
     launch-hang lead, frameless-import time ranges, and the
     untrusted-row token editor. Opened by owner ruling 2026-08-16.
-6. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
+7. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
     — an imported MDF's embedded DBC decodes for the session but
     survives no reopen; make it durable (extraction or a durable
     project reference), then revisit name-matching file-backed
     signals on top. **Needs grilling before implementation.** Opened by
     owner ruling 2026-08-16.
-7. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+8. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
     — crash on exit (wry/WebKit layer-tree teardown race) and missing
     Spotlight bundle metadata. Independently-shippable macOS fixes.
-8. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
+9. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
     — the two data-named cuts from the 2026-08-08 ingest profiling: the
     disk-spill segment write (43 % of the release per-frame budget)
     and `bus_id: Option<String>` interning (~15 %). Opened by owner
     ruling 2026-08-09.
-9. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
+10. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
     — the health sampler's process-family metrics move to the web
     engine's own bookkeeping (WebView2 `GetProcessInfos`) as the
     de-jure source; per-platform matrix (the macOS ppid walk silently
     excludes WKWebView's launchd-parented helpers), the
     `unsafe`/`webview2-com` adoption rulings, costs re-measured.
     Opened by owner ruling 2026-08-15.
-10. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
+11. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
     — shape 3 of Task 72 phase 3's attributed enum-lag fix (owner
     ruling 2026-08-15): decode cursors advance independently of view
     fetches, serves read what the cursors reached. Amends ADR 0049.
-11. [Task 133 — Misc Fixes](0133-misc-fixes.md)
+12. [Task 133 — Misc Fixes](0133-misc-fixes.md)
     — the collection point for small owner-reported fixes that belong
-    to no open task; currently: hex displays preserve leading zeros.
-    Opened by owner instruction 2026-09-03.
-12. [Task 143 — A Webview Reload Rejoins the Running Session](0143-reload-rejoins-the-session.md)
+    to no open task; currently: hex displays preserve leading zeros;
+    the window's own scrollbars flicker on and off (dockview's
+    integer layout in a fractional, unclipped dock area — owner
+    feedback 2026-10-26). Opened by owner instruction 2026-09-03.
+13. [Task 143 — A Webview Reload Rejoins the Running Session](0143-reload-rejoins-the-session.md)
     — a reload today re-runs the fresh-host boot (stops loggers, RBS
     and periodic TX; swaps the raw store under a live pump); make it
     rejoin the host's session instead, then let the health recorder
