@@ -75,7 +75,7 @@ Owner rulings 2026-10-07 (queue walk) — each ordered fixed on this stack:
 
 ## 4. Finished tasks awaiting acceptance
 
-- **169 plot y scale** — `fix-plot-y-scale` 4797c8a3, beneath
+- **169 plot y scale** — `fix-plot-y-scale` 59068726, beneath
   `doc-closeout-2`: a paused axis holds its range until Fit Y, Fit Data
   or a manual bound; Fit Y skips pinned axes; an "ignore manual y
   bounds" chip makes every axis automatic without clearing a bound,
