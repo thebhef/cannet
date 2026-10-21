@@ -128,3 +128,16 @@ as commits on it and are squashed to one before submit.
   moment follow-live went off. Fit Y skips pinned axes and names them in
   a 5-second notice. Observation: unpinning via Fit Y takes two clicks
   today. Phase 4 groomed above; launched 2026-10-20.
+- 2026-10-20 — **Phase 4 landed** (8889b5ec). Paused y holds what the
+  last follow-live tick drew (`heldRangesRef`, decoded unit); a missing
+  entry seeds once from the on-screen samples, a partial serve seeds
+  nothing; Fit Data clears the hold. Fit Y leaves an axis with a manual
+  min or max untouched and the toolbar names the skipped axes for 5 s.
+  Two-click cause confirmed by test: a paused plot's memoised request
+  answered "unchanged", so the fit never redrew — Fit Y now redraws from
+  the cached window. ADR 0026 and README amended. Frontend lanes green
+  (3965 tests). FYI: the per-area fit y button on a pinned axis does
+  nothing and shows no notice (only the toolbar's does).
+- 2026-10-20 — **Re-squashed** to one commit 3a65abe5 on `fix-plot-y-scale`
+  (pre-squash tips 4a946585, 8889b5ec); `doc-closeout-2` restacked.
+  Every exit criterion met; awaiting acceptance (queue § 4).
