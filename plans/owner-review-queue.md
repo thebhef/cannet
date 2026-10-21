@@ -7,7 +7,14 @@ keeps the queue's copy). This file shrinks every time it is walked.
 
 ## 1. Behaviour changes needing a yes or no
 
-(none)
+- **169 — a sentinel-only value table makes a numeric signal an enum.**
+  `VAL_ 254 "Error" 255 "SNA"` on a 0.5 °C/LSB temperature counts as
+  an enum (two or more entries), so in per-unit mode the signal leaves
+  the °C axis for the enum lanes, where min/max is inert — plausibly
+  what "cell temps with SNA don't work right" looks like. Proposed
+  rule: enum only when the table covers values other than the signal's
+  top-of-range raw codes; the host's `cannet_dbc::is_enum` would change
+  with it. Not started. Yes/no. (0169 § Status log, 2026-10-20.)
 
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
