@@ -59,10 +59,24 @@ as commits on it and are squashed to one before submit.
    not set the scale; follow-live unchanged.
 3. **Menu order**: max above min.
 
+4. **Paused y holds until asked** (owner 2026-10-20, after trying the
+   repro: "I don't like the implicit autoscale when stopped — if we're
+   not in follow-live, we should only autoscale on demand"). With
+   follow-live off the axis keeps **the range it was showing when
+   follow-live went off** across pan and zoom. It changes only on
+   demand: Fit Y (on-screen extent, phase 2's scan), Fit Data (full
+   refit of x and y), or a manual bound. A plot that starts paused (a
+   project saved that way, a fresh import) seeds the hold once from
+   the first served data so it is not blank. Follow-live on is
+   unchanged. ADR 0026's automatic-range paragraph amended.
+   → verify: pause, then zoom/pan — the axis does not move; Fit Y fits
+   the window; Fit Data refits; turning follow-live off causes no jump.
+
 ## Exit criteria
 
-- Paused / zoomed: the auto y range and Fit Y are the min/max of the
-  samples on screen; a spike off screen does not set the scale.
+- Paused: the y range holds what follow-live last showed (or the
+  first served data when the plot starts paused) until Fit Y, Fit Data
+  or a manual bound; Fit Y is the min/max of the samples on screen.
 - Follow-live: unchanged (all-time extent).
 - Manual min and max pin the axis exactly, in per-unit mode with more
   than ten signals, with the SNA spike present; a bound survives
@@ -98,3 +112,7 @@ as commits on it and are squashed to one before submit.
   `fix-plot-y-scale` (pre-squash tips 175c90e6, b36eaf78);
   `doc-closeout-2` restacked on it. Every exit criterion met; awaiting
   acceptance (queue § 4).
+- 2026-10-20 — **Owner ruling after the repro:** manual limits are
+  good; the implicit per-tick autoscale when paused is not wanted —
+  paused autoscale is on demand only. Hold = the range showing at the
+  moment follow-live went off. Phase 4 groomed above; not started.
