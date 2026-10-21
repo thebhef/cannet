@@ -195,6 +195,6 @@ as commits on it and are squashed to one before submit.
   hint's "apply manual bounds" turns it off without closing the menu;
   `axisScales` is not written. ADR 0026 and README amended. Frontend
   lanes green (3973 tests).
-- 2026-10-20 — **Re-squashed** to one commit 4797c8a3 on `fix-plot-y-scale`
+- 2026-10-20 — **Re-squashed** to one commit 59068726 on `fix-plot-y-scale`
   (pre-squash tips 6b4bf445, d0b9a8fa); `doc-closeout-2` restacked.
   Every exit criterion met; awaiting acceptance (queue § 4).
