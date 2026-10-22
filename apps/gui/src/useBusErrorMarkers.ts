@@ -34,9 +34,33 @@ export interface BusErrorMarkerRequest {
   errorsSeen: number;
 }
 
+/// An episode's errors by kind and direction, and its counters as of its
+/// last error (ADR 0060) — mirrors `ipc.rs`'s `BusErrorDetail`. Absent
+/// from the episode that carries it when no report covers it (a series
+/// restored with a capture whose reports were not kept).
+export interface BusErrorDetailWire {
+  countByKind: {
+    ack: number;
+    bit: number;
+    form: number;
+    stuff: number;
+    crc: number;
+    other: number;
+    unknown: number;
+  };
+  txCount: number;
+  rxCount: number;
+  tec: number;
+  rec: number;
+}
+
 /// One episode as `bus_error_episodes_in_window` serves it (`ipc.rs`'s
 /// `BusErrorEpisode`): absolute seconds; `lastOrdinal` is the last
-/// error's ordinal on the bus, and so the episode's id.
+/// error's ordinal on the bus, and so the episode's id while it is not
+/// `ongoing` — see `busErrorEpisodeId` in `plotEvents.ts` for why an
+/// open episode is keyed differently. `ongoing`, `detail` and `text` are
+/// optional for a peer too old to send them (ADR 0060); `ongoing`
+/// absent reads as finalised, matching that peer's only possible state.
 export interface BusErrorEpisodeWire {
   bus: string;
   firstT: number;
@@ -45,6 +69,11 @@ export interface BusErrorEpisodeWire {
   span: number;
   rate: number | null;
   lastOrdinal: number;
+  ongoing?: boolean;
+  detail?: BusErrorDetailWire;
+  /// The episode's own text block (ADR 0057), the reader's words first —
+  /// shown verbatim in the Events panel's disclosure, never recomposed.
+  text?: string;
 }
 
 export interface BusErrorMarkerState {
