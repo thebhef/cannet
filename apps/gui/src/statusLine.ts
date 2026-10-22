@@ -18,6 +18,7 @@ import type {
   LoadProgress,
   OpenLogResult,
   RemoteSessionResult,
+  RestoreProgress,
   SystemLogLevel,
 } from "./types";
 import { formatFrameCount } from "./format";
@@ -292,11 +293,21 @@ function shortenPath(path: string): string {
 }
 
 /// One phase's progress, in whatever the phase counts. The two load
-/// phases come off the `load-progress` event; the cache rebuild is
-/// polled, so it is not part of that union but draws in the same chip.
+/// phases come off the `load-progress` event and the restore's off
+/// `restore-progress`; the cache rebuild is polled, so it is not part of
+/// either union but draws in the same chip.
 export type ProgressReport =
   | LoadProgress
+  | RestoreProgress
   | { phase: "cache_rebuild"; decoded: number; total: number };
+
+/// What a restore phase is mapping, in the closing overlay's words for
+/// the same caches.
+const RESTORE_PHASE_WORDS: Record<RestoreProgress["phase"], string> = {
+  capture_index: "capture index",
+  capture_frames: "capture frames",
+  signal_caches: "signal caches",
+};
 
 /// The determinate readout beside a load's progress bar: how full the
 /// bar is, and the number next to it.
@@ -310,7 +321,9 @@ export type ProgressReport =
 /// The census counts bytes and the rebuild counts frames across every
 /// pyramid at once, neither of which means anything to the reader as a
 /// figure, so both show only the percentage. The import counts frames,
-/// which are the thing being imported, so it shows them.
+/// which are the thing being imported, so it shows them. The restore
+/// counts segment files per phase, against that phase's own total, so it
+/// names the phase beside the count: the bar fills once per phase.
 export function loadProgressReadout(
   progress: ProgressReport | null,
 ): { fraction: number; text: string } | null {
@@ -328,11 +341,19 @@ export function loadProgressReadout(
     const fraction = clampFraction(progress.decoded / progress.total);
     return { fraction, text: `${Math.round(fraction * 100)} %` };
   }
-  if (progress.total_frames <= 0) return null;
-  const fraction = clampFraction(progress.frames / progress.total_frames);
+  if (progress.phase === "import") {
+    if (progress.total_frames <= 0) return null;
+    const fraction = clampFraction(progress.frames / progress.total_frames);
+    return {
+      fraction,
+      text: `${progress.frames.toLocaleString()} / ${progress.total_frames.toLocaleString()} frames`,
+    };
+  }
+  if (progress.total_files <= 0) return null;
+  const fraction = clampFraction(progress.files_opened / progress.total_files);
   return {
     fraction,
-    text: `${progress.frames.toLocaleString()} / ${progress.total_frames.toLocaleString()} frames`,
+    text: `${RESTORE_PHASE_WORDS[progress.phase]} ${progress.files_opened.toLocaleString()} / ${progress.total_files.toLocaleString()} files`,
   };
 }
 

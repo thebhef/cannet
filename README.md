@@ -1676,7 +1676,12 @@ when the project is free to open again.
 
 Because it lives outside the process, the capture **survives a quit or
 crash**: on the next launch the prior session reloads as a *stopped*
-historical trace so nothing is lost. The decoded-signal caches behind
+historical trace so nothing is lost. Reopening a large capture takes
+a few seconds, and while it does the status bar reads **Restoring prior
+capture…** with a progress bar counting the segment files mapped so
+far, one phase at a time — the capture index, then its frames, then the
+signal caches (e.g. *capture index 1,204 / 2,452 files*). It shows only
+when there is a prior capture to restore. The decoded-signal caches behind
 the plots normally come back with it, so plotting a restored capture is
 immediate. When they can't — a DBC in the set changed, or the capture
 came back truncated, so what was cached no longer describes it — they
