@@ -515,6 +515,7 @@ impl TraceStore {
         let key: FrameKey = (bus_id, frame.channel, frame.id, frame.extended);
         let direction = frame.direction;
         let on_wire_bits = frame.payload.on_wire_bits(frame.extended);
+        let is_error_frame = matches!(frame.payload, cannet_core::CanFramePayload::Error);
         let mut inner = self.lock_inner();
         if ts_ns < inner.session_start_ns {
             // Record the episode's first-drop detail only on the 0 → 1
@@ -568,6 +569,12 @@ impl TraceStore {
                 },
             );
             inner.key_generation = inner.key_generation.wrapping_add(1);
+        }
+        // An error frame is a row, not traffic: frames/s and bus load
+        // read the data the bus carried, so on a disconnected bus they
+        // read none (ADR 0060 rule 2).
+        if is_error_frame {
+            return Some(u64::try_from(idx).unwrap_or(u64::MAX));
         }
         // Every throughput tracker folds this frame in the same way (bump
         // the count, sample on the shared cadence gate), and every one is
