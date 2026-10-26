@@ -5,7 +5,7 @@ import warnings
 
 from . import cannet_info_pb2 as cannet__info__pb2
 
-GRPC_GENERATED_VERSION = '1.80.0'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class CannetInfoStub(object):
+class CannetInfoStub:
     """What a cannet server is, asked before anything else is asked of it.
 
     This package is deliberately **unversioned and frozen**. It is the one
@@ -58,7 +58,7 @@ class CannetInfoStub(object):
                 _registered_method=True)
 
 
-class CannetInfoServicer(object):
+class CannetInfoServicer:
     """What a cannet server is, asked before anything else is asked of it.
 
     This package is deliberately **unversioned and frozen**. It is the one
@@ -101,7 +101,7 @@ def add_CannetInfoServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class CannetInfo(object):
+class CannetInfo:
     """What a cannet server is, asked before anything else is asked of it.
 
     This package is deliberately **unversioned and frozen**. It is the one
