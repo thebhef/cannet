@@ -3000,7 +3000,7 @@ A **date pattern** ([ADR 0062](docs/adr/0062-one-date-pattern.md)) is
 the TR35 (Unicode LDML) notation, in a fixed English subset: `yyyy` `yy` (year), `M` `MM` `MMM` `MMMM` (9, 09, Sep,
 September), `d` `dd`, `EEE` `EEEE` (Sat, Saturday), `H` `HH` (0–23), `h`
 `hh` with `a` (1–12 AM/PM), `mm`, `ss`, `S` to `SSSSSSSSS` (1–9 digits of
-the fraction, truncated), and the offset as `xx` (`-0600`), `xxx`
+the fraction, rounded), and the offset as `xx` (`-0600`), `xxx`
 (`-06:00`) or `X` / `XX` / `XXX` (the same, but `Z` at UTC). Every
 letter is a field, so literal letters are quoted — `{start:yyyyMMdd'T'HHmm}`
 — and `''` is an apostrophe; a letter outside the subset is an error,
