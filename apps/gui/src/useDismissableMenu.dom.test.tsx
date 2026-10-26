@@ -34,6 +34,7 @@ describe("useDismissableMenu", () => {
     const { getByTestId } = render(<Harness open onClose={onClose} />);
     fireEvent.mouseDown(getByTestId("outside"));
     expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith("outside");
   });
 
   it("does not close on a mousedown inside the menu", () => {
@@ -48,6 +49,7 @@ describe("useDismissableMenu", () => {
     render(<Harness open onClose={onClose} />);
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith("escape");
   });
 
   it("ignores a non-Escape key", () => {

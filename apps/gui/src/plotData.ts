@@ -514,6 +514,38 @@ export function axisAutoRange(
   return hi > lo ? { lo, hi } : constantRange(lo);
 }
 
+/**
+ * The min/max of the samples a series holds inside `[from, to]` — the
+ * extent of what a paused or zoomed plot actually shows (ADR 0026).
+ *
+ * The served slice runs past the visible window on both sides (the
+ * fetch margin that lets the window slide between fetches), so a fit
+ * over the whole slice let a spike just off screen set the scale. With
+ * no window, or no sample inside it — zoomed in between two samples,
+ * where the line crossing the canvas still comes from the slice — the
+ * whole slice is scanned instead, so the series still gets a scale. A
+ * single value comes back as a degenerate extent for the axis to widen.
+ * `null` when the series holds no finite value.
+ */
+export function windowExtent(
+  ser: Pick<RawSeries, "t" | "v">,
+  from: number | null,
+  to: number | null,
+): { lo: number; hi: number } | null {
+  const scan = (inWindow: boolean) => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < ser.v.length; i++) {
+      if (inWindow && (ser.t[i] < from! || ser.t[i] > to!)) continue;
+      const v = ser.v[i];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    return Number.isFinite(lo) && Number.isFinite(hi) ? { lo, hi } : null;
+  };
+  return (from != null && to != null ? scan(true) : null) ?? scan(false);
+}
+
 /** Half-width of a constant axis's scale, as a fraction of the value
  * it holds. Ten per cent puts the trace mid-canvas with round-ish
  * numbers either side, so the axis reads as the value. */

@@ -72,6 +72,10 @@ export interface PlotToolbarProps {
   onAddArea: () => void;
   onFitX: () => void;
   onFitY: () => void;
+  /// Every manual y bound is ignored — not cleared — while this is on:
+  /// each axis draws and fits as automatic (ADR 0026).
+  ignoreManualY: boolean;
+  onIgnoreManualY: (on: boolean) => void;
   followLive: boolean;
   onFollowLive: (on: boolean) => void;
   showPoints: ShowPointsMode;
@@ -156,6 +160,8 @@ export function plotToolbarItems({
   onAddArea,
   onFitX,
   onFitY,
+  ignoreManualY,
+  onIgnoreManualY,
   followLive,
   onFollowLive,
   showPoints,
@@ -202,6 +208,18 @@ export function plotToolbarItems({
           ariaLabel="Fit Y"
           title="fit each y axis to its visible data"
           onPress={onFitY}
+        />
+      ),
+    },
+    {
+      key: "ignore-manual-y",
+      node: (
+        <ChipButton
+          icon="pin-off"
+          ariaLabel="Ignore Manual Axes"
+          title="ignore manual y bounds"
+          pressed={ignoreManualY}
+          onPress={() => onIgnoreManualY(!ignoreManualY)}
         />
       ),
     },
