@@ -258,22 +258,11 @@ pub(crate) fn bus_error_text(
         episode.span()
     );
     if let Some(d) = detail {
-        let k = d.count_by_kind;
-        let mut kinds = [
-            ("ack", k.ack),
-            ("bit", k.bit),
-            ("form", k.form),
-            ("stuff", k.stuff),
-            ("crc", k.crc),
-            ("other", k.other),
-            ("unknown", k.unknown),
-        ];
-        // Most common first; ties keep the list's order.
-        kinds.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        let named: Vec<String> = kinds
+        let named: Vec<String> = d
+            .kinds
+            .largest_first()
             .iter()
-            .filter(|(_, n)| *n > 0)
-            .map(|(kind, n)| format!("{kind} {n}"))
+            .map(|(kind, n)| format!("{} {n}", kind.name()))
             .collect();
         if !named.is_empty() {
             prose.push_str(": ");
@@ -611,11 +600,12 @@ mod tests {
             last_n: 3_412,
         };
         let detail = EpisodeDetail {
-            count_by_kind: cannet_client::episodes::ErrorKindCounts {
+            kinds: cannet_client::episodes::ErrorKindCounts {
                 ack: 3_410,
                 bit: 2,
                 ..Default::default()
-            },
+            }
+            .into(),
             tx_count: 3_400,
             rx_count: 12,
             tec: 128,
