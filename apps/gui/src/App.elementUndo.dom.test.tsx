@@ -526,6 +526,60 @@ describe("element undo", () => {
     });
   }, 30_000);
 
+  it("duplicating a transmit element clones its host frames; undo withdraws only the clones", async () => {
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(addPanelChip("Transmit Panel"));
+    });
+    await act(async () => {
+      fireEvent.click(findChip("Add Frame"));
+    });
+    const hostCalls = (cmd: string) =>
+      vi.mocked(invoke).mock.calls.filter(([c]) => c === cmd).map(([, a]) => a as Record<string, unknown>);
+    await waitFor(() => {
+      if (hostCalls("set_transmit_frame").length !== 1) throw new Error("no frame added yet");
+    });
+    const original = hostCalls("set_transmit_frame")[0].id as string;
+    await act(async () => {
+      fireEvent.click(toolbarChip("Project"));
+    });
+    const names = () =>
+      Array.from(document.querySelectorAll<HTMLInputElement>(".project-element input")).map(
+        (i) => i.value,
+      );
+    const source = names().find((n) => n.startsWith("Transmit"))!;
+    // The element's frameIds only land once the add resolves.
+    await waitFor(() => {
+      if (!names().includes(source)) throw new Error("no transmit row");
+    });
+
+    await act(async () => {
+      fireEvent.click(buttonIn(elementRow(source), "Duplicate"));
+    });
+    await waitFor(() => {
+      if (!names().includes(`${source} (copy)`)) throw new Error("copy not added");
+    });
+    const clone = hostCalls("clone_transmit_frames");
+    expect(clone).toHaveLength(1);
+    const pairs = clone[0].pairs as [string, string][];
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0][0]).toBe(original);
+    const cloneId = pairs[0][1];
+    expect(cloneId).not.toBe(original);
+
+    // One chord takes the copy and its cloned frames away; the
+    // original's frame is untouched.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (names().includes(`${source} (copy)`)) throw new Error("undo left the copy");
+    });
+    const removed = hostCalls("remove_transmit_frame").map((a) => a.id);
+    expect(removed).toEqual([cloneId]);
+    expect(names()).toContain(source);
+  }, 30_000);
+
   it("returns a plot area dragged between two panels in one chord", async () => {
     await mountApp();
     // Two plot panels in two different dockview groups, so both stay
