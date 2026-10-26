@@ -26,11 +26,15 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-import pytest  # noqa: E402
+import pytest
 
-from cannet_python_wire import Frame, FrameKind  # noqa: E402
-from cannet_python_wire import frame_to_proto, proto_to_frame  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire import (
+    Frame,
+    FrameKind,
+    frame_to_proto,
+    proto_to_frame,
+)
+from cannet_python_wire._proto import cannet_pb2 as pb
 
 
 def test_from_flags_priority_ladder() -> None:

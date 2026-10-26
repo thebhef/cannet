@@ -22,7 +22,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 def _ensure_on_path() -> None:
@@ -33,7 +32,7 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_python_wire import message_to_frame  # noqa: E402
+from cannet_python_wire import message_to_frame
 
 
 @dataclass
@@ -50,7 +49,7 @@ class _FakeMsg:
     error_state_indicator: bool = False
     is_remote_frame: bool = False
     is_error_frame: bool = False
-    dlc: Optional[int] = None
+    dlc: int | None = None
 
     def __post_init__(self) -> None:
         if self.dlc is None:

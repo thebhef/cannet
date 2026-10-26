@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -29,8 +28,8 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-from cannet_local_sidecar import driver_python_can as m  # noqa: E402
-from cannet_local_sidecar.driver import (  # noqa: E402
+from cannet_local_sidecar import driver_python_can as m
+from cannet_local_sidecar.driver import (
     STATE_ACTIVE,
     STATE_BUS_OFF,
     STATE_PASSIVE,
@@ -64,7 +63,7 @@ class _FakeKvaserApi:
     def __init__(self) -> None:
         self.status = 0x08  # canSTAT_ERROR_ACTIVE
         self.counters = (0, 0)
-        self.raises: Optional[Exception] = None
+        self.raises: Exception | None = None
         self.calls: list[tuple[str, object]] = []
 
     def read_status(self, handle: object) -> int:
@@ -82,7 +81,7 @@ class _FakeKvaserApi:
 
 
 @pytest.fixture
-def kvaser(monkeypatch: "pytest.MonkeyPatch") -> _FakeKvaserApi:
+def kvaser(monkeypatch: pytest.MonkeyPatch) -> _FakeKvaserApi:
     api = _FakeKvaserApi()
     monkeypatch.setattr(m, "can", object())
     monkeypatch.setattr(m, "_kvaser_api", lambda: api)
@@ -142,13 +141,13 @@ class _RecordingCanlib:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def canIoCtl(self, handle, func, buf, size) -> None:  # noqa: N802
+    def canIoCtl(self, handle, func, buf, size) -> None:
         self.calls.append(("ioctl", handle, func, buf._obj.value, size))
 
-    def canBusOff(self, handle) -> None:  # noqa: N802
+    def canBusOff(self, handle) -> None:
         self.calls.append(("off", handle))
 
-    def canBusOn(self, handle) -> None:  # noqa: N802
+    def canBusOn(self, handle) -> None:
         self.calls.append(("on", handle))
 
 
@@ -182,7 +181,7 @@ def test_kvaser_buson_ioctl_constant_is_python_cans() -> None:
 
 class _VectorBus:
     def __init__(self) -> None:
-        self.chip_state: Optional[tuple[int, int, int]] = (0x01, 256, 0)
+        self.chip_state: tuple[int, int, int] | None = (0x01, 256, 0)
         self.resets = 0
 
     def request_chip_state(self) -> None:
@@ -196,7 +195,7 @@ class _VectorBus:
 
 
 def test_vector_reset_is_python_cans_deactivate_and_reactivate(
-    monkeypatch: "pytest.MonkeyPatch",
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(m, "can", object())
     bus = _VectorBus()

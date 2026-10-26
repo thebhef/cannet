@@ -28,8 +28,8 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-from cannet_local_sidecar import driver_python_can as dpc  # noqa: E402
-from cannet_local_sidecar.driver_python_can import PythonCanChannel  # noqa: E402
+from cannet_local_sidecar import driver_python_can as dpc
+from cannet_local_sidecar.driver_python_can import PythonCanChannel
 
 
 class _PlainBus:

@@ -14,7 +14,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 
 def _ensure_on_path() -> None:
@@ -23,15 +22,15 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-import pytest  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+import pytest
+from cannet_python_wire._proto import cannet_pb2 as pb
 
-from cannet_local_sidecar import driver as drv  # noqa: E402
-from cannet_local_sidecar import driver_python_can as dpc  # noqa: E402
-from cannet_local_sidecar.driver_python_can import PythonCanChannel  # noqa: E402
-from cannet_local_sidecar.server import episodes as ep  # noqa: E402
-from cannet_local_sidecar.server import shared_interface as si  # noqa: E402
-from cannet_local_sidecar.server.outbox import SessionOutbox  # noqa: E402
+from cannet_local_sidecar import driver as drv
+from cannet_local_sidecar import driver_python_can as dpc
+from cannet_local_sidecar.driver_python_can import PythonCanChannel
+from cannet_local_sidecar.server import episodes as ep
+from cannet_local_sidecar.server import shared_interface as si
+from cannet_local_sidecar.server.outbox import SessionOutbox
 
 _S = 1_000_000_000
 _ACK_TX = drv.BusError(kind="ack", direction="tx", tec=128, rec=0)
@@ -226,8 +225,8 @@ class _TagData:
 class _FdErrorEvent:
     def __init__(self, tag: int, code: int, stamp_ns: int) -> None:
         self.tag = tag
-        self.timeStamp = stamp_ns  # noqa: N815 - the XL field's own name
-        self.tagData = _TagData(canError=_TagData(errorCode=code))  # noqa: N815
+        self.timeStamp = stamp_ns
+        self.tagData = _TagData(canError=_TagData(errorCode=code))
 
 
 def test_an_fd_error_event_is_recorded_by_the_hook() -> None:
@@ -257,7 +256,6 @@ class _VectorFdBus:
 
     def recv(self, timeout: float):
         self.recvs += 1
-        return None
 
 
 def test_the_channel_hands_an_fd_error_event_back_as_an_error_frame() -> None:
@@ -318,12 +316,12 @@ class _ErrorChannel:
 
     def __init__(self, channel_id: str) -> None:
         self.channel_id = channel_id
-        self._q: "queue.Queue[drv.Frame]" = queue.Queue()
+        self._q: queue.Queue[drv.Frame] = queue.Queue()
 
     def enqueue(self, frame: drv.Frame) -> None:
         self._q.put(frame)
 
-    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+    def recv(self, timeout_s: float) -> drv.Frame | None:
         try:
             return self._q.get(timeout=timeout_s)
         except queue.Empty:

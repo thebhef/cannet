@@ -20,7 +20,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 
 def _ensure_on_path() -> None:
@@ -31,10 +30,10 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_local_sidecar import server as srv  # noqa: E402
-from cannet_local_sidecar import driver as drv  # noqa: E402
-from cannet_local_sidecar.driver import Frame  # noqa: E402
-from cannet_local_sidecar.server.outbox import SessionOutbox  # noqa: E402
+from cannet_local_sidecar import driver as drv
+from cannet_local_sidecar import server as srv
+from cannet_local_sidecar.driver import Frame
+from cannet_local_sidecar.server.outbox import SessionOutbox
 
 
 def _frame(i: int) -> Frame:
@@ -57,7 +56,7 @@ class _FakeChannel:
 
     def __init__(self, channel_id: str = "fake:0") -> None:
         self.channel_id = channel_id
-        self._q: "queue.Queue[Frame]" = queue.Queue()
+        self._q: queue.Queue[Frame] = queue.Queue()
         self._state = drv.ControllerState()
         self.closed = threading.Event()
         self.sent: list[Frame] = []
@@ -65,7 +64,7 @@ class _FakeChannel:
     def enqueue(self, frame: Frame) -> None:
         self._q.put(frame)
 
-    def recv(self, timeout_s: float) -> Optional[Frame]:
+    def recv(self, timeout_s: float) -> Frame | None:
         try:
             return (
                 self._q.get(timeout=timeout_s)
@@ -111,7 +110,7 @@ class _FakeDriver:
 
 
 def _drain_frame_batches(
-    outbox: "queue.Queue", *, until: int, timeout_s: float = 3.0
+    outbox: queue.Queue, *, until: int, timeout_s: float = 3.0
 ) -> list:
     """Pull envelopes off ``outbox`` until ``until`` frames have arrived
     across ``FrameBatch`` envelopes (ignoring control envelopes like
@@ -138,7 +137,7 @@ def _drain_frame_batches(
 
 def _attach_with_frames(
     *, channel_id: str = "fake:0", frames: list[Frame]
-) -> tuple[srv._SharedInterface, "queue.Queue", _FakeChannel]:
+) -> tuple[srv._SharedInterface, queue.Queue, _FakeChannel]:
     """Build a shared interface, attach one outbox, pre-queue ``frames``
     onto the underlying fake channel before the pump wakes.
 

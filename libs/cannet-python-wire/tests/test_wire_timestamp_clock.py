@@ -28,8 +28,8 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_python_wire import proto_to_frame  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire import proto_to_frame
+from cannet_python_wire._proto import cannet_pb2 as pb
 
 
 def test_proto_to_frame_timestamp_fallback_is_wall_clock() -> None:

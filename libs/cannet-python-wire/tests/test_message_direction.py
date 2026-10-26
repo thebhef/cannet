@@ -20,10 +20,10 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-import can  # noqa: E402
+import can
 
-from cannet_python_wire import frame_to_proto, message_to_frame  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire import frame_to_proto, message_to_frame
+from cannet_python_wire._proto import cannet_pb2 as pb
 
 
 def test_an_echoed_message_is_a_transmitted_frame() -> None:

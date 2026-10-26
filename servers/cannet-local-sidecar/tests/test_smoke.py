@@ -21,17 +21,18 @@ _ensure_on_path()
 
 
 def test_package_imports() -> None:
-    import cannet_local_sidecar  # noqa: F401
+    import cannet_local_sidecar
 
     assert cannet_local_sidecar.__version__
 
 
 def test_proto_stubs_importable() -> None:
-    from cannet_python_wire._proto import cannet_pb2, cannet_pb2_grpc  # noqa: F401
+    from cannet_python_wire._proto import cannet_pb2, cannet_pb2_grpc
 
     # The proto file is the source of truth for the wire surface; if
     # we ever lose the LogMessage variant the host bridge stops
     # working silently.
+    assert hasattr(cannet_pb2_grpc, "CannetServerStub")
     assert hasattr(cannet_pb2, "LogMessage")
     assert hasattr(cannet_pb2, "FrameBatch")
     assert hasattr(cannet_pb2, "Subscribe")
@@ -63,8 +64,9 @@ def test_subscribe_unknown_interface_yields_error_envelope() -> None:
     envelope on the response stream — the exact wire contract the
     Rust client relies on."""
 
-    from cannet_local_sidecar import server
     from cannet_python_wire._proto import cannet_pb2 as pb
+
+    from cannet_local_sidecar import server
 
     class EmptyDriver:
         def list_channels(self):
@@ -96,8 +98,9 @@ def test_log_envelope_factory_tags_with_wire_source() -> None:
     """The sidecar's outgoing log envelopes must carry the
     `sidecar:python-can` source tag the GUI host watches for."""
 
-    from cannet_local_sidecar import server
     from cannet_python_wire._proto import cannet_pb2 as pb
+
+    from cannet_local_sidecar import server
 
     env = server._log_envelope(pb.LOG_LEVEL_INFO, "hello")
     assert env.WhichOneof("body") == "log"
