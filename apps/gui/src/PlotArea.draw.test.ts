@@ -510,6 +510,65 @@ describe("a held state at the width the categorical serve was introduced against
   });
 });
 
+describe("a run narrower than a device pixel", () => {
+  // A served code can hold for a sliver of a pixel: a run narrower than
+  // a served column may lose its code in the serve, but the serve still
+  // changes value in that column (ADR 0026), and that change has to show.
+  // A sub-pixel fill antialiases to nothing, so the run draws as a tick
+  // one CSS pixel wide, the full band tall, in the tile's accent (its
+  // code's colour when a colormap tints it) — on the single-enum ribbon (codes plotted as they are)
+  // and on an enum lane (lane positions plotted, raw codes passed).
+  const TABLE = [
+    { raw: 0, label: "Idle" },
+    { raw: 3, label: "Fault" },
+  ];
+  // 10 px per second: the code-3 run holds 0.02 s, a fifth of a pixel.
+  const TS = [0, 1, 1.02, 3];
+  const CODES = [0, 3, 0, 0];
+
+  function tickOf(ops: Op[], ratio: number) {
+    return ops.find(
+      (o) =>
+        o.op === "fillRect" &&
+        Math.abs((o.args[0] as number) - 10) < 1e-6 &&
+        (o.args[2] as number) >= ratio &&
+        o.fill === "#ff0000",
+    );
+  }
+
+  for (const ratio of [1, 2]) {
+    const opts = {
+      seriesIdx: 1,
+      table: TABLE,
+      target: null,
+      resolveColor: vi.fn(),
+      bandTop: 40,
+      bandBot: 60,
+      accent: "#ff0000",
+      left: 0,
+      width: 1000,
+      ratio,
+    };
+
+    it(`marks it on the single-enum ribbon at ratio ${ratio}`, () => {
+      const { ctx, ops } = recorder();
+      drawEnumTiles(ctx, fakeU([TS, CODES], [{}]), opts);
+      const tick = tickOf(ops, ratio);
+      expect(tick).toBeDefined();
+      expect(tick!.args[1]).toBe(40);
+      expect(tick!.args[3]).toBe(20);
+    });
+
+    it(`marks it on an enum lane at ratio ${ratio}`, () => {
+      const { ctx, ops } = recorder();
+      // The lane plots normalised positions; the codes come in `rawValues`.
+      const lanePositions = [0.2, 0.8, 0.2, 0.2];
+      drawEnumTiles(ctx, fakeU([TS, lanePositions], [{}]), { ...opts, rawValues: CODES });
+      expect(tickOf(ops, ratio)).toBeDefined();
+    });
+  }
+});
+
 describe("enum tile label legibility", () => {
   // The owner's report off the light-theme sign-off frame: "light mode
   // legibility is quite poor basically everywhere in the capture. Dark
