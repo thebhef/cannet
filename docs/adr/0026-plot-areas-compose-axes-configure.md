@@ -135,10 +135,10 @@ noise). "Lane" is an axis *render style*, not a new structural level.
 
 **Where the plot extrapolates, it says so — it does not stop
 drawing.** A plot draws in places its data does not reach: a series is
-sample-and-held to the last column its *axis* has, which a faster
-neighbour puts well past its own newest sample; a stall between two
-samples is drawn as a line straight through it; and a one-sample series
-is drawn as a horizontal line across the whole window (below). All of
+held past its newest sample to the last column its *axis* has, which a
+faster neighbour puts well past it; a stall between two samples is
+drawn as a line straight through it; and a one-sample series is drawn
+as a horizontal line across the whole window (below). All of
 that is worth drawing — a held state is the best answer there is about
 what a signal was last doing — but none of it is a reading, and drawn
 identically to the readings it is a claim the data does not support.
@@ -148,6 +148,23 @@ cut. The alternative — drawing only where there are samples — throws
 away the answer to the question the view is usually being asked ("what
 is it now?"), and the alternative of leaving it as it was makes the
 plot quietly assert things it does not know.
+
+**Between two of its own samples, a line is a straight segment** —
+from the one to the next, whatever else shares the axis. The axis's x
+grid is the union of every series' timestamps, but a ranged series has
+a value only at its own columns between its first and last sample; at
+a neighbour's column it has nothing, and uPlot's linear path joins
+straight across. A series' drawing must not depend on its neighbours:
+holding its value across their columns drew it flat to the last of
+them and diagonally from there into its next sample — a corner at
+another signal's timestamp, where this one has no message and no marker
+can sit. The hold survives only where it is the extrapolation this
+section names: past a series' last sample, both wings of a one-sample
+series, and a stall the host classifies, all dashed. A tile axis (enum
+lanes, a single enum) still sample-and-holds every column, because its
+stepped line and its tiles are a held value's runs, and a run must not
+end at a column that is not its own. Stepped drawing for a ranged
+series is a separate decision, not taken here.
 
 **What counts as extrapolated is a model fact, computed host-side.**
 Two rules decide it: a stretch **not bounded by a sample on each side**
@@ -291,12 +308,11 @@ them — a lane that behaves differently from the line beside it is a
 second renderer to reason about.
 
 **A marker sits only on a sample.** The merged x grid is the union of
-every series on the axis and the sample-and-hold gives every series a
-value at every column of it, so a marker selected from the grid marks a
-series wherever its *neighbours* were read — most densely exactly where
-it has least data: across a stopped series' held tail, across the
-interior of a stall, and along the whole window a one-sample hline is
-drawn over. uPlot's point layer — the one marker renderer, on a lane as
+every series on the axis, and the merge gives a series a value at
+columns that are not its own — its held tail, every column of a tile
+axis's sample-and-hold, the whole window a one-sample hline is drawn
+over — so a marker selected from the grid marks a series wherever its
+*neighbours* were read, most densely exactly where it has least data. uPlot's point layer — the one marker renderer, on a lane as
 on a line — therefore selects from the columns whose x is one of that
 series' own raw timestamps, and from nothing else. It does not consult
 the extrapolated spans, and does not need to: a stretch has no sample
@@ -606,8 +622,8 @@ below:
   wings are drawn, and both are dashed.
 
   The **trailing** half of that sentence used to read "and is never
-  drawn past its data", which the sample-and-hold has never obeyed: a
-  merged row carries its last value forward to the end, so every series
+  drawn past its data", which the merge has never obeyed: a merged row
+  carries its last value forward to the end, so every series
   is drawn to the last column its axis has. That overdraw is real and
   worth keeping — see the extrapolation rule above — so what is written
   down is now what the code does: a series *is* drawn past its data,
