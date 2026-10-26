@@ -205,4 +205,58 @@ describe("the custom-renderer dispatch table", () => {
   it("registers no renderer for a setting whose editor lives elsewhere", () => {
     expect(CUSTOM_SETTING_RENDERERS).not.toHaveProperty("keybindings");
   });
+
+  // `date_time_pattern`'s own editor (ADR 0062): a text box plus a live
+  // preview of now, rendered through the same `formatDatePattern` every
+  // display site shares.
+  describe("the date-time-pattern renderer", () => {
+    function renderPattern(value: string) {
+      const onCommit = vi.fn();
+      render(
+        <SettingControl
+          descriptor={descriptor({ type: "custom", renderer: "date-time-pattern" }, "date_time_pattern")}
+          value={value}
+          onCommit={onCommit}
+        />,
+      );
+      return onCommit;
+    }
+
+    it("previews the default pattern as today's date and time", () => {
+      renderPattern("yyyy-MM-dd HH:mm:ss");
+      const preview = document.querySelector(".date-time-pattern-preview");
+      expect(preview?.textContent).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    });
+
+    it("updates the preview as the pattern is typed, before it commits", () => {
+      renderPattern("yyyy-MM-dd HH:mm:ss");
+      const box = screen.getByLabelText("Date/time pattern");
+      // A literal-only pattern previews deterministically — no clock
+      // dependency — and proves the preview tracks the *draft*, not
+      // only the committed value.
+      fireEvent.change(box, { target: { value: "'hello'" } });
+      expect(document.querySelector(".date-time-pattern-preview")?.textContent).toBe("hello");
+    });
+
+    it("shows the pattern's own error instead of a preview when it fails to parse", () => {
+      const onCommit = renderPattern("yyyy-MM-dd HH:mm:ss");
+      const box = screen.getByLabelText("Date/time pattern");
+      fireEvent.change(box, { target: { value: "%Y" } });
+      expect(document.querySelector(".date-time-pattern-preview")).not.toBeInTheDocument();
+      expect(document.querySelector(".date-time-pattern-error")?.textContent).toMatch(
+        /is not a date pattern field/,
+      );
+      // And the broken draft is never committed by typing alone.
+      expect(onCommit).not.toHaveBeenCalled();
+    });
+
+    it("commits on blur, not per keystroke", () => {
+      const onCommit = renderPattern("yyyy-MM-dd HH:mm:ss");
+      const box = screen.getByLabelText("Date/time pattern");
+      fireEvent.change(box, { target: { value: "dd/MM/yyyy" } });
+      expect(onCommit).not.toHaveBeenCalled();
+      fireEvent.blur(box);
+      expect(onCommit).toHaveBeenCalledWith("dd/MM/yyyy");
+    });
+  });
 });

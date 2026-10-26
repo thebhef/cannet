@@ -9,6 +9,8 @@
 /// division `gridviewRows.ts` documents for every other panel (CLAUDE.md
 /// § GUI architecture).
 
+import { formatCalendarTime } from "./format";
+
 /// One file, mirroring `log_files::LogFileNode::File`. `startNs` /
 /// `endNs` are `null` for a file with no frames, or for the file
 /// currently being written — its header is not finished, so the host
@@ -109,15 +111,17 @@ export function isSelectableLogNode(node: LogFileNode): boolean {
   return node.kind === "file" && !node.writing;
 }
 
-/// UTC ISO 8601, seconds resolution (`2026-09-04T23:11:22Z`) — the
-/// gridview's "trace start" / "trace end" columns. Unambiguous across
-/// readers in different zones, which a table column that outlives its
-/// capture session needs and a wall-clock label next to "now" does not
-/// (the export dialog's informational start/end labels render local
-/// time instead, for exactly that reason).
-export function formatLogTimestamp(ns: number | null): string {
+/// The gridview's "trace start" / "trace end" columns, rendered per the
+/// user's `date_time_pattern` setting (ADR 0062) like every other
+/// calendar time in the app. `null` for a file with no frames, or for
+/// the writing row (its header is not finished). `seconds` is passed as
+/// its own anchor — a scanned header's start/end is always a real
+/// instant, never a capture-relative one — so `formatCalendarTime`'s
+/// wall-clock check is trivially satisfied.
+export function formatLogTimestamp(ns: number | null, pattern: string): string {
   if (ns == null) return "";
-  return new Date(Math.round(ns / 1e6)).toISOString().replace(/\.\d+Z$/, "Z");
+  const seconds = ns / 1e9;
+  return formatCalendarTime(seconds, seconds, pattern) ?? "";
 }
 
 /// A file's span as `h` / `min` / `s`, the coarsest unit that keeps the
@@ -136,13 +140,13 @@ export function formatLogSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/// Filesystem modified time, local — a file property read off disk, not
-/// a capture-relative instant, so it reads the way a file manager's
-/// "Date modified" column does.
-export function formatLogModified(ms: number): string {
-  const d = new Date(ms);
-  const p2 = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+/// Filesystem modified time — a file property read off disk, not a
+/// capture-relative instant, rendered through the same `date_time_pattern`
+/// setting as every other calendar time. `seconds` is passed as its own
+/// anchor, like `formatLogTimestamp`.
+export function formatLogModified(ms: number, pattern: string): string {
+  const seconds = ms / 1000;
+  return formatCalendarTime(seconds, seconds, pattern) ?? "";
 }
 
 /// What a trace column shows while its file's header scan is still
