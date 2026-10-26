@@ -163,6 +163,16 @@ _QUEUE_FULL_TEXTS = (
 _KVASER_ERR_TXBUFOFL = -13
 _XL_ERR_QUEUE_IS_FULL = 11
 
+#: How a backend says it refused a send because its controller is
+#: bus-off, which arms the state poll's bus-off reset (ADR 0039). PEAK's
+#: is ``PCAN_ERROR_BUSOFF``'s text ("Bus error: the CAN controller is in
+#: bus-off state"), lower-cased -- the refusal the owner's bench saw for
+#: minutes while the status word no longer armed the reset. Kvaser and
+#: Vector are not classified: no bus-off send code of either is known
+#: here, so their refusals leave ``bus_off`` unset and the reset is armed
+#: by the state read alone, as before. See ``_send_refused_bus_off``.
+_BUS_OFF_TEXTS = ("bus-off",)
+
 #: How PCAN-Basic words a Read that returned a bus-status result
 #: (``PCAN_ERROR_BUSOFF``, ``PCAN_ERROR_BUSPASSIVE``), lower-cased, and
 #: the state each one is. python-can raises those reads like any other
@@ -968,7 +978,11 @@ class PythonCanChannel:
         try:
             self._bus.send(msg)  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
-            raise TxRejected(str(e), reason=_send_refusal_reason(e)) from e
+            raise TxRejected(
+                str(e),
+                reason=_send_refusal_reason(e),
+                bus_off=_send_refused_bus_off(e),
+            ) from e
 
     def _reject_if_incompatible(self, frame: Frame) -> None:
         """Refuse frame shapes that would make python-can raise inside a
@@ -1761,6 +1775,14 @@ def _send_refusal_reason(error: Exception) -> str:
     if any(t in text for t in _QUEUE_FULL_TEXTS):
         return REFUSAL_QUEUE_FULL
     return REFUSAL_OTHER
+
+
+def _send_refused_bus_off(error: Exception) -> bool:
+    """Whether a backend refused a send because its controller is
+    bus-off: by PCAN-Basic's text for PEAK; never for a backend whose
+    bus-off refusal is not known (see :data:`_BUS_OFF_TEXTS`)."""
+    text = str(error).lower()
+    return any(t in text for t in _BUS_OFF_TEXTS)
 
 
 def _disable_pcan_status_frames(bus) -> None:

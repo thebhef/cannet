@@ -243,6 +243,9 @@ What stands of ADR 0039:
 - **Bus-off is reset per vendor** after it has been read for a second —
   Vector and Kvaser in place, PEAK and anything without an in-place
   reset by reopening. Rule 7 does not apply to a bus-off controller.
+  Every reopen closes before it opens, a failed open is retried each
+  poll, and a send refused bus-off arms the reset (ADR 0039, amendment
+  2026-10-06).
 - **A full queue on a silent channel is reopened**, after two seconds
   without receiving anything. A controller that neither transmits nor
   errors needs re-initialising, which a flush does not do.
