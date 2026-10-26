@@ -30,6 +30,7 @@ import type {
   RbsDirtyRecord,
   RebuildProgress,
   RemoteSessionResult,
+  RestoreProgress,
   TraceFrameRecord,
   TraceGrew,
 } from "./types";
@@ -747,6 +748,16 @@ export function App() {
   // on it, because `try_reload` replaces the raw store wholesale and
   // frames appended into the store it replaces would go with it.
   const restorePendingRef = useRef<Promise<void> | null>(null);
+  // The latest `restore-progress` report while that restore runs, `null`
+  // otherwise — the chip that says a prior capture is being reopened.
+  // The host emits nothing when there is nothing to restore, so an
+  // ordinary open never shows it.
+  const [restoreProgress, setRestoreProgress] = useState<RestoreProgress | null>(null);
+  // Which restore is running (0: none). A report that lands after its
+  // command returned — the last paced one racing the answer — must not
+  // put the chip back up, and a later open's restore must not be taken
+  // down by an earlier one finishing.
+  const restoreRunRef = useRef(0);
   const interfaceBindingsRef = useRef<InterfaceBinding[]>([]);
   const sidecarAddressRef = useRef<string | null>(null);
   const handleConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -1387,6 +1398,11 @@ export function App() {
     unlistens.push(
       listen<LoadProgress>("load-progress", (event) => {
         setLoadProgress(event.payload);
+      }),
+    );
+    unlistens.push(
+      listen<RestoreProgress>("restore-progress", (event) => {
+        if (restoreRunRef.current !== 0) setRestoreProgress(event.payload);
       }),
     );
 
@@ -2285,6 +2301,8 @@ export function App() {
       // (see `restorePendingRef`): the reload swaps the raw store
       // wholesale, so frames appended while it is in flight would be
       // dropped with the store they landed in.
+      const restoreRun = restoreRunRef.current + 1;
+      restoreRunRef.current = restoreRun;
       restorePendingRef.current = (async () => {
         try {
           const restored = await invoke<{
@@ -2304,6 +2322,11 @@ export function App() {
           setRegistry((reg) => reg.map((e) => ({ ...e, trace: restoredTrace(restored.count) })));
         } catch {
           /* no scratch capture to restore */
+        } finally {
+          if (restoreRunRef.current === restoreRun) {
+            restoreRunRef.current = 0;
+            setRestoreProgress(null);
+          }
         }
       })();
     },
@@ -4073,6 +4096,17 @@ export function App() {
               >
                 Cancel
               </button>
+            </span>
+          )}
+          {/* A prior capture being reopened (ADR 0002 DS-7): seconds of
+              segment-file mapping on a large capture, with the views
+              empty until it lands. Determinate per phase — each knows
+              its file count before it maps the first — and nothing to
+              offer beside it: the reload is not cancellable. */}
+          {restoreProgress !== null && (
+            <span className="restore-progress">
+              <LoadProgressChip progress={restoreProgress} />
+              Restoring prior capture…
             </span>
           )}
           {/* The restore threw the persisted pyramids away and every

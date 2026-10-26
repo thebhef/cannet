@@ -38,7 +38,9 @@
 //! Those `O(segments)` mappings are the whole cost of a restore, and each
 //! one is latency- rather than CPU-bound, so they are taken in parallel
 //! ([`crate::seg::open_segments`]); [`DiskRawStore::reopen_timed`] reports
-//! what each phase spent and how many files it mapped.
+//! what each phase spent and how many files it mapped, and
+//! [`DiskRawStore::reopen_reporting`] reports each file as it maps, so a
+//! caller can show how far a long restore has got.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -130,6 +132,14 @@ const META_PREFIX: &str = "meta.";
 /// File-name prefix for a raw payload segment.
 const PAYLOAD_PREFIX: &str = "payload.";
 
+/// Map one reopen pass's `paths`, announcing `(0, total)` before the
+/// first file and `(opened, total)` after each.
+fn map_pass(paths: &[PathBuf], report: &(dyn Fn(usize, usize) + Sync)) -> io::Result<Vec<Segment>> {
+    let total = paths.len();
+    report(0, total);
+    open_segments(paths, &|n| report(n, total))
+}
+
 /// Wall-clock milliseconds elapsed since `t`, for the reopen breakdown.
 fn ms_since(t: std::time::Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
@@ -186,6 +196,30 @@ impl ReopenStats {
     pub fn total_files(&self) -> usize {
         self.meta_files + self.payload_files + self.byid_files
     }
+}
+
+/// Which family of segment files a reopen is mapping — the reopen's
+/// three `O(files)` passes, in the order they run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReopenPass {
+    /// The by-id posting segments.
+    ById,
+    /// The metadata segments.
+    Metadata,
+    /// The payload segments. Their count is only known once the metadata
+    /// is mapped (it is read from the first live record).
+    Payload,
+}
+
+/// One report from [`DiskRawStore::reopen_reporting`]: `opened` of the
+/// `total` files `pass` maps. Each pass is announced at `opened == 0`
+/// with its `total` before its first file maps, then reported once per
+/// file mapped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReopenProgress {
+    pub pass: ReopenPass,
+    pub opened: usize,
+    pub total: usize,
 }
 
 /// Disk-backed [`RawStore`]. See the module docs.
@@ -320,6 +354,31 @@ impl DiskRawStore {
     /// files; the host logs the breakdown on every restore. Everything else
     /// calls [`Self::reopen`] and ignores it.
     pub fn reopen_timed(dir: impl AsRef<Path>) -> io::Result<Option<(Self, ReopenStats)>> {
+        Self::reopen_reporting(dir, &|_| {})
+    }
+
+    /// [`Self::reopen_timed`] with a progress seam (ADR 0002 DS-7): each
+    /// mapping pass is announced with its file count before its first
+    /// file maps, then `progress` sees one [`ReopenProgress`] per file
+    /// mapped, in pass order [`ReopenPass::ById`], [`ReopenPass::Metadata`],
+    /// [`ReopenPass::Payload`]. Nothing is reported when there is no
+    /// manifest to reopen.
+    ///
+    /// `progress` runs on the segment-mapping threads, so it is `Sync` and
+    /// must stay cheap — the reopen's whole cost is those mappings.
+    pub fn reopen_reporting(
+        dir: impl AsRef<Path>,
+        progress: &(dyn Fn(ReopenProgress) + Sync),
+    ) -> io::Result<Option<(Self, ReopenStats)>> {
+        let report = |pass| {
+            move |opened, total| {
+                progress(ReopenProgress {
+                    pass,
+                    opened,
+                    total,
+                });
+            }
+        };
         let started = std::time::Instant::now();
         let mut stats = ReopenStats::default();
         let dir = dir.as_ref().to_path_buf();
@@ -350,7 +409,7 @@ impl DiskRawStore {
         // mark; the first surviving segment is the one holding `first_index`.
         let meta_seg_base = first_index / cfg.records_per_seg;
         let phase = std::time::Instant::now();
-        let by_id = ByIdIndex::reopen(&dir, &manifest.byid)?;
+        let by_id = ByIdIndex::reopen(&dir, &manifest.byid, &report(ReopenPass::ById))?;
         stats.byid_ms = ms_since(phase);
         stats.byid_files = by_id.segment_count();
         stats.byid_ids = by_id.id_count();
@@ -379,7 +438,7 @@ impl DiskRawStore {
         let meta_paths: Vec<PathBuf> = (meta_seg_base..meta_segs_count)
             .map(|i| meta_seg_path(&store.dir, i))
             .collect();
-        store.meta_segs = open_segments(&meta_paths)?;
+        store.meta_segs = map_pass(&meta_paths, &report(ReopenPass::Metadata))?;
         stats.meta_ms = ms_since(phase);
         stats.meta_files = store.meta_segs.len();
         // The lowest live payload byte is the first live row's payload
@@ -403,7 +462,7 @@ impl DiskRawStore {
         let payload_paths: Vec<PathBuf> = (store.payload_seg_base..payload_segs_count)
             .map(|i| payload_seg_path(&store.dir, i))
             .collect();
-        store.payload_segs = open_segments(&payload_paths)?;
+        store.payload_segs = map_pass(&payload_paths, &report(ReopenPass::Payload))?;
         stats.payload_ms = ms_since(phase);
         stats.payload_files = store.payload_segs.len();
         // Refill the RAM ring from the durable tail so a follow-live read
@@ -1009,6 +1068,63 @@ mod tests {
             stats.total_files(),
             stats.meta_files + stats.payload_files + stats.byid_files
         );
+    }
+
+    #[test]
+    fn reopen_reporting_announces_each_pass_then_every_file_once() {
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap(); // rps = 4
+            for i in 0u32..20 {
+                s.append(frame(u64::from(i) * 10, i % 2));
+            }
+            s.flush().unwrap();
+        }
+        let seen = std::sync::Mutex::new(Vec::new());
+        let (_, stats) = DiskRawStore::reopen_reporting(dir.path(), &|p| {
+            seen.lock().unwrap().push(p);
+        })
+        .unwrap()
+        .expect("manifest present");
+        let seen = seen.into_inner().unwrap();
+        let mut at = 0;
+        for (pass, files) in [
+            (ReopenPass::ById, stats.byid_files),
+            (ReopenPass::Metadata, stats.meta_files),
+            (ReopenPass::Payload, stats.payload_files),
+        ] {
+            assert!(files >= 1, "{pass:?}: the fixture maps files in every pass");
+            let reports = &seen[at..=(at + files)];
+            assert_eq!(
+                reports[0],
+                ReopenProgress {
+                    pass,
+                    opened: 0,
+                    total: files
+                },
+                "{pass:?} is announced with its total before any file maps"
+            );
+            let mut opened: Vec<usize> = reports[1..]
+                .iter()
+                .map(|p| {
+                    assert_eq!((p.pass, p.total), (pass, files));
+                    p.opened
+                })
+                .collect();
+            opened.sort_unstable();
+            assert_eq!(opened, (1..=files).collect::<Vec<_>>(), "{pass:?}");
+            at += files + 1;
+        }
+        assert_eq!(at, seen.len(), "nothing reported past the payload pass");
+
+        let empty = TempDir::new().unwrap();
+        let reported = std::sync::atomic::AtomicUsize::new(0);
+        assert!(DiskRawStore::reopen_reporting(empty.path(), &|_| {
+            reported.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .unwrap()
+        .is_none());
+        assert_eq!(reported.into_inner(), 0, "no manifest, nothing to report");
     }
 
     #[test]

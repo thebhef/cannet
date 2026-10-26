@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use cannet_core::{CanFdFlags, CanFramePayload, Direction};
-use cannet_spill::{DiskRawStore, MemRawStore, RawStore};
+use cannet_spill::{DiskRawStore, MemRawStore, RawStore, ReopenProgress};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -480,6 +480,21 @@ impl TraceStore {
     /// depending on how many segment files the capture spans, so every
     /// restore says where its time went and on how many files.
     pub fn try_reload(&self, project_id: Uuid) -> Option<String> {
+        self.try_reload_reporting(project_id, &|_| {})
+    }
+
+    /// [`Self::try_reload`] reporting each segment file as the reopen maps
+    /// it ([`DiskRawStore::reopen_reporting`]), so a launch can show how
+    /// far the restore has got (ADR 0002 DS-7). Nothing is reported unless
+    /// the identity matches and a manifest is there to reopen.
+    ///
+    /// `progress` runs on the mapping threads while this holds the store
+    /// lock, so it must not touch the store.
+    pub fn try_reload_reporting(
+        &self,
+        project_id: Uuid,
+        progress: &(dyn Fn(ReopenProgress) + Sync),
+    ) -> Option<String> {
         let started = Instant::now();
         let mut inner = self.lock_inner();
         let dir = inner.scratch_dir.clone()?;
@@ -490,7 +505,7 @@ impl TraceStore {
             return None;
         }
         let identity_ms = ms_since(identity_at);
-        let Ok(Some((reopened, reopen))) = DiskRawStore::reopen_timed(&dir) else {
+        let Ok(Some((reopened, reopen))) = DiskRawStore::reopen_reporting(&dir, progress) else {
             return None;
         };
         inner.raw = Box::new(reopened);
@@ -1160,6 +1175,61 @@ mod tests {
         drop(store);
         let reopened = cannet_spill::DiskRawStore::reopen(&final_dir).unwrap();
         assert_eq!(reopened.map_or(0, |s| s.len()), len);
+    }
+
+    #[test]
+    fn try_reload_reporting_reports_only_a_reload_that_happens() {
+        let dir = std::env::temp_dir().join(format!("cannet-reload-rp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            store.write_scratch_identity(Some(pid));
+            for i in 0..10u64 {
+                store.append(dummy(i * 1_000, 0x100));
+            }
+            store.flush().unwrap();
+        }
+        let booted = TraceStore::new_disk(&dir).unwrap();
+        let seen = std::sync::Mutex::new(Vec::new());
+        let record = |p: ReopenProgress| seen.lock().unwrap().push(p);
+        assert!(booted
+            .try_reload_reporting(uuid::Uuid::new_v4(), &record)
+            .is_none());
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "another project's scratch reports nothing"
+        );
+        assert!(booted.try_reload_reporting(pid, &record).is_some());
+        let seen = seen.into_inner().unwrap();
+        let passes: Vec<_> = seen
+            .iter()
+            .filter(|p| p.opened == 0)
+            .map(|p| p.pass)
+            .collect();
+        assert_eq!(
+            passes,
+            [
+                cannet_spill::ReopenPass::ById,
+                cannet_spill::ReopenPass::Metadata,
+                cannet_spill::ReopenPass::Payload
+            ],
+            "every pass is announced, in order"
+        );
+        let files = seen.iter().filter(|p| p.opened > 0).count();
+        let on_disk = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                ["byid.", "meta.", "payload."]
+                    .iter()
+                    .any(|p| name.starts_with(p))
+            })
+            .count();
+        assert_eq!(files, on_disk, "one report per segment file mapped");
+        drop(booted);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

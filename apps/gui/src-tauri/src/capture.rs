@@ -82,6 +82,159 @@ impl ProgressPacer {
     }
 }
 
+/// Event carrying how far a relaunch's restore of the prior capture
+/// has got (ADR 0002 DS-7) — see [`RestoreProgress`]. Emitted only while
+/// `restore_scratch_capture` runs and only when there is something to
+/// reload, so its first report is what says a restore is under way.
+pub(crate) const RESTORE_PROGRESS: &str = "restore-progress";
+
+/// Which file-bound part of a restore a [`RestoreProgress`] counts. Each
+/// is a batch of segment-file mappings — the whole cost of a restore —
+/// and they run in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RestorePhase {
+    /// The capture's by-id index.
+    CaptureIndex,
+    /// The capture's frames: metadata, then payload. The total grows once,
+    /// by the payload count, when the metadata is mapped and that count
+    /// becomes known.
+    CaptureFrames,
+    /// The persisted signal pyramids (ADR 0047).
+    SignalCaches,
+}
+
+/// The [`RESTORE_PROGRESS`] payload: `files_opened` of `total_files`
+/// segment files mapped in `phase`.
+///
+/// Per phase: one report at 0 of N before its first file maps (unpaced,
+/// so the first event arrives as soon as the restore starts), reports at
+/// the live-update cadence ([`ProgressPacer`]) while it maps, and a last
+/// one at N of N when it ends. A phase with no files reports nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct RestoreProgress {
+    pub(crate) phase: RestorePhase,
+    pub(crate) files_opened: usize,
+    pub(crate) total_files: usize,
+}
+
+/// The phase a [`RestoreReporter`] is reporting on.
+struct OpenRestorePhase {
+    phase: RestorePhase,
+    /// Files opened by earlier passes of this phase (the payload pass
+    /// counts on from the metadata's total).
+    base: usize,
+    opened: usize,
+    total: usize,
+    pacer: ProgressPacer,
+}
+
+/// Turns the reopen's per-file callbacks into [`RestoreProgress`] reports
+/// for `emit`.
+///
+/// The callbacks arrive from the segment-mapping threads, so the open
+/// phase and its pacer sit behind one `Mutex`; per file that is one
+/// uncontended lock and a clock read, against a mapping that costs a
+/// millisecond. `emit` is called under that lock, so reports leave in
+/// order. It must not take the trace-store or signal-cache lock: the
+/// restore holds them while it maps.
+pub(crate) struct RestoreReporter<F> {
+    emit: F,
+    open: Mutex<Option<OpenRestorePhase>>,
+}
+
+impl<F: Fn(RestoreProgress) + Sync> RestoreReporter<F> {
+    pub(crate) fn new(emit: F) -> Self {
+        Self {
+            emit,
+            open: Mutex::new(None),
+        }
+    }
+
+    /// A report from the raw store's reopen
+    /// ([`cannet_spill::DiskRawStore::reopen_reporting`]).
+    pub(crate) fn capture(&self, p: cannet_spill::ReopenProgress) {
+        let phase = match p.pass {
+            cannet_spill::ReopenPass::ById => RestorePhase::CaptureIndex,
+            cannet_spill::ReopenPass::Metadata | cannet_spill::ReopenPass::Payload => {
+                RestorePhase::CaptureFrames
+            }
+        };
+        self.step(phase, p.opened, p.total);
+    }
+
+    /// A report from the pyramid restore
+    /// ([`SignalCacheStore::restore_reporting`]).
+    pub(crate) fn signal_caches(&self, opened: usize, total: usize) {
+        self.step(RestorePhase::SignalCaches, opened, total);
+    }
+
+    /// `opened == 0` announces a pass of `pass_total` files; anything
+    /// else is the running count within the pass.
+    fn step(&self, phase: RestorePhase, opened: usize, pass_total: usize) {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        if opened == 0 {
+            if let Some(o) = open.as_mut().filter(|o| o.phase == phase) {
+                // A later pass of the open phase: count on from its total.
+                o.base = o.total;
+                o.total += pass_total;
+                return;
+            }
+            if let Some(done) = open.take() {
+                self.finish(&done);
+            }
+            if pass_total == 0 {
+                return;
+            }
+            (self.emit)(RestoreProgress {
+                phase,
+                files_opened: 0,
+                total_files: pass_total,
+            });
+            *open = Some(OpenRestorePhase {
+                phase,
+                base: 0,
+                opened: 0,
+                total: pass_total,
+                pacer: ProgressPacer::new(),
+            });
+            return;
+        }
+        let Some(o) = open.as_mut().filter(|o| o.phase == phase) else {
+            return;
+        };
+        // The mapping threads' counts arrive in no particular order.
+        o.opened = o.opened.max(o.base + opened);
+        if o.pacer.due(Instant::now()) {
+            (self.emit)(RestoreProgress {
+                phase,
+                files_opened: o.opened,
+                total_files: o.total,
+            });
+        }
+    }
+
+    /// The open phase is done: report it at N of N.
+    pub(crate) fn end_phase(&self) {
+        let done = self
+            .open
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(done) = done {
+            self.finish(&done);
+        }
+    }
+
+    fn finish(&self, done: &OpenRestorePhase) {
+        (self.emit)(RestoreProgress {
+            phase: done.phase,
+            files_opened: done.total,
+            total_files: done.total,
+        });
+    }
+}
+
 /// Frames the pump moves between two looks at the clock.
 ///
 /// The pump's cancel check is per frame and stays there; this is only
@@ -2882,6 +3035,8 @@ pub(crate) fn signal_pyramids_rebuilding(state: State<'_, AppState>) -> RebuildP
 /// the open. Returns `count == 0` when there is nothing to restore (no
 /// open project, no scratch, or an identity mismatch) — the gate lives in
 /// [`TraceStore::try_reload`], which only reloads on a matching identity.
+/// While a reload runs it reports each file-bound phase on
+/// [`RESTORE_PROGRESS`]; an open with nothing to reload reports nothing.
 ///
 /// `async` + [`off_async_workers`](crate::sampling::off_async_workers)
 /// (ADR 0048). The frontend does not wait for this — the app comes up
@@ -2904,7 +3059,15 @@ fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
     let state: State<'_, AppState> = app.state();
     let started = std::time::Instant::now();
     let active = *state.active_project_id();
-    let Some(breakdown) = active.and_then(|pid| state.trace_store.try_reload(pid)) else {
+    let reporter = RestoreReporter::new(|p| {
+        let _ = app.emit(RESTORE_PROGRESS, p);
+    });
+    let reloaded = active.and_then(|pid| {
+        state
+            .trace_store
+            .try_reload_reporting(pid, &|p| reporter.capture(p))
+    });
+    let Some(breakdown) = reloaded else {
         // Nothing came back, so nothing a prior session left in the pyramid
         // scratch describes a capture this one holds (ADR 0047).
         state.signal_caches.clear();
@@ -2916,6 +3079,7 @@ fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
             pyramids_rebuilding: false,
         };
     };
+    reporter.end_phase();
     let (count, first_index_usize, first_index_ts_ns) = state.trace_store.len_and_low_water();
     // Adopt the signal pyramids the prior session persisted, if they
     // provably describe this capture decoded against this DBC set (ADR
@@ -2930,10 +3094,14 @@ fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
         // `sample_signals`). The set is what each persisted signal's
         // encoding fingerprint is judged against.
         let dbcs = state.databases();
-        state
-            .signal_caches
-            .restore(&v, &state.decode_model(&dbcs), count)
+        state.signal_caches.restore_reporting(
+            &v,
+            &state.decode_model(&dbcs),
+            count,
+            &|opened, total| reporter.signal_caches(opened, total),
+        )
     });
+    reporter.end_phase();
     // The bus-error episodes' kinds, directions and counters came back
     // beside their error series; the report store starts from them, so
     // a restored episode reads as it did live (ADR 0060 rule 2).
@@ -3009,5 +3177,209 @@ fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
             .session_started()
             .then_some(session_start_ns as f64 / 1_000_000_000.0),
         pyramids_rebuilding,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cannet_spill::{ReopenPass, ReopenProgress as Reopen};
+
+    fn reopen(pass: ReopenPass, opened: usize, total: usize) -> Reopen {
+        Reopen {
+            pass,
+            opened,
+            total,
+        }
+    }
+
+    fn report(phase: RestorePhase, files_opened: usize, total_files: usize) -> RestoreProgress {
+        RestoreProgress {
+            phase,
+            files_opened,
+            total_files,
+        }
+    }
+
+    /// Run `drive` against a reporter and return what it emitted.
+    fn emitted(
+        drive: impl FnOnce(&RestoreReporter<&(dyn Fn(RestoreProgress) + Sync)>),
+    ) -> Vec<RestoreProgress> {
+        let out = Mutex::new(Vec::new());
+        let sink = |p| out.lock().unwrap().push(p);
+        drive(&RestoreReporter::new(&sink));
+        out.into_inner().unwrap()
+    }
+
+    #[test]
+    fn each_phase_opens_at_zero_and_closes_at_its_total() {
+        let out = emitted(|r| {
+            r.capture(reopen(ReopenPass::ById, 0, 3));
+            for n in 1..=3 {
+                r.capture(reopen(ReopenPass::ById, n, 3));
+            }
+            r.capture(reopen(ReopenPass::Metadata, 0, 4));
+            for n in 1..=4 {
+                r.capture(reopen(ReopenPass::Metadata, n, 4));
+            }
+            // The payload count arrives once the metadata is mapped: the
+            // frames phase's total grows, and its count runs on.
+            r.capture(reopen(ReopenPass::Payload, 0, 2));
+            for n in 1..=2 {
+                r.capture(reopen(ReopenPass::Payload, n, 2));
+            }
+            r.end_phase();
+            r.signal_caches(0, 5);
+            for n in 1..=5 {
+                r.signal_caches(n, 5);
+            }
+            r.end_phase();
+        });
+        // Paced reports may land in between on a slow machine; the shape
+        // around them is fixed.
+        let firsts_and_lasts: Vec<_> = out
+            .iter()
+            .copied()
+            .filter(|p| p.files_opened == 0 || p.files_opened == p.total_files)
+            .collect();
+        assert_eq!(
+            firsts_and_lasts,
+            [
+                report(RestorePhase::CaptureIndex, 0, 3),
+                report(RestorePhase::CaptureIndex, 3, 3),
+                report(RestorePhase::CaptureFrames, 0, 4),
+                report(RestorePhase::CaptureFrames, 6, 6),
+                report(RestorePhase::SignalCaches, 0, 5),
+                report(RestorePhase::SignalCaches, 5, 5),
+            ]
+        );
+        for pair in out.windows(2) {
+            if pair[0].phase == pair[1].phase {
+                assert!(pair[0].files_opened <= pair[1].files_opened, "{pair:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn per_file_reports_are_paced() {
+        let started = Instant::now();
+        let files = 5_000;
+        let out = emitted(|r| {
+            r.signal_caches(0, files);
+            // Out of order, as the mapping threads deliver them.
+            for n in (1..=files).rev() {
+                r.signal_caches(n, files);
+            }
+            r.end_phase();
+        });
+        let period = crate::settings::effective().live_update_interval_ms;
+        let slots = usize::try_from(started.elapsed().as_millis() / u128::from(period)).unwrap();
+        assert!(
+            out.len() <= 2 + slots,
+            "{} reports in {} periods",
+            out.len(),
+            slots
+        );
+        assert_eq!(out[0], report(RestorePhase::SignalCaches, 0, files));
+        assert_eq!(
+            *out.last().unwrap(),
+            report(RestorePhase::SignalCaches, files, files)
+        );
+    }
+
+    #[test]
+    fn nothing_to_map_reports_nothing() {
+        let out = emitted(|r| {
+            r.end_phase();
+            r.capture(reopen(ReopenPass::ById, 0, 0));
+            r.capture(reopen(ReopenPass::Metadata, 0, 0));
+            r.capture(reopen(ReopenPass::Payload, 0, 0));
+            r.end_phase();
+            r.signal_caches(7, 9); // no phase announced: ignored
+            r.end_phase();
+        });
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// The reporter's cost on the restore path: the same generated
+    /// scratch (~2 000 segment files) reopened alternately with no
+    /// callback and with the reporter the restore command wires in,
+    /// median wall clock of each. Not a gate — run it by hand:
+    /// `cargo test -p cannet-gui --lib restore_reporting_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement, run by hand"]
+    fn restore_reporting_cost() {
+        use cannet_core::{CanFramePayload, Direction};
+        use cannet_spill::{DiskConfig, DiskRawStore, RawStore, RawTraceFrame};
+        let dir = tempfile::TempDir::new().unwrap();
+        {
+            let cfg = DiskConfig {
+                records_per_seg: 16,
+                payload_seg_bytes: 1024,
+                ring_capacity: 8,
+            };
+            let mut s = DiskRawStore::with_config(dir.path(), cfg).unwrap();
+            for i in 0..24_000u32 {
+                s.append(RawTraceFrame {
+                    timestamp_ns: u64::from(i) * 1_000,
+                    channel: 0,
+                    id: i % 400,
+                    extended: false,
+                    direction: Direction::Rx,
+                    payload: CanFramePayload::Classic(vec![0; 8]),
+                    bus_id: None,
+                });
+            }
+            s.flush().unwrap();
+        }
+        let files = |stats: cannet_spill::ReopenStats| stats.total_files();
+        // Warm: the first open of a just-written file pays the filter
+        // stack's scan (see `open_segments`), which neither side should.
+        let (_, stats) = DiskRawStore::reopen_timed(dir.path()).unwrap().unwrap();
+        let mut plain = Vec::new();
+        let mut reporting = Vec::new();
+        for _ in 0..15 {
+            let t = Instant::now();
+            drop(DiskRawStore::reopen_timed(dir.path()).unwrap().unwrap());
+            plain.push(t.elapsed().as_secs_f64() * 1000.0);
+            let sink = |_: RestoreProgress| {};
+            let reporter = RestoreReporter::new(sink);
+            let t = Instant::now();
+            drop(
+                DiskRawStore::reopen_reporting(dir.path(), &|p| reporter.capture(p))
+                    .unwrap()
+                    .unwrap(),
+            );
+            reporter.end_phase();
+            reporting.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let median = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        };
+        println!(
+            "{} files: plain median {:.2} ms (min {:.2}), reporting median {:.2} ms (min {:.2})",
+            files(stats),
+            median(&mut plain),
+            plain[0],
+            median(&mut reporting),
+            reporting[0],
+        );
+    }
+
+    #[test]
+    fn the_payload_names_the_phase_in_snake_case() {
+        assert_eq!(
+            serde_json::to_value(report(RestorePhase::CaptureFrames, 2, 9)).unwrap(),
+            serde_json::json!({ "phase": "capture_frames", "files_opened": 2, "total_files": 9 })
+        );
+        assert_eq!(
+            serde_json::to_value(RestorePhase::CaptureIndex).unwrap(),
+            "capture_index"
+        );
+        assert_eq!(
+            serde_json::to_value(RestorePhase::SignalCaches).unwrap(),
+            "signal_caches"
+        );
     }
 }
