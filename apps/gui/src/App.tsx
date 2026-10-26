@@ -1059,8 +1059,13 @@ export function App() {
         newFrameIds = source.element.frameIds.map(() => crypto.randomUUID());
         const pairs = source.element.frameIds.map((fid, i) => [fid, newFrameIds[i]]);
         try {
-          await invoke("clone_transmit_frames", { pairs });
+          await invoke("clone_transmit_frames", {
+            pairs,
+            elementName: source.element.name ?? null,
+          });
         } catch {
+          // The host has already written the refusal (element and the
+          // missing frame id) to the system log; nothing was copied.
           return "";
         }
         duplicatedFramesRef.current.set(newId, newFrameIds);
