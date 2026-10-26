@@ -4259,15 +4259,6 @@ describe("PlotPanel area collapse", () => {
     ...(hidden ? { hidden: true } : {}),
   });
 
-  /// The `areas` list in the panel's most recent persist.
-  function persistedAreas(api: { updateParameters: { mock: { calls: unknown[][] } } }) {
-    const calls = api.updateParameters.mock.calls;
-    const last = (calls[calls.length - 1]?.[0] ?? {}) as {
-      areas?: Array<Record<string, unknown>>;
-    };
-    return last.areas ?? [];
-  }
-
   /// The x-axis config of each *drawing* uPlot, top to bottom. Two
   /// filters, both needed: a superseded instance stays in the mock's
   /// array (so keep the newest per mounted root, as `liveInstances`
@@ -4287,30 +4278,21 @@ describe("PlotPanel area collapse", () => {
     return live.map((u) => (u.opts.axes ?? []).find((a) => a.scale !== "y") ?? {});
   }
 
-  it("collapses and expands an area from its head toggle, persisting the flag", () => {
+  it("opens an area carrying a legacy `collapsed: true` expanded", () => {
     const registry = makeRegistry({
-      id: "el-collapse",
-      config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }] },
+      id: "el-legacy-collapsed",
+      config: { areas: [{ id: "a1", collapsed: true, signals: [sig("EngineSpeed", "rpm")] }] },
     });
-    const { api } = renderPanel({ params: { elementId: "el-collapse" }, registry });
-    const area = () => document.querySelector(".plot-area") as HTMLElement;
-    expect(area().classList.contains("collapsed")).toBe(false);
-
-    fireEvent.click(screen.getByRole("button", { name: "collapse plot area" }));
-    expect(area().classList.contains("collapsed")).toBe(true);
-    expect(area().style.flexGrow).toBe("0");
-    expect(persistedAreas(api)[0]?.collapsed).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: "expand plot area" }));
-    expect(area().classList.contains("collapsed")).toBe(false);
-    expect(persistedAreas(api)[0]?.collapsed).toBeFalsy();
+    renderPanel({ params: { elementId: "el-legacy-collapsed" }, registry });
+    const area = document.querySelector(".plot-area") as HTMLElement;
+    expect(area.classList.contains("collapsed")).toBe(false);
+    expect(area.querySelectorAll(".plot-signal-row").length).toBe(1);
   });
 
-  it("reduces a collapsed area to its heading row", () => {
-    // The collapsed representation is one heading row — area name,
-    // signal-count chip, and the pattern match chip when a rule feeds
-    // the area. Everything else (rows, filter status, y-cursors, the
-    // per-area chrome) goes with the plot height.
+  it("reduces a collapsed axis to its heading row", () => {
+    // The collapsed representation is one heading row — area name and
+    // signal-count chip. Everything else (rows, filter status,
+    // y-cursors, the per-axis chrome) goes with the plot height.
     const registry = makeRegistry({
       id: "el-collapse-heading",
       config: {
@@ -4321,7 +4303,7 @@ describe("PlotPanel area collapse", () => {
     const area = () => document.querySelector(".plot-area") as HTMLElement;
     expect(area().querySelectorAll(".plot-signal-row").length).toBe(2);
 
-    fireEvent.click(screen.getByRole("button", { name: "collapse plot area" }));
+    fireEvent.click(screen.getByRole("button", { name: "collapse axis" }));
     const side = area().querySelector(".plot-area-signals") as HTMLElement;
     // The side panel is exactly the heading row — no rows below it.
     expect(side.children.length).toBe(1);
@@ -4330,34 +4312,10 @@ describe("PlotPanel area collapse", () => {
     expect(area().querySelector(".plot-area-ycursors")).toBeNull();
     // The heading carries the area's name and how many series it holds.
     expect(within(side).getByText("2 signals")).toBeInTheDocument();
-    // Per-area chrome is part of the expanded layout, not the heading.
+    // Per-axis chrome is part of the expanded layout, not the heading;
+    // the parent head's area-level controls stay put.
     expect(within(side).queryByRole("button", { name: "fit y" })).toBeNull();
-    expect(within(side).queryByLabelText("y-axis mode")).toBeNull();
-  });
-
-  it("renders one heading row for a collapsed multi-axis area", () => {
-    // One logical area is one collapse state (ADR 0026) — and one
-    // collapsed *representation*: the derived axes that would each draw
-    // their own strip are not rendered at all while the area is
-    // collapsed.
-    const registry = makeRegistry({
-      id: "el-collapse-individual",
-      config: {
-        areas: [
-          {
-            id: "a1",
-            yAxisMode: "individual",
-            collapsed: true,
-            signals: [sig("EngineSpeed", "rpm"), sig("EngineTemp", "degC")],
-          },
-        ],
-      },
-    });
-    renderPanel({ params: { elementId: "el-collapse-individual" }, registry });
-    const areas = Array.from(document.querySelectorAll(".plot-area")) as HTMLElement[];
-    expect(areas.length).toBe(1);
-    expect(areas[0].classList.contains("collapsed")).toBe(true);
-    expect(screen.getAllByRole("button", { name: "expand plot area" }).length).toBe(1);
+    expect(within(side).getByLabelText("y-axis mode")).toBeInTheDocument();
   });
 
   it("keeps the x-axis time label when the bottom area is collapsed", async () => {
@@ -4371,8 +4329,9 @@ describe("PlotPanel area collapse", () => {
       config: {
         areas: [
           { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
-          { id: "a2", collapsed: true, signals: [sig("EngineTemp", "degC")] },
+          { id: "a2", signals: [sig("EngineTemp", "degC")] },
         ],
+        axisCollapsed: { a2: true },
       },
     });
     await withSizedCanvas(async () => {
@@ -4417,7 +4376,7 @@ describe("PlotPanel area collapse", () => {
         [22, 51],
       ]);
 
-      fireEvent.click(screen.getAllByRole("button", { name: "collapse plot area" })[1]);
+      fireEvent.click(screen.getAllByRole("button", { name: "collapse axis" })[1]);
       await settle();
       expect(liveXAxes().map((a) => [a.gap, a.size])).toEqual([[22, 51]]);
     });
@@ -4445,65 +4404,14 @@ describe("PlotPanel area collapse", () => {
       expect(liveXAxes().map((a) => a.label !== undefined)).toEqual([false, true]);
 
       // Collapse the lower area; the label moves up to the one still drawing.
-      fireEvent.click(screen.getAllByRole("button", { name: "collapse plot area" })[1]);
+      fireEvent.click(screen.getAllByRole("button", { name: "collapse axis" })[1]);
       await settle();
       expect(liveXAxes().map((a) => a.label !== undefined)).toEqual([true]);
 
-      fireEvent.click(screen.getByRole("button", { name: "expand plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "expand axis" }));
       await settle();
       expect(liveXAxes().map((a) => a.label !== undefined)).toEqual([false, true]);
     });
-  });
-
-  it("carries the pattern match chip on a collapsed area's heading", async () => {
-    // A pattern rule is what feeds the area, and its status line is one
-    // of the things the collapse takes away — so the count rides the
-    // heading instead (ADR 0020 membership).
-    const registry = makeRegistry({
-      id: "el-collapse-chip",
-      config: {
-        areas: [{ id: "a1", collapsed: true, signals: [], patterns: ["EngineSpeed"] }],
-      },
-    });
-    renderPanel({ params: { elementId: "el-collapse-chip" }, registry });
-    // The catalog resolves on its own microtask, so the count arrives
-    // with it.
-    const head = document.querySelector(".plot-area-signals-head") as HTMLElement;
-    await waitFor(() => expect(within(head).getByText("1 match")).toBeInTheDocument());
-    expect(within(head).getByText("1 signal")).toBeInTheDocument();
-    expect(document.querySelector(".plot-area-filter-status")).toBeNull();
-  });
-
-  it("restores the prior layout exactly on a collapse round-trip", () => {
-    // Collapsing is layout, not configuration: the per-axis weights the
-    // user dragged must come back untouched when the area expands.
-    const registry = makeRegistry({
-      id: "el-collapse-roundtrip",
-      config: {
-        areas: [
-          {
-            id: "a1",
-            yAxisMode: "per-unit",
-            signals: [sig("EngineSpeed", "rpm"), sig("EngineTemp", "degC")],
-          },
-        ],
-        axisWeights: { "a1/u:unit:rpm": 3, "a1/u:unit:degC": 1 },
-      },
-    });
-    const { api } = renderPanel({ params: { elementId: "el-collapse-roundtrip" }, registry });
-    const grows = () =>
-      Array.from(document.querySelectorAll(".plot-area")).map(
-        (a) => (a as HTMLElement).style.flexGrow,
-      );
-    expect(grows()).toEqual(["3", "1"]);
-
-    fireEvent.click(screen.getByRole("button", { name: "collapse plot area" }));
-    expect(grows()).toEqual(["0"]);
-    fireEvent.click(screen.getByRole("button", { name: "expand plot area" }));
-    expect(grows()).toEqual(["3", "1"]);
-    const calls = api.updateParameters.mock.calls;
-    const last = (calls[calls.length - 1]?.[0] ?? {}) as { axisWeights: Record<string, number> };
-    expect(last.axisWeights).toEqual({ "a1/u:unit:rpm": 3, "a1/u:unit:degC": 1 });
   });
 
   it("gives a contiguous run of collapsed axes one shared drag handle", () => {
@@ -4548,8 +4456,9 @@ describe("PlotPanel area collapse", () => {
       config: {
         areas: [
           { id: "a1", signals: [sig("TopSignal", "rpm")] },
-          { id: "a2", collapsed: true, signals: [sig("BottomSignal", "rpm")] },
+          { id: "a2", signals: [sig("BottomSignal", "rpm")] },
         ],
+        axisCollapsed: { a2: true },
       },
     });
     renderPanel({ params: { elementId: "el-collapse-drag" }, registry });
@@ -4585,7 +4494,7 @@ describe("PlotPanel area collapse", () => {
     renderPanel({ params: { elementId: "el-collapse-auto" }, registry });
     const area = document.querySelector(".plot-area") as HTMLElement;
     expect(area.classList.contains("collapsed")).toBe(true);
-    expect(screen.getByRole("button", { name: "expand plot area" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "expand axis" })).toBeDisabled();
   });
 });
 
@@ -4722,18 +4631,47 @@ describe("PlotPanel axis collapse", () => {
     expect(document.querySelectorAll(".plot-area-collapsed-handle").length).toBe(1);
   });
 
-  it("gives a unified area's single axis no separate axis toggle", () => {
-    // In unified mode the area *is* the axis, so the area toggle is the
-    // only disclosure — a second one on the same row would say nothing.
-    renderPanel({
-      params: { elementId: "el-axis-unified" },
-      registry: makeRegistry({
-        id: "el-axis-unified",
-        config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }] },
-      }),
+  it("has no plot-area collapse; a unified head carries one axis toggle, leftmost", () => {
+    const registry = makeRegistry({
+      id: "el-collapse-unified",
+      config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }] },
     });
-    expect(screen.queryByRole("button", { name: "collapse axis" })).toBeNull();
-    expect(screen.getByRole("button", { name: "collapse plot area" })).toBeInTheDocument();
+    const { api } = renderPanel({ params: { elementId: "el-collapse-unified" }, registry });
+    const area = () => document.querySelector(".plot-area") as HTMLElement;
+    expect(screen.queryByRole("button", { name: /plot area$/ })).toBeNull();
+    expect(document.querySelector(".plot-area-collapse")).toBeNull();
+    const head = area().querySelector(".plot-area-signals-head") as HTMLElement;
+    expect(head.querySelectorAll(".plot-axis-collapse").length).toBe(1);
+    expect(head.firstElementChild).toHaveClass("plot-axis-collapse");
+    expect(head.children[1]).toHaveClass("plot-area-grip");
+
+    fireEvent.click(screen.getByRole("button", { name: "collapse axis" }));
+    expect(area().classList.contains("collapsed")).toBe(true);
+    expect(lastParams(api).axisCollapsed).toEqual({ a1: true });
+    expect(persistedAreas(api)[0]).not.toHaveProperty("collapsed");
+
+    fireEvent.click(screen.getByRole("button", { name: "expand axis" }));
+    expect(area().classList.contains("collapsed")).toBe(false);
+    expect(lastParams(api).axisCollapsed).toEqual({});
+  });
+
+  it("puts the disclosure leftmost on every derived axis head, ahead of the grip", () => {
+    renderPanel({
+      params: { elementId: "el-axis-leftmost" },
+      registry: twoAxisRegistry("el-axis-leftmost"),
+    });
+    const heads = Array.from(
+      document.querySelectorAll(".plot-area-signals-head"),
+    ) as HTMLElement[];
+    expect(heads.length).toBe(2);
+    for (const head of heads) {
+      expect(head.querySelectorAll(".plot-axis-collapse").length).toBe(1);
+      expect(head.firstElementChild).toHaveClass("plot-axis-collapse");
+    }
+    // The grip lives on the parent head only, right after the toggle.
+    expect(heads[0].children[1]).toHaveClass("plot-area-grip");
+    expect(heads[1].querySelector(".plot-area-grip")).toBeNull();
+    expect(document.querySelector(".plot-area-collapse")).toBeNull();
   });
 
   it("drops a collapsed entry when its axis stops existing", () => {
@@ -5157,7 +5095,7 @@ describe("PlotPanel solo", () => {
       },
       trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
     });
-    const { api } = renderPanel({ params: { elementId: "el-solo-collapse" }, registry });
+    renderPanel({ params: { elementId: "el-solo-collapse" }, registry });
     const collapsedFlags = () =>
       Array.from(document.querySelectorAll(".plot-area")).map((a) =>
         a.classList.contains("collapsed"),
@@ -5169,7 +5107,6 @@ describe("PlotPanel solo", () => {
     // height.
     typeSolo("(Cell\\d)");
     expect(collapsedFlags()).toEqual([false, true, false]);
-    expect(persistedAreas(api)[1]?.collapsed).toBeFalsy();
     fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
     expect(collapsedFlags()).toEqual([true, false, false]);
     // …and back on the whole set, both matching areas draw again.
@@ -7148,7 +7085,6 @@ describe("PlotPanel area drag payload", () => {
             signals: [sig("Cell1"), sig("Cell2")],
             patterns: ["Cell\d+"],
             yAxisMode: "per-unit",
-            collapsed: true,
           },
           { id: "a2", signals: [sig("Other", "A")] },
         ],
@@ -7167,7 +7103,6 @@ describe("PlotPanel area drag payload", () => {
     expect(area!.area.signals.map((s) => s.signalName)).toEqual(["Cell1", "Cell2"]);
     expect(area!.area.patterns).toEqual(["Cell\d+"]);
     expect(area!.area.yAxisMode).toBe("per-unit");
-    expect(area!.area.collapsed).toBe(true);
     // Only this area's ranges travel — not the neighbour's, and not the
     // layout weights.
     expect(area!.axisScales).toEqual({ a1: { max: 10 }, "a1/u:unit:V": { min: 1 } });
@@ -7184,8 +7119,9 @@ describe("PlotPanel area drag payload", () => {
       config: {
         areas: [
           { id: "a1", signals: [sig("Cell1")] },
-          { id: "a2", collapsed: true, signals: [sig("Cell2")] },
+          { id: "a2", signals: [sig("Cell2")] },
         ],
+        axisCollapsed: { a2: true },
         axisScales: { a2: { max: 4 } },
       },
     });
@@ -7197,7 +7133,6 @@ describe("PlotPanel area drag payload", () => {
     });
     const area = parsePlotAreaDragData(dt.getData(PLOT_AREA_DND_MIME));
     expect(area!.area.id).toBe("a2");
-    expect(area!.area.collapsed).toBe(true);
     expect(area!.axisScales).toEqual({ a2: { max: 4 } });
   });
 
@@ -7289,7 +7224,7 @@ describe("PlotPanel area drag between panels", () => {
   const lastPersist = (api: { updateParameters: { mock: { calls: unknown[][] } } }) => {
     const calls = api.updateParameters.mock.calls;
     return (calls[calls.length - 1]?.[0] ?? {}) as {
-      areas?: { id: string; collapsed?: boolean; patterns?: string[]; yAxisMode?: string; primarySignalKey?: string | null }[];
+      areas?: { id: string; patterns?: string[]; yAxisMode?: string; primarySignalKey?: string | null }[];
       axisScales?: Record<string, unknown>;
     };
   };
@@ -7324,7 +7259,6 @@ describe("PlotPanel area drag between panels", () => {
         patterns: ["Cell\d+"],
         yAxisMode: "per-unit",
         primarySignalKey: "pk",
-        collapsed: true,
       },
       { id: "a2", signals: [sig("Other", "A")] },
     ],
@@ -7334,13 +7268,13 @@ describe("PlotPanel area drag between panels", () => {
 
   it("moves an area to the drop position of another panel, ranges and all", () => {
     const { apiA, apiB } = renderTwoPanels(SOURCE, TARGET);
-    expect(stackOf("panel-a")).toEqual([["1 signal"], ["Other"]]);
+    expect(stackOf("panel-a")).toEqual([["Cell1"], ["Other"]]);
     expect(stackOf("panel-b")).toEqual([["Bee"]]);
 
     dragAreaBetween("panel-a", 0, "panel-b", 0);
 
     // Landed above the area it was dropped on; gone from the source.
-    expect(stackOf("panel-b")).toEqual([["1 signal"], ["Bee"]]);
+    expect(stackOf("panel-b")).toEqual([["Cell1"], ["Bee"]]);
     expect(stackOf("panel-a")).toEqual([["Other"]]);
 
     const moved = lastPersist(apiB).areas![0];
@@ -7348,8 +7282,6 @@ describe("PlotPanel area drag between panels", () => {
     expect(moved.patterns).toEqual(["Cell\d+"]);
     expect(moved.yAxisMode).toBe("per-unit");
     expect(moved.primarySignalKey).toBe("pk");
-    expect(moved.collapsed).toBe(true);
-    expect(screen.getByTestId("panel-b").querySelectorAll(".plot-area")[0]).toHaveClass("collapsed");
     // The manual ranges travelled under the same keys — the area id
     // moved with the area — and the layout weights did not travel.
     expect(lastPersist(apiB).axisScales).toEqual({ a1: { max: 10 }, "a1/u:unit:V": { min: 1 } });
@@ -7364,13 +7296,12 @@ describe("PlotPanel area drag between panels", () => {
     dragAreaBetween("panel-a", 0, "panel-b", 0, { ctrlKey: true });
 
     // Both panels hold it now.
-    expect(stackOf("panel-a")).toEqual([["1 signal"], ["Other"]]);
-    expect(stackOf("panel-b")).toEqual([["1 signal"], ["Bee"]]);
+    expect(stackOf("panel-a")).toEqual([["Cell1"], ["Other"]]);
+    expect(stackOf("panel-b")).toEqual([["Cell1"], ["Bee"]]);
 
     const copy = lastPersist(apiB).areas![0];
     expect(copy.id).not.toBe("a1");
     expect(copy.patterns).toEqual(["Cell\d+"]);
-    expect(copy.collapsed).toBe(true);
     // The copy is its own area, so its ranges are re-keyed onto its id.
     expect(lastPersist(apiB).axisScales).toEqual({
       [copy.id]: { max: 10 },
@@ -7394,7 +7325,7 @@ describe("PlotPanel area drag between panels", () => {
     fireEvent.dragOver(first, { dataTransfer: dt });
     fireEvent.drop(first, { dataTransfer: dt, ctrlKey: true });
 
-    expect(stackOf("panel-a")).toEqual([["Other"], ["1 signal"]]);
+    expect(stackOf("panel-a")).toEqual([["Other"], ["Cell1"]]);
     expect(lastPersist(apiA).areas!.map((a) => a.id)).toEqual(["a2", "a1"]);
   });
 
@@ -7404,7 +7335,7 @@ describe("PlotPanel area drag between panels", () => {
     // receptive panel adds there without emptying the source.
     renderTwoPanels(SOURCE, TARGET);
     dragAreaBetween("panel-a", 0, "panel-b", 0, { cancel: true });
-    expect(stackOf("panel-a")).toEqual([["1 signal"], ["Other"]]);
+    expect(stackOf("panel-a")).toEqual([["Cell1"], ["Other"]]);
     expect(stackOf("panel-b")).toEqual([["Bee"]]);
   });
 
@@ -7500,7 +7431,7 @@ describe("PlotPanel per-area render scoping", () => {
     await threeAreas("el-scope-collapse");
     const before = counter("render.PlotArea");
     await act(async () => {
-      fireEvent.click(within(areaAt(1)).getByRole("button", { name: "collapse plot area" }));
+      fireEvent.click(within(areaAt(1)).getByRole("button", { name: "collapse axis" }));
     });
     expect(areaAt(1).classList.contains("collapsed")).toBe(true);
     expect(counter("render.PlotArea") - before).toBe(1);
@@ -7538,7 +7469,7 @@ describe("PlotPanel per-area render scoping", () => {
     // above is undone one render later.
     await threeAreas("el-scope-persist");
     await act(async () => {
-      fireEvent.click(within(areaAt(1)).getByRole("button", { name: "collapse plot area" }));
+      fireEvent.click(within(areaAt(1)).getByRole("button", { name: "collapse axis" }));
     });
     const before = counter("render.PlotArea");
     // Purely panel-local, so this render's only new input is the entries
@@ -8640,7 +8571,11 @@ describe("where the A/B cursors put their timestamps", () => {
 
   /// Every string each stacked area's draw hook painted, top to bottom,
   /// with a pair of x cursors already placed.
-  async function opsPerArea(areas: unknown[], trace?: Partial<TraceData>): Promise<DrawnText[][]> {
+  async function opsPerArea(
+    areas: unknown[],
+    trace?: Partial<TraceData>,
+    extra: Record<string, unknown> = {},
+  ): Promise<DrawnText[][]> {
     const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
     try {
@@ -8649,7 +8584,7 @@ describe("where the A/B cursors put their timestamps", () => {
         params: { elementId: "el-ab-label" },
         registry: makeRegistry({
           id: "el-ab-label",
-          config: { areas, cursorX: { a: 0.5, b: 1.5 } },
+          config: { areas, cursorX: { a: 0.5, b: 1.5 }, ...extra },
         }),
       });
       await act(async () => {
@@ -8688,8 +8623,11 @@ describe("where the A/B cursors put their timestamps", () => {
 
   /// The same, as bare strings — what every case that cares only about
   /// *which* area said something reads.
-  async function textsPerArea(areas: unknown[]): Promise<string[][]> {
-    return (await opsPerArea(areas)).map((a) => a.map((o) => o.text));
+  async function textsPerArea(
+    areas: unknown[],
+    extra: Record<string, unknown> = {},
+  ): Promise<string[][]> {
+    return (await opsPerArea(areas, undefined, extra)).map((a) => a.map((o) => o.text));
   }
 
   const abLabels = (texts: string[]) => texts.filter((t) => /^[AB] /.test(t));
@@ -8716,10 +8654,13 @@ describe("where the A/B cursors put their timestamps", () => {
   it("moves the labels up when the bottom area is collapsed", async () => {
     // Same rule as the x-axis time label: the bottom *drawing* axis
     // carries it, and a collapsed area draws nothing.
-    const perArea = await textsPerArea([
-      { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
-      { id: "a2", collapsed: true, signals: [sig("EngineTemp", "degC")] },
-    ]);
+    const perArea = await textsPerArea(
+      [
+        { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+        { id: "a2", signals: [sig("EngineTemp", "degC")] },
+      ],
+      { axisCollapsed: { a2: true } },
+    );
     expect(perArea).toHaveLength(1);
     expect(abLabels(perArea[0])).toHaveLength(2);
   });
@@ -8844,10 +8785,14 @@ describe("where the A/B cursors put their timestamps", () => {
   });
 
   it("keeps the readouts below the box on the axis that inherits them", async () => {
-    const perArea = await opsPerArea([
-      { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
-      { id: "a2", collapsed: true, signals: [sig("EngineTemp", "degC")] },
-    ]);
+    const perArea = await opsPerArea(
+      [
+        { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+        { id: "a2", signals: [sig("EngineTemp", "degC")] },
+      ],
+      undefined,
+      { axisCollapsed: { a2: true } },
+    );
     const chips = perArea[0].filter((o) => /^([AB] |Δt)/.test(o.text));
     expect(chips).toHaveLength(3);
     const bb = lastLive[0].bbox;
@@ -9348,13 +9293,17 @@ describe("where the event marker labels sit", () => {
 
   /// Every string each drawing area painted, top to bottom, with one
   /// note on the timeline.
-  async function opsPerArea(areas: unknown[], label = "brake on"): Promise<DrawnText[][]> {
+  async function opsPerArea(
+    areas: unknown[],
+    label = "brake on",
+    extra: Record<string, unknown> = {},
+  ): Promise<DrawnText[][]> {
     const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
     try {
       renderPanel({
         params: { elementId: "el-marker-top" },
-        registry: makeRegistry({ id: "el-marker-top", config: { areas } }),
+        registry: makeRegistry({ id: "el-marker-top", config: { areas, ...extra } }),
         notes: {
           notes: [{ id: "n1", timestampNs: 1_000_000_000, label }],
           addNote: () => {},
@@ -9400,8 +9349,11 @@ describe("where the event marker labels sit", () => {
 
   /// The same, as bare strings — what every case that cares only about
   /// *which* area said something reads.
-  async function textsPerArea(areas: unknown[]): Promise<string[][]> {
-    return (await opsPerArea(areas)).map((a) => a.map((o) => o.text));
+  async function textsPerArea(
+    areas: unknown[],
+    extra: Record<string, unknown> = {},
+  ): Promise<string[][]> {
+    return (await opsPerArea(areas, undefined, extra)).map((a) => a.map((o) => o.text));
   }
 
   /// The top gutter (uPlot `padding[0]`) each drawing area reserves.
@@ -9487,7 +9439,7 @@ describe("where the event marker labels sit", () => {
       };
       expect(live().map(drew)).toEqual([true, false]);
 
-      fireEvent.click(screen.getAllByRole("button", { name: "collapse plot area" })[0]);
+      fireEvent.click(screen.getAllByRole("button", { name: "collapse axis" })[0]);
       await settle();
       const after = live();
       expect(after).toHaveLength(1);
@@ -9501,10 +9453,13 @@ describe("where the event marker labels sit", () => {
   it("moves the labels down when the top area is collapsed", async () => {
     // Collapsing the topmost area used to take the marker labels with
     // it — a collapsed area is a heading row with no canvas to draw on.
-    const perArea = await textsPerArea([
-      { id: "a1", collapsed: true, signals: [sig("EngineSpeed", "rpm")] },
-      { id: "a2", signals: [sig("EngineTemp", "degC")] },
-    ]);
+    const perArea = await textsPerArea(
+      [
+        { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
+        { id: "a2", signals: [sig("EngineTemp", "degC")] },
+      ],
+      { axisCollapsed: { a1: true } },
+    );
     expect(perArea).toHaveLength(1);
     expect(perArea[0]).toContain("brake on");
   });
@@ -9559,10 +9514,11 @@ describe("where the event marker labels sit", () => {
     // and the chips on one with no room for them.
     await opsPerArea(
       [
-        { id: "a1", collapsed: true, signals: [sig("EngineSpeed", "rpm")] },
+        { id: "a1", signals: [sig("EngineSpeed", "rpm")] },
         { id: "a2", signals: [sig("EngineTemp", "degC")] },
       ],
       LONG,
+      { axisCollapsed: { a1: true } },
     );
     expect(gutters()).toEqual([47]);
   });

@@ -403,42 +403,30 @@ equalizes them. A y-axis-mode change produces new axis ids and so
 resets an area's custom weights; the shared enum-lanes axis keeps a
 membership-stable id so lane churn doesn't reset its weight.
 
-**An area can be collapsed, and a collapsed area gives up its space —
-all of it.** A plot area carries a persisted `collapsed` flag, and a
-collapsed area renders as **one heading row**: its name, a
-signal-count chip, and its pattern match count when a rule feeds it
-(ADR 0020). Nothing else — no canvas, no rows, no per-area chrome, and
-the derived axes after the first are not rendered at all, so one
-collapsed area is one row however many axes its mode stacks.
-Collapsing reclaims the space it took; expanding restores the prior
-layout exactly, because the per-axis weights and ranges are keyed by
-axis id and a collapse round-trip never writes them. The flag is per
-*area*, not per axis, because an area is the curated thing and its axes
-are derived: one collapse state, however many axes the mode stacks. An
-area whose signals are **all hidden** is collapsed regardless of the
-flag — there is nothing to draw on it — which is the rule that already
-collapses a fully-hidden axis; that collapse alone *keeps* its
-side-panel rows, because a swatch in one of them is the only way to
-un-hide a signal, and reducing it to a heading would strand it.
-
-**An axis can be collapsed on its own, and that is layout, not
-visibility.** Every axis that has a label of its own — a per-unit unit
-group, an individual mode series' lane — carries the same disclosure on
-that label. (In unified mode the area *is* the axis, so the area's
-toggle is the only one.) A collapsed axis renders as its **label
-strip**: no canvas, no rows. Its weight share redistributes to the axes
-still drawing, so the stack still fits the panel, and the splitter it
-would have traded weight through is suppressed — there is nothing to
-trade — with the neighbours pairing across it. Its series stay on the
-axis with their `hidden` flags untouched and their membership unchanged:
+**Collapse is per axis, and it is layout, not visibility.** There is
+no area-level collapse: an area is the curated thing and its axes are
+what take space, so the space is given back one axis at a time. Every
+derived axis head — a per-unit unit group's, an individual-mode
+series' lane, and unified mode's single axis alike — carries one
+disclosure, and it is the **leftmost element of the head bar**, ahead
+of the reorder grip on the parent head. A collapsed axis renders as its
+**heading row**: its name (and axis label), a signal-count chip, no
+canvas, no rows. Its weight share redistributes to the axes still
+drawing, so the stack still fits the panel, and the splitter it would
+have traded weight through is suppressed — there is nothing to trade —
+with the neighbours pairing across it. Its series stay on the axis with
+their `hidden` flags untouched and their membership unchanged:
 collapsing an axis is not hiding its signals, and the two must not be
 confused because clearing the collapse has to give the axis back exactly
 as it was. Collapsed state is persisted per derived-axis id, beside the
 axis weights and on the same lifecycle — both describe the layout the
 user is looking at, so a y-axis-mode change retires them together.
 Collapsing *every* axis of an area is allowed and wedges nothing: each
-strip keeps its own toggle, and it is the same shape the all-hidden rule
-already reaches.
+strip keeps its own toggle. An axis whose signals are **all hidden** is
+collapsed regardless — there is nothing to draw on it — and that
+collapse alone *keeps* its side-panel rows, because a swatch in one of
+them is the only way to un-hide a signal, and reducing it to a heading
+would strand it; its toggle is inert and says why.
 
 **Solo masks the view; it never rewrites what is hidden.** A panel-wide
 regex over the canonical signal path (ADR 0038 — the same subject an
@@ -454,8 +442,7 @@ mask is scoped to the areas the pattern found something in: an area
 with no match renders exactly as solo-off leaves it, so a pattern aimed
 at one area never blanks the rest of the panel. Within an area solo
 does apply to, being left with no *solo-visible* series collapses it by
-the same all-hidden rule above, and equally without touching its
-persisted `collapsed` flag.
+the same all-hidden rule above.
 
 **One wheel, and one point where a signal's color is decided.** Every
 surface that draws a signal in its own color — the signal view's name
@@ -757,7 +744,7 @@ below:
   with a reading in another. Their timestamps are not repeated down the
   stack: one x is one time however many areas it crosses, and saying it
   once per area is the same number written N times over the data.
-  "Bottom drawing axis", not "last axis": a collapsed area is a heading
+  "Bottom drawing axis", not "last axis": a collapsed axis is a heading
   row with no canvas, so the chrome falls back up the stack to the
   lowest axis that still has a plot (`bottomDrawingAxis`). Tick spacing
   is label-width-aware so zoomed-in elapsed-time labels (more
@@ -902,30 +889,31 @@ below:
     gestures on a live axis's surface, since it has no uPlot of its own
     to receive them. This covers a fully-hidden numeric axis and a
     fully-hidden enum-lanes axis alike.
-- **Area and axis collapse ride that same path.**
-  `PlotAreaConfig.collapsed` and the panel's `axisCollapsed` map (keyed
-  by derived-axis id, sparse, pruned to the live axis set like the
-  weights) are both folded into the per-axis collapsed flag the panel
-  derives — an axis is collapsed when its parent area's flag is set, its
-  own entry is set, *or* every signal on it is hidden — so both inherit
-  the whole treatment above: flex-grow 0, no canvas, splitter
-  suppression and reach-over, and the gesture-replaying placeholder.
-  Only the all-hidden case keeps the compact rows; the two deliberate
-  collapses render the side panel's head and stop (`heading-only`).
-  The area's **▾ / ▸ toggle** sits on the parent head beside the reorder
-  grip (one per logical area, like the remove ×), and is inert on an
-  area collapsed only by the all-hidden rule: there is no expanded form
-  to go to, and its rows are already listed for un-hiding. The axis's
-  own toggle sits with the axis's own label, and only exists where that
-  label does. A contiguous run of collapsed axes carries **one
+- **Axis collapse rides that same path.** The panel's `axisCollapsed`
+  map (keyed by derived-axis id, sparse, pruned to the live axis set
+  like the weights) is folded into the per-axis collapsed flag the panel
+  derives — an axis is collapsed when its own entry is set *or* every
+  signal on it is hidden — so it inherits the whole treatment above:
+  flex-grow 0, no canvas, splitter suppression and reach-over, and the
+  gesture-replaying placeholder. Only the all-hidden case keeps the
+  compact rows; the deliberate collapse renders the side panel's head
+  and stops (`heading-only`). The **▾ / ▸ toggle** is the leftmost
+  element of every axis head; on the parent head the reorder grip
+  follows it, then the area label, separator and axis label, and the
+  y-mode combobox, patterns button and remove × stay at the right. It
+  is inert on an axis collapsed only by the all-hidden rule: there is
+  no expanded form to go to, and its rows are already listed for
+  un-hiding. A contiguous run of collapsed axes carries **one
   shared drag handle**, on the run's first axis
   (`collapsedRunHeads`) — a band of empty canvas column reads as one
   thing to grab, and a handle per collapsed axis would be a ladder of
   them saying nothing extra. It drags that axis's parent area with the
-  same payload the head grip carries, so a collapsed area stays
-  reorderable; a drop targets whichever area's row it was released
+  same payload the head grip carries, so an area whose head axis is
+  collapsed stays reorderable (a collapsed non-parent axis has no grip
+  of its own); a drop targets whichever area's row it was released
   over, so an area buried inside a run is targeted by dropping on its
-  own side-panel strip.
+  own side-panel strip. A persisted per-area `collapsed` key from an
+  earlier build is dropped on read and the area opens expanded.
 
 - **Solo is applied per derived axis, after the axes are derived.**
   `plotSolo.ts` holds the pure model (matcher, match list in panel
