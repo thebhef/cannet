@@ -54,7 +54,7 @@ import {
   type ResolvedAxisRange,
 } from "./plotAxisScale";
 import { useDismissableMenu } from "./useDismissableMenu";
-import { useSetting } from "./hostSettings";
+import { hostSettings, useSetting } from "./hostSettings";
 import {
   TICK_SIG_FIGS,
   formatFloat,
@@ -88,9 +88,15 @@ import { Combobox, type ComboboxOption } from "./Combobox";
 import { ColorChip } from "./ColorChip";
 import { Icon } from "./Icon";
 import { DisclosureToggle } from "./DisclosureToggle";
-import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
+import {
+  formatDurationSeconds,
+  formatElapsed,
+  formatLocalTimestamp,
+  fracDigitsForSpan,
+  hasWallClockAnchor,
+} from "./format";
 import { SIGNAL_DND_MIME, setSignalDragData } from "./dragSignals";
-import { type Series, valueAt } from "./plotCursors";
+import { centerWindowOn, type Series, valueAt } from "./plotCursors";
 import type { PatternResolution } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
 import { type YAxisMode } from "./plotAxisDerivation";
@@ -721,6 +727,11 @@ interface PlotAreaProps {
    * x-axis origin, so the plot's `t=0` matches the trace table's. `null`
    * until a session start is known. */
   originSeconds: number | null;
+  /** The panel's x-axis origin in absolute (Unix-epoch) seconds — the
+   * one every area's x is measured from, so an x value's instant is
+   * `baseSeconds + x`. `null` before any area has anchored. Read only
+   * to name the calendar time under the bottom axis's hover (ADR 0024). */
+  baseSeconds: number | null;
   /** The trace model's re-anchor epoch. Bumped whenever the decoded
    * model changes under the view — a DBC loaded, removed, reloaded in
    * place or re-scoped re-decodes the capture, so the same window over
@@ -1525,6 +1536,118 @@ export function drawEventLabelChips(
   ctx.restore();
 }
 
+/** The box width {@link drawChip} would give a single-line `text` chip
+ * — for measuring whether two chips' natural positions would collide,
+ * before either is drawn. */
+function chipBoxWidth(ctx: CanvasRenderingContext2D, text: string, ratio: number): number {
+  return ctx.measureText(text).width + 2 * CHIP_PAD_X_PX * ratio;
+}
+
+/** Whether two chip boxes, each `width` wide and centred on `x`, would
+ * share any pixels. */
+function boxesOverlap(xa: number, wa: number, xb: number, wb: number): boolean {
+  return Math.abs(xa - xb) < (wa + wb) / 2;
+}
+
+/** A box on the bottom axis that names one time: its x value `t`
+ * (capture-relative seconds, the plot's x) and its extent in CSS px,
+ * the coordinate system a DOM pointer event compares against. */
+export interface TimeHitBox {
+  t: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Whether `(cssX, cssY)` lies in `b`, edges included. */
+function inTimeHitBox(b: TimeHitBox, cssX: number, cssY: number): boolean {
+  return cssX >= b.left && cssX <= b.left + b.width && cssY >= b.top && cssY <= b.top + b.height;
+}
+
+/** The pinned chip's hit box for the gutter's click-to-pan, the cursor
+ * it belongs to, and that cursor's own time — what the pan recentres
+ * on. */
+export interface PinnedCursorChip extends TimeHitBox {
+  cursor: "a" | "b";
+}
+
+/** A drawn A or B chip's box; `pinned` marks the one (at most) pinned
+ * to an edge, which is the one a click pans to. */
+export interface CursorChipBox extends PinnedCursorChip {
+  pinned: boolean;
+}
+
+/**
+ * The calendar-time tooltip for a pointer at `(cssX, cssY)` over the
+ * bottom axis: the local date and time of the first box it lands in —
+ * a cursor chip or an x tick label — read through the trace time
+ * cell's own formatter, so the two views name an instant identically
+ * (ADR 0024). `null` on a miss, and everywhere when `baseSeconds` (the
+ * panel's x-axis origin, absolute seconds) is not a wall clock: there
+ * is then no instant to name.
+ */
+export function timeHoverTooltip(
+  cssX: number,
+  cssY: number,
+  boxes: readonly TimeHitBox[],
+  baseSeconds: number | null,
+): string | null {
+  if (baseSeconds === null || !hasWallClockAnchor(baseSeconds)) return null;
+  const hit = boxes.find((b) => inTimeHitBox(b, cssX, cssY));
+  return hit ? formatLocalTimestamp(baseSeconds + hit.t, baseSeconds) : null;
+}
+
+/**
+ * The hit boxes of the bottom axis's tick labels (CSS px, canvas
+ * origin): one per split, centred on its tick and `measure(label)`
+ * wide, spanning the band uPlot draws the tick values in — below the
+ * tick marks, their gap and the time-cursor gutter, above the axis
+ * label. Built when a pointer asks rather than at paint time: the
+ * splits are uPlot's, recorded by the axis `values` callback, and
+ * `valToPos` answers for the scale they were drawn at.
+ */
+export function xTickLabelBoxes(
+  u: uPlot,
+  ticks: { splits: readonly number[]; labels: readonly string[] },
+  o: { plotLeft: number; plotBottom: number; measure: (text: string) => number },
+): TimeHitBox[] {
+  const offset = X_TICK_SIZE_PX + X_AXIS_VALUE_GAP_PX + TIME_CURSOR_GUTTER_PX;
+  const top = o.plotBottom + offset;
+  const height = X_AXIS_SIZE_PX - offset;
+  return ticks.splits.map((t, i) => {
+    const width = o.measure(ticks.labels[i] ?? "");
+    const x = o.plotLeft + u.valToPos(t, "x");
+    return { t, left: x - width / 2, top, width, height };
+  });
+}
+
+/**
+ * Whether a pointer at `(cssX, cssY)` landed on `hit`'s box, and if so,
+ * the pan that follows: the visible span unchanged, recentred on the
+ * pinned cursor's time (same rule as jumping to an event marker). Calls
+ * `pan` and returns `true` on a hit; otherwise touches nothing and
+ * returns `false`, so the caller knows whether to swallow the event.
+ *
+ * Pulled out of the pointer listener itself so the hit-test and the
+ * pan it produces can be driven directly in a test, with a fake `pan`,
+ * instead of only through a real pointer event and a real uPlot
+ * instance.
+ */
+export function routeCursorChipClick(
+  hit: PinnedCursorChip | null,
+  cssX: number,
+  cssY: number,
+  xs: { min: number | null; max: number | null },
+  defaultWidthSeconds: number,
+  pan: (min: number, max: number) => void,
+): boolean {
+  if (!hit || !inTimeHitBox(hit, cssX, cssY)) return false;
+  const [min, max] = centerWindowOn(hit.t, xs, defaultWidthSeconds);
+  pan(min, max);
+  return true;
+}
+
 /**
  * The A and B time chips and Δt, in the gutter between the bottom
  * drawing axis's plot box and its x tick labels (ADR 0026).
@@ -1533,6 +1656,11 @@ export function drawEventLabelChips(
  * they can no longer cover the series they are read against. Once per
  * panel, beside the x-axis time label they now sit with: one x is one
  * time however many areas it crosses.
+ *
+ * Returns the box of every A/B chip drawn (see {@link CursorChipBox}),
+ * in CSS px: the hover names each one's calendar time, and the one
+ * flagged `pinned` is where a click routes into a pan. Empty when
+ * nothing drew. Δt has no box — a duration names no instant.
  */
 export function drawTimeCursorChips(
   ctx: CanvasRenderingContext2D,
@@ -1551,31 +1679,122 @@ export function drawTimeCursorChips(
     xDigits: number;
     ratio: number;
   },
-): void {
+): CursorChipBox[] {
   const a = o.cursorXa;
   const b = o.cursorXb;
-  if (a == null && b == null) return;
+  if (a == null && b == null) return [];
+  const inBounds = (xp: number) => xp >= o.left && xp <= o.left + o.width;
+  const xaRaw = a != null ? u.valToPos(a, "x", true) : null;
+  const xbRaw = b != null ? u.valToPos(b, "x", true) : null;
+  // Resolved before any drawing starts, so a cursor (or the only one
+  // there is) that's scrolled out of view draws nothing at all rather
+  // than a half-drawn or doubly-pinned chip set: with two cursors,
+  // *neither* end of the span is in view; with one, there is no span —
+  // only a point, and it is not in view either.
+  const nothingToShow =
+    xaRaw != null && xbRaw != null
+      ? !inBounds(xaRaw) && !inBounds(xbRaw)
+      : !inBounds((xaRaw ?? xbRaw) as number);
+  if (nothingToShow) return [];
   ctx.save();
   ctx.beginPath();
   ctx.rect(o.left, o.gutterTop, o.width, o.gutter);
   ctx.clip();
   const cy = o.gutterTop + o.gutter / 2;
-  const chip = (t: number, text: string, color: string) => {
-    const xp = u.valToPos(t, "x", true);
-    if (xp < o.left - 4 || xp > o.left + o.width + 4) return;
-    drawChip(ctx, [text], { x: xp, anchor: "center", cy, color, ratio: o.ratio });
+  // A span is what the cursors were placed to measure, so Δt never
+  // goes coarser than milliseconds even once the position labels have
+  // zoomed out past that — finer when the ticks' own digits are finer.
+  const deltaDigits = Math.max(3, o.xDigits);
+  const clampX = (xp: number) => Math.min(Math.max(xp, o.left), o.left + o.width);
+  // Every A/B chip drawn, in device px — converted to the returned CSS
+  // px boxes once, at the end. `drawEdgeChip` or the row branch below
+  // flags the one cursor that is pinned, if any.
+  const drawn: { cursor: "a" | "b"; t: number; x: number; w: number; pinned: boolean }[] = [];
+  // A cursor scrolled out of the visible window still names a place on
+  // the timeline, so — as long as the *other* cursor is still in view —
+  // its chip pins to the edge on its side instead of disappearing, and
+  // clicking it pans there (the span the cursors measure stays
+  // reachable even once you've zoomed into part of it).
+  const drawEdgeChip = (cursor: "a" | "b", xpRaw: number, t: number, text: string, color: string) => {
+    const xp = clampX(xpRaw);
+    const w = chipBoxWidth(ctx, text, o.ratio);
+    if (xp === xpRaw) {
+      drawChip(ctx, [text], { x: xp, anchor: "center", cy, color, ratio: o.ratio });
+      drawn.push({ cursor, t, x: xp - w / 2, w, pinned: false });
+      return;
+    }
+    // Pinned: a centred chip would hang half its box past the gutter's
+    // clip, so anchor it by the edge it's pinned to instead.
+    const x = xpRaw < o.left ? o.left : o.left + o.width - w;
+    drawChip(ctx, [text], { x, anchor: "left", cy, color, ratio: o.ratio });
+    drawn.push({ cursor, t, x, w, pinned: true });
   };
-  // Δt first: the two cursor times are the readings and the span
-  // between them is derived from them, so when a narrow span puts all
-  // three chips on the same pixels, the readings are what survives.
-  if (a != null && b != null) {
-    chip((a + b) / 2, `Δt ${formatDurationSeconds(Math.abs(b - a))}`, theme().axisText);
+  if (a != null && b != null && xaRaw != null && xbRaw != null) {
+    const aText = `A ${formatElapsed(a, o.xDigits)}`;
+    const deltaText = `Δt ${formatDurationSeconds(Math.abs(b - a), deltaDigits)}`;
+    const bText = `B ${formatElapsed(b, o.xDigits)}`;
+    const xa = clampX(xaRaw);
+    const xb = clampX(xbRaw);
+    const xDelta = (xa + xb) / 2;
+    const wA = chipBoxWidth(ctx, aText, o.ratio);
+    const wDelta = chipBoxWidth(ctx, deltaText, o.ratio);
+    const wB = chipBoxWidth(ctx, bText, o.ratio);
+    const overlapRow =
+      boxesOverlap(xa, wA, xDelta, wDelta) ||
+      boxesOverlap(xDelta, wDelta, xb, wB) ||
+      boxesOverlap(xa, wA, xb, wB);
+    if (overlapRow) {
+      // A narrow span puts the three chips' natural (centred) boxes on
+      // overlapping pixels, which buries the Δt reading under A and B.
+      // Lay them out as one row instead — still centred on the cursor
+      // midpoint — rather than stacked on top of each other.
+      const gap = CHIP_PAD_X_PX * o.ratio;
+      const total = wA + wDelta + wB + gap * 2;
+      const rowLeft = Math.min(Math.max((xa + xb) / 2 - total / 2, o.left), o.left + o.width - total);
+      const deltaX = rowLeft + wA + gap;
+      const bX = deltaX + wDelta + gap;
+      drawChip(ctx, [aText], { x: rowLeft, anchor: "left", cy, color: theme().cursorA, ratio: o.ratio });
+      drawChip(ctx, [deltaText], { x: deltaX, anchor: "left", cy, color: theme().axisText, ratio: o.ratio });
+      drawChip(ctx, [bText], { x: bX, anchor: "left", cy, color: theme().cursorB, ratio: o.ratio });
+      // At most one side is out of view here (both-out bailed above),
+      // so at most one is flagged.
+      drawn.push({ cursor: "a", t: a, x: rowLeft, w: wA, pinned: !inBounds(xaRaw) });
+      drawn.push({ cursor: "b", t: b, x: bX, w: wB, pinned: !inBounds(xbRaw) });
+    } else {
+      // Δt first: the two cursor times are the readings and the span
+      // between them is derived from them, so when a narrow span puts
+      // all three chips on the same pixels, the readings are what
+      // survive. Its midpoint of two in-bounds positions is always
+      // itself in bounds, so it never needs pinning.
+      drawChip(ctx, [deltaText], { x: xDelta, anchor: "center", cy, color: theme().axisText, ratio: o.ratio });
+      // "<letter> <time>", so a chip says both which cursor and where —
+      // the trace's elapsed-time format, at the ticks' adaptive
+      // precision.
+      drawEdgeChip("a", xaRaw, a, aText, theme().cursorA);
+      drawEdgeChip("b", xbRaw, b, bText, theme().cursorB);
+    }
+  } else {
+    // A lone cursor — already known to be in view, or `nothingToShow`
+    // would have returned above. (Only a *pair*, with the other end in
+    // view, is worth pinning and reaching back to when it isn't.)
+    const t = a ?? (b as number);
+    const xpRaw = (xaRaw ?? xbRaw) as number;
+    const text = a != null ? `A ${formatElapsed(t, o.xDigits)}` : `B ${formatElapsed(t, o.xDigits)}`;
+    const color = a != null ? theme().cursorA : theme().cursorB;
+    drawChip(ctx, [text], { x: xpRaw, anchor: "center", cy, color, ratio: o.ratio });
+    const w = chipBoxWidth(ctx, text, o.ratio);
+    drawn.push({ cursor: a != null ? "a" : "b", t, x: xpRaw - w / 2, w, pinned: false });
   }
-  // "<letter> <time>", so a chip says both which cursor and where — the
-  // trace's elapsed-time format, at the ticks' adaptive precision.
-  if (a != null) chip(a, `A ${formatElapsed(a, o.xDigits)}`, theme().cursorA);
-  if (b != null) chip(b, `B ${formatElapsed(b, o.xDigits)}`, theme().cursorB);
   ctx.restore();
+  return drawn.map(({ cursor, t, x, w, pinned }) => ({
+    cursor,
+    t,
+    pinned,
+    left: x / o.ratio,
+    top: o.gutterTop / o.ratio,
+    width: w / o.ratio,
+    height: o.gutter / o.ratio,
+  }));
 }
 
 /**
@@ -1712,7 +1931,7 @@ export function drawHoverOverlay(
     isFirst: boolean;
     isLast: boolean;
   },
-): void {
+): CursorChipBox[] {
   const ratio = u.ctx.canvas.width / u.width || 1;
   const { left, top, width, height } = u.bbox;
   ctx.save();
@@ -1836,8 +2055,9 @@ export function drawHoverOverlay(
       ratio,
     });
   }
+  let chips: CursorChipBox[] = [];
   if (o.isLast) {
-    drawTimeCursorChips(ctx, u, {
+    chips = drawTimeCursorChips(ctx, u, {
       cursorXa: o.cursorXa,
       cursorXb: o.cursorXb,
       left,
@@ -1859,6 +2079,7 @@ export function drawHoverOverlay(
     height,
     ratio,
   });
+  return chips;
 }
 
 /** The overlay canvas of one plot area, and the context it is painted
@@ -1952,6 +2173,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     winStart,
     winEnd,
     originSeconds,
+    baseSeconds,
     modelEpoch,
     live,
     followLive,
@@ -2086,6 +2308,16 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * is registered once per instance and would otherwise keep the props
    * the instance was built with. */
   const paintHoverOverlayRef = useRef<() => void>(() => {});
+  /** The last-painted A/B chips' hit boxes, read by the gutter's
+   * click-to-pan and calendar-time hover listeners (set up once in the
+   * `ready` hook, so they need a ref rather than a closure over this
+   * render's props). Rewritten on every repaint, so a stale box can
+   * never outlive the frame it was drawn in. */
+  const cursorChipBoxesRef = useRef<CursorChipBox[]>([]);
+  /** The bottom axis's current tick splits and their labels, as uPlot's
+   * `values` callback last produced them — what the hover hit-tests a
+   * tick label against. */
+  const xTicksRef = useRef<{ splits: readonly number[]; labels: readonly string[] }>({ splits: [], labels: [] });
   const seriesRef = useRef<Map<string, Series>>(new Map());
   const presentRef = useRef<Map<string, number | null>>(new Map());
   const resampleBusyRef = useRef(false);
@@ -2330,7 +2562,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     syncHoverOverlay(overlay, u);
     overlay.ctx.clearRect(0, 0, overlay.canvas.width, overlay.canvas.height);
     const lr = liveRef.current;
-    drawHoverOverlay(overlay.ctx, u, {
+    cursorChipBoxesRef.current = drawHoverOverlay(overlay.ctx, u, {
       events: lr.events,
       litEventIds: lr.litEventIds,
       eventExtents: lr.eventExtents,
@@ -2503,6 +2735,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     winStart,
     winEnd,
     originSeconds,
+    baseSeconds,
     followLive,
     cursorMode,
     cursorXa,
@@ -2528,6 +2761,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       winStart,
       winEnd,
       originSeconds,
+      baseSeconds,
       followLive,
       cursorMode,
       cursorXa,
@@ -3363,10 +3597,16 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // distinguishable.
           values: (u, splits) => {
             const d = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
-            return splits.map((v) => formatElapsed(v, d));
+            const labels = splits.map((v) => formatElapsed(v, d));
+            xTicksRef.current = { splits, labels };
+            return labels;
           },
         }
       : { ...axisCommon, size: 18, space: xTickSpace, values: (_u, splits) => splits.map(() => "") };
+    // The container outlives this instance, so what this instance hangs
+    // on it (the gutter chips' click and calendar-time hover) leaves
+    // with it: a rebuild must not leave a destroyed instance panning.
+    const elListeners = new AbortController();
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: Math.max(24, el.clientHeight - 2),
@@ -3843,6 +4083,83 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               window.addEventListener("mouseup", onUp);
             });
             over.addEventListener("contextmenu", (e: MouseEvent) => e.preventDefault());
+            // The gutter's pinned cursor chip (ADR 0024) is below the
+            // plot box, so `u.over` — sized to the box alone — never
+            // sees a click on it; catch it on the whole container
+            // instead and hit-test against the box the last paint
+            // recorded. Anything else is not ours, so leave it alone.
+            const listen = { signal: elListeners.signal };
+            el.addEventListener("mousedown", (e: MouseEvent) => {
+              // Bail before touching the canvas's rect at all: this
+              // fires on every click anywhere in the chart (over bubbles
+              // up through `el` too), and most of them have no chip to
+              // hit — the common case should cost nothing beyond the
+              // ref read.
+              const hit = cursorChipBoxesRef.current.find((c) => c.pinned) ?? null;
+              if (!hit) return;
+              const rect = u.ctx.canvas.getBoundingClientRect();
+              const xs = u.scales.x;
+              const handled = routeCursorChipClick(
+                hit,
+                e.clientX - rect.left,
+                e.clientY - rect.top,
+                { min: xs.min ?? null, max: xs.max ?? null },
+                hostSettings().follow_window_ms / 1000,
+                // Same pan every drag already takes (ADR 0024):
+                // preserve the current span, recentre it on the
+                // cursor's time, and go through the shared x-sync so
+                // every linked area moves and follow-live drops
+                // exactly as a manual pan already does.
+                (min, max) => {
+                  withSuppressed(() => u.setScale("x", { min, max }));
+                  liveRef.current.onUserXChange(min, max, areaId);
+                },
+              );
+              if (handled) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            }, listen);
+            // Calendar time on the bottom axis (ADR 0024): an A/B chip
+            // or an x tick label names its instant as local date and
+            // time on hover, through the trace time cell's formatter —
+            // a native `title`, like the trace's. No repaint: the
+            // chips' boxes are the ones the last paint recorded, and a
+            // tick label's box is built from uPlot's own splits only
+            // once the pointer is below the plot box, where the labels
+            // are. Written only when the text changes.
+            const setTitle = (text: string | null) => {
+              if ((el.getAttribute("title") ?? null) === text) return;
+              if (text === null) el.removeAttribute("title");
+              else el.setAttribute("title", text);
+            };
+            el.addEventListener("mousemove", (e: MouseEvent) => {
+              const base = liveRef.current.baseSeconds;
+              const chips = cursorChipBoxesRef.current;
+              // Only the bottom axis draws chips and tick labels.
+              if (!isLast || !hasWallClockAnchor(base)) {
+                setTitle(null);
+                return;
+              }
+              const ratio = u.ctx.canvas.width / u.width || 1;
+              const rect = u.ctx.canvas.getBoundingClientRect();
+              const x = e.clientX - rect.left;
+              const y = e.clientY - rect.top;
+              const plotBottom = (u.bbox.top + u.bbox.height) / ratio;
+              const boxes =
+                y > plotBottom
+                  ? [
+                      ...chips,
+                      ...xTickLabelBoxes(u, xTicksRef.current, {
+                        plotLeft: u.bbox.left / ratio,
+                        plotBottom,
+                        measure: measureLabelWidth,
+                      }),
+                    ]
+                  : chips;
+              setTitle(timeHoverTooltip(x, y, boxes, base));
+            }, listen);
+            el.addEventListener("mouseleave", () => setTitle(null), listen);
           },
         ],
       },
@@ -3966,6 +4283,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       liveRef.current.onHoverX(areaId, null);
       registerInstance(areaId, null);
       diagCount("uplot.destroy"); // DIAG
+      elListeners.abort();
+      el.removeAttribute("title");
       overlayRef.current?.canvas.remove();
       overlayRef.current = null;
       u.destroy();
