@@ -1,4 +1,9 @@
-import { formatDatePattern, parseDatePattern, type Instant } from "./datePattern";
+import {
+  formatDatePattern,
+  parseDatePattern,
+  type DatePattern,
+  type Instant,
+} from "./datePattern";
 import type { TraceFrameRecord } from "./types";
 
 /// Zero-padded hex digits for a CAN id — 8 digits for an extended
@@ -221,6 +226,150 @@ export function formatCalendarTime(
   // stored pattern never fails to parse here; defensive only.
   if ("error" in parsed) return null;
   return formatDatePattern(parsed, instant, offsetMinutes);
+}
+
+/// An instant as the calendar formatters below read it: whole epoch
+/// seconds plus nanoseconds, and the local offset (minutes east of UTC)
+/// in force at that instant. Rounded to the microsecond first — at a
+/// ~1.7e9 epoch magnitude a float64 carries the fractional second to
+/// about 0.2 µs, so finer digits are float noise, and truncating noise
+/// would turn `.1235` into `.1234999…`. Whole seconds and fraction come
+/// from the same rounded integer, so they can never disagree.
+function localInstant(seconds: number): { instant: Instant; offsetMinutes: number } {
+  const micros = Math.round(seconds * 1e6);
+  const whole = Math.floor(micros / 1e6);
+  return {
+    instant: { seconds: whole, nanos: (micros - whole * 1e6) * 1e3 },
+    offsetMinutes: -new Date(whole * 1000).getTimezoneOffset(),
+  };
+}
+
+const hasField = (pattern: DatePattern, letters: string) =>
+  pattern.items.some((item) => "letter" in item && letters.includes(item.letter));
+
+/// A table time cell under `time_display = calendar` (ADR 0024 rule 2):
+/// the user's whole `date_time_pattern` (ADR 0062), then `.` and the
+/// fraction to `fracDigits` digits — the digits the elapsed column
+/// shows, so switching readings neither gains nor loses precision.
+/// `2023-11-14 22:13:20.1234` for the default pattern at 4 digits.
+///
+/// The fraction is **truncated**, not rounded, like the pattern's own
+/// `S` field (ADR 0062 § 1): a time never reads as a later second than
+/// the one it is in. A pattern that already carries an `S…` field
+/// renders its own fraction and is given no second one — the user chose
+/// that precision. `fracDigits` 0 appends nothing. The fraction is
+/// appended after the *whole* pattern, wherever its seconds field sits.
+///
+/// `null` without a wall-clock anchor (`hasWallClockAnchor`), like
+/// `formatCalendarTime`: a relative timeline names no instant, and the
+/// cell shows elapsed time instead. Also renders a plot tick: pass
+/// `calendarWindow`'s `tickPattern` (which has its own `S` field) and 0.
+export function formatCalendarCell(
+  seconds: number,
+  base: number | null,
+  pattern: string,
+  fracDigits: number,
+): string | null {
+  if (!hasWallClockAnchor(base)) return null;
+  const parsed = parseDatePattern(pattern);
+  // The host validates `date_time_pattern` on write (ADR 0062); defensive.
+  if ("error" in parsed) return null;
+  const { instant, offsetMinutes } = localInstant(seconds);
+  const text = formatDatePattern(parsed, instant, offsetMinutes);
+  if (fracDigits <= 0 || hasField(parsed, "S")) return text;
+  return `${text}.${String(instant.nanos).padStart(9, "0").slice(0, fracDigits)}`;
+}
+
+/// What a plot's x axis shows for the window `[fromSeconds, toSeconds]`
+/// under `time_display = calendar` (ADR 0024 rule 2): a TR35 pattern for
+/// its tick labels, and the axis title that carries the date.
+///
+/// `tickPattern` is time of day, 24-hour, and drops the leading fields
+/// the whole window shares:
+///
+/// - the window starts and ends in the same local hour → `mm:ss`;
+/// - otherwise → `HH:mm:ss` — across days too, since the title names
+///   the dates.
+///
+/// Minutes and seconds always stay: a bare `ss` would read as elapsed
+/// seconds. Then `.` and `S` × `fracDigitsForSpan(to − from)` — the same
+/// digit count the elapsed ticks use at that zoom — none when that is 0.
+///
+/// `title` names the local calendar dates the window touches:
+/// `Time on <date>` for one, `Time on <d1> and <d2>` for two, and
+/// `Time between <first>, <last>` for more. A date renders through the
+/// **date part** of the user's `date_time_pattern` (ADR 0062): its
+/// `y` / `M` / `d` / `E` fields, from the first to the last of them, with
+/// the literal text between two of them kept and any time field inside
+/// that run read as a single space (`EEE dd MMM yyyy, HH:mm:ss` gives
+/// `Tue 14 Nov 2023`). A pattern with no date field at all uses
+/// `yyyy-MM-dd`.
+///
+/// Both read the machine's own zone, at each end's own offset. `null`
+/// without a wall-clock anchor (`hasWallClockAnchor`), like
+/// `formatCalendarTime` — the axis stays elapsed.
+export function calendarWindow(
+  fromSeconds: number,
+  toSeconds: number,
+  base: number | null,
+  pattern: string,
+): { tickPattern: string; title: string } | null {
+  if (!hasWallClockAnchor(base)) return null;
+  const parsed = parseDatePattern(pattern);
+  // The host validates `date_time_pattern` on write (ADR 0062); defensive.
+  if ("error" in parsed) return null;
+  const from = localInstant(Math.min(fromSeconds, toSeconds));
+  const to = localInstant(Math.max(fromSeconds, toSeconds));
+  // Wall-clock seconds at each end, read as if they were UTC.
+  const fromLocal = from.instant.seconds + from.offsetMinutes * 60;
+  const toLocal = to.instant.seconds + to.offsetMinutes * 60;
+
+  // A DST fall-back repeats an hour, so one hour also needs one offset.
+  const oneHour =
+    Math.floor(fromLocal / 3_600) === Math.floor(toLocal / 3_600) &&
+    from.offsetMinutes === to.offsetMinutes;
+  const digits = fracDigitsForSpan(Math.abs(toSeconds - fromSeconds));
+  const tickPattern = `${oneHour ? "mm:ss" : "HH:mm:ss"}${digits > 0 ? `.${"S".repeat(digits)}` : ""}`;
+
+  const datePart = datePartOf(parsed);
+  const date = ({ instant, offsetMinutes }: ReturnType<typeof localInstant>) =>
+    formatDatePattern(datePart, instant, offsetMinutes);
+  const days = Math.floor(toLocal / 86_400) - Math.floor(fromLocal / 86_400) + 1;
+  const title =
+    days <= 1
+      ? `Time on ${date(from)}`
+      : days === 2
+        ? `Time on ${date(from)} and ${date(to)}`
+        : `Time between ${date(from)}, ${date(to)}`;
+  return { tickPattern, title };
+}
+
+/// The date part of `pattern`, per `calendarWindow`'s rule; `yyyy-MM-dd`
+/// when it has no date field.
+function datePartOf(pattern: DatePattern): DatePattern {
+  const isDate = (item: DatePattern["items"][number] | undefined) =>
+    item !== undefined && "letter" in item && "yMdE".includes(item.letter);
+  const first = pattern.items.findIndex(isDate);
+  if (first < 0) {
+    const fallback = parseDatePattern("yyyy-MM-dd");
+    if ("error" in fallback) throw new Error(fallback.error);
+    return fallback;
+  }
+  let last = first;
+  pattern.items.forEach((item, i) => {
+    if (isDate(item)) last = i;
+  });
+  const items: DatePattern["items"][number][] = [];
+  for (let i = first; i <= last; i++) {
+    const item = pattern.items[i];
+    if (isDate(item)) items.push(item);
+    else if ("literal" in item) {
+      if (isDate(pattern.items[i - 1]) && isDate(pattern.items[i + 1])) items.push(item);
+    } else if (!("literal" in items[items.length - 1])) {
+      items.push({ literal: " " });
+    }
+  }
+  return { items };
 }
 
 /// A per-id message rate (frames/second) for the by-id "msg/s" column.

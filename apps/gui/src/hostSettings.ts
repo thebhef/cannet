@@ -167,6 +167,12 @@ export interface Settings {
   /// names, logs and the export range's editable From/To fields keep
   /// their own formats regardless.
   date_time_pattern: string;
+  /// How every timeline view reads a frame's time: `elapsed` since the
+  /// session origin, or `calendar` — the instant through
+  /// `date_time_pattern` (`formatCalendarCell` / `calendarWindow` in
+  /// `format.ts`). App-wide, never per view (ADR 0024 rule 2); a
+  /// relative timeline reads elapsed either way.
+  time_display: string;
   /// The column layout a *newly created* trace or by-ID table opens
   /// with; `null` = the app's built-in layout. Round-tripped by the
   /// host without interpretation — the column key set is declared here
@@ -257,6 +263,7 @@ export function defaultSettings(): Settings {
     dbc_auto_reload: true,
     can_id_format: "hex",
     date_time_pattern: "yyyy-MM-dd HH:mm:ss",
+    time_display: "elapsed",
     trace_columns: null,
     signal_columns: null,
     float_exponential_below: 1e-4,
