@@ -43,7 +43,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::connect_flow::{self, Attempt, Outcome};
 use crate::ipc::InterfaceRecord;
-use crate::{server_trust, sys_error, sys_info, sys_warn};
+use crate::{server_trust, sys_debug, sys_error, sys_info, sys_warn};
 
 /// Tauri event emitted whenever the host's cached interface list for
 /// some address changes. Payload is [`InterfacesChangedPayload`]; the
@@ -394,6 +394,12 @@ pub async fn refresh_interfaces(
 ) -> Result<Vec<InterfaceRecord>, String> {
     let attempt = connect_flow::plan(&address, &server_trust::trust_for(&app, &address));
     let config = attempt.config(&address)?;
+    sys_debug!(
+        &app,
+        SOURCE,
+        "{address}: listing interfaces ({})",
+        attempt.describe()
+    );
     let interfaces = match cannet_client::list_interfaces(&config).await {
         Ok(interfaces) => interfaces,
         Err(e) => {
@@ -401,6 +407,12 @@ pub async fn refresh_interfaces(
             return Err(e.to_string());
         }
     };
+    sys_debug!(
+        &app,
+        SOURCE,
+        "{address}: listed {} interface(s)",
+        interfaces.len()
+    );
     connect_flow::resolved(&app, &address);
     let records: Vec<InterfaceRecord> = interfaces.into_iter().map(InterfaceRecord::from).collect();
     update_cache_and_emit(&app, &address, &records);
@@ -415,8 +427,19 @@ pub async fn refresh_interfaces(
 /// and puts the question to the user).
 async fn run_watch(app: AppHandle, address: String) {
     let mut gate = RetryWarnGate::new();
+    // One "connecting" line per run of attempts, not one per backoff tick.
+    let mut announced = false;
     loop {
         let attempt = connect_flow::plan(&address, &server_trust::trust_for(&app, &address));
+        if !announced {
+            sys_info!(
+                &app,
+                SOURCE,
+                "{address}: connecting ({})",
+                attempt.describe()
+            );
+            announced = true;
+        }
         let config = match attempt.config(&address) {
             Ok(config) => config,
             Err(msg) => {
@@ -430,6 +453,13 @@ async fn run_watch(app: AppHandle, address: String) {
                 // about this server has been answered.
                 connect_flow::resolved(&app, &address);
                 gate.reset();
+                announced = false;
+                sys_info!(
+                    &app,
+                    SOURCE,
+                    "{address}: connected ({})",
+                    attempt.describe()
+                );
                 set_connected(&app, &address, true);
                 loop {
                     match stream.next().await {
@@ -438,7 +468,10 @@ async fn run_watch(app: AppHandle, address: String) {
                                 interfaces.into_iter().map(InterfaceRecord::from).collect();
                             update_cache_and_emit(&app, &address, &records);
                         }
-                        Ok(None) => break,
+                        Ok(None) => {
+                            sys_info!(&app, SOURCE, "{address}: connection ended; retrying");
+                            break;
+                        }
                         // A credential the server stops accepting
                         // mid-stream is as terminal as one refused at
                         // connect time.

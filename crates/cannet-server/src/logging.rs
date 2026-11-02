@@ -34,8 +34,14 @@
 //! design (ADR 0041), and pinning clients compare it out of band — so
 //! it is an ordinary logged line.
 
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use cannet_server::auth::Refusal;
 
 /// Rolling log file name inside [`dir`].
 pub const LOG_FILE: &str = "cannet-server.log";
@@ -144,6 +150,63 @@ pub fn token_configured_note() -> &'static str {
     "a client token is required on every RPC; its value was printed to the console"
 }
 
+/// A TCP connection reached this process. Logged before TLS, so a
+/// connection with nothing after it may have failed its handshake, and
+/// a log with no such line means the connection never got here.
+pub fn connection_note(peer: IpAddr) -> String {
+    format!("connection from {peer}")
+}
+
+/// The gate refused an RPC. Takes the kind and never the value, the same
+/// structural argument as [`token_configured_note`].
+pub fn refusal_note(peer: Option<IpAddr>, refusal: Refusal) -> String {
+    match peer {
+        Some(peer) => format!("refused an RPC from {peer}: {refusal}"),
+        None => format!("refused an RPC from an unknown peer: {refusal}"),
+    }
+}
+
+/// How often one key may log a network line. A client that retries, or
+/// someone probing the port, must not rotate the history out of the file.
+const PEER_LOG_WINDOW: Duration = Duration::from_mins(1);
+
+/// Keys remembered before the map is cleared, which bounds its memory
+/// and at worst repeats a line.
+const PEER_LOG_KEYS: usize = 1024;
+
+/// Admits one line per key per [`PEER_LOG_WINDOW`].
+pub struct PerPeerLimit<K> {
+    last: Mutex<HashMap<K, Instant>>,
+}
+
+impl<K> Default for PerPeerLimit<K> {
+    fn default() -> Self {
+        Self {
+            last: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl<K: Eq + Hash> PerPeerLimit<K> {
+    /// Whether `key` may log at `now`.
+    pub fn admit(&self, key: K, now: Instant) -> bool {
+        let Ok(mut last) = self.last.lock() else {
+            return true;
+        };
+        if last
+            .get(&key)
+            .is_some_and(|seen| now.duration_since(*seen) < PEER_LOG_WINDOW)
+        {
+            return false;
+        }
+        if last.len() >= PEER_LOG_KEYS {
+            last.clear();
+        }
+        last.insert(key, now);
+        true
+    }
+}
+
 /// Render one line, trailing newline included. Pure; unit-testable.
 fn format_line(ts_ms: u64, level: Level, source: &str, message: &str) -> String {
     format!(
@@ -172,6 +235,40 @@ mod tests {
             format_line(1_700, Level::Info, PROXY, "listening on 127.0.0.1:50051"),
             "1970-01-01T00:00:01.700Z INFO hardware proxy: listening on 127.0.0.1:50051\n"
         );
+    }
+
+    #[test]
+    fn network_notes_name_the_peer_and_the_kind() {
+        let peer: IpAddr = "10.10.1.32".parse().unwrap();
+        assert_eq!(connection_note(peer), "connection from 10.10.1.32");
+        assert_eq!(
+            refusal_note(Some(peer), Refusal::NoCredential),
+            "refused an RPC from 10.10.1.32: no token presented"
+        );
+        assert_eq!(
+            refusal_note(None, Refusal::WrongCredential),
+            "refused an RPC from an unknown peer: wrong token presented"
+        );
+    }
+
+    #[test]
+    fn a_key_logs_once_per_window_and_keys_do_not_share_one() {
+        let limit = PerPeerLimit::default();
+        let start = Instant::now();
+        assert!(limit.admit("a", start));
+        assert!(!limit.admit("a", start + Duration::from_secs(59)));
+        assert!(limit.admit("b", start + Duration::from_secs(59)));
+        assert!(limit.admit("a", start + PEER_LOG_WINDOW));
+    }
+
+    #[test]
+    fn the_limit_forgets_rather_than_growing_without_bound() {
+        let limit = PerPeerLimit::default();
+        let now = Instant::now();
+        for key in 0..=PEER_LOG_KEYS {
+            assert!(limit.admit(key, now));
+        }
+        assert_eq!(limit.last.lock().unwrap().len(), 1);
     }
 
     #[test]

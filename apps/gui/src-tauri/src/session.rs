@@ -567,11 +567,16 @@ pub(crate) async fn connect_remote_server(
         return result;
     }
 
-    sys_debug!(&app, "connection", "connecting to {address}");
     // How this server is reached is the host's decision, planned once
     // from what it has stored for the address (ADR 0041) and reused for
     // both the discovery call and the session below.
     let attempt = connect_flow::plan(&address, &crate::server_trust::trust_for(&app, &address));
+    sys_debug!(
+        &app,
+        "connection",
+        "connecting to {address} ({})",
+        attempt.describe()
+    );
     let config = match attempt.config(&address) {
         Ok(config) => config,
         Err(msg) => {
@@ -589,6 +594,13 @@ pub(crate) async fn connect_remote_server(
             return Err(msg);
         }
     };
+    sys_info!(
+        &app,
+        "connection",
+        "{address} answered with {} interface(s) ({})",
+        interfaces.len(),
+        attempt.describe()
+    );
     connect_flow::resolved(&app, &address);
 
     if interfaces.is_empty() {

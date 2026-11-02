@@ -82,6 +82,18 @@ impl std::fmt::Debug for Attempt {
 }
 
 impl Attempt {
+    /// How this attempt reaches the server, for the log: whether a token
+    /// is stored and never its value.
+    #[must_use]
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Self::Plaintext => "plaintext",
+            Self::Probe => "first contact, nothing stored",
+            Self::Pinned { token: Some(_), .. } => "pinned, with a stored token",
+            Self::Pinned { token: None, .. } => "pinned, no stored token",
+        }
+    }
+
     /// The `cannet-client` configuration this attempt dials with.
     ///
     /// A stored fingerprint that no longer parses is a hard error
@@ -452,6 +464,21 @@ mod tests {
     #[test]
     fn a_routable_address_with_nothing_stored_is_a_first_use_probe() {
         assert_eq!(plan("bench:50051", &TrustEntry::default()), Attempt::Probe,);
+    }
+
+    #[test]
+    fn the_logged_description_says_a_token_is_stored_but_not_what_it_is() {
+        let pinned = |token: Option<&str>| Attempt::Pinned {
+            fingerprint: "SHA256:abc".into(),
+            token: token.map(str::to_string),
+        };
+        assert_eq!(
+            pinned(Some("secret-words")).describe(),
+            "pinned, with a stored token"
+        );
+        assert_eq!(pinned(None).describe(), "pinned, no stored token");
+        assert_eq!(Attempt::Plaintext.describe(), "plaintext");
+        assert_eq!(Attempt::Probe.describe(), "first contact, nothing stored");
     }
 
     #[test]

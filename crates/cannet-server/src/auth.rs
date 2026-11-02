@@ -20,11 +20,14 @@
 //!
 //! The value is a credential, so it appears in exactly one place: the
 //! startup banner the operator reads. It never reaches a log record, a
-//! `Status` message, or an error string.
+//! `Status` message, or an error string. A refusal is reported to the
+//! host as a [`Refusal`] and a peer address, which is all an operator
+//! needs to see that a client arrived and why it was turned away.
 
 use std::fmt;
 use std::fs;
 use std::io;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -220,7 +223,39 @@ pub fn gated<S>(
     service: S,
     token: Option<AccessToken>,
 ) -> tonic::service::interceptor::InterceptedService<S, impl tonic::service::Interceptor + Clone> {
-    tonic::service::interceptor::InterceptedService::new(service, token_gate(token))
+    gated_reporting(service, token, |_, _| {})
+}
+
+/// [`gated`], telling `report` about each refusal.
+pub fn gated_reporting<S, R>(
+    service: S,
+    token: Option<AccessToken>,
+    report: R,
+) -> tonic::service::interceptor::InterceptedService<S, impl tonic::service::Interceptor + Clone>
+where
+    R: Fn(Option<SocketAddr>, Refusal) + Clone,
+{
+    tonic::service::interceptor::InterceptedService::new(service, reporting_gate(token, report))
+}
+
+/// Why the gate turned a caller away. Host-side only: the caller gets
+/// the same status either way, so this is not an oracle. It carries no
+/// part of what was presented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Refusal {
+    /// The request had no `authorization` entry.
+    NoCredential,
+    /// It had one that was malformed or was not the token.
+    WrongCredential,
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NoCredential => "no token presented",
+            Self::WrongCredential => "wrong token presented",
+        })
+    }
 }
 
 /// A tonic interceptor that gates one service's RPCs on `token`.
@@ -238,8 +273,26 @@ pub fn gated<S>(
 pub fn token_gate(
     token: Option<AccessToken>,
 ) -> impl Fn(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> + Clone {
+    reporting_gate(token, |_, _| {})
+}
+
+/// [`token_gate`], telling `report` about each refusal.
+#[allow(clippy::result_large_err)] // As above: `Status` is the vocabulary here.
+pub fn reporting_gate<R>(
+    token: Option<AccessToken>,
+    report: R,
+) -> impl Fn(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> + Clone
+where
+    R: Fn(Option<SocketAddr>, Refusal) + Clone,
+{
     move |request| match &token {
-        Some(token) => authorize(request.metadata(), token).map(|()| request),
+        Some(token) => match check(request.metadata(), token) {
+            Ok(()) => Ok(request),
+            Err(refusal) => {
+                report(request.remote_addr(), refusal);
+                Err(unauthenticated())
+            }
+        },
         None => Ok(request),
     }
 }
@@ -256,15 +309,19 @@ pub fn authorize(
     metadata: &tonic::metadata::MetadataMap,
     token: &AccessToken,
 ) -> Result<(), tonic::Status> {
-    let header = metadata.get(AUTHORIZATION).ok_or_else(unauthenticated)?;
+    check(metadata, token).map_err(|_| unauthenticated())
+}
+
+fn check(metadata: &tonic::metadata::MetadataMap, token: &AccessToken) -> Result<(), Refusal> {
+    let header = metadata.get(AUTHORIZATION).ok_or(Refusal::NoCredential)?;
     // Metadata is bytes, and a value outside ASCII is a caller's
     // mistake (or probe), not a reason to panic.
-    let value = header.to_str().map_err(|_| unauthenticated())?;
-    let (scheme, presented) = value.split_once(' ').ok_or_else(unauthenticated)?;
+    let value = header.to_str().map_err(|_| Refusal::WrongCredential)?;
+    let (scheme, presented) = value.split_once(' ').ok_or(Refusal::WrongCredential)?;
     // RFC 7235: the scheme is case-insensitive, and RFC 6750 allows
     // more than one space before the credential.
     if !scheme.eq_ignore_ascii_case("Bearer") || !token.matches(presented.trim()) {
-        return Err(unauthenticated());
+        return Err(Refusal::WrongCredential);
     }
     Ok(())
 }

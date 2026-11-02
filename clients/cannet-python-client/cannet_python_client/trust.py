@@ -164,7 +164,8 @@ class ServerTarget:
 
     address: str
     fingerprint: str | None = None
-    token: str | None = None
+    # Out of the generated `repr`, so logging a target cannot leak it.
+    token: str | None = dataclasses.field(default=None, repr=False)
 
     @property
     def plaintext(self) -> bool:

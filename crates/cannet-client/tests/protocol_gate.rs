@@ -159,6 +159,7 @@ async fn a_server_that_cannot_be_asked_at_all_is_refused_rather_than_retried() {
         error.to_string().contains("this client speaks cannet.v1"),
         "{error}",
     );
+    assert!(!error.to_string().contains("  "), "{error}");
 
     server.abort();
 }

@@ -13,6 +13,7 @@ nothing.
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Iterator
 from concurrent import futures
 
@@ -24,6 +25,7 @@ from cannet_python_wire._proto import cannet_info_pb2_grpc as info_grpc
 from cannet_python_wire._proto import cannet_pb2_grpc as pb_grpc
 
 from cannet_python_client import IncompatibleProtocol, Session, server_info
+from cannet_python_client.session import list_interfaces
 from cannet_python_client.trust import ServerTarget
 
 
@@ -89,6 +91,43 @@ def test_a_server_that_cannot_be_asked_at_all_is_refused_too() -> None:
         Session(target(address), "virtual:bus0", timeout=5.0)
     assert caught.value.served == []
     assert str(caught.value).endswith(f"this client speaks {PROTOCOL_PACKAGE}")
+
+
+SECRET = "secret-words-never-logged"
+
+
+def test_a_failed_attempt_leaves_breadcrumbs_and_never_the_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        caplog.at_level(logging.DEBUG, logger="cannet_python_client.session"),
+        fake_server(None) as address,
+        pytest.raises(IncompatibleProtocol),
+    ):
+        list_interfaces(ServerTarget(address=address, token=SECRET), timeout=5.0)
+    assert f"{address}: connecting (plaintext)" in caplog.text
+    assert f"{address}: failed to connect" in caplog.text
+    assert SECRET not in caplog.text
+
+
+def test_a_refused_rpc_after_connecting_is_logged_too(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # `ListInterfaces` is registered but not implemented, so the server
+    # answers `ServerInfo` and then fails the call that follows.
+    with (
+        caplog.at_level(logging.DEBUG, logger="cannet_python_client.session"),
+        fake_server(["cannet.v1"]) as address,
+        pytest.raises(grpc.RpcError),
+    ):
+        list_interfaces(ServerTarget(address=address, token=SECRET), timeout=5.0)
+    assert f"{address}: connected (plaintext)" in caplog.text
+    assert f"{address}: ListInterfaces failed: UNIMPLEMENTED" in caplog.text
+    assert SECRET not in caplog.text
+
+
+def test_a_target_never_prints_its_token() -> None:
+    assert SECRET not in repr(ServerTarget(address="bench:50051", token=SECRET))
 
 
 def test_a_server_serving_our_major_among_others_is_accepted(
