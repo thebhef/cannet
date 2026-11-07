@@ -108,6 +108,19 @@ def test_bus_off(tmp_path: Path, strategy: str) -> None:
     # The state poll called the recovery under test on the channel.
     assert any(f"ut: {strategy} ->" in e for r in rows for e in r["strategy"])
     _assert_recovered(bench)
+    # The under-test channel reads active with its episode closed and
+    # hears the partner again -- near-live, ahead of "recovered".
+    assert any(e["event"] == "bus_back" for e in _events(bench))
+    labels = {row["label"] for row in bench.timeline()}
+    assert {
+        "pull (ut)",
+        "pull (partner)",
+        "bus-off",
+        "reopen",
+        "bus back",
+        "recovered",
+    } <= labels
+    assert any(row["label"].startswith("backlog") for row in bench.timeline())
 
 
 def test_error_passive(tmp_path: Path) -> None:
@@ -118,6 +131,13 @@ def test_error_passive(tmp_path: Path) -> None:
     assert any(r["state"] == "passive" and r["tec"] >= 128 for r in rows)
     assert any(r["status"] == "0x40000" for r in rows)
     _assert_recovered(bench)
+    # No reopen here, and the fake's episode-close timer (~1 s after the
+    # last error) outlasts this scenario's quick, decay-only recovery, so
+    # bus_back need not fire before the run stops -- bus_off (below)
+    # covers it.
+    labels = {row["label"] for row in bench.timeline()}
+    assert {"pull (ut)", "pull (partner)", "recovered"} <= labels
+    assert "bus-off" not in labels
 
 
 def test_stuck_tx_queue(tmp_path: Path) -> None:

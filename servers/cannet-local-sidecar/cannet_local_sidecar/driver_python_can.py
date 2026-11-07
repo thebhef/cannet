@@ -166,11 +166,11 @@ _XL_ERR_QUEUE_IS_FULL = 11
 #: How a backend says it refused a send because its controller is
 #: bus-off, which arms the state poll's bus-off reset (ADR 0039). PEAK's
 #: is ``PCAN_ERROR_BUSOFF``'s text ("Bus error: the CAN controller is in
-#: bus-off state"), lower-cased -- the refusal the owner's bench saw for
-#: minutes while the status word no longer armed the reset. Kvaser and
-#: Vector are not classified: no bus-off send code of either is known
-#: here, so their refusals leave ``bus_off`` unset and the reset is armed
-#: by the state read alone, as before. See ``_send_refused_bus_off``.
+#: bus-off state"), lower-cased -- the only wording PCAN-Basic uses for
+#: that refusal. Kvaser and Vector are not classified: no bus-off send
+#: code of either is known here, so their refusals leave ``bus_off``
+#: unset and the reset is armed by the state read alone, as before. See
+#: ``_send_refused_bus_off``.
 _BUS_OFF_TEXTS = ("bus-off",)
 
 #: How PCAN-Basic words a Read that returned a bus-status result

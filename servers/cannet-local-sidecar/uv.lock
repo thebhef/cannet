@@ -91,7 +91,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "grpcio", specifier = ">=1.80" },
-    { name = "grpcio-tools", marker = "extra == 'dev'", specifier = ">=1.80" },
+    { name = "grpcio-tools", marker = "extra == 'dev'", specifier = ">=1.80,<1.81" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.15" },
     { name = "protobuf", specifier = ">=6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9" },

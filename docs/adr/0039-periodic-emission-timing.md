@@ -250,6 +250,29 @@ still say bus-off — and the write is the one being refused. PEAK says so
 in `PCAN_ERROR_BUSOFF`'s text; no bus-off send code is known for Kvaser
 or Vector, whose reset stays armed by the state read alone.
 
+**A pull alone does not take a controller bus-off.** An error-passive
+transmitter's acknowledge errors do not raise its transmit error
+counter (ISO 11898-1) — only an error-active transmitter's do, and
+error-passive is exactly where the lack of an acknowledge stops
+counting. Live, TEC climbed to 128 on the pull and held there;
+bus-off followed only from bit, form or stuff errors at the connector
+(a replug, a wiggle, or the pull itself landing badly), never from the
+missing acknowledge by itself.
+
+**Measured: active within about 1.6 s of bus-off.** Six live PEAK
+pulls recovered — three on the close-before-open order by itself,
+three more on the shipped fix built from it — against three pulls of
+the two rungs that preceded close-before-open, which never recovered:
+
+| Run | Strategy | Bus-off → active | Verdict |
+|---|---|---|---|
+| 1 | `sidecar` (open before close) | — | not recovered |
+| 2 | `state_active` | — | not recovered |
+| 3 | `bus_reset` | — | not recovered |
+| 4–6 | `close_then_open` | 1.5 / 1.6 / 1.5 s | recovered 3/3 |
+| 8, 10, 12 | `sidecar` (shipped fix) | 1.6 / 1.6 / 1.4 s | recovered 3/3 |
+| 7, 9, 11 | `sidecar` (shipped fix; no bus-off) | — (error-passive) | recovered by itself 3/3 |
+
 ## Amendment (2026-10-03) — only the wire writes the `Tx` row
 
 A transmit the session accepts appends nothing. The frame enters the
