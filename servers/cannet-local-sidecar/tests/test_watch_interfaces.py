@@ -84,7 +84,7 @@ def _drain(it, n: int, timeout_s: float = 2.0) -> list[pb.InterfaceList]:
         try:
             for _ in range(n):
                 out.append(next(it))
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:  # noqa: BLE001 - background thread edge; the main thread asserts on it
             err.append(e)
 
     t = threading.Thread(target=_run, daemon=True)

@@ -348,7 +348,7 @@ class FakeDriver:
             raise KeyError(channel_id)
         try:
             bus = FakePcanBus(self.wire, channel_id, fd=config.fd)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - fake mirrors the driver edge; re-raised as OSError
             raise OSError(f"open {channel_id}: {e}") from e
         _disable_pcan_status_frames(bus)
         return PythonCanChannel(
