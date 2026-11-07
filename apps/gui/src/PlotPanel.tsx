@@ -90,7 +90,7 @@ import {
   type LiveEdgeTuning,
 } from "./followWindow";
 import { showPointsFromRaw, showPointsOverride, type ShowPointsMode } from "./plotPoints";
-import { formatElapsed, fracDigitsForSpan } from "./format";
+import { fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
@@ -347,7 +347,7 @@ import {
 } from "./plotAreaTransfer";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
-import { eventChipMinWidthPx, PlotArea } from "./PlotArea";
+import { calendarAxis, eventChipMinWidthPx, PlotArea, plotTimeText } from "./PlotArea";
 import { PlotMeasurementStrip, type PlottedSignal } from "./PlotMeasurements";
 
 
@@ -1485,6 +1485,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // Clear flows through the same callback). `null` when no area
   // has anchored yet (e.g. no frames in the window).
   const [baseSeconds, setBaseSeconds] = useState<number | null>(null);
+  const timeDisplay = useSetting("time_display");
+  const datePattern = useSetting("date_time_pattern");
   // Display-relative `t` (seconds, panel x-axis units) → absolute
   // trace ns: the host's note store works in
   // `RawTraceFrame::timestamp_ns` units so a note placed in panel
@@ -2773,8 +2775,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // that could alter the span re-renders the panel (xEpoch bump).
   const { xMin, xMax } = xSyncRef.current;
   const xLabelDigits = xMin != null && xMax != null ? fracDigitsForSpan(xMax - xMin) : 4;
+  // Calendar reading (`time_display`): the same cell the chips and the
+  // trace show, at the same digits; elapsed without a wall-clock anchor.
+  const calendar = calendarAxis(baseSeconds, timeDisplay, datePattern);
   const fmtPos = (t: number | null): string =>
-    t == null ? "—" : formatElapsed(t, xLabelDigits);
+    t == null ? "—" : plotTimeText(t, xLabelDigits, calendar);
 
   /** Right-click anywhere on the panel toolbar opens this menu —
    * currently just the diagnostic-readout toggle, but the shape is

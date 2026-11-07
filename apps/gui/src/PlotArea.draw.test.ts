@@ -13,7 +13,7 @@
 // a recorder standing in for the context and a hand-rolled uPlot whose
 // only real job is a linear `valToPos`.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type uPlot from "uplot";
 
 import {
@@ -29,11 +29,19 @@ import {
   drawXAxisTimeLabel,
   eventChipGutterPx,
   routeCursorChipClick,
+  plotTimeText,
   timeHoverTooltip,
   xTickLabelBoxes,
+  xTickLabels,
   type TileLabel,
 } from "./PlotArea";
-import { formatCalendarTime } from "./format";
+import {
+  calendarWindow,
+  formatCalendarCell,
+  formatCalendarTime,
+  formatElapsed,
+  fracDigitsForSpan,
+} from "./format";
 import { enumSegments, mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
 import { applySampleMarkerFilter, showPointsToUplot } from "./plotPoints";
@@ -2002,5 +2010,108 @@ describe("the line path uPlot builds over a merged row", () => {
     const { ops, gaps } = await lineOf([merged[0], ...rows]);
     expect(ops.filter((o) => o.op === "lineTo" || o.op === "moveTo")).toHaveLength(4);
     expect(gaps).toHaveLength(1);
+  });
+});
+
+const cellAt = (seconds: number, pattern: string, digits = 0): string =>
+  formatCalendarCell(seconds, 1_699_999_600, pattern, digits) as string;
+
+describe("plot calendar time (time_display = calendar)", () => {
+  // 2023-11-14T22:06:40Z; pinned to UTC so the strings are exact.
+  const BASE = 1_699_999_600;
+  const PATTERN = "yyyy-MM-dd HH:mm:ss";
+  const CAL = { base: BASE, pattern: PATTERN };
+  const lineU = (min: number, max: number): uPlot =>
+    ({
+      data: [[min, max]],
+      series: [{}, {}],
+      width: 700,
+      height: 400,
+      bbox: { left: 40, top: 30, width: 600, height: 300 },
+      ctx: { canvas: { width: 700, height: 400 } },
+      scales: { x: { min, max } },
+      valToPos: (v: number, axis: string) => (axis === "x" ? 40 + v * 10 : 330 - v),
+    }) as unknown as uPlot;
+  const BOX = { left: 40, top: 30, width: 600, height: 300, ratio: 1 };
+
+  beforeEach(() => {
+    vi.stubEnv("TZ", "UTC");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("labels ticks with the window's time of day, not elapsed seconds", () => {
+    const w = calendarWindow(BASE + 0, BASE + 10, BASE, PATTERN);
+    expect(w).not.toBeNull();
+    const labels = xTickLabels([0, 5, 10], 0, 10, CAL);
+    expect(labels).toEqual([0, 5, 10].map((v) => cellAt(BASE + v, w!.tickPattern)));
+    expect(labels[0]).toMatch(/^06:40/);
+  });
+
+  it("keeps elapsed ticks without a calendar reading", () => {
+    expect(xTickLabels([0, 5, 10], 0, 10, null)).toEqual(
+      [0, 5, 10].map((v) => formatElapsed(v, fracDigitsForSpan(10))),
+    );
+  });
+
+  it("names the date in the axis label for a one-day window", () => {
+    const { ctx, ops } = recorder();
+    drawXAxisTimeLabel(ctx, lineU(0, 10), { ...BOX, hoverX: null, calendar: CAL });
+    expect(ops.find((o) => o.op === "fillText")?.args[0]).toBe("Time on 2023-11-14");
+  });
+
+  it("names both dates for a window across midnight", () => {
+    const { ctx, ops } = recorder();
+    drawXAxisTimeLabel(ctx, lineU(0, 7200), { ...BOX, hoverX: null, calendar: CAL });
+    expect(ops.find((o) => o.op === "fillText")?.args[0]).toBe(
+      "Time on 2023-11-14 and 2023-11-15",
+    );
+  });
+
+  it("appends the hovered time of day to the title", () => {
+    const { ctx, ops } = recorder();
+    drawXAxisTimeLabel(ctx, lineU(0, 10), { ...BOX, hoverX: 2, calendar: CAL });
+    const text = ops.find((o) => o.op === "fillText")?.args[0] as string;
+    expect(text.startsWith("Time on 2023-11-14 · ")).toBe(true);
+    expect(text).toContain("06:42");
+  });
+
+  it("keeps the elapsed label on a relative timeline", () => {
+    const { ctx, ops } = recorder();
+    drawXAxisTimeLabel(ctx, lineU(0, 10), { ...BOX, hoverX: null, calendar: null });
+    expect(ops.find((o) => o.op === "fillText")?.args[0]).toBe("time (s)");
+  });
+
+  it("reads A and B as calendar cells while Δt stays a duration", () => {
+    const box = { left: 0, width: 400, gutterTop: 210, gutter: 17, xDigits: 3, ratio: 1 };
+    const cal = recorder();
+    drawTimeCursorChips(cal.ctx, lineU(0, 40), { ...box, cursorXa: 1, cursorXb: 19, calendar: CAL });
+    const texts = cal.ops.filter((o) => o.op === "fillText").map((o) => String(o.args[0]));
+    expect(texts).toContain(`A ${cellAt(BASE + 1, PATTERN, 3)}`);
+    expect(texts).toContain(`B ${cellAt(BASE + 19, PATTERN, 3)}`);
+    const el = recorder();
+    drawTimeCursorChips(el.ctx, lineU(0, 40), { ...box, cursorXa: 1, cursorXb: 19 });
+    const dt = (r: ReturnType<typeof recorder>) =>
+      r.ops
+        .filter((x) => x.op === "fillText")
+        .map((x) => String(x.args[0]))
+        .find((t) => t.startsWith("Δt"));
+    expect(dt(cal)).toBeDefined();
+    expect(dt(cal)).toBe(dt(el));
+  });
+
+  it("plotTimeText is the elapsed reading without a calendar", () => {
+    expect(plotTimeText(1.5, 3, null)).toBe(formatElapsed(1.5, 3));
+    expect(plotTimeText(1.5, 3, CAL)).toBe(cellAt(BASE + 1.5, PATTERN, 3));
+  });
+
+  it("swaps the hover tooltip to elapsed time in calendar mode", () => {
+    const chip = { t: 3.25, left: 100, top: 210, width: 50, height: 17 };
+    expect(timeHoverTooltip(120, 215, [chip], BASE, PATTERN, "calendar")).toBe(formatElapsed(3.25));
+    expect(timeHoverTooltip(120, 215, [chip], BASE, PATTERN, "elapsed")).toBe(
+      formatCalendarTime(BASE + 3.25, BASE, PATTERN),
+    );
+    expect(timeHoverTooltip(120, 215, [chip], 5, PATTERN, "calendar")).toBeNull();
   });
 });

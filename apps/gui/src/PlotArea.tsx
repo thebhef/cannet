@@ -95,6 +95,9 @@ import { ColorChip } from "./ColorChip";
 import { Icon } from "./Icon";
 import { DisclosureToggle } from "./DisclosureToggle";
 import {
+  calendarWindow,
+  ELAPSED_FRAC_DIGITS,
+  formatCalendarCell,
   formatCalendarTime,
   formatDurationSeconds,
   formatElapsed,
@@ -276,12 +279,82 @@ const X_AXIS_LABEL_FONT = xAxisLabelFont(1);
  * the *window* crosses a magnitude boundary, which is a pan/zoom, not a
  * mouse move.
  */
-function xAxisLabelText(hoverX: number | null, xMax: number | null, fracDigits: number): string {
-  if (hoverX == null || !Number.isFinite(hoverX)) return X_AXIS_LABEL;
-  const text = formatElapsed(hoverX, fracDigits);
-  const width =
-    xMax != null && Number.isFinite(xMax) ? formatElapsed(xMax, fracDigits).length : text.length;
-  return `${X_AXIS_LABEL} · ${text.padStart(width)}`;
+function xAxisLabelText(
+  hoverX: number | null,
+  xMax: number | null,
+  fracDigits: number,
+  calendar: CalendarAxis | null = null,
+  xMin: number | null = null,
+): string {
+  const win =
+    calendar && xMin != null && xMax != null
+      ? calendarWindow(calendar.base + xMin, calendar.base + xMax, calendar.base, calendar.pattern)
+      : null;
+  const label = win ? win.title : X_AXIS_LABEL;
+  if (hoverX == null || !Number.isFinite(hoverX)) return label;
+  // In calendar mode the title names the date(s), so the cursor reads
+  // as the same time of day the ticks use.
+  const read = (t: number): string =>
+    win && calendar
+      ? (formatCalendarCell(calendar.base + t, calendar.base, win.tickPattern, 0) ?? "")
+      : formatElapsed(t, fracDigits);
+  const text = read(hoverX);
+  const width = xMax != null && Number.isFinite(xMax) ? read(xMax).length : text.length;
+  return `${label} · ${text.padStart(width)}`;
+}
+
+/**
+ * The calendar reading of the plot's x axis: the panel's wall-clock
+ * origin and the user's `date_time_pattern`. `null` when the
+ * `time_display` setting is elapsed or there is no wall-clock anchor —
+ * the axis then stays elapsed (ADR 0024).
+ */
+export interface CalendarAxis {
+  base: number;
+  pattern: string;
+}
+
+export function calendarAxis(
+  base: number | null,
+  timeDisplay: string,
+  pattern: string,
+): CalendarAxis | null {
+  return timeDisplay === "calendar" && base !== null && hasWallClockAnchor(base)
+    ? { base, pattern }
+    : null;
+}
+
+/** One x position as text — a chip or a cursor readout: elapsed at
+ * `digits` fractional digits, or the calendar cell (the whole pattern,
+ * `.ffff` appended) when `calendar` is set. */
+export function plotTimeText(t: number, digits: number, calendar: CalendarAxis | null): string {
+  if (calendar) {
+    const cell = formatCalendarCell(calendar.base + t, calendar.base, calendar.pattern, digits);
+    if (cell !== null) return cell;
+  }
+  return formatElapsed(t, digits);
+}
+
+/** The bottom axis's tick labels for the window `[min, max]`: time of
+ * day under a calendar reading (shared leading fields dropped, the date
+ * lives in the axis title), elapsed seconds otherwise. The window's
+ * pattern is resolved once for all the splits. */
+export function xTickLabels(
+  splits: readonly number[],
+  min: number,
+  max: number,
+  calendar: CalendarAxis | null,
+): string[] {
+  const win = calendar
+    ? calendarWindow(calendar.base + min, calendar.base + max, calendar.base, calendar.pattern)
+    : null;
+  if (calendar && win) {
+    return splits.map(
+      (v) => formatCalendarCell(calendar.base + v, calendar.base, win.tickPattern, 0) ?? "",
+    );
+  }
+  const d = fracDigitsForSpan(max - min);
+  return splits.map((v) => formatElapsed(v, d));
 }
 
 const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
@@ -1593,10 +1666,15 @@ export function timeHoverTooltip(
   boxes: readonly TimeHitBox[],
   baseSeconds: number | null,
   pattern: string,
+  timeDisplay: string = "elapsed",
 ): string | null {
   if (baseSeconds === null || !hasWallClockAnchor(baseSeconds)) return null;
   const hit = boxes.find((b) => inTimeHitBox(b, cssX, cssY));
-  return hit ? formatCalendarTime(baseSeconds + hit.t, baseSeconds, pattern) : null;
+  if (!hit) return null;
+  // The tooltip is the other reading of the instant the box shows.
+  return timeDisplay === "calendar"
+    ? formatElapsed(hit.t, ELAPSED_FRAC_DIGITS)
+    : formatCalendarTime(baseSeconds + hit.t, baseSeconds, pattern);
 }
 
 /**
@@ -1678,9 +1756,12 @@ export function drawTimeCursorChips(
     /** Fractional digits the x-axis ticks are showing, so a chip reads
      * at the precision of the tick under it (ADR 0024). */
     xDigits: number;
+    /** Calendar reading of the chips' times; Δt stays a duration. */
+    calendar?: CalendarAxis | null;
     ratio: number;
   },
 ): CursorChipBox[] {
+  const cal = o.calendar ?? null;
   const a = o.cursorXa;
   const b = o.cursorXb;
   if (a == null && b == null) return [];
@@ -1731,9 +1812,9 @@ export function drawTimeCursorChips(
     drawn.push({ cursor, t, x, w, pinned: true });
   };
   if (a != null && b != null && xaRaw != null && xbRaw != null) {
-    const aText = `A ${formatElapsed(a, o.xDigits)}`;
+    const aText = `A ${plotTimeText(a, o.xDigits, cal)}`;
     const deltaText = `Δt ${formatDurationSeconds(Math.abs(b - a), deltaDigits)}`;
-    const bText = `B ${formatElapsed(b, o.xDigits)}`;
+    const bText = `B ${plotTimeText(b, o.xDigits, cal)}`;
     const xa = clampX(xaRaw);
     const xb = clampX(xbRaw);
     const xDelta = (xa + xb) / 2;
@@ -1780,7 +1861,7 @@ export function drawTimeCursorChips(
     // view, is worth pinning and reaching back to when it isn't.)
     const t = a ?? (b as number);
     const xpRaw = (xaRaw ?? xbRaw) as number;
-    const text = a != null ? `A ${formatElapsed(t, o.xDigits)}` : `B ${formatElapsed(t, o.xDigits)}`;
+    const text = `${a != null ? "A" : "B"} ${plotTimeText(t, o.xDigits, cal)}`;
     const color = a != null ? theme().cursorA : theme().cursorB;
     drawChip(ctx, [text], { x: xpRaw, anchor: "center", cy, color, ratio: o.ratio });
     const w = chipBoxWidth(ctx, text, o.ratio);
@@ -1869,12 +1950,16 @@ export function drawXAxisTimeLabel(
     width: number;
     height: number;
     ratio: number;
+    /** Calendar reading: the label carries the window's date(s). */
+    calendar?: CalendarAxis | null;
   },
 ): void {
   const text = xAxisLabelText(
     o.hoverX,
     u.scales.x.max ?? null,
     fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)),
+    o.calendar ?? null,
+    u.scales.x.min ?? null,
   );
   ctx.save();
   ctx.font = xAxisLabelFont(o.ratio);
@@ -1931,6 +2016,8 @@ export function drawHoverOverlay(
      * gutter — the same anchoring the drawing axes already use. */
     isFirst: boolean;
     isLast: boolean;
+    /** Calendar reading of the bottom axis's chips and label. */
+    calendar?: CalendarAxis | null;
   },
 ): CursorChipBox[] {
   const ratio = u.ctx.canvas.width / u.width || 1;
@@ -2068,9 +2155,18 @@ export function drawHoverOverlay(
       gutterTop: top + height + X_TICK_SIZE_PX * ratio,
       gutter: TIME_CURSOR_GUTTER_PX * ratio,
       xDigits: fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)),
+      calendar: o.calendar,
       ratio,
     });
-    drawXAxisTimeLabel(ctx, u, { hoverX: o.hoverX, left, top, width, height, ratio });
+    drawXAxisTimeLabel(ctx, u, {
+      hoverX: o.hoverX,
+      left,
+      top,
+      width,
+      height,
+      ratio,
+      calendar: o.calendar,
+    });
   }
   drawValueCursorChips(ctx, u, {
     cursorYh1: o.cursorYh1,
@@ -2274,6 +2370,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * (ADR 0034). Drawing stays pinned to rAF — this is the fetch, which
    * is where the host-side cost is. */
   const fetchIntervalMs = useSetting("plot_fetch_interval_ms");
+  // The calendar reading of the x axis (ADR 0024): ticks, title, chips.
+  // A ref, because the uPlot closures outlive a render; the effect below
+  // re-labels the axis when the reading changes.
+  const timeDisplay = useSetting("time_display");
+  const datePattern = useSetting("date_time_pattern");
+  const calendar = calendarAxis(baseSeconds, timeDisplay, datePattern);
+  const calendarRef = useRef(calendar);
+  calendarRef.current = calendar;
+  const calendarKey = calendar ? `${calendar.base}|${calendar.pattern}` : "";
 
   /** How a float reads, from `settings.json` (ADR 0034). Reactive
    * because the y-axis tick formatter is a closure the uPlot instance
@@ -2578,6 +2683,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // without rebuilding this instance, and that is exactly when this
       // axis starts carrying the event chips.
       isFirst: lr.isFirst,
+      calendar: calendarRef.current,
       isLast,
     });
   };
@@ -3563,7 +3669,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     // their shared x-gridlines stay aligned.
     const xTickSpace: uPlot.Axis["space"] = (_u, _axisIdx, min, max) => {
       const d = fracDigitsForSpan((max ?? 0) - (min ?? 0));
-      const widest = measureLabelWidth(formatElapsed(max ?? 0, d));
+      const cal = calendarRef.current;
+      const win = cal
+        ? calendarWindow(cal.base + (min ?? 0), cal.base + (max ?? 0), cal.base, cal.pattern)
+        : null;
+      const widest = measureLabelWidth(
+        cal && win
+          ? (formatCalendarCell(cal.base + (max ?? 0), cal.base, win.tickPattern, 0) ?? "")
+          : formatElapsed(max ?? 0, d),
+      );
       return Math.max(50, Math.ceil(widest) + 22);
     };
     // Only the bottom-most stacked area carries the "time (s)" label and
@@ -3602,8 +3716,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // precision adapts to the visible span so zoomed-in ticks stay
           // distinguishable.
           values: (u, splits) => {
-            const d = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
-            const labels = splits.map((v) => formatElapsed(v, d));
+            const labels = xTickLabels(
+              splits,
+              u.scales.x.min ?? 0,
+              u.scales.x.max ?? 0,
+              calendarRef.current,
+            );
             xTicksRef.current = { splits, labels };
             return labels;
           },
@@ -4163,7 +4281,14 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                       }),
                     ]
                   : chips;
-              setTitle(timeHoverTooltip(x, y, boxes, base, hostSettings().date_time_pattern));
+              setTitle(timeHoverTooltip(
+                  x,
+                  y,
+                  boxes,
+                  base,
+                  hostSettings().date_time_pattern,
+                  hostSettings().time_display,
+                ));
             }, listen);
             el.addEventListener("mouseleave", () => setTitle(null), listen);
           },
@@ -4566,6 +4691,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // (`recalcAxes`), and every other redraw above stays cheap: the
   // crosshair moves on every mouse move, and re-running axis and
   // padding convergence there would be three layout cycles per frame.
+  useEffect(() => {
+    uplotRef.current?.redraw(false, true);
+    paintHoverOverlayRef.current();
+  }, [calendarKey]);
+
   const eventChipKey = isFirst ? eventChipLabels(events).join(" ") : "";
   const eventChipKeyPrevRef = useRef<string | null>(null);
   useEffect(() => {
