@@ -455,6 +455,22 @@ template, for file names rather than display — or with the export
 range's From / To fields, which take and echo their own fixed
 wall-clock/offset syntax rather than this setting's pattern.
 
+**Time display**:
+The `time_display` setting (ADR 0024 rule 2): how every timeline view
+— trace, By-ID, Events, Signals, plots — reads a frame's time.
+`elapsed` (the default) is time since the session origin; `calendar`
+is the instant itself through the **date/time pattern**. One app-wide
+choice, never per view; the command palette's *Toggle calendar time*
+flips it. A relative timeline (no wall-clock anchor) names no instant
+and reads elapsed under either. In calendar mode a table time cell
+shows the whole pattern plus the elapsed column's fraction digits; a
+plot's ticks read time of day, and its x-axis title carries the date —
+`Time on <date>`, `Time on <d1> and <d2>`, or `Time between <first>,
+<last>` as the window spans one, two or more dates.
+_Avoid_: "real time" or "absolute time" for the calendar reading, and
+"relative time" for elapsed — a relative *timeline* is the anchorless
+case, which is a different fact.
+
 ### Plot view
 
 **Plot panel**:

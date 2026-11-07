@@ -29,7 +29,7 @@ use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
     Settings, CAN_ID_FORMATS, MIN_BUS_ERROR_EPISODE_GAP_S, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES,
     MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS,
-    THEMES, TRACE_MODES, Y_AXIS_MODES,
+    THEMES, TIME_DISPLAYS, TRACE_MODES, Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -600,6 +600,22 @@ const DESCRIPTORS: &[Spec] = &[
         kind: Kind::Behaviour,
         control: Control::Custom {
             renderer: "date-time-pattern",
+        },
+    },
+    Spec {
+        key: "time_display",
+        backing: Backing::Field,
+        label: "Time display",
+        help: "calendar shows every timeline view — trace, By-ID, Events, \
+               Signals, plots — as calendar time through the date/time pattern \
+               instead of elapsed time since the session started; one choice \
+               for all views. A capture with no wall-clock start time names no \
+               instant, so it stays elapsed. Command palette: Toggle calendar \
+               time.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Enum {
+            options: TIME_DISPLAYS,
         },
     },
     Spec {

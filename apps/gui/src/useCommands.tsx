@@ -658,6 +658,12 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "view.redo": () => applyViewHistory("redo"),
     "view.fullscreen": toggleFullscreenView,
     "view.exitFullscreen": () => dockApiRef.current?.exitMaximizedGroup(),
+    "view.toggleCalendarTime": () => {
+      const next = hostSettings().time_display === "calendar" ? "elapsed" : "calendar";
+      void updateSettings({ time_display: next }).catch(() => {
+        /* host logs the failure; the stored value still holds */
+      });
+    },
   };
   const runCommand = useCallback((id: string) => {
     const handler = commandHandlersRef.current[id];
