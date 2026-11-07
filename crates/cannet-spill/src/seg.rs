@@ -9,6 +9,7 @@
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use memmap2::MmapMut;
 
@@ -116,16 +117,35 @@ const OPEN_SEGMENTS_THREADS: usize = 16;
 /// on its own thread, concatenate. The first failing chunk's error is
 /// returned and the rest of the mappings are dropped, exactly as the
 /// serial loop would.
-pub(crate) fn open_segments(paths: &[PathBuf]) -> io::Result<Vec<Segment>> {
+///
+/// `on_file` is the progress seam: called once per file mapped, with the
+/// running count of files mapped so far in this call (`1..=paths.len()`
+/// on success), from whichever mapping thread mapped it — hence `Sync`.
+/// The count is one shared atomic add per file, so the counts arrive in
+/// no particular order across threads but each value is seen exactly
+/// once. A restore reports how far it has got from this (ADR 0002 DS-7);
+/// the callback runs on the mapping threads, so it must stay cheap and
+/// must not wait on anything the caller holds. Pass `&|_| {}` to ignore it.
+pub(crate) fn open_segments(
+    paths: &[PathBuf],
+    on_file: &(dyn Fn(usize) + Sync),
+) -> io::Result<Vec<Segment>> {
+    let opened = AtomicUsize::new(0);
+    let map_one = |p: &PathBuf| {
+        let seg = open_segment(p)?;
+        on_file(opened.fetch_add(1, Ordering::Relaxed) + 1);
+        Ok(seg)
+    };
     if paths.len() < 2 {
-        return paths.iter().map(|p| open_segment(p)).collect();
+        return paths.iter().map(map_one).collect();
     }
     let threads = OPEN_SEGMENTS_THREADS.min(paths.len());
     let chunk = paths.len().div_ceil(threads);
+    let map_one = &map_one;
     let chunks: Vec<io::Result<Vec<Segment>>> = std::thread::scope(|s| {
         let handles: Vec<_> = paths
             .chunks(chunk)
-            .map(|slice| s.spawn(move || slice.iter().map(|p| open_segment(p)).collect()))
+            .map(|slice| s.spawn(move || slice.iter().map(map_one).collect()))
             .collect();
         handles
             .into_iter()
@@ -173,7 +193,7 @@ mod tests {
                 p
             })
             .collect();
-        let segs = open_segments(&paths).expect("all present");
+        let segs = open_segments(&paths, &|_| {}).expect("all present");
         assert_eq!(segs.len(), paths.len());
         for (i, s) in segs.iter().enumerate() {
             let want = u8::try_from(i).unwrap();
@@ -182,8 +202,36 @@ mod tests {
         let mut missing = paths.clone();
         missing.push(dir.path().join("seg.absent"));
         assert!(
-            open_segments(&missing).is_err(),
+            open_segments(&missing, &|_| {}).is_err(),
             "a path that cannot be mapped fails the whole call"
         );
+    }
+
+    /// Every count `open_segments` hands its callback, sorted.
+    fn reported_counts(paths: &[PathBuf]) -> Vec<usize> {
+        let seen = std::sync::Mutex::new(Vec::new());
+        let segs = open_segments(paths, &|n| seen.lock().unwrap().push(n)).expect("all present");
+        assert_eq!(segs.len(), paths.len());
+        let mut seen = seen.into_inner().unwrap();
+        seen.sort_unstable();
+        seen
+    }
+
+    #[test]
+    fn the_progress_seam_sees_every_file_once_on_the_threaded_and_single_file_paths() {
+        let dir = TempDir::new().unwrap();
+        let paths: Vec<PathBuf> = (0..40u8)
+            .map(|i| {
+                let p = dir.path().join(format!("seg.{i:03}"));
+                create_segment(&p, 8).unwrap();
+                p
+            })
+            .collect();
+        // Threaded: 40 files over 16 threads.
+        assert_eq!(reported_counts(&paths), (1..=40).collect::<Vec<_>>());
+        // Single file: the serial path.
+        assert_eq!(reported_counts(&paths[..1]), vec![1]);
+        // Nothing to map: no calls.
+        assert!(reported_counts(&[]).is_empty());
     }
 }

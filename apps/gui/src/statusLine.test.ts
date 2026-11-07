@@ -263,4 +263,55 @@ describe("loadProgressReadout", () => {
     const readout = loadProgressReadout({ phase: "import", frames: 900, total_frames: 500 });
     expect(readout?.fraction).toBe(1);
   });
+
+  it("reads a restore as segment files against the phase's own total", () => {
+    const readout = loadProgressReadout({
+      phase: "capture_index",
+      files_opened: 1_204,
+      total_files: 2_452,
+    });
+    expect(readout?.fraction).toBeCloseTo(1_204 / 2_452, 10);
+    expect(readout?.text).toBe(
+      `capture index ${(1_204).toLocaleString()} / ${(2_452).toLocaleString()} files`,
+    );
+  });
+
+  it("names each restore phase", () => {
+    const text = (phase: "capture_index" | "capture_frames" | "signal_caches") =>
+      loadProgressReadout({ phase, files_opened: 1, total_files: 4 })?.text;
+    expect(text("capture_index")).toBe("capture index 1 / 4 files");
+    expect(text("capture_frames")).toBe("capture frames 1 / 4 files");
+    expect(text("signal_caches")).toBe("signal caches 1 / 4 files");
+  });
+
+  it("follows a restore phase whose total grew", () => {
+    // The frames phase learns its payload count only after the metadata
+    // is mapped, so its total grows once mid-phase; the bar steps back
+    // rather than claiming a fraction of the smaller total.
+    expect(
+      loadProgressReadout({ phase: "capture_frames", files_opened: 1_691, total_files: 1_691 })
+        ?.fraction,
+    ).toBe(1);
+    const grown = loadProgressReadout({
+      phase: "capture_frames",
+      files_opened: 1_691,
+      total_files: 1_903,
+    });
+    expect(grown?.fraction).toBeCloseTo(1_691 / 1_903, 10);
+    expect(grown?.text).toBe(
+      `capture frames ${(1_691).toLocaleString()} / ${(1_903).toLocaleString()} files`,
+    );
+  });
+
+  it("fills the bar on a restore phase's final report", () => {
+    expect(
+      loadProgressReadout({ phase: "signal_caches", files_opened: 129, total_files: 129 }),
+    ).toEqual({ fraction: 1, text: "signal caches 129 / 129 files" });
+  });
+
+  it("has nothing to report for a restore phase with no files", () => {
+    expect(
+      loadProgressReadout({ phase: "capture_index", files_opened: 0, total_files: 0 }),
+    ).toBeNull();
+  });
 });

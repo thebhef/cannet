@@ -1867,9 +1867,30 @@ impl PersistedSignal {
 /// width of about four and turns the restore into the slow half of a
 /// launch. `None` if any run doesn't answer to its manifest row.
 fn reopen_set(root: &Path, signals: &[PersistedSignal]) -> Option<Vec<(SignalKey, SignalCache)>> {
-    if signals.is_empty() {
-        return Some(Vec::new());
+    map_set(root, signals, plan_set(signals)?, &|_| {})
+}
+
+/// What [`reopen_set`] will map: each signal's key and file prefix, how
+/// many level runs it has, and every run.
+struct SetPlan {
+    keys: Vec<(SignalKey, String)>,
+    per_signal: Vec<usize>,
+    runs: Vec<(String, usize, usize)>,
+}
+
+impl SetPlan {
+    /// Segment files mapping this set opens — the restore's progress total.
+    fn files(&self) -> usize {
+        self.runs
+            .iter()
+            .map(|(_, len, first)| SampleSeq::reopen_file_count(*len, *first))
+            .sum()
     }
+}
+
+/// The first half of [`reopen_set`], without touching the disk. `None`
+/// if a row doesn't plan.
+fn plan_set(signals: &[PersistedSignal]) -> Option<SetPlan> {
     let keys: Vec<(SignalKey, String)> = signals
         .iter()
         .map(|s| {
@@ -1885,7 +1906,31 @@ fn reopen_set(root: &Path, signals: &[PersistedSignal]) -> Option<Vec<(SignalKey
         per_signal.push(levels.len());
         runs.extend(levels);
     }
-    let mut mapped = SampleSeq::reopen_many(root, &runs)
+    Some(SetPlan {
+        keys,
+        per_signal,
+        runs,
+    })
+}
+
+/// The second half of [`reopen_set`]: map `plan`'s files in one batched
+/// open, `on_file` seeing the running count (see
+/// [`SampleSeq::reopen_many_reporting`]).
+fn map_set(
+    root: &Path,
+    signals: &[PersistedSignal],
+    plan: SetPlan,
+    on_file: &(dyn Fn(usize) + Sync),
+) -> Option<Vec<(SignalKey, SignalCache)>> {
+    if signals.is_empty() {
+        return Some(Vec::new());
+    }
+    let SetPlan {
+        keys,
+        per_signal,
+        runs,
+    } = plan;
+    let mut mapped = SampleSeq::reopen_many_reporting(root, &runs, on_file)
         .ok()
         .flatten()?
         .into_iter();
@@ -3199,6 +3244,25 @@ impl SignalCacheStore {
         dbcs: &DecodeModel<'_>,
         store_len: usize,
     ) -> RestoreOutcome {
+        self.restore_reporting(validity, dbcs, store_len, &|_, _| {})
+    }
+
+    /// [`Self::restore`] reporting the reopen's segment files as they map
+    /// (ADR 0002 DS-7, ADR 0047): `progress(0, total)` once the rows to
+    /// reopen are judged and before the first file maps — `total` being
+    /// every file of every row to reopen, DBC-backed and file-backed
+    /// together — then `progress(opened, total)` once per file mapped.
+    /// Nothing is reported when there is no set to reopen.
+    ///
+    /// `progress` runs on the mapping threads while this holds the cache
+    /// lock, so it must not touch the caches.
+    pub fn restore_reporting(
+        &self,
+        validity: &PyramidValidity,
+        dbcs: &DecodeModel<'_>,
+        store_len: usize,
+        progress: &(dyn Fn(usize, usize) + Sync),
+    ) -> RestoreOutcome {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let Some(manifest) = caches.staged.take() else {
             return RestoreOutcome::default();
@@ -3256,8 +3320,22 @@ impl SignalCacheStore {
                 park_rows.push(row);
             }
         }
-        let restored_dbc = reopen_set(&caches.root, &dbc_rows);
-        let restored_file = reopen_set(&caches.root, &file_rows);
+        // Plan both sets before mapping either, so the progress total is
+        // known before the first file maps.
+        let dbc_plan = plan_set(&dbc_rows);
+        let file_plan = plan_set(&file_rows);
+        let dbc_files = dbc_plan.as_ref().map_or(0, SetPlan::files);
+        let total = dbc_files + file_plan.as_ref().map_or(0, SetPlan::files);
+        if total > 0 {
+            progress(0, total);
+        }
+        let restored_dbc = dbc_plan
+            .and_then(|plan| map_set(&caches.root, &dbc_rows, plan, &|n| progress(n, total)));
+        let restored_file = file_plan.and_then(|plan| {
+            map_set(&caches.root, &file_rows, plan, &|n| {
+                progress(dbc_files + n, total);
+            })
+        });
         if restored_dbc.is_none() {
             // The batch reopen failed, so every row it covered is owed a
             // rebuild after all.
@@ -7856,6 +7934,87 @@ mod tests {
             row("Speed").encoding,
             "the two provenances are fingerprinted against different things"
         );
+    }
+
+    #[test]
+    fn a_relaunch_reports_the_three_restore_phases_in_order_with_their_file_totals() {
+        // The relaunch path's reporting, end to end over a generated disk
+        // scratch and a persisted pyramid set, wired as the restore
+        // command wires it.
+        use crate::capture::{RestorePhase, RestoreProgress, RestoreReporter};
+        let db = Database::parse(&dbc_ab_text(1)).unwrap();
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", 0);
+        let len = build_and_persist_ab(root.path(), &v, &db, 2000);
+        let pyramid_files = std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name() != MANIFEST_FILE)
+            .count();
+
+        let scratch = TempDir::new().unwrap();
+        let pid = uuid::Uuid::new_v4();
+        {
+            let store = TraceStore::new_disk(scratch.path()).unwrap();
+            store.write_scratch_identity(Some(pid));
+            for i in 0..len {
+                store.append(ab_frame(i as u64 * S, 1, 2));
+            }
+            store.flush().unwrap();
+        }
+        let count_prefixed = |prefixes: &[&str]| {
+            std::fs::read_dir(scratch.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    prefixes.iter().any(|p| name.starts_with(p))
+                })
+                .count()
+        };
+        let index_files = count_prefixed(&["byid."]);
+        let frame_files = count_prefixed(&["meta.", "payload."]);
+
+        let out = std::sync::Mutex::new(Vec::new());
+        let reporter = RestoreReporter::new(|p| out.lock().unwrap().push(p));
+        let booted = TraceStore::new_disk(scratch.path()).unwrap();
+        assert!(booted
+            .try_reload_reporting(pid, &|p| reporter.capture(p))
+            .is_some());
+        reporter.end_phase();
+        let caches = SignalCacheStore::new(root.path());
+        let outcome = caches.restore_reporting(&v, &scopes(&db), len, &|opened, total| {
+            reporter.signal_caches(opened, total);
+        });
+        reporter.end_phase();
+        assert_eq!(counts(outcome), (2, 0, 0));
+
+        let out = out.into_inner().unwrap();
+        let ends: Vec<RestoreProgress> = out
+            .iter()
+            .copied()
+            .filter(|p| p.files_opened == 0 || p.files_opened == p.total_files)
+            .collect();
+        let report = |phase, files_opened, total_files| RestoreProgress {
+            phase,
+            files_opened,
+            total_files,
+        };
+        // The frames phase opens at the metadata count and closes at
+        // metadata plus payload.
+        let meta_files = count_prefixed(&["meta."]);
+        assert_eq!(
+            ends,
+            [
+                report(RestorePhase::CaptureIndex, 0, index_files),
+                report(RestorePhase::CaptureIndex, index_files, index_files),
+                report(RestorePhase::CaptureFrames, 0, meta_files),
+                report(RestorePhase::CaptureFrames, frame_files, frame_files),
+                report(RestorePhase::SignalCaches, 0, pyramid_files),
+                report(RestorePhase::SignalCaches, pyramid_files, pyramid_files),
+            ]
+        );
+        assert!(index_files > 0 && meta_files > 0 && pyramid_files > 1);
     }
 
     #[test]

@@ -140,9 +140,14 @@ impl ByIdIndex {
     /// deterministic — by mapping the existing files whole without
     /// truncating them. A missing or short segment file surfaces as an
     /// I/O error, which the caller treats as an unusable scratch.
+    ///
+    /// `progress` is told `(0, total)` once the chains are planned and
+    /// before the first file maps, then `(opened, total)` once per file
+    /// mapped (see [`open_segments`]).
     pub(crate) fn reopen(
         dir: impl AsRef<Path>,
         entries: &[(u32, bool, u64, u64)],
+        progress: &(dyn Fn(usize, usize) + Sync),
     ) -> std::io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         // Plan every id's chain first — the geometry is pure arithmetic —
@@ -177,7 +182,9 @@ impl ByIdIndex {
             post.flushed_len = len;
             plans.push(((id, extended), post));
         }
-        let mut segs = open_segments(&paths)?.into_iter();
+        let total = paths.len();
+        progress(0, total);
+        let mut segs = open_segments(&paths, &|n| progress(n, total))?.into_iter();
         let mut map = HashMap::with_capacity(plans.len());
         for (key, mut post) in plans {
             let want = post.cum_cap.len() - post.seg_base;

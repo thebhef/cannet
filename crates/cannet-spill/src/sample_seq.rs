@@ -149,6 +149,31 @@ impl SampleSeq {
         dir: impl AsRef<Path>,
         runs: &[(String, usize, usize)],
     ) -> std::io::Result<Option<Vec<Self>>> {
+        Self::reopen_many_reporting(dir, runs, &|_| {})
+    }
+
+    /// How many segment files reopening the run `(len, first_slot)` maps —
+    /// what [`Self::reopen_many_reporting`] will count up to for it, so a
+    /// caller can state a restore's total before the first file maps.
+    /// `0` for a pair that would not reopen (`first_slot > len`).
+    pub fn reopen_file_count(len: usize, first_slot: usize) -> usize {
+        chain_plan(len, first_slot).map_or(0, |(cum_cap, seg_base)| cum_cap.len() - seg_base)
+    }
+
+    /// [`Self::reopen_many`] with a progress seam (ADR 0002 DS-7):
+    /// `on_file` is called once per segment file mapped, with the running
+    /// count across the whole set (ending at the sum of
+    /// [`Self::reopen_file_count`] over `runs` when the set reopens). It
+    /// runs on the mapping threads, so it is `Sync` and must stay cheap.
+    /// A set that misses before mapping anything reports nothing.
+    ///
+    /// # Errors
+    /// As [`Self::reopen_many`].
+    pub fn reopen_many_reporting(
+        dir: impl AsRef<Path>,
+        runs: &[(String, usize, usize)],
+        on_file: &(dyn Fn(usize) + Sync),
+    ) -> std::io::Result<Option<Vec<Self>>> {
         let dir = dir.as_ref();
         let mut plans = Vec::with_capacity(runs.len());
         let mut paths = Vec::new();
@@ -163,7 +188,7 @@ impl SampleSeq {
         if !paths.iter().all(|p| p.is_file()) {
             return Ok(None);
         }
-        let mut segs = open_segments(&paths)?;
+        let mut segs = open_segments(&paths, on_file)?;
         // Peel the mappings off the back so each run takes its own tail
         // without shifting the ones still to come.
         let mut out: Vec<Option<Self>> = (0..runs.len()).map(|_| None).collect();
@@ -696,6 +721,53 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(SampleSeq::reopen_many(dir.path(), &[]).unwrap().is_some());
+    }
+
+    #[test]
+    fn reopen_many_reporting_counts_every_file_up_to_the_planned_total() {
+        let dir = TempDir::new().unwrap();
+        let runs: Vec<(String, usize, usize)> = [1usize, 100, 2000]
+            .iter()
+            .enumerate()
+            .map(|(r, &n)| {
+                let prefix = format!("sig{r}.l0");
+                let mut seq = SampleSeq::new(dir.path(), prefix.clone());
+                for i in 0..n {
+                    seq.push(i as f64, i as f64);
+                }
+                seq.flush().unwrap();
+                (prefix, n, 0)
+            })
+            .collect();
+        let planned: usize = runs
+            .iter()
+            .map(|(_, len, first)| SampleSeq::reopen_file_count(*len, *first))
+            .sum();
+        let on_disk = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(planned, on_disk, "the plan names every file the set holds");
+        assert!(planned >= 2, "the threaded path is exercised");
+
+        let seen = std::sync::Mutex::new(Vec::new());
+        let back = SampleSeq::reopen_many_reporting(dir.path(), &runs, &|n| {
+            seen.lock().unwrap().push(n);
+        })
+        .unwrap()
+        .expect("every run is present");
+        assert_eq!(back.len(), 3);
+        let mut seen = seen.into_inner().unwrap();
+        seen.sort_unstable();
+        assert_eq!(seen, (1..=planned).collect::<Vec<_>>());
+
+        // The single-file path: a one-entry run is one file.
+        let one = &runs[..1];
+        assert_eq!(SampleSeq::reopen_file_count(one[0].1, 0), 1);
+        let seen = std::sync::Mutex::new(Vec::new());
+        SampleSeq::reopen_many_reporting(dir.path(), one, &|n| seen.lock().unwrap().push(n))
+            .unwrap()
+            .expect("present");
+        assert_eq!(seen.into_inner().unwrap(), vec![1]);
+
+        assert_eq!(SampleSeq::reopen_file_count(1, 2), 0, "inconsistent pair");
     }
 
     #[test]
