@@ -21,6 +21,7 @@ cannet-local-sidecar/
 │   │   ├── shared_interface.py #   one shared channel + its pump threads
 │   │   ├── outbox.py           #   a session's control and data lanes
 │   │   └── episodes.py         #   bus-error episodes and the row cap
+│   ├── bench/                  # fault-recovery bench (not shipped)
 │   ├── driver.py               # internal driver-adapter interface
 │   └── driver_python_can.py    # default python-can-backed adapter
 ├── tests/                      # pytest, hardware-free
@@ -289,6 +290,83 @@ as a row per error frame or an envelope per refused send
   <id>: queued_to_driver=…/s total=… offered=…/s refused=…/s
   max_send=… ms max_gap=… ms` — `offered` is every send the host
   asked for, `queued_to_driver` the ones the driver accepted.
+
+## Fault recovery bench
+
+`cannet_local_sidecar/bench/` answers one question with data: does a
+bus-off recovery bring a channel back? It runs the sidecar
+**in-process** (the real `service` / `shared_interface` pipeline,
+loopback only, nothing advertised), drives it as a `cannet.v1` client
+the way cannet does — `ConfigureBus` and `Subscribe` for two channels
+on one wire, transmits both ways, reading `InterfaceState`,
+`BusErrorEpisode`, `TxRefusals` and frames — and before the channels
+open swaps the sidecar's bus-off recovery (the channel `reset` the
+state poll calls, ADR 0039) for the strategy under test. Nothing
+experimental ships: no flag, no proto change, and the server never
+imports the bench.
+
+```sh
+cd servers/cannet-local-sidecar
+uv run python -m cannet_local_sidecar.bench.fault_recovery run     --under-test <id> --partner <id> --strategy close_then_open --no-timeout
+uv run python -m cannet_local_sidecar.bench.fault_recovery wait found     # another shell
+uv run python -m cannet_local_sidecar.bench.fault_recovery run     --driver fake --scenario bus_off --strategy close_then_open
+```
+
+- **Traffic.** `--rate` frames/s each way (default 800), both channels
+  sending and receiving, at the longest payload the bus takes (8 B
+  classic, 64 B FD; with FD on, every other frame is classic-format),
+  each carrying its direction's sequence number and send time. The bus
+  defaults to ev-zonal's — FD, 500 kbit/s nominal, 2 Mbit/s data;
+  `--classic`, `--bitrate`, `--data-bitrate` change it.
+- **Found / recovered.** Found is the first of the channel under test
+  reading `state() != active` or a send on it refused; both are
+  recorded with the gap between them. Recovered is the partner
+  receiving the bench's frames count for count for a second after the
+  fault was found: contiguous sequence numbers, none stale (older than
+  250 ms on arrival), none repeated, keeping up with the sends — a
+  stale queue replaying after a reset is a failure.
+- **Timeouts.** `run` waits 10 s for the fault and 10 s for the
+  recovery (`--timeout` changes both); `--no-timeout` waits forever,
+  for a run with someone at the cable. Exit 0 recovered, 1 not, 2
+  refused to start. `wait <event>` blocks until the event (`found`,
+  `recovered`, `verdict`, …) appears in the newest run's events file,
+  or the one `--run` names, and prints it — start it after `run` has
+  printed its run directory, or pass that directory.
+- **Record.** Each run writes `perf/bus-recovery/<UTC>-<strategy>/`
+  at the repository root (`--out` moves it): `events.jsonl`, every
+  reading as it arrived plus the sidecar's own log lines and the
+  strategy's calls, and `table.md`, a row per 250 ms while the fault
+  lasts and per second otherwise, then a verdict line. The columns are
+  raw and side by side, never merged: `t | state() | status word | TEC
+  | REC | sent/s | accepted/s | refused (reason) | partner rx/s | seq
+  gap | strategy event` — `state()`/TEC/REC from the sidecar's
+  `InterfaceState`, the status word from the backend's own read
+  (`CAN_GetStatus` on PEAK, which with auto-reset on is where the
+  driver resets the controller), accepted from the driver's queue,
+  refused from `TxRefusals`, partner rx from what arrived. Runs are
+  transient: committed while the recovery work is open, removed at its close.
+- **Strategies** (`bench/strategies.py`), each docstring saying what
+  the backend call does: `sidecar` (control — the shipped recovery),
+  `state_active` (`bus.state = BusState.ACTIVE`), `bus_reset`
+  (`bus.reset()`), `close_then_open` (`shutdown()`, then the sidecar's
+  reopen), and PEAK-only `auto_reset` (`PCAN_BUSOFF_AUTORESET` at open)
+  and `uninit_init_same_handle` (`CAN_Uninitialize` + `CAN_Initialize`
+  on the held handle).
+- **Scenarios** (`bench/fake.py`, `--driver fake`): a PEAK-shaped fake
+  under the real `PythonCanChannel` — `bus_off`, `error_passive`,
+  `stuck_tx_queue`, `refusal_storm`, `reopen_fails` (the next open
+  fails `PCAN_ERROR_INITIALIZE` once) and
+  `status_word_clears_while_writes_refuse` (the status word reads OK
+  while writes still refuse bus-off). The fake refuses a second
+  `CAN_Initialize` on a handle the process holds, as PEAK did on the
+  owner's bench. `tests/test_fault_recovery_bench.py` runs each in the
+  default suite; where the shipped recovery fails one it is
+  `xfail(strict=True)` with the reason. Its `hardware` test (deselected
+  by default; `-m hardware`) runs a PEAK pair named by
+  `CANNET_BENCH_UNDER_TEST` / `CANNET_BENCH_PARTNER`.
+- **Exclusive handles.** PCAN handles are exclusive per process: close
+  both channels in cannet first. The bench refuses to start, naming
+  the driver's error, when a channel does not open.
 
 ## Swap the driver library
 
