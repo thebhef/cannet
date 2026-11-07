@@ -939,6 +939,21 @@ use is bounded to ~10 MB and never needs pruning. Both sinks carry the
 same `<timestamp> <LEVEL> <source>: <message>` line. There is no
 minimum level and no flag to set one.
 
+The log also records where the client token came from (`--token`,
+`CANNET_TOKEN` or the `access-token` file, never its value), each peer
+that opens a TCP connection, and each RPC the token gate refuses, with
+the peer and whether the token was missing or wrong. These network lines
+are limited to one per peer and kind per minute. If a client's attempts
+produce no `connection from` line, they are not reaching the server, so
+look at the network or firewall. A `connection from` with nothing after
+it is not a failure on its own: accepted RPCs are not logged, and neither
+is a failed TLS handshake.
+
+Clients leave the matching trail: the GUI's `cannet.log` and the Python
+client's `cannet_python_client.session` logger record each connection
+attempt and its outcome, with the failure's cause and whether a token is
+stored, never its value.
+
 The supervised sidecar writes its own `sidecar-python-can.log` beside
 it — always at debug level, whatever `--sidecar-log-level` says, since
 that flag governs the sidecar's *stderr*, which is the half that lands

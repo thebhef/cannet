@@ -14,12 +14,14 @@
 //! which a token is enforced: it may not ride an unencrypted channel.
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cannet_core::BusConfig;
 use cannet_server::{
-    auth::gated, install_crypto_provider, AccessToken, ServerIdentity, ServerInfoImpl,
-    VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
+    auth::{gated, gated_reporting, Refusal},
+    install_crypto_provider, AccessToken, ServerIdentity, ServerInfoImpl, VirtualBusServerImpl,
+    VIRTUAL_BUS_FACTORY_ID,
 };
 use cannet_wire::info::cannet_info_client::CannetInfoClient;
 use cannet_wire::info::ServerInfoRequest;
@@ -108,6 +110,54 @@ fn credential(token: Option<&str>) -> impl tonic::service::Interceptor + Clone {
         }
         Ok(request)
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_refusal_is_reported_with_its_peer_and_kind() {
+    install_crypto_provider();
+    let dir = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::load_or_generate(dir.path()).unwrap();
+    let token = AccessToken::load_or_generate(dir.path()).unwrap();
+    let tls = identity.tls_config();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stream = TcpListenerStream::new(listener);
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&reports);
+    let service = gated_reporting(
+        VirtualBusServerImpl::new(BusConfig::classic_500k()).into_service(),
+        Some(token.clone()),
+        move |peer: Option<SocketAddr>, refusal: Refusal| {
+            sink.lock().unwrap().push((peer.map(|p| p.ip()), refusal));
+        },
+    );
+    let handle = tokio::spawn(async move {
+        let _ = Server::builder()
+            .tls_config(tls)
+            .unwrap()
+            .add_service(service)
+            .serve_with_incoming(stream)
+            .await;
+    });
+
+    let channel = connect(addr, &identity).await;
+    for presented in [None, Some(WRONG_TOKEN), Some(token.as_str())] {
+        let _ = CannetServerClient::with_interceptor(channel.clone(), credential(presented))
+            .list_interfaces(ListInterfacesRequest {})
+            .await;
+    }
+
+    let peer = Some(addr.ip());
+    assert_eq!(
+        *reports.lock().unwrap(),
+        [
+            (peer, Refusal::NoCredential),
+            (peer, Refusal::WrongCredential)
+        ],
+        "the right token is not a refusal"
+    );
+
+    handle.abort();
 }
 
 #[track_caller]

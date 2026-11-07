@@ -354,7 +354,7 @@ impl ConnectConfig {
             Trust::Plaintext => endpoint
                 .connect()
                 .await
-                .map_err(|e| ConnectionError::Connect(e.to_string())),
+                .map_err(|e| ConnectionError::Connect(connect_detail(&e))),
             Trust::Pinned { pin, .. } => {
                 let observed: ObservedPin = Arc::new(Mutex::new(None));
                 let connector = tls::pinned_connector(pin, observed.clone());
@@ -367,7 +367,7 @@ impl ConnectConfig {
                                 expected: observation.expected.map(|p| p.to_string()),
                                 observed: observation.observed.to_string(),
                             },
-                            None => ConnectionError::Connect(e.to_string()),
+                            None => ConnectionError::Connect(connect_detail(&e)),
                         })
                     }
                 }
@@ -400,6 +400,20 @@ impl ConnectConfig {
     }
 }
 
+/// A transport error with its causes: tonic's own `Display` is only
+/// "transport error", which cannot tell a refused connection from a
+/// timeout or a blocked route.
+fn connect_detail(error: &tonic::transport::Error) -> String {
+    let mut detail = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        detail.push_str(": ");
+        detail.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    detail
+}
+
 /// Refuse `channel` unless the server serves [`PROTOCOL_PACKAGE`]
 /// (ADR 0059).
 ///
@@ -408,11 +422,22 @@ impl ConnectConfig {
 /// answering on a server that has moved on to a later major. The
 /// refusal is terminal: a running server does not grow a package
 /// because a client asked twice.
+///
+/// `UNAUTHENTICATED` here cannot be about the user's token, because this
+/// call does not carry one: it is a server from before `ServerInfo`
+/// existed, whose gate covers every RPC, and it is reported as that.
 async fn check_protocol(channel: &Channel) -> Result<(), ConnectionError> {
     let served = CannetInfoClient::new(channel.clone())
         .server_info(ServerInfoRequest {})
         .await
-        .map_err(ConnectionError::from)?
+        .map_err(|status| match status.code() {
+            tonic::Code::Unauthenticated => ConnectionError::Unimplemented(
+                "ServerInfo, which it refuses without a token: the server is older than \
+                 this client, so update it"
+                    .into(),
+            ),
+            _ => ConnectionError::from(status),
+        })?
         .into_inner()
         .packages;
     if served.iter().any(|package| package == PROTOCOL_PACKAGE) {
@@ -435,8 +460,8 @@ impl BearerCredential {
         let Some(token) = token else {
             return Ok(Self(None));
         };
-        // The token is 43 characters of base64url as the server mints
-        // it, but an operator can supply any value with `--token`, and
+        // The server mints a five-word passphrase, but an operator can
+        // supply any value with `--token`, and
         // metadata is ASCII-only. A value that cannot be sent is a
         // configuration error, not something to discover as a rejection.
         let value = format!("Bearer {token}")
@@ -1915,11 +1940,11 @@ impl std::fmt::Display for ConnectionError {
             ),
             Self::Unimplemented(detail) if detail.is_empty() => write!(
                 f,
-                "the server does not implement an RPC this client calls;                  this client speaks {PROTOCOL_PACKAGE}"
+                "the server does not implement an RPC this client calls; this client speaks {PROTOCOL_PACKAGE}"
             ),
             Self::Unimplemented(detail) => write!(
                 f,
-                "the server does not implement an RPC this client calls ({detail});                  this client speaks {PROTOCOL_PACKAGE}"
+                "the server does not implement an RPC this client calls ({detail}); this client speaks {PROTOCOL_PACKAGE}"
             ),
             Self::InsecureScheme { address } => write!(
                 f,

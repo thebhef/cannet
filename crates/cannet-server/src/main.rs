@@ -40,7 +40,7 @@ use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cannet_core::BusConfig;
 use cannet_server::{
@@ -53,6 +53,9 @@ use cannet_sidecar::{
 };
 use cannet_wire::info::cannet_info_server::CannetInfoServer;
 use clap::{Args, Parser, Subcommand};
+use tokio::net::TcpStream;
+use tokio_stream::{Stream, StreamExt as _};
+use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
 
 mod logging;
@@ -180,6 +183,16 @@ impl ProxyArgs {
     /// asked for and this endpoint cannot carry one".
     fn token_was_supplied(&self, from_env: Option<&str>) -> bool {
         self.token.is_some() || from_env.is_some()
+    }
+
+    /// Where [`Self::access_token`] takes the token from, for the log:
+    /// the source and never the value.
+    fn token_source(&self, from_env: Option<&str>) -> &'static str {
+        match (&self.token, from_env) {
+            (Some(_), _) => "--token",
+            (None, Some(_)) => "CANNET_TOKEN",
+            (None, None) => "the access-token file",
+        }
     }
 }
 
@@ -761,6 +774,7 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     let token_was_supplied = args.token_was_supplied(from_env.as_deref());
+    let token_source = args.token_source(from_env.as_deref());
 
     // What this server answers to, whether or not it advertises: it is
     // also what `ServerInfo` reports. Lenient here and strict inside
@@ -768,6 +782,20 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     // advertisement, but must not stop a `--no-mdns` server that never
     // publishes one.
     let instance_name = discovery::advertised_name(args.name.as_deref()).unwrap_or_default();
+
+    // Bound here rather than by `serve` so each connection can be logged,
+    // and before anything is started that a failed bind would have to
+    // bring down. No delay and no keepalive are `Server::builder`'s own
+    // defaults.
+    let connections = logging::PerPeerLimit::default();
+    let listener =
+        TcpIncoming::new(args.bind, true, None).map_err(|e| e as Box<dyn std::error::Error>)?;
+    let incoming = noting_connections(listener, move |peer| {
+        if connections.admit(peer, Instant::now()) {
+            logging::info(PROXY, logging::connection_note(peer));
+        }
+    });
+
     let mdns = advertise(&args)?;
 
     let supervisor = Arc::new(SidecarSupervisor::default());
@@ -793,6 +821,7 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     }
     if token.is_some() {
         logging::info(PROXY, logging::token_configured_note());
+        logging::info(PROXY, format!("client token source: {token_source}"));
     } else if token_was_supplied {
         // Saying nothing here would let an operator believe they had
         // configured authentication when the endpoint cannot carry it.
@@ -836,10 +865,17 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     // protocol major this server does not serve has to be told that
     // before it is asked for a credential (ADR 0059). `tests/auth.rs`
     // pins both halves.
+    let refusals = Arc::new(logging::PerPeerLimit::default());
+    let report_refusal = move |peer: Option<SocketAddr>, refusal: auth::Refusal| {
+        let peer = peer.map(|peer| peer.ip());
+        if refusals.admit((peer, refusal), Instant::now()) {
+            logging::warn(PROXY, logging::refusal_note(peer, refusal));
+        }
+    };
     let serve = builder
-        .add_service(auth::gated(service, token))
+        .add_service(auth::gated_reporting(service, token, report_refusal))
         .add_service(ServerInfoImpl::new(build_version(), instance_name).into_service())
-        .serve(args.bind);
+        .serve_with_incoming(incoming);
 
     // Ctrl-C is the graceful path: it races the server future so a
     // held connection can't block the shutdown below.
@@ -857,6 +893,23 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
         result?;
     }
     Ok(())
+}
+
+/// `incoming`, telling `note` the peer of each accepted connection.
+fn noting_connections<E>(
+    incoming: impl Stream<Item = Result<TcpStream, E>>,
+    mut note: impl FnMut(IpAddr),
+) -> impl Stream<Item = Result<TcpStream, E>> {
+    incoming.map(move |connection| {
+        if let Some(peer) = connection
+            .as_ref()
+            .ok()
+            .and_then(|stream| stream.peer_addr().ok())
+        {
+            note(peer.ip());
+        }
+        connection
+    })
 }
 
 /// Bring the proxy down within a bounded window, leaving nothing behind
@@ -1156,6 +1209,32 @@ mod tests {
             .access_token(dir.path(), Some("from-the-environment"))
             .unwrap();
         assert_eq!(token.as_str(), "from-the-flag");
+    }
+
+    #[test]
+    fn the_log_can_say_where_the_token_came_from() {
+        let flag = Cli::try_parse_from(["cannet-server", "--token", "secret"]).unwrap();
+        assert_eq!(flag.proxy.token_source(Some("other")), "--token");
+        let bare = Cli::try_parse_from(["cannet-server"]).unwrap();
+        assert_eq!(bare.proxy.token_source(Some("other")), "CANNET_TOKEN");
+        assert_eq!(bare.proxy.token_source(None), "the access-token file");
+    }
+
+    #[tokio::test]
+    async fn each_accepted_connection_names_its_peer() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut seen = Vec::new();
+        {
+            let incoming = noting_connections(
+                tokio_stream::wrappers::TcpListenerStream::new(listener),
+                |peer| seen.push(peer),
+            );
+            tokio::pin!(incoming);
+            let _client = TcpStream::connect(addr).await.unwrap();
+            incoming.next().await.unwrap().unwrap();
+        }
+        assert_eq!(seen, [addr.ip()]);
     }
 
     #[test]

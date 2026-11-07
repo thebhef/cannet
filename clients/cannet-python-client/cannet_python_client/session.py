@@ -272,6 +272,40 @@ def open_channel(target: ServerTarget, timeout: float) -> grpc.Channel:
     )
 
 
+def _describe(target: ServerTarget) -> str:
+    """How ``target`` is reached, for the log: whether a token is held
+    and never its value."""
+    if target.plaintext:
+        return "plaintext"
+    return "pinned, with a stored token" if target.token else "pinned, no stored token"
+
+
+def _failure_note(exc: BaseException) -> str:
+    """Why an attempt failed, for the log. An RPC error is reduced to its
+    status, the part of it the server chose to say."""
+    if isinstance(exc, grpc.Call):
+        return f"{exc.code().name}: {exc.details()}"
+    return str(exc)
+
+
+def _dial(target: ServerTarget, timeout: float) -> grpc.Channel:
+    """Open a channel and pass the protocol gate (ADR 0059), logging the
+    attempt and its outcome."""
+    _logger.info("%s: connecting (%s)", target.address, _describe(target))
+    try:
+        channel = open_channel(target, timeout)
+        try:
+            check_protocol(channel, target, timeout)
+        except BaseException:
+            channel.close()
+            raise
+    except Exception as exc:
+        _logger.warning("%s: failed to connect: %s", target.address, _failure_note(exc))
+        raise
+    _logger.info("%s: connected (%s)", target.address, _describe(target))
+    return channel
+
+
 def server_info(
     channel: grpc.Channel,
     target: ServerTarget,
@@ -324,17 +358,25 @@ def list_interfaces(target: ServerTarget, timeout: float) -> list[pb.Interface]:
     subscribe. The channel opens and closes within this call, same as
     the Rust client's own ``list_interfaces``.
     """
-    channel = open_channel(target, timeout)
+    # Same gate as a session's: this dials a server too, and an answer
+    # from one that does not serve this client's major is not an answer
+    # about interfaces (ADR 0059).
+    channel = _dial(target, timeout)
     try:
-        # Same gate as a session's: this dials a server too, and an
-        # answer from one that does not serve this client's major is
-        # not an answer about interfaces (ADR 0059).
-        check_protocol(channel, target, timeout)
         stub = pb_grpc.CannetServerStub(channel)
-        response = stub.ListInterfaces(
-            pb.ListInterfacesRequest(),
-            timeout=timeout,
-            metadata=_bearer_metadata(target),
+        try:
+            response = stub.ListInterfaces(
+                pb.ListInterfacesRequest(),
+                timeout=timeout,
+                metadata=_bearer_metadata(target),
+            )
+        except grpc.RpcError as exc:
+            _logger.warning(
+                "%s: ListInterfaces failed: %s", target.address, _failure_note(exc)
+            )
+            raise
+        _logger.debug(
+            "%s: listed %d interface(s)", target.address, len(response.interfaces)
         )
         return list(response.interfaces)
     finally:
@@ -394,15 +436,10 @@ class Session:
         self._clock_round_active = False
         self._clock_round_complete = threading.Event()
 
-        self._channel = open_channel(target, timeout)
         # Before anything else on this channel: a server that does not
         # serve this client's protocol major is refused here, with a
         # sentence, instead of failing somewhere downstream (ADR 0059).
-        try:
-            check_protocol(self._channel, target, timeout)
-        except BaseException:
-            self._channel.close()
-            raise
+        self._channel = _dial(target, timeout)
         stub = pb_grpc.CannetServerStub(self._channel)
         for envelope in opening_envelopes(interface_id, config=config):
             self._outbox.put(envelope)

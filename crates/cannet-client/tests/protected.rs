@@ -17,8 +17,9 @@ use cannet_client::{
 };
 use cannet_core::{BusConfig, CanFrameSource};
 use cannet_server::{
-    auth::gated, install_crypto_provider, AccessToken, ServerIdentity, ServerInfoImpl,
-    VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
+    auth::{gated, token_gate},
+    install_crypto_provider, AccessToken, ServerIdentity, ServerInfoImpl, VirtualBusServerImpl,
+    VIRTUAL_BUS_FACTORY_ID,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -194,6 +195,70 @@ async fn a_pinned_client_with_the_wrong_token_is_unauthenticated() {
     );
 
     server.handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_older_than_server_info_is_not_mistaken_for_a_refused_token() {
+    // A server from before ADR 0059 gates everything with one
+    // server-wide layer and has no `ServerInfo`. The client's first
+    // call carries no credential, so that server refuses it before the
+    // right token is ever presented, and saying the token was rejected
+    // sends the user to check a token that is correct.
+    install_crypto_provider();
+    let dir = tempfile::tempdir().unwrap();
+    let identity = ServerIdentity::load_or_generate(dir.path()).unwrap();
+    let token = AccessToken::load_or_generate(dir.path()).unwrap();
+    let pin = CertPin::parse(&identity.fingerprint().to_string()).unwrap();
+    let tls = identity.tls_config();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let stream = TcpListenerStream::new(listener);
+    let gate = token_gate(Some(token.clone()));
+    let service = VirtualBusServerImpl::new(BusConfig::classic_500k()).into_service();
+    let handle = tokio::spawn(async move {
+        let _ = Server::builder()
+            .tls_config(tls)
+            .unwrap()
+            .layer(tonic::service::interceptor(gate))
+            .add_service(service)
+            .serve_with_incoming(stream)
+            .await;
+    });
+
+    let error = list_interfaces(&ConnectConfig::pinned_with_token(
+        &address,
+        pin,
+        token.as_str(),
+    ))
+    .await
+    .expect_err("this server cannot answer the protocol check");
+    assert!(
+        matches!(error, ConnectionError::Unimplemented(_)),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "the server does not implement an RPC this client calls (ServerInfo, which it refuses without a token: the server is older than this client, so update it); this client speaks cannet.v1"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_connection_says_why_rather_than_only_that_it_failed() {
+    // Bound and released, so nothing is listening there.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    drop(listener);
+
+    let error = list_interfaces(&ConnectConfig::unpinned(&address))
+        .await
+        .expect_err("nothing is listening");
+    let text = error.to_string();
+    assert!(
+        text.starts_with("failed to connect: transport error: "),
+        "{text}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -94,7 +94,11 @@ client asked again. The sentence names both sides:
 
 The Servers section, the python client and the CLI all show that same
 sentence. An `UNIMPLEMENTED` on *any* RPC is read the same way; it is
-what a peer built before `ServerInfo` existed looks like.
+what a peer built before `ServerInfo` existed looks like. So is an
+`UNAUTHENTICATED` answer to `ServerInfo` itself: the call carries no
+credential, and only a token-protected peer from before this rule, whose
+gate is server-wide, refuses it. It is reported as an old server, never
+as a rejected token.
 
 **8. mDNS gains `proto=`**, the comma-separated list of packages
 served; `ver=` stays the build string. Advisory only — it is absent
