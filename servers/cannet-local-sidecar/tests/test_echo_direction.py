@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
 
 
 def _ensure_on_path() -> None:
@@ -21,9 +20,9 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-import can  # noqa: E402
+import can
 
-from cannet_local_sidecar.driver_python_can import PythonCanChannel  # noqa: E402
+from cannet_local_sidecar.driver_python_can import PythonCanChannel
 
 
 class _Bus:
@@ -31,7 +30,7 @@ class _Bus:
         self._messages = list(messages)
         self.state = "ACTIVE"
 
-    def recv(self, timeout: float) -> Optional[can.Message]:
+    def recv(self, timeout: float) -> can.Message | None:
         return self._messages.pop(0) if self._messages else None
 
     def shutdown(self) -> None:

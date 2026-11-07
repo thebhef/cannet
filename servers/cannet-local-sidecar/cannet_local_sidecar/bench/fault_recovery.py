@@ -80,8 +80,9 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import IO, Any, Iterator, Optional
+from typing import IO, Any
 
 import grpc
 from cannet_python_wire._proto import cannet_pb2 as pb
@@ -181,9 +182,9 @@ class _Stream:
 
     def __init__(self) -> None:
         self.next_seq = 0
-        self.last_rx: Optional[int] = None
-        self.run_first: Optional[int] = None
-        self.run_start_s: Optional[float] = None
+        self.last_rx: int | None = None
+        self.run_first: int | None = None
+        self.run_start_s: float | None = None
 
     def note_rx(
         self, seq: int, sent_ms: int, now_s: float, now_ms: int
@@ -213,7 +214,7 @@ class _BenchDriver:
     real one, then swaps each channel's ``reset`` for the strategy's
     recovery and wraps ``send`` / ``close`` so the bench sees them."""
 
-    def __init__(self, inner: drv.Driver, strategy: strat.Strategy, bench: "Bench"):
+    def __init__(self, inner: drv.Driver, strategy: strat.Strategy, bench: Bench):
         self._inner = inner
         self._strategy = strategy
         self._bench = bench
@@ -280,9 +281,9 @@ class _BenchDriver:
 
         # Instance attributes shadow the methods; the sidecar looks them
         # up per call, so this is the whole injection.
-        setattr(ch, "reset", reset)
-        setattr(ch, "send", send)
-        setattr(ch, "close", close)
+        ch.reset = reset
+        ch.send = send
+        ch.close = close
 
 
 class Bench:
@@ -298,7 +299,7 @@ class Bench:
             )
         self.config = config
         self._driver = _BenchDriver(driver, strat.STRATEGIES[config.strategy], self)
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
         run_dir = config.out / f"{stamp}-{config.strategy}"
         n = 1
         while run_dir.exists():
@@ -306,11 +307,11 @@ class Bench:
             run_dir = config.out / f"{stamp}-{config.strategy}-{n}"
         self.run_dir = run_dir
         self.rows: list[dict] = []
-        self.found: Optional[dict] = None
-        self.recovered: Optional[dict] = None
-        self.bus_back: Optional[dict] = None
-        self.first_state_t: Optional[float] = None
-        self.first_refusal_t: Optional[float] = None
+        self.found: dict | None = None
+        self.recovered: dict | None = None
+        self.bus_back: dict | None = None
+        self.first_state_t: float | None = None
+        self.first_refusal_t: float | None = None
         #: Per interface id: the first episode's ``first_ns`` (the pull),
         #: and the latest report's ``last_ns`` / ``open`` / arrival wall
         #: clock (the running "last episode" the timeline reads).
@@ -321,10 +322,10 @@ class Bench:
         #: Whether the channel under test is ready for a confirming
         #: partner frame to count as "bus back" (see module docstring).
         self._ut_ready = False
-        self._found_utc: Optional[dt.datetime] = None
-        self._recovered_utc: Optional[dt.datetime] = None
-        self._bus_off_utc: Optional[dt.datetime] = None
-        self._reopen_utc: Optional[dt.datetime] = None
+        self._found_utc: dt.datetime | None = None
+        self._recovered_utc: dt.datetime | None = None
+        self._bus_off_utc: dt.datetime | None = None
+        self._reopen_utc: dt.datetime | None = None
         self._lock = threading.Lock()
         self._seen = threading.Condition()
         self._seen_events: set[str] = set()
@@ -334,14 +335,14 @@ class Bench:
         self._row = _new_row()
         self._row_start = 0.0
         self._states: dict[str, tuple[str, int, int]] = {}
-        self._startup_error: Optional[str] = None
+        self._startup_error: str | None = None
         self._t0 = time.monotonic()
-        self._found_s: Optional[float] = None
-        self._events: Optional[IO[str]] = None
-        self._log_handler: Optional[logging.Handler] = None
+        self._found_s: float | None = None
+        self._events: IO[str] | None = None
+        self._log_handler: logging.Handler | None = None
         self._old_level = logging.NOTSET
-        self._server: Optional[grpc.Server] = None
-        self._channel: Optional[grpc.Channel] = None
+        self._server: grpc.Server | None = None
+        self._channel: grpc.Channel | None = None
         self._call: Any = None
         self._threads: list[threading.Thread] = []
 
@@ -352,8 +353,8 @@ class Bench:
 
         cfg = self.config
         self.run_dir.mkdir(parents=True)
-        self._events = open(
-            self.run_dir / "events.jsonl", "a", encoding="utf-8", newline="\n"
+        self._events = (self.run_dir / "events.jsonl").open(
+            "a", encoding="utf-8", newline="\n"
         )
         self._t0 = time.monotonic()
         self._row_start = self._t0
@@ -434,7 +435,7 @@ class Bench:
 
     # ----- waiting ---------------------------------------------------------
 
-    def wait_for(self, event: str, timeout: Optional[float] = 10.0) -> bool:
+    def wait_for(self, event: str, timeout: float | None = 10.0) -> bool:
         """Whether ``event`` was emitted within ``timeout`` s (``None``:
         however long it takes)."""
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -446,10 +447,10 @@ class Bench:
                 self._seen.wait(left)
             return True
 
-    def wait_for_fault(self, timeout: Optional[float] = 10.0) -> Optional[dict]:
+    def wait_for_fault(self, timeout: float | None = 10.0) -> dict | None:
         return self.found if self.wait_for("found", timeout) else None
 
-    def wait_for_recovery(self, timeout: Optional[float] = 10.0) -> Optional[dict]:
+    def wait_for_recovery(self, timeout: float | None = 10.0) -> dict | None:
         return self.recovered if self.wait_for("recovered", timeout) else None
 
     def note(self, event: str, **fields) -> None:
@@ -647,7 +648,7 @@ class Bench:
             if recovered is not None:
                 self._emit("recovered", **recovered)
 
-    def _recovered_by(self, stream: _Stream, seq: int, now: float) -> Optional[dict]:
+    def _recovered_by(self, stream: _Stream, seq: int, now: float) -> dict | None:
         """The recovery this arrival completes, if it completes one.
         Called under the lock."""
         if (
@@ -718,7 +719,9 @@ class Bench:
             return "n/a"
         try:
             return f"0x{int(read()):05X}"
-        except Exception as e:  # noqa: BLE001 - a reading like any other
+        # a reading like any other
+        except Exception as e:
+            logging.getLogger(__name__).debug("a reading like any other", exc_info=True)
             return f"raised: {e}"
 
     def _accepted(self, interface_id: str) -> None:
@@ -776,7 +779,7 @@ class Bench:
     def _emit(self, event: str, **fields) -> None:
         line = {
             "t": self._t(),
-            "utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds"),
+            "utc": dt.datetime.now(dt.UTC).isoformat(timespec="milliseconds"),
             "event": event,
             **fields,
         }
@@ -821,7 +824,7 @@ class Bench:
         is omitted."""
         rows: list[dict] = []
 
-        def add(label: str, when: Optional[dt.datetime]) -> None:
+        def add(label: str, when: dt.datetime | None) -> None:
             if when is not None:
                 rows.append(
                     {
@@ -852,14 +855,14 @@ class Bench:
     def _role(self, interface_id: str) -> str:
         return "ut" if interface_id == self.config.under_test else "partner"
 
-    def _after_found(self, when: dt.datetime) -> Optional[float]:
+    def _after_found(self, when: dt.datetime) -> float | None:
         if self._found_utc is None:
             return None
         return round((when - self._found_utc).total_seconds(), 3)
 
     def _bus_back_reading(
         self,
-    ) -> tuple[Optional[dt.datetime], Optional[float], Optional[str]]:
+    ) -> tuple[dt.datetime | None, float | None, str | None]:
         """``bus back``: the later of the two channels' last-episode
         ``last_ns``, and that channel's backlog at the moment -- how far
         behind wall clock its report of it arrived. ``None`` until both
@@ -883,8 +886,10 @@ class Bench:
         lines = [
             f"# Fault-recovery run {self.run_dir.name}",
             "",
-            f"- strategy `{cfg.strategy}`; under test `{cfg.under_test}`; "
-            f"partner `{cfg.partner}`; driver {cfg.driver_label}",
+            (
+                f"- strategy `{cfg.strategy}`; under test `{cfg.under_test}`; "
+                f"partner `{cfg.partner}`; driver {cfg.driver_label}"
+            ),
             f"- {cfg.rate:.0f} frames/s each way; {bus}",
             "- every reading: `events.jsonl` beside this file",
             "",
@@ -905,7 +910,7 @@ _QUIET_EVENTS = frozenset(
 )
 
 
-def _when(what: str, t: Optional[float]) -> str:
+def _when(what: str, t: float | None) -> str:
     return f"{what} t={t:.3f} s" if t is not None else f"{what} never"
 
 
@@ -914,13 +919,13 @@ def _raw(message) -> dict:
 
 
 def _utcnow() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 def _ns_to_utc(ns: int) -> dt.datetime:
     """A frames'-clock or ``as_of_ns`` reading as UTC: both are epoch
     nanoseconds on the same wall clock the bench's own readings use."""
-    return dt.datetime.fromtimestamp(ns / 1e9, tz=dt.timezone.utc)
+    return dt.datetime.fromtimestamp(ns / 1e9, tz=dt.UTC)
 
 
 def _timeline_line(row: dict) -> str:
@@ -968,10 +973,10 @@ def table_cells(row: dict) -> list[str]:
 def run_trial(
     bench: Bench,
     *,
-    fault_timeout: Optional[float] = 10.0,
-    recovery_timeout: Optional[float] = 10.0,
-    wire: Optional[fake.FakeWire] = None,
-    scenario: Optional[fake.Scenario] = None,
+    fault_timeout: float | None = 10.0,
+    recovery_timeout: float | None = 10.0,
+    wire: fake.FakeWire | None = None,
+    scenario: fake.Scenario | None = None,
     warmup_s: float = 0.5,
 ) -> str:
     """One trial: start, wait for the fault and then the recovery, stop.
@@ -1002,10 +1007,10 @@ def run_trial(
 def wait_for_event(
     event: str,
     *,
-    run_dir: Optional[Path] = None,
+    run_dir: Path | None = None,
     out: Path = DEFAULT_OUT,
-    timeout: Optional[float] = None,
-) -> Optional[dict]:
+    timeout: float | None = None,
+) -> dict | None:
     """Block until ``event`` appears in ``run_dir``'s events file -- by
     default the newest run under ``out`` once one exists -- and return
     it; ``None`` on ``timeout``."""
@@ -1032,7 +1037,7 @@ def wait_for_event(
         time.sleep(0.25)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="python -m cannet_local_sidecar.bench.fault_recovery",
         description="Fault-recovery bench: does a bus-off recovery bring a "

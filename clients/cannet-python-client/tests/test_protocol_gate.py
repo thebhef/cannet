@@ -35,7 +35,7 @@ class _FakeInfo(info_grpc.CannetInfoServicer):
     def __init__(self, packages: list[str]) -> None:
         self._packages = packages
 
-    def ServerInfo(  # noqa: N802 — the gRPC method name is the wire's
+    def ServerInfo(
         self, request: info_pb.ServerInfoRequest, context: grpc.ServicerContext
     ) -> info_pb.ServerInfoResponse:
         return info_pb.ServerInfoResponse(
@@ -68,9 +68,11 @@ def target(address: str) -> ServerTarget:
 
 
 def test_a_server_serving_another_major_is_refused_with_both_sides_named() -> None:
-    with fake_server(["cannet.v2"]) as address:
-        with pytest.raises(IncompatibleProtocol) as caught:
-            Session(target(address), "virtual:bus0", timeout=5.0)
+    with (
+        fake_server(["cannet.v2"]) as address,
+        pytest.raises(IncompatibleProtocol) as caught,
+    ):
+        Session(target(address), "virtual:bus0", timeout=5.0)
     assert caught.value.served == ["cannet.v2"]
     # The same sentence the Rust client, the GUI and the CLI show.
     assert str(caught.value) == "serves cannet.v2; this client speaks cannet.v1"
@@ -80,9 +82,11 @@ def test_a_server_that_cannot_be_asked_at_all_is_refused_too() -> None:
     # `ServerInfo` itself is UNIMPLEMENTED: a peer that predates the
     # rule, so nothing it answers can be read as agreement about the
     # wire.
-    with fake_server(None) as address:
-        with pytest.raises(IncompatibleProtocol) as caught:
-            Session(target(address), "virtual:bus0", timeout=5.0)
+    with (
+        fake_server(None) as address,
+        pytest.raises(IncompatibleProtocol) as caught,
+    ):
+        Session(target(address), "virtual:bus0", timeout=5.0)
     assert caught.value.served == []
     assert str(caught.value).endswith(f"this client speaks {PROTOCOL_PACKAGE}")
 

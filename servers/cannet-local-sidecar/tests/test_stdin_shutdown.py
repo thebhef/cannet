@@ -19,7 +19,6 @@ import sys
 import time
 from pathlib import Path
 
-
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 
 

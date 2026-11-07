@@ -21,7 +21,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 
 def _ensure_on_path() -> None:
@@ -31,10 +30,10 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire._proto import cannet_pb2 as pb
 
-from cannet_local_sidecar import driver as drv  # noqa: E402
-from cannet_local_sidecar.server import service  # noqa: E402
+from cannet_local_sidecar import driver as drv
+from cannet_local_sidecar.server import service
 
 #: Offered sends per second on each interface -- the bench's periodic
 #: rate per channel.
@@ -52,7 +51,7 @@ class _Channel:
         self.accepted_at: list[float] = []
         self._closed = threading.Event()
 
-    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+    def recv(self, timeout_s: float) -> drv.Frame | None:
         self._closed.wait(timeout_s)
         return None
 
@@ -68,7 +67,7 @@ class _Channel:
     def state(self) -> drv.ControllerState:
         return drv.ControllerState()
 
-    def rx_loss(self) -> Optional[int]:
+    def rx_loss(self) -> int | None:
         return None
 
     def close(self) -> None:

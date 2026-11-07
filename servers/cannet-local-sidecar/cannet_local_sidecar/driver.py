@@ -18,14 +18,14 @@ runtime via close+reopen when the wire layer receives a
 from __future__ import annotations
 
 import dataclasses
-from typing import Iterable, Optional, Protocol
+from collections.abc import Iterable
+from typing import Protocol
 
 # The frame a driver produces and consumes is the wire's own, shared
 # with every other speaker of the protocol in this repository. It is
 # re-exported here because it is part of this protocol's surface: an
 # alternative-driver author reads one module.
-from cannet_python_wire import Frame as Frame
-from cannet_python_wire import FrameKind as FrameKind
+from cannet_python_wire import Frame, FrameKind
 
 
 @dataclasses.dataclass(frozen=True)
@@ -72,10 +72,10 @@ class Channel:
     id: str
     display_name: str
     fd_capable: bool = False
-    driver_name: Optional[str] = None
-    driver_version: Optional[str] = None
-    firmware_version: Optional[str] = None
-    serial_number: Optional[str] = None
+    driver_name: str | None = None
+    driver_version: str | None = None
+    firmware_version: str | None = None
+    serial_number: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -89,8 +89,8 @@ class OpenConfig:
     today; the server passes the default.
     """
 
-    bitrate_bps: Optional[int] = None
-    data_bitrate_bps: Optional[int] = None
+    bitrate_bps: int | None = None
+    data_bitrate_bps: int | None = None
     fd: bool = False
     listen_only: bool = False
 
@@ -233,7 +233,7 @@ class TxRejected(Exception):
         message: str = "",
         *,
         queue_full: bool = False,
-        reason: Optional[str] = None,
+        reason: str | None = None,
         bus_off: bool = False,
     ) -> None:
         super().__init__(message)
@@ -274,9 +274,9 @@ class BusError:
     """
 
     kind: str = "unknown"
-    direction: Optional[str] = None
-    tec: Optional[int] = None
-    rec: Optional[int] = None
+    direction: str | None = None
+    tec: int | None = None
+    rec: int | None = None
     counted: bool = True
 
 
@@ -291,7 +291,7 @@ class Driver(Protocol):
     def list_channels(self) -> Iterable[Channel]:
         """Enumerate available channels across all supported vendors."""
 
-    def open(self, channel_id: str, config: OpenConfig) -> "OpenChannel":
+    def open(self, channel_id: str, config: OpenConfig) -> OpenChannel:
         """Open a single channel for rx/tx."""
 
 
@@ -300,7 +300,7 @@ class OpenChannel(Protocol):
 
     channel_id: str
 
-    def recv(self, timeout_s: float) -> Optional[Frame]:
+    def recv(self, timeout_s: float) -> Frame | None:
         """Block up to ``timeout_s`` for a frame; ``None`` on timeout."""
 
     def send(self, frame: Frame) -> None:
@@ -322,7 +322,7 @@ class OpenChannel(Protocol):
         under-reports cannot be told apart from a healthy bus.
         """
 
-    def rx_loss(self) -> Optional[int]:
+    def rx_loss(self) -> int | None:
         """Receive overruns the backend has reported since this channel
         was opened, or ``None`` where the backend reports no such thing.
 
@@ -427,15 +427,7 @@ class OpenChannel(Protocol):
 
 
 __all__ = [
-    "BusError",
-    "Channel",
-    "ControllerState",
-    "Driver",
     "ERROR_KINDS",
-    "Frame",
-    "FrameKind",
-    "OpenChannel",
-    "OpenConfig",
     "REFUSAL_CLOSED",
     "REFUSAL_INCOMPATIBLE",
     "REFUSAL_LISTEN_ONLY",
@@ -446,6 +438,14 @@ __all__ = [
     "STATE_PASSIVE",
     "STATE_UNAVAILABLE",
     "STATE_WARNING",
+    "BusError",
+    "Channel",
+    "ControllerState",
+    "Driver",
+    "Frame",
+    "FrameKind",
+    "OpenChannel",
+    "OpenConfig",
     "TxRejected",
     "state_from_counters",
     "worse_state",

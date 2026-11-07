@@ -44,7 +44,6 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 def _ensure_on_path() -> None:
@@ -54,12 +53,12 @@ def _ensure_on_path() -> None:
 
 _ensure_on_path()
 
-import pytest  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+import pytest
+from cannet_python_wire._proto import cannet_pb2 as pb
 
-from cannet_local_sidecar import driver as drv  # noqa: E402
-from cannet_local_sidecar import driver_python_can as dpc  # noqa: E402
-from cannet_local_sidecar.driver import Frame  # noqa: E402
+from cannet_local_sidecar import driver as drv
+from cannet_local_sidecar import driver_python_can as dpc
+from cannet_local_sidecar.driver import Frame
 
 #: Seconds a run settles before its window opens, and how long it runs.
 _WARMUP_S = 2.0
@@ -140,10 +139,10 @@ class _PacedChannel:
         self._t0 = time.monotonic()
         self._n = 0
         self._closed = False
-        self._closed_at: Optional[float] = None
+        self._closed_at: float | None = None
         self.refused = 0
 
-    def recv(self, timeout_s: float) -> Optional[Frame]:
+    def recv(self, timeout_s: float) -> Frame | None:
         if self._closed:
             return None
         if not self._period:
@@ -178,7 +177,7 @@ class _PacedChannel:
     def state(self) -> drv.ControllerState:
         return drv.ControllerState(state=drv.STATE_PASSIVE, tec=128, rec=0)
 
-    def rx_loss(self) -> Optional[int]:
+    def rx_loss(self) -> int | None:
         return None
 
     def close(self) -> None:
@@ -427,7 +426,7 @@ def _client_main(
     start = time.monotonic()
     end = start + _WARMUP_S + _WINDOW_S
     drained = False
-    drain_start: Optional[float] = None
+    drain_start: float | None = None
     drain_s = 0.0
 
     def watchdog() -> None:

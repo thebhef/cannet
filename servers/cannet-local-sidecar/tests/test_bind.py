@@ -23,12 +23,13 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_local_sidecar import server as srv  # noqa: E402
+from cannet_local_sidecar import server as srv
 
 
 def _make_grpc_server():
-    import grpc
     from concurrent import futures
+
+    import grpc
 
     return grpc.server(futures.ThreadPoolExecutor(max_workers=1))
 

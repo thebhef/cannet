@@ -9,6 +9,7 @@ context cancel — all without any vendor SDKs.
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
@@ -25,9 +26,10 @@ def _ensure_on_path() -> None:
 _ensure_on_path()
 
 
-from cannet_local_sidecar import driver as drv  # noqa: E402
-from cannet_local_sidecar import server as srv  # noqa: E402
-from cannet_python_wire._proto import cannet_pb2 as pb  # noqa: E402
+from cannet_python_wire._proto import cannet_pb2 as pb
+
+from cannet_local_sidecar import driver as drv
+from cannet_local_sidecar import server as srv
 
 
 class _StubDriver:
@@ -84,7 +86,9 @@ def _drain(it, n: int, timeout_s: float = 2.0) -> list[pb.InterfaceList]:
         try:
             for _ in range(n):
                 out.append(next(it))
-        except BaseException as e:  # noqa: BLE001 - background thread edge; the main thread asserts on it
+        # background thread edge; the main thread asserts on it
+        except BaseException as e:
+            logging.getLogger(__name__).exception("watcher thread failed")
             err.append(e)
 
     t = threading.Thread(target=_run, daemon=True)
