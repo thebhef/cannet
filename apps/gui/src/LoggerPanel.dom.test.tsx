@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const statuses = vi.hoisted(() => ({
   value: [] as { id: string; writing: boolean; path: string | null; bytes: number; frameCount: number; error: string | null }[],
@@ -298,5 +298,68 @@ describe("LoggerPanel", () => {
     await waitFor(() =>
       expect(update).toHaveBeenCalledWith("lg1", { kind: "logger", folder: "D:\\captures" }),
     );
+  });
+
+  // Owner ruling (2026-10-08): `{now}` names each file
+  // at its own creation, so the preview has to keep reading as a clock
+  // while the panel is open — ticked the way `DateTimePatternEditor`
+  // ticks its own preview.
+  describe("the preview tick", () => {
+    const previewCalls = () =>
+      invoke.mock.calls.filter((c) => c[0] === "preview_export_template").length;
+
+    it("re-asks the host once a second while the file template carries {now}", async () => {
+      vi.useFakeTimers();
+      try {
+        renderPanel({ file: "{now}" });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        const before = previewCalls();
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+          await Promise.resolve();
+        });
+        expect(previewCalls()).toBeGreaterThan(before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("never re-asks more often than once a second", async () => {
+      vi.useFakeTimers();
+      try {
+        renderPanel({ file: "{now}" });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        const before = previewCalls();
+        await act(async () => {
+          vi.advanceTimersByTime(500);
+          await Promise.resolve();
+        });
+        expect(previewCalls()).toBe(before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not tick at all when neither template carries {now}", async () => {
+      vi.useFakeTimers();
+      try {
+        renderPanel({ file: "{start}" });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        const before = previewCalls();
+        await act(async () => {
+          vi.advanceTimersByTime(3000);
+          await Promise.resolve();
+        });
+        expect(previewCalls()).toBe(before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
