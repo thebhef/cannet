@@ -95,12 +95,6 @@ export interface PlotAreaConfig {
    * what `primarySignalForArea` resolves it to. Click a signal row in
    * the side panel to promote that signal to primary. */
   primarySignalKey?: string | null;
-  /** Collapsed = the area gives up its plot height: every axis it
-   * derives renders as a strip (no canvas) while its side-panel rows
-   * stay, so the toggle back is always in reach (ADR 0026). Absent ⇒
-   * expanded. An area whose signals are *all hidden* collapses anyway,
-   * flag or no flag — there is nothing to draw on it. */
-  collapsed?: boolean;
   /** Pattern-defined series (ADR 0020 / ADR 0038): regex patterns
    * evaluated against the canonical signal path
    * `bus/ecu/message/signal`, OR-combined with the manual `signals`
@@ -199,9 +193,6 @@ export interface AxisHandlers {
    * individual y-axis mode splits the area's rows across. */
   onSelectSignal: (key: string, modifiers: { mod: boolean; shift: boolean }) => void;
   onSetYAxisMode: (mode: YAxisMode) => void;
-  /** Collapse the parent area if expanded, expand it if collapsed —
-   * one collapse state per logical area (ADR 0026). */
-  onToggleCollapsed: () => void;
   /** Collapse / expand *this derived axis* alone. Layout only: the
    * axis keeps its series and their visibility, it just gives up its
    * canvas and its share of the panel's height (ADR 0026). */
@@ -413,7 +404,6 @@ export function areasFromParams(raw: unknown): PlotAreaConfig[] {
         yAxisMode: yAxisModeFromRaw(o.yAxisMode),
         primarySignalKey: typeof o.primarySignalKey === "string" ? o.primarySignalKey : null,
         patterns: patterns.length > 0 ? patterns : undefined,
-        collapsed: o.collapsed === true ? true : undefined,
       });
     }
     if (out.length > 0) return out;
