@@ -97,7 +97,7 @@ export function formatFrameCount(total: number, firstIndex: number): string {
 /// zero-padded once a higher one is present (`1:05.0000`,
 /// `2:00:03.5000`). Negative inputs (a frame stamped before the origin —
 /// a bug, but render defensively) get a leading `-`.
-export function formatElapsed(seconds: number, fracDigits = 4): string {
+export function formatElapsed(seconds: number, fracDigits = ELAPSED_FRAC_DIGITS): string {
   const sign = seconds < 0 ? "-" : "";
   // Work in integer units of 10^-fracDigits so the fractional rounding
   // can't carry a 59.99996 up to a bare "60" seconds segment. Safe in a
@@ -125,6 +125,10 @@ export function formatElapsed(seconds: number, fracDigits = 4): string {
   // dot either — `2:00:03`, not `2:00:03.`.
   return fracDigits > 0 ? `${sign}${body}.${frac}` : `${sign}${body}`;
 }
+
+/// The fraction digits a table's elapsed time cell shows (`1:05.0000`);
+/// the calendar reading of that cell (`formatCalendarCell`) keeps them.
+export const ELAPSED_FRAC_DIGITS = 4;
 
 /// Fractional digits for a timeline-position label when the visible
 /// x-window spans `spanSeconds`: 4 digits at a 1 s span, one fewer per

@@ -14,7 +14,7 @@ import type { FuzzyWinner, SignalRecord, TraceFrameRecord } from "./types";
 import { theme, useThemeName } from "./theme";
 import type { TimelineEvent } from "./notes";
 import type { TraceRow } from "./trace";
-import { formatTimestamp, type CanIdFormat } from "./format";
+import type { CanIdFormat } from "./format";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import { ColorChip } from "./ColorChip";
@@ -344,10 +344,6 @@ export function TraceView({
   // a change has to arrive as a *changed prop* or the visible window
   // keeps painting the old format until something else moves.
   const idFormat = useSetting("can_id_format") as CanIdFormat;
-
-  // The calendar-time tooltip's pattern (`date_time_pattern`, ADR
-  // 0062) — read the same way, for the same reason.
-  const datePattern = useSetting("date_time_pattern");
 
   // What the assigned databases can name right now — the one input a
   // subject reference resolves against (ADR 0056). Read once for the
@@ -1019,7 +1015,6 @@ export function TraceView({
                     event={r?.row === "event" ? r.event : null}
                     baseTimestamp={baseTimestampSeconds}
                     idFormat={idFormat}
-                    datePattern={datePattern}
                     columns={visible}
                     gridTemplate={gridTemplate}
                     busLookup={busLookup}
@@ -1114,9 +1109,6 @@ interface RowProps {
   event: TimelineEvent | null;
   baseTimestamp: number | null;
   idFormat: CanIdFormat;
-  /// The `date_time_pattern` setting (ADR 0062) the time cell's
-  /// tooltip renders through.
-  datePattern: string;
   columns: readonly ColumnState[];
   gridTemplate: string;
   busLookup: BusLookup;
@@ -1170,7 +1162,6 @@ const Row = memo(function Row({
   event,
   baseTimestamp,
   idFormat,
-  datePattern,
   columns,
   gridTemplate,
   busLookup,
@@ -1199,7 +1190,6 @@ const Row = memo(function Row({
         event={event}
         chips={subjectChips(event, events, subjectIndex, idFormat)}
         baseTimestamp={baseTimestamp}
-        datePattern={datePattern}
         actions={eventActions}
         focused={eventFocused}
         editing={eventEditing}
@@ -1257,7 +1247,6 @@ const Row = memo(function Row({
           key,
           frame,
           absoluteIndex,
-          baseTimestamp,
           idFormat,
           busLookup,
         );
@@ -1266,10 +1255,7 @@ const Row = memo(function Row({
             className={className}
             seconds={frame?.timestamp_seconds ?? null}
             base={baseTimestamp}
-            pattern={datePattern}
-          >
-            {content}
-          </TraceTimeCell>
+          />
         ) : (
           <span className={className}>{content}</span>
         );
@@ -1313,7 +1299,6 @@ function EventRow({
   event,
   chips,
   baseTimestamp,
-  datePattern,
   actions,
   focused,
   editing,
@@ -1332,9 +1317,6 @@ function EventRow({
   /// assigned right now (ADR 0056).
   chips: readonly SubjectChip[];
   baseTimestamp: number | null;
-  /// The `date_time_pattern` setting (ADR 0062) the time cell's
-  /// tooltip renders through.
-  datePattern: string;
   actions?: EventActions;
   /// The grid's cursor is on this row.
   focused: boolean;
@@ -1451,10 +1433,7 @@ function EventRow({
         className="trace-event-time"
         seconds={event.timestampNs / 1e9}
         base={baseTimestamp}
-        pattern={datePattern}
-      >
-        {formatTimestamp(event.timestampNs / 1e9, baseTimestamp)}
-      </TraceTimeCell>
+      />
       {onGoto && (
         <button
           type="button"

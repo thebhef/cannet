@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { defaultSettings, hydrateSettings } from "./hostSettings";
 import { ByIdTable } from "./ByIdTable";
 import { TraceView } from "./TraceView";
-import { formatCalendarTime } from "./format";
+import { formatCalendarCell, formatCalendarTime, formatTimestamp } from "./format";
 import { defaultColumns } from "./traceColumns";
 import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
 import type { TimelineEvent } from "./notes";
@@ -218,5 +218,52 @@ describe.each(surfaces)("%s time column", (_name, renderSurface) => {
     const cell = hoverTimeCell(container);
 
     expect(cell).not.toHaveAttribute("title");
+  });
+});
+
+/// `time_display = calendar` (ADR 0024 rule 2): the same cell reads the
+/// whole `date_time_pattern` plus the elapsed column's `.ffff`, and the
+/// hover swaps to the elapsed text. One cell serves every table, so each
+/// surface is held to the same strings.
+async function useCalendarDisplay() {
+  storedSettings = { time_display: "calendar" };
+  await hydrateSettings();
+}
+const CALENDAR_TEXT = formatCalendarCell(FRAME_SECONDS, SESSION_START, PATTERN, 4)!;
+
+describe("calendar time display", () => {
+  it("renders the pattern plus four fraction digits", () => {
+    expect(CALENDAR_TEXT).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.2500$/);
+  });
+
+  describe.each(surfaces)("%s time column", (_name, renderSurface) => {
+    it("shows calendar text and the elapsed text on hover", async () => {
+      await useCalendarDisplay();
+      const container = renderSurface(SESSION_START);
+      const cell = container.querySelector(".trace-row .col-time") as HTMLElement;
+      expect(cell.textContent).toBe(CALENDAR_TEXT);
+      expect(cell).not.toHaveAttribute("title");
+      fireEvent.mouseOver(cell);
+      expect(cell).toHaveAttribute("title", "3:20.2500");
+      fireEvent.mouseOut(cell);
+      expect(cell).not.toHaveAttribute("title");
+    });
+
+    it("stays elapsed, with no tooltip, on a relative timeline", async () => {
+      await useCalendarDisplay();
+      const container = renderSurface(0);
+      const cell = hoverTimeCell(container);
+      expect(cell.textContent).toBe(formatTimestamp(FRAME_SECONDS, 0));
+      expect(cell).not.toHaveAttribute("title");
+    });
+  });
+
+  it("reads the event row the same way", async () => {
+    await useCalendarDisplay();
+    const container = renderEventRow(SESSION_START);
+    const cell = container.querySelector(".trace-event-time") as HTMLElement;
+    expect(cell.textContent).toBe(CALENDAR_TEXT);
+    fireEvent.mouseOver(cell);
+    expect(cell).toHaveAttribute("title", "3:20.2500");
   });
 });
