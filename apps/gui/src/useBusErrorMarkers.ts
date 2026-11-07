@@ -16,6 +16,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { BusErrorKindCount } from "./types";
 
 /// Everything that determines one fetch's answer.
 export interface BusErrorMarkerRequest {
@@ -37,17 +38,11 @@ export interface BusErrorMarkerRequest {
 /// An episode's errors by kind and direction, and its counters as of its
 /// last error (ADR 0060) — mirrors `ipc.rs`'s `BusErrorDetail`. Absent
 /// from the episode that carries it when no report covers it (a series
-/// restored with a capture whose reports were not kept).
+/// restored from a scratch written before the reports were persisted
+/// beside it).
 export interface BusErrorDetailWire {
-  countByKind: {
-    ack: number;
-    bit: number;
-    form: number;
-    stuff: number;
-    crc: number;
-    other: number;
-    unknown: number;
-  };
+  /// Only the kinds counted, largest first (the host's order).
+  countByKind: BusErrorKindCount[];
   txCount: number;
   rxCount: number;
   tec: number;

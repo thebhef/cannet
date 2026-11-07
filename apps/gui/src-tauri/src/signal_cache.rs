@@ -72,7 +72,11 @@
 //! a file-backed series it is never caught up and is complete as it
 //! stands, and it comes back from disk on any relaunch over the same
 //! capture; past that it is the same pyramid, the same paged serve, the
-//! same persistence, front-trim and sweep. No DBC bears on it, so a
+//! same persistence, front-trim and sweep. Beside it the series keeps
+//! what the running total cannot say — each reported episode's kinds,
+//! directions and counters
+//! (`SignalCacheStore::record_bus_error_episode`) — in its manifest
+//! row, so a restored capture's episodes read as they did live. No DBC bears on it, so a
 //! DBC-set change leaves it alone, and no signal listing offers it.
 //!
 //! A batch of queries ([`SignalCacheStore::slice_many`],
@@ -118,7 +122,7 @@ use cannet_dbc::Database;
 use cannet_spill::{lower_bound, SampleSeq, SAMPLE_ENTRY_BYTES};
 use serde::{Deserialize, Serialize};
 
-use crate::bus_error_episodes::{self, Episode, EpisodeList};
+use crate::bus_error_episodes::{self, Episode, EpisodeList, ReportedEpisode};
 use crate::math_kernels::{self, MathCarry};
 use crate::math_signals::{MathFunction, MathModel, MathOperandRef, ResolvedMath};
 use crate::signal_fingerprint::{self, DecodeModel};
@@ -368,6 +372,15 @@ struct SignalCache {
     /// more cheaply than a manifest could carry it. It goes with the
     /// cache, so a clear drops it and a restore starts without it.
     episodes: Option<EpisodeList>,
+    /// For a bus's **error series**, the episodes the sidecar reported on
+    /// that bus, oldest first, each as of its newest report
+    /// ([`SignalCacheStore::record_bus_error_episode`]). Unlike `episodes`
+    /// these cannot be rebuilt from level 0 — the series holds only the
+    /// running total, not the kinds, directions or counters — so they ride
+    /// the series' manifest row and come back with it (ADR 0047, ADR 0060
+    /// rule 2). Bounded as the series is: one per second of capture at
+    /// most, front-trimmed with it. Empty for every other series.
+    reported: Vec<ReportedEpisode>,
 }
 
 impl SignalCache {
@@ -390,6 +403,7 @@ impl SignalCache {
             encoding: None,
             read: false,
             episodes: None,
+            reported: Vec::new(),
         }
     }
 
@@ -827,6 +841,7 @@ impl SignalCache {
             signal: key.signal.clone(),
             file: self.file.clone(),
             bus_errors: key.is_bus_errors(),
+            reported: self.reported.clone(),
             encoding,
             next_index: self.next_index as u64,
             extent: self.extent().map(|(lo, hi)| [lo, hi]),
@@ -916,6 +931,7 @@ impl SignalCache {
             // Never persisted: the first episode serve rebuilds it from
             // the restored level 0.
             episodes: None,
+            reported: p.reported.clone(),
         }
     }
 
@@ -936,6 +952,13 @@ impl SignalCache {
         if let Some(list) = &mut self.episodes {
             list.trim_below(ts_seconds);
         }
+        // An episode is trimmed once its last error is, as the series'
+        // own points are.
+        #[allow(clippy::cast_precision_loss)]
+        let ended = self
+            .reported
+            .partition_point(|e| (e.last_ns as f64) / 1e9 < ts_seconds);
+        self.reported.drain(..ended);
     }
 }
 
@@ -1684,6 +1707,12 @@ struct PersistedSignal {
     /// existed still reads, as the set it describes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     bus_errors: bool,
+    /// A bus's error series' reported episodes — what the series alone
+    /// cannot say about each: its kinds, directions and counters
+    /// ([`ReportedEpisode`]). `#[serde(default)]` so a manifest written
+    /// before they were kept still reads, as the series alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reported: Vec<ReportedEpisode>,
     /// Fingerprint of the encoding these samples were decoded under
     /// ([`crate::signal_fingerprint`]) — for a DBC-backed row the
     /// definition that decoded it, for a file-backed one the source it
@@ -1797,8 +1826,9 @@ fn reopen_set(root: &Path, signals: &[PersistedSignal]) -> Option<Vec<(SignalKey
 
 /// [`MANIFEST_FILE`]'s contents: the validity key the whole set is reusable
 /// against, and one row per cached signal. Small (bounded by the number of
-/// plotted signals × pyramid depth), rewritten whole whenever the pyramids
-/// have moved.
+/// plotted signals × pyramid depth, plus each bus error series' reported
+/// episodes — about 150 bytes each, at most one per second of capture),
+/// rewritten whole whenever the pyramids have moved.
 #[derive(Serialize, Deserialize)]
 struct PyramidManifest {
     validity: PyramidValidity,
@@ -3857,6 +3887,55 @@ impl SignalCacheStore {
         cache.fold();
         caches.dirty = true;
         caches.episode_revision += 1;
+    }
+
+    /// Keep `episode` — a reported episode on `bus`, as of its newest
+    /// report — beside `bus`'s error series, so it persists and restores
+    /// with the series (ADR 0047). An episode the series already holds
+    /// (the same `base`) is replaced, so a republish updates it; any other
+    /// is the bus's next. A record that moved nothing writes nothing.
+    pub(crate) fn record_bus_error_episode(&self, bus: &str, episode: &ReportedEpisode) {
+        let key = self.ensure_bus_error_caches(&[bus]).remove(0);
+        let Some(key) = key else { return };
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let Some(cache) = caches.by_key.get_mut(&key) else {
+            return;
+        };
+        match cache.reported.last_mut() {
+            Some(last) if last.base == episode.base => {
+                if last == episode {
+                    return;
+                }
+                *last = episode.clone();
+            }
+            Some(last) if last.base > episode.base => return,
+            _ => cache.reported.push(episode.clone()),
+        }
+        caches.dirty = true;
+    }
+
+    /// Every bus whose error series this store holds, with the total it
+    /// has counted and the reported episodes kept beside it
+    /// ([`Self::record_bus_error_episode`]) — what a report store starts
+    /// from over a restored capture. A series restored from a manifest
+    /// written before the episodes were kept comes with none.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(crate) fn bus_error_reports(&self) -> Vec<(String, u64, Vec<ReportedEpisode>)> {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut out: Vec<(String, u64, Vec<ReportedEpisode>)> = caches
+            .by_key
+            .iter()
+            .filter(|(key, _)| key.is_bus_errors())
+            .filter_map(|(key, cache)| {
+                Some((
+                    key.bus_id.clone()?,
+                    cache.error_count() as u64,
+                    cache.reported.clone(),
+                ))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     /// Every error frame `bus`'s series has counted, or `0` for a bus with
@@ -11812,6 +11891,43 @@ mod tests {
         let files = files_under(root.path());
         assert!(files.iter().any(|f| f.starts_with(&base)), "{files:?}");
         assert_eq!(error_totals(&store), totals);
+    }
+
+    #[test]
+    fn a_bus_errors_reported_episodes_update_in_place_and_trim_with_the_series() {
+        // Kept beside the series: a republish (same base) replaces its
+        // record, a later episode is appended, a stale one is ignored,
+        // and the scratch cap's front-trim drops the episodes that ended
+        // before the mark, as it drops the series' own points.
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new(dir.path());
+        let ep = |base: u64, first_s: u64, last_s: u64, count: u64| ReportedEpisode {
+            first_ns: first_s * S,
+            last_ns: last_s * S,
+            count,
+            kinds: cannet_client::episodes::ErrorKindCounts {
+                ack: count,
+                ..Default::default()
+            }
+            .into(),
+            tx_count: count,
+            rx_count: 0,
+            tec: 128,
+            rec: 0,
+            open: false,
+            base,
+        };
+        store.record_bus_error_episode("ea", &ep(0, 10, 10, 1));
+        store.record_bus_error_episode("ea", &ep(0, 10, 11, 900));
+        store.record_bus_error_episode("ea", &ep(900, 20, 21, 5));
+        store.record_bus_error_episode("ea", &ep(0, 10, 11, 900));
+        let reported = |s: &SignalCacheStore| s.bus_error_reports()[0].2.clone();
+        assert_eq!(
+            reported(&store),
+            vec![ep(0, 10, 11, 900), ep(900, 20, 21, 5)]
+        );
+        store.evict_below(15.0);
+        assert_eq!(reported(&store), vec![ep(900, 20, 21, 5)]);
     }
 
     #[test]

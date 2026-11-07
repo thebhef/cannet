@@ -45,6 +45,14 @@
 //! `BusErrorReports::detail` sums their counts by kind and direction
 //! and takes the counters of the last.
 //!
+//! **What outlives a relaunch.** The series alone holds only the running
+//! total, so each reported episode's own record (`ReportedEpisode`:
+//! its span, count, kinds — sparse, only those counted — directions and
+//! counters) is kept beside the series in the signal cache and persisted
+//! in the same manifest row (ADR 0047). A scratch restore starts the
+//! report store from them (`BusErrorReports::restore`), all closed, so
+//! `detail` answers for a restored capture as it did live.
+//!
 //! A plot asks for the episodes that intersect its window at no more
 //! markers than fit (`fit_window`). Episodes at gap `2g` are exactly
 //! the gap-`g` episodes merged wherever one ends less than `2g` before
@@ -66,6 +74,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use cannet_client::episodes::{BusErrorEpisode, ErrorKindCounts};
+use serde::{Deserialize, Serialize};
 
 /// One episode: the first and last error of a burst on one bus.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -290,24 +299,111 @@ pub(crate) const EPISODE_CLOSE_AFTER_NS: u64 = 1_000_000_000;
 /// Vector's precedent).
 pub(crate) const DEFAULT_ERROR_ROW_CAP: u32 = 16;
 
+/// A kind of error frame, as ADR 0060 rule 1 names them. Ordered as the
+/// rule lists them, which is also the tie-break when two kinds count the
+/// same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ErrorKind {
+    Ack,
+    Bit,
+    Form,
+    Stuff,
+    Crc,
+    Other,
+    Unknown,
+}
+
+/// An episode's error frames by kind, **sparse**: only the kinds it
+/// counted any of. One kind is the usual case — a pulled cable is all
+/// `ack` — so the host keeps, persists and serves a map rather than a
+/// row of seven counters that are mostly zero.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct ErrorKinds(BTreeMap<ErrorKind, u64>);
+
+impl ErrorKind {
+    /// The kind's name, as ADR 0060 rule 1 spells it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Ack => "ack",
+            Self::Bit => "bit",
+            Self::Form => "form",
+            Self::Stuff => "stuff",
+            Self::Crc => "crc",
+            Self::Other => "other",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl ErrorKinds {
+    /// Add `other`'s counts to these, kind by kind.
+    fn add(&mut self, other: &Self) {
+        for (kind, n) in &other.0 {
+            *self.0.entry(*kind).or_insert(0) += n;
+        }
+    }
+
+    /// Every kind counted, largest first; a tie keeps [`ErrorKind`]'s
+    /// order. How the bus-health row and an event's text list them.
+    pub(crate) fn largest_first(&self) -> Vec<(ErrorKind, u64)> {
+        let mut kinds: Vec<(ErrorKind, u64)> = self.0.iter().map(|(k, n)| (*k, *n)).collect();
+        kinds.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        kinds
+    }
+}
+
+impl From<ErrorKindCounts> for ErrorKinds {
+    fn from(k: ErrorKindCounts) -> Self {
+        Self(
+            [
+                (ErrorKind::Ack, k.ack),
+                (ErrorKind::Bit, k.bit),
+                (ErrorKind::Form, k.form),
+                (ErrorKind::Stuff, k.stuff),
+                (ErrorKind::Crc, k.crc),
+                (ErrorKind::Other, k.other),
+                (ErrorKind::Unknown, k.unknown),
+            ]
+            .into_iter()
+            .filter(|(_, n)| *n > 0)
+            .collect(),
+        )
+    }
+}
+
 /// One episode as the sidecar reported it, and as the host keeps it: its
 /// first and latest error (on the host's timeline), its counts, the
 /// counters as of its latest error, and where it starts in the bus's
 /// running error total.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// **Persisted with the bus's error series** (ADR 0047): every field but
+/// `open` rides the series' manifest row in the pyramid scratch
+/// ([`crate::signal_cache::SignalCacheStore::record_bus_error_episode`]),
+/// so a capture restored after a relaunch reads the same episode it
+/// showed live (ADR 0060 rule 2). `open` is not: nothing is ongoing after
+/// a relaunch, so a restored episode is closed. In the manifest's JSON a
+/// record is about 150 bytes — a pulled cable's
+/// `{"first_ns":…,"last_ns":…,"count":3412,"kinds":{"ack":3412},
+/// "tx_count":3412,"rx_count":0,"tec":128,"rec":0,"base":0}` — and a bus
+/// holds at most one per second of capture.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ReportedEpisode {
     pub(crate) first_ns: u64,
     pub(crate) last_ns: u64,
     pub(crate) count: u64,
-    pub(crate) count_by_kind: ErrorKindCounts,
+    pub(crate) kinds: ErrorKinds,
     pub(crate) tx_count: u64,
     pub(crate) rx_count: u64,
     pub(crate) tec: u32,
     pub(crate) rec: u32,
     /// Not yet closed: no closing report, and no later episode, has
-    /// arrived for it.
+    /// arrived for it. Never persisted.
+    #[serde(skip)]
     pub(crate) open: bool,
-    /// The bus's running error total before this episode's first error.
+    /// The bus's running error total before this episode's first error —
+    /// unique per episode on its bus, so it is also the episode's key.
     pub(crate) base: u64,
 }
 
@@ -326,10 +422,10 @@ impl ReportedEpisode {
 
 /// What a reader's episode — one or more reported ones merged at the
 /// reader's gap — says beyond its count and span.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EpisodeDetail {
     /// The reported episodes' counts by kind, summed.
-    pub(crate) count_by_kind: ErrorKindCounts,
+    pub(crate) kinds: ErrorKinds,
     pub(crate) tx_count: u64,
     pub(crate) rx_count: u64,
     /// The counters as of the last error.
@@ -363,19 +459,6 @@ pub(crate) struct BusErrorReports {
 #[allow(clippy::cast_precision_loss)]
 fn seconds(ns: u64) -> f64 {
     ns as f64 / 1e9
-}
-
-/// `a` + `b`, kind by kind.
-fn add_kinds(a: ErrorKindCounts, b: ErrorKindCounts) -> ErrorKindCounts {
-    ErrorKindCounts {
-        ack: a.ack + b.ack,
-        bit: a.bit + b.bit,
-        form: a.form + b.form,
-        stuff: a.stuff + b.stuff,
-        crc: a.crc + b.crc,
-        other: a.other + b.other,
-        unknown: a.unknown + b.unknown,
-    }
 }
 
 impl BusErrorReports {
@@ -414,7 +497,7 @@ impl BusErrorReports {
                 let grew = report.count > e.count || report.last_ns > e.last_ns;
                 e.last_ns = e.last_ns.max(report.last_ns);
                 e.count = report.count;
-                e.count_by_kind = report.count_by_kind;
+                e.kinds = report.count_by_kind.into();
                 e.tx_count = report.tx_count;
                 e.rx_count = report.rx_count;
                 e.tec = report.tec;
@@ -445,7 +528,7 @@ impl BusErrorReports {
             first_ns,
             last_ns,
             count: report.count,
-            count_by_kind: report.count_by_kind,
+            kinds: report.count_by_kind.into(),
             tx_count: report.tx_count,
             rx_count: report.rx_count,
             tec: report.tec,
@@ -475,6 +558,21 @@ impl BusErrorReports {
                 },
             );
         }
+    }
+
+    /// Start `bus` from what a capture restored with its error series
+    /// persisted beside it: `total` errors counted, and the reported
+    /// episodes the series kept (all closed — nothing is ongoing after a
+    /// relaunch). A bus that already has reports is left alone, as
+    /// [`Self::seed`] leaves it.
+    pub(crate) fn restore(&mut self, bus: &str, total: u64, episodes: Vec<ReportedEpisode>) {
+        self.buses
+            .entry(bus.to_string())
+            .or_insert_with(|| BusReports {
+                total,
+                episodes,
+                current: None,
+            });
     }
 
     /// Close every episode `source` still holds open — its session has
@@ -520,16 +618,18 @@ impl BusErrorReports {
     /// What the reported episodes that begin within `[first_t, last_t]`
     /// seconds on `bus` say together — a reader's episode, which is a
     /// whole number of reported ones — or `None` when no report covers
-    /// it (a series restored with a capture whose reports were not).
+    /// it (a series restored from a scratch written before the reports
+    /// were persisted beside it).
     pub(crate) fn detail(&self, bus: &str, first_t: f64, last_t: f64) -> Option<EpisodeDetail> {
         let episodes = &self.buses.get(bus)?.episodes;
         let lo = episodes.partition_point(|e| seconds(e.first_ns) < first_t);
         let hi = episodes.partition_point(|e| seconds(e.first_ns) <= last_t);
         let covered = episodes.get(lo..hi).filter(|c| !c.is_empty())?;
-        let last = covered[covered.len() - 1];
+        let last = &covered[covered.len() - 1];
         Some(EpisodeDetail {
-            count_by_kind: covered.iter().fold(ErrorKindCounts::default(), |acc, e| {
-                add_kinds(acc, e.count_by_kind)
+            kinds: covered.iter().fold(ErrorKinds::default(), |mut acc, e| {
+                acc.add(&e.kinds);
+                acc
             }),
             tx_count: covered.iter().map(|e| e.tx_count).sum(),
             rx_count: covered.iter().map(|e| e.rx_count).sum(),
@@ -928,11 +1028,45 @@ mod tests {
         let _ = r.apply("b", "s", &second);
         // Merged at a 5 s gap the two are one reader's episode.
         let d = r.detail("b", 10.0, 14.0).unwrap();
-        assert_eq!((d.count_by_kind.ack, d.count_by_kind.bit), (50, 10));
+        assert_eq!(
+            d.kinds.largest_first(),
+            vec![(ErrorKind::Ack, 50), (ErrorKind::Bit, 10)]
+        );
         assert_eq!((d.tx_count, d.rx_count), (60, 5));
         assert_eq!((d.tec, d.ongoing), (255, true), "the last one's counters");
         assert_eq!(r.detail("b", 30.0, 40.0), None);
         assert_eq!(r.detail("other", 10.0, 14.0), None);
+    }
+
+    #[test]
+    fn kinds_are_kept_sparse_and_listed_largest_first() {
+        // Owner ruling 2026-10-05: a pulled cable is all `ack`, so the
+        // host keeps only the kinds counted, and lists them largest
+        // first; a tie keeps ADR 0060's own order.
+        let one: ErrorKinds = ErrorKindCounts {
+            ack: 3_412,
+            ..ErrorKindCounts::default()
+        }
+        .into();
+        assert_eq!(serde_json::to_string(&one).unwrap(), r#"{"ack":3412}"#);
+        let mixed: ErrorKinds = ErrorKindCounts {
+            ack: 2,
+            bit: 3_410,
+            crc: 2,
+            ..ErrorKindCounts::default()
+        }
+        .into();
+        assert_eq!(
+            mixed.largest_first(),
+            vec![
+                (ErrorKind::Bit, 3_410),
+                (ErrorKind::Ack, 2),
+                (ErrorKind::Crc, 2)
+            ]
+        );
+        assert!(ErrorKinds::from(ErrorKindCounts::default())
+            .largest_first()
+            .is_empty());
     }
 
     /// An imported capture's error records, through the import builder

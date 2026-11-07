@@ -259,7 +259,10 @@ describe("BusHealthPanel", () => {
           firstTsNs: 0,
           lastTsNs: 2_500_000_000,
           count: 3412,
-          countByKind: { ack: 3410, bit: 2, form: 0, stuff: 0, crc: 0, other: 0, unknown: 0 },
+          countByKind: [
+            { kind: "ack", count: 3410 },
+            { kind: "bit", count: 2 },
+          ],
           txCount: 3412,
           rxCount: 0,
           tec: 104,
@@ -281,7 +284,7 @@ describe("BusHealthPanel", () => {
     renderPanel();
     await waitFor(() => expect(screen.getByText("stale")).toBeInTheDocument());
     const cell = cellsOf("Powertrain")[6];
-    expect(cell).toContain("mostly ack: no other node acknowledging");
+    expect(cell).toContain("3,412 errors (1.4k/s): ack 3,410, bit 2");
     expect(cell).toContain("— ongoing");
     expect(cell).toContain("sends refused: 1,234 (transmit queue full)");
     expect(cell).toContain("transmit queue flushed 2×");

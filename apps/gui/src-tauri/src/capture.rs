@@ -2937,6 +2937,12 @@ fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
             .signal_caches
             .restore(&v, &state.decode_model(&dbcs), count)
     });
+    // The bus-error episodes' kinds, directions and counters came back
+    // beside their error series; the report store starts from them, so
+    // a restored episode reads as it did live (ADR 0060 rule 2).
+    if let Some(health) = app.try_state::<crate::bus_health::BusHealth>() {
+        crate::bus_health::restore_reports(&state.signal_caches, &health);
+    }
     let pyramids_ms = pyramids_at.elapsed().as_secs_f64() * 1000.0;
     // A rejection used to be invisible from here: the capture came back
     // fast and then every plot over it spent minutes re-decoding, with
