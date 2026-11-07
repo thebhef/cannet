@@ -9,12 +9,22 @@
 /// Attach the returned ref to the menu's own root element; no
 /// `stopPropagation()` or CSS-selector `closest()` needed at the call
 /// site, since outside-ness is decided by `ref.current.contains`.
+///
+/// `onClose` is told *why* the menu is closing. A menu holding an
+/// uncommitted edit needs it: an outside click is "done here", so the
+/// edit commits, while Escape is "never mind", so it does not. The menu
+/// cannot rely on its input's `blur` for the outside case — closing on
+/// `mousedown` unmounts the input before the browser moves focus, so
+/// that `blur` never reaches it.
 
 import { type RefObject, useEffect, useRef } from "react";
 
+/** What dismissed the menu: a `mousedown` outside it, or Escape. */
+export type DismissReason = "outside" | "escape";
+
 export function useDismissableMenu<T extends HTMLElement = HTMLElement>(
   open: boolean,
-  onClose: () => void,
+  onClose: (reason: DismissReason) => void,
 ): RefObject<T> {
   const ref = useRef<T>(null);
 
@@ -28,10 +38,10 @@ export function useDismissableMenu<T extends HTMLElement = HTMLElement>(
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onCloseRef.current();
+      if (ref.current && !ref.current.contains(e.target as Node)) onCloseRef.current("outside");
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
+      if (e.key === "Escape") onCloseRef.current("escape");
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);

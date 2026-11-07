@@ -1653,6 +1653,130 @@ describe("PlotPanel", () => {
     });
   });
 
+  /// A paused plot's y range holds until asked (ADR 0026): turning
+  /// follow-live off keeps the range it was showing, and pan and zoom
+  /// leave it alone. Fit Y fits the samples on screen; Fit Data refits
+  /// to the data. The host serves the visible window plus a margin
+  /// either side, so a spike just past an edge arrives in the slice —
+  /// and must not set Fit Y's scale. The fake host serves the whole
+  /// series whatever the window, which is the margin at its widest.
+  describe("paused y holds until asked", () => {
+    const STOPPED = { start: 0, end: 60, isPaused: false };
+    // Spikes at 8 and 22 sit inside a [10, 20] window's ±20 % margin.
+    const SPIKED = { t: [8, 10, 12, 15, 18, 20, 22], v: [9000, 3700, 3712, 3724, 3710, 3705, -9000] };
+    let seq = 0;
+
+    const row = (name: string) => screen.getByText(name).closest(".plot-signal-row") as HTMLElement;
+    const yRange = (name = "CellVolts") => row(name).querySelector(".plot-signal-range")?.textContent;
+
+    async function mount(config?: Record<string, unknown>) {
+      const id = `el-hold-${seq++}`;
+      const commands = createPanelCommandRegistry();
+      renderPanel({
+        params: { elementId: id, showDiag: true },
+        registry: makeRegistry({ id, trace: STOPPED, config }),
+        commands,
+      });
+      addFocusedSignal("CellVolts");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      const setRange = async (r: string) => {
+        act(() => {
+          commands.invoke(id, "plot.setVisibleRange", r);
+        });
+        // Long enough for the window's re-sample to land and draw.
+        await act(async () => {
+          await new Promise((res) => setTimeout(res, 100));
+        });
+      };
+      return { commands, id, setRange };
+    }
+
+    /// Following live first, so the held range is the host's all-time
+    /// extent — then zoomed to [10, 20], which turns follow-live off.
+    async function mountZoomed() {
+      mockSampleSeries.CellVolts = SPIKED;
+      mockSignalExtents.CellVolts = { lo: -9000, hi: 9000 };
+      const m = await mount();
+      await waitFor(() => expect(yRange()).toContain("y[-9000 … 9000]"));
+      await m.setRange("10 20");
+      expect(followChip()).toHaveAttribute("aria-pressed", "false");
+      return m;
+    }
+
+    const fitY = async () => {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Fit Y" }));
+      });
+    };
+
+    it("turning follow-live off keeps the range it was showing, across zoom and pan", async () => {
+      await withSizedCanvas(async () => {
+        const { setRange } = await mountZoomed();
+        expect(yRange()).toContain("y[-9000 … 9000]");
+        await setRange("12 18");
+        expect(yRange()).toContain("y[-9000 … 9000]");
+        await setRange("30 40");
+        expect(yRange()).toContain("y[-9000 … 9000]");
+      });
+    });
+
+    it("one Fit Y click fits the samples on screen, not the margin, and that holds", async () => {
+      await withSizedCanvas(async () => {
+        const { setRange } = await mountZoomed();
+        // A stopped trace has no resample loop, and once the mount's
+        // re-samples have landed the window's request is memoised: the
+        // click alone has to redraw, on the first press.
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 600));
+        });
+        await fitY();
+        await waitFor(() => expect(yRange()).toContain("y[3700 … 3724]"));
+        // Widening the window to take the spikes in leaves it alone.
+        await setRange("8 22");
+        expect(yRange()).toContain("y[3700 … 3724]");
+      });
+    });
+
+    it("Fit Data refits y to the data", async () => {
+      await withSizedCanvas(async () => {
+        const { commands, id } = await mountZoomed();
+        await fitY();
+        await waitFor(() => expect(yRange()).toContain("y[3700 … 3724]"));
+        await act(async () => {
+          commands.invoke(id, "plot.fitXAxis");
+        });
+        await waitFor(() => expect(yRange()).toContain("y[-9000 … 9000]"));
+      });
+    });
+
+    it("a plot that starts paused seeds the hold from the first served data", async () => {
+      mockSampleSeries.CellVolts = { t: [10, 15, 20], v: [3700, 3712, 3724] };
+      // Not the range a follow-live axis would show: the seed is the data.
+      mockSignalExtents.CellVolts = { lo: -20000, hi: 20000 };
+      await withSizedCanvas(async () => {
+        const { setRange } = await mount({ followLive: false, showDiag: true });
+        expect(followChip()).toHaveAttribute("aria-pressed", "false");
+        await waitFor(() => expect(yRange()).toContain("y[3700 … 3724]"));
+        await setRange("14 16");
+        expect(yRange()).toContain("y[3700 … 3724]");
+      });
+    });
+
+    it("a signal added while paused gets a range of its own", async () => {
+      mockSampleSeries.CellVolts = { t: [10, 15, 20], v: [3700, 3712, 3724] };
+      mockSignalExtents.CellVolts = { lo: -20000, hi: 20000 };
+      mockSampleSeries.PackVolts = { t: [10, 15, 20], v: [396, 397, 398] };
+      mockSignalExtents.PackVolts = { lo: -20000, hi: 20000 };
+      await withSizedCanvas(async () => {
+        await mount({ followLive: false, showDiag: true });
+        await waitFor(() => expect(yRange()).toContain("y[3700 … 3724]"));
+        addFocusedSignal("PackVolts");
+        // It joins the axis's union, so the shared scale takes it in.
+        await waitFor(() => expect(yRange("PackVolts")).toContain("y[396 … 3724]"));
+      });
+    });
+  });
+
   /// The follow-live branch takes its range from the host's all-time
   /// extent rather than the visible slice (ADR 0025), and that answer
   /// outlives the display choice in force when it arrived — so it is
@@ -3587,7 +3711,13 @@ describe("PlotArea y-normalisation", () => {
   /// the only way to pin a *known* axis id: a freshly added area's id
   /// is a UUID, and the derived-axis ids the settings key off are built
   /// from it.
-  function renderSeeded(opts: { signals: string[]; axisScales?: Record<string, unknown>; mode?: string }) {
+  function renderSeeded(opts: {
+    signals: string[];
+    axisScales?: Record<string, unknown>;
+    mode?: string;
+    followLive?: boolean;
+    ignoreManualY?: boolean;
+  }) {
     const elementId = `el-scale-${seedCounter++}`;
     return renderPanel({
       params: { elementId },
@@ -3610,6 +3740,8 @@ describe("PlotArea y-normalisation", () => {
             },
           ],
           ...(opts.axisScales ? { axisScales: opts.axisScales } : {}),
+          ...(opts.followLive != null ? { followLive: opts.followLive } : {}),
+          ...(opts.ignoreManualY != null ? { ignoreManualY: opts.ignoreManualY } : {}),
         },
       }),
     });
@@ -3750,10 +3882,10 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
-  it("fit y clears a manual range instead of writing numbers into it", async () => {
-    // Under a sparse store, "fit y" and "clear the fields" are the same
-    // intent — go back to automatic — so they do the same thing. Fit y
-    // seeding the fields would silently pin every axis it ever fitted.
+  it("fit y leaves a pinned axis exactly as set, on a paused plot", async () => {
+    // A manual bound is the user's own statement of the scale; Fit Y
+    // refits only the axes nobody pinned (ADR 0026). Paused, so no
+    // later tick could put a cleared bound back on screen either way.
     mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
     mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
     const restore = stubSize();
@@ -3761,12 +3893,124 @@ describe("PlotArea y-normalisation", () => {
       const { api } = renderSeeded({
         signals: ["LimitEffective"],
         axisScales: { a1: { min: 0, max: 1000 } },
+        followLive: false,
       });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1000 A"]));
       await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { min: 0, max: 1000 } }));
       await act(async () => {
         fireEvent.click(document.querySelector(".plot-area-fit-y")!);
       });
-      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({}));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Fit Y" }));
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+      });
+      expect(persistedScales(api).axisScales).toEqual({ a1: { min: 0, max: 1000 } });
+      expect(yTickLabels([0, 1])).toEqual(["0 A", "1000 A"]);
+      await waitForData((data) => expect(data[1]?.[2]).toBeCloseTo(0.5, 6));
+    } finally {
+      restore();
+    }
+  });
+
+  /// The toolbar's "ignore manual y bounds" chip.
+  const ignoreChip = () => screen.getByRole("button", { name: "Ignore Manual Axes" });
+
+  it("ignoring manual bounds draws a pinned axis as automatic, and off puts them back untouched", async () => {
+    mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { min: 0, max: 1000 } } });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1000 A"]));
+      expect(ignoreChip()).toHaveAttribute("aria-pressed", "false");
+      await act(async () => {
+        fireEvent.click(ignoreChip());
+      });
+      expect(ignoreChip()).toHaveAttribute("aria-pressed", "true");
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["400 A", "500 A"]));
+      // Ignored, not cleared: the store is never written by the chip.
+      expect(persistedScales(api).axisScales).toEqual({ a1: { min: 0, max: 1000 } });
+      await act(async () => {
+        fireEvent.click(ignoreChip());
+      });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1000 A"]));
+      expect(persistedScales(api).axisScales).toEqual({ a1: { min: 0, max: 1000 } });
+    } finally {
+      restore();
+    }
+  });
+
+  it("while manual bounds are ignored, Fit Y refits a pinned axis on a paused plot", async () => {
+    // Follow-live draws the host's all-time extent and hands that to the
+    // paused hold; only a Fit Y that sees no pin moves the axis onto the
+    // samples on screen.
+    mockSignalExtents.LimitEffective = { lo: 0, hi: 2000 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({
+        signals: ["LimitEffective"],
+        axisScales: { a1: { min: 100, max: 1000 } },
+        ignoreManualY: true,
+      });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "2000 A"]));
+      await act(async () => {
+        fireEvent.click(followChip());
+      });
+      expect(followChip()).toHaveAttribute("aria-pressed", "false");
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+      });
+      expect(yTickLabels([0, 1])).toEqual(["0 A", "2000 A"]);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Fit Y" }));
+      });
+      // Onto the samples on screen — neither the stored [100, 1000] nor
+      // the held [0, 2000]. Which samples the paused window holds is the
+      // window's business; the top is somewhere in the data.
+      await waitFor(() => {
+        const [lo, hi] = yTickLabels([0, 1]);
+        expect(lo).toBe("400 A");
+        expect(hi).toMatch(/^(4\d\d|500) A$/);
+      });
+      // Off again: the pinned bounds apply exactly as stored.
+      await act(async () => {
+        fireEvent.click(ignoreChip());
+      });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["100 A", "1000 A"]));
+      expect(persistedScales(api).axisScales).toEqual({ a1: { min: 100, max: 1000 } });
+    } finally {
+      restore();
+    }
+  });
+
+  it("the ignore chip rides the panel config, stored only while on", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({ signals: ["LimitEffective"], ignoreManualY: true });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      expect(ignoreChip()).toHaveAttribute("aria-pressed", "true");
+      await waitFor(() => expect(persistedScales(api)).toHaveProperty("ignoreManualY", true));
+      await act(async () => {
+        fireEvent.click(ignoreChip());
+      });
+      await waitFor(() => expect(persistedScales(api)).not.toHaveProperty("ignoreManualY", true));
+      expect((persistedScales(api) as { ignoreManualY?: unknown }).ignoreManualY).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  it("the y-axis menu still shows the stored bounds while they are ignored, and says so", async () => {
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { max: 1000 } }, ignoreManualY: true });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      expect(screen.getByLabelText("y axis maximum")).toHaveValue("1000");
+      expect(screen.getByText("manual bounds are ignored")).toBeInTheDocument();
     } finally {
       restore();
     }
@@ -3812,6 +4056,11 @@ describe("PlotArea y-normalisation", () => {
       expect(screen.getByLabelText("y axis minimum")).toBeInTheDocument();
       expect(screen.getByLabelText("y axis maximum")).toBeInTheDocument();
       expect(screen.getByLabelText("log scale")).not.toBeChecked();
+      // Max above min, the way the axis itself reads top to bottom.
+      const bounds = Array.from(
+        document.querySelectorAll<HTMLInputElement>(".plot-axis-menu input[aria-label^='y axis']"),
+      ).map((i) => i.getAttribute("aria-label"));
+      expect(bounds).toEqual(["y axis maximum", "y axis minimum"]);
     } finally {
       restore();
     }
@@ -3834,6 +4083,316 @@ describe("PlotArea y-normalisation", () => {
         fireEvent.keyDown(max, { key: "Enter" });
       });
       await waitFor(() => expect(persistedScales(api).axisScales).toEqual({}));
+    } finally {
+      restore();
+    }
+  });
+
+  it("× on a bound clears that bound alone, and the axis goes automatic on that side", async () => {
+    mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { min: 0, max: 1000 } } });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1000 A"]));
+      rightClickAxis(4);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "clear y axis maximum" }));
+      });
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { min: 0 } }));
+      expect(screen.getByLabelText("y axis maximum")).toHaveValue("");
+      expect(screen.getByLabelText("y axis minimum")).toHaveValue("0");
+      expect(screen.queryByRole("button", { name: "clear y axis maximum" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "clear y axis minimum" })).toBeInTheDocument();
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "500 A"]));
+    } finally {
+      restore();
+    }
+  });
+
+  it("clear all empties both bounds; the log flag is not a bound and stays", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({
+        signals: ["LimitEffective"],
+        axisScales: { a1: { min: 0, max: 1000 } },
+      });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "clear all y axis bounds" }));
+      });
+      // Sparse store: an axis with nothing set has no entry at all.
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({}));
+      expect(screen.getByLabelText("y axis maximum")).toHaveValue("");
+      expect(screen.getByLabelText("y axis minimum")).toHaveValue("");
+      expect(screen.getByRole("button", { name: "clear all y axis bounds" })).toBeDisabled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("clear all on a log axis clears the held min too, and keeps log", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({
+        signals: ["LimitEffective"],
+        axisScales: { a1: { min: 5, max: 1000, log: true } },
+      });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "clear all y axis bounds" }));
+      });
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { log: true } }));
+      expect(screen.getByLabelText("log scale")).toBeChecked();
+    } finally {
+      restore();
+    }
+  });
+
+  it("an empty field has no ×, clear all is disabled while nothing is set, and a typed draft shows its ×", async () => {
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"] });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      expect(screen.queryByRole("button", { name: "clear y axis maximum" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "clear y axis minimum" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "clear all y axis bounds" })).toBeDisabled();
+      fireEvent.change(screen.getByLabelText("y axis maximum"), { target: { value: "12" } });
+      expect(screen.getByRole("button", { name: "clear y axis maximum" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "clear y axis minimum" })).not.toBeInTheDocument();
+      // The × sits inside the field it clears.
+      expect(
+        screen.getByRole("button", { name: "clear y axis maximum" }).parentElement,
+      ).toContainElement(screen.getByLabelText("y axis maximum"));
+    } finally {
+      restore();
+    }
+  });
+
+  it("the menu's hint turns the ignore chip off, and the stored bounds draw again", async () => {
+    mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({
+        signals: ["LimitEffective"],
+        axisScales: { a1: { min: 0, max: 1000 } },
+        ignoreManualY: true,
+      });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["400 A", "500 A"]));
+      rightClickAxis(4);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "apply manual bounds" }));
+      });
+      expect(ignoreChip()).toHaveAttribute("aria-pressed", "false");
+      // The menu stays open; the apply row goes with the chip.
+      expect(screen.getByLabelText("y axis maximum")).toHaveValue("1000");
+      expect(screen.queryByRole("button", { name: "apply manual bounds" })).not.toBeInTheDocument();
+      expect(screen.queryByText("manual bounds are ignored")).not.toBeInTheDocument();
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1000 A"]));
+      expect(persistedScales(api).axisScales).toEqual({ a1: { min: 0, max: 1000 } });
+    } finally {
+      restore();
+    }
+  });
+
+  it("the menu has one hint slot: its text swaps when the chip turns off, no line comes or goes", async () => {
+    const restore = stubSize();
+    try {
+      renderSeeded({
+        signals: ["LimitEffective"],
+        axisScales: { a1: { max: 1000 } },
+        ignoreManualY: true,
+      });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      const hints = () => Array.from(document.querySelectorAll(".plot-axis-menu-hint"));
+      expect(hints()).toHaveLength(1);
+      const slot = hints()[0];
+      expect(slot).toHaveTextContent("manual bounds are ignored");
+      // The apply row is the menu's last row while the chip is on.
+      const menu = document.querySelector(".plot-axis-menu")!;
+      expect(menu.lastElementChild).toBe(screen.getByRole("button", { name: "apply manual bounds" }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "apply manual bounds" }));
+      });
+      expect(hints()).toHaveLength(1);
+      expect(hints()[0]).toBe(slot);
+      expect(slot).toHaveTextContent("empty = automatic");
+    } finally {
+      restore();
+    }
+  });
+
+  it("the hint reads the log-axis rule on a log axis", async () => {
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { log: true } } });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      const hints = document.querySelectorAll(".plot-axis-menu-hint");
+      expect(hints).toHaveLength(1);
+      expect(hints[0]).toHaveTextContent("min is the smallest positive value");
+    } finally {
+      restore();
+    }
+  });
+
+  // A per-unit area of many same-unit signals, one of which carries a
+  // J1939-style "not available" code: raw 255 at 0.5 degC/LSB decodes to
+  // 127.5 degC and spikes far above the 20..31 degC the rest read. Seeded
+  // through saved config so the per-unit axis id (`a1/u:unit:degC`) is
+  // known.
+  const SNA_TEMPS = Array.from({ length: 12 }, (_, i) => `Temp${String(i + 1).padStart(2, "0")}`);
+  const SNA_T = [0, 1, 2, 3, 4, 5];
+  function seedSnaTemps(axisScales?: Record<string, unknown>) {
+    SNA_TEMPS.forEach((n, i) => {
+      const v = n === "Temp12" ? [25, 127.5, 25, 26, 127.5, 25] : SNA_T.map((t) => 20 + i + t * 0.1);
+      mockSampleSeries[n] = { t: SNA_T, v };
+      mockSignalExtents[n] = { lo: Math.min(...v), hi: Math.max(...v) };
+    });
+    const elementId = `el-sna-${seedCounter++}`;
+    return renderPanel({
+      params: { elementId },
+      registry: makeRegistry({
+        id: elementId,
+        config: {
+          areas: [
+            {
+              id: "a1",
+              signals: SNA_TEMPS.map((n) => ({
+                busId: null,
+                messageId: 256,
+                extended: false,
+                signalName: n,
+                messageName: "EngineData",
+                unit: "degC",
+                color: "#4ecbff",
+              })),
+              yAxisMode: "per-unit",
+            },
+          ],
+          ...(axisScales ? { axisScales } : {}),
+        },
+      }),
+    });
+  }
+  /// The newest uPlot instance drawing `n` series — the degC axis, told
+  /// apart from an enum-lanes axis by how many signals it holds.
+  function instanceWithSeries(n: number) {
+    for (let i = uplotInstances.length - 1; i >= 0; i--) {
+      const inst = uplotInstances[i] as unknown as { data: (number | null)[][] };
+      if ((inst.data?.length ?? 0) === n + 1 && (inst.data[0]?.length ?? 0) > 0) return inst;
+    }
+    return null;
+  }
+
+  it("manual min and max pin a many-signal per-unit axis exactly, SNA spike and all", async () => {
+    const restore = stubSize();
+    try {
+      seedSnaTemps({ "a1/u:unit:degC": { min: 0, max: 50 } });
+      await waitFor(() => {
+        const inst = instanceWithSeries(12);
+        expect(inst).not.toBeNull();
+        // Every series normalises through exactly [0, 50]: a value v
+        // plots at v / 50, the spike included (off the top, at 2.55).
+        SNA_TEMPS.forEach((n, i) => {
+          const row = inst!.data[i + 1];
+          mockSampleSeries[n].v.forEach((v, j) => expect(row[j]).toBeCloseTo(v / 50, 6));
+        });
+      });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 degC", "50 degC"]));
+    } finally {
+      restore();
+    }
+  });
+
+  it("an SNA-only value table keeps the signal on the unit axis", async () => {
+    // A single-member table is an SNA sentinel on a numeric signal and
+    // stays numeric (`isEnumValueTable`), so the spike shares the degC
+    // axis and the manual range above pins it with the rest.
+    mockValueTables.Temp12 = [{ raw: 255, label: "SNA" }];
+    const restore = stubSize();
+    try {
+      seedSnaTemps({ "a1/u:unit:degC": { min: 0, max: 50 } });
+      await waitFor(() => expect(instanceWithSeries(12)).not.toBeNull());
+      expect(document.querySelectorAll(".plot-area-canvas").length).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("a two-entry sentinel table moves the signal to the enum lanes; the unit axis still pins exactly", async () => {
+    // `254 Error` + `255 SNA` reads as an enum (two or more members),
+    // so per-unit mode breaks the signal out onto its own enum-lanes
+    // axis. The degC axis keeps the other eleven at exactly [0, 50].
+    mockValueTables.Temp12 = [
+      { raw: 254, label: "Error" },
+      { raw: 255, label: "SNA" },
+    ];
+    const restore = stubSize();
+    try {
+      seedSnaTemps({ "a1/u:unit:degC": { min: 0, max: 50 } });
+      await waitFor(() => {
+        expect(instanceWithSeries(1)).not.toBeNull();
+        const inst = instanceWithSeries(11);
+        expect(inst).not.toBeNull();
+        SNA_TEMPS.slice(0, 11).forEach((n, i) => {
+          mockSampleSeries[n].v.forEach((v, j) => expect(inst!.data[i + 1][j]).toBeCloseTo(v / 50, 6));
+        });
+      });
+      expect(document.querySelectorAll(".plot-area-canvas").length).toBe(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it("a bound typed and then left by clicking outside the menu is kept", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = seedSnaTemps();
+      await waitFor(() => expect(instanceWithSeries(12)).not.toBeNull());
+      rightClickAxis(4);
+      const min = screen.getByLabelText("y axis minimum");
+      const max = screen.getByLabelText("y axis maximum");
+      await act(async () => {
+        fireEvent.focus(max);
+        fireEvent.change(max, { target: { value: "50" } });
+        // Tab to the min box: the max box blurs inside the menu.
+        fireEvent.blur(max);
+        fireEvent.focus(min);
+        fireEvent.change(min, { target: { value: "0" } });
+      });
+      // Click elsewhere: the menu dismisses on mousedown, before the
+      // browser blurs the focused box.
+      await act(async () => {
+        fireEvent.mouseDown(document.body);
+      });
+      expect(screen.queryByLabelText("y axis minimum")).not.toBeInTheDocument();
+      await waitFor(() =>
+        expect(persistedScales(api).axisScales).toEqual({ "a1/u:unit:degC": { min: 0, max: 50 } }),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("Escape dismisses the menu without committing a typed bound", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = seedSnaTemps();
+      await waitFor(() => expect(instanceWithSeries(12)).not.toBeNull());
+      rightClickAxis(4);
+      const max = screen.getByLabelText("y axis maximum");
+      await act(async () => {
+        fireEvent.change(max, { target: { value: "50" } });
+        fireEvent.keyDown(document, { key: "Escape" });
+      });
+      expect(screen.queryByLabelText("y axis maximum")).not.toBeInTheDocument();
+      expect(persistedScales(api).axisScales ?? {}).toEqual({});
     } finally {
       restore();
     }

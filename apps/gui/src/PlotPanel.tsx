@@ -604,6 +604,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [axisScales, setAxisScales] = useState<AxisScales>(() =>
     axisScalesFromRaw(savedConfig?.axisScales),
   );
+  /** The toolbar's "ignore manual y bounds" chip: while on, every axis
+   * draws and fits as automatic, but {@link axisScales} is never written,
+   * so turning it off puts each bound back as stored (ADR 0026).
+   * Persisted sparsely: absent = off. */
+  const [ignoreManualY, setIgnoreManualY] = useState(() =>
+    boolFromRaw(savedConfig?.ignoreManualY, false),
+  );
   /** Solo (`plotSolo.ts`): a panel-wide regex over the series display
    * names, masking everything it doesn't match out of the *view*. It
    * never rewrites a series' persisted `hidden` flag — clearing solo
@@ -642,6 +649,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setAxisWeights(axisWeightsFromRaw(config.axisWeights));
     setAxisCollapsed(axisCollapsedFromRaw(config.axisCollapsed));
     setAxisScales(axisScalesFromRaw(config.axisScales));
+    setIgnoreManualY(boolFromRaw(config.ignoreManualY, false));
     setSolo(soloFromRaw(config.solo));
     setCursorX(cursorXFromRaw(config.cursorX));
     setCursorYByArea(cursorYByAreaFromRaw(config.cursorYByArea));
@@ -1215,6 +1223,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       axisWeights,
       axisCollapsed,
       axisScales,
+      ...(ignoreManualY ? { ignoreManualY } : {}),
       solo: soloToParams(solo),
     });
   }, [
@@ -1233,6 +1242,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     axisWeights,
     axisCollapsed,
     axisScales,
+    ignoreManualY,
   ]);
 
   // --- area ops ---
@@ -2390,7 +2400,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     axisCollapsed,
     derivedAreaMemo,
   ]);
-
   /// Per-*derived-axis* slice of the selection — the shape that keeps a
   /// selection click off the memoised areas that hold none of the
   /// affected rows. Every axis outside the selected area (and every one
@@ -2838,6 +2847,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onAddArea={addArea}
         onFitX={fitData}
         onFitY={fitYAll}
+        ignoreManualY={ignoreManualY}
+        onIgnoreManualY={setIgnoreManualY}
         followLive={followLive}
         onFollowLive={setFollowLive}
         showPoints={effectiveShowPoints}
@@ -3025,6 +3036,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}
                 yScale={axisScales[d.area.id]}
+                ignoreManualY={ignoreManualY}
+                onIgnoreManualY={setIgnoreManualY}
               label={areaLabels.get(parent.id) ?? "Area"}
               subtitle={d.subtitle}
               isFirst={idx === topAxisIdx}
