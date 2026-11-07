@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   areaAxisScales,
   claimPlotArea,
+  copyModifierLabel,
   copyOfArea,
+  isCopyDrag,
   insertAreaAt,
   onPlotAreaClaimed,
   parsePlotAreaDragData,
@@ -172,5 +174,23 @@ describe("claiming a moved area from its source panel", () => {
     onPlotAreaClaimed("plot-src", src)();
     expect(claimPlotArea("plot-src", "a1")).toBe(false);
     expect(src).not.toHaveBeenCalled();
+  });
+});
+
+describe("isCopyDrag", () => {
+  const none = { altKey: false, ctrlKey: false };
+  it("is Alt on macOS, and only Alt", () => {
+    expect(isCopyDrag({ altKey: true, ctrlKey: false }, true)).toBe(true);
+    expect(isCopyDrag({ altKey: false, ctrlKey: true }, true)).toBe(false);
+    expect(isCopyDrag(none, true)).toBe(false);
+  });
+  it("is Ctrl elsewhere, and only Ctrl", () => {
+    expect(isCopyDrag({ altKey: false, ctrlKey: true }, false)).toBe(true);
+    expect(isCopyDrag({ altKey: true, ctrlKey: false }, false)).toBe(false);
+    expect(isCopyDrag(none, false)).toBe(false);
+  });
+  it("names the modifier for the platform", () => {
+    expect(copyModifierLabel(true)).toBe("Alt");
+    expect(copyModifierLabel(false)).toBe("Ctrl");
   });
 });
