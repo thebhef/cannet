@@ -78,8 +78,8 @@ export interface DecimatedRequest {
   /// `null`/omitted falls back to the window's first-frame timestamp — the
   /// pre-session transient, before a session start is known.
   origin?: number | null;
-  /// Pixel budget — one bucket per pixel column. The host returns at
-  /// most `4 * maxPoints` points: each bucket's first, last, min and max
+  /// Pixel budget — one served column per pixel column. The host returns
+  /// at most `4 * maxPoints` points: each column's first, last, min and max
   /// (ADR 0026). There is no render-mode flag beside it; the same serve
   /// answers a line and an enum lane.
   maxPoints: number;

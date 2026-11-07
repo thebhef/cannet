@@ -21,8 +21,8 @@
 //! rides that message id, instead of one full decode per signal that
 //! then throws away every value but one.
 //!
-//! [`decimate_min_max`] reduces a (possibly enormous) series to roughly
-//! a requested number of time buckets, keeping each bucket's first,
+//! [`decimate_min_max`] reduces a (possibly enormous) series to a
+//! requested number of time columns, keeping each column's first,
 //! last, min- and max-value point so both spikes and held runs survive
 //! — what the plot panel applies before handing the data to uPlot,
 //! since a window can hold far more frames than the canvas has pixels.
@@ -167,73 +167,98 @@ fn make_id(raw: u32, extended: bool) -> Option<CanId> {
     }
 }
 
-/// Reduce `points` to roughly `max_buckets` time buckets, keeping each
-/// bucket's **first, last, min- and max-value** point (in timestamp
-/// order, deduplicated where they coincide) — min/max decimation with
-/// the bucket's endpoints kept beside its extremes, so both spikes and
-/// held runs survive.
+/// Reduce `points` to `max_buckets` equal **time columns** over
+/// `[from, to)`, keeping each column's **first, last, min- and
+/// max-value** point (in timestamp order, deduplicated where they
+/// coincide) — min/max decimation with each column's endpoints kept
+/// beside its extremes, so both spikes and held runs survive.
 ///
-/// Bucketing is by point index, not by time: the trace store's samples
-/// are roughly time-ordered and roughly uniformly spaced, so index
-/// buckets approximate time buckets closely enough, and an index walk is
-/// O(n) with no search. Returns at most `4 * max_buckets` points; a
-/// `max_buckets` of 0 is treated as "no decimation". If the series
-/// already fits in `max_buckets` points it's returned unchanged.
+/// `max_buckets` is one column per canvas pixel, so a column is a pixel
+/// column. The range is clamped to the series' own first and last point
+/// (a fit-all serve asks over `f64::MIN .. f64::MAX`), which can only
+/// narrow a column, never widen it. Points
+/// outside the range — the boundary samples a slice carries so a line
+/// runs off each edge — join the edge column, so the first and last
+/// input points always survive and the answer holds at most
+/// `4 * max_buckets` points. A `max_buckets` of 0 is treated as "no
+/// decimation"; a series that already fits in `max_buckets` points is
+/// returned unchanged.
+///
+/// **Why columns of time, not of points.** A pyramid level's points are
+/// not evenly spaced in time — a flat bucket folds to one point, a busy
+/// one to two — so a bucket of *points* can be a fraction of a pixel
+/// in one place and several pixels in another. A held run read off such
+/// a level can arrive as a single point in the middle of a point bucket,
+/// neither its first nor its last, and be dropped. Time columns are the
+/// pixels the renderer draws, so the guarantee below is stated in them.
 ///
 /// **Why the endpoints, and not only the extremes.** A min/max envelope
-/// keeps each bucket's argmin and argmax *by value*, which summarises a
+/// keeps each column's argmin and argmax *by value*, which summarises a
 /// measurement well and loses a held state: a value held across the
-/// middle of a bucket whose neighbours carry both a lower and a higher
-/// one is neither the argmin nor the argmax, so it is dropped outright.
-/// On a 100 Hz enum series that lost a state held for up to 3.21 canvas
-/// pixel columns — not drawn coarsely, absent, so no renderer
-/// downstream could put it back. Keeping the bucket's first and last
-/// sample closes it by construction, and gives this guarantee:
+/// middle of a column whose neighbours carry both a lower and a higher
+/// one is neither, so it is dropped outright. Keeping each column's
+/// first and last point closes it:
 ///
-/// > every run of equal consecutive samples that spans two buckets
-/// > contributes at least one kept sample carrying its value, at every
-/// > alignment of the run against the bucket grid
+/// > every run of equal consecutive points whose hold covers a column
+/// > edge contributes at least one kept point carrying its value, at
+/// > every alignment of the run against the column grid
 ///
-/// — because such a run owns the last sample of the bucket it leaves
-/// and the first of the one it enters. It is also what a **stepped**
-/// line needs: a step renderer holds a value to the next sample, so a
-/// bucket's last sample is where its step ends. That is why this is the
-/// one shared reduction rather than a second, categorical one (ADR
-/// 0026).
-///
-/// The endpoints also keep the rendered line touching both ends of the
-/// input series, which matters for plots: a plot panel passes a slice
-/// `[from, to)` plus one boundary sample on each side so the line spans
-/// the full visible x range. Without them the boundary sample can lose
-/// its bucket's argmin/argmax race and get dropped — visible as the line
-/// "ending one bin early" inside the canvas.
+/// — because such a run owns the last point before that edge or the
+/// first one after it. A run held for at least one column always covers
+/// an edge. It is also what a **stepped** line needs: a step renderer
+/// holds a value to the next sample, so a column's last point is where
+/// its step ends. That is why this is the one shared reduction rather
+/// than a second, categorical one (ADR 0026).
 #[must_use]
-pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<SamplePoint> {
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn decimate_min_max(
+    points: &[SamplePoint],
+    from: f64,
+    to: f64,
+    max_buckets: usize,
+) -> Vec<SamplePoint> {
     let n = points.len();
     if max_buckets == 0 || n <= max_buckets {
         return points.to_vec();
     }
-    let bucket = n.div_ceil(max_buckets);
+    let lo = from.max(points[0].t_seconds);
+    let hi = to.min(points[n - 1].t_seconds);
+    let width = (hi - lo) / max_buckets as f64;
+    let last_column = max_buckets - 1;
+    let column = |t: f64| -> usize {
+        if width.is_nan() || width <= 0.0 || t <= lo {
+            return 0;
+        }
+        (((t - lo) / width) as usize).min(last_column)
+    };
     let mut out = Vec::with_capacity(4 * max_buckets);
     let mut start = 0;
     while start < n {
-        let end = (start + bucket).min(n);
+        let c = column(points[start].t_seconds);
+        let mut end = start + 1;
+        while end < n && column(points[end].t_seconds) == c {
+            end += 1;
+        }
         let slice = &points[start..end];
         // argmin / argmax by value (first occurrence wins on ties).
-        let mut lo = 0;
-        let mut hi = 0;
+        let mut min = 0;
+        let mut max = 0;
         for (i, p) in slice.iter().enumerate() {
-            if p.value < slice[lo].value {
-                lo = i;
+            if p.value < slice[min].value {
+                min = i;
             }
-            if p.value > slice[hi].value {
-                hi = i;
+            if p.value > slice[max].value {
+                max = i;
             }
         }
-        // The bucket's four kept indices, emitted in index order and
-        // deduplicated: a flat bucket collapses to its first and last,
-        // and a one-sample bucket to that sample.
-        let mut keep = [0, lo.min(hi), lo.max(hi), slice.len() - 1];
+        // The column's four kept indices, emitted in index order and
+        // deduplicated: a flat column collapses to its first and last,
+        // and a one-point column to that point.
+        let mut keep = [0, min.min(max), min.max(max), slice.len() - 1];
         keep.sort_unstable();
         let mut prev: Option<usize> = None;
         for i in keep {
@@ -473,10 +498,13 @@ BO_ 256 EngineData: 2 ECU
     #[allow(clippy::float_cmp)]
     fn decimate_passthrough_when_small_or_disabled() {
         let pts = vec![pt(0.0, 1.0), pt(1.0, 2.0), pt(2.0, 3.0)];
-        assert_eq!(decimate_min_max(&pts, 10), pts);
-        assert_eq!(decimate_min_max(&pts, 3), pts);
-        assert_eq!(decimate_min_max(&pts, 0), pts);
-        assert_eq!(decimate_min_max(&[], 5), Vec::<SamplePoint>::new());
+        assert_eq!(decimate_min_max(&pts, f64::MIN, f64::MAX, 10), pts);
+        assert_eq!(decimate_min_max(&pts, f64::MIN, f64::MAX, 3), pts);
+        assert_eq!(decimate_min_max(&pts, f64::MIN, f64::MAX, 0), pts);
+        assert_eq!(
+            decimate_min_max(&[], f64::MIN, f64::MAX, 5),
+            Vec::<SamplePoint>::new()
+        );
     }
 
     #[test]
@@ -495,7 +523,7 @@ BO_ 256 EngineData: 2 ECU
             pt(4.0, 9.0),
             pt(5.0, 4.0),
         ];
-        let out = decimate_min_max(&pts, 2);
+        let out = decimate_min_max(&pts, f64::MIN, f64::MAX, 2);
         assert_eq!(
             out,
             vec![
@@ -524,38 +552,38 @@ BO_ 256 EngineData: 2 ECU
         // also what a stepped renderer needs to know where the held
         // run starts and where it ends.
         assert_eq!(
-            decimate_min_max(&pts, 2),
+            decimate_min_max(&pts, f64::MIN, f64::MAX, 2),
             vec![pt(0.0, 7.0), pt(1.0, 7.0), pt(2.0, 7.0), pt(3.0, 7.0)],
         );
     }
 
     /// The guarantee a stepped renderer rests on: **a run of equal
-    /// consecutive samples that spans two buckets contributes at least
-    /// one kept sample carrying its value, at every alignment of the run
-    /// against the bucket grid.**
+    /// consecutive points whose hold covers a column edge contributes at
+    /// least one kept point carrying its value, at every alignment of
+    /// the run against the column grid** — so every run held for a
+    /// column or longer survives.
     ///
-    /// A min/max envelope alone cannot promise that. It keeps a bucket's
+    /// A min/max envelope alone cannot promise that. It keeps a column's
     /// argmin and argmax *by value*, so a code held across the middle of
-    /// a bucket whose neighbours carry both a lower and a higher code is
-    /// neither, and vanishes — measured at up to 3.21 canvas pixel
-    /// columns wide on a 100 Hz enum series. Keeping each bucket's first
-    /// and last sample closes it: a run that crosses a bucket boundary
-    /// owns the last sample of the bucket it leaves and the first of the
-    /// one it enters.
+    /// a column whose neighbours carry both a lower and a higher code is
+    /// neither, and vanishes. Keeping each column's first and last point
+    /// closes it: a run that covers an edge owns the last point before
+    /// it or the first one after it.
     ///
     /// The held code is `3` against a background cycling `0..=5`, which
-    /// is the adversarial case — strictly between the codes its bucket
-    /// neighbours carry, so neither the bucket's argmin nor its argmax.
+    /// is the adversarial case — strictly between the codes its column
+    /// neighbours carry, so neither the column's argmin nor its argmax.
     #[test]
     #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
-    fn a_run_spanning_two_buckets_survives_at_every_alignment() {
+    fn a_run_covering_a_column_edge_survives_at_every_alignment() {
         const N: usize = 600;
         const MAX_BUCKETS: usize = 100;
         const HELD: f64 = 3.0;
-        let bucket = N.div_ceil(MAX_BUCKETS);
-        for hold in 2..=bucket + 1 {
-            for start in 0..3 * bucket {
-                let pts: Vec<SamplePoint> = (0..N)
+        // Points sit at t = index over [0, N], so a column is 6 points.
+        let column = N / MAX_BUCKETS;
+        for hold in 1..=2 * column {
+            for start in 0..3 * column {
+                let pts: Vec<SamplePoint> = (0..=N)
                     .map(|i| {
                         let v = if i >= start && i < start + hold {
                             HELD
@@ -565,20 +593,49 @@ BO_ 256 EngineData: 2 ECU
                         pt(i as f64, v)
                     })
                     .collect();
-                let out = decimate_min_max(&pts, MAX_BUCKETS);
+                let out = decimate_min_max(&pts, 0.0, N as f64, MAX_BUCKETS);
                 let carried = out.iter().any(|p| {
                     p.value == HELD
                         && p.t_seconds >= start as f64
                         && p.t_seconds < (start + hold) as f64
                 });
-                if start / bucket != (start + hold - 1) / bucket {
+                // The hold runs to the next point, at `start + hold`.
+                let covers_edge = start % column == 0 || start / column != (start + hold) / column;
+                assert!(hold < column || covers_edge);
+                if covers_edge {
                     assert!(
                         carried,
-                        "hold {hold} at {start} spans two buckets but no kept sample carries it",
+                        "hold {hold} at {start} covers a column edge but no kept point carries it",
                     );
                 }
             }
         }
+    }
+
+    /// Columns are of **time**, not of points: a run that arrives as one
+    /// point among unevenly spaced neighbours — what a pyramid level
+    /// looks like, where a flat bucket folds to one point and a busy one
+    /// to two — still survives when its hold covers a column edge.
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn columns_are_of_time_so_a_sparse_held_point_survives() {
+        // Two columns over [0, 3.2): the edge is at 1.6. The held point
+        // at t = 1.5 holds to t = 2.6, across that edge. Bucketed by
+        // *point* — four per bucket — it sits mid-bucket between a lower
+        // and a higher code and was dropped; as a time column's last
+        // point it is kept.
+        let pts = vec![
+            pt(0.0, 0.0),
+            pt(0.1, 5.0),
+            pt(1.5, 3.0),
+            pt(2.6, 1.0),
+            pt(2.7, 5.0),
+            pt(2.8, 0.0),
+            pt(3.0, 1.0),
+            pt(3.2, 5.0),
+        ];
+        let out = decimate_min_max(&pts, 0.0, 3.2, 2);
+        assert!(out.contains(&pt(1.5, 3.0)), "{out:?}");
     }
 
     #[test]
@@ -586,7 +643,7 @@ BO_ 256 EngineData: 2 ECU
         let pts: Vec<SamplePoint> = (0..1000)
             .map(|i| pt(f64::from(i), f64::from((i * 7) % 13)))
             .collect();
-        let out = decimate_min_max(&pts, 50);
+        let out = decimate_min_max(&pts, f64::MIN, f64::MAX, 50);
         // Bound is `4 * max_buckets`: each bucket keeps its first,
         // last, min and max.
         assert!(out.len() <= 200, "got {}", out.len());
