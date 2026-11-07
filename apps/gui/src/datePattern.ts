@@ -66,6 +66,18 @@ export interface Instant {
   nanos: number;
 }
 
+/// `instant` rounded (half up) to `digits` fractional digits, carrying
+/// into the whole seconds. Rounding the instant itself, before any field
+/// is split, is what lets a `.99996` at four digits become `:00.0000` of
+/// the next minute, hour, day or year (ADR 0062 § 1).
+export function roundInstant(instant: Instant, digits: number): Instant {
+  const unit = 10 ** (9 - digits);
+  const nanos = Math.round(instant.nanos / unit) * unit;
+  return nanos >= 1e9
+    ? { seconds: instant.seconds + 1, nanos: nanos - 1e9 }
+    : { seconds: instant.seconds, nanos };
+}
+
 /// Parse `pattern`, or say what is wrong with it. The first problem,
 /// reading left to right, is the one reported.
 export function parseDatePattern(pattern: string): DatePattern | { error: string } {
@@ -156,6 +168,13 @@ export function formatDatePattern(
   offsetMinutes: number,
   timeZone?: string,
 ): string {
+  // Round to the pattern's finest `S` field first, so a carry reaches
+  // every other field.
+  const digits = Math.max(
+    0,
+    ...pattern.items.map((item) => ("letter" in item && item.letter === "S" ? item.width : 0)),
+  );
+  if (digits > 0) instant = roundInstant(instant, digits);
   // The wall-clock fields at that offset, read as if they were UTC.
   const local = new Date((instant.seconds + offsetMinutes * 60) * 1000);
   const year = local.getUTCFullYear();
