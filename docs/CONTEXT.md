@@ -361,7 +361,9 @@ refused at enqueue leaves no row either (ADR 0061).
 The rule that a row, count, sample, rate, logger or export record comes
 only from what the wire reported — a received frame or the driver's
 echo — never from a transmit **intent** (an enqueue answer, a `send()`
-return, a route being up). See ADR 0061.
+return, a route being up). A refusal is reported in the system log and
+the transmit element's "last send failed" mark, never as data. See ADR
+0061.
 _Avoid_: "delivered" / "undelivered" for a transmit — delivery is the
 wire's to report; "sent" for an accepted enqueue — say "accepted".
 
