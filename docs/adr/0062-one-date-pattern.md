@@ -1,6 +1,11 @@
 # ADR 0062 — One date pattern: a TR35 subset, two implementations, one vector file
 
-Status: accepted (2026-10-07)
+Status: accepted (2026-10-07); amended (2026-10-07) — the display side
+now has a consumer: the `date_time_pattern` setting (ADR 0034) governs
+every displayed calendar time through `format.ts::formatCalendarTime`,
+validated on write through a display-mode parse that accepts `zzz`
+(§3). Phase 1 shipped the pattern with no reader yet; this closes that
+gap.
 
 ## Context
 
@@ -58,7 +63,12 @@ implementation on each side, and the two must not drift.
 3. **`zzz` is display-only.** The frontend renders the zone name through
    `Intl`; the host has no zone-name table and refuses `zzz` in a file
    name with that reason (use `xxx`). The refusal is in the vector file
-   too.
+   too. *(2026-10-07)* Validating the `date_time_pattern` setting on
+   write needs `zzz` to parse without being rendered: the host's
+   `DatePattern::parse_display` accepts it (the display-mode sibling of
+   `parse`, which keeps refusing it for file names) and nothing on the
+   host ever calls `format` on the result — only the frontend renders a
+   zone name, through `Intl`.
 
 4. **No legacy notation.** A template saved in strftime fails to resolve
    with the pattern's own error (`%Y` fails on `Y`) until it is

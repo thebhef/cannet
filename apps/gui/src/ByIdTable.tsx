@@ -152,6 +152,10 @@ export function ByIdTable({
   // in `cellContent` so it reaches the memoised rows as a prop and a
   // change repaints them. Same as `TraceView`.
   const idFormat = useSetting("can_id_format") as CanIdFormat;
+  // The time cell's calendar-time tooltip pattern (ADR 0062), read the
+  // same way — through `useSetting` so it reaches the memoised rows as
+  // a prop and a change repaints them.
+  const datePattern = useSetting("date_time_pattern");
 
   const visible = useMemo(() => visibleColumns(columns), [columns]);
   const gridTemplate = useMemo(() => gridTemplateColumns(columns), [columns]);
@@ -510,6 +514,7 @@ export function ByIdTable({
                     gridTemplate={gridTemplate}
                     baseTimestamp={baseTimestamp}
                     idFormat={idFormat}
+                    datePattern={datePattern}
                     busLookup={busLookup}
                     onToggle={onToggleExpand}
                     rowDomId={grid.rowDomId}
@@ -558,6 +563,9 @@ interface ByIdRowProps {
   gridTemplate: string;
   baseTimestamp: number | null;
   idFormat: CanIdFormat;
+  /// The `date_time_pattern` setting (ADR 0062) the time cell's
+  /// tooltip renders through.
+  datePattern: string;
   busLookup: BusLookup;
   onToggle: (rowKey: string) => void;
   /// The DOM id `aria-activedescendant` names this row by (ADR 0044).
@@ -580,6 +588,7 @@ const ByIdRow = memo(function ByIdRow({
   gridTemplate,
   baseTimestamp,
   idFormat,
+  datePattern,
   busLookup,
   onToggle,
   rowDomId,
@@ -642,6 +651,7 @@ const ByIdRow = memo(function ByIdRow({
             className={className}
             seconds={frame?.timestamp_seconds ?? null}
             base={baseTimestamp}
+            pattern={datePattern}
           >
             {content}
           </TraceTimeCell>

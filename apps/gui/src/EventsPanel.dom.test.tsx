@@ -36,13 +36,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { EventsPanel } from "./EventsPanel";
 import { activeEventIds, resetEventHighlight } from "./eventHighlight";
-import { formatLocalTimestamp } from "./format";
+import { formatCalendarTime } from "./format";
 import { GOTO_EVENT } from "./gotoEvent";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { maxScrollTop, ROW_HEIGHT } from "./traceViewport";
 import { diagCounts } from "./diag";
-import { hydrateSettings } from "./hostSettings";
+import { defaultSettings, hydrateSettings } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import type { Bus } from "./types";
@@ -850,7 +850,10 @@ describe("EventsPanel bus-error episodes in the one list", () => {
 
     const cell = row.querySelector(".trace-event-time") as HTMLElement;
     fireEvent.mouseOver(cell);
-    expect(cell).toHaveAttribute("title", formatLocalTimestamp(1_000, SESSION_START)!);
+    expect(cell).toHaveAttribute(
+      "title",
+      formatCalendarTime(1_000, SESSION_START, defaultSettings().date_time_pattern)!,
+    );
   });
 
   it("shows no tooltip on an episode row without a wall-clock origin", async () => {

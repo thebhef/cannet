@@ -18,10 +18,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...storedSettings } : null)),
 }));
 
-import { hydrateSettings } from "./hostSettings";
+import { defaultSettings, hydrateSettings } from "./hostSettings";
 import { ByIdTable } from "./ByIdTable";
 import { TraceView } from "./TraceView";
-import { formatLocalTimestamp } from "./format";
+import { formatCalendarTime } from "./format";
 import { defaultColumns } from "./traceColumns";
 import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
 import type { TimelineEvent } from "./notes";
@@ -29,6 +29,9 @@ import type { TimelineEvent } from "./notes";
 /// The session origin (2023-11-14T22:06:40Z) and a frame 200.25 s into it.
 const SESSION_START = 1_699_999_600;
 const FRAME_SECONDS = SESSION_START + 200.25;
+/// The pattern the components resolve through `useSetting` — the
+/// default, since this suite's mocked `get_settings` stores none.
+const PATTERN = defaultSettings().date_time_pattern;
 
 const frame: TraceFrameRecord = {
   index: 0,
@@ -160,7 +163,10 @@ describe("the trace view's event row", () => {
     const container = renderEventRow(SESSION_START);
     const cell = container.querySelector(".trace-event-time") as HTMLElement;
     fireEvent.mouseOver(cell);
-    expect(cell).toHaveAttribute("title", formatLocalTimestamp(FRAME_SECONDS, SESSION_START)!);
+    expect(cell).toHaveAttribute(
+      "title",
+      formatCalendarTime(FRAME_SECONDS, SESSION_START, PATTERN)!,
+    );
   });
 
   it("shows no tooltip when the session has no wall-clock origin", () => {
@@ -179,10 +185,13 @@ describe.each(surfaces)("%s time column", (_name, renderSurface) => {
     // Still elapsed time on screen (ADR 0024) — the tooltip is the
     // second reading, not a second origin.
     expect(cell.textContent).toBe("3:20.2500");
-    expect(cell).toHaveAttribute("title", formatLocalTimestamp(FRAME_SECONDS, SESSION_START)!);
+    expect(cell).toHaveAttribute(
+      "title",
+      formatCalendarTime(FRAME_SECONDS, SESSION_START, PATTERN)!,
+    );
     // Not the session origin's own instant: the row's.
     expect(cell.getAttribute("title")).not.toBe(
-      formatLocalTimestamp(SESSION_START, SESSION_START),
+      formatCalendarTime(SESSION_START, SESSION_START, PATTERN),
     );
   });
 

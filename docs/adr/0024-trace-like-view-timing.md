@@ -4,9 +4,12 @@ Status: accepted (2026-06-01); amended (2026-06-30) — replaced the
 per-trace re-zero display model with a single application-level origin
 rendered as elapsed time; amended (2026-08-19) — where an *imported*
 capture's origin comes from: the file states the timeline, and the
-session origin is the earliest timestamp the import brings in. The
-history below describes the current decision; the superseded
-per-trace-offset rendering is recorded under "Rejected alternatives."
+session origin is the earliest timestamp the import brings in; amended
+(2026-10-07) — rule 4's calendar-time reading now renders through the
+user's `date_time_pattern` setting (ADR 0062) rather than a fixed
+`toLocaleString`. The history below describes the current decision;
+the superseded per-trace-offset rendering is recorded under "Rejected
+alternatives."
 
 ## Decision
 
@@ -64,11 +67,12 @@ settle it, and they are the same rules on every import path.
    unstated start supplies zero — not a special case, and
    `format.ts::hasWallClockAnchor` is how a renderer asks which kind of
    timeline it is looking at. On a wall-clock timeline, hovering a
-   trace row's time cell names its instant as local date and time
-   (`format.ts::formatLocalTimestamp`); the plot's A/B cursor chips and
-   x-axis tick labels read the same way on hover, through the same
-   formatter, at the panel's x origin plus their x value. On a relative
-   timeline none of them shows anything.
+   trace row's time cell names its instant as calendar time
+   (`format.ts::formatCalendarTime`), rendered through the user's
+   `date_time_pattern` setting (ADR 0062) rather than a fixed format —
+   the plot's A/B cursor chips and x-axis tick labels read the same way
+   on hover, through the same formatter, at the panel's x origin plus
+   their x value. On a relative timeline none of them shows anything.
 
 5. **The session origin is the earliest timestamp the import brings
    in.** Over *everything* on the capture's timeline: frames,
