@@ -550,6 +550,7 @@ describe("ElementRow", () => {
         onOpen={() => {}}
         onRename={() => {}}
         onRemove={() => {}}
+        onDuplicate={() => {}}
         onToggleLoggerEnabled={() => {}}
       />,
     );
@@ -569,6 +570,7 @@ describe("ElementRow", () => {
         onOpen={() => {}}
         onRename={onRename}
         onRemove={() => {}}
+        onDuplicate={() => {}}
         onToggleLoggerEnabled={() => {}}
       />,
     );
@@ -576,6 +578,47 @@ describe("ElementRow", () => {
       target: { value: "Cabin sweep" },
     });
     expect(onRename).toHaveBeenCalledWith("Cabin sweep");
+  });
+
+  it("duplicates in a single click", () => {
+    const onDuplicate = vi.fn();
+    render(
+      <ElementRow
+        element={traceEl}
+        panel={undefined}
+        connected={false}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onRemove={() => {}}
+        onDuplicate={onDuplicate}
+        onToggleLoggerEnabled={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    expect(onDuplicate).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Duplicate on a transmit row, saying why", () => {
+    const onDuplicate = vi.fn();
+    render(
+      <ElementRow
+        element={
+          { kind: "transmit", id: "tx-1", name: "Tx 1", sources: [], frameIds: ["f"] } as unknown as ProjectElement
+        }
+        panel={undefined}
+        connected={false}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onRemove={() => {}}
+        onDuplicate={onDuplicate}
+        onToggleLoggerEnabled={() => {}}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "Duplicate" });
+    expect(btn).toBeDisabled();
+    expect(btn.getAttribute("title")).toMatch(/not yet/i);
+    fireEvent.click(btn);
+    expect(onDuplicate).not.toHaveBeenCalled();
   });
 
   it("offers Open when no panel exists and Focus when one does", () => {
@@ -588,6 +631,7 @@ describe("ElementRow", () => {
         onOpen={onOpen}
         onRename={() => {}}
         onRemove={() => {}}
+        onDuplicate={() => {}}
         onToggleLoggerEnabled={() => {}}
       />,
     );
@@ -603,6 +647,7 @@ describe("ElementRow", () => {
         onOpen={() => {}}
         onRename={() => {}}
         onRemove={() => {}}
+        onDuplicate={() => {}}
         onToggleLoggerEnabled={() => {}}
       />,
     );
@@ -620,6 +665,7 @@ describe("ElementRow", () => {
         onOpen={() => {}}
         onRename={() => {}}
         onRemove={onRemove}
+        onDuplicate={() => {}}
         onToggleLoggerEnabled={() => {}}
       />,
     );
@@ -636,6 +682,7 @@ describe("ElementRow", () => {
         onOpen={() => {}}
         onRename={() => {}}
         onRemove={() => {}}
+        onDuplicate={() => {}}
         onToggleLoggerEnabled={() => {}}
       />,
     );
@@ -663,6 +710,7 @@ describe("ElementRow", () => {
           onOpen={() => {}}
           onRename={() => {}}
           onRemove={() => {}}
+          onDuplicate={() => {}}
           onToggleLoggerEnabled={() => {}}
         />,
       );
@@ -679,6 +727,7 @@ describe("ElementRow", () => {
           onOpen={() => {}}
           onRename={() => {}}
           onRemove={() => {}}
+          onDuplicate={() => {}}
           onToggleLoggerEnabled={() => {}}
         />,
       );
@@ -695,6 +744,7 @@ describe("ElementRow", () => {
           onOpen={() => {}}
           onRename={() => {}}
           onRemove={() => {}}
+          onDuplicate={() => {}}
           onToggleLoggerEnabled={() => {}}
         />,
       );
@@ -712,6 +762,7 @@ describe("ElementRow", () => {
           onOpen={() => {}}
           onRename={() => {}}
           onRemove={() => {}}
+          onDuplicate={() => {}}
           onToggleLoggerEnabled={onToggle}
         />,
       );
