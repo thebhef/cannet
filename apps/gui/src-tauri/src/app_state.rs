@@ -149,11 +149,6 @@ pub(crate) struct AppState {
     /// violation index the trace fetch decorates rows from, and the
     /// validity map. Owns its own lock.
     pub(crate) verifier: verification::VerificationState,
-    /// Which `Tx` rows describe a refused send — a frame no wire took
-    /// (see [`crate::transmit_commands::UndeliveredTx`]). Written by the
-    /// transmit path when the enqueue is refused, read by the trace
-    /// fetch, and cleared with the capture. Owns its own lock.
-    pub(crate) undelivered_tx: crate::transmit_commands::UndeliveredTx,
     /// The exclusive lock on the open project's cache directory
     /// ([ADR 0002](../../../docs/adr/0002-disk-spill-store.md) DS-7),
     /// held for as long as the session is rooted there. `None` when the

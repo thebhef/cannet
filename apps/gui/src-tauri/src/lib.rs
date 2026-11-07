@@ -939,7 +939,6 @@ pub fn run() -> ! {
                 transmit_scheduler,
                 rbs: Mutex::new(rbs::RbsRuntime::default()),
                 verifier: verification::VerificationState::default(),
-                undelivered_tx: transmit_commands::UndeliveredTx::default(),
                 scratch_lock: Mutex::new(scratch_lock),
                 filter_index_dir: Mutex::new(filter_dir),
                 filter_index: Mutex::new(None),
