@@ -533,11 +533,16 @@ its counters never fall — and it is **reset without user action**: the
 sidecar resets any controller still bus-off after a second, in place on
 Vector and Kvaser and by reopening the channel elsewhere (PEAK
 included). The row then reads bus-off followed by the recovered state,
-and the sidecar's log carries one line per reset. The sidecar also
-reopens a channel whose driver is refusing sends because its transmit
-queue is full while nothing at all — not even an error frame — has
-arrived for two seconds: that controller has stopped transmitting
-without reporting bus-off, and only a reopen restarts it.
+and the sidecar's log carries one line per reset. A channel that is not
+bus-off but has refused every send as queue-full for a second, with
+none accepted, has its **transmit queue flushed** instead — whether or
+not frames are still arriving, since a queue that has not freed a slot
+in a second's worth of frame times is not draining, and a flush lets
+the next period through the moment the wire can carry it (ADR 0060).
+Only a channel refusing queue-full while nothing at all — not even an
+error frame — has arrived for two seconds is reopened: that controller
+has stopped transmitting without reporting bus-off, and only a reopen
+restarts it.
 
 **Absent is not zero anywhere in that panel.** An in-process virtual bus
 has no configurable bitrate and therefore no defined load; a bus with no
