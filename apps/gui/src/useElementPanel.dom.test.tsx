@@ -43,7 +43,7 @@ function makeRegistry(elements: ProjectElement[]) {
     updateTrace: () => {},
     update,
     remove: () => {},
-    duplicate: () => "",
+    duplicate: async () => "",
   };
   return { registry, ensure, update };
 }

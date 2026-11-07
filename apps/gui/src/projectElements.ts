@@ -63,8 +63,11 @@ export interface ElementRegistry {
   update(id: string, patch: Partial<ProjectElement>, writer?: string): void;
   /// Duplicate an element ([`duplicateElement`]): the copy lands directly
   /// after the original, opens no panel, and the whole thing is one undo
-  /// step. Returns the copy's id (`""` for an unknown id).
-  duplicate(id: string): string;
+  /// step. Resolves to the copy's id (`""` for an unknown id, or when the
+  /// host could not clone a transmit's frames — nothing is added then).
+  /// Async because a `transmit` copy owns cloned host TX frames, made
+  /// before the copy is spliced in.
+  duplicate(id: string): Promise<string>;
   /// Remove an element and close its panel, if any.
   remove(id: string): void;
 }
@@ -411,12 +414,18 @@ function plotConfigCopy(config: Record<string, unknown>): Record<string, unknown
 /// reference (the host loads per element id, so the copy loads like any
 /// element opened with that path); a `logger` is copied disabled, so a
 /// duplicate never starts a second writer on the same file by itself.
-/// A `transmit`'s `frameIds` index the shared host TX pool; copying them
-/// would share frames, so the caller must not duplicate one until the
-/// host frames are cloned.
-export function duplicateElement(source: ProjectElement, newId: string): ProjectElement {
+/// A `transmit`'s `frameIds` index the shared host TX pool, so a copy gets
+/// `newFrameIds` — the ids the caller cloned the host frames under, one
+/// per original frame, in order — never the original's. Duplicate clones
+/// frames, it does not share them.
+export function duplicateElement(
+  source: ProjectElement,
+  newId: string,
+  newFrameIds: readonly string[] = [],
+): ProjectElement {
   const copy = structuredClone(source);
   copy.id = newId;
+  if (copy.kind === "transmit") copy.frameIds = [...newFrameIds];
   copy.name = `${source.name ?? elementKindLabel(source.kind)} (copy)`;
   if (copy.kind === "plot" && copy.config) copy.config = plotConfigCopy(copy.config);
   if (copy.kind === "logger") copy.enabled = false;
