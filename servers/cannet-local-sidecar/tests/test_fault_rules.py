@@ -100,6 +100,27 @@ def test_a_kvaser_code_that_is_not_queue_full_is_other() -> None:
     assert _refusal(_CanError("Timeout", error_code=-7)).reason == drv.REFUSAL_OTHER
 
 
+def test_a_peak_bus_off_refusal_says_bus_off() -> None:
+    """PCAN_ERROR_BUSOFF's text. The wire reason stays ``other``; the
+    flag is what arms the state poll's bus-off reset (ADR 0039)."""
+    refused = _refusal(
+        _CanError("Failed to send: Bus error: the CAN controller is in bus-off state")
+    )
+    assert refused.bus_off and refused.reason == drv.REFUSAL_OTHER
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _CanError("Failed to send: The transmit queue is full"),
+        _CanError("Transmit buffer overflow", error_code=-13),
+        _CanError("Failed to send: Bus error: the CAN controller is error passive"),
+    ],
+)
+def test_other_refusals_do_not_say_bus_off(error: Exception) -> None:
+    assert not _refusal(error).bus_off
+
+
 def test_the_wrappers_own_refusals_carry_their_reasons() -> None:
     lo = PythonCanChannel(channel_id="t:0", bus=None, listen_only=True, fd=False)
     with pytest.raises(drv.TxRejected) as info:
