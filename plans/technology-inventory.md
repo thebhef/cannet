@@ -1176,7 +1176,36 @@ crate retained long-term).
   `adopted` as a direct `cannet-gui` dependency for export/logger
   name-template resolution — user strftime format strings pass
   straight through to chrono (no subset), with the host validating
-  and returning polished error messages to the frontend.
+  and returning polished error messages to the frontend. **Narrowed
+  2026-10-07** (task 165): the strftime use is withdrawn — see the
+  strftime entry below; `cannet-gui` keeps `chrono` for calendar
+  arithmetic under the hand-rolled date pattern and for its other uses
+  (`chrono::Local` in the logger, and elsewhere).
+
+- **TR35 date patterns (Unicode LDML date format patterns), hand-rolled
+  subset** — `adopted` (2026-10-07, task 165, owner ruling;
+  [ADR 0062](../docs/adr/0062-one-date-pattern.md)) as the one notation
+  for user-written calendar-time formats: the `{start:…}` / `{now:…}`
+  name-template tokens now, the display setting next. `yyyy-MM-dd
+  HH:mm:ss`. Implemented twice with no new dependency — the host's
+  `date_pattern.rs` (over `chrono`'s calendar fields) and the
+  frontend's `datePattern.ts` (over `Date`'s UTC fields, `Intl` for the
+  display-only zone name) — held identical by one shared vector file
+  (`apps/gui/src/datePattern.vectors.json`) both test suites read.
+
+- **strftime (`chrono` format strings) for user-facing patterns** —
+  `rejected` (2026-10-07, task 165, owner: "I don't love the strftime
+  behavior we've got; it's not as intuitive"). Removed from the name
+  templates with no legacy path: a saved `{start:%Y-%m-%d}` reports the
+  pattern error until retyped. `chrono` itself stays (entry above).
+
+- **`date-fns`** (`format`) — `rejected` (2026-10-07, task 165) for
+  date patterns: frontend only, so it gives the host's file-name side
+  nothing and parity would still rest on a hand-rolled Rust twin.
+
+- **ICU4X** (`icu_datetime`) — `rejected` (2026-10-07, task 165) for
+  date patterns: no pattern-string API for arbitrary user patterns,
+  and megabytes of locale data to render one English format.
 
 - **A dedicated log-file crate rather than `tracing-appender`** —
   `rejected` (2026-08-13) for the server's rolling logfile. The workspace
