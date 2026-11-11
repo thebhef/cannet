@@ -105,6 +105,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("trace_auto_scroll", Scope::UserOverridable),
     ("plot_y_axis_mode", Scope::UserOverridable),
     ("dbc_auto_reload", Scope::UserOverridable),
+    ("logger_scan_file_headers", Scope::UserOverridable),
     ("can_id_format", Scope::UserOverridable),
     ("date_time_pattern", Scope::UserOverridable),
     ("time_display", Scope::UserOverridable),
@@ -411,6 +412,16 @@ pub struct Settings {
     /// way — the opt-out is about not replacing the database under an
     /// analysis in progress, not about going quiet.
     pub dbc_auto_reload: bool,
+    /// Whether the logger panel's file list reads each `.blf` it shows
+    /// for its start, end and message count (see [`crate::log_files`]).
+    /// Default `true`, which is what the list has always done.
+    ///
+    /// That read is the whole file, and on a cloud-synced folder (a
+    /// cloud sync client with files offloaded) reading a file
+    /// downloads it. Off, the list shows only what a directory listing
+    /// knows — name, size, modified time — and reads no file. Read on
+    /// every listing, so switching it off applies at once.
+    pub logger_scan_file_headers: bool,
     /// How a trace-style table's `id` column renders an arbitration
     /// id — one of [`CAN_ID_FORMATS`], default `hex`, which is what the
     /// column has always shown.
@@ -776,6 +787,7 @@ impl Default for Settings {
             trace_auto_scroll: true,
             plot_y_axis_mode: "unified".to_string(),
             dbc_auto_reload: true,
+            logger_scan_file_headers: true,
             can_id_format: "hex".to_string(),
             date_time_pattern: "yyyy-MM-dd HH:mm:ss".to_string(),
             time_display: "elapsed".to_string(),
@@ -1470,6 +1482,7 @@ mod tests {
             trace_auto_scroll: false,
             plot_y_axis_mode: "individual".to_string(),
             dbc_auto_reload: false,
+            logger_scan_file_headers: false,
             can_id_format: "decimal".to_string(),
             date_time_pattern: "dd/MM/yyyy HH:mm".to_string(),
             time_display: "calendar".to_string(),

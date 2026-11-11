@@ -157,6 +157,10 @@ export interface Settings {
   /// Host-consumed (`dbc_watcher`); listed here because the mirror
   /// carries every field of `settings.json`.
   dbc_auto_reload: boolean;
+  /// Whether the logger file grid's listing reads each file's header.
+  /// Host-consumed (`log_files`); the grid reads it only to cancel the
+  /// host's scans and re-list when it flips.
+  logger_scan_file_headers: boolean;
   /// How a trace-style table's `id` column spells an arbitration id —
   /// the frontend's `CanIdFormat`. App-wide: the trace and by-ID tables
   /// read it and pass it to their rows.
@@ -261,6 +265,7 @@ export function defaultSettings(): Settings {
     trace_auto_scroll: true,
     plot_y_axis_mode: "unified",
     dbc_auto_reload: true,
+    logger_scan_file_headers: true,
     can_id_format: "hex",
     date_time_pattern: "yyyy-MM-dd HH:mm:ss",
     time_display: "elapsed",

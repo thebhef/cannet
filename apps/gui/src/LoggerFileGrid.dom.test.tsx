@@ -95,6 +95,7 @@ const FILE: LogFileNode = {
   modifiedMs: 1_700_000_010_000,
   scanPending: false,
   writing: false,
+  scanSkipped: false,
 };
 
 /// A file the host has listed but not yet read the header of: stat data
@@ -110,6 +111,7 @@ const UNSCANNED: LogFileNode = {
   modifiedMs: 1_700_000_030_000,
   scanPending: true,
   writing: false,
+  scanSkipped: false,
 };
 
 const WRITING: LogFileNode = {
@@ -123,6 +125,7 @@ const WRITING: LogFileNode = {
   modifiedMs: 1_700_000_020_000,
   scanPending: false,
   writing: true,
+  scanSkipped: false,
 };
 
 const SUB: LogFileNode = {
@@ -142,7 +145,7 @@ afterEach(cleanup);
 describe("LoggerFileGrid", () => {
   it("renders nothing while the folder has not resolved", () => {
     const { container } = render(
-      <LoggerFileGrid folder={null} writing={false} onImport={vi.fn()} />,
+      <LoggerFileGrid onScreen folder={null} writing={false} onImport={vi.fn()} />,
     );
     expect(container).toBeEmptyDOMElement();
     expect(invoke).not.toHaveBeenCalledWith("list_logger_files", expect.anything());
@@ -155,7 +158,7 @@ describe("LoggerFileGrid", () => {
     vi.stubEnv("TZ", "UTC");
     try {
       listing.value = [FILE];
-      render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+      render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
       const row = await screen.findByText("a.blf");
       const cells = row.closest(".logger-file-row") as HTMLElement;
       expect(within(cells).getByText("1.0 MB")).toBeInTheDocument();
@@ -175,7 +178,7 @@ describe("LoggerFileGrid", () => {
       const custom = "dd/MM/yyyy HH:mm:ss";
       await updateSettings({ date_time_pattern: custom });
       listing.value = [FILE];
-      render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+      render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
       const row = await screen.findByText("a.blf");
       const cells = row.closest(".logger-file-row") as HTMLElement;
       const startSeconds = FILE.startNs! / 1e9;
@@ -190,7 +193,7 @@ describe("LoggerFileGrid", () => {
 
   it("uses the shared gridview header, and dragging its handle resizes the tracks", async () => {
     listing.value = [FILE];
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
     await screen.findByText("a.blf");
     const handle = document.querySelector<HTMLElement>(
       ".logger-file-grid .trace-header .col-lf-name .col-resize-handle",
@@ -228,7 +231,7 @@ describe("LoggerFileGrid", () => {
     listing.value = [FILE];
     const onColumnsChange = vi.fn();
     render(
-      <LoggerFileGrid
+      <LoggerFileGrid onScreen
         folder="C:\logs"
         writing={false}
         onImport={vi.fn()}
@@ -256,7 +259,7 @@ describe("LoggerFileGrid", () => {
     listing.value = [FILE];
     const onColumnsChange = vi.fn();
     render(
-      <LoggerFileGrid
+      <LoggerFileGrid onScreen
         folder="C:\logs"
         writing={false}
         onImport={vi.fn()}
@@ -284,7 +287,7 @@ describe("LoggerFileGrid", () => {
 
   it("shows a directory as a collapsed branch and expands it on the caret", async () => {
     listing.value = [SUB];
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
     await screen.findByText("sub\\");
     expect(screen.queryByText("a.blf")).toBeNull();
     fireEvent.click(document.querySelector(".logger-file-caret") as HTMLElement);
@@ -296,14 +299,14 @@ describe("LoggerFileGrid", () => {
     // paths, and it is the only thing here that knows which OS that is —
     // so a mac gets `sub/`, not the `sub\` a Windows build shows.
     listing.value = [{ ...SUB, id: "/logs/sub" }];
-    render(<LoggerFileGrid folder="/Users/dev/logs" writing={false} onImport={vi.fn()} />);
+    render(<LoggerFileGrid onScreen folder="/Users/dev/logs" writing={false} onImport={vi.fn()} />);
     await screen.findByText("sub/");
     expect(screen.queryByText("sub\\")).toBeNull();
   });
 
   it("the writing row carries the writing marker and no import button", async () => {
     listing.value = [WRITING];
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
     const row = (await screen.findByText("open.blf")).closest(".logger-file-row") as HTMLElement;
     expect(row.className).toContain("writing");
     expect(within(row).queryByRole("button", { name: "Import" })).toBeNull();
@@ -312,7 +315,7 @@ describe("LoggerFileGrid", () => {
   it("the per-row Import button calls onImport with the file's path", async () => {
     listing.value = [FILE];
     const onImport = vi.fn();
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={onImport} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={onImport} />);
     await screen.findByText("a.blf");
     fireEvent.click(screen.getByRole("button", { name: "Import" }));
     expect(onImport).toHaveBeenCalledWith(FILE.id);
@@ -321,7 +324,7 @@ describe("LoggerFileGrid", () => {
   it("Space on the cursor row imports it, and does nothing on a directory", async () => {
     listing.value = [SUB, FILE];
     const onImport = vi.fn();
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={onImport} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={onImport} />);
     await screen.findByText("sub\\");
     const grid = screen.getByRole("tree", { name: "Files in folder" });
     // Cursor starts nowhere; Home lands it on the directory row first.
@@ -336,7 +339,7 @@ describe("LoggerFileGrid", () => {
   it("the context menu offers Import for a file and only reveal for a directory", async () => {
     listing.value = [SUB, FILE];
     const onImport = vi.fn();
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={onImport} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={onImport} />);
     const fileText = await screen.findByText("a.blf");
     fireEvent.contextMenu(fileText.closest(".logger-file-row") as HTMLElement);
     const ctx = document.querySelector(".logger-file-ctx") as HTMLElement;
@@ -354,7 +357,7 @@ describe("LoggerFileGrid", () => {
 
   it("Show in Explorer reveals the row's own path", async () => {
     listing.value = [FILE];
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
     const row = (await screen.findByText("a.blf")).closest(".logger-file-row") as HTMLElement;
     fireEvent.contextMenu(row);
     fireEvent.click(screen.getByText(REVEAL_LABEL));
@@ -367,7 +370,7 @@ describe("LoggerFileGrid", () => {
     vi.useFakeTimers();
     try {
       const { rerender } = render(
-        <LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />,
+        <LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />,
       );
       await vi.waitFor(() =>
         expect(invoke).toHaveBeenCalledWith("list_logger_files", { folder: "C:\\logs" }),
@@ -380,7 +383,7 @@ describe("LoggerFileGrid", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(invoke.mock.calls.length).toBe(callsIdle);
 
-      rerender(<LoggerFileGrid folder="C:\logs" writing={true} onImport={vi.fn()} />);
+      rerender(<LoggerFileGrid onScreen folder="C:\logs" writing={true} onImport={vi.fn()} />);
       await vi.advanceTimersByTimeAsync(10_000);
       expect(invoke.mock.calls.length).toBeGreaterThan(callsIdle);
     } finally {
@@ -393,7 +396,7 @@ describe("LoggerFileGrid", () => {
     // yet (ADR 0049). Zeros would read as measurements — "no frames" and
     // "not looked at" are different answers.
     listing.value = [UNSCANNED];
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
     const row = (await screen.findByText("fresh.blf")).closest(
       ".logger-file-row",
     ) as HTMLElement;
@@ -407,7 +410,7 @@ describe("LoggerFileGrid", () => {
 
   it("re-asks for the listing when the host announces a finished scan", async () => {
     listing.value = [UNSCANNED];
-    render(<LoggerFileGrid folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
     await screen.findByText("fresh.blf");
     await waitFor(() =>
       expect(handlers.byEvent.get("logger-files-scanned")?.length).toBeGreaterThan(0),
@@ -423,5 +426,68 @@ describe("LoggerFileGrid", () => {
       return el;
     });
     expect(row.querySelectorAll(".logger-file-cell.pending")).toHaveLength(0);
+  });
+
+  it("a hidden grid neither lists nor listens, and lists once shown", async () => {
+    // A dockview background tab stays mounted. Listing it would queue
+    // header scans — whole-file reads, downloads on a cloud folder — for
+    // rows nobody can see.
+    listing.value = [UNSCANNED];
+    const { rerender } = render(
+      <LoggerFileGrid onScreen={false} folder="C:\logs" writing={true} onImport={vi.fn()} />,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(invoke).not.toHaveBeenCalledWith("list_logger_files", expect.anything());
+    expect(handlers.byEvent.get("logger-files-scanned") ?? []).toHaveLength(0);
+
+    rerender(<LoggerFileGrid onScreen folder="C:\logs" writing={true} onImport={vi.fn()} />);
+    await screen.findByText("fresh.blf");
+  });
+
+  it("cancels the host's header scans when hidden, unmounted, or re-aimed", async () => {
+    listing.value = [UNSCANNED];
+    const { rerender, unmount } = render(
+      <LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />,
+    );
+    await screen.findByText("fresh.blf");
+    expect(invoke).not.toHaveBeenCalledWith("cancel_logger_file_scans");
+
+    rerender(<LoggerFileGrid onScreen={false} folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("cancel_logger_file_scans"));
+
+    invoke.mockClear();
+    rerender(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    rerender(<LoggerFileGrid onScreen folder="C:\other" writing={false} onImport={vi.fn()} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("cancel_logger_file_scans"));
+
+    invoke.mockClear();
+    unmount();
+    expect(invoke).toHaveBeenCalledWith("cancel_logger_file_scans");
+  });
+
+  it("cancels the host's header scans when logger_scan_file_headers is switched off", async () => {
+    await hydrateSettings();
+    try {
+      listing.value = [UNSCANNED];
+      render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
+      await screen.findByText("fresh.blf");
+      expect(invoke).not.toHaveBeenCalledWith("cancel_logger_file_scans");
+      await updateSettings({ logger_scan_file_headers: false });
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("cancel_logger_file_scans"));
+    } finally {
+      await updateSettings({ logger_scan_file_headers: true });
+    }
+  });
+
+  it("shows the trace columns as skipped, not pending, when header scans are off", async () => {
+    listing.value = [{ ...UNSCANNED, scanPending: false, scanSkipped: true }];
+    render(<LoggerFileGrid onScreen folder="C:\logs" writing={false} onImport={vi.fn()} />);
+    const row = (await screen.findByText("fresh.blf")).closest(
+      ".logger-file-row",
+    ) as HTMLElement;
+    expect(within(row).getByText("2.0 MB")).toBeInTheDocument();
+    expect(within(row).queryByText("0")).not.toBeInTheDocument();
+    expect(row.querySelectorAll(".logger-file-cell.pending")).toHaveLength(0);
+    expect(row.querySelectorAll(".logger-file-cell.skipped")).toHaveLength(4);
   });
 });

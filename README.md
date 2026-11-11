@@ -3181,7 +3181,15 @@ read yet**: a file the host has no header for shows `…` in those four
 columns while it reads it in the background, one read per file however
 often the list refreshes, and the columns fill in as each finishes. That
 is what lets the panel keep listing while a logger writes into a folder
-someone has just dropped half a gigabyte of old runs into. The file currently being written shows as the
+someone has just dropped half a gigabyte of old runs into. That read is
+the whole file, so it happens only while the panel is on screen: a
+logger panel in a background tab lists nothing, and hiding or closing it
+cancels any reads still queued. **In a cloud-synced folder** (OneDrive,
+SharePoint) reading a file you have offloaded downloads it — turn off
+*Read logger files for start, end and message count*
+(`logger_scan_file_headers`, Settings › Logging) and the list shows only
+name, size and modified time, with `—` in the other columns, and reads
+no file. The file currently being written shows as the
 list's own live row — a ● beside its name, with its size and message
 count growing — instead of a separate status line. Importing a file from
 the list — the per-row button, its context menu, or Space on the

@@ -55,6 +55,15 @@ export function LoggerPanel(props: IDockviewPanelProps) {
   const { update } = registry;
   const { projectPath, onImportCapture } = useProjectContext();
   const connectionStates = useConnectionStates();
+  // Whether the panel is on screen — false while it sits in a background
+  // tab of its dockview group, which stays mounted. The file grid reads
+  // nothing from the folder while hidden.
+  const { api } = props;
+  const [panelVisible, setPanelVisible] = useState<boolean>(api.isVisible);
+  useEffect(() => {
+    const d = api.onDidVisibilityChange((e) => setPanelVisible(e.isVisible));
+    return () => d.dispose();
+  }, [api]);
   const connected = useMemo(
     () => Object.values(connectionStates).some((s) => s.kind === "connected"),
     [connectionStates],
@@ -267,6 +276,7 @@ export function LoggerPanel(props: IDockviewPanelProps) {
 
       <LoggerFileGrid
         folder={folderPreview.error ? null : folderPreview.resolved}
+        onScreen={panelVisible}
         writing={writing}
         onImport={onImportCapture}
         initialColumns={(props.params as { fileColumns?: unknown } | undefined)?.fileColumns}
