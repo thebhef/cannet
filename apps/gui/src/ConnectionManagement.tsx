@@ -12,7 +12,7 @@
 // to that section.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { Combobox, type ComboboxOption } from "./Combobox";

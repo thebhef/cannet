@@ -28,7 +28,7 @@
 // restart.
 
 import { useSyncExternalStore } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { BindingSpec } from "./commands";
 import type { ThemeName } from "./theme";

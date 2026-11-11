@@ -13,7 +13,7 @@
 // is this gridview's own writing row.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import { listen } from "@tauri-apps/api/event";
 
 import { Icon } from "./Icon";

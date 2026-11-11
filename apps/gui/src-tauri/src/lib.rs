@@ -136,6 +136,7 @@ pub mod units;
 mod verification;
 mod view_signals;
 mod watched_file;
+mod window_events;
 mod window_state;
 
 // File-model types the `cannet-perf-measurement` harness reuses, re-exported so the
@@ -263,6 +264,18 @@ fn app_version() -> &'static str {
 #[tauri::command]
 fn report_js_heap(bytes: u64) {
     crash::record_js_heap(bytes);
+}
+
+/// Append a handover of the frontend hang recorder's records to
+/// `frontend.log` beside `cannet.log` (`crash::persist_frontend_records`).
+/// File I/O, so it runs on the blocking pool, never on the IPC thread
+/// whose stall those records may be describing (ADR 0048). An error
+/// reaches the frontend, which keeps the records and retries.
+#[tauri::command]
+async fn append_frontend_log(text: String) -> Result<(), String> {
+    sampling::off_async_workers(move || crash::persist_frontend_records(&text))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Resolve the session's project directory (ADR 0042 §1): the directory
@@ -729,6 +742,7 @@ pub fn run() -> ! {
         .manage(log_files::LogFileCache::default())
         .manage(project_registry::ProjectCacheSizes::default())
         .manage(closing::ClosingGate::default())
+        .manage(window_events::WindowEvents::default())
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -864,6 +878,7 @@ pub fn run() -> ! {
             diag::diag_enabled,
             diag::exit_process,
             report_js_heap,
+            append_frontend_log,
             math_commands::list_math_signals,
             math_commands::define_math_signal,
             math_commands::update_math_signal,
@@ -1045,6 +1060,11 @@ pub fn run() -> ! {
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
         } if app_handle.state::<closing::ClosingGate>().is_started() => api.prevent_close(),
+        // Resize and scale-factor bursts go to `cannet.log` at debug: both
+        // are suspects when the window stops answering.
+        tauri::RunEvent::WindowEvent { event, .. } => {
+            window_events::on_window_event(app_handle, &event);
+        }
         _ => {}
     });
     let requested = *requested_exit_code

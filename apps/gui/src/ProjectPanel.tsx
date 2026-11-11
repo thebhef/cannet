@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import type { IDockviewPanel, IDockviewPanelProps } from "dockview";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import {
   describeAppliedConfig,

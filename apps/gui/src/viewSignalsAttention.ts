@@ -29,7 +29,7 @@
 /// event-gated cost was not judged obviously real.
 
 import { useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { ViewSignalPage } from "./types";
 import { useDbcGeneration } from "./dbcChanged";

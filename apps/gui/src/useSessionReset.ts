@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 /// The frontend session state the reset re-anchors, injected so the hook
 /// stays testable and doesn't reach into `App`'s closures.

@@ -16,7 +16,7 @@
 // setting found only through its help text still survives: it is the top
 // result for the query that found it.
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import { Fzf } from "fzf";
 
 import { MIN_RELATIVE_SCORE } from "./gridviewFilter";

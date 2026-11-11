@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { SignalPageRow, SignalSectionsWire, SignalSelectionWire } from "./types";
 import type { SignalSortState } from "./signalColumns";

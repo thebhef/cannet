@@ -17,7 +17,7 @@
 /// it now reads in — which is how the affordance converges per-unit
 /// lanes (an mV series joins the V lane at ÷1000).
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { signalRefKey, type SignalRef } from "./plotPanelConfig";
 import { recordSignalKey, type RawSeries } from "./plotData";

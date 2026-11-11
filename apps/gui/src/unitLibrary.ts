@@ -9,7 +9,7 @@
 // and read synchronously thereafter.
 
 import { useSyncExternalStore } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { ComboboxOption } from "./Combobox";
 import type { UnitId } from "./types";

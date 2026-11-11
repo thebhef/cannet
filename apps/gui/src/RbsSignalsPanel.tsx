@@ -25,7 +25,7 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import { usePanelEditRecorder } from "./panelEditRecorder";
 
 import type { RbsSignalRow } from "./types";

@@ -6,7 +6,7 @@
 // architecture).
 
 import { useCallback, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import {
   noteToEvent,

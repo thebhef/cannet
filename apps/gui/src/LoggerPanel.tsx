@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { useConnectionStates } from "./connectionStates";

@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { diagCount } from "./diag"; // DIAG
 import { decodeSignalsSample } from "./plotData";

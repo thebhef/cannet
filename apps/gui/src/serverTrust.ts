@@ -14,7 +14,7 @@
 // the single raise below.
 
 import { useSyncExternalStore } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { serverKey } from "./serverList";
 

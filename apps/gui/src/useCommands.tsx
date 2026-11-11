@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import { emit } from "@tauri-apps/api/event";
 import type { AddPanelOptions, DockviewApi } from "dockview";
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 type DependencyLicense = {
   name: string;

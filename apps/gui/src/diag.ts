@@ -28,10 +28,19 @@
 // unconditional is the 1 Hz reporter's *heartbeat*: the host reads the
 // arrival of `report_js_heap` as evidence the renderer's main thread is
 // still turning, so that beat is a product feature, not instrumentation.
+// So is a tick whose lag passes `LAG_FORWARD_MS`: it goes to `cannet.log`
+// at `warn` (`frontendFailures.ts`), since `--diag` is never on in the
+// field.
 
-import { invoke } from "@tauri-apps/api/core";
+import { forwardWarn } from "./frontendFailures";
+import { invoke } from "./ipc";
 
 import type { InteractTally } from "./perfInteract";
+
+/// Timer lag at or above which a tick is reported to `cannet.log` even
+/// with the machinery disarmed. A healthy loaded day runs well under it;
+/// a second late is a main thread that could not echo a keypress.
+const LAG_FORWARD_MS = 1_000;
 
 // Armed state for everything above. Off until the host says otherwise.
 let enabled = false;
@@ -248,16 +257,23 @@ export function startDiagReporter(): () => void {
     // as this window's liveness heartbeat (`crash.rs`): it runs on the
     // main thread, so a renderer that has stopped responding stops
     // sending it, and that is the only way a frontend hang reaches
-    // `cannet.log` at all. `0` is the host's "no reading" — it records
+    // `cannet.log` while it lasts (the hang recorder's `frontend.log`
+    // says more, but only afterwards). `0` is the host's "no reading" — it records
     // the beat and leaves the last real heap figure alone.
     const mem = (performance as { memory?: { usedJSHeapSize?: number } })
       .memory;
     const heap = typeof mem?.usedJSHeapSize === "number" ? mem.usedJSHeapSize : 0;
     if (heap > 0) diagGauge("jsheap_mb", heap / (1024 * 1024));
     void invoke("report_js_heap", { bytes: heap }).catch(() => {});
+    // Lag is the one saturation measure cheap enough to watch on every
+    // launch: forward it when it is bad. A hidden window's timers are
+    // throttled by the browser, so lag there is not a symptom.
+    if (lag >= LAG_FORWARD_MS && document.visibilityState !== "hidden") {
+      forwardWarn("lag", `timer lag ${lag.toFixed(0)} ms`);
+    }
     // Everything below is the diagnostic half of the tick: the delta
     // build, the Map clone, two `JSON.stringify`s and the console line.
-    // Disarmed, the tick is the heartbeat and nothing else.
+    // Disarmed, the tick is the heartbeat and the lag check.
     if (!enabled) return;
     const delta: Record<string, number> = {};
     for (const [k, v] of counts) {
