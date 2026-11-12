@@ -18,6 +18,11 @@ const connection = vi.hoisted(() => ({ value: {} as Record<string, { kind: strin
 // template in that OS's separators and roots a relative folder at that
 // OS's project directory, exactly as the real host does.
 const host = vi.hoisted(() => ({ sep: "\\", root: "C:\\proj" }));
+// The panel's dockview visibility, and the listener it registers for it.
+const panelVisibility = vi.hoisted(() => ({
+  visible: true,
+  listener: null as ((e: { isVisible: boolean }) => void) | null,
+}));
 
 const invoke = vi.hoisted(() =>
   vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -101,7 +106,14 @@ function renderPanel(over: Partial<LoggerElement> = {}) {
 
   const props = {
     params: { elementId: "lg1" },
-    api: { updateParameters: vi.fn() },
+    api: {
+      updateParameters: vi.fn(),
+      isVisible: panelVisibility.visible,
+      onDidVisibilityChange: (cb: (e: { isVisible: boolean }) => void) => {
+        panelVisibility.listener = cb;
+        return { dispose: () => {} };
+      },
+    },
   } as unknown as Parameters<typeof LoggerPanel>[0];
   render(
     <ProjectContext.Provider value={projectCtx}>
@@ -117,10 +129,27 @@ beforeEach(() => {
   vi.clearAllMocks();
   statuses.value = [];
   connection.value = {};
+  panelVisibility.visible = true;
+  panelVisibility.listener = null;
 });
 afterEach(cleanup);
 
 describe("LoggerPanel", () => {
+  it("lists the folder only while the panel is on screen", async () => {
+    // A background tab stays mounted; listing its folder would queue
+    // whole-file header reads nobody can see.
+    panelVisibility.visible = false;
+    renderPanel();
+    await screen.findByText(/C:\\proj/);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(invoke).not.toHaveBeenCalledWith("list_logger_files", expect.anything());
+
+    act(() => panelVisibility.listener?.({ isVisible: true }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("list_logger_files", expect.anything()),
+    );
+  });
+
   it("lays the controls out folder → file → preview → max size", () => {
     renderPanel();
     const labels = [...document.querySelectorAll(".logger-row")].map((row) =>

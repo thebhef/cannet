@@ -45,6 +45,8 @@ import {
   PENDING_CELL,
   PENDING_CELL_HINT,
   revealLabel,
+  SKIPPED_CELL,
+  SKIPPED_CELL_HINT,
   type LogFileNode,
 } from "./logFileGrid";
 
@@ -56,6 +58,11 @@ export interface LoggerFileGridProps {
   /// loading). `null` renders nothing rather than listing the host's
   /// interpretation of an empty path.
   folder: string | null;
+  /// Whether the panel is on screen. A dockview background tab stays
+  /// mounted, and a listing queues header scans — each a whole-file
+  /// read, a download on a cloud-synced folder — so a hidden grid asks
+  /// the host nothing and cancels the scans it asked for.
+  onScreen: boolean;
   /// Poll the listing while true. A logger that is writing may be
   /// growing the open file or about to roll to the next part, and only
   /// a start, a stop or a failure fires `loggers-changed` — a roll does
@@ -82,6 +89,7 @@ interface ContextMenuState {
 
 export function LoggerFileGrid({
   folder,
+  onScreen,
   writing,
   onImport,
   initialColumns,
@@ -89,6 +97,7 @@ export function LoggerFileGrid({
 }: LoggerFileGridProps) {
   const revealMenuLabel = useMemo(() => revealLabel(isMacPlatform(), isWindowsPlatform()), []);
   const datePattern = useSetting("date_time_pattern");
+  const scanHeaders = useSetting("logger_scan_file_headers");
   // The column layout, through the shared column layer — resize,
   // reorder and show/hide are its gestures, not this view's. Changes
   // are reported upward for the panel to persist; the mount value never
@@ -122,19 +131,34 @@ export function LoggerFileGrid({
   const visible = useMemo(() => visibleColumns(columns), [columns]);
   const gridTemplate = useMemo(() => logFileGridTemplateColumns(columns), [columns]);
 
+  // The host reads `logger_scan_file_headers` itself; it is a
+  // dependency here only so a flip re-aims the mirror and re-lists.
   const fetchNodes = useCallback(
     (): Promise<readonly LogFileNode[]> =>
       folder == null
         ? Promise.resolve(NO_NODES)
         : invoke<LogFileNode[]>("list_logger_files", { folder }),
-    [folder],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [folder, scanHeaders],
   );
   const { value: nodes, refresh } = useHostMirror<readonly LogFileNode[]>({
     fetch: fetchNodes,
     fallback: NO_NODES,
     event: LOGGERS_CHANGED_EVENT,
     pollWhile: () => writing,
+    enabled: onScreen,
   });
+
+  // No header scan outlives the view that asked for it: the host drops
+  // every queued scan and cancels the running one when this grid hides,
+  // unmounts, is re-aimed at another folder, or scans are switched off.
+  const scanning = onScreen && scanHeaders && folder != null;
+  useEffect(() => {
+    if (!scanning) return;
+    return () => {
+      void invoke("cancel_logger_file_scans").catch(() => {});
+    };
+  }, [scanning, folder]);
 
   // A listing answers with what the host already knows and leaves the
   // rest pending (ADR 0049); the host announces each background header
@@ -142,11 +166,12 @@ export function LoggerFileGrid({
   // dropped files announces one per scan, and the mirror's single-flight
   // guard collapses that burst into one refetch per round trip.
   useEffect(() => {
+    if (!onScreen) return;
     const unlisten = listen(LOG_FILES_SCANNED_EVENT, () => refresh());
     return () => {
       void unlisten.then((fn) => fn());
     };
-  }, [refresh]);
+  }, [refresh, onScreen]);
 
   // View-local: which directories are open. A fresh listing (a new
   // folder) starts collapsed, like every other gridview tree in the app.
@@ -277,10 +302,15 @@ export function LoggerFileGrid({
           // measurements (ADR 0049 — a partial answer is first-class and
           // announces itself).
           const pending = node.kind === "file" && node.scanPending;
+          // Header scans are off and this header was never cached: the
+          // same absence, but nothing is on its way.
+          const skipped = node.kind === "file" && node.scanSkipped;
           const traceCell = (text: string, className: string, title?: string) =>
             pending
               ? fileCell(PENDING_CELL, `${className} pending`, PENDING_CELL_HINT)
-              : fileCell(text, className, title);
+              : skipped
+                ? fileCell(SKIPPED_CELL, `${className} skipped`, SKIPPED_CELL_HINT)
+                : fileCell(text, className, title);
           return (
             <GridviewRowLine<LogFileColumnKey>
               key={node.id}

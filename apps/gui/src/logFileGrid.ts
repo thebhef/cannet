@@ -35,6 +35,10 @@ export interface LogFileEntry {
   /// and it renders as the gridview's live status row (ruling: no
   /// separate logging status line).
   writing: boolean;
+  /// The host has not read this file's header and will not: header
+  /// scans are off (`logger_scan_file_headers`). Those columns render
+  /// as skipped (`SKIPPED_CELL`), not pending — nothing is coming.
+  scanSkipped: boolean;
 }
 
 /// One directory, mirroring `log_files::LogFileNode::Dir`. Only ever
@@ -157,6 +161,14 @@ export const PENDING_CELL = "\u2026";
 /// Why a row's trace columns are empty right now. On the cell's title so
 /// a user who wonders need not guess whether the file is unreadable.
 export const PENDING_CELL_HINT = "Reading this file's header…";
+
+/// What a trace column shows when header scans are off and the host has
+/// no cached header for its file.
+export const SKIPPED_CELL = "\u2014";
+
+/// Why a skipped row's trace columns are empty.
+export const SKIPPED_CELL_HINT =
+  "Not read: reading logger files is off in Settings › Logging.";
 
 /// A message count includes both directions (the capture holds rx and
 /// tx alike, and a logger writes the whole thing) — roughly twice the

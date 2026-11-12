@@ -690,6 +690,18 @@ const DESCRIPTORS: &[Spec] = &[
         control: interval_ms(),
     },
     Spec {
+        key: "logger_scan_file_headers",
+        backing: Backing::Field,
+        label: "Read logger files for start, end and message count",
+        help: "Reading a file reads all of it. In a cloud-synced folder \
+               (OneDrive, SharePoint) that downloads files you have \
+               offloaded; turn this off there and the logger's file list \
+               shows only name, size and modified time.",
+        surfaces: &[Surface::Logging],
+        kind: Kind::Behaviour,
+        control: Control::Bool,
+    },
+    Spec {
         key: "log_rotation_bytes",
         backing: Backing::Field,
         label: "Log file rotation size",

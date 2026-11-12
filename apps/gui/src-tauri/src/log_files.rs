@@ -27,9 +27,19 @@
 //! the grid asks again. This is the rule the listing used to break: a
 //! 4 Hz poll over a folder whose files each take seconds to scan started
 //! a fresh full read of the same file on every tick.
+//!
+//! **A scan never outlives the view that asked for it.** "Header-only"
+//! means no payload decode, not a short read: the walk reads every
+//! object, so the whole file. On a cloud-synced folder with files
+//! offloaded, that is a download. The grid lists only while it is on
+//! screen, and cancels every queued and running scan
+//! ([`cancel_logger_file_scans`]) when it stops showing a folder. The
+//! `logger_scan_file_headers` setting switches scans off altogether: the
+//! listing then serves cached headers and marks the rest skipped.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -39,7 +49,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::logger::{LoggerRuntime, LoggerStatus};
 
 /// Emitted with the absolute path of a file whose background header scan
-/// has just landed in [`LogFileCache`]. The logger file grid re-asks for
+/// has just landed in [`LogFileCache`] — or with an empty payload after
+/// [`cancel_logger_file_scans`], whose cancel may have dropped a scan a
+/// grid still showing its folder wants. The logger file grid re-asks for
 /// the listing; its host-mirror coalesces a burst of these into one
 /// refetch.
 pub const LOG_FILES_SCANNED_EVENT: &str = "logger-files-scanned";
@@ -69,7 +81,10 @@ struct CachedEntry {
 /// [`cannet_blf::scan_blf`] and a Tauri emit, tests pass a stub that
 /// counts its calls and blocks on command, which is how single-flight is
 /// asserted without a multi-hundred-megabyte fixture.
-type ScanFn = Arc<dyn Fn(&Path) -> FileMeta + Send + Sync>;
+///
+/// The flag is the scan's cancel: raised by [`LogFileCache::cancel_scans`],
+/// and a scan that observes it returns `None`, which stores nothing.
+type ScanFn = Arc<dyn Fn(&Path, &AtomicBool) -> Option<FileMeta> + Send + Sync>;
 type AnnounceFn = Arc<dyn Fn(&Path) + Send + Sync>;
 
 /// The background scan queue: which paths are waiting or running, in
@@ -81,11 +96,16 @@ type AnnounceFn = Arc<dyn Fn(&Path) + Send + Sync>;
 /// (ADR 0049). One worker drains the queue, so N unscanned files are N
 /// sequential reads rather than N concurrent ones — the concurrency was
 /// half of what saturated the machine.
+///
+/// `cancel` is the current generation's cancel flag. Each job is handed
+/// the flag current when it starts; [`LogFileCache::cancel_scans`] raises
+/// it and installs a fresh one, so a job queued after the cancel runs.
 #[derive(Default)]
 struct ScanQueue {
     queued: VecDeque<ScanJob>,
     pending: HashSet<PathBuf>,
     running: bool,
+    cancel: Arc<AtomicBool>,
 }
 
 /// One queued header scan: the file, and the `(size, modified)` pair the
@@ -156,7 +176,7 @@ impl LogFileCache {
         let scan = Arc::clone(scan);
         let announce = Arc::clone(announce);
         std::thread::spawn(move || loop {
-            let job = {
+            let (job, cancel) = {
                 let mut q = scans
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -164,9 +184,14 @@ impl LogFileCache {
                     q.running = false;
                     return;
                 };
-                job
+                (job, Arc::clone(&q.cancel))
             };
-            let meta = scan(&job.path);
+            // Cancelled part-way: nothing to store, and `pending` was
+            // already cleared by the cancel — removing the path now
+            // could drop a job a later listing queued for it.
+            let Some(meta) = scan(&job.path, &cancel) else {
+                continue;
+            };
             {
                 let mut e = entries
                     .lock()
@@ -192,6 +217,26 @@ impl LogFileCache {
             }
             announce(&job.path);
         });
+    }
+
+    /// Drop every queued header scan and cancel the one running, if
+    /// any. Nothing a cancelled scan read is stored, and its file lists
+    /// pending again, queuing a fresh scan on the next listing that
+    /// wants one.
+    ///
+    /// The grid calls this whenever it stops showing a folder (hidden,
+    /// closed, re-aimed, or header scans switched off): a scan reads the
+    /// whole file, and on a cloud-synced folder that is a download, so
+    /// none may outlive the view that asked for it.
+    pub(crate) fn cancel_scans(&self) {
+        let mut q = self
+            .scans
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        q.queued.clear();
+        q.pending.clear();
+        q.cancel.store(true, Ordering::Relaxed);
+        q.cancel = Arc::new(AtomicBool::new(false));
     }
 }
 
@@ -236,6 +281,10 @@ pub enum LogFileNode {
         /// gridview's writing row (ADR-free — owner ruling, not a design
         /// decision: the folder listing carries no separate status line).
         writing: bool,
+        /// The header has not been read and will not be: header scans are
+        /// off (`logger_scan_file_headers`). Like `scan_pending`, the
+        /// trace columns are the absence of numbers, not numbers.
+        scan_skipped: bool,
     },
 }
 
@@ -276,7 +325,7 @@ fn modified_ms(modified: SystemTime) -> i64 {
 
 /// One file's node: the live-writing row if `writing` names it, otherwise
 /// the cached header metadata, or a pending row with one background scan
-/// asked for. A file whose header cannot be read still lists — by name,
+/// asked for — or, with `scan_headers` off, a skipped row and no scan. A file whose header cannot be read still lists — by name,
 /// size and modified time — with empty trace columns, rather than
 /// disappearing from the folder.
 fn file_node(
@@ -286,6 +335,7 @@ fn file_node(
     writing: &HashMap<PathBuf, (u64, u64)>,
     scan: &ScanFn,
     announce: &AnnounceFn,
+    scan_headers: bool,
 ) -> Option<LogFileNode> {
     let metadata = std::fs::metadata(path).ok()?;
     let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -302,11 +352,26 @@ fn file_node(
             modified_ms,
             scan_pending: false,
             writing: true,
+            scan_skipped: false,
         });
     }
 
     let size = metadata.len();
     let Some(meta) = cache.cached(path, size, modified) else {
+        if !scan_headers {
+            return Some(LogFileNode::File {
+                id: path_id(path),
+                name: name.to_string(),
+                size_bytes: size,
+                start_ns: None,
+                end_ns: None,
+                message_count: 0,
+                modified_ms,
+                scan_pending: false,
+                writing: false,
+                scan_skipped: true,
+            });
+        }
         cache.request_scan(
             ScanJob {
                 path: path.to_path_buf(),
@@ -326,6 +391,7 @@ fn file_node(
             modified_ms,
             scan_pending: true,
             writing: false,
+            scan_skipped: false,
         });
     };
     Some(LogFileNode::File {
@@ -338,6 +404,7 @@ fn file_node(
         modified_ms,
         scan_pending: false,
         writing: false,
+        scan_skipped: false,
     })
 }
 
@@ -351,6 +418,7 @@ fn walk_dir(
     writing: &HashMap<PathBuf, (u64, u64)>,
     scan: &ScanFn,
     announce: &AnnounceFn,
+    scan_headers: bool,
 ) -> Vec<LogFileNode> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -366,7 +434,7 @@ fn walk_dir(
         };
         let name = entry.file_name().to_string_lossy().into_owned();
         if file_type.is_dir() {
-            let children = walk_dir(&path, cache, writing, scan, announce);
+            let children = walk_dir(&path, cache, writing, scan, announce, scan_headers);
             if !children.is_empty() {
                 nodes.push(LogFileNode::Dir {
                     id: path_id(&path),
@@ -375,7 +443,9 @@ fn walk_dir(
                 });
             }
         } else if file_type.is_file() && is_blf(&path) {
-            if let Some(node) = file_node(&path, &name, cache, writing, scan, announce) {
+            if let Some(node) =
+                file_node(&path, &name, cache, writing, scan, announce, scan_headers)
+            {
                 nodes.push(node);
             }
         }
@@ -397,28 +467,38 @@ fn list_files(
     statuses: &[LoggerStatus],
     scan: &ScanFn,
     announce: &AnnounceFn,
+    scan_headers: bool,
 ) -> Vec<LogFileNode> {
     if !dir.is_dir() {
         return Vec::new();
     }
-    walk_dir(dir, cache, &writing_files(statuses), scan, announce)
+    walk_dir(
+        dir,
+        cache,
+        &writing_files(statuses),
+        scan,
+        announce,
+        scan_headers,
+    )
 }
 
-/// The production header read: [`cannet_blf::scan_blf`], with an
-/// unreadable file reading as an empty trace rather than failing the row.
-fn scan_blf_header(path: &Path) -> FileMeta {
-    cannet_blf::scan_blf(path).map_or(
-        FileMeta {
-            frame_count: 0,
-            first_timestamp_ns: None,
-            last_timestamp_ns: None,
-        },
-        |scan| FileMeta {
+/// The production header read: [`cannet_blf::scan_blf_cancellable`],
+/// with an unreadable file reading as an empty trace rather than failing
+/// the row, and a cancelled walk as `None`.
+fn scan_blf_header(path: &Path, cancel: &AtomicBool) -> Option<FileMeta> {
+    match cannet_blf::scan_blf_cancellable(path, cancel, &mut |_| {}) {
+        Ok(cannet_blf::ScanOutcome::Cancelled) => None,
+        Ok(cannet_blf::ScanOutcome::Complete(scan)) => Some(FileMeta {
             frame_count: scan.frame_count,
             first_timestamp_ns: scan.first_timestamp_ns,
             last_timestamp_ns: scan.last_timestamp_ns,
-        },
-    )
+        }),
+        Err(_) => Some(FileMeta {
+            frame_count: 0,
+            first_timestamp_ns: None,
+            last_timestamp_ns: None,
+        }),
+    }
 }
 
 /// Tauri command — the logger panel's recursive file gridview: `folder`
@@ -449,16 +529,29 @@ pub async fn list_logger_files(app: AppHandle, folder: String) -> Vec<LogFileNod
         });
         let cache = app.state::<LogFileCache>();
         let statuses = app.state::<LoggerRuntime>().statuses();
-        list_files(&dir, &cache, &statuses, &scan, &announce)
+        let scan_headers = crate::settings::effective().logger_scan_file_headers;
+        list_files(&dir, &cache, &statuses, &scan, &announce, scan_headers)
     })
     .await
+}
+
+/// Tauri command — cancel every queued and running header scan
+/// ([`LogFileCache::cancel_scans`]). The logger file grid calls it when
+/// it stops showing a folder. Announces [`LOG_FILES_SCANNED_EVENT`]
+/// once afterwards, so any *other* grid still showing a folder re-lists
+/// and queues again what it still wants.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn cancel_logger_file_scans(app: AppHandle) {
+    app.state::<LogFileCache>().cancel_scans();
+    let _ = app.emit(LOG_FILES_SCANNED_EVENT, "");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::logger::{fixed_namer, LogWriter};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -531,12 +624,12 @@ mod tests {
     ) -> Vec<LogFileNode> {
         let (tx, rx) = mpsc::channel();
         let announce = announce_to(tx);
-        list_files(dir, cache, &[], scan, &announce);
+        list_files(dir, cache, &[], scan, &announce, true);
         for _ in 0..expect {
             rx.recv_timeout(Duration::from_secs(10))
                 .expect("a queued scan never announced itself");
         }
-        list_files(dir, cache, &[], scan, &announce)
+        list_files(dir, cache, &[], scan, &announce, true)
     }
 
     fn files_of(nodes: &[LogFileNode]) -> Vec<&LogFileNode> {
@@ -557,9 +650,9 @@ mod tests {
         write_test_blf(&dir.path().join("a.blf"), &[(1, 0x1)]);
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
-        let scan: ScanFn = Arc::new(move |p: &Path| {
+        let scan: ScanFn = Arc::new(move |p: &Path, c: &AtomicBool| {
             counted.fetch_add(1, Ordering::SeqCst);
-            scan_blf_header(p)
+            scan_blf_header(p, c)
         });
         let cache = LogFileCache::default();
         list_and_settle(dir.path(), &cache, &scan, 1);
@@ -620,20 +713,20 @@ mod tests {
         }
         let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let held = Arc::clone(&gate);
-        let scan: ScanFn = Arc::new(move |p: &Path| {
+        let scan: ScanFn = Arc::new(move |p: &Path, c: &AtomicBool| {
             let (lock, cv) = &*held;
             let mut open = lock.lock().unwrap();
             while !*open {
                 open = cv.wait(open).unwrap();
             }
             drop(open);
-            scan_blf_header(p)
+            scan_blf_header(p, c)
         });
         let cache = LogFileCache::default();
         let announce = no_announce();
 
         let started = std::time::Instant::now();
-        let nodes = list_files(dir.path(), &cache, &[], &scan, &announce);
+        let nodes = list_files(dir.path(), &cache, &[], &scan, &announce, true);
         let elapsed = started.elapsed();
 
         assert_eq!(files_of(&nodes).len(), 3);
@@ -681,7 +774,7 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let counted = Arc::clone(&calls);
         let held = Arc::clone(&gate);
-        let scan: ScanFn = Arc::new(move |p: &Path| {
+        let scan: ScanFn = Arc::new(move |p: &Path, c: &AtomicBool| {
             counted.fetch_add(1, Ordering::SeqCst);
             let (lock, cv) = &*held;
             let mut open = lock.lock().unwrap();
@@ -689,14 +782,14 @@ mod tests {
                 open = cv.wait(open).unwrap();
             }
             drop(open);
-            scan_blf_header(p)
+            scan_blf_header(p, c)
         });
         let cache = LogFileCache::default();
         let (tx, rx) = mpsc::channel();
         let announce = announce_to(tx);
 
         for _ in 0..8 {
-            let nodes = list_files(dir.path(), &cache, &[], &scan, &announce);
+            let nodes = list_files(dir.path(), &cache, &[], &scan, &announce, true);
             assert!(files_of(&nodes).iter().all(|n| matches!(
                 n,
                 LogFileNode::File {
@@ -721,7 +814,7 @@ mod tests {
         );
 
         // And the listing after them serves the headers, no longer pending.
-        let nodes = list_files(dir.path(), &cache, &[], &scan, &announce);
+        let nodes = list_files(dir.path(), &cache, &[], &scan, &announce, true);
         for node in files_of(&nodes) {
             let LogFileNode::File {
                 scan_pending,
@@ -744,9 +837,118 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let announce = announce_to(tx);
         let cache = LogFileCache::default();
-        list_files(dir.path(), &cache, &[], &real_scan(), &announce);
+        list_files(dir.path(), &cache, &[], &real_scan(), &announce, true);
         let announced = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(announced, dir.path().join("run.blf"));
+    }
+
+    // --- header scans off, and cancel ---
+
+    #[test]
+    fn with_header_scans_off_a_listing_reads_no_file_and_marks_it_skipped() {
+        // The cloud-folder case: a scan reads the whole file, which is
+        // what makes a sync client download one it had offloaded.
+        let dir = tempfile::tempdir().unwrap();
+        write_test_blf(&dir.path().join("a.blf"), &[(1, 0x1)]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let scan: ScanFn = Arc::new(move |p: &Path, c: &AtomicBool| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            scan_blf_header(p, c)
+        });
+        let cache = LogFileCache::default();
+        let nodes = list_files(dir.path(), &cache, &[], &scan, &no_announce(), false);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no scan may be queued");
+        let [LogFileNode::File {
+            scan_pending,
+            scan_skipped,
+            size_bytes,
+            ..
+        }] = files_of(&nodes)[..]
+        else {
+            panic!("expected one file row");
+        };
+        assert!(!scan_pending);
+        assert!(scan_skipped);
+        assert!(*size_bytes > 0, "stat data still lists");
+    }
+
+    #[test]
+    fn with_header_scans_off_an_already_cached_header_still_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        write_test_blf(&dir.path().join("a.blf"), &[(1, 0x1)]);
+        let cache = LogFileCache::default();
+        list_and_settle(dir.path(), &cache, &real_scan(), 1);
+        let nodes = list_files(dir.path(), &cache, &[], &real_scan(), &no_announce(), false);
+        let [LogFileNode::File {
+            scan_skipped,
+            message_count,
+            ..
+        }] = files_of(&nodes)[..]
+        else {
+            panic!("expected one file row");
+        };
+        assert!(!scan_skipped);
+        assert_eq!(*message_count, 1);
+    }
+
+    #[test]
+    fn cancel_stops_the_running_scan_and_drops_the_queued_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.blf", "b.blf", "c.blf"] {
+            write_test_blf(&dir.path().join(name), &[(1, 0x1)]);
+        }
+        // Each scan blocks until it is cancelled, as a long download
+        // would, and reports whether it saw the cancel.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let counted = Arc::clone(&calls);
+        let started_tx = Mutex::new(started_tx);
+        let done_tx = Mutex::new(done_tx);
+        let scan: ScanFn = Arc::new(move |_: &Path, c: &AtomicBool| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let _ = started_tx.lock().unwrap().send(());
+            while !c.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let _ = done_tx.lock().unwrap().send(());
+            None
+        });
+        let cache = LogFileCache::default();
+        let (tx, rx) = mpsc::channel();
+        let announce = announce_to(tx);
+        list_files(dir.path(), &cache, &[], &scan, &announce, true);
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        cache.cancel_scans();
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the running scan never saw the cancel");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the two queued scans must be dropped, not run"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a cancelled scan is not a finished one and announces nothing"
+        );
+
+        // Nothing was cached, and nothing is left pending: the next
+        // listing queues the files again.
+        let nodes = list_files(dir.path(), &cache, &[], &scan, &announce, true);
+        assert!(files_of(&nodes).iter().all(|n| matches!(
+            n,
+            LogFileNode::File {
+                scan_pending: true,
+                ..
+            }
+        )));
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        cache.cancel_scans();
     }
 
     // --- writing_files ---
@@ -807,7 +1009,7 @@ mod tests {
         write_test_blf(&dir.path().join("sub").join("a.blf"), &[(1, 0x1)]);
         std::fs::write(dir.path().join("notes.txt"), b"x").unwrap();
         let cache = LogFileCache::default();
-        let nodes = list_files(dir.path(), &cache, &[], &real_scan(), &no_announce());
+        let nodes = list_files(dir.path(), &cache, &[], &real_scan(), &no_announce(), true);
         assert_eq!(nodes.len(), 1, "the stray .txt is dropped: {nodes:?}");
         match &nodes[0] {
             LogFileNode::Dir { name, children, .. } => {
@@ -823,7 +1025,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("empty")).unwrap();
         let cache = LogFileCache::default();
-        assert!(list_files(dir.path(), &cache, &[], &real_scan(), &no_announce()).is_empty());
+        assert!(list_files(dir.path(), &cache, &[], &real_scan(), &no_announce(), true).is_empty());
     }
 
     #[test]
@@ -843,11 +1045,11 @@ mod tests {
         let cache = LogFileCache::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
-        let scan: ScanFn = Arc::new(move |p: &Path| {
+        let scan: ScanFn = Arc::new(move |p: &Path, c: &AtomicBool| {
             counted.fetch_add(1, Ordering::SeqCst);
-            scan_blf_header(p)
+            scan_blf_header(p, c)
         });
-        let nodes = list_files(dir.path(), &cache, &statuses, &scan, &no_announce());
+        let nodes = list_files(dir.path(), &cache, &statuses, &scan, &no_announce(), true);
         assert_eq!(nodes.len(), 1);
         match &nodes[0] {
             LogFileNode::File {
@@ -886,6 +1088,7 @@ mod tests {
             &[],
             &real_scan(),
             &no_announce(),
+            true,
         );
         assert!(nodes.is_empty());
     }
@@ -896,12 +1099,13 @@ mod tests {
         write_test_blf(&dir.path().join("b.blf"), &[(1, 0x1)]);
         write_test_blf(&dir.path().join("a.blf"), &[(1, 0x1)]);
         let cache = LogFileCache::default();
-        let names: Vec<String> = list_files(dir.path(), &cache, &[], &real_scan(), &no_announce())
-            .into_iter()
-            .map(|n| match n {
-                LogFileNode::File { name, .. } | LogFileNode::Dir { name, .. } => name,
-            })
-            .collect();
+        let names: Vec<String> =
+            list_files(dir.path(), &cache, &[], &real_scan(), &no_announce(), true)
+                .into_iter()
+                .map(|n| match n {
+                    LogFileNode::File { name, .. } | LogFileNode::Dir { name, .. } => name,
+                })
+                .collect();
         assert_eq!(names, vec!["a.blf".to_string(), "b.blf".to_string()]);
     }
 }

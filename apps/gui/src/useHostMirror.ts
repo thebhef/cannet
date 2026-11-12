@@ -64,6 +64,11 @@ export interface UseHostMirrorOptions<T, P = unknown> {
   /// in place is the same "keep up with the host" job the paged views
   /// do, and it used to carry its own separate number for it.
   pollIntervalMs?: number;
+  /// While false the mirror is dormant: no fetch, no listener, no poll,
+  /// and `value` holds the last snapshot. A view not on screen (a
+  /// dockview background tab stays mounted) passes its visibility, so it
+  /// asks the host nothing until it can show the answer. Default true.
+  enabled?: boolean;
 }
 
 export interface UseHostMirrorResult<T> {
@@ -79,6 +84,7 @@ export function useHostMirror<T, P = unknown>({
   fromPayload,
   pollWhile,
   pollIntervalMs,
+  enabled = true,
 }: UseHostMirrorOptions<T, P>): UseHostMirrorResult<T> {
   const configuredPollMs = useSetting("view_refresh_interval_ms");
   const pollMs = pollIntervalMs ?? configuredPollMs;
@@ -141,6 +147,7 @@ export function useHostMirror<T, P = unknown>({
   refreshRef.current = refresh;
 
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
     // A re-aimed `fetch` supersedes whatever is still in flight for the
     // previous target: its answer is not this mirror's state any more.
@@ -170,11 +177,11 @@ export function useHostMirror<T, P = unknown>({
     // `refresh` is stable now (it reads `fetch` through a ref), so
     // `fetch` — which decides *what* is mirrored — is what has to re-run
     // the snapshot pair when a consumer re-aims it at something else.
-  }, [refresh, event, fetch]);
+  }, [refresh, event, fetch, enabled]);
 
   const pollWhileRef = useRef(pollWhile);
   pollWhileRef.current = pollWhile;
-  const shouldPoll = pollWhileRef.current?.(value) ?? false;
+  const shouldPoll = enabled && (pollWhileRef.current?.(value) ?? false);
   useEffect(() => {
     if (!shouldPoll) return;
     const timer = window.setInterval(refresh, pollMs);

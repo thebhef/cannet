@@ -878,6 +878,7 @@ pub fn run() -> ! {
             logger::set_loggers,
             logger::get_logger_statuses,
             log_files::list_logger_files,
+            log_files::cancel_logger_file_scans,
             reveal::reveal_in_file_manager,
             closing::begin_close,
         ])

@@ -82,6 +82,7 @@ const SYNCHRONOUS_COMMANDS: &[&str] = &[
     "add_note",
     "cancel_export",
     "cancel_import",
+    "cancel_logger_file_scans",
     "clear_notes",
     "clear_system_log",
     "clear_transmit_frames",
