@@ -67,7 +67,7 @@
 /// this design rejected.
 
 import { useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { signalKey } from "./plotData";
 import { useElementRegistry } from "./projectElements";

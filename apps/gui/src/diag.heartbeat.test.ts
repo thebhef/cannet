@@ -43,4 +43,29 @@ describe("the diag reporter's UI heartbeat", () => {
       stop();
     }
   });
+
+  it("forwards a timer lag of a second or more to the host log, and not less", () => {
+    // `--diag` is off on a field machine, so the lag the 1 Hz line
+    // prints never reaches `cannet.log` from there. A tick that fires a
+    // second or more late is forwarded on its own at `warn`.
+    vi.useFakeTimers();
+    let t = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => t);
+    const stop = startDiagReporter();
+    try {
+      t = 1_400; // 400 ms late: ordinary jank, not logged
+      vi.advanceTimersByTime(1_000);
+      t = 3_900; // 1500 ms late
+      vi.advanceTimersByTime(1_000);
+      const lags = vi
+        .mocked(invoke)
+        .mock.calls.filter((c) => c[0] === "gui_emit_system_log")
+        .map((c) => c[1] as { level: string; message: string });
+      expect(lags).toEqual([{ level: "warn", source: "frontend", message: "timer lag 1500 ms" }]);
+    } finally {
+      stop();
+      clock.mockRestore();
+    }
+  });
 });
+

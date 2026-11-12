@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { FilterPredicate, FuzzyWinner, TraceFrameRecord } from "./types";
 import { useTraceModel } from "./traceData";

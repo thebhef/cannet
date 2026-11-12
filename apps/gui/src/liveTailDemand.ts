@@ -15,7 +15,7 @@
 /// aggregate is zero — which is also its startup state.
 
 import { useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 /// Rows an auto-scrolling chronological view asks for. Matches the host's
 /// own ceiling: comfortably more than any plausible visible-row count, so

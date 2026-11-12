@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { Bus, MessageDescriptorRecord } from "./types";
 import { Combobox } from "./Combobox";

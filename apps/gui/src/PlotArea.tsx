@@ -13,7 +13,7 @@
  * so it does not cleanly separate into its own module.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MutableRefObject } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import uPlot from "uplot";
 
 import {

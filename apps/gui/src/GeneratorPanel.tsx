@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { useElementRegistry } from "./projectElements";
 import type { GeneratorRule, ProjectElement } from "./types";

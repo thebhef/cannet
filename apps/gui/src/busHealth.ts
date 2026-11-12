@@ -13,7 +13,7 @@
 // this adds is the join and the words.
 
 import { useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { describeAppliedConfig } from "./connectionStates";
 import { useHostMirror } from "./useHostMirror";

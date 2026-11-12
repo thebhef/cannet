@@ -18,7 +18,7 @@
 // capture data and derives no model fact.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { ComboboxOption } from "./Combobox";
 import {

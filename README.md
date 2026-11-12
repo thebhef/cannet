@@ -1356,7 +1356,10 @@ the **health sampler** (a system process-table refresh and a memory /
 buffer / cache summary into `cannet.log`, every 20 s — set
 `health_sample_ms` to `0` to switch it off), the **UI-liveness
 heartbeat** (one IPC call a second, whose *arrival* is the host's only
-evidence the renderer's main thread is still turning), and the
+evidence the renderer's main thread is still turning), the **frontend
+hang recorder** (a worker pinged twice a second, one map entry per IPC
+call, and a handover to `frontend.log` every 30 s — see System
+Messages below), and the
 background emitters that feed the live views (`trace-grew` at 100 ms,
 the trace flusher at 2 s, clock status at 1 s).
 
@@ -3373,10 +3376,45 @@ budget are settings (`system_log_ring_capacity`,
 `system_log_rate_limit`), and setting the budget to `0` turns the
 limiter off — diagnosing a message flood is exactly when you want all
 of it. Sources currently in use:
-`blf-import`, `capture`, `connection`, `dbc`, `dbc-watch`, `health`,
-`logger`, `mdf-import`, `plot`, `project`, `rbs`, `server`, `session`,
-`settings`, `state`, `transmit`, `virtual-bus` (vendor sidecars will
-use `sidecar:<vendor>` in Phase 8).
+`blf-import`, `capture`, `connection`, `dbc`, `dbc-watch`, `frontend`,
+`health`, `logger`, `mdf-import`, `plot`, `project`, `rbs`, `server`,
+`session`, `settings`, `state`, `transmit`, `virtual-bus`, `window`
+(vendor sidecars will use `sidecar:<vendor>` in Phase 8).
+`frontend` carries the webview's uncaught exceptions, unhandled promise
+rejections and any 1 Hz tick that fired a second or more late, at
+`warn`, at most five of each kind a minute. `window` is one `debug`
+line per burst of window resizes / scale-factor changes, written once
+the burst has been quiet for half a second.
+
+**Frontend hang recorder (`frontend.log`)**. The host's evidence that
+the window is alive is the UI heartbeat it receives once a second, and
+when it stops `cannet.log` cannot say whether the renderer stopped
+sending it or the host stopped answering. A Web Worker in the webview,
+with its own thread and timer, keeps a small record store in the
+webview's origin-private storage (bounded at 256 KB, oldest dropped
+first, each record flushed as it is written). The main thread pings it
+twice a second with how long the oldest unanswered heartbeat has
+waited and which IPC commands have been outstanding for over a second.
+It records:
+
+| Record | Means |
+| --- | --- |
+| `stall-start` / `stall-end` | the pings stopped for ≥ 2 s and came back: the renderer's main thread was blocked. `stall-start` names the commands outstanding at the last ping and whether the host was still answering. |
+| `ack-lost` / `ack-resumed` | the pings continued but no heartbeat was answered for ≥ 3 s: the host's IPC thread was blocked. `ack-lost` names the outstanding commands — the first suspects. |
+| `resize`, `dpr`, `visibility` | the window's resize bursts (count and final size), device-pixel-ratio changes and visibility changes. |
+| `start` | a launch, with the window's size, ratio and visibility. |
+
+At launch and every 30 s while the host is answering, the store is
+handed to the host and appended to `frontend.log` in the same directory
+as `cannet.log`, with the same 5 MB one-generation rotation; handed-over
+records are then removed. During a hang the file is stale until the
+next launch, which writes what the hung session recorded. A stall or ack
+loss still open at a kill is closed at the next launch by a
+`never seen — the process ended` record. Every line is
+`<UTC timestamp> <LEVEL> <kind>: <text>`, stamped the way `cannet.log`
+is, so the two files line up by time. Where the webview has no Worker
+or origin-private storage the recorder is off, and `cannet.log` says
+so once (`hang recorder off: …`).
 
 **System Messages panel**. Open it from the status bar's *System
 messages* button. The panel renders a virtualised list filterable by

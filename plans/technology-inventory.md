@@ -703,6 +703,33 @@ crate retained long-term).
   the files inside it — every macOS auto-reload (DBC, project, RBS)
   was silently dead. Found reviewing the RBS disk watch; the backend
   requirement is pinned by `dbc_watcher`'s in-place-write test.
+- **Web Worker + Origin Private File System** (browser platform APIs,
+  no package) — `adopted` 2026-11-11 for task 173's frontend hang
+  recorder (`apps/gui/src/hangRecorder*.ts`). A dedicated worker has its
+  own thread and timer, so it keeps recording through a stall of the
+  renderer's main thread; it appends records to an OPFS file through a
+  `FileSystemSyncAccessHandle` (worker-only), flushing each one, so what
+  a kill leaves is what was written. The records are handed to the host
+  over IPC while healthy (`frontend.log`) and by the next launch after a
+  hang. Bundled by Vite's `new Worker(new URL(...), { type: "module" })`;
+  the CSP is `null`, so no exception is needed. Where either API is
+  missing the recorder is off and `cannet.log` says so once — no
+  fallback. Confirmed on macOS WKWebView (records written before a
+  SIGKILL were read back at the next launch); WebView2 on Windows is
+  not yet confirmed. Alternatives:
+  - **IndexedDB** — `rejected`: asynchronous and transactional, with
+    relaxed durability by default (a flushed-to-disk point needs
+    `durability: "strict"` per transaction) — a heavier API than an
+    append-only log needs, and one with no synchronous write a worker
+    can finish before taking its next message. Not kept as a fallback.
+  - **A localhost side channel** (the worker posts to a host HTTP
+    endpoint) — `rejected` for now: it is the only way to get a file
+    that grows *during* a hang, but adds a port, a token and a CSP
+    exception. Can be added behind the same worker later.
+  - **`tauri-plugin-log`** — `rejected`: it forwards frontend logs over
+    the same IPC the hang blocks, so it records nothing during the
+    hang it is meant to explain; the host's existing `cannet-log`
+    rolling writer already covers the file.
 
 ### Units / Quantities
 

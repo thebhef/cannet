@@ -20,7 +20,7 @@
 // the view renders those rows with a pending size and asks again when
 // the event lands.
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { formatBytes } from "./statusLine";
 

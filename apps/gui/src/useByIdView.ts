@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { ByIdSnapshotRecord, FilterPredicate, FuzzyWinner } from "./types";
 import type { SortState } from "./traceColumns";

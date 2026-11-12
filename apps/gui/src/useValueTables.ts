@@ -16,7 +16,7 @@
  * labels either kind without knowing which it has.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import { signalKey } from "./plotData";
 import { useDbcGeneration } from "./dbcChanged";
 import type { ValueTableEntryRecord } from "./types";

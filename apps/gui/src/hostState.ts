@@ -19,7 +19,7 @@
 // best-effort (fire-and-forget — a failed flush is logged host-side and
 // simply means the change isn't durable, never a broken UI).
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { emptyBlfChannelMaps, type BlfChannelMaps } from "./blfChannelMap";
 

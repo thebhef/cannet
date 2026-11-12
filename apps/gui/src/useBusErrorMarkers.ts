@@ -15,7 +15,7 @@
 // the visible slice plus margin, no unbounded accumulation).
 
 import { useCallback, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 import type { BusErrorKindCount } from "./types";
 
 /// Everything that determines one fetch's answer.

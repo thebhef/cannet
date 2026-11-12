@@ -46,7 +46,24 @@
 //!   healthy samples. The report is issued from the renderer's main
 //!   thread, so a stalled one stops beating; past
 //!   [`UI_HEARTBEAT_STALL_MS`] the recorder says so once at `warn`, and
-//!   once more when it comes back. A disk-backed session adds the
+//!   once more when it comes back.
+//!
+//!   **What the heartbeat proves, and what it does not.** Its arrival
+//!   proves both ends are turning: the renderer's main thread sent it
+//!   and the webview IPC thread, where the synchronous `report_js_heap`
+//!   runs, dispatched it. Its absence proves neither has stopped on its
+//!   own: a blocked renderer and a blocked IPC thread (a synchronous
+//!   command that does not return — `command_surface.rs`) look the same
+//!   from here. The frontend hang recorder tells them apart from the
+//!   other side: a worker in the webview records whether the main
+//!   thread's pings stopped or kept coming while the heartbeat went
+//!   unanswered, and which commands were outstanding. Its records reach
+//!   [`FRONTEND_LOG_FILE`] beside this log, from a healthy session or
+//!   from the next launch after a hang ([`persist_frontend_records`]).
+//!   A host thread stuck in work the frontend did not ask for is outside
+//!   both; a process dump covers that.
+//!
+//!   A disk-backed session adds the
 //!   scratch's per-family byte split (ADR 0002 DS-8) and, beside it,
 //!   what the signal-pyramid family is *earning* (ADR 0047): live
 //!   pyramids, how many of them this session has never read and what
@@ -303,6 +320,31 @@ fn admitted_by(level: LogLevel, min: &str) -> bool {
 fn persist_block(block: &str) {
     let _guard = WRITE_LOCK.lock();
     let _ = append_block(&log_dir(), LOG_FILE, log_cap_bytes(), block);
+}
+
+/// The frontend hang recorder's file under [`log_dir`], beside
+/// [`LOG_FILE`] and rolled the same way.
+pub const FRONTEND_LOG_FILE: &str = "frontend.log";
+
+/// Serializes handovers to [`FRONTEND_LOG_FILE`]; separate from
+/// [`WRITE_LOCK`] because the two files never share a write.
+static FRONTEND_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Append a handover of the frontend hang recorder's records to
+/// [`FRONTEND_LOG_FILE`]. The records are already formatted lines, each
+/// stamped by the webview's wall clock in this file's own format, so
+/// the two logs line up by timestamp.
+///
+/// Unlike [`persist_message`] the error is returned: the frontend keeps
+/// records it could not hand over and sends them again.
+pub fn persist_frontend_records(text: &str) -> std::io::Result<()> {
+    let _guard = FRONTEND_WRITE_LOCK.lock();
+    append_frontend_records(&log_dir(), log_cap_bytes(), text)
+}
+
+/// [`persist_frontend_records`] against an explicit directory and cap.
+fn append_frontend_records(dir: &std::path::Path, cap: u64, text: &str) -> std::io::Result<()> {
+    append_block(dir, FRONTEND_LOG_FILE, cap, text)
 }
 
 /// Install the process-wide panic hook, chaining the previous one so
@@ -1360,5 +1402,35 @@ mod tests {
             std::fs::read_to_string(dir.path().join(LOG_FILE)).unwrap(),
             "1970-01-01T00:00:01.700Z INFO crash: hello\n"
         );
+    }
+
+    #[test]
+    fn frontend_records_roll_in_their_own_file_beside_cannet_log() {
+        // The hang recorder's records are the frontend's account, not the
+        // host's: they go to `frontend.log` in the same directory, under
+        // the same size-capped one-generation scheme, and never into
+        // `cannet.log`.
+        let dir = tempfile::tempdir().unwrap();
+        append_frontend_records(
+            dir.path(),
+            16,
+            "2026-11-11T19:39:00.000Z WARN stall-start: x\n",
+        )
+        .unwrap();
+        append_frontend_records(
+            dir.path(),
+            16,
+            "2026-11-11T19:39:07.000Z INFO stall-end: y\n",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(FRONTEND_LOG_FILE)).unwrap(),
+            "2026-11-11T19:39:07.000Z INFO stall-end: y\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(format!("{FRONTEND_LOG_FILE}.1"))).unwrap(),
+            "2026-11-11T19:39:00.000Z WARN stall-start: x\n"
+        );
+        assert!(!dir.path().join(LOG_FILE).exists());
     }
 }

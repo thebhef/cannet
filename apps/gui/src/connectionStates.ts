@@ -7,7 +7,7 @@
 // project fact, not a connection fact.
 
 import { useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { formatBitrate } from "./busHardwareConfig";
 import { useHostMirror } from "./useHostMirror";

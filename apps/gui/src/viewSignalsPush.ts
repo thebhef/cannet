@@ -59,7 +59,7 @@
 /// DBC-defined and file-backed signals.
 
 import { useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { ViewSignalRef } from "./types";
 import { signalKey } from "./plotData";

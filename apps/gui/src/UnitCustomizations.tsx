@@ -53,7 +53,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import { DisclosureToggle } from "./DisclosureToggle";
 import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";

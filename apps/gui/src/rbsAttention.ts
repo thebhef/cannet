@@ -27,7 +27,7 @@
 /// capture length or session time.
 
 import { useCallback, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./ipc";
 
 import type { RbsSignalRow } from "./types";
 import { RBS_SIGNAL_PROBLEM_STATUSES, rbsSignalDisplayStatus } from "./rbsSignalsFilter";
