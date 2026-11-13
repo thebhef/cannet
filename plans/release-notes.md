@@ -1,9 +1,9 @@
 # Release notes — the work on this branch
 
-What changed for someone using cannet. Nothing here has merged: it sits
-on one linear branch chain off `main`, and this file is what the release
-will say while the chain is still under review. No version number is
-claimed.
+What changed for someone using cannet since v0.10.0. Everything here
+is on `main` (the last tier merged 2026-11-07) except the items marked
+**pending**, which sit on the branch chain awaiting review. No version
+number is claimed.
 
 Items marked **New** did not exist before. **Changed** is a deliberate
 difference you may notice even though nothing was wrong. **Fixed**
@@ -180,6 +180,12 @@ repaired something broken.
   explicit time format. An invalid template is rejected in the preview,
   with the reason. The template, folder and format are remembered for
   next time.
+- **Changed:** an explicit time format inside a token is written with
+  the date-pattern letters the Date/time pattern setting uses —
+  `{start:yyyy-MM-dd}` — not the C-style `%Y-%m-%d` ones. A template
+  saved with the old letters reports an error in the preview and at
+  write time until it is retyped; nothing converts it for you. The bare
+  token still gives the ISO basic form.
 - **New:** the range defaults to the whole capture, up to the live edge
   when the write finishes. A timeline over the capture takes both bounds,
   with the capture's own events as clickable ticks, and presets for the
@@ -224,8 +230,9 @@ repaired something broken.
   the palette.
 - **New:** its panel takes a folder and a file, both templates resolved
   by the same tokens an export name uses, plus a preview, a format and a
-  size cap. `{logger}` is available inside a logger, and its `{now}` is
-  the moment logging started, so every file of one run shares it.
+  size cap. `{logger}` is available inside a logger. `{now}` is the moment
+  each file is created, so the files of one run carry their own start
+  times; `{start}` is the capture's start, the same in all of them.
 - **New:** logging runs exactly while the logger is enabled and something
   is connected. Connecting starts it, disconnecting stops it. Unlike the
   RBS Run flag, the enabled flag is saved with the project — logging
@@ -255,6 +262,16 @@ repaired something broken.
   resolves in the running OS's own, so the default `logs/{logger}` is one
   subdirectory on Windows and on macOS alike and a project written on
   either opens correctly on the other.
+- **Fixed (pending):** a logger pointed at a OneDrive or SharePoint
+  folder no longer downloads files you had offloaded, even with its
+  panel hidden. Listing the folder read every file's header, which on a
+  cloud folder fetches the file; the list now reads only while the
+  panel is on screen, and hiding it, changing its folder, or turning
+  the reads off cancels what is queued.
+- **New (pending):** **Settings › Logging › Scan file headers** turns
+  those reads off altogether. Off, the list shows name, size and
+  modified time, with `—` in the start, end, duration and message
+  columns; headers already read still show.
 
 ## Bus faults
 
@@ -311,6 +328,12 @@ repaired something broken.
   whether that element's own buses are connected.
 - **Changed:** the two Discover buttons in connection management are now
   icon buttons.
+- **New:** every element row has **Duplicate**. The copy is named
+  "<original> (copy)", lands right after the original, and one undo
+  removes it. It shares nothing with the original: a plot's areas are
+  re-keyed, a logger is copied switched off, and a transmit element's
+  frames are cloned on the host, so each copy edits and runs alone and
+  starts stopped.
 
 ## Opening and closing
 
@@ -323,6 +346,12 @@ repaired something broken.
   reading **Closing — writing the capture cache…** with the step it is
   on — until the cache is fully written, so a relaunch never races the
   previous instance's shutdown.
+- **New:** relaunching over a project with a prior capture shows
+  **Restoring prior capture…** in the status bar, with a progress bar
+  through its three steps — capture index, capture frames, signal
+  caches — from the first file opened until the frames are back. There
+  is no chip when there is nothing to restore. A large capture used to
+  sit as an empty window for the 12 s or more the reopen took.
 
 ## Transmitting
 
@@ -335,10 +364,10 @@ repaired something broken.
   adapter's own echo of each frame it put on the wire is the row
   (`receive_own_messages`, every vendor the sidecar opens), a virtual
   bus echoes a participant's frame once another participant received
-  it, and a frame the bus never carries leaves nothing behind. The one
-  row the host still writes itself is `Tx ✗`: a transmit the session
-  refused outright (no interface, not connected). Hardware the driver
-  cannot echo shows no `Tx` rows at all. PEAK adapters echo a frame when
+  it, and a frame the bus never carries leaves nothing behind. A transmit
+  the session refuses outright (no interface, not connected) writes no
+  row either: a refusal is reported, never recorded as data. Hardware
+  the driver cannot echo shows no `Tx` rows at all. PEAK adapters echo a frame when
   it goes onto the wire, acknowledged or not, so on PEAK (and Vector, as
   a precaution) an echo from a controller that has gone error-passive —
   sixteen failed transmissions in a row — is withheld: a frame
@@ -347,6 +376,12 @@ repaired something broken.
 - **Changed:** the manual send no longer answers with a row index, and
   its wire status reads `accepted` rather than `sent` — the session
   took the frame; the bus has not spoken yet.
+- **New:** a refused send is reported. A manual send the host turns
+  away (no route, adapter gone, session closed, queue full), a periodic
+  batch it turns away, or a Duplicate that fails, writes one System
+  messages row with the reason; the frame's row in the transmit panel
+  carries a warning mark, with the reason on hover, until its next
+  accepted send. No trace row, count or rate comes from it.
 
 ## Plot
 
@@ -401,10 +436,6 @@ repaired something broken.
   ticks, and takes the A and B cursors by click. A panel with no
   signals anywhere shows the capture's span and follows live, so a
   fresh panel is a timeline rather than a blank.
-- **Changed:** the plot toolbar carries an **Events** chip that reveals
-  the event-kind checklist — which kinds show as markers, bus errors
-  included. The copy that lived only in the toolbar's right-click menu
-  is gone, so there is one control. Each plot keeps its own choice.
 - **Fixed:** an empty area beside a populated one no longer blanks
   every event marker on the panel.
 - **Changed:** the plot's **Bus error** markers are episodes, not one
@@ -419,6 +450,38 @@ repaired something broken.
 - **New:** a colour pick in the Signals panel or on a plot series
   swatch applies to every selected row, in one change; a right-click on
   an unselected row makes it the selection first.
+- **Changed:** collapse is per axis. Every axis head, unified mode's
+  included, has one disclosure at its left; the whole-area collapse is
+  gone, and a project that saved one opens expanded.
+- **Fixed:** a long `bus · ecu · message` label in the legend shrinks
+  with its column and keeps its tail instead of vanishing whole. The
+  message cells of the Signals, View signals and RBS signals panels
+  behave the same.
+- **Changed:** copying a plot area is Alt-drag on macOS and Ctrl-drag
+  on Windows and Linux. The pointer shows copy while the modifier is
+  held, and a drop in the same panel copies too; without the modifier
+  a same-panel drop reorders and a cross-panel drop moves, as before.
+- **Fixed:** a series draws straight between its own consecutive
+  samples. It used to run flat through every neighbouring series'
+  timestamp and bend into its next sample from the last of them, so
+  how a line was drawn depended on what shared its axis. Enum lanes
+  keep their stepped hold.
+- **Fixed:** an enum code held for at least one pixel column keeps its
+  code at every zoom level. A narrower change may lose its code when
+  zoomed far out but still shows as a change in that column or the
+  next, so a transition is never hidden.
+- **Changed:** the y scale of a paused plot holds what follow-live
+  last showed until you ask for Fit Y, Fit Data or type a bound. Fit Y
+  and that paused fit use only the samples on screen, so a spike just
+  outside the window no longer sets the scale. Follow-live keeps the
+  all-time extent, as before.
+- **Fixed:** a y bound typed into the axis menu and left by clicking
+  elsewhere is kept; it used to need Enter. The menu lists max above
+  min, the order the axis reads.
+- **New:** an **ignore manual y bounds** chip on the plot toolbar makes
+  every axis automatic without clearing the bounds; off, they return.
+  The axis menu clears one bound or both, and clearing turns the chip
+  off.
 
 ## Events panel
 
@@ -434,21 +497,37 @@ repaired something broken.
   selecting it draws the episode's extent on the plot while it is
   selected. A tag filter hides episodes (they carry no tag); the
   Diagnostics row's tooltip says the gap they are grouped at.
-- **New:** bus errors get their own paged section, below Notes and
-  comments: one row per **episode** — a burst of errors on one bus,
-  ended by a silence of at least the **episode gap** — newest first,
-  with the bus, the first error's time, the count, the span and the
-  rate. The gap is a new setting, **Trace → Bus-error episode gap**
-  (`bus_error_episode_gap_s`, 5 seconds by default, 1 to 3600). The
-  section reads a window at a time rather than holding a capture's
-  whole error history, and a change to the gap re-derives it at once.
-  This section sits on its own for now, separate from the whole
-  chronological event list.
+- **New:** an **episode** is a burst of errors on one bus ended by a
+  silence of at least the **episode gap**, a new setting, **Trace →
+  Bus-error episode gap** (5 seconds by default, 1 to 3600). The list
+  reads a window at a time rather than holding a capture's whole error
+  history, and a change to the gap regroups it at once.
 - **Changed:** hovering an event row's time — in the Events panel or
   interleaved into the trace — reads the same instant as a message
   row's hover: the local date and time. A bus-error episode row gets
   the same hover. A capture with no wall-clock origin still shows no
   tooltip, as before.
+
+## Dates and times
+
+- **New:** **Settings → General → Date/time pattern** sets how every
+  date and time the app shows is written — trace hover, Events, the
+  logger's file list, System messages, the BLF channel map — in local
+  time, `yyyy-MM-dd HH:mm:ss` by default. The setting previews the
+  current time as you type and refuses a pattern it cannot read, with
+  the reason. File names and the log keep their ISO form.
+- **New:** **Settings → General → Time display** switches every view
+  between elapsed time and calendar time; the palette's *Toggle
+  calendar time* does the same. Under calendar time the trace, By-ID,
+  Events and Signals time cells show the clock time and the hover shows
+  elapsed; the plot's x ticks, its axis title ("Time on …"), the hover
+  label, the A/B chips and the panel readouts read calendar time, and
+  Δt stays a duration. A capture with no wall-clock origin stays
+  elapsed.
+- **Fixed:** a calendar time's fraction rounds rather than truncates,
+  so the elapsed and calendar readings of one frame end in the same
+  digit, and a value that rounds up past the minute, hour or day
+  carries into it.
 
 ## Settings view
 
@@ -525,7 +604,14 @@ repaired something broken.
   refused. For every vendor the sidecar now resets a controller it has
   read bus-off for a second (Vector and Kvaser in place, anything else
   by reopening the channel), then publishes the recovery to the
-  bus-health panel. PEAK channels deliberately open *without* PCAN's
+  bus-health panel. A reopen closes the old channel before it opens
+  the new one — PCAN refuses a second open of a handle the process
+  still holds, which is why an earlier build never brought a PEAK
+  channel back — and if the open fails the bus reads unavailable and
+  is retried on every status poll until it succeeds, instead of the
+  dead channel being left in place. On PEAK, bus-off, error-passive
+  and a stuck transmit queue each recovered on three of three pulls
+  on the bench. PEAK channels deliberately open *without* PCAN's
   own bus-off auto-reset: it fires inside the very status read the
   sidecar polls, so bus-off was never seen, and it leaves the full
   transmit queue stuck — a cable left out for hours came back to a
@@ -551,6 +637,10 @@ repaired something broken.
   this build's protocol, with the reason, before you can connect to
   it; and a connection to one is refused with the same sentence
   instead of retrying forever. See *For application developers*.
+- **Fixed:** connecting to a server older than this build is reported
+  as that — "older than the client" — instead of as a refused token.
+  The server also logs each connection and each refused call now,
+  so its log is no longer silent when a client is turned away.
 - **Fixed:** a Kvaser interface's receive timestamps no longer jump
   backward roughly every 12 hours. python-can's Kvaser backend's
   receive timer rolls over every 2^32 ticks (just under 11h56m) with
@@ -584,18 +674,32 @@ repaired something broken.
   panel.
 - **Fixed:** the Database panel's search box takes a click anywhere in the
   box it draws, not only over the first few characters.
-- **Fixed:** on Windows, the mouse pointer no longer vanishes after typing
-  in the command palette — most visibly when Enter raised the Open
-  dialog and the pointer stayed hidden over the whole window. WebView2
-  runtime 152 began honouring the Windows "Hide pointer while typing"
-  setting and keeps the pointer hidden until the webview itself sees a
-  mouse move; cannet never wanted the pointer hidden, so the window now
-  turns that feature off.
+- **Fixed:** on Windows, the mouse pointer no longer stays hidden
+  after picking a command in the command palette that opens a native
+  dialog, such as Open. WebView2 hides the pointer while you type and
+  shows it again on the next mouse move it sees; the dialog used to
+  come up before the palette had closed, so the webview never saw that
+  move. The palette now closes before the picked command runs.
 - **Fixed:** the Database and RBS trees collapse and expand normally
   while a filter string is present. Typing a query still opens the
   path to every match; from then on the chevron and the arrow keys
   work on any row, so a bus, database or ECU you are not interested in
   folds away and stays folded until you open it or clear the filter.
+
+## Diagnostics
+
+- **New (pending):** an error the app's window did not handle now
+  reaches `cannet.log` as a warning from source `frontend`, capped at
+  five per kind per minute, instead of being lost.
+- **New (pending):** a `frontend.log` beside `cannet.log`, rolled the
+  same way, records a window stall as it happens, written from a
+  helper thread so it survives the app being killed. After a hang it
+  says when the stall began, when it ended or that it was ended by a
+  kill, which host commands were still outstanding by name, and
+  whether the host was answering the window's heartbeat, so a frozen
+  window and a frozen host read differently. Window resize bursts,
+  scale changes and visibility changes are logged beside it at debug
+  level, as the usual suspects.
 
 ## For application developers
 
