@@ -142,7 +142,7 @@
   the ruling (the derived unit is the integral's *id*, and only where
   it is true of the samples; the manual output scalars compose ahead of
   the time conversion) are written up in
-  `plans/tasks/0139-math-units-scaling.md` § Status log. Host lib tests
+  `plans/tasks/pending-closeout/0139-math-units-scaling.md` § Status log. Host lib tests
   1173 → 1190 passing on that branch; no frontend change was needed.
 - The amend rewrote `task139-units`' message to cover the branch's full
   content, including the previously unmentioned ratio absorption (the
