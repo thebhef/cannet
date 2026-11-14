@@ -1451,9 +1451,13 @@ settled query's filter index the box reports **searching…**; once it
 lands the box reports the host's own match count (singular at one),
 in both modes. Clearing the box restores the full view;
 **Ctrl/⌘+F** focuses and selects it. **Add ▸ Trace** creates a new trace element and a
-panel for it (in by-ID mode — toggle it anytime); the new trace starts
-**empty and stopped** (hit **Start** to begin capturing), regardless of
-what's already in the session buffer. The project panel
+panel for it (in by-ID mode — toggle it anytime); the new trace hooks
+into the session buffer — **running from its start** — when there is
+one, and starts **empty and stopped** (hit **Start** to begin
+capturing) when nothing has been captured yet. Each element's window
+and run state are session state held by the host rather than the
+panel, so closing and reopening a panel leaves them as they were. The
+project panel
 lists the elements — closing a panel doesn't destroy its element,
 reopen, **duplicate** or remove it from there. Duplicate makes a copy
 named "<name> (copy)" right after the original, opens no panel, and is one

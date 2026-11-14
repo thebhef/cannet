@@ -133,7 +133,7 @@ function makeRegistry(elementId: string, frameIds: string[]) {
       id === elementId ? ({ element, trace: fakeTrace } as RegistryEntry) : undefined,
     create: () => elementId,
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update: (id: string, patch: Partial<ProjectElement>) => {
       if (id !== elementId) return;
       updates.push(patch);

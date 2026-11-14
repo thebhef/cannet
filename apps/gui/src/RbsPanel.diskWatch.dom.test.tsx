@@ -99,7 +99,7 @@ function renderPanel() {
       id === "el" ? ({ element, trace: fakeTrace } as RegistryEntry) : undefined,
     create: () => "el",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update: () => {},
     remove: () => {},
   } as unknown as ElementRegistry;

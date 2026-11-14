@@ -43,6 +43,7 @@ const SYNCHRONOUS_COMMANDS: &[&str] = &[
     "fetch_system_log",
     "get_bus_health",
     "get_connection_states",
+    "get_trace_windows",
     "get_discovered_servers",
     "get_interfaces",
     "get_logger_statuses",

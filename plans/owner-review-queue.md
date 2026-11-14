@@ -67,6 +67,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
   full value is in the side panel and the measurement strip. Accept, or
   want it elsewhere? Detail: 0146 § Blockers / side effects.
 
+- **New project now runs the seeded views from 0 in every case.** The
+  trace windows moved to the host, and the host's clear (which New
+  already runs) starts every window. Before, a New with no prior
+  session left them stopped until the next connect, and the result
+  raced two in-flight commands. Accept, or want New to leave them
+  stopped? Detail: 0143 § Status log, 2026-11-14 phase 2.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the

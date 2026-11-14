@@ -69,7 +69,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         // Deliberately slow: models the real ~1 s DBC parse inside
         // `loadDbcSet`. Automation must not connect while the project
         // is still applying — a connect here flips views live and the
-        // later `setRegistry(clearedTrace)` stomps them back to stopped.
+        // rest of the open stomps them back to stopped.
         if (knobs.dbcDelayMs > 0)
           await new Promise((r) => setTimeout(r, knobs.dbcDelayMs));
         return null;

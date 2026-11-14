@@ -8,7 +8,7 @@ import {
 } from "./projectElements";
 import type { RegistryEntry } from "./projectElements";
 import type { ProjectElement } from "./types";
-import { freshTrace } from "./trace";
+import { RUNNING_TRACE } from "./registryTestKit";
 
 describe("isProjectElement", () => {
   it("accepts each known kind with an id", () => {
@@ -260,14 +260,14 @@ describe("applyElementPatch", () => {
     sources: string[] = ["*"],
   ): RegistryEntry => ({
     element: { kind: "trace", id, sources },
-    trace: freshTrace(0),
+    trace: RUNNING_TRACE,
   });
   const filter = (
     id: string,
     sources: string[] = ["*"],
   ): RegistryEntry => ({
     element: { kind: "filter", id, sources },
-    trace: freshTrace(0),
+    trace: RUNNING_TRACE,
   });
 
   it("merges patch into the matching element", () => {
@@ -299,7 +299,7 @@ describe("applyElementPatch", () => {
   it("returns the same entries ref for a no-op transmit sinks patch", () => {
     const tx: RegistryEntry = {
       element: { kind: "transmit", id: "x", sinks: ["b1"], frameIds: [] },
-      trace: freshTrace(0),
+      trace: RUNNING_TRACE,
     };
     const before = [tx];
     expect(applyElementPatch(before, "x", { sinks: ["b1"] })).toBe(before);
@@ -317,7 +317,7 @@ describe("applyElementPatch", () => {
         sources: ["*"],
         config: { areas: [{ id: "a", signals: [] }], followLive: true },
       },
-      trace: freshTrace(0),
+      trace: RUNNING_TRACE,
     };
     const before = [plot];
     const same = applyElementPatch(before, "p", {
@@ -337,7 +337,7 @@ describe("applyElementPatch", () => {
         sources: ["*"],
         config: { areas: [{ id: "a", signals: [] }] }, // loaded shape: no signalFilter
       },
-      trace: freshTrace(0),
+      trace: RUNNING_TRACE,
     };
     const before = [plot];
     const same = applyElementPatch(before, "p", {
@@ -349,7 +349,7 @@ describe("applyElementPatch", () => {
   it("applies a `config` patch that changes a nested value", () => {
     const plot: RegistryEntry = {
       element: { kind: "plot", id: "p", sources: ["*"], config: { followLive: true } },
-      trace: freshTrace(0),
+      trace: RUNNING_TRACE,
     };
     const before = [plot];
     const after = applyElementPatch(before, "p", { config: { followLive: false } });
@@ -363,7 +363,7 @@ describe("applyElementPatch", () => {
     // change recognises (and skips) its own echo.
     const plot: RegistryEntry = {
       element: { kind: "plot", id: "p", sources: ["*"], config: { followLive: true } },
-      trace: freshTrace(0),
+      trace: RUNNING_TRACE,
     };
     const after = applyElementPatch([plot], "p", { config: { followLive: false } }, "writer-1");
     expect(after[0].configEpoch).toBe(1);
@@ -378,7 +378,7 @@ describe("applyElementPatch", () => {
   it("leaves the config epoch alone for a patch that doesn't touch config", () => {
     const plot: RegistryEntry = {
       element: { kind: "plot", id: "p", sources: ["*"], config: { followLive: true } },
-      trace: freshTrace(0),
+      trace: RUNNING_TRACE,
       configEpoch: 4,
       configOrigin: "writer-1",
     };
@@ -391,7 +391,7 @@ describe("applyElementPatch", () => {
   it("leaves the config epoch alone for a no-op config patch (a panel re-persisting what it read)", () => {
     const plot: RegistryEntry = {
       element: { kind: "plot", id: "p", sources: ["*"], config: { followLive: true } },
-      trace: freshTrace(0),
+      trace: RUNNING_TRACE,
       configEpoch: 4,
     };
     const before = [plot];

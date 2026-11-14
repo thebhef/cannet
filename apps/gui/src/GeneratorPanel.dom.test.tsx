@@ -29,13 +29,12 @@ import {
   type ElementRegistry,
   type RegistryEntry,
 } from "./projectElements";
-import { freshTrace } from "./trace";
-import { makeLiveRegistry } from "./registryTestKit";
+import { makeLiveRegistry, RUNNING_TRACE } from "./registryTestKit";
 import type { GeneratorRule, ProjectElement } from "./types";
 
 function renderPanel(rules: GeneratorRule[]) {
   const element: ProjectElement = { kind: "generator", id: "g1", rules };
-  const map = new Map<string, RegistryEntry>([["g1", { element, trace: freshTrace(0) }]]);
+  const map = new Map<string, RegistryEntry>([["g1", { element, trace: RUNNING_TRACE }]]);
   const update = vi.fn();
   const registry = {
     get entries() {
@@ -44,7 +43,7 @@ function renderPanel(rules: GeneratorRule[]) {
     get: (id: string) => map.get(id),
     create: () => "",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update,
     remove: () => {},
   } as unknown as ElementRegistry;

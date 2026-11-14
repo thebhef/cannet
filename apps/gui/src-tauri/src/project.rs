@@ -216,7 +216,8 @@ pub struct Project {
     pub layout: serde_json::Value,
     /// The project's elements — `trace` / `plot` / `transmit` /
     /// `filter` / `rbs` / `colormap`, each an opaque `{kind, id, …}`
-    /// record. The host doesn't read these; the frontend owns the shape.
+    /// record. The frontend owns the shape; the host reads only each
+    /// record's `id`, to key its trace window.
     #[serde(default)]
     pub elements: Vec<serde_json::Value>,
     /// Logical buses the project knows about.
@@ -390,6 +391,10 @@ fn open_project_blocking(app: &tauri::AppHandle, path: &str) -> Result<Project, 
             // has applied the project and cleared the trace view — so the
             // restored history isn't clobbered by open-clears-the-trace.
             *state.active_project_id() = Some(p.project_id);
+            // The trace windows are the opened project's elements', each
+            // stopped and empty at the count; `restore_scratch_capture`
+            // widens them to the restored history if there is one.
+            crate::trace_windows::replace_for_open(app, &element_ids(&p.elements));
             // A simulation the *previous* session armed is not this
             // project's, and no project file can arm one — the RBS Run
             // flag is session state (ADR 0028). Stopping here is what
@@ -499,7 +504,18 @@ fn close_project_blocking(app: &tauri::AppHandle) {
     *state.math_model_cache() = None;
     state.set_project_bus_names(Vec::new());
     crate::project_watch::clear_open_project(app);
+    // The trace windows belong to the elements being left.
+    crate::trace_windows::clear(app);
     crate::sys_info!(app, "project", "closed the open project");
+}
+
+/// The `id` of every element record that has a string one, in file
+/// order — the keys of the opened project's trace windows.
+pub(crate) fn element_ids(elements: &[serde_json::Value]) -> Vec<String> {
+    elements
+        .iter()
+        .filter_map(|e| e.get("id")?.as_str().map(str::to_owned))
+        .collect()
 }
 
 /// Serialize `project` (pretty-printed) and write it to `path`. Returns
@@ -663,6 +679,17 @@ fn write_project_file(path: &str, project: &Project) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn element_ids_reads_each_string_id_in_file_order() {
+        let elements = vec![
+            serde_json::json!({ "kind": "trace", "id": "t1" }),
+            serde_json::json!({ "kind": "plot" }),
+            serde_json::json!({ "kind": "filter", "id": 7 }),
+            serde_json::json!({ "kind": "future-kind", "id": "f9" }),
+        ];
+        assert_eq!(element_ids(&elements), ["t1", "f9"]);
+    }
 
     fn sample() -> Project {
         Project {

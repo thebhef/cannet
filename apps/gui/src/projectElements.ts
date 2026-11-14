@@ -6,13 +6,14 @@ import { copyOfArea, rekeyAxisScales } from "./plotAreaTransfer";
 import type { PlotAreaConfig } from "./plotPanelConfig";
 import type { ColorRule, GeneratorRule, ProjectElement, ProjectElementKind } from "./types";
 import type { TraceState } from "./trace";
+import type { TraceControl } from "./traceWindows";
 
 /// A registry entry: the persisted project element plus its runtime
-/// state. `trace` is the live `[start, end, isPaused]` session window —
-/// *not* persisted in the project (it re-anchors to the session buffer,
-/// which resets on a new connection / app exit). Both element kinds use
-/// it: a `plot` element is a trace-style window too, it just renders
-/// signal values instead of message rows.
+/// state. `trace` is the element's `[start, end, isPaused]` session
+/// window — a *mirror* of the host's trace-window map
+/// (`traceWindows.ts`), never set by the frontend and never persisted.
+/// Every trace-style view reads it: a `plot` element is a trace-style
+/// window too, it just renders signal values instead of message rows.
 export interface RegistryEntry {
   element: ProjectElement;
   trace: TraceState;
@@ -46,9 +47,11 @@ export interface ElementRegistry {
   /// element as `trace` — correct it). No-op if already present with
   /// that kind.
   ensure(id: string, kind: ProjectElementKind): void;
-  /// Replace an element's session window. The updater may return the
-  /// same object to signal "no change".
-  updateTrace(id: string, updater: (s: TraceState) => TraceState): void;
+  /// Run a control (Start / Stop / Pause / Resume / Clear / All Data) on
+  /// an element's session window. The host owns the window: it applies
+  /// the control at its own frame count, and `trace` changes when its
+  /// answer reaches the mirror.
+  controlTrace(id: string, action: TraceControl): void;
   /// Patch a project element's fields in place (e.g. set `sources` or a
   /// filter's `predicate`). The patch is shallow — any field in the
   /// patch replaces the matching field on the element. The element's

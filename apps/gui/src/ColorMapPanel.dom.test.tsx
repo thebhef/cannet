@@ -63,10 +63,9 @@ import {
   type ElementRegistry,
   type RegistryEntry,
 } from "./projectElements";
-import { freshTrace } from "./trace";
 import type { ProjectElement } from "./types";
 import { SignalCatalogProvider } from "./signalCatalogContext";
-import { makeLiveRegistry } from "./registryTestKit";
+import { makeLiveRegistry, RUNNING_TRACE } from "./registryTestKit";
 
 const projectCtx = {
   buses: [{ id: "b1", name: "Chassis" }],
@@ -83,7 +82,7 @@ function renderPanel(over: Partial<Extract<ProjectElement, { kind: "colormap" }>
     rules: [],
     ...over,
   };
-  const map = new Map<string, RegistryEntry>([["cm1", { element, trace: freshTrace(0) }]]);
+  const map = new Map<string, RegistryEntry>([["cm1", { element, trace: RUNNING_TRACE }]]);
   const update = vi.fn();
   const registry = {
     get entries() {
@@ -92,7 +91,7 @@ function renderPanel(over: Partial<Extract<ProjectElement, { kind: "colormap" }>
     get: (id: string) => map.get(id),
     create: () => "",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update,
     remove: () => {},
   } as unknown as ElementRegistry;

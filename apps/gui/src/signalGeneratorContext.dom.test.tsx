@@ -45,7 +45,7 @@ import { SignalCatalogProvider } from "./signalCatalogContext";
 import { SignalGeneratorProvider, useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
-import { freshTrace } from "./trace";
+import { RUNNING_TRACE } from "./registryTestKit";
 import { signalKey } from "./plotData";
 import type { ProjectElement } from "./types";
 
@@ -72,11 +72,11 @@ function Probe() {
 
 function renderProbe(elements: ProjectElement[]) {
   const registry = {
-    entries: elements.map((element) => ({ element, trace: freshTrace(0) })),
+    entries: elements.map((element) => ({ element, trace: RUNNING_TRACE })),
     get: () => undefined,
     create: () => "",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update: () => {},
     remove: () => {},
   } as unknown as ElementRegistry;

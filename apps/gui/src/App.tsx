@@ -163,14 +163,13 @@ import {
   isProjectElement,
   normalizeElement,
 } from "./projectElements";
+import { NO_TRACE } from "./trace";
 import {
-  type TraceState,
-  clearedTrace,
-  freshTrace,
-  reanchorToSession,
-  restoredTrace,
-  stopTrace,
-} from "./trace";
+  type TraceControl,
+  controlTraceWindow,
+  syncTraceWindows,
+  useTraceWindows,
+} from "./traceWindows";
 import { useSessionReset } from "./useSessionReset";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
@@ -706,14 +705,6 @@ export function App() {
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
   const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
-  // Current session frame count and session start, mirrored into refs
-  // so `create` / `ensure` can tell whether a session buffer exists —
-  // and hook a new view straight into it — without taking `count`
-  // (changes every tick) or `sessionStartSeconds` as dependencies.
-  const countRef = useRef(0);
-  countRef.current = count;
-  const sessionStartSecondsRef = useRef<number | null>(null);
-  sessionStartSecondsRef.current = sessionStartSeconds;
   // Perf self-driving config (ADR 0031), fetched once from the host on
   // boot and handed to the orchestration effect below. `null` = normal
   // launch. The mirrored refs let that once-mounted effect read live
@@ -899,16 +890,18 @@ export function App() {
         return { kind, id, name, sources: ["*"] };
     }
   };
-  // The trace window a brand-new element starts with. When a session
-  // buffer exists (live or already holding frames), the new view hooks
-  // straight into it — anchored at 0, spanning the buffer, following
-  // live — exactly the state `startAllElements` gives views present at
-  // session start. With no session yet it's an empty stopped window;
-  // the session-start event will start it along with everything else.
-  const newElementTrace = (): TraceState =>
-    sessionStartSecondsRef.current !== null || countRef.current > 0
-      ? freshTrace(0)
-      : clearedTrace(0);
+  // The host's trace windows (`trace_windows.rs`), mirrored. The
+  // registry's `trace` slots are copied from this map and from nowhere
+  // else; the ref lets the entry builders below read it without taking
+  // it as a dependency.
+  const traceWindows = useTraceWindows();
+  const traceWindowsRef = useRef(traceWindows);
+  traceWindowsRef.current = traceWindows;
+  // A new entry's `trace` slot: the host's window for that id if the
+  // mirror already has one, else empty until the host — which gives every
+  // id the registry hands it a window (`syncTraceWindows` below) —
+  // answers and the mirror effect copies it in.
+  const newElementTrace = (id: string) => traceWindowsRef.current[id] ?? NO_TRACE;
   const create = useCallback((kind: ProjectElementKind): string => {
     diagCount("registry.create"); // DIAG
     const id = crypto.randomUUID();
@@ -925,7 +918,7 @@ export function App() {
       const name = defaultElementName(kind, prev.map((e) => e.element));
       return [
         ...prev,
-        { element: buildFreshElement(kind, id, name), trace: newElementTrace() },
+        { element: buildFreshElement(kind, id, name), trace: newElementTrace(id) },
       ];
     });
     return id;
@@ -938,7 +931,7 @@ export function App() {
         diagCount("registry.ensure.append"); // DIAG
         return [
           ...prev,
-          { element: buildFreshElement(kind, id, name), trace: newElementTrace() },
+          { element: buildFreshElement(kind, id, name), trace: newElementTrace(id) },
         ];
       }
       if (prev[i].element.kind === kind) return prev;
@@ -948,19 +941,12 @@ export function App() {
       return next;
     });
   }, []);
-  const updateTrace = useCallback((id: string, updater: (s: TraceState) => TraceState) => {
-    setRegistry((prev) => {
-      let changed = false;
-      const next = prev.map((e) => {
-        if (e.element.id !== id) return e;
-        const t = updater(e.trace);
-        if (t === e.trace) return e;
-        changed = true;
-        return { ...e, trace: t };
-      });
-      if (changed) diagCount("registry.updateTrace"); // DIAG
-      return changed ? next : prev;
-    });
+  // A run control is the host's to apply (at its own frame count); the
+  // registry's `trace` slot changes when its answer reaches the mirror.
+  // Not optimistic: one source of truth, and the answer is a round trip
+  // over in-memory state.
+  const controlTrace = useCallback((id: string, action: TraceControl) => {
+    void controlTraceWindow(id, action).catch(() => {});
   }, []);
   // Shallow patch of an element's persisted fields. Used by the
   // per-sink Sources picker (sets `sources`), the filter predicate
@@ -1094,7 +1080,7 @@ export function App() {
           const next = prev.slice();
           next.splice(i + 1, 0, {
             element: duplicateElement(prev[i].element, newId, newFrameIds),
-            trace: newElementTrace(),
+            trace: newElementTrace(newId),
           });
           return next;
         });
@@ -1168,7 +1154,7 @@ export function App() {
           const fresh = { ...buildFreshElement(kind, id, label), ...fields } as ProjectElement;
           next = [
             ...next.slice(0, index),
-            { element: fresh, trace: newElementTrace() },
+            { element: fresh, trace: newElementTrace(id) },
             ...next.slice(index),
           ];
         }
@@ -1277,14 +1263,6 @@ export function App() {
     [],
   );
 
-  // (Re)starting the session buffer — opening a BLF, connecting to a
-  // server, or Clear — also (re)starts every trace / plot element:
-  // they all anchor at 0 and run, following the new capture from its
-  // start.
-  const startAllElements = useCallback(() => {
-    setRegistry((prev) => prev.map((e) => ({ ...e, trace: freshTrace(0) })));
-  }, []);
-
   // The shared session (re)start step (clear the host store + reset the
   // frontend's derived session state). Each call site below supplies its
   // own clear-error policy — they differ on purpose.
@@ -1292,7 +1270,6 @@ export function App() {
     invalidateCache,
     setSessionStartSeconds,
     setCount,
-    startAllElements,
   });
 
   // Bootstrap + live-update the system-log mirror. The
@@ -1452,21 +1429,16 @@ export function App() {
           // reads as done at the count it stopped at — the user asked
           // it to stop, not to throw away what it had.
           const { total, count } = event.payload;
-          // A file import that reached its end is a capture nothing more
-          // will be appended to, so every trace element freezes there
-          // rather than staying *running* over a buffer that has stopped
-          // growing — a running element keeps each plot area's
-          // self-paced re-sample loop alive for a picture that cannot
-          // change (ADR 0024). Frozen at the event's own count, not at
-          // the last `trace-grew` tick's: the sampler runs on a timer and
-          // is up to a tick behind the pump, and an `end` below the true
-          // length is what `reanchorToSession` would then make permanent.
-          // A live session's pump exiting lands here too, and must not
-          // freeze anything — hence the same load-state gate the
-          // transition below uses.
+          // A file import that reached its end: the host has frozen every
+          // trace window at the store's own length (the windows arrive
+          // through the mirror). The count is taken from the event too,
+          // not left to the next `trace-grew` tick — the sampler is up to
+          // a tick behind the pump, and a window paged against the older
+          // count would lose the tail. A live session's pump exiting
+          // lands here as well and must not touch the count — hence the
+          // same load-state gate the transition below uses.
           if (stateKindRef.current === "loading" || stateKindRef.current === "running") {
             setCount(count);
-            setRegistry((reg) => reg.map((e) => ({ ...e, trace: stopTrace(e.trace, count) })));
           }
           setState((s) => {
             if (s.kind === "loading" || s.kind === "running") {
@@ -1491,21 +1463,35 @@ export function App() {
     };
   }, [invalidateCache]);
 
-  // Re-anchor every trace window when the session buffer shrinks (a new
-  // connection cleared it) — a no-op on every other tick.
+  // The registry's `trace` slots mirror the host's trace-window map. A
+  // window moves only on a run control, a session (re)start, a restore,
+  // a buffer that shrank, an element appearing or leaving, and project
+  // open / close — never per frame (a running window grows by
+  // arithmetic in the views).
   useEffect(() => {
     setRegistry((prev) => {
       let changed = false;
       const next = prev.map((e) => {
-        const t = reanchorToSession(e.trace, count);
-        if (t === e.trace) return e;
+        const w = traceWindows[e.element.id] ?? NO_TRACE;
+        if (w.start === e.trace.start && w.end === e.trace.end && w.isPaused === e.trace.isPaused) {
+          return e;
+        }
         changed = true;
-        return { ...e, trace: t };
+        return { ...e, trace: w };
       });
-      if (changed) diagCount("registry.reanchor"); // DIAG
+      if (changed) diagCount("registry.traceMirror"); // DIAG
       return changed ? next : prev;
     });
-  }, [count]);
+  }, [traceWindows]);
+  // Hand the host the registry's element ids whenever the set changes —
+  // created, duplicated, removed, undone, redone, a project applied — so
+  // each element has exactly one window, keyed by id. Keyed on the joined
+  // ids, so a config edit (which changes the registry but not its ids)
+  // sends nothing.
+  const elementIdsKey = useMemo(() => registry.map((e) => e.element.id).join("\n"), [registry]);
+  useEffect(() => {
+    void syncTraceWindows(elementIdsKey === "" ? [] : elementIdsKey.split("\n")).catch(() => {});
+  }, [elementIdsKey]);
 
   // Both formats import through a channel → bus mapping step. The
   // outer pending state holds the picked path + its scan (channel
@@ -2247,7 +2233,7 @@ export function App() {
                 ? { ...el, path: resolveProjectPath(dir, el.path) }
                 : el,
             ),
-        ).map((el) => ({ element: el, trace: clearedTrace(countRef.current) })),
+        ).map((el) => ({ element: el, trace: newElementTrace(el.id) })),
       );
       // An opened project's elements are a fresh starting point too —
       // the undo history must not step back into the project that was
@@ -2319,7 +2305,6 @@ export function App() {
           setFirstIndex(restored.first_index);
           setFirstIndexTsNs(restored.first_index_ts_ns);
           setSessionStartSeconds(restored.session_start_seconds);
-          setRegistry((reg) => reg.map((e) => ({ ...e, trace: restoredTrace(restored.count) })));
         } catch {
           /* no scratch capture to restore */
         } finally {
@@ -2380,9 +2365,7 @@ export function App() {
       // project starts with no transmit frames.
       void invoke("clear_transmit_frames").catch(() => {});
       // Fire-and-forget the host clear + reset the session synchronously.
-      // `seedDefaultLayout` already reseeded the registry, so don't restart
-      // elements.
-      void resetSession({ fireAndForget: true, startElements: false });
+      void resetSession({ fireAndForget: true });
       setDirty(false);
     })();
   }, [
@@ -3693,10 +3676,9 @@ export function App() {
             await rehydrateProjectState();
             // Awaited: the automation handoff below must not connect
             // while the project is still applying — a capture started
-            // mid-apply flips views live and `applyProject`'s
-            // `setRegistry(clearedTrace)` then stomps them back to
-            // stopped (observed as every view born stopped in
-            // self-driving runs).
+            // mid-apply flips views live and the rest of the open then
+            // stomps them back to stopped (observed as every view born
+            // stopped in self-driving runs).
             await applyProject(p, projectToOpen);
             rememberProject(projectToOpen);
             setDirty(false);
@@ -3818,12 +3800,12 @@ export function App() {
       get: (id) => registry.find((e) => e.element.id === id),
       create,
       ensure,
-      updateTrace,
+      controlTrace,
       update: updateElement,
       remove: removeElement,
       duplicate: duplicateElementById,
     }),
-    [registry, create, ensure, updateTrace, updateElement, removeElement, duplicateElementById],
+    [registry, create, ensure, controlTrace, updateElement, removeElement, duplicateElementById],
   );
 
   const remoteConnected = Array.from(remoteSessions.values()).some(

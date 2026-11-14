@@ -131,8 +131,7 @@ import {
   type ElementRegistry,
   type RegistryEntry,
 } from "./projectElements";
-import { freshTrace } from "./trace";
-import { makeLiveRegistry } from "./registryTestKit";
+import { makeLiveRegistry, RUNNING_TRACE } from "./registryTestKit";
 import { LIVE_TAIL_ROWS, resetLiveTailDemand } from "./liveTailDemand";
 import { PAGE_ROWS } from "./useWindowedQuery";
 import { hydrateSettings } from "./hostSettings";
@@ -183,7 +182,7 @@ const projectCtx = {
 function makeRegistry(elements: ProjectElement[]): ElementRegistry {
   const map = new Map<string, RegistryEntry>();
   for (const element of elements) {
-    map.set(element.id, { element, trace: freshTrace(0) });
+    map.set(element.id, { element, trace: RUNNING_TRACE });
   }
   return {
     get entries() {
@@ -192,7 +191,7 @@ function makeRegistry(elements: ProjectElement[]): ElementRegistry {
     get: (id: string) => map.get(id),
     create: () => "",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update: (id: string, patch: Partial<ProjectElement>) => {
       const e = map.get(id);
       if (e) map.set(id, { ...e, element: { ...e.element, ...patch } as ProjectElement });
@@ -576,14 +575,13 @@ describe("TracePanel rehydration", () => {
 
 describe("TracePanel run controls", () => {
   // The shared `TraceControls` run chips are icon-only, in a
-  // `ChipSegment`, but drive the same `useTrace` handle the old plain
-  // buttons did. Pause and Stop both freeze the window at the current
-  // session count, so a test that only checks "the window froze" cannot
-  // tell one chip from the other wired to the wrong handler — only
-  // `isPaused` does.
+  // `ChipSegment`. The window is host state: a chip sends its action to
+  // the host and the view shows whatever the host's mirror then says —
+  // it never moves the window itself, so Stop and Pause freeze at the
+  // host's count rather than at the last count this view heard.
   function renderRunning() {
-    // A freshly seeded element runs (`freshTrace`), so the bar shows
-    // Pause / Stop, not Start.
+    // A seeded element's mirror holds a running window, so the bar
+    // shows Pause / Stop, not Start.
     const { Provider, control } = makeLiveRegistry([
       { kind: "trace", id: "t1", sources: ["*"] } as ProjectElement,
     ]);
@@ -610,34 +608,35 @@ describe("TracePanel run controls", () => {
     if (!btn) throw new Error(`run chip "${name}" not found`);
     return btn;
   };
+  const status = (container: HTMLElement) =>
+    container.querySelector(".trace-status")?.textContent ?? "";
 
-  it("Pause freezes the window but marks it resumable", () => {
+  it.each([
+    ["Pause", "pause"],
+    ["Stop", "stop"],
+    ["Clear", "clear"],
+  ] as const)("%s asks the host to %s this element's window", (chip, action) => {
+    const { container, control } = renderRunning();
+    fireEvent.click(runChip(container, chip));
+    expect(control.traceControls()).toEqual([{ id: "t1", action }]);
+  });
+
+  it("shows the host's answer, not a guess of its own", () => {
     const { container, control } = renderRunning();
     fireEvent.click(runChip(container, "Pause"));
-    const state = control.entries()[0].trace;
-    expect(state.end).not.toBeNull();
-    expect(state.isPaused).toBe(true);
-  });
-
-  it("Stop freezes the window without leaving it resumable", () => {
-    const { container, control } = renderRunning();
-    fireEvent.click(runChip(container, "Stop"));
-    const state = control.entries()[0].trace;
-    expect(state.end).not.toBeNull();
-    expect(state.isPaused).toBe(false);
-  });
-
-  it("Clear collapses the window to empty at the current count, keeping it running", () => {
-    const { container, control } = renderRunning();
-    fireEvent.click(runChip(container, "Clear"));
-    const state = control.entries()[0].trace;
-    expect(state.end).toBeNull();
-    expect(state.start).toBe(traceData.count);
+    // Nothing moved locally: the window is the host's to change.
+    expect(status(container)).toBe("running");
+    expect(control.entries()[0].trace).toEqual(RUNNING_TRACE);
+    act(() => control.setTrace("t1", { start: 0, end: 40, isPaused: true }));
+    expect(status(container)).toBe("paused");
+    // Resume is offered once paused, and is a host command too.
+    fireEvent.click(runChip(container, "Resume"));
+    expect(control.traceControls().map((c) => c.action)).toEqual(["pause", "resume"]);
   });
 });
 
 describe("TracePanel All Data", () => {
-  it("widens a stopped window to the whole session buffer", () => {
+  it("asks the host to widen the window, and shows the whole buffer it answers with", () => {
     const { Provider, control } = makeLiveRegistry([
       { kind: "trace", id: "t1", sources: ["*"] } as ProjectElement,
     ]);
@@ -658,13 +657,12 @@ describe("TracePanel All Data", () => {
       [...container.querySelectorAll<HTMLButtonElement>(".trace-panel-toolbar button")].find(
         (x) => x.getAttribute("aria-label") === name,
       );
-    // Clear then Stop leaves a stopped, empty window at the buffer's tail.
-    fireEvent.click(chip("Clear")!);
-    fireEvent.click(chip("Stop")!);
-    expect(control.entries()[0].trace.start).toBe(traceData.count);
+    // A stopped, empty window at the buffer's tail.
+    act(() => control.setTrace("t1", { start: traceData.count, end: traceData.count, isPaused: false }));
     fireEvent.click(chip("All Data")!);
-    const state = control.entries()[0].trace;
-    expect(state).toEqual({ start: 0, end: traceData.count, isPaused: false });
+    expect(control.traceControls()).toEqual([{ id: "t1", action: "allData" }]);
+    act(() => control.setTrace("t1", { start: 0, end: traceData.count, isPaused: false }));
+    expect(container.querySelector(".trace-status")?.textContent).toBe("stopped");
   });
 });
 

@@ -103,7 +103,8 @@ import { formatCalendarCell, formatCalendarTime } from "./format";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
-import { freshTrace } from "./trace";
+import { RUNNING_TRACE } from "./registryTestKit";
+import type { TraceState } from "./trace";
 import { DRAG_PATTERNS_MIME, SIGNAL_DND_MIME } from "./dragSignals";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { signalKey } from "./plotData";
@@ -115,13 +116,13 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
-type TS = ReturnType<typeof freshTrace>;
+type TS = TraceState;
 type Entry = { element: { kind: "signals"; id: string; config?: Record<string, unknown> }; trace: TS };
 function makeRegistry(seed?: { id: string; config?: Record<string, unknown> }): ElementRegistry {
   const map = new Map<string, Entry>();
   const entry = (id: string, config?: Record<string, unknown>): Entry => ({
     element: { kind: "signals", id, config },
-    trace: freshTrace(0),
+    trace: RUNNING_TRACE,
   });
   if (seed) map.set(seed.id, entry(seed.id, seed.config));
   return {
@@ -141,10 +142,7 @@ function makeRegistry(seed?: { id: string; config?: Record<string, unknown> }): 
       const e = map.get(id);
       if (e) map.set(id, { ...e, element: { ...e.element, ...patch } });
     },
-    updateTrace: (id: string, updater: (s: TS) => TS) => {
-      const e = map.get(id);
-      if (e) map.set(id, { ...e, trace: updater(e.trace) });
-    },
+    controlTrace: vi.fn(),
     remove: (id: string) => {
       map.delete(id);
     },
@@ -229,15 +227,10 @@ afterEach(() => {
 });
 
 describe("SignalsPanel All Data", () => {
-  it("shows All Data and widens a stopped window to the whole session buffer", () => {
+  it("shows All Data and asks the host to widen this element's window", () => {
     const { registry } = renderPanel({ params: { elementId: "el-all-data" } });
-    registry.updateTrace("el-all-data", () => ({ start: 40, end: 60, isPaused: false }));
     fireEvent.click(screen.getByRole("button", { name: "All Data" }));
-    expect(registry.get("el-all-data")?.trace).toEqual({
-      start: 0,
-      end: traceData.count,
-      isPaused: false,
-    });
+    expect(registry.controlTrace).toHaveBeenCalledWith("el-all-data", "allData");
   });
 });
 

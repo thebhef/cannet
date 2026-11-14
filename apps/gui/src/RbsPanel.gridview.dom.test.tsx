@@ -139,7 +139,7 @@ function renderPanel() {
     get: () => ({ element, trace: fakeTrace }) as RegistryEntry,
     create: () => "el",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update: (_id: string, patch: Partial<ProjectElement>) => {
       element = { ...element, ...patch } as ProjectElement;
     },

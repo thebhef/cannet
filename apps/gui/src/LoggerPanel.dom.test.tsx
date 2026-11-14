@@ -66,7 +66,7 @@ import { LoggerPanel } from "./LoggerPanel";
 import { DEFAULT_LOGGER_FILE, DEFAULT_LOGGER_FOLDER, DEFAULT_LOGGER_MAX_MB } from "./logger";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry, type RegistryEntry } from "./projectElements";
-import { freshTrace } from "./trace";
+import { RUNNING_TRACE } from "./registryTestKit";
 import type { ProjectElement } from "./types";
 
 const onImportCapture = vi.fn();
@@ -90,7 +90,7 @@ function renderPanel(over: Partial<LoggerElement> = {}) {
     maxFileSizeMb: DEFAULT_LOGGER_MAX_MB,
     ...over,
   };
-  const map = new Map<string, RegistryEntry>([["lg1", { element, trace: freshTrace(0) }]]);
+  const map = new Map<string, RegistryEntry>([["lg1", { element, trace: RUNNING_TRACE }]]);
   const update = vi.fn();
   const registry = {
     get entries() {
@@ -99,7 +99,7 @@ function renderPanel(over: Partial<LoggerElement> = {}) {
     get: (id: string) => map.get(id),
     create: () => "",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update,
     remove: () => {},
   } as unknown as ElementRegistry;

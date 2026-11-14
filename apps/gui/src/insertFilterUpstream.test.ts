@@ -3,14 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { insertFilterUpstream } from "./insertFilterUpstream";
 import type { ElementRegistry, RegistryEntry } from "./projectElements";
 import type { ProjectElement } from "./types";
-import { freshTrace } from "./trace";
+import { RUNNING_TRACE } from "./registryTestKit";
 
 /// Fake registry that records `create` + `update` calls and reflects
 /// them in `entries` / `get`. Mirrors the App.tsx behaviour closely
 /// enough for the orchestration test.
 function fakeRegistry(initial: ProjectElement[]) {
   const map = new Map<string, RegistryEntry>(
-    initial.map((el) => [el.id, { element: el, trace: freshTrace(0) }]),
+    initial.map((el) => [el.id, { element: el, trace: RUNNING_TRACE }]),
   );
   const create = vi.fn((kind: ProjectElement["kind"]) => {
     const id = `created-${kind}-${map.size}`;
@@ -20,7 +20,7 @@ function fakeRegistry(initial: ProjectElement[]) {
         : kind === "filter"
           ? ({ kind, id, sources: ["*"] } as ProjectElement)
           : ({ kind, id, sources: ["*"] } as ProjectElement);
-    map.set(id, { element: fresh, trace: freshTrace(0) });
+    map.set(id, { element: fresh, trace: RUNNING_TRACE });
     return id;
   });
   const update = vi.fn((id: string, patch: Partial<ProjectElement>) => {
@@ -38,7 +38,7 @@ function fakeRegistry(initial: ProjectElement[]) {
     get: (id) => map.get(id),
     create,
     ensure: vi.fn(),
-    updateTrace: vi.fn(),
+    controlTrace: vi.fn(),
     update,
     remove: vi.fn(),
     duplicate: vi.fn(async () => ""),

@@ -76,7 +76,7 @@ function renderPanel(opts: {
     get: (id: string) => entries.find((e) => e.element.id === id),
     create: () => "",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update: vi.fn(),
     remove: vi.fn(),
   } as unknown as ElementRegistry;

@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 //
-// An import that has finished leaves the trace elements *stopped*, at
-// the count the pump reports.
+// Trace windows are host state (`trace_windows.rs`): the registry hands
+// the host its element ids, mirrors the host's map, and moves no window
+// itself — not on a run control, not on Clear, not when an import ends.
 //
-// The frames are all in the store and nothing more is coming, so a
-// trace element that stayed "running" is reporting a state the session
-// is not in — and every plot area over it keeps its self-paced resample
-// loop alive for a picture that cannot change. The count matters as
-// much as the freeze: the `trace-grew` sampler is up to a tick behind
-// the pump, and a window frozen at its number loses the tail.
+// An import that has finished leaves every window *stopped* at the
+// count the pump reports: the frames are all in the store and nothing
+// more is coming, so a window left "running" reports a state the
+// session is not in, and every plot area over it keeps its self-paced
+// resample loop alive for a picture that cannot change. The host does
+// the freeze (at the store's own length, tested there); the frontend
+// takes the count from the same event, because the `trace-grew` sampler
+// is up to a tick behind the pump and a window paged against its number
+// loses the tail.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -19,6 +23,12 @@ const listeners = new Map<string, Handler[]>();
 
 const invokeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 let dialogPath: string | null = null;
+
+/// The element ids the registry last handed the host.
+function syncedIds(): string[] {
+  const syncs = invokeCalls.filter((c) => c.cmd === "sync_trace_windows");
+  return (syncs[syncs.length - 1]?.args.elementIds as string[] | undefined) ?? [];
+}
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -45,7 +55,11 @@ vi.mock("@tauri-apps/api/core", () => ({
         };
       case "set_state":
       case "clear_trace_store":
+      case "sync_trace_windows":
+      case "trace_window_control":
         return null;
+      case "get_trace_windows":
+        return {};
       case "scan_blf_channels":
         return {
           channels: [0],
@@ -171,6 +185,15 @@ function statuses(): string[] {
   return Array.from(document.querySelectorAll(".trace-status")).map((e) => e.textContent ?? "");
 }
 
+/// The host publishing its map: every synced element gets `window`.
+function hostWindows(window: { start: number; end: number | null; isPaused: boolean }) {
+  emit(
+    "trace-windows-changed",
+    Object.fromEntries(syncedIds().map((id) => [id, window])),
+  );
+}
+const RUNNING = { start: 0, end: null, isPaused: false };
+
 beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   listeners.clear();
@@ -204,17 +227,59 @@ async function importBlf(finalCount: number) {
   });
   await act(async () => {
     emit("trace-grew", traceGrew(finalCount));
+    // The import's session start ran every window from 0, host-side.
+    hostWindows(RUNNING);
   });
   return finalCount;
 }
 
+describe("the registry mirrors the host's trace windows", () => {
+  it("hands the host every element id, and shows whatever window the host publishes", async () => {
+    render(<App />);
+    await waitFor(() => {
+      if (!document.querySelector(".trace-panel .trace-status"))
+        throw new Error("seeded layout not mounted yet");
+    });
+    await waitFor(() => expect(syncedIds().length).toBeGreaterThan(0));
+    // Until the host answers, a view reads an empty stopped window.
+    expect(statuses().every((s) => s === "stopped")).toBe(true);
+    await act(async () => hostWindows(RUNNING));
+    expect(statuses().every((s) => s === "running")).toBe(true);
+    await act(async () => hostWindows({ start: 0, end: 5, isPaused: true }));
+    expect(statuses().every((s) => s === "paused")).toBe(true);
+  });
+
+  it("Clear restarts the windows host-side: the frontend moves none itself", async () => {
+    render(<App />);
+    await waitFor(() => expect(syncedIds().length).toBeGreaterThan(0));
+    // A session holding frames enables the toolbar Clear.
+    await act(async () => {
+      emit("trace-grew", traceGrew(9));
+      hostWindows({ start: 0, end: 5, isPaused: true });
+    });
+    await act(async () => {
+      fireEvent.click(toolbarChip("Clear"));
+    });
+    await waitFor(() => {
+      if (!invokeCalls.some((c) => c.cmd === "clear_trace_store")) throw new Error("no clear");
+    });
+    // The windows are still what the host last said, until it says
+    // otherwise.
+    expect(statuses().every((s) => s === "paused")).toBe(true);
+  });
+});
+
 describe("a finished import leaves the trace stopped", () => {
-  it("every trace element reads stopped once the pump reports it is done", async () => {
+  it("every trace element reads stopped once the host freezes the windows", async () => {
     const total = await importBlf(9);
     expect(statuses().every((s) => s === "running")).toBe(true);
     await act(async () => {
       emit("log-finished", { status: "ok", total, count: total });
     });
+    // The frontend freezes nothing itself…
+    expect(statuses().every((s) => s === "running")).toBe(true);
+    // …the host does, and the mirror shows it.
+    await act(async () => hostWindows({ start: 0, end: total, isPaused: false }));
     expect(statuses()).not.toHaveLength(0);
     expect(statuses().every((s) => s === "stopped")).toBe(true);
   });
@@ -224,13 +289,13 @@ describe("the frozen window is the pump's count, not the sampler's", () => {
   it("keeps the frames appended since the last trace-grew tick", async () => {
     // `trace-grew` runs on a timer, so the count it last reported is
     // behind the pump's own by up to a tick — on a fast import, tens of
-    // thousands of frames. Freezing the window there would drop them,
-    // and `reanchorToSession` would then make the shorter window
-    // permanent. The event carries the store's real length for exactly
-    // this.
+    // thousands of frames. The host freezes the windows at the store's
+    // real length; the frontend has to page against that length too,
+    // which the event carries for exactly this.
     await importBlf(4);
     await act(async () => {
       emit("log-finished", { status: "ok", total: 9, count: 9 });
+      hostWindows({ start: 0, end: 9, isPaused: false });
     });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 300));

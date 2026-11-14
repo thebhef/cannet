@@ -7,6 +7,11 @@
 // case is gone.) Mounts the REAL App with the Tauri IPC mocked, drives
 // a session with synthetic `trace-grew` events, then adds new panels
 // through the real toolbar buttons.
+//
+// The window is the host's (`trace_windows.rs`, where "running from 0
+// when a session buffer exists" is tested): here the App must hand the
+// host the new element's id, and page the window the host answers with
+// — from 0, live.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -23,6 +28,34 @@ function emitTauri(event: string, payload: unknown) {
 // Commands with their args, so the test can assert *what window* a
 // panel asked the host for, not just that it asked.
 const invokeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+
+/// The element ids the registry last handed the host.
+function syncedIds(): string[] {
+  const syncs = invokeCalls.filter((c) => c.cmd === "sync_trace_windows");
+  return (syncs[syncs.length - 1]?.args.elementIds as string[] | undefined) ?? [];
+}
+const STOPPED_EMPTY = { start: 0, end: 0, isPaused: false };
+const RUNNING_FROM_0 = { start: 0, end: null, isPaused: false };
+
+/// After a panel was added: wait for the registry to hand the host one
+/// id it did not have, then publish the host's answer — the new element
+/// running from 0 over the existing buffer, every other window as it was.
+async function hostAnswersNewElement(before: string[]) {
+  const added = await waitFor(() => {
+    const fresh = syncedIds().filter((id) => !before.includes(id));
+    if (fresh.length !== 1) throw new Error("new element not handed to the host yet");
+    return fresh[0];
+  });
+  await act(async () => {
+    emitTauri(
+      "trace-windows-changed",
+      Object.fromEntries([
+        ...before.map((id) => [id, STOPPED_EMPTY]),
+        [added, RUNNING_FROM_0],
+      ]),
+    );
+  });
+}
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -188,6 +221,8 @@ describe("views created mid-session", () => {
       return el;
     });
     expect(seededStatus).toHaveClass("trace-status-stopped");
+    await waitFor(() => expect(syncedIds().length).toBeGreaterThan(0));
+    const seededIds = syncedIds();
 
     // Drive a live session: the host has 5000 frames buffered and is
     // still streaming.
@@ -205,6 +240,7 @@ describe("views created mid-session", () => {
     await act(async () => {
       fireEvent.click(addPanelChip("Trace"));
     });
+    await hostAnswersNewElement(seededIds);
 
     // The new panel is *running*: its toolbar shows the running status
     // (Pause/Stop, not Start). `trace-status-running` renders only when
@@ -242,6 +278,8 @@ describe("views created mid-session", () => {
       if (!document.querySelector(".trace-panel .trace-status"))
         throw new Error("seeded layout not mounted yet");
     });
+    await waitFor(() => expect(syncedIds().length).toBeGreaterThan(0));
+    const seededIds = syncedIds();
 
     await act(async () => {
       emitTauri("trace-grew", grew(5000));
@@ -250,6 +288,7 @@ describe("views created mid-session", () => {
     await act(async () => {
       fireEvent.click(addPanelChip("Plot Panel"));
     });
+    await hostAnswersNewElement(seededIds);
 
     // The plot shares the trace window state (same registry entry shape,
     // same `create` path, same TraceControls): running means its window

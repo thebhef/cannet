@@ -57,9 +57,9 @@ import { SignalsPanel } from "./SignalsPanel";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
-import { freshTrace } from "./trace";
 import { SignalCatalogProvider } from "./signalCatalogContext";
-import { makeLiveRegistry } from "./registryTestKit";
+import { makeLiveRegistry, RUNNING_TRACE } from "./registryTestKit";
+import type { TraceState } from "./trace";
 import type { ProjectElement } from "./types";
 
 class FakeResizeObserver {
@@ -68,13 +68,13 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
-type TS = ReturnType<typeof freshTrace>;
+type TS = TraceState;
 type Entry = { element: { kind: "signals"; id: string; config?: Record<string, unknown> }; trace: TS };
 function makeRegistry(): ElementRegistry {
   const map = new Map<string, Entry>();
   const entry = (id: string, config?: Record<string, unknown>): Entry => ({
     element: { kind: "signals", id, config },
-    trace: freshTrace(0),
+    trace: RUNNING_TRACE,
   });
   return {
     get entries() {
@@ -93,10 +93,7 @@ function makeRegistry(): ElementRegistry {
       const e = map.get(id);
       if (e) map.set(id, { ...e, element: { ...e.element, ...patch } });
     },
-    updateTrace: (id: string, updater: (s: TS) => TS) => {
-      const e = map.get(id);
-      if (e) map.set(id, { ...e, trace: updater(e.trace) });
-    },
+    controlTrace: () => {},
     remove: (id: string) => {
       map.delete(id);
     },

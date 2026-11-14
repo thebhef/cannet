@@ -390,6 +390,15 @@ The chronological view of a capture — frames in arrival order. Names a
 *view*, never the data.
 _Avoid_: "trace" for the capture itself, or for a plotted signal.
 
+**Trace window**:
+The slice of the session buffer one trace-style element shows — a start,
+an end (none while **running**) and whether it is paused — moved only by
+the run controls (Start, Stop, Pause, Resume, Clear, All Data) and by
+session events (a session start, an import's end, a restore, project
+open / close). Session state the host holds per element; never saved,
+and the views only mirror it.
+_Avoid_: "window" for the visible rows a view has paged in.
+
 **Events panel**:
 The view of the timeline events alone: **one list, oldest first**, of
 the authored events (notes and message-bound comments), the
