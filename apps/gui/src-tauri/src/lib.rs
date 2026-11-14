@@ -129,6 +129,7 @@ mod system_log;
     clippy::len_without_is_empty
 )]
 pub mod trace_store;
+mod trace_windows;
 mod transmit_commands;
 mod transmit_frames;
 mod transmit_scheduler;
@@ -764,6 +765,9 @@ pub fn run() -> ! {
             connect_remote_server,
             disconnect_remote_server,
             connection_state::get_connection_states,
+            trace_windows::get_trace_windows,
+            trace_windows::trace_window_control,
+            trace_windows::sync_trace_windows,
             project::open_project,
             project::close_project,
             project::save_project,
@@ -972,6 +976,7 @@ pub fn run() -> ! {
                 math: math_signals::MathRegistry::new(),
                 math_model: Mutex::new(None),
                 project_bus_names: Mutex::new(Vec::new()),
+                trace_windows: trace_windows::TraceWindows::default(),
             });
             // Make sure the main window has the id our capabilities expect.
             // Tauri assigns "main" by default for the first window in the

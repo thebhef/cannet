@@ -71,7 +71,7 @@ function renderPanel(
     get: () => undefined,
     create: () => "",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update: vi.fn(),
     remove: vi.fn(),
   } as unknown as ElementRegistry;

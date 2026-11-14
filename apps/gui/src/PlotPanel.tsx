@@ -1157,7 +1157,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, [trace]);
 
   /** "All Data": widen the trace window to the whole session buffer
-   * (still following live if it was already running — `allDataTrace`)
+   * (still following live if it was already running — the host keeps
+   * the run state)
    * and fit the x-axis to it. The DBC-reload recovery workflow this
    * serves: Clear collapses the window to now so re-picking signals
    * against the fresh DBC resamples cheaply, then All Data widens back

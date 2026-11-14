@@ -13,8 +13,10 @@
 //
 // Mounts the REAL App with the Tauri IPC mocked, drives a session with
 // synthetic `trace-grew` events, adds a trace panel through the real
-// toolbar and stops it — a stopped window is the case where nothing
-// else re-keys the fetch.
+// toolbar, and has the host publish its window stopped — a stopped
+// window is the case where nothing else re-keys the fetch. (Windows are
+// host state; Stop's own round trip is covered in `TracePanel` and
+// `trace_windows.rs`.)
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -35,6 +37,12 @@ const invokeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 // count-only refreshes on the shared primitive's stale tick, and those
 // say nothing about whether the view re-asked for its rows.
 const rowPages: string[] = [];
+
+/// The element ids the registry last handed the host.
+function syncedIds(): string[] {
+  const syncs = invokeCalls.filter((c) => c.cmd === "sync_trace_windows");
+  return (syncs[syncs.length - 1]?.args.elementIds as string[] | undefined) ?? [];
+}
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -197,8 +205,12 @@ describe("a DBC changed on disk", () => {
         throw new Error("seeded layout not mounted yet");
     });
 
-    // A session with history, and a panel over it: added mid-session it
-    // comes up running and anchored at 0 (see App.midSessionCreate).
+    // A session with history, and a panel over it, stopped over the
+    // whole buffer. A running view re-pages on its own refresh tick,
+    // which would answer the question by accident; a stopped one
+    // re-pages only when the identity of what it fetches changes.
+    await waitFor(() => expect(syncedIds().length).toBeGreaterThan(0));
+    const seededIds = syncedIds();
     await act(async () => {
       emitTauri("trace-grew", grew(5000));
     });
@@ -206,25 +218,20 @@ describe("a DBC changed on disk", () => {
       fireEvent.click(addPanelChip("Trace"));
     });
     await waitFor(() => {
+      if (syncedIds().length !== seededIds.length + 1)
+        throw new Error("the new panel's element has not reached the host yet");
+    });
+    await act(async () => {
+      emitTauri(
+        "trace-windows-changed",
+        Object.fromEntries(syncedIds().map((id) => [id, { start: 0, end: 5000, isPaused: false }])),
+      );
+    });
+    await waitFor(() => {
       if (!rowPages.includes("fetch_by_id_page"))
         throw new Error("the new panel has not paged its window yet");
     });
-
-    // Stop it. A running view re-pages on its own refresh tick, which
-    // would answer the question by accident; a stopped one re-pages only
-    // when the identity of what it fetches changes.
-    const running = document.querySelectorAll<HTMLElement>(
-      ".trace-panel .trace-status-running",
-    );
-    expect(running.length).toBe(1);
-    const panel = running[0].closest(".trace-panel") as HTMLElement;
-    const stop = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find(
-      (b) => b.getAttribute("aria-label") === "Stop",
-    );
-    if (!stop) throw new Error("no Stop button on the running panel");
-    await act(async () => {
-      fireEvent.click(stop);
-    });
+    expect(document.querySelectorAll(".trace-panel .trace-status-stopped").length).toBe(2);
     await act(async () => {
       await new Promise((r) => setTimeout(r, DBC_CHANGE_COALESCE_MS * 2));
     });

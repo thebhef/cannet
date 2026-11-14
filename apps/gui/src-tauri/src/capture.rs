@@ -2401,6 +2401,7 @@ pub(crate) async fn import_mdf(
                     // The frontend's load state ends on this event
                     // whichever contents were asked for.
                     let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
+                    crate::trace_windows::stop_all(&app_for_thread, count);
                     let _ =
                         app_for_thread.emit("log-finished", LogFinished::Ok { total: 0, count });
                     None
@@ -2944,6 +2945,9 @@ pub(crate) fn restamp_scratch_for_capture(state: &AppState) {
 pub(crate) async fn clear_trace_store(app: AppHandle) {
     crate::sampling::off_async_workers(move || {
         clear_trace_store_now(&app, &app.state::<AppState>());
+        // A session (re)start — Connect, opening a capture, Clear — runs
+        // every trace window from 0, following the new capture.
+        crate::trace_windows::start_all(&app);
     })
     .await;
 }
@@ -2973,6 +2977,8 @@ pub(crate) fn clear_trace_store_now(app: &AppHandle, state: &AppState) {
     if let Some(health) = app.try_state::<crate::bus_health::BusHealth>() {
         health.clear();
     }
+    // The buffer shrank to nothing under every trace window.
+    crate::trace_windows::reanchor_all(app);
 }
 
 /// What a successful scratch restore brings back: the reloaded frame
@@ -3071,6 +3077,9 @@ fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
         // Nothing came back, so nothing a prior session left in the pyramid
         // scratch describes a capture this one holds (ADR 0047).
         state.signal_caches.clear();
+        // Nothing was reloaded, but the store may have been reset on the
+        // way; keep every window inside it.
+        crate::trace_windows::reanchor_all(app);
         return RestoredCapture {
             count: 0,
             first_index: 0,
@@ -3167,6 +3176,11 @@ fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
     // Whatever the restore adopted (or rejected) is the file-backed set
     // this session now has.
     let _ = app.emit(FILE_SIGNALS_CHANGED, ());
+    // The reloaded history is presented frozen, not live: every window is
+    // the stopped whole buffer (ADR 0002 DS-7).
+    if count > 0 {
+        crate::trace_windows::restore_all(app, u64::try_from(count).unwrap_or(u64::MAX));
+    }
     #[allow(clippy::cast_precision_loss)]
     RestoredCapture {
         count: u64::try_from(count).unwrap_or(u64::MAX),

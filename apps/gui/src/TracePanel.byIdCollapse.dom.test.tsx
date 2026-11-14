@@ -35,7 +35,7 @@ import {
   type ElementRegistry,
   type RegistryEntry,
 } from "./projectElements";
-import { freshTrace } from "./trace";
+import { RUNNING_TRACE } from "./registryTestKit";
 import { byIdRowKey } from "./ByIdTable";
 import { hydrateSettings } from "./hostSettings";
 import { ROW_HEIGHT, SIGNAL_LINE_HEIGHT } from "./traceViewport";
@@ -100,7 +100,7 @@ const projectCtx = {
 function makeRegistry(elements: ProjectElement[]): ElementRegistry {
   const map = new Map<string, RegistryEntry>();
   for (const element of elements) {
-    map.set(element.id, { element, trace: freshTrace(0) });
+    map.set(element.id, { element, trace: RUNNING_TRACE });
   }
   return {
     get entries() {
@@ -109,7 +109,7 @@ function makeRegistry(elements: ProjectElement[]): ElementRegistry {
     get: (id: string) => map.get(id),
     create: () => "",
     ensure: () => {},
-    updateTrace: () => {},
+    controlTrace: () => {},
     update: (id: string, patch: Partial<ProjectElement>) => {
       const e = map.get(id);
       if (e) map.set(id, { ...e, element: { ...e.element, ...patch } as ProjectElement });

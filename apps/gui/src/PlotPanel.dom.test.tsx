@@ -536,8 +536,8 @@ import { MathSignalsProvider } from "./mathSignalsContext";
 import { SignalGeneratorContext } from "./signalGeneratorContext";
 import { stableSignalColor, wheelColor } from "./palette";
 import { signalKey } from "./plotData";
-import { freshTrace } from "./trace";
-import { makeLiveRegistry } from "./registryTestKit";
+import { makeLiveRegistry, RUNNING_TRACE } from "./registryTestKit";
+import type { TraceState } from "./trace";
 import type { Bus, ProjectElement } from "./types";
 import { diagCounts } from "./diag";
 import { AUTO_POINT_MARKER_FLOOR } from "./plotPoints";
@@ -555,10 +555,12 @@ class FakeResizeObserver {
 
 // A throwaway element registry: PlotPanel uses `ensure` (to register
 // its element), `update` (to persist its `config` blob), and, via
-// `useTrace`, `get` / `updateTrace`. `seed` pre-populates an element so
+// `useTrace`, `get` / `controlTrace`. `seed` pre-populates an element so
 // a test can mount a panel against an element that already carries
 // config (the close-and-reopen path).
-type TS = ReturnType<typeof freshTrace>;
+type TS = TraceState;
+/// Every run control a panel sent through `makeRegistry`'s fake, in order.
+const traceControls: Array<{ id: string; action: string }> = [];
 type Entry = { element: { kind: "plot"; id: string; config?: Record<string, unknown> }; trace: TS };
 function makeRegistry(seed?: {
   id: string;
@@ -570,7 +572,7 @@ function makeRegistry(seed?: {
   const map = new Map<string, Entry>();
   const entry = (id: string, config?: Record<string, unknown>, trace?: TS): Entry => ({
     element: { kind: "plot", id, config },
-    trace: trace ?? freshTrace(0),
+    trace: trace ?? RUNNING_TRACE,
   });
   if (seed) map.set(seed.id, entry(seed.id, seed.config, seed.trace));
   // The real registry keeps `entries` as state and only replaces the array
@@ -606,10 +608,19 @@ function makeRegistry(seed?: {
         touched();
       }
     },
-    updateTrace: (id: string, updater: (s: TS) => TS) => {
+    // Stands in for the host, which owns the window arithmetic and tests
+    // it (`trace_windows.rs`): records every control, and answers All
+    // Data the way the host does over this fixture's 100-frame buffer,
+    // so a test can watch the panel react to a widened window.
+    controlTrace: (id: string, action: string) => {
+      traceControls.push({ id, action });
       const e = map.get(id);
-      if (e) {
-        map.set(id, { ...e, trace: updater(e.trace) });
+      if (e && action === "allData") {
+        const widened: TS =
+          e.trace.end === null
+            ? { start: 0, end: null, isPaused: false }
+            : { start: 0, end: 100, isPaused: e.trace.isPaused };
+        map.set(id, { ...e, trace: widened });
         touched();
       }
     },
@@ -2667,8 +2678,8 @@ describe("PlotPanel", () => {
   });
 
   it("paints each partial answer on a stopped trace too, with no user interaction", async () => {
-    // The boot-restore case. A restored capture is *stopped*
-    // (`restoredTrace`), so the self-paced resample loop — which only
+    // The boot-restore case. A restored capture is *stopped* (the
+    // host restores every window stopped), so the self-paced resample loop — which only
     // runs while the trace is running — cannot be what re-requests.
     // ADR 0049 nonetheless says a partial answer is continued by the
     // view until the host reports it caught up; if nothing does that
@@ -4820,8 +4831,9 @@ describe("PlotPanel All data button", () => {
       });
       await act(async () => {});
 
-      // The trace window widened to the whole session buffer (100 frames
-      // in the default fixture) — still stopped, since it wasn't running.
+      // The host was asked to widen the window; its answer (the whole
+      // 100-frame buffer, still stopped) is what the panel now shows.
+      expect(traceControls[traceControls.length - 1]).toEqual({ id: "el-alldata", action: "allData" });
       expect(registry.get("el-alldata")?.trace).toEqual({ start: 0, end: 100, isPaused: false });
       // The x-axis fit starts at 0 — not the old parked start (40) that
       // plain Fit Data would have used — which is what "All Data" adds.
@@ -4844,11 +4856,10 @@ describe("PlotPanel All data button", () => {
         fireEvent.click(screen.getByRole("button", { name: "All Data" }));
       });
 
-      // A running trace stays running (grows with the buffer) — only its
-      // start moved to 0.
-      expect(registry.get("el-alldata-running")?.trace).toEqual({
-        start: 0, end: null, isPaused: false,
-      });
+      // The control went to the host; a running window stays running there
+      // (`trace_windows.rs`), so the panel keeps following live.
+      expect(traceControls[traceControls.length - 1]).toEqual({ id: "el-alldata-running", action: "allData" });
+      expect(registry.get("el-alldata-running")?.trace.end).toBeNull();
     });
   });
 });
@@ -5435,7 +5446,7 @@ describe("PlotPanel solo", () => {
         ],
         ...config,
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
 
   it("shows only the matching series across every area of the panel", () => {
@@ -5513,7 +5524,7 @@ describe("PlotPanel solo", () => {
           { id: "a2", signals: [], patterns: ["/EngineData/Limit"] },
         ],
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
     renderPanel({ params: { elementId: "el-solo-pattern" }, registry });
     // The catalog the pattern resolves against arrives over `invoke`.
@@ -5699,7 +5710,7 @@ describe("PlotPanel solo", () => {
           { id: "a3", signals: [sig("PackVoltage")] },
         ],
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
     renderPanel({ params: { elementId: "el-solo-collapse" }, registry });
     const collapsedFlags = () =>
@@ -5755,7 +5766,7 @@ describe("PlotPanel solo", () => {
         ],
         ...config,
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
 
   const soloPosition = () => screen.getByLabelText("solo position").textContent;
@@ -5846,7 +5857,7 @@ describe("PlotPanel solo", () => {
       config: {
         areas: [{ id: "a1", signals: [sig("Cell1", "V", true), sig("Cell2")] }],
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
     renderPanel({ params: { elementId: "el-solo-hidden-onpage" }, registry });
     typeSolo("(Cell\\d)");
@@ -5874,7 +5885,7 @@ describe("PlotPanel solo", () => {
           { id: "a3", signals: [sig("Current", "A")] },
         ],
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
     renderPanel({ params: { elementId: "el-solo-flat" }, registry });
 
@@ -5915,7 +5926,7 @@ describe("PlotPanel solo", () => {
           { id: "a2", signals: [sig("Cell1"), sig("Cell10")] },
         ],
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
     renderPanel({ params: { elementId: "el-solo-keyed" }, registry });
     typeSolo("Cell(?<cell>\\d+)$");
@@ -6290,7 +6301,7 @@ describe("PlotPanel solo", () => {
           { id: "a2", signals: [catalogSig("EngineSpeed", "rpm")] },
         ],
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
 
   it("groups a pattern-provided row exactly like a manual pick", async () => {
@@ -6411,7 +6422,7 @@ describe("PlotPanel solo", () => {
           { id: "a1", yAxisMode: "per-unit", signals: [amps("LimitNominal"), amps("LimitEffective")] },
         ],
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
     await withSizedCanvas(async () => {
       renderPanel({ params: { elementId: "el-solo-repaint" }, registry });
@@ -6453,7 +6464,7 @@ describe("PlotPanel solo", () => {
           { id: "a1", yAxisMode: "per-unit", signals: [amps("LimitNominal"), amps("LimitEffective")] },
         ],
       },
-      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+      trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
     });
     await withSizedCanvas(async () => {
       renderPanel({ params: { elementId: "el-solo-inflight" }, registry });
@@ -10320,7 +10331,7 @@ describe("run state gates the self-paced resample loop", () => {
     // `plot_fetch_interval_ms` defaults to 67 ms, so a live area ticks
     // several times over the measured window.
     await withSizedCanvas(async () => {
-      mount(freshTrace(0));
+      mount(RUNNING_TRACE);
       await wait(300);
       const r0 = resamples();
       const s0 = slides();

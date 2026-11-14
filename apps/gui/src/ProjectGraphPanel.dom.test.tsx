@@ -57,7 +57,6 @@ vi.mock("@xyflow/react/dist/style.css", () => ({}));
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
-import { freshTrace } from "./trace";
 import { LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL, expectMiddleEllipsis } from "./longNameTestKit";
 
 afterEach(cleanup);
@@ -105,7 +104,7 @@ function makeRegistry(create: ReturnType<typeof vi.fn>): ElementRegistry {
     get: () => undefined,
     create,
     ensure: noop,
-    updateTrace: noop,
+    controlTrace: noop,
     update: noop,
     remove: noop,
   } as unknown as ElementRegistry;
@@ -126,9 +125,6 @@ function renderPanel(create: ReturnType<typeof vi.fn>, buses?: { id: string; nam
       </ElementRegistryContext.Provider>
     </ProjectContext.Provider>,
   );
-  // `freshTrace` is referenced by the registry mocks elsewhere; keep
-  // the import alive in case the wider test environment expects it.
-  void freshTrace;
 }
 
 describe("ProjectGraphPanel", () => {

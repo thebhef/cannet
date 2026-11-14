@@ -14,7 +14,8 @@ import type { ReactNode } from "react";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import type { TraceFrameRecord } from "./types";
-import { freshTrace, useTrace } from "./trace";
+import { useTrace } from "./trace";
+import { RUNNING_TRACE } from "./registryTestKit";
 import { PAGE_ROWS } from "./useWindowedQuery";
 
 function harness(rows: boolean) {
@@ -30,8 +31,8 @@ function harness(rows: boolean) {
   };
   const registry = {
     entries: [],
-    get: () => ({ element: { kind: "trace", id: "el" }, trace: freshTrace(0) }),
-    updateTrace: () => {},
+    get: () => ({ element: { kind: "trace", id: "el" }, trace: RUNNING_TRACE }),
+    controlTrace: () => {},
   } as unknown as ElementRegistry;
   const wrapper = ({ children }: { children: ReactNode }) => (
     <ElementRegistryContext.Provider value={registry}>

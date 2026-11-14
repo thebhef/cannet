@@ -171,3 +171,59 @@ required and the trace panel and the signals panel pass
   40..60 -> `{0, count, stopped}`). Running-from-0 and paused cases
   stay covered by the pure `trace.test.ts`. No perf run: no data or
   render hot path changed.
+- **2026-11-14, phase 2 (branch `task143-host-trace-windows`).** Trace
+  windows are host state: `apps/gui/src-tauri/src/trace_windows.rs`
+  (`TraceWindow` + the ported arithmetic, a `TraceWindows` map on
+  `AppState`, commands `get_trace_windows` / `trace_window_control` /
+  `sync_trace_windows`, event `trace-windows-changed` carrying the
+  map). Frontend mirrors through `useHostMirror` (`traceWindows.ts`);
+  `ElementRegistry.updateTrace` → `controlTrace`; `trace.ts` keeps only
+  the read side. Paging untouched.
+  - Element lifecycle is one command, not ensure + remove: the
+    registry hands the host its whole id set whenever the set changes
+    (`sync_trace_windows`) — new ids get the new-element window, kept
+    ids keep theirs, missing ids are dropped. Covers create, ensure,
+    duplicate, remove, undo/redo and project apply with one call site.
+  - Run controls are not optimistic: the view shows the host's answer
+    (no DOM test showed a lag problem; the round trip is in-memory).
+  - The "every window" moments and where each lives now:
+
+    | Moment (old frontend site) | Now |
+    |---|---|
+    | Connect / open BLF or MDF / Clear / New (`startAllElements` via `useSessionReset`) | `clear_trace_store` command: `start_all` |
+    | Buffer shrank (`reanchorToSession` effect on `count`) | `clear_trace_store_now` (every clear, incl. the project-cache Clear) and a restore that reloaded nothing: `reanchor_all` |
+    | Restore (`restoredTrace(restored.count)`) | `restore_scratch_capture`: `restore_all(count)` when count > 0 |
+    | Import ended (`stopTrace(e.trace, count)` on `log-finished`) | `run_pump` clean end when `replay_origin`, and MDF's no-messages branch: `stop_all(store len)` |
+    | Project apply (`clearedTrace(countRef.current)`) | `open_project`: `replace_for_open` (file's element ids, cleared at the store count) |
+    | Close / New project | `close_project`: map emptied |
+    | New element (`newElementTrace` in create / ensure / duplicate / restore) | `sync_trace_windows`: `new_element(session started or len > 0)` |
+
+  - Tests: 19 host (`trace_windows::tests`, `project::tests::element_ids…`;
+    the arithmetic port was written with the module, then a mutation
+    — clear dropping paused-ness — was confirmed caught before
+    reverting). DOM: `traceWindows.dom.test.tsx` (new, written and
+    seen failing first), TracePanel run controls / All Data (rewritten,
+    seen failing against the old `useTrace`), SignalsPanel / PlotPanel
+    All Data, App import-end / Clear / mirror / id sync, mid-session
+    create, DBC re-anchor. `registryTestKit` records controls and
+    takes the host's answer (`setTrace`).
+  - Deviation: New project. Before, `startElements: false` left the
+    seeded views as `newElementTrace` made them — stopped with no prior
+    session, running otherwise — and the result raced the
+    fire-and-forget clear. Now the clear always starts every window, so
+    the seeded views run from 0 after New in every case (the clear
+    starts a session, which is the new-element rule's own condition).
+    Queued for a yes/no.
+  - README: the "new trace starts empty and stopped regardless of the
+    buffer" note was already wrong (mid-session views run from 0 since
+    an earlier change); corrected. `docs/CONTEXT.md` gains **Trace
+    window**.
+  - Perf (ADR 0031, release, ev-zonal 60 s, scrub; reports
+    `docs/performance-measurements/frontend/2026-11-14-7e7d9983-run{1,2,3}.json`):
+    ids_measured 174 / 174 / 174; rx 1605.9 / 1605.1 / 1605.8 f/s;
+    lag_ms max 22.0 / 20.1 / 4.1; longtask max 0 / 78 / 0 ms/s;
+    tx_late_ms max 5.97 / 77.6 / 8.46; flush_ms max 7.07 / 20.17 /
+    11.64; host_mb max 71.6 / 63.5 / 63.1; webview_renderer_mb max
+    356.2 / 362.4 / 353.6; jsheap max 101.7 / 97.1 / 99.4;
+    `memo.elementRegistryValue` 0.83/s in all three (no per-frame
+    registry churn).

@@ -262,6 +262,10 @@ pub(crate) struct AppState {
     /// reaches the host: the project-open parse, and the frontend's push
     /// on every bus add / rename / remove.
     pub(crate) project_bus_names: Mutex<Vec<(String, String)>>,
+    /// Each element's trace window over [`Self::trace_store`]
+    /// ([`crate::trace_windows`]): session state the frontend mirrors,
+    /// never persisted.
+    pub(crate) trace_windows: crate::trace_windows::TraceWindows,
 }
 
 /// Guarded-field accessors. Each wraps the one lock its field needs with

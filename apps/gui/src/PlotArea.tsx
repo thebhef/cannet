@@ -4573,7 +4573,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   //
   // `catchingUp` is what makes ADR 0049's "the view re-requests" true on
   // a *stopped* trace: a restored capture is stopped by construction
-  // (`restoredTrace`), so a pyramid rebuild triggered by opening it had
+  // (the host restores every window stopped), so a pyramid rebuild triggered by opening it had
   // no loop to continue its prefixes — the plot froze on the first one
   // until a zoom or Fit Data forced a fetch. The latch clears on the
   // host's completeness token, so the loop still stops dead on a frozen

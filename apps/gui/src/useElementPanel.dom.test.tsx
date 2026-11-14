@@ -18,15 +18,14 @@ import {
   type ElementRegistry,
   type RegistryEntry,
 } from "./projectElements";
-import { makeLiveRegistry } from "./registryTestKit";
+import { makeLiveRegistry, RUNNING_TRACE } from "./registryTestKit";
 import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
-import { freshTrace } from "./trace";
 import type { ProjectElement } from "./types";
 
 function makeRegistry(elements: ProjectElement[]) {
   const map = new Map<string, RegistryEntry>();
   for (const element of elements) {
-    map.set(element.id, { element, trace: freshTrace(0) });
+    map.set(element.id, { element, trace: RUNNING_TRACE });
   }
   const ensure = vi.fn();
   const update = vi.fn((id: string, patch: Partial<ProjectElement>) => {
@@ -40,7 +39,7 @@ function makeRegistry(elements: ProjectElement[]) {
     get: (id: string) => map.get(id),
     create: () => "",
     ensure,
-    updateTrace: () => {},
+    controlTrace: () => {},
     update,
     remove: () => {},
     duplicate: async () => "",

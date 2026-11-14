@@ -4,19 +4,13 @@ import { invoke } from "./ipc";
 /// The frontend session state the reset re-anchors, injected so the hook
 /// stays testable and doesn't reach into `App`'s closures.
 export interface SessionResetDeps {
-  /// Re-anchor every trace window (bump the epoch, drop the live tail).
+  /// Drop the paged views' cache (bump the epoch, drop the live tail).
   invalidateCache: () => void;
   setSessionStartSeconds: (value: number | null) => void;
   setCount: (value: number) => void;
-  /// Re-anchor + restart every trace/plot element at index 0.
-  startAllElements: () => void;
 }
 
 export interface SessionResetOptions {
-  /// Restart every trace/plot element (default `true`). New-project
-  /// passes `false`: `seedDefaultLayout` already reseeded the registry,
-  /// so there's nothing left to restart.
-  startElements?: boolean;
   /// Fire-and-forget the host clear — don't await it, swallow any
   /// failure, and run the frontend reset synchronously (the New-project
   /// policy, which must not block on or surface a clear error).
@@ -33,9 +27,10 @@ export interface SessionResetOptions {
 
 /// The shared session (re)start step behind Clear, Connect, BLF-map
 /// confirm, and New project: clear the host trace store, then reset the
-/// frontend's derived session state (re-anchor every trace window, drop
-/// the session-start clock, zero the frame count, and — unless
-/// `startElements` is `false` — restart every trace/plot element).
+/// frontend's derived session state (drop the paged views' cache, the
+/// session-start clock and the frame count). The host's clear also runs
+/// every element's trace window from 0; the registry hears that through
+/// its trace-window mirror, not from here.
 ///
 /// Returns `true` if the caller should proceed, `false` if the host
 /// clear rejected under an abort policy and the caller should bail. The
@@ -44,20 +39,14 @@ export interface SessionResetOptions {
 /// own through {@link SessionResetOptions} instead of sharing one
 /// hardcoded behaviour.
 export function useSessionReset(deps: SessionResetDeps) {
-  const { invalidateCache, setSessionStartSeconds, setCount, startAllElements } = deps;
+  const { invalidateCache, setSessionStartSeconds, setCount } = deps;
   return useCallback(
     async (options: SessionResetOptions = {}): Promise<boolean> => {
-      const {
-        startElements = true,
-        fireAndForget = false,
-        onError,
-        resetOnClearError = false,
-      } = options;
+      const { fireAndForget = false, onError, resetOnClearError = false } = options;
       const resetLocal = () => {
         invalidateCache();
         setSessionStartSeconds(null);
         setCount(0);
-        if (startElements) startAllElements();
       };
       if (fireAndForget) {
         void invoke("clear_trace_store").catch(() => {});
@@ -73,6 +62,6 @@ export function useSessionReset(deps: SessionResetDeps) {
       resetLocal();
       return true;
     },
-    [invalidateCache, setSessionStartSeconds, setCount, startAllElements],
+    [invalidateCache, setSessionStartSeconds, setCount],
   );
 }

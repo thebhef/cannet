@@ -1204,9 +1204,13 @@ where
         "frame source ended cleanly ({total} frames)"
     );
     // The store's own length, read here rather than left to the next
-    // `trace-grew` tick: this is the count the frontend freezes an
-    // ended import's windows at, and the sampler is up to a tick behind.
+    // `trace-grew` tick: an ended import's windows freeze at it, and the
+    // sampler is up to a tick behind — a window frozen at its count would
+    // lose the tail. A live source's pump ending freezes nothing.
     let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
+    if replay_origin {
+        crate::trace_windows::stop_all(app, count);
+    }
     let _ = app.emit("log-finished", LogFinished::Ok { total, count });
     anchor
 }
