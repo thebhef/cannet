@@ -228,6 +228,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("SignalsPanel All Data", () => {
+  it("shows All Data and widens a stopped window to the whole session buffer", () => {
+    const { registry } = renderPanel({ params: { elementId: "el-all-data" } });
+    registry.updateTrace("el-all-data", () => ({ start: 40, end: 60, isPaused: false }));
+    fireEvent.click(screen.getByRole("button", { name: "All Data" }));
+    expect(registry.get("el-all-data")?.trace).toEqual({
+      start: 0,
+      end: traceData.count,
+      isPaused: false,
+    });
+  });
+});
+
 describe("SignalsPanel", () => {
   it("marks a file-backed row by source and labels it with its channel group", async () => {
     // A file-backed signal (docs/CONTEXT.md) has no message and no ECU,

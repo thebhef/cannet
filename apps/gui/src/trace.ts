@@ -77,8 +77,8 @@ export function clearKeepingState(s: TraceState, n: number): TraceState {
 /// trace keeps running, now from the buffer's start instead of its
 /// tail, so it still grows with the buffer; a frozen (stopped /
 /// paused) one becomes the full buffer to date, reusing `restoredTrace`'s
-/// shape. Used by the plot's "All Data" button (post-DBC-reload
-/// recovery, ADR 0024): Clear collapses the window to now for a cheap
+/// shape. Used by every trace-style view's "All Data" button (the
+/// plot's post-DBC-reload recovery, ADR 0024): Clear collapses the window to now for a cheap
 /// re-pick of signals against the fresh DBC, then All Data widens back
 /// out to the whole capture for one full-history resample.
 export function allDataTrace(s: TraceState, n: number): TraceState {
@@ -180,7 +180,7 @@ export interface TraceHandle {
   resume: () => void;
   clear: () => void;
   /// Widen the window to the whole session buffer (`allDataTrace`) —
-  /// the plot's "All Data" button.
+  /// the "All Data" button.
   allData: () => void;
 }
 

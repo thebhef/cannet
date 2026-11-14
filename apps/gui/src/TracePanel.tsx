@@ -636,6 +636,7 @@ export function TracePanel(props: IDockviewPanelProps) {
           onPause={trace.pause}
           onResume={trace.resume}
           onClear={trace.clear}
+          onAllData={trace.allData}
         />
         <ChipSegment label="Trace Mode">
           <ChipButton
