@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { invoke } from "./ipc";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -172,6 +173,12 @@ import {
 } from "./traceWindows";
 import { useSessionReset } from "./useSessionReset";
 import { createWorkingProjectPusher, sameElements } from "./workingProject";
+import {
+  busConfigOf,
+  fetchSessionStatus,
+  remoteSessionsOf,
+  type SessionStatus,
+} from "./sessionStatus";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
   BY_ID_PANEL_COMPONENT,
@@ -733,6 +740,12 @@ export function App() {
   // gates the splash, which must come down on every one of those
   // outcomes.
   const [bootSettled, setBootSettled] = useState(false);
+  // Which way the boot went, once the host has said whether it holds a
+  // project (ADR 0063): `fresh` opens the project, `rejoin` takes up the
+  // session the host already holds. Until it is known, the App's
+  // mount-time defaults (no loggers, no buses) must not be pushed at a
+  // host that may be running a project's loggers and simulation.
+  const [bootPath, setBootPath] = useState<"pending" | "fresh" | "rejoin">("pending");
   const splashVisible = useSplashVisible(bootSettled);
   const bootSettledRef = useRef(false);
   bootSettledRef.current = bootSettled;
@@ -1342,65 +1355,76 @@ export function App() {
     };
   }, []);
 
+  // The session buffer's picture — count, low-water mark, origin, rates,
+  // residency and the live tail — as the host reports it: on every
+  // `trace-grew`, and once from `session_status` when a reloaded frontend
+  // rejoins a session whose emitter has nothing new to say (ADR 0063).
+  const applyTraceGrew = useCallback(
+    (grew: TraceGrew) => {
+      const {
+        count: newCount,
+        first_index,
+        first_index_ts_ns,
+        frames_per_second,
+        frames_per_second_rx,
+        frames_per_second_tx,
+        frames_per_second_by_bus,
+        bus_load_percent,
+        frames_dropped_before_session,
+        session_start_seconds,
+        buffer_seconds,
+        scratch_bytes,
+        mem_bytes,
+        tail,
+      } = grew;
+      // DIAG: log buffer size + aggregate/rx/tx/per-bus FPS as gauges so
+      // a capture shows throughput against buffer growth, split by
+      // direction and per bus.
+      diagGauge("count", newCount); // DIAG
+      diagGauge("fps", frames_per_second); // DIAG
+      diagGauge("fps.rx", frames_per_second_rx); // DIAG
+      diagGauge("fps.tx", frames_per_second_tx); // DIAG
+      for (const b of frames_per_second_by_bus) {
+        diagGauge(`fps.${b.bus_id}`, b.frames_per_second); // DIAG
+      }
+      // DIAG: session-start drop counter (stale pipeline frames after a
+      // clear/reconnect race).
+      diagGauge("drop.before_session", frames_dropped_before_session); // DIAG
+      setCount((prev) => {
+        if (newCount < prev) {
+          invalidateCache();
+        }
+        return newCount;
+      });
+      // Taken as reported: the host says "no session" with `null`, and
+      // zero is a real origin — a log with no stated start time
+      // anchors there (ADR 0024). Reading zero as "no origin" left the
+      // plot falling back to its own window's first frame, so anything
+      // to the left of it rendered at a negative time and the trace
+      // table and the plot disagreed about the same instant.
+      setSessionStartSeconds(session_start_seconds);
+      setFramesPerSecond(frames_per_second);
+      setBusLoadPercent(bus_load_percent);
+      setBufferSeconds(buffer_seconds);
+      setScratchBytes(scratch_bytes);
+      setMemBytes(mem_bytes);
+      setFirstIndex(first_index);
+      setFirstIndexTsNs(first_index_ts_ns);
+      setLiveTail({
+        start: tail.length > 0 ? tail[0].index : newCount,
+        rows: tail,
+      });
+    },
+    [invalidateCache],
+  );
+
   useEffect(() => {
     const unlistens: Array<Promise<() => void>> = [];
 
     unlistens.push(
       listen<TraceGrew>("trace-grew", (event) => {
         diagCount("event.trace-grew"); // DIAG
-        const {
-          count: newCount,
-          first_index,
-          first_index_ts_ns,
-          frames_per_second,
-          frames_per_second_rx,
-          frames_per_second_tx,
-          frames_per_second_by_bus,
-          bus_load_percent,
-          frames_dropped_before_session,
-          session_start_seconds,
-          buffer_seconds,
-          scratch_bytes,
-          mem_bytes,
-          tail,
-        } = event.payload;
-        // DIAG: log buffer size + aggregate/rx/tx/per-bus FPS as gauges so
-        // a capture shows throughput against buffer growth, split by
-        // direction and per bus.
-        diagGauge("count", newCount); // DIAG
-        diagGauge("fps", frames_per_second); // DIAG
-        diagGauge("fps.rx", frames_per_second_rx); // DIAG
-        diagGauge("fps.tx", frames_per_second_tx); // DIAG
-        for (const b of frames_per_second_by_bus) {
-          diagGauge(`fps.${b.bus_id}`, b.frames_per_second); // DIAG
-        }
-        // DIAG: session-start drop counter (stale pipeline frames after a
-        // clear/reconnect race).
-        diagGauge("drop.before_session", frames_dropped_before_session); // DIAG
-        setCount((prev) => {
-          if (newCount < prev) {
-            invalidateCache();
-          }
-          return newCount;
-        });
-        // Taken as reported: the host says "no session" with `null`, and
-        // zero is a real origin — a log with no stated start time
-        // anchors there (ADR 0024). Reading zero as "no origin" left the
-        // plot falling back to its own window's first frame, so anything
-        // to the left of it rendered at a negative time and the trace
-        // table and the plot disagreed about the same instant.
-        setSessionStartSeconds(session_start_seconds);
-        setFramesPerSecond(frames_per_second);
-        setBusLoadPercent(bus_load_percent);
-        setBufferSeconds(buffer_seconds);
-        setScratchBytes(scratch_bytes);
-        setMemBytes(mem_bytes);
-        setFirstIndex(first_index);
-        setFirstIndexTsNs(first_index_ts_ns);
-        setLiveTail({
-          start: tail.length > 0 ? tail[0].index : newCount,
-          rows: tail,
-        });
+        applyTraceGrew(event.payload);
       }),
     );
 
@@ -1493,7 +1517,7 @@ export function App() {
       unlistens.forEach((p) => p.then((fn) => fn()));
       if (exportDoneTimer.current !== null) clearTimeout(exportDoneTimer.current);
     };
-  }, [invalidateCache]);
+  }, [applyTraceGrew]);
 
   // The registry's `trace` slots mirror the host's trace-window map. A
   // window moves only on a run control, a session (re)start, a restore,
@@ -1520,10 +1544,15 @@ export function App() {
   // each element has exactly one window, keyed by id. Keyed on the joined
   // ids, so a config edit (which changes the registry but not its ids)
   // sends nothing.
+  // Nothing is sent before the boot has applied a project: until then the
+  // registry holds only the mount's default seed, and handing the host
+  // that id set would drop every window a reloaded frontend is about to
+  // rejoin (ADR 0063).
   const elementIdsKey = useMemo(() => registry.map((e) => e.element.id).join("\n"), [registry]);
   useEffect(() => {
+    if (!bootSettled) return;
     void syncTraceWindows(elementIdsKey === "" ? [] : elementIdsKey.split("\n")).catch(() => {});
-  }, [elementIdsKey]);
+  }, [elementIdsKey, bootSettled]);
 
   // Both formats import through a channel → bus mapping step. The
   // outer pending state holds the picked path + its scan (channel
@@ -2218,18 +2247,22 @@ export function App() {
     [rememberRecentProject],
   );
 
-  // Apply an opened project: restore the panel layout (incl. per-panel
-  // config in the panel params), the remote-address field, and the
-  // loaded DBC set (replaces whatever's loaded with the project's list).
-  // Doesn't touch a live connection: the project's bus is configured
-  // into the fields; hit Connect to switch.
-  const applyProject = useCallback(
-    async (project: Project, projectFilePath: string) => {
+  // Apply a project document to the frontend's own state — the half of
+  // applying a project that touches no host state, shared by the fresh
+  // open (`applyProject`) and the rejoin (`rejoinSession`, ADR 0063).
+  // `projectFilePath` is what relative DBC and `.cannet_rbs` references
+  // resolve against (ADR 0030); `null` for an unsaved project, whose
+  // references are already absolute.
+  //
+  // The fields first: buses, bindings, virtual buses, colours and the DBC
+  // scoping. Returns what the fresh open goes on to hand the host.
+  const applyProjectFields = useCallback(
+    (project: Project, projectFilePath: string | null) => {
       // DBC and `.cannet_rbs` references in the project may be relative
       // to the project file's own directory (ADR 0030); resolve them to
       // absolute before they reach the host commands, which read from
       // disk directly.
-      const dir = projectDir(projectFilePath);
+      const dir = projectFilePath === null ? "" : projectDir(projectFilePath);
       // `project.remote_address` is ignored — addresses now live per-
       // binding (see `gatherProject`); reading a v3 file's value would
       // re-introduce the toolbar-level address we removed.
@@ -2256,39 +2289,33 @@ export function App() {
       const scoping: Record<string, string[]> = {};
       for (const d of incomingDbcs) scoping[d.path] = d.buses ?? [];
       setDbcBuses(scoping);
-      // Open path ordering (ADR 0033): DBCs → RBS elements → views →
-      // replayed capture. The loaded DBC set is foundational model state
-      // — decoding, RBS message resolution, and plot labels all read it —
-      // so every view must validate against a *settled* set, not the
-      // partial set an interleaved `add_dbc` loop exposes. `loadDbcSet`
-      // clears then re-adds each DBC; awaiting it to completion first is
-      // what keeps RBS load, the restored layout, and the sampled capture
-      // below from racing a half-loaded set (which left the later-loaded
-      // buses' views empty). `loadDbcSet` takes the scoping map so each
-      // DBC is committed with the right `buses`.
-      await loadDbcSet(
-        incomingDbcs.map((d) => d.path),
-        scoping,
-      );
+      return { dbcs: incomingDbcs, scoping, vbuses: incomingVbuses };
+    },
+    [],
+  );
+
+  // …then the views: the element registry, a fresh undo history, and the
+  // panel layout. Returns the elements it put in the registry.
+  const applyProjectView = useCallback(
+    (project: Project, projectFilePath: string | null): readonly ProjectElement[] => {
+      const dir = projectFilePath === null ? "" : projectDir(projectFilePath);
       // Restore the element registry before the panels `fromJSON` creates
       // (which reference elements by `params.elementId`) so they find
-      // their entries. (A panel that doesn't still self-heals.) RBS
-      // elements now load against the settled DBC set above.
+      // their entries. (A panel that doesn't still self-heals.)
       // `assignDefaultNames` backfills `${Kind} ${n}` names onto elements
       // saved before display names existed (ADR 0019).
-      setRegistry(
-        assignDefaultNames(
-          (Array.isArray(project.elements) ? project.elements : [])
-            .filter(isProjectElement)
-            .map(normalizeElement)
-            .map((el) =>
-              el.kind === "rbs" && el.path
-                ? { ...el, path: resolveProjectPath(dir, el.path) }
-                : el,
-            ),
-        ).map((el) => ({ element: el, trace: newElementTrace(el.id) })),
+      const elements = assignDefaultNames(
+        (Array.isArray(project.elements) ? project.elements : [])
+          .filter(isProjectElement)
+          .map(normalizeElement)
+          .map((el) =>
+            el.kind === "rbs" && el.path
+              ? { ...el, path: resolveProjectPath(dir, el.path) }
+              : el,
+          ),
       );
-      // An opened project's elements are a fresh starting point too —
+      setRegistry(elements.map((el) => ({ element: el, trace: newElementTrace(el.id) })));
+      // An applied project's elements are a fresh starting point too —
       // the undo history must not step back into the project that was
       // open before. (The effect above re-reads the present from the
       // registry once this render lands.)
@@ -2299,7 +2326,7 @@ export function App() {
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);
       if (api && layout) {
-        // An opened project replaces what was open wholesale; its
+        // An applied project replaces what was there wholesale; its
         // layout is a fresh baseline, not an undoable step from the
         // previous one — apply under the guard and restart both view
         // histories (same as `seedDefaultLayout`).
@@ -2316,6 +2343,39 @@ export function App() {
           ? recordFocus(EMPTY_FOCUS_HISTORY, api.activePanel.id)
           : EMPTY_FOCUS_HISTORY;
       }
+      return elements;
+    },
+    [clearGesture],
+  );
+
+  // Apply an opened project: restore the panel layout (incl. per-panel
+  // config in the panel params), the remote-address field, and the
+  // loaded DBC set (replaces whatever's loaded with the project's list).
+  // Doesn't touch a live connection: the project's bus is configured
+  // into the fields; hit Connect to switch.
+  const applyProject = useCallback(
+    async (project: Project, projectFilePath: string) => {
+      const {
+        dbcs: incomingDbcs,
+        scoping,
+        vbuses: incomingVbuses,
+      } = applyProjectFields(project, projectFilePath);
+      // Open path ordering (ADR 0033): DBCs → RBS elements → views →
+      // replayed capture. The loaded DBC set is foundational model state
+      // — decoding, RBS message resolution, and plot labels all read it —
+      // so every view must validate against a *settled* set, not the
+      // partial set an interleaved `add_dbc` loop exposes. `loadDbcSet`
+      // clears then re-adds each DBC; awaiting it to completion first is
+      // what keeps RBS load, the restored layout, and the sampled capture
+      // below from racing a half-loaded set (which left the later-loaded
+      // buses' views empty). `loadDbcSet` takes the scoping map so each
+      // DBC is committed with the right `buses`.
+      await loadDbcSet(
+        incomingDbcs.map((d) => d.path),
+        scoping,
+      );
+      // RBS elements load against the settled DBC set above.
+      applyProjectView(project, projectFilePath);
       // Rebuild host-side virtual buses from project defs
       // (ADR 0021). Per-binding session participants are opened on
       // Connect, not here.
@@ -2368,7 +2428,52 @@ export function App() {
         }
       })();
     },
-    [loadDbcSet, invalidateCache, clearGesture],
+    [applyProjectFields, applyProjectView, loadDbcSet, invalidateCache],
+  );
+
+  // Rejoin the session the host holds (ADR 0063): a reloaded frontend
+  // takes up the project and session exactly where they are. Only
+  // frontend state is written — no open, no DBC push, no virtual-bus
+  // replay, no restore, no logger push, nothing cleared. The working
+  // document (fresher than the file, and than the working layout in
+  // `.cannet/state.json`) supplies the project; the host's own answers
+  // supply the loaded DBC set, the connected sessions, the buffer's
+  // picture and an import in flight. Undo history starts fresh, as on a
+  // fresh open. The caller sets the dirty flag once the layout's own
+  // change echo has landed.
+  const rejoinSession = useCallback(
+    (status: SessionStatus) => {
+      const doc = status.document;
+      if (doc !== null) {
+        applyProjectFields(doc, status.path);
+        const elements = applyProjectView(doc, status.path);
+        // The host already holds these RBS elements, loaded and running
+        // as they were: the reconciler must find them in place, not load
+        // them again (a load re-reads the file over unsaved overrides).
+        const rbs = new Map<string, { path: string | null }>();
+        for (const el of elements) if (el.kind === "rbs") rbs.set(el.id, { path: el.path });
+        rbsHostStateRef.current = rbs;
+      } else {
+        // A New project the host holds but was never told the contents
+        // of (the reload came inside the push's debounce): what New
+        // seeds. The dock already holds the seeded layout — an unsaved
+        // project leaves no last-project pointer, so the mount seeded it.
+        setBuses([{ id: "b1", name: "Bus 1" }]);
+        setInterfaceBindings([]);
+        setLocalVirtualBuses([]);
+        setSignalColors({});
+        rbsHostStateRef.current = new Map();
+      }
+      setDbcPaths(status.dbcs.map((d) => d.dbc_path));
+      setDbcBuses(Object.fromEntries(status.dbcs.map((d) => [d.dbc_path, d.buses ?? []])));
+      setProjectPath(status.path);
+      setRemoteSessions(remoteSessionsOf(status));
+      setBusConfigInFlight(busConfigOf(status));
+      applyTraceGrew(status.trace);
+      setRebuildingCaches(status.pyramids_rebuilding);
+      if (status.importing !== null) setState({ kind: "loading", result: status.importing });
+    },
+    [applyProjectFields, applyProjectView, applyTraceGrew],
   );
 
   const handleNewProject = useCallback(() => {
@@ -3220,11 +3325,21 @@ export function App() {
   // --- RBS host lifecycle (ADR 0028) ---
   // The host resolves `.cannet_rbs` bus-name keys against the
   // project's logical buses; push the (id, name) map on every change.
+  //
+  // Not before the boot has decided which way it goes, and a rejoin's
+  // first set is the one the host already has (ADR 0063): an empty set
+  // pushed from the mount's defaults would re-resolve every running RBS
+  // element against no buses.
+  const lastRbsBusesRef = useRef<string | null>(null);
   useEffect(() => {
-    void invoke("rbs_sync_project_buses", {
-      buses: buses.map((b) => [b.id, b.name]),
-    }).catch(() => {});
-  }, [buses]);
+    if (bootPath === "pending") return;
+    const pairs = buses.map((b) => [b.id, b.name]);
+    const key = JSON.stringify(pairs);
+    const adopt = bootPath === "rejoin" && lastRbsBusesRef.current === null;
+    lastRbsBusesRef.current = key;
+    if (adopt) return;
+    void invoke("rbs_sync_project_buses", { buses: pairs }).catch(() => {});
+  }, [buses, bootPath]);
   // Reconcile host-loaded RBS elements with the registry: load when a
   // path appears / changes, unload when the element goes away. Owned
   // here (not by the panel) so an element's config is on the host even
@@ -3336,13 +3451,26 @@ export function App() {
     () => loggerConfigs(registry.map((e) => e.element)),
     [registry],
   );
+  //
+  // Like the bus-name push above: nothing before the boot has decided,
+  // and a rejoin's first set is the one the host is already running —
+  // an empty set from the mount's defaults would stop every logger
+  // (ADR 0063). A set identical to the last one sent is not re-sent.
+  const lastLoggerPushRef = useRef<string | null>(null);
   useEffect(() => {
-    void invoke("set_loggers", {
+    if (bootPath === "pending") return;
+    const push = {
       loggers,
       project: projectName(projectPath) ?? "capture",
       buses: buses.map((b) => b.id),
-    }).catch(() => {});
-  }, [loggers, buses, projectPath]);
+    };
+    const key = JSON.stringify(push);
+    if (key === lastLoggerPushRef.current) return;
+    const adopt = bootPath === "rejoin" && lastLoggerPushRef.current === null;
+    lastLoggerPushRef.current = key;
+    if (adopt) return;
+    void invoke("set_loggers", push).catch(() => {});
+  }, [loggers, buses, projectPath, bootPath]);
   // Keep every element-backed dockview tab title in lockstep with the
   // model-owned name (ADR 0019): covers rename from the project
   // panel, project open (layouts saved with stale titles), and the
@@ -3697,6 +3825,35 @@ export function App() {
       if (bootOpenRanRef.current) return;
       bootOpenRanRef.current = true;
       void (async () => {
+        // The host says whether it already holds a project (ADR 0063). If
+        // it does, this is a reloaded frontend: rejoin the session as it
+        // stands and open nothing. Only a process launch, which holds
+        // nothing, takes the fresh path below.
+        const status = await fetchSessionStatus();
+        if (status?.held === true) {
+          // Committed at once, effects included, so everything the
+          // applied project sets off — the panels' tab titles synced to
+          // the elements' names, the layout's own change echo, both of
+          // which mark the project dirty — has happened before the host's
+          // dirty flag is set below.
+          flushSync(() => {
+            setBootPath("rejoin");
+            rejoinSession(status);
+          });
+          // The layout change echo lands on a microtask.
+          await new Promise((r) => setTimeout(r, 0));
+          setDirty(status.dirty);
+          setBootSettled(true);
+          void invoke("gui_emit_system_log", {
+            level: "info",
+            source: "startup",
+            message:
+              `startup: rejoined the running session (${status.trace.count} frames, ` +
+              `${status.sessions.length} connected session(s)${status.dirty ? ", unsaved changes" : ""})`,
+          }).catch(() => {});
+          return;
+        }
+        setBootPath("fresh");
         let cfg: AutomationConfig | null = null;
         try {
           cfg = await invoke<AutomationConfig | null>("diag_autostart");
@@ -3763,6 +3920,7 @@ export function App() {
     [
       seedDefaultLayout,
       applyProject,
+      rejoinSession,
       rememberProject,
       dropRecentProject,
       clearGesture,

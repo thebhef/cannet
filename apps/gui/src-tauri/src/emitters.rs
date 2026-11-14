@@ -441,47 +441,58 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
                 Some((from, to)) => collect_trace_records(state.inner(), from, to),
                 None => Vec::new(),
             };
-            #[allow(clippy::cast_precision_loss)]
-            let session_start_seconds = snap
-                .session_started
-                .then(|| session_start_ns as f64 / 1_000_000_000.0);
-            let frames_per_second_by_bus = snap
-                .frames_per_second_by_bus
-                .into_iter()
-                .map(|(bus_id, frames_per_second)| BusFps {
-                    bus_id,
-                    frames_per_second,
-                })
-                .collect();
-            let first_index = snap.first_index as u64;
-            let mem_bytes = crash::last_app_rss();
-            // The bar's numbers are the host's, every one of them
-            // (ADR 0055), so the bus-load figure is computed here beside
-            // the rest rather than folded together in the view — off the
-            // same snapshot, so it describes the same instant they do.
-            let bus_load_percent =
-                crate::bus_health::worst_load_from(&app, &state, &snap.bits_per_second_by_bus);
-            let _ = app.emit(
-                "trace-grew",
-                TraceGrew {
-                    count,
-                    first_index,
-                    first_index_ts_ns: snap.first_index_ts_ns,
-                    frames_per_second,
-                    frames_per_second_rx: snap.frames_per_second_rx,
-                    frames_per_second_tx: snap.frames_per_second_tx,
-                    frames_per_second_by_bus,
-                    bus_load_percent,
-                    frames_dropped_before_session: snap.frames_dropped_before_session,
-                    session_start_seconds,
-                    buffer_seconds: snap.buffer_seconds,
-                    scratch_bytes: snap.scratch_bytes,
-                    mem_bytes,
-                    tail,
-                },
-            );
+            let payload = trace_grew_payload(&app, &state, snap, frames_per_second, tail);
+            let _ = app.emit("trace-grew", payload);
         }
     });
+}
+
+/// The `trace-grew` payload for one store readout: the frontend's whole
+/// picture of the session buffer. The emitter sends it on change; a
+/// reloaded frontend reads the same picture once through
+/// [`crate::session_status`] (ADR 0063), because a stopped capture's
+/// emitter has nothing new to say.
+pub(crate) fn trace_grew_payload(
+    app: &AppHandle,
+    state: &AppState,
+    snap: crate::trace_store::StatusSnapshot,
+    frames_per_second: f64,
+    tail: Vec<crate::ipc::TraceFrameRecord>,
+) -> TraceGrew {
+    #[allow(clippy::cast_precision_loss)]
+    let session_start_seconds = snap
+        .session_started
+        .then(|| snap.session_start_ns as f64 / 1_000_000_000.0);
+    let frames_per_second_by_bus = snap
+        .frames_per_second_by_bus
+        .into_iter()
+        .map(|(bus_id, frames_per_second)| BusFps {
+            bus_id,
+            frames_per_second,
+        })
+        .collect();
+    // The bar's numbers are the host's, every one of them (ADR 0055),
+    // so the bus-load figure is computed here beside the rest rather
+    // than folded together in the view — off the same snapshot, so it
+    // describes the same instant they do.
+    let bus_load_percent =
+        crate::bus_health::worst_load_from(app, state, &snap.bits_per_second_by_bus);
+    TraceGrew {
+        count: u64::try_from(snap.len).unwrap_or(u64::MAX),
+        first_index: snap.first_index as u64,
+        first_index_ts_ns: snap.first_index_ts_ns,
+        frames_per_second,
+        frames_per_second_rx: snap.frames_per_second_rx,
+        frames_per_second_tx: snap.frames_per_second_tx,
+        frames_per_second_by_bus,
+        bus_load_percent,
+        frames_dropped_before_session: snap.frames_dropped_before_session,
+        session_start_seconds,
+        buffer_seconds: snap.buffer_seconds,
+        scratch_bytes: snap.scratch_bytes,
+        mem_bytes: crash::last_app_rss(),
+        tail,
+    }
 }
 
 /// Periodically flush the trace store so its disk-spill segments and

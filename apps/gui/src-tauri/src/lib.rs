@@ -105,6 +105,7 @@ mod server_list;
 mod server_path;
 mod server_trust;
 mod session;
+mod session_status;
 mod settings;
 mod settings_descriptor;
 mod sidecar;
@@ -738,7 +739,7 @@ pub fn run() -> ! {
         .manage(connect_flow::ServerPrompts::default())
         .manage(server_browse::DiscoveredServers::default())
         .manage(diag::DiagState::default())
-        .manage(diag::AutomationState(autostart))
+        .manage(diag::AutomationState::new(autostart.clone()))
         .manage(diag::DiagEnabled(diag_on))
         .manage(logger::LoggerRuntime::default())
         .manage(log_files::LogFileCache::default())
@@ -769,7 +770,7 @@ pub fn run() -> ! {
             trace_windows::get_trace_windows,
             trace_windows::trace_window_control,
             trace_windows::sync_trace_windows,
-            working_project::get_working_project,
+            session_status::session_status,
             working_project::set_working_project,
             project::open_project,
             project::close_project,
@@ -969,6 +970,7 @@ pub fn run() -> ! {
                 filter_index: Mutex::new(None),
                 filter_index_build: Mutex::new(()),
                 import_cancel: Mutex::new(None),
+                import_source: Mutex::new(None),
                 export_cancel: Mutex::new(None),
                 live_tail_rows: std::sync::atomic::AtomicU64::new(0),
                 active_project_id: Mutex::new(None),
@@ -1000,6 +1002,15 @@ pub fn run() -> ! {
             crash::spawn_health_recorder(app.handle().clone());
             spawn_trace_grew_emitter(app.handle().clone());
             spawn_trace_flusher(app.handle().clone());
+            // `--reload-after-secs`: the automation surface's reload
+            // harness (ADR 0031, ADR 0063). Absent on a normal launch.
+            if let Some(reload) = autostart.as_ref().and_then(|c| c.reload) {
+                diag::spawn_reload_harness(
+                    app.handle().clone(),
+                    std::time::Duration::from_secs(reload.after_secs),
+                    reload.prepare,
+                );
+            }
             spawn_clock_status_emitter(app.handle().clone());
             bus_health::spawn_bus_health_emitter(app.handle().clone());
             // Apply the persisted windowed-ring scratch cap (ADR 0002 DS-8)

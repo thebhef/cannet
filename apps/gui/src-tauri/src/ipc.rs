@@ -1486,7 +1486,7 @@ pub struct SubscriptionRecord {
 
 /// Returned from `connect_remote_server` once the gRPC session is up
 /// and the pump thread has been spawned.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Default)]
 pub struct RemoteSessionResult {
     pub address: String,
     pub interfaces: Vec<InterfaceRecord>,

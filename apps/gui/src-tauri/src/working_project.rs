@@ -5,8 +5,9 @@
 //! Host state so the frontend can be torn down and rebuilt without the
 //! project reverting to its file: the frontend pushes its half of the
 //! document ([`set_working_project`]) on every project edit, debounced,
-//! the way it already pushes the working layout (ADR 0032), and
-//! [`get_working_project`] reads it back.
+//! the way it already pushes the working layout (ADR 0032), and a
+//! reloaded frontend reads it back through
+//! [`crate::session_status::session_status`] (ADR 0063).
 //!
 //! **Session-scoped and in memory only**, like the RBS Run flag
 //! (ADR 0028) and the trace windows ([`crate::trace_windows`]). Nothing
@@ -24,7 +25,7 @@
 //!
 //! The open file's path is not stored here either: the disk watch's
 //! record already knows it (set on open and on every save, forgotten on
-//! close), so [`get_working_project`] reads it from there.
+//! close), so [`crate::session_status`] reads it from there.
 //!
 //! Undo history is not carried (ADR 0058's stacks stay in the frontend).
 
@@ -76,7 +77,8 @@ impl From<&Project> for WorkingDocument {
     }
 }
 
-/// What the host holds, as [`get_working_project`] answers it.
+/// What the host holds of the project, as
+/// [`crate::session_status::session_status`] answers it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct WorkingProjectStatus {
     /// Whether the session holds a project at all. `false` only before
@@ -172,16 +174,6 @@ pub(crate) fn set_working_project(
     dirty: bool,
 ) {
     state.working_project.push(document, dirty);
-}
-
-/// What the session holds: whether a project is held, its file, its
-/// working document and dirty flag. In-memory state only, so it is safe
-/// on the IPC thread.
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn get_working_project(state: tauri::State<'_, AppState>) -> WorkingProjectStatus {
-    let path = state.watched_project().path_string();
-    state.working_project.status(path)
 }
 
 #[cfg(test)]

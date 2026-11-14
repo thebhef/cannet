@@ -1315,6 +1315,18 @@ report is written.
   measurement run never needs it spelled out. Ask for it on its own to
   watch the console stream during an interactive session, or to bracket
   a capture by hand from the devtools console.
+- `--reload-after-secs <n>` reloads the window `n` seconds after launch,
+  from the host — the check that a reload changes nothing (ADR 0063)
+  without any input into the desktop. It writes the session's state to
+  the system log before the reload and again 15 s after it (`reload
+  harness: before …` / `after …`: frame count, every trace window,
+  connected sessions, each logger's frames written, running periodics
+  and RBS elements), and whether a send from the page's `pagehide`
+  reached the host. `--reload-prepare` first pauses one view's trace
+  window, stops another's and starts every stopped periodic transmit, so
+  the reload has each kind to keep. The launch's own scenario
+  (`--project`, `--connect-on-start`, …) runs once per process: the
+  reloaded window rejoins the session instead of running it again.
 
 **Read three things before believing a report.** Each names a way this
 harness has passed while measuring nothing:
@@ -1347,6 +1359,7 @@ place. Off unless a flag turns it on:
 | Project auto-open / auto-connect / auto-exit | off | `--project`, `--connect-on-start` |
 | Rest-of-bus simulation Run (the load a measurement run needs) | off — the flag is session state no project carries | `--rbs-run-on-start` |
 | Forced plot show-points mode | off — each panel draws its own saved mode | `--show-points` |
+| Host-issued window reload, with before / after session lines | off | `--reload-after-secs`, `--reload-prepare` |
 | User-scope redirection | off — the real profile | `--app-data-dir` |
 | `tx-flush` / `tx-sched` dev-log lines (stderr only; they never reach the System Messages panel or `cannet.log`) | off — the default log filter excludes both targets, so the lines are never formatted | `RUST_LOG=tx-flush=info,tx-sched=info` |
 | WebView DevTools / remote debugging port | closed — the release build has no inspector | the `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` environment variable, read by the WebView2 runtime (what the screenshot harness sets) |
@@ -1620,6 +1633,18 @@ The session buffer keeps filling underneath regardless.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.)
+
+**Reloading the window changes nothing.** The window is a view onto the
+session the app holds, so reloading it (a black window after a graphics
+driver restart, say) brings it back exactly where it was: still
+connected, loggers still writing, periodic transmits and rest-of-bus
+simulation still running, the frame count carrying on, and every view
+running, paused or stopped as it was. Unsaved project edits come back
+unsaved. What a reload does not keep is undo history and how each view
+was scrolled, expanded or focused — those start fresh, as on opening a
+project. A progress chip for a capture export or a prior-capture restore
+that was running is not shown again; the work itself finishes. See
+[ADR 0063](docs/adr/0063-a-reload-changes-nothing.md).
 
 **Undo / redo.** `Mod+Z` and `Mod+Y` (`Mod+Shift+Z` also works) step
 back and forward through what you've done to your views — not just the

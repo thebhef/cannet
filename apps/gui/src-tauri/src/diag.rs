@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 /// The display refresh budget: a frame is "late" once a synchronous task
 /// overruns ~16.7 ms (60 Hz). Long-task time divided by this estimates
@@ -747,6 +747,26 @@ pub struct AutomationConfig {
     /// anything it does not recognise reads as `auto`, and `None`
     /// leaves each panel's own mode alone.
     pub show_points: Option<String>,
+    /// `--reload-after-secs <n>` (with `--reload-prepare`): the reload
+    /// harness, or `None` when the launch did not ask for it.
+    pub reload: Option<ReloadHarness>,
+}
+
+/// The reload harness a launch asked for: the check that "a reload
+/// changes nothing" (ADR 0063), driven without any input into the
+/// desktop. See [`spawn_reload_harness`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReloadHarness {
+    /// `--reload-after-secs <n>`: reload the main window's webview from
+    /// the host `n` seconds after launch.
+    pub after_secs: u64,
+    /// `--reload-prepare`: just before that reload, put the session in
+    /// the state the check is about — pause the first trace-style
+    /// element's window and stop the second's, so the reload has a
+    /// running, a paused and a stopped window to keep, and start every
+    /// stopped periodic transmit in the project's pool.
+    pub prepare: bool,
 }
 
 impl AutomationConfig {
@@ -760,6 +780,8 @@ impl AutomationConfig {
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Option<Self> {
         let mut cfg = AutomationConfig::default();
         let mut seen = false;
+        let mut reload_after: Option<u64> = None;
+        let mut prepare = false;
         let mut it = args.into_iter();
         it.next(); // argv[0] — the program path
         while let Some(arg) = it.next() {
@@ -800,9 +822,21 @@ impl AutomationConfig {
                     cfg.show_points = it.next();
                     seen = true;
                 }
+                "--reload-after-secs" => {
+                    reload_after = it.next().and_then(|v| v.parse().ok());
+                    seen = true;
+                }
+                "--reload-prepare" => {
+                    prepare = true;
+                    seen = true;
+                }
                 _ => {}
             }
         }
+        cfg.reload = reload_after.map(|after_secs| ReloadHarness {
+            after_secs,
+            prepare,
+        });
         seen.then_some(cfg)
     }
 }
@@ -833,7 +867,7 @@ pub fn diag_enabled_from_args(args: impl IntoIterator<Item = String>) -> bool {
             }
             // Value-taking flags that don't arm anything: skip their value
             // so a project path of `--diag` stays a path.
-            "--project" | "--app-data-dir" | "--show-points" => {
+            "--project" | "--app-data-dir" | "--show-points" | "--reload-after-secs" => {
                 it.next();
             }
             _ => {}
@@ -854,15 +888,190 @@ pub fn diag_enabled(state: State<'_, DiagEnabled>) -> bool {
 }
 
 /// Managed wrapper so the parsed [`AutomationConfig`] (or its absence) can
-/// live in Tauri state and be served to the webview on boot.
-pub struct AutomationState(pub Option<AutomationConfig>);
+/// live in Tauri state and be served to the webview on boot — **once per
+/// process**. The scenario it describes (open, connect, capture, exit) is
+/// the launch's; a frontend reloaded mid-run rejoins the session it left
+/// (ADR 0063) and must not run it again, so the first ask takes it.
+pub struct AutomationState(Mutex<Option<AutomationConfig>>);
+
+impl AutomationState {
+    #[must_use]
+    pub fn new(config: Option<AutomationConfig>) -> Self {
+        Self(Mutex::new(config))
+    }
+
+    /// The config, the first time it is asked for; `None` after that.
+    pub fn take(&self) -> Option<AutomationConfig> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
 
 /// Return the perf self-driving config parsed from the launch args, or
-/// `null` for a normal launch. The webview calls this once on boot.
+/// `null` for a normal launch — and `null` for every boot after the
+/// first, so a reload does not re-run the scenario.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn diag_autostart(state: State<'_, AutomationState>) -> Option<AutomationConfig> {
-    state.0.clone()
+    state.take()
+}
+
+/// The reload harness behind `--reload-after-secs` (ADR 0031's
+/// automation surface; ADR 0063 is the rule it checks): `after` launch,
+/// optionally prepare the session (see [`ReloadHarness::prepare`]),
+/// write the session's state to the
+/// system log, reload the main window's webview, and write it again once
+/// the reloaded frontend has had time to rejoin. The two lines are the
+/// evidence — a reload that changes nothing leaves them equal but for
+/// the frame counts, which only grow.
+///
+/// Before reloading it also installs a `pagehide` listener in the page
+/// that sends one line through the same IPC an un-awaited `invoke` from
+/// a `pagehide` handler uses, so the log says whether such a send
+/// reaches the host on a real reload.
+pub fn spawn_reload_harness(app: AppHandle, after: std::time::Duration, prepare: bool) {
+    let spawned = std::thread::Builder::new()
+        .name("cannet-reload-harness".into())
+        .spawn(move || {
+            std::thread::sleep(after);
+            if prepare {
+                prepare_session(&app);
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            crate::sys_info!(
+                &app,
+                "diag",
+                "reload harness: before {}",
+                session_line(&app)
+            );
+            let Some(window) = app.get_webview_window("main") else {
+                crate::sys_warn!(&app, "diag", "reload harness: no main window to reload");
+                return;
+            };
+            let _ = window.eval(PAGEHIDE_PROBE);
+            if let Err(e) = window.reload() {
+                crate::sys_warn!(&app, "diag", "reload harness: reload failed: {e}");
+                return;
+            }
+            crate::sys_info!(&app, "diag", "reload harness: reload issued");
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            crate::sys_info!(&app, "diag", "reload harness: after {}", session_line(&app));
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "could not spawn the reload harness");
+    }
+}
+
+/// The page-side half of the `pagehide` probe: on teardown, one
+/// un-awaited `invoke`, exactly as the working-project flush sends.
+const PAGEHIDE_PROBE: &str = "window.addEventListener('pagehide', () => { \
+     window.__TAURI_INTERNALS__.invoke('gui_emit_system_log', \
+     { level: 'info', source: 'diag', message: 'reload harness: pagehide send reached the host' }); });";
+
+/// Pause the first trace-style element's window and stop the second's,
+/// in the working document's element order, through the same host
+/// arithmetic the run controls use; then start every stopped periodic
+/// transmit in the project's pool, through the command the transmit
+/// panel's Start sends.
+fn prepare_session(app: &AppHandle) {
+    let state = app.state::<crate::app_state::AppState>();
+    let ids: Vec<String> = state
+        .working_project
+        .status(None)
+        .document
+        .map(|d| {
+            d.elements
+                .iter()
+                .filter(|e| matches!(e["kind"].as_str(), Some("trace" | "plot")))
+                .filter_map(|e| e["id"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let n = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
+    let controls = [
+        crate::trace_windows::TraceControl::Pause,
+        crate::trace_windows::TraceControl::Stop,
+    ];
+    for (id, control) in ids.iter().zip(controls) {
+        crate::trace_windows::update(app, |map| {
+            crate::trace_windows::control(map, id, control, n)
+        });
+    }
+    let stopped: Vec<String> = state
+        .transmit_frames()
+        .list()
+        .into_iter()
+        .filter(|f| !f.running)
+        .map(|f| f.frame.id)
+        .collect();
+    let mut started = 0usize;
+    for id in &stopped {
+        match crate::transmit_commands::start_periodic_transmit(
+            app.clone(),
+            app.state(),
+            id.clone(),
+        ) {
+            Ok(()) => started += 1,
+            Err(e) => crate::sys_warn!(app, "diag", "reload harness: could not start {id}: {e}"),
+        }
+    }
+    crate::sys_info!(
+        app,
+        "diag",
+        "reload harness: paused {:?}, stopped {:?}, started {} periodic(s)",
+        ids.first(),
+        ids.get(1),
+        started
+    );
+}
+
+/// One line of what a reload must not change: the buffer's count, every
+/// trace window, the connected sessions, each logger's writing state and
+/// frame count, the running periodics and the running RBS elements.
+fn session_line(app: &AppHandle) -> String {
+    let state = app.state::<crate::app_state::AppState>();
+    let count = state.trace_store.len();
+    let windows: Vec<String> = state
+        .trace_windows
+        .snapshot()
+        .iter()
+        .map(|(id, w)| {
+            let end = w
+                .end
+                .map_or_else(|| "running".to_owned(), |e| e.to_string());
+            let paused = if w.is_paused { " paused" } else { "" };
+            format!("{id}={}..{end}{paused}", w.start)
+        })
+        .collect();
+    let mut sessions: Vec<String> = state.remote_sessions().keys().cloned().collect();
+    sessions.sort();
+    let loggers: Vec<String> = app
+        .state::<crate::logger::LoggerRuntime>()
+        .statuses()
+        .iter()
+        .map(|l| {
+            let writing = if l.writing { "writing" } else { "idle" };
+            format!("{}:{writing}:{}", l.id, l.frame_count)
+        })
+        .collect();
+    let periodics = state
+        .transmit_frames()
+        .list()
+        .iter()
+        .filter(|f| f.running)
+        .count();
+    let rbs_running = state.rbs().elements.values().filter(|e| e.run).count();
+    let held = state.working_project.status(None);
+    format!(
+        "count={count} windows=[{}] sessions={sessions:?} loggers=[{}] \
+         periodics_running={periodics} rbs_running={rbs_running} project_held={} dirty={}",
+        windows.join(" "),
+        loggers.join(" "),
+        held.held,
+        held.dirty
+    )
 }
 
 /// Exit the process with `code`. The webview has no other way to set a
@@ -1315,5 +1524,44 @@ mod tests {
         let cfg = AutomationConfig::from_args(args(&["cannet", "--perf-capture-secs", "soon"]))
             .expect("flag arms autostart");
         assert_eq!(cfg.capture_secs, None);
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        std::iter::once("cannet-gui")
+            .chain(list.iter().copied())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A reloaded frontend boots again and asks again; it must not be
+    /// handed the launch's scenario a second time (ADR 0063).
+    #[test]
+    fn the_autostart_is_handed_out_once_per_process() {
+        let state =
+            AutomationState::new(AutomationConfig::from_args(args(&["--connect-on-start"])));
+        assert!(
+            state.take().is_some(),
+            "the launch's boot gets the scenario"
+        );
+        assert!(state.take().is_none(), "a reload's boot does not");
+    }
+
+    #[test]
+    fn the_reload_harness_flags_arm_autostart_and_not_diag() {
+        let a = args(&["--reload-after-secs", "30", "--reload-prepare"]);
+        let cfg = AutomationConfig::from_args(a.clone()).expect("flags arm autostart");
+        assert_eq!(
+            cfg.reload,
+            Some(ReloadHarness {
+                after_secs: 30,
+                prepare: true
+            })
+        );
+        assert!(!diag_enabled_from_args(a));
     }
 }

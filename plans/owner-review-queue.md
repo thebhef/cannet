@@ -74,6 +74,13 @@ keeps the queue's copy). This file shrinks every time it is walked.
   raced two in-flight commands. Accept, or want New to leave them
   stopped? Detail: 0143 § Status log, 2026-11-14 phase 2.
 
+- **A reload does not bring back four transient things**: an export's
+  and a prior-capture restore's progress chips, a pending "project
+  changed on disk" notice, and the last import's done / error notice
+  (and its file name in the title). The work itself is unaffected.
+  Each needs a small host fact; fold into a later task, or accept?
+  Detail: 0143 § Blockers / side effects.
+
 ## 2. Fix on this stack (owner-ordered 2026-09-16)
 
 - Bring `plans/release-notes.md` up to date with everything on the
