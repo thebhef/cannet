@@ -338,6 +338,16 @@ the second pass, and the two differ in what they have produced when
 they are cancelled: a census has produced nothing, an import has
 frames in the store.
 
+**Working project**:
+The open project as the user has it right now, saved or not — what Save
+would write — and whether it is **dirty** (has changes the file lacks).
+The frontend pushes its half (layout, elements, buses, bindings, DBC
+list, local virtual buses, signal colours) to the host on each edit; the
+host's own registries (transmit pool, math signals, signal database
+picks and units) stay the source for the rest. Session state in memory;
+the project file changes only on Save.
+_Avoid_: "the project" when the file on disk is meant.
+
 ### Transmit
 
 **Calculated field**:

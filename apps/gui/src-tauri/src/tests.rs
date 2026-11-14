@@ -759,6 +759,7 @@ pub(crate) fn test_state() -> AppState {
         math_model: Mutex::new(None),
         project_bus_names: Mutex::new(Vec::new()),
         trace_windows: crate::trace_windows::TraceWindows::default(),
+        working_project: crate::working_project::WorkingProject::default(),
         databases: Mutex::new(Vec::new()),
         descriptor_snapshot: Mutex::new(None),
         split_messages: Mutex::new(None),
