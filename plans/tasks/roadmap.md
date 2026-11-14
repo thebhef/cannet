@@ -83,13 +83,6 @@ started.
     — the collection point for small owner-reported fixes that belong
     to no open task; currently: hex displays preserve leading zeros.
     Opened by owner instruction 2026-09-03.
-13. [Task 143 — A Webview Reload Rejoins the Running Session](0143-reload-rejoins-the-session.md)
-    — a reload today re-runs the fresh-host boot (stops loggers, RBS
-    and periodic TX; swaps the raw store under a live pump); make it
-    rejoin the host's session instead, then let the health recorder
-    reload a window whose renderer has stopped heartbeating (the
-    black screen from the six-day ll16 capture). Opened by owner
-    ruling 2026-09-15; the WebView2 `ProcessFailed` hook is backlogged.
 
 ## Beyond 0.10.x — feature rework and architecture
 

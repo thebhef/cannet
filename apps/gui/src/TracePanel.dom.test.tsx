@@ -636,6 +636,38 @@ describe("TracePanel run controls", () => {
   });
 });
 
+describe("TracePanel All Data", () => {
+  it("widens a stopped window to the whole session buffer", () => {
+    const { Provider, control } = makeLiveRegistry([
+      { kind: "trace", id: "t1", sources: ["*"] } as ProjectElement,
+    ]);
+    const props = {
+      params: { elementId: "t1" },
+      api: { updateParameters: vi.fn() },
+    } as unknown as Parameters<typeof TracePanel>[0];
+    const { container } = render(
+      <TraceDataProvider value={traceData}>
+        <ProjectContext.Provider value={projectCtx}>
+          <Provider>
+            <TracePanel {...props} />
+          </Provider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+    const chip = (name: string) =>
+      [...container.querySelectorAll<HTMLButtonElement>(".trace-panel-toolbar button")].find(
+        (x) => x.getAttribute("aria-label") === name,
+      );
+    // Clear then Stop leaves a stopped, empty window at the buffer's tail.
+    fireEvent.click(chip("Clear")!);
+    fireEvent.click(chip("Stop")!);
+    expect(control.entries()[0].trace.start).toBe(traceData.count);
+    fireEvent.click(chip("All Data")!);
+    const state = control.entries()[0].trace;
+    expect(state).toEqual({ start: 0, end: traceData.count, isPaused: false });
+  });
+});
+
 describe("TracePanel event kinds", () => {
   const notesCtx = (notes: Note[]): NotesContextValue => ({
     notes,

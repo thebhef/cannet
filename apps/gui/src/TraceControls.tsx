@@ -9,13 +9,11 @@ interface TraceControlsProps {
   onPause: () => void;
   onResume: () => void;
   onClear: () => void;
-  /// Widen the window to the whole session buffer, beside Clear —
-  /// renders an "All Data" chip only when supplied. Currently only
-  /// the plot passes it (post-DBC-reload recovery: Clear collapses the
-  /// window for a cheap signal re-pick, All Data widens back out for
-  /// one full-history resample); the other trace-style views don't
-  /// need it.
-  onAllData?: () => void;
+  /// Widen the window to the whole session buffer, beside Clear.
+  /// Clear collapses the window to now; All Data is its way back out,
+  /// so every trace-style view offers both. The plot's handler also
+  /// fits its x axis.
+  onAllData: () => void;
 }
 
 /**
@@ -53,14 +51,12 @@ export function TraceControls({
         )}
         <ChipButton icon="clear" ariaLabel="Clear" title="Clear" onPress={onClear} />
       </ChipSegment>
-      {onAllData && (
-        <ChipButton
-          label="All Data"
-          ariaLabel="All Data"
-          title="widen the window to the whole session buffer and fit the x-axis to it"
-          onPress={onAllData}
-        />
-      )}
+      <ChipButton
+        label="All Data"
+        ariaLabel="All Data"
+        title="widen the window to the whole session buffer"
+        onPress={onAllData}
+      />
       <span className={`trace-status trace-status-${status}`}>{status}</span>
     </span>
   );

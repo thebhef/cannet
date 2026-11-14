@@ -1053,6 +1053,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           onPause={trace.pause}
           onResume={trace.resume}
           onClear={trace.clear}
+          onAllData={trace.allData}
         />
         <ChipButton
           label={`Selection (${selection.keys.length}${

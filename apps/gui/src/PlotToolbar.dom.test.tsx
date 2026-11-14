@@ -103,7 +103,7 @@ function renderBar(over: Partial<PlotToolbarProps> = {}): Spies {
 const BAR: readonly [string, string][] = [
   ["Start", "Start"],
   ["Clear", "Clear"],
-  ["All Data", "widen the window to the whole session buffer and fit the x-axis to it"],
+  ["All Data", "widen the window to the whole session buffer"],
   ["Fit Data", "fit x axis to the data"],
   ["Fit Y", "fit each y axis to its visible data"],
   ["Ignore Manual Axes", "ignore manual y bounds"],
