@@ -782,6 +782,7 @@ pub(crate) fn test_state() -> AppState {
         filter_index: Mutex::new(None),
         filter_index_build: Mutex::new(()),
         import_cancel: Mutex::new(None),
+        import_source: Mutex::new(None),
         export_cancel: Mutex::new(None),
         live_tail_rows: std::sync::atomic::AtomicU64::new(0),
         active_project_id: Mutex::new(None),
@@ -790,6 +791,11 @@ pub(crate) fn test_state() -> AppState {
         signal_dbc_picks: Mutex::new(std::sync::Arc::default()),
         signal_units: Mutex::new(std::sync::Arc::default()),
     }
+}
+
+/// [`seam_session`] with no participants, for other modules' tests.
+pub(crate) fn seam_session_for_status() -> RemoteSession {
+    seam_session(Vec::new())
 }
 
 /// A minimal vbus-flavoured session for exercising the session-map
@@ -807,6 +813,7 @@ fn seam_session(
         controllers: None,
         rejections: None,
         peer: None,
+        joined: crate::session::SessionJoin::default(),
     }
 }
 
@@ -2523,6 +2530,7 @@ fn an_accepted_send_appends_no_row() {
             controllers: None,
             rejections: None,
             peer: None,
+            joined: crate::session::SessionJoin::default(),
         },
     );
     let req = ipc::TransmitRequest {
@@ -2685,6 +2693,7 @@ fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
         controllers: None,
         rejections: None,
         peer: None,
+        joined: crate::session::SessionJoin::default(),
     };
     state
         .remote_sessions
@@ -2847,6 +2856,7 @@ fn the_tx_rate_is_fed_by_ingested_echoes() {
             controllers: None,
             rejections: None,
             peer: None,
+            joined: crate::session::SessionJoin::default(),
         },
     );
     let req = ipc::TransmitRequest {
@@ -2954,6 +2964,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
         controllers: None,
         rejections: None,
         peer: None,
+        joined: crate::session::SessionJoin::default(),
     };
     state
         .remote_sessions
@@ -6711,6 +6722,7 @@ fn bench_tx_vbus_real_path() {
         controllers: None,
         rejections: None,
         peer: None,
+        joined: crate::session::SessionJoin::default(),
     };
     state
         .remote_sessions
@@ -8765,6 +8777,7 @@ fn session_with_controller(bus: &str, interface: &str, state: Option<i32>) -> Re
         controllers: Some(controllers),
         rejections: None,
         peer: None,
+        joined: crate::session::SessionJoin::default(),
     }
 }
 
@@ -8864,6 +8877,7 @@ fn an_interface_that_comes_back_gets_its_route_back() {
             controllers: Some(controllers.clone()),
             rejections: None,
             peer: None,
+            joined: crate::session::SessionJoin::default(),
         },
     );
     assert!(crate::session::resolve_bus_route(&sessions, "p").is_none());
@@ -9576,6 +9590,7 @@ fn peer_session(iface: &str, bus: &str, tx: SessionTx) -> (RemoteSession, sessio
             controllers: None,
             rejections: None,
             peer: Some(kept),
+            joined: crate::session::SessionJoin::default(),
         },
         handles,
     )
@@ -9937,6 +9952,7 @@ fn a_full_request_channel_misses_its_buses_periods_and_stalls_no_other_bus() {
             controllers: None,
             rejections: None,
             peer: None,
+            joined: crate::session::SessionJoin::default(),
         },
     );
     running_row(&state, "on-stuck", "stuck", 0x100);
@@ -10004,5 +10020,35 @@ fn a_late_tick_counts_the_whole_periods_it_skipped() {
     assert_eq!(
         transmit_commands::periods_skipped(base, base + p * 10, p),
         9
+    );
+}
+
+/// A connected bus is writing into the store, so a restore must not swap
+/// it: it answers from the live store and leaves the frames, the windows
+/// and the store identity untouched (ADR 0063).
+#[test]
+fn restore_answers_from_the_live_store_while_a_bus_is_connected() {
+    let state = test_state();
+    state.trace_store.append(dummy_frame(1_000, 0x123));
+    state.trace_store.append(dummy_frame(2_000, 0x124));
+    assert!(
+        crate::capture::live_store_answer(&state).is_none(),
+        "nothing connected: the restore runs as before"
+    );
+    state
+        .register_session("addr".into(), seam_session(Vec::new()))
+        .unwrap();
+    let live = crate::capture::live_store_answer(&state).expect("a connected bus refuses the swap");
+    assert_eq!(live.count, 2);
+    assert_eq!(state.trace_store.len(), 2, "the live frames stay");
+    drop(state.unregister_sessions(None));
+    *state.import_source() = Some(crate::capture::ImportSource::Blf(
+        crate::ipc::OpenLogResult {
+            blf_path: "x.blf".into(),
+        },
+    ));
+    assert!(
+        crate::capture::live_store_answer(&state).is_some(),
+        "an import pump writing refuses it too"
     );
 }

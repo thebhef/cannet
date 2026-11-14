@@ -28,7 +28,7 @@ use crate::{sys_error, sys_info, sys_warn};
 /// count + bus scoping), in priority order. Returned from `add_dbc` /
 /// `remove_dbc` / `set_dbc_buses` so the frontend always gets the
 /// authoritative set after a change.
-fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
+pub(crate) fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
     state
         .databases()
         .iter()

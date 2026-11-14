@@ -409,6 +409,15 @@ open / close). Session state the host holds per element; never saved,
 and the views only mirror it.
 _Avoid_: "window" for the visible rows a view has paged in.
 
+**Rejoin**:
+What a frontend boot does when the host already holds a project: it
+takes up the session as it stands — the working project, the trace
+windows, the connection, the loggers and the simulation untouched —
+instead of opening the project file again. Only a process launch, which
+holds nothing, opens; every reload rejoins (ADR 0063).
+_Avoid_: "reconnect" (the connection never dropped), "restore" (that
+is a relaunch bringing a prior capture back, ADR 0002 DS-7).
+
 **Events panel**:
 The view of the timeline events alone: **one list, oldest first**, of
 the authored events (notes and message-bound comments), the

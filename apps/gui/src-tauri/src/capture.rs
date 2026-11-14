@@ -420,6 +420,7 @@ pub(crate) async fn open_log(
     // whichever way.
     let cancel = Arc::new(AtomicBool::new(false));
     *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
+    *app.state::<AppState>().import_source() = Some(ImportSource::Blf(result.clone()));
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
@@ -445,6 +446,7 @@ pub(crate) async fn open_log(
             // This pump is done — cleanly, cancelled, or panicked —
             // so nothing should be able to cancel it again.
             *app_for_thread.state::<AppState>().import_cancel() = None;
+            *app_for_thread.state::<AppState>().import_source() = None;
             let mut anchor = match result {
                 Ok(anchor) => anchor,
                 Err(payload) => {
@@ -481,6 +483,17 @@ pub(crate) async fn open_log(
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
     Ok(result)
+}
+
+/// The file an import pump is reading right now, in the shape the import
+/// command answered with — what a reloaded frontend needs to show the
+/// load it did not start (ADR 0063). Held in
+/// [`AppState::import_source`] from the pump's spawn to its end.
+#[derive(serde::Serialize, Clone)]
+#[serde(untagged)]
+pub(crate) enum ImportSource {
+    Blf(OpenLogResult),
+    Mdf(ImportMdfResult),
 }
 
 /// Whether the import that has just ended was cancelled rather than
@@ -2375,6 +2388,7 @@ pub(crate) async fn import_mdf(
     // spawns, checked by `run_pump`'s loop, cleared once the pump ends.
     let cancel = Arc::new(AtomicBool::new(false));
     *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
+    *app.state::<AppState>().import_source() = Some(ImportSource::Mdf(result.clone()));
     let cancelled_probe = Arc::clone(&cancel);
 
     let app_for_thread = app.clone();
@@ -2475,6 +2489,7 @@ pub(crate) async fn import_mdf(
             // This pump is done — cleanly, cancelled, or panicked — so
             // nothing should be able to cancel it again.
             *app_for_thread.state::<AppState>().import_cancel() = None;
+            *app_for_thread.state::<AppState>().import_source() = None;
             if let Err(payload) = result {
                 let msg = format!("load failed: {}", panic_message(payload.as_ref()));
                 sys_error!(&app_for_thread, "mdf-import", "{msg}");
@@ -2987,7 +3002,7 @@ pub(crate) fn clear_trace_store_now(app: &AppHandle, state: &AppState) {
 /// was restored.
 #[derive(serde::Serialize, Clone, Copy)]
 pub struct RestoredCapture {
-    count: u64,
+    pub(crate) count: u64,
     /// Windowed-ring low-water mark of the reloaded store (ADR 0002 DS-8):
     /// non-zero when the prior capture was evicted before exit, so the
     /// restored chronological view clamps to `[first_index, count)`.
@@ -3034,6 +3049,34 @@ pub(crate) fn signal_pyramids_rebuilding(state: State<'_, AppState>) -> RebuildP
     pyramids_rebuilding_now(&state)
 }
 
+/// The restore's answer while something is writing into the store — a
+/// bus connected or an import pump running — or `None` when nothing is.
+///
+/// Swapping the store then would throw away what the live session is
+/// appending, so the restore leaves the store, its pyramids and every
+/// trace window alone and answers with the store as it stands. A fresh
+/// boot never meets this (nothing is connected before the first open);
+/// it guards a frontend reload, whose boot does not ask for a restore
+/// at all (ADR 0063).
+pub(crate) fn live_store_answer(state: &AppState) -> Option<RestoredCapture> {
+    let live = !state.remote_sessions().is_empty() || state.import_source().is_some();
+    if !live {
+        return None;
+    }
+    let (count, first_index, first_index_ts_ns) = state.trace_store.len_and_low_water();
+    #[allow(clippy::cast_precision_loss)]
+    Some(RestoredCapture {
+        count: u64::try_from(count).unwrap_or(u64::MAX),
+        first_index: first_index as u64,
+        first_index_ts_ns,
+        session_start_seconds: state
+            .trace_store
+            .session_started()
+            .then(|| state.trace_store.session_start_ns() as f64 / 1_000_000_000.0),
+        pyramids_rebuilding: pyramids_rebuilding_now(state).rebuilding,
+    })
+}
+
 /// Reload the prior disk-spill capture as a stopped historical trace, if
 /// one belongs to the open project (ADR 0002 DS-7). The frontend calls
 /// this *after* `open_project` has applied the project and cleared the
@@ -3063,6 +3106,15 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
 
 fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
     let state: State<'_, AppState> = app.state();
+    if let Some(live) = live_store_answer(&state) {
+        sys_info!(
+            &app,
+            "project",
+            "prior capture not restored: a bus is connected or an import is running, so the live capture ({} frames) stands",
+            live.count
+        );
+        return live;
+    }
     let started = std::time::Instant::now();
     let active = *state.active_project_id();
     let reporter = RestoreReporter::new(|p| {

@@ -188,6 +188,12 @@ pub(crate) struct AppState {
     /// guard ever allows to run at a time. `cancel_import` flips
     /// whichever flag is here; a call with nothing importing is a no-op.
     pub(crate) import_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// The file the import pump in flight is reading, or `None` when no
+    /// pump runs (a census, which also fills [`Self::import_cancel`],
+    /// leaves this empty). Set and cleared beside the pump's cancel
+    /// flag; read by [`crate::session_status`] so a reloaded frontend
+    /// still shows the load (ADR 0063).
+    pub(crate) import_source: Mutex<Option<crate::capture::ImportSource>>,
     /// Cooperative cancel flag for the single capture export in flight
     /// right now (`save_capture`'s spawned thread), or `None` when
     /// nothing is exporting. Its own slot rather than a share of
@@ -418,6 +424,12 @@ impl AppState {
         self.import_cancel
             .lock()
             .expect("import_cancel mutex poisoned")
+    }
+
+    pub(crate) fn import_source(&self) -> MutexGuard<'_, Option<crate::capture::ImportSource>> {
+        self.import_source
+            .lock()
+            .expect("import_source mutex poisoned")
     }
 
     pub(crate) fn export_cancel(&self) -> MutexGuard<'_, Option<Arc<AtomicBool>>> {

@@ -1304,6 +1304,7 @@ BO_ 1280 AuxFrame: 8 AUX
                     controllers: None,
                     rejections: None,
                     peer: None,
+                    joined: crate::session::SessionJoin::default(),
                 },
             )
             .unwrap();

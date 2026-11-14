@@ -91,6 +91,19 @@ pub(crate) struct RemoteSession {
     /// and what the host configured on it. `None` for the in-process
     /// backend.
     pub(crate) peer: Option<RemotePeer>,
+    /// What the connect answered and what it was asked to apply, kept
+    /// for the session's life so a frontend that reloads mid-session can
+    /// read its connection back instead of losing it (ADR 0063).
+    pub(crate) joined: SessionJoin,
+}
+
+/// One session as a reloaded frontend rejoins it: the answer
+/// `connect_remote_server` gave, and the bindings — with the hardware
+/// configuration each asked for — it was connected with.
+#[derive(Clone, Default, serde::Serialize)]
+pub(crate) struct SessionJoin {
+    pub(crate) result: RemoteSessionResult,
+    pub(crate) bindings: Vec<InterfaceBusBinding>,
 }
 
 /// What a remote session's peer reports beside its frames (ADR 0060),
@@ -295,7 +308,7 @@ impl AppState {
 /// underlying controller is reopened at the requested rate / mode.
 /// Omitting both leaves the sidecar on its driver default
 /// (typically classic, 500 kbps).
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct InterfaceBusBinding {
     pub interface: String,
@@ -736,6 +749,17 @@ pub(crate) async fn connect_remote_server(
     // session owns the original — the value is known here, so clone it
     // instead of re-reading the just-inserted entry under a second lock.
     let pump_channel_to_bus = channel_to_bus.clone();
+    let result = RemoteSessionResult {
+        address: address.clone(),
+        subscriptions: subscriptions
+            .iter()
+            .map(|s| ipc::SubscriptionRecord {
+                interface_id: s.interface_id.clone(),
+                channel: s.channel,
+            })
+            .collect(),
+        interfaces: interfaces.into_iter().map(InterfaceRecord::from).collect(),
+    };
     register_session_or_warn(
         &app,
         &state,
@@ -753,6 +777,10 @@ pub(crate) async fn connect_remote_server(
             controllers: Some(controllers),
             rejections: Some(rejections),
             peer: Some(peer),
+            joined: SessionJoin {
+                result: result.clone(),
+                bindings: binding_lookup.clone(),
+            },
         },
     )
     .inspect_err(|e| fail_subscribed(&app, e))?;
@@ -805,17 +833,7 @@ pub(crate) async fn connect_remote_server(
         n = subscriptions.len(),
     );
 
-    Ok(RemoteSessionResult {
-        address,
-        subscriptions: subscriptions
-            .iter()
-            .map(|s| ipc::SubscriptionRecord {
-                interface_id: s.interface_id.clone(),
-                channel: s.channel,
-            })
-            .collect(),
-        interfaces: interfaces.into_iter().map(InterfaceRecord::from).collect(),
-    })
+    Ok(result)
 }
 
 /// Open an in-process session against a `local-vbus://<id>` address.
@@ -910,6 +928,14 @@ fn connect_local_vbus(
             controllers: None,
             rejections: None,
             peer: None,
+            joined: SessionJoin {
+                result: RemoteSessionResult {
+                    address: address.clone(),
+                    subscriptions: subscriptions.clone(),
+                    interfaces: Vec::new(),
+                },
+                bindings: binding_lookup.to_vec(),
+            },
         },
     )?;
 

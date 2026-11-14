@@ -136,25 +136,25 @@ required and the trace panel and the signals panel pass
 
 - [x] The trace panel and the signals panel show All Data; pressing it
       on a stopped view shows the whole session buffer (DOM tests).
-- [ ] Trace windows are host state: run controls round-trip through
+- [x] Trace windows are host state: run controls round-trip through
       the host, the frontend holds only a mirror, and the window
       arithmetic has host tests. No `trace.ts` arithmetic remains that
       the host also has.
-- [ ] A reload leaves the session connected, every logger writing,
+- [x] A reload leaves the session connected, every logger writing,
       periodic transmits and RBS elements running, the trace count
       continuous, and every element's trace window as it was — running
       stays running, paused stays paused, stopped stays stopped. DOM
       tests for the rejoin branch of the boot; host test for
       `session_status`.
-- [ ] A reload with unsaved edits keeps them and stays dirty; a reload
+- [x] A reload with unsaved edits keeps them and stays dirty; a reload
       while disconnected keeps the capture and the trace windows.
-- [ ] `restore_scratch_capture` never swaps the store while a bus is
+- [x] `restore_scratch_capture` never swaps the store while a bus is
       connected (host test).
-- [ ] Checked on CAN hardware: connected, a logger writing, a periodic
+- [x] Checked on CAN hardware: connected, a logger writing, a periodic
       transmit running, one view paused and one stopped — reload, and
       nothing changes.
-- [ ] A perf reading at the phase-4 tip, recorded.
-- [ ] The ADR is written; README's behaviour notes match what ships.
+- [x] A perf reading at the phase-4 tip, recorded.
+- [x] The ADR is written; README's behaviour notes match what ships.
 - [ ] *(phase 5)* A stalled heartbeat past the bound triggers exactly
       one reload per episode, logged; the verdict is a pure, tested
       function beside `ui_liveness`; `crash.rs` module docs match.
@@ -293,3 +293,167 @@ required and the trace panel and the signals panel pass
     `--app-data-dir`) has `winw` 0 and scroll_jank_px 81 863; runs 2–3
     have `winw` 0.8 and 289 / 241, in phase 2's band — the same split
     earlier reports show between `winw` 0 and non-zero runs.
+- **2026-11-14, phase 4 (branch `task143-rejoin`).** A reload changes
+  nothing: the boot asks `session_status` first and, when the host holds
+  a project, rejoins it (ADR 0063). Verified on CAN hardware (below).
+  - Host: `session_status.rs` — one async command (it reads the trace
+    store's lock) answering `held` / `path` / `document` / `dirty`
+    (phase 3's status, flattened; `get_working_project` removed), the
+    buffer's `trace-grew` picture (`emitters::trace_grew_payload`,
+    factored out of the emitter), the connected sessions as their
+    connects answered (`RemoteSession::joined` — the connect's result
+    plus the bindings it was given), the loaded DBC set, whether a
+    pyramid rebuild is owed, and the import in flight
+    (`AppState::import_source`, set and cleared beside the pump's
+    cancel flag). `restore_scratch_capture` answers from the live store
+    while a session is registered or an import pump runs
+    (`capture::live_store_answer`). `diag_autostart` is one-shot per
+    process (`AutomationState::take`).
+  - Frontend: `applyProject` split into `applyProjectFields` /
+    `applyProjectView` (frontend state only) + the fresh path's host
+    steps; `rejoinSession` uses the same two, then the host's answers.
+    The boot runs the rejoin under `flushSync` and sets the host's dirty
+    flag after the layout echo — without it the tab-title sync
+    (`panel.api.setTitle`, a layout change) committed after the flag and
+    marked a clean project dirty (DOM test failed 4 runs of 5; 10 of 10
+    pass with it). The working document's layout is applied (fresher
+    than `.cannet/state.json`'s, which the dock restores first and the
+    rejoin replaces).
+  - Three mount-time pushes reset host state on a reload and are now
+    gated on the boot's decision (`bootPath`), a rejoin adopting its
+    first set as already sent: `sync_trace_windows` (the empty id set —
+    phase 2's hazard; gated on `bootSettled`), **`set_loggers` with no
+    loggers, which stopped every logger**, and `rbs_sync_project_buses`
+    with no buses, which re-resolved every running RBS element. The
+    RBS reconciler is seeded with the rejoined elements, so it neither
+    `rbs_load`s (re-reading the file over unsaved overrides) nor
+    `rbs_init`s them. `set_loggers` is now also not re-sent when its
+    content is unchanged (fresh path too; the host plan was idempotent).
+  - Audit — frontend state built from the host session, and where a
+    rejoin gets it:
+
+    | State | Fresh boot | Rejoin | Pinned by |
+    |---|---|---|---|
+    | count, first index (+ts), session origin, fps, bus load, buffer s, scratch / mem, live tail | restore answer, then `trace-grew` | `session_status.trace` → `applyTraceGrew`, then `trace-grew` | `App.rejoin` (5,000 / 7,300 shown), hardware |
+    | `state` kind `loading` (import in flight) | the import handlers | `session_status.importing` | `App.rejoin` import case; `session_status` host test |
+    | `state` `done` / `error` | `log-finished`, errors | not carried | transient notices (in the system log); filed below |
+    | remote sessions map (status line, title, connected buses) | connect answers | `session_status.sessions[].result` | `App.rejoin` title; `sessionStatus.test.ts`; host test |
+    | hardware config at connect (pending-change banner) | connect args | `sessions[].bindings` | `sessionStatus.test.ts`; host test |
+    | connection states | mirror (`get_connection_states`) | same mirror | existing `connectionStates` tests |
+    | loaded DBC paths + scoping | `loadDbcSet` answers | `session_status.dbcs` | `App.rejoin` (pushed document's `dbcs`) |
+    | buses, bindings, virtual buses, colours, elements, layout, path, dirty | `open_project` | working document | `App.rejoin` |
+    | trace windows | mirror + sync | mirror; sync gated | `App.rejoin` (running / paused / stopped kept; no dropping id set; mutation caught) |
+    | transmit frames, running periodics | `TransmitPanel` mirror | same mirror | hardware `periodics_running=1` both sides |
+    | RBS loaded / running | reconciler `rbs_load` + `rbs_view` mirror | reconciler seeded, mirror | `App.rejoin` (`rbs_load` 0; mutation caught), hardware |
+    | logger statuses | `LoggerPanel` mirror; `set_loggers` push | mirror; push adopted | `App.rejoin` (`set_loggers` 0; mutation caught), hardware |
+    | RBS bus names | push on `buses` | adopted | `App.rejoin` |
+    | notes, math signals, system log, sidecar, bus health, view signals | mount reads + events | same | existing tests; no change |
+    | pyramid rebuild chip | restore answer | `session_status.pyramids_rebuilding` | `App.rejoin` chip case |
+    | import load progress | `load-progress` | same events, still arriving | none needed: event-only, no state to read |
+    | restore progress chip | `restore-progress` | **not shown** | filed below |
+    | export progress chip | `export-progress` | **not shown**; `export-finished` still shows "Exported" | filed below |
+    | "project changed on disk" notice | `project-changed` | **not raised again** | filed below |
+    | automation scenario | `diag_autostart` | `null` (one-shot) | `diag::reload_tests` |
+    | undo history, focus history, scroll / expansion | — | start fresh | by ruling |
+
+  - `pagehide`: the harness installs a `pagehide` listener that sends
+    one un-awaited `invoke` (what the working-project flush does) and
+    then reloads; the host logged it 20 ms and 39 ms after issuing the
+    reload, in both hardware runs. The flush reaches the host on
+    WebView2; the 300 ms debounce bounds only a renderer that dies
+    without `pagehide`. ADR 0063 says so.
+  - Reload harness (ADR 0031 surface): `--reload-after-secs <n>` reloads
+    the main window via `WebviewWindow::reload` (tauri 2.11.1) and logs
+    a `before` / `after` session line; `--reload-prepare` pauses the
+    working document's first trace/plot window, stops the second and
+    starts every stopped periodic transmit.
+  - Hardware (PCAN ×2, ev-zonal plus a logger element and one 100 ms
+    periodic, `--connect-on-start --rbs-run-on-start --reload-after-secs
+    40 --reload-prepare`, release build):
+
+    | | before reload | after (+15 s) |
+    |---|---|---|
+    | count | 107 625 | 152 371 (rejoin read 108 437) |
+    | windows | `chrono` 0..101706 paused, `byid-pack` 0..101706 stopped, 10 running | identical |
+    | sessions | `127.0.0.1:57289` | same |
+    | logger | writing, 107 456 frames, `run-002.blf` 671 728 B | writing, 151 833 frames, same file 963 940 B |
+    | periodics / RBS running | 1 / 1 | 1 / 1 |
+    | dirty | true | true |
+
+    No `opened project`, `restored … frames`, `logging to` or RBS line
+    after the reload; the only lines are the harness's, the `pagehide`
+    probe and `startup: rejoined the running session (108437 frames, 1
+    connected session(s), unsaved changes)`. Paused / stopped were set
+    through the host's window arithmetic by `--reload-prepare`, not by
+    input. Not checked by hand: the views' rendering after the reload
+    (no screenshots taken — no UI automation on this machine).
+  - Tests: host `session_status::tests` (6), `restore_answers_from_the_
+    live_store_while_a_bus_is_connected` (seen failing against a stub),
+    `diag::reload_tests` (2). DOM `App.rejoin.dom.test.tsx` (6) and
+    `sessionStatus.test.ts` (2); removing the sync gate, the logger
+    adopt or the RBS seeding each fails the rejoin tests. Every existing
+    App test passes unchanged (null `session_status` = fresh path).
+  - Perf, the memory question settled (ADR 0031, release, ev-zonal 60 s,
+    back to back, one `--app-data-dir` per build; reports
+    `docs/performance-measurements/frontend/2026-11-14-bcbd1411-control-*`
+    — `frontend-log-survives-a-hang`, before this task — and
+    `2026-11-14-abcd5c30-tip-*`). ids_measured 174 and rx/tx 1603–1612
+    f/s in all nine. WebView renderer peak, MB:
+
+    | | scrub | no interaction |
+    |---|---|---|
+    | control | 344.8 / 327.0 | **440.7 / 447.1** |
+    | tip | 337.2 / 341.2 / 336.0 | 432.3 / 411.7 |
+
+    The 400+ MB readings are the no-interaction scenario, and the control
+    has them too: this task did not add them. Host 62.5–65.9 MB and JS
+    heap 98.5–113.6 MB peak in both builds; tree peak 737–861 (control)
+    vs 754–845 (tip). Timing: lag_ms max 5.8 / 21.2 / 9.4 / 10.0 / 4.0
+    (tip) vs 10.3 / 6.3 / 7.1 / 8.4 (control); tx_late_ms max 5.2–18.1
+    (tip) vs 5.2–85.1 (control); flush_ms max 8.3–19.2 vs 9.5–16.6;
+    longtask 0 in every tip run. Control scrub runs had `winw` 0 and
+    scroll_jank_px 14 340 / 21 240; tip scrub runs `winw` 0.7–0.8 and
+    61–109 — the split phase 3 noted, not a code difference.
+    `workingProject.push` 0.83/s scrub, 0 idle.
+
+- **2026-11-14 — overseer review at the phase-4 tip (`task143-rejoin`).**
+  Verdicts against the exit criteria:
+  - All Data in the trace and signals panels — **met** (phase 1 DOM
+    tests).
+  - Trace windows are host state — **met**: `trace_windows.rs` holds
+    the map and its arithmetic with host tests; `trace.ts` keeps only
+    the status / count / window readers and `useTrace`, whose controls
+    call the host.
+  - A reload leaves everything as it was — **met**:
+    `App.rejoin.dom.test.tsx`, `session_status` host tests, and the
+    hardware run.
+  - Unsaved edits kept, disconnected reload keeps capture and windows
+    — **met** (`App.rejoin`; no restore, no clear on the rejoin path).
+  - `restore_scratch_capture` never swaps a live store — **met**
+    (`capture::live_store_answer`, host test).
+  - Hardware check — **met** for host state (windows, session, logger
+    file, periodic, RBS identical across the reload; count continuous).
+    How the views *render* after the reload was not looked at — no
+    input is sent to the owner's desktop — and is the owner's check.
+  - Perf reading — **met**: five tip runs beside a four-run same-day
+    control. The 400+ MB renderer peak is the no-interaction scenario
+    on the control too (440.7 / 447.1 MB against 432.3 / 411.7 at the
+    tip); this task did not move it.
+  - ADR and README — **met** (ADR 0063).
+  - Phase 5 (host-issued reload of a wedged window) — **not started**,
+    by ruling 4. The task stays open on that box alone.
+
+## Blockers / side effects
+
+- **Not rejoined (phase 4):** a capture export's progress chip and a
+  prior-capture restore's progress chip are not shown after a reload
+  (the work finishes; an export's "Exported" still shows); a pending
+  "project changed on disk" notice is not raised again; the `done` /
+  `error` status notice and the finished import's file name in the
+  window title are not carried. Each needs a host fact the rejoin could
+  read (export in flight, restore in flight, the watch's pending
+  change, the last import's source). Named in ADR 0063 / README.
+- `set_loggers` is no longer re-sent with unchanged content on any
+  path (it was re-sent on every registry identity change, e.g. each
+  trace-window mirror update). The host's reconcile was already a no-op
+  for an unchanged set.
