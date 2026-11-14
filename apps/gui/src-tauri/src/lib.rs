@@ -139,6 +139,7 @@ mod view_signals;
 mod watched_file;
 mod window_events;
 mod window_state;
+mod working_project;
 
 // File-model types the `cannet-perf-measurement` harness reuses, re-exported so the
 // harness can parse the example project / RBS through the production
@@ -768,6 +769,8 @@ pub fn run() -> ! {
             trace_windows::get_trace_windows,
             trace_windows::trace_window_control,
             trace_windows::sync_trace_windows,
+            working_project::get_working_project,
+            working_project::set_working_project,
             project::open_project,
             project::close_project,
             project::save_project,
@@ -977,6 +980,7 @@ pub fn run() -> ! {
                 math_model: Mutex::new(None),
                 project_bus_names: Mutex::new(Vec::new()),
                 trace_windows: trace_windows::TraceWindows::default(),
+                working_project: working_project::WorkingProject::default(),
             });
             // Make sure the main window has the id our capabilities expect.
             // Tauri assigns "main" by default for the first window in the

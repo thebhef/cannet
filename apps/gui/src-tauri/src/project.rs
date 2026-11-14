@@ -395,6 +395,9 @@ fn open_project_blocking(app: &tauri::AppHandle, path: &str) -> Result<Project, 
             // stopped and empty at the count; `restore_scratch_capture`
             // widens them to the restored history if there is one.
             crate::trace_windows::replace_for_open(app, &element_ids(&p.elements));
+            // The working project is the file just read, nothing unsaved;
+            // the frontend's pushes replace it from its next edit.
+            state.working_project.opened(&p);
             // A simulation the *previous* session armed is not this
             // project's, and no project file can arm one — the RBS Run
             // flag is session state (ADR 0028). Stopping here is what
@@ -506,6 +509,9 @@ fn close_project_blocking(app: &tauri::AppHandle) {
     crate::project_watch::clear_open_project(app);
     // The trace windows belong to the elements being left.
     crate::trace_windows::clear(app);
+    // An unsaved project replaces it, which the frontend has not pushed
+    // yet.
+    state.working_project.closed();
     crate::sys_info!(app, "project", "closed the open project");
 }
 
@@ -576,6 +582,9 @@ fn save_project_inner(
         write_project_file(path, &project)
     }) {
         Ok(()) => {
+            // The file now holds the working project; the disk watch's
+            // record (written above) is where its path lives.
+            state.working_project.saved();
             crate::sys_info!(app, "project", "saved project to {path}");
             Ok(project.project_id.to_string())
         }

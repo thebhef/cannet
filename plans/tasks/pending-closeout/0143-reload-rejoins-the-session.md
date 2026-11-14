@@ -227,3 +227,69 @@ required and the trace panel and the signals panel pass
     356.2 / 362.4 / 353.6; jsheap max 101.7 / 97.1 / 99.4;
     `memo.elementRegistryValue` 0.83/s in all three (no per-frame
     registry churn).
+- **2026-11-14, phase 3 (branch `task143-working-project`).** The host
+  holds the working project: `apps/gui/src-tauri/src/working_project.rs`
+  (`WorkingDocument`, a `WorkingProject` store on `AppState`, commands
+  `set_working_project` / `get_working_project`, both synchronous
+  memory swaps on the allow-list). No boot change.
+  - What the document carries — the frontend-owned half of the save
+    payload, in the form Save writes it (DBC / `.cannet_rbs` paths
+    relative to the project file where the file stores them so):
+    `layout`, `elements`, `buses`, `interface_bindings`, `dbcs` (with
+    bus scoping), `local_virtual_buses`, `signal_colors`. Plus `dirty`.
+    `schema_version` and the dead `remote_address` arrive in the push
+    and are dropped.
+  - What stays in host registries (single source, not copied): the
+    transmit pool, math signals, signal DBC picks, signal units — what
+    `save_project` already snapshots from the registries. Bus names
+    already reach the host on every bus edit; RBS and loggers are their
+    own host state. Phase 4 reads them through the existing commands.
+  - The path is not stored: `get_working_project` reads it from the
+    disk watch's record (`watched_project`, set on open and every save,
+    forgotten on close). The record's text — what ADR 0053's "changed on
+    disk" compares against — is untouched by a push.
+  - Lifecycle: `open_project` seeds the document from the parsed file,
+    clean; `close_project` (New) resets to "held, no document, clean";
+    a push replaces document + dirty (and marks a never-opened session
+    held); `save_project` / `save_project_as` clear dirty. Before any of
+    these (process launch) nothing is held — the bit phase 4's
+    `session_status` needs.
+  - Frontend: `workingProject.ts` — one debounced (300 ms),
+    de-duplicating pusher, made once in `App`. It reads `gatherProject`
+    (the function Save uses) at send time. Triggers: one effect keyed
+    on `gatherProject`, `projectPath`, `dirty` and `bootSettled`, and
+    the dock's layout-change listener (the layout is not React state).
+    `gatherProject` now depends on an element list whose identity
+    changes only when an element object does, so a trace-window mirror
+    update or a live count tick schedules nothing. Gated on
+    `bootSettled`: nothing is sent while the boot is still applying the
+    project. `pagehide` flushes a pending push.
+  - Tests: host 6 (`working_project::tests`: fresh holds nothing, open
+    seeds clean, close resets, push replaces, save clears dirty, the
+    frontend payload deserializes to exactly the seven fields; a
+    `saved()` no-op mutation was confirmed caught). Frontend:
+    `workingProject.test.ts` (7, pusher), `App.workingProject.dom.test.tsx`
+    (5: no push before the boot settles, an edit pushes once with
+    dirty, mirror update / count tick / unchanged document push
+    nothing, `pagehide` flushes, New pushes after the close). Removing
+    the boot gate or the `pagehide` listener was confirmed to fail them.
+  - Dropped during the phase: a "resend after open / close" hook. New
+    seeds fresh element ids, so its document never equals the last
+    push and the ordinary trigger already sends it; no test could tell
+    the hook was there.
+  - Perf (ADR 0031, release, ev-zonal 60 s; reports
+    `docs/performance-measurements/frontend/2026-11-14-73271efc-run{1,2,3}.json`
+    with scrub, `-idle-run4.json` with no interaction; `73271efc` is the
+    pre-squash build, same code): ids_measured 174 in all four; rx
+    1605.4 / 1609.0 / 1607.0 / 1612.0 f/s; lag_ms max 29.5 / 4.6 / 3.2
+    / 3.1; longtask max 0 in all; tx_late_ms max 13.3 / 7.7 / 24.4;
+    flush_ms max 12.1 / 10.6 / 10.9; host_mb max 63.0 / 63.2 / 64.2 /
+    63.1; webview_renderer_mb max 343.6 / 410.7 / 357.8 / 445.0; jsheap
+    max 97.9 / 123.9 / 105.7. `workingProject.push` 0.83/s in the scrub
+    runs — equal to `dockview.layoutChange` and `registry.update`, i.e.
+    one push per scrub gesture edit (plot pan / zoom / follow write the
+    element and layout) — and **0 in the no-interaction run**: no push
+    during a steady live capture. Run 1 (first in a fresh
+    `--app-data-dir`) has `winw` 0 and scroll_jank_px 81 863; runs 2–3
+    have `winw` 0.8 and 289 / 241, in phase 2's band — the same split
+    earlier reports show between `winw` 0 and non-zero runs.

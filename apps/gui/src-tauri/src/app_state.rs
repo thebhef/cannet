@@ -266,6 +266,10 @@ pub(crate) struct AppState {
     /// ([`crate::trace_windows`]): session state the frontend mirrors,
     /// never persisted.
     pub(crate) trace_windows: crate::trace_windows::TraceWindows,
+    /// The working project document and its dirty flag
+    /// ([`crate::working_project`]): session state the frontend pushes on
+    /// each project edit, never persisted.
+    pub(crate) working_project: crate::working_project::WorkingProject,
 }
 
 /// Guarded-field accessors. Each wraps the one lock its field needs with

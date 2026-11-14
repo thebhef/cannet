@@ -171,6 +171,7 @@ import {
   useTraceWindows,
 } from "./traceWindows";
 import { useSessionReset } from "./useSessionReset";
+import { createWorkingProjectPusher, sameElements } from "./workingProject";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
   BY_ID_PANEL_COMPONENT,
@@ -733,6 +734,37 @@ export function App() {
   // outcomes.
   const [bootSettled, setBootSettled] = useState(false);
   const splashVisible = useSplashVisible(bootSettled);
+  const bootSettledRef = useRef(false);
+  bootSettledRef.current = bootSettled;
+  // The working project's one push site (`workingProject.ts`): the
+  // project as the user has it, in the form Save writes it, with the
+  // dirty flag, held by the host for the session so a frontend reload
+  // need not revert to the file. Read at send time through refs, so the
+  // pusher is made once. Nothing goes before the boot has settled —
+  // until then the App holds only the default seed, and sending it would
+  // overwrite the host's copy of the project the boot is applying.
+  const gatherProjectRef = useRef<(() => Project) | null>(null);
+  const [workingProjectPusher] = useState(() =>
+    createWorkingProjectPusher(() => {
+      const gather = gatherProjectRef.current;
+      if (!bootSettledRef.current || gather === null) return null;
+      const path = projectPathRef.current;
+      return {
+        document: path === null ? gather() : withStoredPaths(gather(), path),
+        dirty: dirtyRef.current,
+      };
+    }),
+  );
+  // A reload tears the page down without waiting for the debounce, so a
+  // pending push goes now (best effort: the send is not awaited).
+  useEffect(() => {
+    const onPageHide = () => workingProjectPusher.flush();
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      workingProjectPusher.dispose();
+    };
+  }, [workingProjectPusher]);
   // The in-flight restore of the project's prior capture, if any
   // (ADR 0002 DS-7). `applyProject` starts it without waiting, so the
   // app is usable while a large capture reopens; `handleConnect` waits
@@ -2117,6 +2149,18 @@ export function App() {
       : EMPTY_FOCUS_HISTORY;
   }, [create, clearGesture]);
 
+  // The registry's element objects, as a list whose identity changes
+  // only when an element does: the trace-window mirror rebuilds the
+  // registry's entries but keeps each element object, and a window is
+  // not part of the project.
+  const projectElementsRef = useRef<ProjectElement[]>([]);
+  const projectElements = useMemo(() => {
+    const next = registry.map((e) => e.element);
+    if (sameElements(next, projectElementsRef.current)) return projectElementsRef.current;
+    projectElementsRef.current = next;
+    return next;
+  }, [registry]);
+
   /// Snapshot the open project into a `Project` (the elements, not
   /// their runtime state — that re-anchors on reload). Emits
   /// `buses`, `interface_bindings`, and `dbcs` (per-DBC bus scoping).
@@ -2133,7 +2177,7 @@ export function App() {
         layout: dockApiRef.current
           ? stripMaximizedNode(dockApiRef.current.toJSON())
           : { grid: {}, panels: {} },
-        elements: registry.map((e) => e.element),
+        elements: projectElements,
         buses,
         interface_bindings: interfaceBindings,
         dbcs,
@@ -2145,8 +2189,17 @@ export function App() {
         signal_colors: signalColors,
       };
     },
-    [registry, dbcPaths, dbcBuses, buses, interfaceBindings, localVirtualBuses, signalColors],
+    [projectElements, dbcPaths, dbcBuses, buses, interfaceBindings, localVirtualBuses, signalColors],
   );
+  gatherProjectRef.current = gatherProject;
+  // Push the working project whenever what Save would write may have
+  // changed: `gatherProject` is rebuilt exactly when one of its inputs
+  // is, the stored path form follows `projectPath`, and `dirty` rides
+  // along. The dock layout is not React state; its change listener
+  // schedules the same push.
+  useEffect(() => {
+    if (bootSettled) workingProjectPusher.schedule();
+  }, [workingProjectPusher, bootSettled, gatherProject, projectPath, dirty]);
 
   // Record which project is "open" — both the React state and the
   // host-side pointer (ADR 0032) that reopens it on the next launch.
@@ -3608,6 +3661,8 @@ export function App() {
         // Any layout change (panels added / dragged / closed, columns
         // resized) also marks the project dirty.
         setDirty(true);
+        // …and changes the working project the host holds.
+        workingProjectPusher.schedule();
         // Feed the undo stack — except while a programmatic
         // `fromJSON`/seed is echoing (the guard) or before the initial
         // layout has settled (`null` history).
@@ -3712,6 +3767,7 @@ export function App() {
       dropRecentProject,
       clearGesture,
       rehydrateProjectState,
+      workingProjectPusher,
     ],
   );
 
