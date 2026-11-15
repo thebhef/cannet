@@ -629,6 +629,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     },
     "plot.fitXAxis": () => runFocusedPanelCommand("plot.fitXAxis"),
     "plot.followLive.enable": () => runFocusedPanelCommand("plot.followLive.enable"),
+    "plot.followFit.enable": () => runFocusedPanelCommand("plot.followFit.enable"),
     "panel.find": () => runFocusedPanelCommand("panel.find"),
     // Prompt for a range ("min max" / "min,max" / "min..max") or a bare
     // width, and hand the raw text to the focused plot's own handler —

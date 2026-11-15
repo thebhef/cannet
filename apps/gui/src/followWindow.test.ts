@@ -284,4 +284,31 @@ describe("followXWindow", () => {
   it("fits the full span from the window start when not following and no window is set", () => {
     expect(followXWindow(false, false, null, null, 579, DEFAULT, 30)).toEqual({ min: 30, max: 579 });
   });
+
+  describe("follow + fit", () => {
+    it("pins the left edge at the window start and the right edge at the live edge", () => {
+      // Past the default width, where plain follow would have started
+      // sliding: the window keeps widening instead.
+      expect(followXWindow(true, true, null, 100, 579, DEFAULT, 0, true)).toEqual({ min: 0, max: 579 });
+      // From the trace window's own start, not a literal 0 (ADR 0024).
+      expect(followXWindow(true, true, null, 100, 579, DEFAULT, 30, true)).toEqual({ min: 30, max: 579 });
+    });
+
+    it("ignores a chosen width — the fit is the width", () => {
+      expect(followXWindow(true, true, 30, 130, 579, DEFAULT, 0, true)).toEqual({ min: 0, max: 579 });
+      // ...including while the capture is still shorter than it.
+      expect(followXWindow(true, true, 30, 130, 2, DEFAULT, 0, true)).toEqual({ min: 0, max: 2 });
+    });
+
+    it("refuses an inverted or empty window", () => {
+      expect(followXWindow(true, true, null, null, 0.5, DEFAULT, 0.8, true)).toBeNull();
+      expect(followXWindow(true, true, null, null, 0.8, DEFAULT, 0.8, true)).toBeNull();
+    });
+
+    it("does nothing a stopped trace would not already do", () => {
+      // Not running: the same fit-once / leave-alone rules as follow.
+      expect(followXWindow(true, false, 30, 130, 579, DEFAULT, 30, true)).toBeNull();
+      expect(followXWindow(true, false, null, null, 579, DEFAULT, 30, true)).toEqual({ min: 30, max: 579 });
+    });
+  });
 });

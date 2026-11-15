@@ -1760,6 +1760,26 @@ describe("PlotPanel", () => {
       });
     });
 
+    it("follow + fit refits y, as Fit Data then follow-live would", async () => {
+      await withSizedCanvas(async () => {
+        const { commands, id } = await mountZoomed();
+        await fitY();
+        await waitFor(() => expect(yRange()).toContain("y[3700 … 3724]"));
+        // A stopped trace has no resample loop and its window does not
+        // move, so once the mount's re-samples have landed nothing but
+        // the press itself can redraw.
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 600));
+        });
+        await act(async () => {
+          commands.invoke(id, "plot.followFit.enable");
+        });
+        // The pinned Fit Y is dropped: the whole capture is in view, so
+        // the axis goes back to the whole capture's extent.
+        await waitFor(() => expect(yRange()).toContain("y[-9000 … 9000]"));
+      });
+    });
+
     it("a plot that starts paused seeds the hold from the first served data", async () => {
       mockSampleSeries.CellVolts = { t: [10, 15, 20], v: [3700, 3712, 3724] };
       // Not the range a follow-live axis would show: the seed is the data.
@@ -2917,6 +2937,51 @@ describe("PlotPanel command registration (f / l hotkeys)", () => {
       commands.invoke("el-test", "plot.followLive.enable");
     });
     expect(followChip()).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("g enters follow + fit, f and l each drop back to plain follow", async () => {
+    const commands = renderWithCommands();
+    const fitChip = () => screen.getByRole("button", { name: "Follow Live and Fit" });
+    const invoke = async (id: string) => {
+      await act(async () => {
+        commands.invoke("el-test", id);
+      });
+    };
+    expect(fitChip()).toHaveAttribute("aria-pressed", "false");
+    await invoke("plot.followFit.enable");
+    expect(fitChip()).toHaveAttribute("aria-pressed", "true");
+    expect(followChip()).toHaveAttribute("aria-pressed", "false");
+    // Enable-only, like `l`.
+    await invoke("plot.followFit.enable");
+    expect(fitChip()).toHaveAttribute("aria-pressed", "true");
+
+    // `f` fits once and leaves a fixed-width follow behind.
+    await invoke("plot.fitXAxis");
+    await waitFor(() => expect(fitChip()).toHaveAttribute("aria-pressed", "false"));
+    expect(followChip()).toHaveAttribute("aria-pressed", "true");
+
+    // `g` restores it; `l` hands off to plain follow too.
+    await invoke("plot.followFit.enable");
+    expect(fitChip()).toHaveAttribute("aria-pressed", "true");
+    await invoke("plot.followLive.enable");
+    expect(fitChip()).toHaveAttribute("aria-pressed", "false");
+    expect(followChip()).toHaveAttribute("aria-pressed", "true");
+
+    // Its own chip turns following off altogether.
+    await invoke("plot.followFit.enable");
+    fireEvent.click(fitChip());
+    expect(fitChip()).toHaveAttribute("aria-pressed", "false");
+    expect(followChip()).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("f in a plot that is not following does not start following", async () => {
+    const commands = renderWithCommands();
+    fireEvent.click(followChip());
+    expect(followChip()).toHaveAttribute("aria-pressed", "false");
+    await act(async () => {
+      commands.invoke("el-test", "plot.fitXAxis");
+    });
+    expect(followChip()).toHaveAttribute("aria-pressed", "false");
   });
 
   it("panel.find focuses and selects the solo pattern box", () => {

@@ -27,6 +27,7 @@ function spies() {
     onFitY: vi.fn(),
     onIgnoreManualY: vi.fn(),
     onFollowLive: vi.fn(),
+    onFollowFit: vi.fn(),
     onShowPoints: vi.fn(),
     onCursorMode: vi.fn(),
     onClearCursors: vi.fn(),
@@ -64,6 +65,8 @@ function props(s: Spies, over: Partial<PlotToolbarProps> = {}): PlotToolbarProps
     onIgnoreManualY: s.onIgnoreManualY,
     followLive: true,
     onFollowLive: s.onFollowLive,
+    followFit: false,
+    onFollowFit: s.onFollowFit,
     showPoints: "auto",
     onShowPoints: s.onShowPoints,
     solo: {
@@ -109,6 +112,7 @@ const BAR: readonly [string, string][] = [
   ["Ignore Manual Axes", "ignore manual y bounds"],
   ["Add Plot Area", "add plot area"],
   ["Follow Live", "follow the live edge"],
+  ["Follow Live and Fit", "follow the live edge and keep the whole capture in view"],
   ["Show Points", null as unknown as string],
   ["X Cursors", "x cursors — vertical A / B lines placed on click"],
   ["Y Cursors", "y cursors — horizontal H1 / H2 lines placed on click"],
@@ -186,6 +190,29 @@ describe("PlotToolbar", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Follow Live" }));
     expect(off.onFollowLive).toHaveBeenCalledWith(true);
+  });
+
+  it("says whether it is following and fitting, on a chip of its own", () => {
+    const s = renderBar();
+    const fit = screen.getByRole("button", { name: "Follow Live and Fit" });
+    expect(fit).toHaveTextContent("Follow + Fit");
+    expect(fit).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(fit);
+    expect(s.onFollowFit).toHaveBeenCalledWith(true);
+
+    // The two are one choice: while fitting, Follow reads as not pressed.
+    const on = renderBar({ followLive: true, followFit: true });
+    expect(screen.getByRole("button", { name: "Follow Live" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    const pressed = screen.getByRole("button", { name: "Follow Live and Fit" });
+    expect(pressed).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(pressed);
+    expect(on.onFollowFit).toHaveBeenCalledWith(false);
+    // Pressing Follow from there asks for plain follow, not for off.
+    fireEvent.click(screen.getByRole("button", { name: "Follow Live" }));
+    expect(on.onFollowLive).toHaveBeenCalledWith(true);
   });
 
   it("says whether manual y bounds are ignored, and toggles it", () => {
@@ -393,6 +420,7 @@ describe("PlotToolbar", () => {
         "solo:clear",
         "add-area",
         "follow",
+        "follow-fit",
         "points",
         "cursor-mode",
         "clear-cursors",

@@ -2240,7 +2240,15 @@ resample at the end.
   capture's
   growing edge while keeping the current visible x-width (it just slides
   right); a manual x pan/zoom turns it off, the same way a manual scroll
-  leaves auto-scroll in a trace panel.
+  leaves auto-scroll in a trace panel. **Follow + Fit** follows with
+  both ends anchored instead: the left edge stays on the capture's
+  first sample and the right rides the growing edge, so the window
+  widens to keep the whole capture in view, and entering it refits y
+  the way a fit-x press does. The two are one choice —
+  pressing either chip leaves the other. With a plot focused, **`l`**
+  turns on Follow, **`g`** Follow + Fit, and **`f`** fits x once; from
+  Follow + Fit, `f` or `l` drops back to Follow at the width the window
+  had grown to.
 - **Show points.** A tri-state button on the toolbar that cycles
   **Points: Auto → Off → On** and applies to every series on every axis
   of every area in

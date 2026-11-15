@@ -164,7 +164,9 @@ import {
  * re-sampling, so the extent it carries is the one it last drew);
  * **follow live** slides a fixed-width window so the right edge tracks
  * the live edge — the width is whatever you last zoomed/panned to (a
- * default until the capture is that long, then it slides).
+ * default until the capture is that long, then it slides);
+ * **follow + fit** follows with the left edge held on the capture's
+ * start instead, so the window widens to keep the whole capture in view.
  *
  * Cursors & measurements are off by default (toolbar). "X" cursors:
  * left-click = A, right-click = B (through every area); "Y": per-area
@@ -177,7 +179,7 @@ import {
  * which broadcasts a "goto" this panel re-centres its x-window on.
  *
  * Persistable state (areas + signal→area assignment, y-ranges,
- * follow-live, cursor mode, measurement toggle/selection; cursor
+ * follow-live / follow + fit, cursor mode, measurement toggle/selection; cursor
  * positions best-effort — notes are session-scoped in the host) is
  * persisted on the element (so it survives closing and reopening the
  * panel within a session) and mirrored into the dockview panel `params`.
@@ -555,6 +557,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const [areas, setAreas] = useState<PlotAreaConfig[]>(() => areasFromParams(savedConfig?.areas));
   const [followLive, setFollowLive] = useState(() => boolFromRaw(savedConfig?.followLive, true));
+  // Follow + fit rides on follow-live: it is only in effect while that
+  // is on, so a path that merely stops following need not clear it.
+  const [followFitWanted, setFollowFit] = useState(() => boolFromRaw(savedConfig?.followFit, false));
+  const followFit = followLive && followFitWanted;
   const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(savedConfig?.cursorMode));
   const [measEnabled, setMeasEnabled] = useState(() => boolFromRaw(savedConfig?.measEnabled, false));
   // What the panel acts on. `measEnabled` is the *stored* preference and
@@ -640,6 +646,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   useElementRehydrate(panel, (config) => {
     setAreas(areasFromParams(config.areas));
     setFollowLive(boolFromRaw(config.followLive, true));
+    setFollowFit(boolFromRaw(config.followFit, false));
     setCursorMode(cursorModeFromRaw(config.cursorMode));
     setMeasEnabled(boolFromRaw(config.measEnabled, false));
     setMeasKeys(measKeysFromRaw(config.measKeys));
@@ -877,6 +884,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
       // width the user lands on and re-slides it to the live edge, so
       // follow-live survives it intact.
       if (!keepFollow) setFollowLive(false);
+      // Either way the user now has a width of their own, which is the
+      // one thing follow + fit does not keep.
+      setFollowFit(false);
       bumpXEpoch();
     },
     [applyXAll, bumpXEpoch],
@@ -888,6 +898,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const followLiveRef = useRef(followLive);
   useEffect(() => {
     followLiveRef.current = followLive;
+  });
+  const followFitRef = useRef(followFit);
+  useEffect(() => {
+    followFitRef.current = followFit;
   });
   const runningRef = useRef(live);
   useEffect(() => {
@@ -999,6 +1013,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         edgeT,
         hostSettings().follow_window_ms / 1000,
         sharedStart(),
+        followFitRef.current,
       );
       if (win) {
         diagCount("followwin.slide"); // DIAG
@@ -1052,6 +1067,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * data — toolbar's "fit y" hits all areas at once. (Per-area Fit Y
    * lives on the side-panel header.) */
   const [fitYEpoch, setFitYEpoch] = useState(0);
+  /** Increment to ask every area to drop a pinned Fit Y and redraw on
+   * the automatic range at once — entering follow + fit. */
+  const [refitYEpoch, setRefitYEpoch] = useState(0);
   const fitYAll = useCallback(() => setFitYEpoch((n) => n + 1), []);
 
   /** Fit the x-axis to `[start, ext)`, where `ext` comes from a host
@@ -1092,9 +1110,36 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const fitData = useCallback(
     // Fit the full span from the window's session-relative start (ADR
     // 0024 — a Clear re-anchors but doesn't re-zero), not a literal 0.
-    () => fitToRange(sharedStart(), winStart, winEnd),
+    // A fit is one press: out of follow + fit it leaves plain follow
+    // sliding the span it just fitted.
+    () => {
+      setFollowFit(false);
+      return fitToRange(sharedStart(), winStart, winEnd);
+    },
     [fitToRange, sharedStart, winStart, winEnd],
   );
+
+  /** Plain follow-live. Coming out of follow + fit it keeps the width
+   * the fit had grown to — the press is the gesture that chooses it,
+   * exactly as a "fit data" press at that moment would. */
+  const followOnly = useCallback(() => {
+    const { xMin, xMax } = xSyncRef.current;
+    if (followFitRef.current && xMin != null && xMax != null) userXWidthRef.current = xMax - xMin;
+    setFollowFit(false);
+    setFollowLive(true);
+  }, []);
+  const onFollowLive = useCallback(
+    (on: boolean) => (on ? followOnly() : setFollowLive(false)),
+    [followOnly],
+  );
+  const onFollowFit = useCallback((on: boolean) => {
+    setFollowFit(on);
+    setFollowLive(on);
+    // The fit is of the data, y as well as x: entering drops a pinned
+    // Fit Y the way a "fit data" press does, so each axis goes back to
+    // following the capture's extent.
+    if (on) setRefitYEpoch((n) => n + 1);
+  }, []);
 
   /** `plot.setVisibleRange`: the prompt hands this
    * panel its own typed text, since resolving a bare width needs this
@@ -1128,13 +1173,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   // Hotkey / palette implementations for this panel instance
   // (ADR 0018): with the panel focused, `f` re-runs fit-data, `l`
-  // re-enters follow-live (enable-only — panning the x axis is how
-  // the user drops out), and Mod+F focuses the solo box the way a
+  // re-enters follow-live and `g` follow + fit (both enable-only —
+  // panning the x axis is how the user drops out), and Mod+F focuses the solo box the way a
   // browser's find focuses its search field — selecting its current
   // text so typing replaces rather than appends.
   usePanelCommands(elementId, {
     "plot.fitXAxis": fitData,
-    "plot.followLive.enable": () => setFollowLive(true),
+    "plot.followLive.enable": followOnly,
+    "plot.followFit.enable": () => onFollowFit(true),
     "panel.find": () => {
       soloInputRef.current?.focus();
       soloInputRef.current?.select();
@@ -1213,6 +1259,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     persist({
       areas,
       followLive,
+      ...(followFit ? { followFit } : {}),
       cursorMode,
       measEnabled,
       measKeys,
@@ -1232,6 +1279,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     areas,
     solo,
     followLive,
+    followFit,
     cursorMode,
     measEnabled,
     measKeys,
@@ -2851,7 +2899,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
         ignoreManualY={ignoreManualY}
         onIgnoreManualY={setIgnoreManualY}
         followLive={followLive}
-        onFollowLive={setFollowLive}
+        onFollowLive={onFollowLive}
+        followFit={followFit}
+        onFollowFit={onFollowFit}
         showPoints={effectiveShowPoints}
         onShowPoints={setShowPoints}
         solo={{
@@ -3087,6 +3137,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               resetYEpoch={resetYEpoch}
               xEpoch={xEpoch}
               fitYEpoch={fitYEpoch}
+              refitYEpoch={refitYEpoch}
               showDiag={showDiag}
               {...handlers}
               eventExtents={eventExtents.length === 0 ? EMPTY_PLOT_EXTENTS : eventExtents}

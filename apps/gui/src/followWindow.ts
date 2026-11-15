@@ -152,6 +152,11 @@ export function advanceLiveEdge(
 ///   last zoomed/panned/fitted to — else `defaultWidth`; until the capture
 ///   is that long the left edge stays pinned at `windowStartT` and the
 ///   window just grows.
+/// - Following *and fitting* a running trace (`fitLive`): both ends are
+///   anchored — the left edge at `windowStartT`, the right on the live
+///   edge — so the window widens as data arrives and no width, chosen or
+///   default, applies. It is what pressing "fit data" on every frame of a
+///   followed trace would give.
 /// - Otherwise, if no window has been set yet (`xMax == null`), fit the
 ///   whole span `[windowStartT, ext]` once. This is the restore case: a
 ///   reloaded *stopped* trace has no live edge, so follow-live must not
@@ -176,8 +181,11 @@ export function followXWindow(
   ext: number,
   defaultWidth: number,
   windowStartT: number,
+  fitLive = false,
 ): { min: number; max: number } | null {
   if (followLive && running) {
+    // Same empty-window refusal as the sliding branch below.
+    if (fitLive) return ext > windowStartT ? { min: windowStartT, max: ext } : null;
     const hasUserWidth = userWidth != null && userWidth > 0;
     const width = hasUserWidth ? userWidth : defaultWidth;
     let min = ext - width;

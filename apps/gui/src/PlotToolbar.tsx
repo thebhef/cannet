@@ -78,6 +78,11 @@ export interface PlotToolbarProps {
   onIgnoreManualY: (on: boolean) => void;
   followLive: boolean;
   onFollowLive: (on: boolean) => void;
+  /// Following with the whole capture kept in view: the window's left
+  /// edge stays on the capture's start while the right rides the live
+  /// edge. Only ever on while `followLive` is.
+  followFit: boolean;
+  onFollowFit: (on: boolean) => void;
   showPoints: ShowPointsMode;
   onShowPoints: (mode: ShowPointsMode) => void;
   solo: PlotToolbarSolo;
@@ -164,6 +169,8 @@ export function plotToolbarItems({
   onIgnoreManualY,
   followLive,
   onFollowLive,
+  followFit,
+  onFollowFit,
   showPoints,
   onShowPoints,
   solo,
@@ -324,8 +331,21 @@ export function plotToolbarItems({
           label="Follow"
           ariaLabel="Follow Live"
           title="follow the live edge"
-          pressed={followLive}
-          onPress={() => onFollowLive(!followLive)}
+          pressed={followLive && !followFit}
+          // From follow + fit, Follow means "plain follow", not "off".
+          onPress={() => onFollowLive(followFit || !followLive)}
+        />
+      ),
+    },
+    {
+      key: "follow-fit",
+      node: (
+        <ChipButton
+          label="Follow + Fit"
+          ariaLabel="Follow Live and Fit"
+          title="follow the live edge and keep the whole capture in view"
+          pressed={followFit}
+          onPress={() => onFollowFit(!followFit)}
         />
       ),
     },

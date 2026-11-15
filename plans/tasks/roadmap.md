@@ -235,30 +235,23 @@ section with implementation underway.
    (Drag-a-plot-area-between-panels shipped separately, 2026-08-08.)
    Inherits the measurement strip's rework, which task 108 phase 4
    suppressed rather than removed.
-35. [Task 131 — Grow Live](0131-grow-live.md)
-   — a third x-range behaviour beside manual and Follow: left edge
-   pinned to the capture's first sample, right edge riding the live
-   edge, so the window widens as data arrives. Runs for a period after
-   connect, then hands off to Follow at the grown width. Opened by
-   owner instruction 2026-08-31; duration and mode-vs-phase questions
-   open.
-36. [Task 85 — Extended Multiplexing End to End](0085-extended-multiplexing.md)
+35. [Task 85 — Extended Multiplexing End to End](0085-extended-multiplexing.md)
    — `SG_MUL_VAL_` parsed and modelled, the Database panel rendering
    nested mux trees, per-frame decode gated on the full selector path,
    and a worked example DBC. The task file existed but had never
    reached this roadmap; found unlisted and added at the 2026-08-26
    close-out. Open design questions.
-37. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+36. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
    — cannet connects out to a value-source server that streams sparse
    `(signal, value)` updates by name; RBS applies them as overrides and
    keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
    (e.g. an EV drive cycle) drive the RBS.
-38. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+37. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
    — staged: pcapng import (CAN linktypes, no model change), step/hold
    plot semantics for on-change series, then the multi-protocol trace
    model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
    Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-39. [Task 40 — bridge_client / cannet-client Session-Machinery
+38. [Task 40 — bridge_client / cannet-client Session-Machinery
     Consolidation](0040-bridge-client-consolidation.md) — gated on
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else
