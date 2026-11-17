@@ -174,8 +174,8 @@ Inventing a predicate DSL would buy generality nobody needs.
 - Build still fails fast on a collision in the *defaults*; user edits
   fail fast in the *shortcuts panel*. The two share one conflict
   checker.
-- Panel-local commands (`plot.fitXAxis`, `plot.followLive.enable`)
-  are bindable like any other, since they appear in the command
+- Panel-local commands (`plot.fitXAxis`, `plot.followLive.enable`,
+  `plot.followFit.enable`) are bindable like any other, since they appear in the command
   registry.
 - `view.undo` / `view.redo` are rebindable like any other command, and
   a user who unbinds them loses view undo — the histories are still

@@ -44,6 +44,7 @@ describe("the shipped command set", () => {
     expect(byId.get("goto.view")).toBe("Mod+P");
     expect(byId.get("plot.fitXAxis")).toBe("f");
     expect(byId.get("plot.followLive.enable")).toBe("l");
+    expect(byId.get("plot.followFit.enable")).toBe("g");
   });
 
   it("binds goto.timeInTrace on Mod+T and goto.event on Mod+E", () => {

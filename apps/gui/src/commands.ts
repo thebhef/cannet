@@ -325,6 +325,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     context: plotFocused,
   },
   {
+    id: "plot.followFit.enable",
+    label: "Plot: follow + fit",
+    category: "Plot",
+    context: plotFocused,
+  },
+  {
     id: "plot.setVisibleRange",
     label: "Plot: set visible range…",
     category: "Plot",
@@ -345,6 +351,7 @@ export const DEFAULT_BINDINGS: readonly BindingSpec[] = [
   { chord: "Mod+F", commandId: "panel.find" },
   { chord: "f", commandId: "plot.fitXAxis" },
   { chord: "l", commandId: "plot.followLive.enable" },
+  { chord: "g", commandId: "plot.followFit.enable" },
   // View navigation and layout undo/redo. The browser back/forward
   // chords skip editables (Alt+arrow is word-nav in mac text fields),
   // and undo/redo skips them so a focused input keeps its native

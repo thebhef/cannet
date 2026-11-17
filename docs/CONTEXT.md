@@ -507,7 +507,12 @@ case, which is a different fact.
 **Plot panel**:
 A dockview panel that plots signals over time. Holds one or more
 **plot areas**, the shared time (x) **scale** across them, and the
-panel toolbar (fit, follow-live, show-points).
+panel toolbar (fit, follow-live, follow + fit, show-points).
+
+**Follow + fit**:
+Following the live edge with the scale's left edge held on the
+capture's first sample, so the visible span widens as data arrives.
+**Follow-live** on its own keeps a fixed width and slides.
 
 **Plot area**:
 A curated group of **series** within a plot panel, plus its **y-axis

@@ -126,6 +126,9 @@ export interface PlotPanelParams {
   elementId?: unknown;
   areas?: unknown;
   followLive?: unknown;
+  /** Follow + fit: following with the window's left edge held on the
+   * capture's start. Means nothing unless `followLive` is on. */
+  followFit?: unknown;
   cursorMode?: unknown;
   measEnabled?: unknown;
   measKeys?: unknown;

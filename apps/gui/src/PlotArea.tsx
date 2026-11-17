@@ -973,6 +973,11 @@ interface PlotAreaProps {
   /** Toolbar's "fit y" — incremented to ask every area to refit y
    * from its currently rendered data. */
   fitYEpoch: number;
+  /** Follow + fit was entered — drop any pinned Fit Y and redraw *now*
+   * against the capture's extent. Unlike {@link resetYEpoch} it does not
+   * wait for the next fetch: the x window need not have moved (a quiet
+   * bus, a stopped trace), and then no fetch is coming. */
+  refitYEpoch: number;
   /** Reveal the per-row y-range / cached-t-range diagnostic readout
    * (panel-level "diag" toggle). */
   showDiag: boolean;
@@ -2398,6 +2403,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     resetYEpoch,
     xEpoch,
     fitYEpoch,
+    refitYEpoch,
     showDiag,
     onSetPrimarySignal,
     onSelectSignal,
@@ -4627,6 +4633,22 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     if (winEnd > 0) sampledWindowRef.current = true;
     void resampleRef.current();
   }, [winEnd, live]);
+
+  // Follow + fit was entered: back to the automatic y range, drawn at
+  // once from the window already cached — the request for an unmoved
+  // window is memoised and would answer "unchanged". Declared ahead of
+  // the follow-live effect below so that, when the press also turns
+  // follow-live on, this redraw is not the call its busy-guard drops.
+  const refitYEpochPrevRef = useRef(refitYEpoch);
+  useEffect(() => {
+    if (refitYEpochPrevRef.current === refitYEpoch) return;
+    refitYEpochPrevRef.current = refitYEpoch;
+    manualRangesRef.current = new Map();
+    manualFitYRef.current = false;
+    heldRangesRef.current = new Map();
+    repaintFromCacheRef.current = true;
+    void resampleRef.current();
+  }, [refitYEpoch]);
 
   // Forced re-sample when "follow live" toggles (so it snaps to / off
   // the live edge immediately).
