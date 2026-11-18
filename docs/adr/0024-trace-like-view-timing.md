@@ -42,7 +42,8 @@ origin for the whole application.
    digits the elapsed column would show (`format.ts::formatCalendarCell`);
    a plot's ticks read time of day with the leading fields the window
    shares dropped, and its x-axis title names the window's date(s)
-   (`format.ts::calendarWindow`). Durations (Δt, a period) stay
+   (`format.ts::calendarWindow`); the free cursor's reading beside
+   that title always keeps its hour. Durations (Δt, a period) stay
    durations in both readings.
 
 3. **Elapsed time renders as `[d:][hh:][mm:]ss.ffff`** — only the

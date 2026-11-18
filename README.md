@@ -1922,7 +1922,9 @@ writes, so the panel teaches the file.
   the elapsed time on hover (and the calendar time on hover while the
   setting is `elapsed`). The plots read it too: x ticks show the time
   of day, the x-axis label names the window's date(s) (`Time on
-  <date>`, `Time on <d1> and <d2>`, `Time between <first>, <last>`),
+  <date>`, `Time on <d1> and <d2>`, `Time between <first>, <last>`)
+  and reads the free cursor's time beside it — always with its hour,
+  which the ticks drop when the whole window shares one —
   the A/B chips and panel cursor readouts show the calendar cell, and
   the tick and chip hover shows the elapsed time; Δt stays a duration.
   A capture with no wall-clock start time names no instant and stays

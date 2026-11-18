@@ -294,10 +294,12 @@ function xAxisLabelText(
   const label = win ? win.title : X_AXIS_LABEL;
   if (hoverX == null || !Number.isFinite(hoverX)) return label;
   // In calendar mode the title names the date(s), so the cursor reads
-  // as the same time of day the ticks use.
+  // as time of day at the ticks' precision — always with its hour, which
+  // the ticks drop when the whole window shares it.
+  const cursorPattern = win?.tickPattern.replace(/^mm/, "HH:mm");
   const read = (t: number): string =>
-    win && calendar
-      ? (formatCalendarCell(calendar.base + t, calendar.base, win.tickPattern, 0) ?? "")
+    cursorPattern && calendar
+      ? (formatCalendarCell(calendar.base + t, calendar.base, cursorPattern, 0) ?? "")
       : formatElapsed(t, fracDigits);
   const text = read(hoverX);
   const width = xMax != null && Number.isFinite(xMax) ? read(xMax).length : text.length;

@@ -2136,6 +2136,16 @@ describe("plot calendar time (time_display = calendar)", () => {
     expect(text).toContain("06:42");
   });
 
+  it("reads the hovered time with its hour when the ticks drop it", () => {
+    // A window inside one hour ticks as mm:ss; the cursor still names
+    // the hour.
+    expect(calendarWindow(BASE + 0, BASE + 10, BASE, PATTERN)?.tickPattern).toMatch(/^mm:ss/);
+    const { ctx, ops } = recorder();
+    drawXAxisTimeLabel(ctx, lineU(0, 10), { ...BOX, hoverX: 2, calendar: CAL });
+    const text = ops.find((o) => o.op === "fillText")?.args[0] as string;
+    expect(text.split(" · ")[1]).toMatch(/^\d\d:06:42/);
+  });
+
   it("keeps the elapsed label on a relative timeline", () => {
     const { ctx, ops } = recorder();
     drawXAxisTimeLabel(ctx, lineU(0, 10), { ...BOX, hoverX: null, calendar: null });
