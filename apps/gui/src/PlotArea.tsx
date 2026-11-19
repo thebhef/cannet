@@ -2638,6 +2638,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * the join out again at each use) is what keeps the cache descriptor
    * and the built-instance compare from drifting apart. */
   const signalMembershipKey = signals.map(signalRefKey).sort().join("|");
+  /** The signals that draw — hidden by the user or masked by solo, a
+   * signal is neither fetched nor merged. The merge builds one row per
+   * series across the union of every series' timestamps, so a series
+   * that draws nothing still cost a full-width row and widened the
+   * union for everyone else; at hundreds of solo-paged signals on one
+   * axis that ran the renderer out of heap. The sampled window keys on
+   * this set, so showing a signal refetches. */
+  const drawnSignals = useMemo(() => signals.filter((s) => !s.hidden), [signals]);
+  const drawnMembershipKey = drawnSignals.map(signalRefKey).sort().join("|");
   /** "Nothing drawn *yet*" for the current signal set, as opposed to
    * "nothing to draw". A membership change re-anchors the windowed
    * source, so the next sample is a cold whole-window one — seconds
@@ -3085,7 +3094,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // (ADR 0026), so they need no host extent either.
       const wantHostExtent =
         lr.followLive && !manualFitYRef.current && !enumActivePre && !laneModeRef.current;
-      const sigQuery = signals.map((s) => ({
+      const sigQuery = drawnSignals.map((s) => ({
         busId: s.busId,
         messageId: s.messageId,
         extended: s.extended,
@@ -3121,13 +3130,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               // every sample of which is still valid. The model epoch
               // rides in front of it — the same window's samples are
               // not the same numbers once the DBC set has moved.
-              descriptor: `${modelEpoch}:${signalMembershipKey}`,
+              descriptor: `${modelEpoch}:${drawnMembershipKey}`,
               // Provenance rides along, exactly as it does on the
               // extent sidecar above: a file-backed series — and a math
               // one — is keyed by it host-side, so a query that dropped
               // the flag would name a message identity nothing decodes
               // and come back empty.
-              signals: signals.map((s) => ({
+              signals: drawnSignals.map((s) => ({
                 key: signalRefKey(s),
                 busId: s.busId,
                 messageId: s.messageId,
@@ -3210,7 +3219,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // series against another signal's extent.
       if (outcome.extra) {
         const extents = new Map<string, SignalExtent>();
-        signals.forEach((s, i) => {
+        drawnSignals.forEach((s, i) => {
           const e = outcome.extra?.[i];
           // Cached in the unit the signal *decodes* in, which is the
           // unit the host answered in. The carry into the drawn unit
@@ -3233,9 +3242,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // series carried into the unit it is *read* in. The affine is the
       // host's (ADR 0025); a series nobody converted passes the very
       // same arrays through, allocating nothing.
+      // A hidden series is empty even when a repaint from cache still
+      // holds its samples (it was visible when they were fetched).
       const seriesRel: RawSeries[] = signals.map((s) => {
         const key = signalRefKey(s);
-        const raw = snapshot.byKey.get(key) ?? { t: [], v: [] };
+        const raw = (s.hidden ? undefined : snapshot.byKey.get(key)) ?? { t: [], v: [] };
         return convertSeries(raw, displayAffineOf(displayUnitsRef.current, key));
       });
       // Auto-normalisation: every series on this axis is re-mapped to
@@ -3605,7 +3616,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     }
   }, [
     signals,
-    signalMembershipKey,
+    drawnSignals,
+    drawnMembershipKey,
     modelEpoch,
     areaId,
     withSuppressed,
@@ -4756,11 +4768,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // `setSeries` alone left the area blank until the next pan/zoom
   // forced a resample, because what a visibility change really moves is
   // the *normalisation* (a hidden series contributes nothing to its
-  // group's scale) and that only happens on a resample. So resample —
-  // but from the window already cached, not from the host: the fetch
-  // covers hidden signals too, so every sample this needs is in hand
-  // and a round-trip would return the same bytes. That matters beyond
-  // one swatch click: solo's step mode flips visibility per keystroke.
+  // group's scale) and that only happens on a resample. A change that
+  // only hides repaints from the window already cached — it holds every
+  // sample still drawn. One that shows a signal the cached window does
+  // not hold (hidden signals are not fetched) asks the host, on a
+  // stopped capture as on a live one: no tick is coming to do it.
   const hiddenKey = signals.map((s) => (s.hidden ? "1" : "0")).join("");
   const hiddenKeyPrevRef = useRef(hiddenKey);
   useEffect(() => {
@@ -4771,7 +4783,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     signals.forEach((s, i) => u.setSeries(i + 1, { show: !s.hidden }));
     // Falls back to a real fetch on its own when there is no cached
     // window yet (`resample` reads `currentRange()` through this flag).
-    repaintFromCacheRef.current = true;
+    const cached = currentRange()?.byKey;
+    repaintFromCacheRef.current =
+      cached != null && drawnSignals.every((s) => cached.has(signalRefKey(s)));
     void resampleRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hiddenKey]);
