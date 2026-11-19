@@ -209,6 +209,14 @@ fn make_id(raw: u32, extended: bool) -> Option<CanId> {
 /// holds a value to the next sample, so a column's last point is where
 /// its step ends. That is why this is the one shared reduction rather
 /// than a second, categorical one (ADR 0026).
+///
+/// **The columns are the request's, not the series'.** When `[from, to)`
+/// is a real window, the columns are its [`ColumnGrid`] — the same for
+/// every series served over that window — so the columns several series
+/// keep line up, and [`snap_to_columns`] can report their points at
+/// shared times. Only an unbounded range (a fit-all over
+/// `f64::MIN .. f64::MAX`) falls back to columns over the series' own
+/// span.
 #[must_use]
 #[allow(
     clippy::cast_precision_loss,
@@ -225,9 +233,13 @@ pub fn decimate_min_max(
     if max_buckets == 0 || n <= max_buckets {
         return points.to_vec();
     }
-    let lo = from.max(points[0].t_seconds);
-    let hi = to.min(points[n - 1].t_seconds);
-    let width = (hi - lo) / max_buckets as f64;
+    let (lo, width) = if let Some(grid) = ColumnGrid::new(from, to, max_buckets) {
+        (grid.lo, grid.width)
+    } else {
+        let lo = from.max(points[0].t_seconds);
+        let hi = to.min(points[n - 1].t_seconds);
+        (lo, (hi - lo) / max_buckets as f64)
+    };
     let last_column = max_buckets - 1;
     let column = |t: f64| -> usize {
         if width.is_nan() || width <= 0.0 || t <= lo {
@@ -270,6 +282,164 @@ pub fn decimate_min_max(
         start = end;
     }
     out
+}
+
+/// The pixel columns one decimated serve bins against: `max_buckets`
+/// columns `(to - from) / max_buckets` wide, **anchored at a whole
+/// multiple of that width** rather than at `from`. The anchor is what
+/// makes the grid a fact about the request alone — every series served
+/// for one window gets the same columns — and keeps a column where it is
+/// while a following window slides by less than its width.
+///
+/// Anchoring starts the grid up to one column before `from`, so it can
+/// end up to one column short of `to`. The decimation folds that
+/// remainder into the last column, keeping the serve's
+/// `4 × max_buckets` bound; it lies in the fetch margin past the visible
+/// window, and [`snap_to_columns`] leaves its points at their own times.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColumnGrid {
+    lo: f64,
+    width: f64,
+    count: usize,
+}
+
+impl ColumnGrid {
+    /// The grid for a window, or `None` when there is none to share: a
+    /// zero budget, an unbounded or empty range, or columns too narrow
+    /// for distinct positions inside them at this magnitude of time.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn new(from: f64, to: f64, max_buckets: usize) -> Option<Self> {
+        if max_buckets == 0 || !from.is_finite() || !to.is_finite() || to <= from {
+            return None;
+        }
+        let width = (to - from) / max_buckets as f64;
+        // A column must be far wider than one ulp of the times in it, or
+        // its slot positions round together.
+        if !width.is_finite() || width <= from.abs().max(to.abs()) * 1e-12 {
+            return None;
+        }
+        let lo = (from / width).floor() * width;
+        Some(Self {
+            lo,
+            width,
+            count: max_buckets,
+        })
+    }
+
+    /// One column's width, seconds.
+    #[must_use]
+    pub fn width(&self) -> f64 {
+        self.width
+    }
+
+    /// The column `t` falls in, or `None` off the grid.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn column(&self, t: f64) -> Option<usize> {
+        if t.is_nan() || t < self.lo {
+            return None;
+        }
+        let c = ((t - self.lo) / self.width) as usize;
+        (c < self.count).then_some(c)
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn at(&self, column: usize, offset: f64) -> f64 {
+        self.lo + (column as f64 + offset) * self.width
+    }
+}
+
+/// Where in its column a kept point is reported, by its rank among the
+/// column's `k` kept points: the first at an eighth, the last at seven
+/// eighths, a lone middle one at the centre, two middles between. A
+/// column therefore contributes at most five distinct times, whichever
+/// series kept which of its points.
+fn slot(rank: usize, k: usize) -> f64 {
+    if rank == 0 {
+        0.125
+    } else if rank == k - 1 {
+        0.875
+    } else if k == 3 {
+        0.5
+    } else if rank == 1 {
+        0.375
+    } else {
+        0.625
+    }
+}
+
+/// Report a decimated serve's points at **shared** times: each point at
+/// its rank's fixed position in its `grid` column ([`slot`]), so series
+/// served over one window share columns instead of each bringing its own
+/// timestamps. Values do not move and no point leaves its column, so the
+/// envelope, its extremes and the line through them are the ones
+/// [`decimate_min_max`] kept, each shifted by under one column.
+///
+/// Left at their own times, and so exact:
+///
+/// - points off the grid — the boundary samples a slice carries past
+///   each edge;
+/// - every point in the column holding the series' first or last point,
+///   so where it starts and its live edge stay where the data puts them
+///   (the whole column, so its order with the column's other points
+///   holds);
+/// - a column holding more than four points, which only a series not
+///   decimated against `grid` has.
+///
+/// Returns each moved point's `(old, new)` time, in order, for
+/// [`moved_time`] to carry anything else keyed by a sample time along.
+pub fn snap_to_columns(points: &mut [SamplePoint], grid: &ColumnGrid) -> Vec<(f64, f64)> {
+    let n = points.len();
+    let mut moved = Vec::new();
+    if n == 0 {
+        return moved;
+    }
+    let first_column = grid.column(points[0].t_seconds);
+    let last_column = grid.column(points[n - 1].t_seconds);
+    let mut start = 0;
+    while start < n {
+        let c = grid.column(points[start].t_seconds);
+        let mut end = start + 1;
+        while end < n && grid.column(points[end].t_seconds) == c {
+            end += 1;
+        }
+        let k = end - start;
+        if let Some(column) = c {
+            if k <= 4 && c != first_column && c != last_column {
+                for (rank, p) in points[start..end].iter_mut().enumerate() {
+                    let t = grid.at(column, slot(rank, k));
+                    if t.to_bits() != p.t_seconds.to_bits() {
+                        moved.push((p.t_seconds, t));
+                        p.t_seconds = t;
+                    }
+                }
+            }
+        }
+        start = end;
+    }
+    moved
+}
+
+/// Where a sample at `t` was reported after [`snap_to_columns`]
+/// returned `moved`; `t` itself when it did not move. `last` picks among
+/// samples sharing `t`: a span *starting* at a sample starts at the last
+/// of them, one *ending* at a sample ends at the first.
+#[must_use]
+pub fn moved_time(t: f64, moved: &[(f64, f64)], last: bool) -> f64 {
+    let lo = moved.partition_point(|&(old, _)| old < t);
+    let hi = moved.partition_point(|&(old, _)| old <= t);
+    if lo == hi {
+        return t;
+    }
+    if last {
+        moved[hi - 1].1
+    } else {
+        moved[lo].1
+    }
 }
 
 #[cfg(test)]
@@ -651,5 +821,126 @@ BO_ 256 EngineData: 2 ECU
         // Endpoints make it through.
         assert_eq!(out.first().map(|p| p.t_seconds), Some(0.0));
         assert_eq!(out.last().map(|p| p.t_seconds), Some(999.0));
+    }
+
+    /// A busy series at its own cadence and phase, `n` points over
+    /// `[t0, t0 + span)`, cycling a sawtooth so every column has distinct
+    /// extremes.
+    #[allow(clippy::cast_precision_loss)]
+    fn busy(t0: f64, span: f64, n: usize, phase: usize) -> Vec<SamplePoint> {
+        (0..n)
+            .map(|i| pt(t0 + span * i as f64 / n as f64, ((i + phase) % 17) as f64))
+            .collect()
+    }
+
+    fn served(points: &[SamplePoint], from: f64, to: f64, max: usize) -> Vec<SamplePoint> {
+        let mut out = decimate_min_max(points, from, to, max);
+        let grid = ColumnGrid::new(from, to, max).unwrap();
+        snap_to_columns(&mut out, &grid);
+        out
+    }
+
+    #[test]
+    fn decimated_series_over_one_window_share_their_columns() {
+        // Unrelated cadences: as served before, no time of one is a time
+        // of the other, and the merge's union is their sum.
+        let (from, to, max) = (1_700_000_000.0, 1_700_000_060.0, 200);
+        let series: Vec<Vec<SamplePoint>> = (0..8u32)
+            .map(|k| {
+                busy(
+                    from - 0.5 + 0.03 * f64::from(k),
+                    61.0,
+                    9_973 + 101 * k as usize,
+                    k as usize,
+                )
+            })
+            .collect();
+        let union = |snap: bool| -> usize {
+            let mut all = std::collections::BTreeSet::new();
+            for s in &series {
+                let out = if snap {
+                    served(s, from, to, max)
+                } else {
+                    decimate_min_max(s, from, to, max)
+                };
+                all.extend(out.iter().map(|p| p.t_seconds.to_bits()));
+            }
+            all.len()
+        };
+        // Each series keeps its own times only off the grid and in its
+        // first and last columns (a dozen points at most); every other
+        // point sits at one of its column's five shared positions.
+        let bound = 5 * (max + 1) + 12 * series.len();
+        let snapped = union(true);
+        assert!(snapped <= bound, "{snapped} > {bound}");
+        // As served before, the union grew with every series added.
+        let unsnapped = union(false);
+        assert!(unsnapped > 4 * bound, "{unsnapped}");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn snapping_keeps_every_value_in_its_own_column_in_order() {
+        let (from, to, max) = (1_700_000_000.0, 1_700_000_060.0, 200);
+        let raw = busy(from - 0.5, 61.0, 9_973, 3);
+        let kept = decimate_min_max(&raw, from, to, max);
+        let mut snapped = kept.clone();
+        let grid = ColumnGrid::new(from, to, max).unwrap();
+        let moved = snap_to_columns(&mut snapped, &grid);
+        assert!(!moved.is_empty());
+        assert_eq!(snapped.len(), kept.len());
+        for (k, s) in kept.iter().zip(&snapped) {
+            assert_eq!(k.value, s.value, "a value moved");
+            assert_eq!(
+                grid.column(k.t_seconds),
+                grid.column(s.t_seconds),
+                "{k:?} left its column"
+            );
+        }
+        assert!(
+            snapped.windows(2).all(|w| w[0].t_seconds < w[1].t_seconds),
+            "not strictly increasing",
+        );
+        // The series' ends are exact.
+        assert_eq!(snapped.first(), kept.first());
+        assert_eq!(snapped.last(), kept.last());
+    }
+
+    #[test]
+    fn a_window_sliding_by_less_than_a_column_keeps_a_samples_position() {
+        // Following live: the window moves a little each fetch. A sample
+        // in the middle of both windows is reported at the same time.
+        let raw = busy(1_700_000_000.0, 120.0, 40_000, 0);
+        let max = 400;
+        let width = 60.0 / 400.0;
+        let at = |from: f64| {
+            let s = served(&raw, from, from + 60.0, max);
+            s.iter()
+                .map(|p| p.t_seconds)
+                .find(|&t| t > 1_700_000_040.0)
+                .unwrap()
+        };
+        let t0 = 1_700_000_020.0;
+        assert_eq!(at(t0).to_bits(), at(t0 + width * 0.4).to_bits());
+    }
+
+    #[test]
+    fn there_is_no_grid_to_share_over_an_unbounded_range() {
+        assert!(ColumnGrid::new(f64::MIN, f64::MAX, 100).is_none());
+        assert!(ColumnGrid::new(0.0, 0.0, 100).is_none());
+        assert!(ColumnGrid::new(0.0, 1.0, 0).is_none());
+        // Columns a few ulps wide at this magnitude: nothing distinct to
+        // place points at.
+        assert!(ColumnGrid::new(1.7e9, 1.7e9 + 1e-6, 4000).is_none());
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_moved_sample_time_carries_along() {
+        let moved = [(1.0, 1.1), (2.0, 2.1), (2.0, 2.3), (5.0, 4.9)];
+        assert_eq!(moved_time(1.0, &moved, false), 1.1);
+        assert_eq!(moved_time(3.0, &moved, false), 3.0);
+        assert_eq!(moved_time(2.0, &moved, true), 2.3);
+        assert_eq!(moved_time(2.0, &moved, false), 2.1);
     }
 }

@@ -575,6 +575,29 @@ positions from the line beside it, and placed every marker on a tile
 edge at a coarse zoom, which is precisely the density information
 markers exist to show.
 
+*Amended 2026-11-19:* **a decimated sample is reported at its column's
+position, not its own time.** The merge builds one x column per
+distinct time across an axis's series and one row per series across
+all of them, and signals from different messages almost never share a
+time — so with each column's four samples at their own times, the
+table grew with the square of the signal count. 576 cell voltages on a
+3840 px plot held a renderer at 3 GB and climbing. Now the columns are
+the request's: `(to − from) / max_points` wide, anchored at a whole
+multiple of that width so every series served for one window bins
+against the same columns and a sliding window keeps them. A kept
+sample is reported by its rank in its column — first at ⅛, last at ⅞,
+a middle one at ½ or two at ⅜ and ⅝ — so a column contributes at most
+five times however many series share the axis. No value moves and no
+sample leaves its pixel column, so the envelope, its extremes, the
+y-scale fitted to them and the line between a series' own samples are
+unchanged; each sample shifts by under one column. Exact still: a
+series served raw (zoomed in until it fits the budget), the boundary
+samples past either edge, and the columns holding a series' first and
+last sample, so where it starts and its live edge are where the data
+puts them. An extrapolated span bounded by served samples moves with
+them, so a dash still starts and ends on a sample. The bus-error serve
+keeps real times — its markers read deltas off them.
+
 ## Why
 
 **Composition and configuration are different concerns, so they get

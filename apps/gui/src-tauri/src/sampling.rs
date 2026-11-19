@@ -52,7 +52,11 @@ use crate::signal_sampler;
 /// sample, so a spike survives for a line and a held run survives for an
 /// enum lane
 /// — one serve for every render mode, and no flag from the caller
-/// saying which it is (ADR 0026).
+/// saying which it is (ADR 0026). A decimated series is reported on the
+/// window's shared column grid — each kept sample at its rank's position
+/// in its pixel column, not at its own time — so the plot's merge across
+/// many series is bounded by the columns (ADR 0026, amended 2026-11-19).
+/// A series that fit the budget keeps its own times.
 ///
 /// The returned `from_seconds` / `last_seconds` are facts about the
 /// *window*, read off the store's anchors — they do not depend on which
@@ -271,24 +275,16 @@ fn sample_signals_inner(
     let slice_ms = t_slice.elapsed().as_secs_f64() * 1000.0;
 
     let t_decode = std::time::Instant::now();
+    // The window's shared column grid: every decimated series of this
+    // serve is reported on it, so a plot's merge across them is bounded
+    // by its columns rather than by the series' own timestamps.
+    let grid = signal_sampler::ColumnGrid::new(slice_from, slice_to, max_points as usize);
     let series: Vec<SampledPoints> = sliced
         .into_iter()
         .zip(served.extrapolated)
-        .map(|(points, spans)| {
-            let mut t = Vec::with_capacity(points.len());
-            let mut v = Vec::with_capacity(points.len());
-            for p in points {
-                t.push(p.t_seconds);
-                v.push(p.value);
-            }
-            SampledPoints {
-                t,
-                v,
-                extrapolated: spans
-                    .into_iter()
-                    .map(|s| [s.from_seconds, s.to_seconds])
-                    .collect(),
-            }
+        .zip(served.decimated)
+        .map(|((points, spans), decimated)| {
+            sampled_points(points, &spans, grid.filter(|_| decimated).as_ref())
         })
         .collect();
     let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
@@ -314,6 +310,42 @@ fn sample_signals_inner(
         complete: served.complete,
         slice_ms,
         decode_ms,
+    }
+}
+
+/// One served window as the wire carries it. With a `grid` — the window
+/// was decimated — its points are reported at the grid's shared times
+/// ([`signal_sampler::snap_to_columns`]), and each extrapolated span
+/// whose end is a served sample moves with that sample, so the stretch
+/// the plot dashes still starts and ends on a sample of the series
+/// (ADR 0026). The spans are classified before this, against the real
+/// sample times.
+fn sampled_points(
+    mut points: Vec<signal_sampler::SamplePoint>,
+    spans: &[crate::signal_cache::ExtrapolatedSpan],
+    grid: Option<&signal_sampler::ColumnGrid>,
+) -> SampledPoints {
+    let moved = grid.map_or_else(Vec::new, |g| {
+        signal_sampler::snap_to_columns(&mut points, g)
+    });
+    let mut t = Vec::with_capacity(points.len());
+    let mut v = Vec::with_capacity(points.len());
+    for p in points {
+        t.push(p.t_seconds);
+        v.push(p.value);
+    }
+    SampledPoints {
+        t,
+        v,
+        extrapolated: spans
+            .iter()
+            .map(|s| {
+                [
+                    signal_sampler::moved_time(s.from_seconds, &moved, true),
+                    signal_sampler::moved_time(s.to_seconds, &moved, false),
+                ]
+            })
+            .collect(),
     }
 }
 
@@ -527,9 +559,52 @@ fn cache_queries(signals: &[SignalQuery]) -> Vec<CacheQuery<'_>> {
 
 #[cfg(test)]
 mod tests {
-    use super::off_async_workers;
+    use super::{off_async_workers, sampled_points};
+    use crate::signal_cache::ExtrapolatedSpan;
+    use crate::signal_sampler::{ColumnGrid, SamplePoint};
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[allow(clippy::cast_precision_loss)]
+    fn points(times: &[f64]) -> Vec<SamplePoint> {
+        times
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| SamplePoint {
+                t_seconds: t,
+                value: i as f64,
+            })
+            .collect()
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_span_bounded_by_served_samples_moves_with_them() {
+        // Ten one-second columns over [0, 10). A gap from 3.3 to 6.6 is
+        // a span between two samples that both snap.
+        let grid = ColumnGrid::new(0.0, 10.0, 10).unwrap();
+        let served = points(&[0.2, 1.4, 3.3, 6.6, 8.1, 9.7]);
+        let spans = [
+            ExtrapolatedSpan {
+                from_seconds: 3.3,
+                to_seconds: 6.6,
+            },
+            // The tail past the last sample, which stays exact.
+            ExtrapolatedSpan {
+                from_seconds: 9.7,
+                to_seconds: 10.0,
+            },
+        ];
+        let wire = sampled_points(served.clone(), &spans, Some(&grid));
+        assert_eq!(wire.t, vec![0.2, 1.125, 3.125, 6.125, 8.125, 9.7]);
+        assert_eq!(wire.v, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(wire.extrapolated, vec![[3.125, 6.125], [9.7, 10.0]]);
+
+        // Served raw: nothing moves.
+        let raw = sampled_points(served, &spans, None);
+        assert_eq!(raw.t, vec![0.2, 1.4, 3.3, 6.6, 8.1, 9.7]);
+        assert_eq!(raw.extrapolated, vec![[3.3, 6.6], [9.7, 10.0]]);
+    }
 
     #[test]
     fn a_command_body_that_never_yields_does_not_park_an_async_worker() {
