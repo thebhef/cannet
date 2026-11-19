@@ -3453,6 +3453,21 @@ is, so the two files line up by time. Where the webview has no Worker
 or origin-private storage the recorder is off, and `cannet.log` says
 so once (`hang recorder off: …`).
 
+**When the window's renderer dies.** The webview's renderer process
+can be killed (WebView2 does this when it runs out of memory) while
+the host keeps capturing. On Windows and Linux the host checks every
+2 s: when the UI heartbeat has been silent for 10 s and its own
+`WebView` process family has no renderer left in it, it reloads the
+window, which rejoins the running session, and logs `renderer process
+is gone … reloaded the window` at `warn`. A renderer that is alive but
+slow is never reloaded. At most 3 automatic reloads happen in 10
+minutes, none within 30 s of the last; past that the host logs once
+and leaves the window alone. Separately, on every platform, a close
+request while the heartbeat has been silent for 10 s is handled by the
+host: it runs the normal shutdown (the capture, loggers and caches are
+written) without the frontend's unsaved-changes prompt, so unsaved
+project edits are lost, as they would be if the process were killed.
+
 **System Messages panel**. Open it from the status bar's *System
 messages* button. The panel renders a virtualised list filterable by
 source and by minimum level (default `info` — a session's worth of

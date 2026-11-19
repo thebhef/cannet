@@ -98,6 +98,7 @@ mod project_dir;
 mod project_registry;
 mod project_watch;
 mod rbs;
+mod renderer_watch;
 mod reveal;
 mod sampling;
 mod server_browse;
@@ -1000,6 +1001,7 @@ pub fn run() -> ! {
             // depths from it (ADR 0034).
             settings::hydrate(app.handle());
             crash::spawn_health_recorder(app.handle().clone());
+            renderer_watch::spawn(app.handle().clone());
             spawn_trace_grew_emitter(app.handle().clone());
             spawn_trace_flusher(app.handle().clone());
             // `--reload-after-secs`: the automation surface's reload
@@ -1080,6 +1082,25 @@ pub fn run() -> ! {
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
         } if app_handle.state::<closing::ClosingGate>().is_started() => api.prevent_close(),
+        // Before it starts, a close is the frontend's to decide — unless
+        // the frontend cannot answer. Tauri holds the close for its
+        // listener either way, so a dead or wedged renderer would hold
+        // the window open forever; close from here instead
+        // (`renderer_watch`).
+        tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if renderer_watch::frontend_cannot_answer() => {
+            api.prevent_close();
+            crate::sys_warn!(
+                app_handle,
+                "closing",
+                "close requested with no frontend to answer it (no UI heartbeat for {} s); \
+                 closing from the host without the unsaved-changes prompt",
+                renderer_watch::FRONTEND_GONE_MS / 1_000
+            );
+            closing::begin_shutdown(app_handle, None);
+        }
         // Resize and scale-factor bursts go to `cannet.log` at debug: both
         // are suspects when the window stops answering.
         tauri::RunEvent::WindowEvent { event, .. } => {
