@@ -643,24 +643,41 @@ impl SignalCache {
     /// costs fewer than [`PYRAMID_BRANCH`] points per level below the one
     /// read, and the decimation keeps its last column's final point, so
     /// the live edge survives it.
+    #[cfg(test)]
     fn window(&self, from: f64, to: f64, max_points: usize) -> Vec<SamplePoint> {
+        self.window_served(from, to, max_points).0
+    }
+
+    /// [`Self::window`], and whether the answer was decimated — `false`
+    /// when the window fit the budget and is served at the series' own
+    /// sample times, which a caller placing points on a shared column
+    /// grid must leave exact.
+    fn window_served(&self, from: f64, to: f64, max_points: usize) -> (Vec<SamplePoint>, bool) {
         if self.levels[0].live_len() == 0 {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let level = self.serve_level(from, to, max_points);
         let slice = self.level_points(level, from, to);
         if max_points == 0 {
-            return slice;
+            return (slice, false);
         }
         let (Some(first), Some(last)) = (slice.first(), slice.last()) else {
-            return slice;
+            return (slice, false);
         };
-        // The column the decimation will bin into: the same clamp to the
+        // The column the decimation will bin into: the window's shared
+        // grid, or — over an unbounded range — the same clamp to the
         // series' own span it applies.
         #[allow(clippy::cast_precision_loss)]
-        let column = (to.min(last.t_seconds) - from.max(first.t_seconds)) / max_points as f64;
+        let column = signal_sampler::ColumnGrid::new(from, to, max_points).map_or_else(
+            || (to.min(last.t_seconds) - from.max(first.t_seconds)) / max_points as f64,
+            |grid| grid.width(),
+        );
         let slice = self.refine_gaps(slice, level, column);
-        signal_sampler::decimate_min_max(&slice, from, to, max_points)
+        let decimated = slice.len() > max_points;
+        (
+            signal_sampler::decimate_min_max(&slice, from, to, max_points),
+            decimated,
+        )
     }
 
     /// Splice finer-level points into every gap of `slice` (read off
@@ -4302,6 +4319,7 @@ impl SignalCacheStore {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let mut series = Vec::with_capacity(keys.len());
         let mut extrapolated = Vec::with_capacity(keys.len());
+        let mut decimated = Vec::with_capacity(keys.len());
         for key in keys {
             // A query that names no series (a busless DBC-backed one) and
             // one whose cache has gone are answered the same way: an
@@ -4310,12 +4328,14 @@ impl SignalCacheStore {
             let Some(cache) = key.as_ref().and_then(|k| caches.by_key.get_mut(k)) else {
                 series.push(Vec::new());
                 extrapolated.push(Vec::new());
+                decimated.push(false);
                 continue;
             };
             // Something asked this pyramid for samples, so it has earned
             // its disk this session ([`CacheUsage`]).
             cache.read = true;
-            let window = cache.window(from_seconds, to_seconds, max_points);
+            let (window, reduced) = cache.window_served(from_seconds, to_seconds, max_points);
+            decimated.push(reduced);
             // Classified here rather than in the reducer: which
             // stretches of a window have no data behind them is a fact
             // about the series, not about the serve that asked.
@@ -4325,6 +4345,7 @@ impl SignalCacheStore {
         ServedWindows {
             series,
             extrapolated,
+            decimated,
             complete: caught_up(&caches, keys, store_len),
         }
     }
@@ -4818,6 +4839,10 @@ pub struct ServedWindows {
     /// to "which parts of this window is the view about to draw without
     /// data behind them" — see `SignalCache::extrapolated_spans`.
     pub extrapolated: Vec<Vec<ExtrapolatedSpan>>,
+    /// Whether each window was decimated, index-parallel with
+    /// [`Self::series`]. `false` is a window served at its series' own
+    /// sample times — it fit the budget, or none was set.
+    pub decimated: Vec<bool>,
     /// `true` when every queried signal's decode cursor reached the store
     /// tip this serve read — the windows are the whole answer for their
     /// range. `false` when the serve ran out of budget first: the windows
@@ -6337,6 +6362,31 @@ mod tests {
             Vec::new(),
             "a decimated window's bucket spacing was read as gaps in the series",
         );
+    }
+
+    /// A serve says whether it decimated, so the plot's serve knows which
+    /// windows it may place on the shared column grid and which are at
+    /// the series' own sample times and must stay exact.
+    #[test]
+    fn a_serve_says_which_windows_it_decimated() {
+        let store = TraceStore::new();
+        append_cadence(&store, 0, S / 1000, 20_000);
+        let db = load_dbc();
+        let dbs = &on_test_bus(&[&db]);
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+        let q = [query_on(256, "X")];
+
+        let zoomed_out = cache.slice_many(&q, 0.0, 19.999, 200, &store, dbs);
+        assert_eq!(zoomed_out.decimated, vec![true]);
+        // 100 ms is 100 samples: under a 200-point budget, served raw.
+        let zoomed_in = cache.slice_many(&q, 5.0, 5.1, 200, &store, dbs);
+        assert_eq!(zoomed_in.decimated, vec![false]);
+        assert!(zoomed_in.series[0]
+            .iter()
+            .all(|p| (p.t_seconds * 1000.0 - (p.t_seconds * 1000.0).round()).abs() < 1e-6));
+        let unbudgeted = cache.slice_many(&q, 0.0, 19.999, 0, &store, dbs);
+        assert_eq!(unbudgeted.decimated, vec![false]);
     }
 
     /// The shipped screenshot fixture (`examples/extrapolation/`) exists
