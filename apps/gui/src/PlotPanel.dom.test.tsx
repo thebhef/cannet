@@ -775,6 +775,14 @@ function persistedAreas(api: { updateParameters: ReturnType<typeof vi.fn> }): Pl
 const sampleCalls = () =>
   vi.mocked(invoke).mock.calls.filter((c) => c[0] === "sample_signals").length;
 
+/// The signal names each `cmd` request carried, oldest first — what the
+/// panel asked the host to decode, per round-trip.
+const requestedSignals = (cmd: "sample_signals" | "signal_min_max") =>
+  vi
+    .mocked(invoke)
+    .mock.calls.filter((c) => c[0] === cmd)
+    .map((c) => ((c[1] as { signals?: { signalName: string }[] }).signals ?? []).map((s) => s.signalName));
+
 /// The newest uPlot instance rendered inside the named area. Areas
 /// rebuild their instance on a signal-set change, so the last one wins.
 function liveInstanceIn(areaLabel: string): FakeUPlotInst {
@@ -5424,6 +5432,41 @@ describe("PlotPanel hidden signal rows", () => {
     expect(shownAgain.querySelector(".plot-signal-readout")).not.toBeNull();
   });
 
+  it("does not ask the host for a hidden signal, and fetches it when shown", async () => {
+    await withSizedCanvas(async () => {
+      const registry = makeRegistry({
+        id: "el-hide-nofetch",
+        config: {
+          areas: [
+            {
+              id: "a1",
+              signals: [
+                { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#abc", hidden: true },
+                { busId: null, messageId: 256, extended: false, signalName: "EngineTemp", messageName: "EngineData", unit: "rpm", color: "#def" },
+              ],
+            },
+          ],
+        },
+        trace: { start: 0, end: 60, isPaused: false } as unknown as TraceState,
+      });
+      renderPanel({ params: { elementId: "el-hide-nofetch" }, registry });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const asked = requestedSignals("sample_signals");
+      expect(asked.flat()).toContain("EngineTemp");
+      expect(asked.flat()).not.toContain("EngineSpeed");
+
+      await act(async () => {
+        fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      expect(requestedSignals("sample_signals").slice(asked.length).flat()).toContain("EngineSpeed");
+      const rows = liveInstanceIn("Area 1").data as unknown[][];
+      expect(rows[1].some((v) => v != null)).toBe(true);
+    });
+  });
+
   it("still shows compact rows when every signal on the axis is hidden", () => {
     // ADR 0026: an all-hidden axis keeps its rows rather than
     // reducing to a heading — a swatch in one of them is the only way
@@ -6418,11 +6461,45 @@ describe("PlotPanel solo", () => {
     expect(soloPosition()).toBe("all (2)");
   });
 
-  it("flips visibility without a host round-trip or a chart rebuild", async () => {
-    // Every plotted signal is already sampled — hidden ones included —
-    // so a solo change is a re-normalise + redraw of the window each
-    // area already holds: no fetch, and no new uPlot instance (which at
-    // the series counts this panel targets is the expensive thing).
+  it("asks the host only for the signals solo leaves visible", async () => {
+    // A masked signal draws nothing, so fetching it is pure cost — and
+    // the cost is not linear: every fetched series is merged onto one
+    // shared x column. A panel of hundreds of solo-paged signals paid
+    // for all of them on every resample and ran the renderer out of
+    // heap.
+    await withSizedCanvas(async () => {
+      const registry = cellRegistry("el-solo-fetch-visible", { solo: { pattern: "Cell16" } });
+      renderPanel({ params: { elementId: "el-solo-fetch-visible" }, registry });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      // Area 2 holds no match, so solo leaves it alone: PackVoltage
+      // still draws and is still fetched. Area 1's Cell1 is masked.
+      const asked = requestedSignals("sample_signals");
+      expect(asked.flat()).toContain("Cell16");
+      expect(asked.flat()).toContain("PackVoltage");
+      for (const names of [...asked, ...requestedSignals("signal_min_max")]) {
+        expect(names).not.toContain("Cell1");
+      }
+
+      // Clearing solo shows Cell1 again — on a stopped trace, with no
+      // tick coming, so the change itself has to fetch it and draw.
+      const before = asked.length;
+      await act(async () => {
+        typeSolo("");
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      expect(requestedSignals("sample_signals").slice(before).flat()).toContain("Cell1");
+      const rows = liveInstanceIn("Area 1").data as unknown[][];
+      expect(rows[1].some((v) => v != null)).toBe(true); // Cell1 draws
+    });
+  });
+
+  it("flips visibility without a chart rebuild", async () => {
+    // A solo change re-normalises and redraws; it does not build a new
+    // uPlot instance (which at the series counts this panel targets is
+    // the expensive thing). Hiding needs no host round-trip at all —
+    // the window already holds every sample still drawn.
     // A stopped trace, so no self-paced tick can be mistaken for either.
     await withSizedCanvas(async () => {
       const registry = cellRegistry("el-solo-nofetch");

@@ -17,6 +17,22 @@ describe("mergeSeries", () => {
     expect(mergeSeries([])).toEqual([[]]);
   });
 
+  it("gives every series with no samples one shared all-null row", () => {
+    // A hidden series is not fetched, so it arrives empty. Hundreds of
+    // them on one axis must not cost a full-width row each.
+    const empty = { t: [] as number[], v: [] as number[] };
+    const merged = mergeSeries([empty, { t: [1, 2, 3], v: [10, 20, 30] }, empty, empty]);
+    expect(merged).toEqual([
+      [1, 2, 3],
+      [null, null, null],
+      [10, 20, 30],
+      [null, null, null],
+      [null, null, null],
+    ]);
+    expect(merged[3]).toBe(merged[1]);
+    expect(merged[4]).toBe(merged[1]);
+  });
+
   it("uses each series' own timestamps when aligned", () => {
     const merged = mergeSeries([{ t: [1, 2, 3], v: [10, 20, 30] }]);
     expect(merged).toEqual([

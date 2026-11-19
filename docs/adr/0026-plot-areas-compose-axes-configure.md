@@ -1021,10 +1021,17 @@ below:
   function of the area's signals and its y-axis mode, which the mask
   does not touch. So the whole feature reduces to the hidden-signal
   treatment above: scale unions, lane re-flow, the collapse of an axis
-  with nothing left to draw, all for free. A visibility flip repaints
-  from the window the area already holds rather than refetching (the
-  fetch covers hidden signals, so the bytes would be identical); it
-  still resamples, because normalisation happens there.
+  with nothing left to draw, all for free. **A hidden signal is not
+  fetched and costs the merge nothing** — hidden by the user or masked
+  by solo alike. The sampled window and the follow-live extent query
+  carry only the signals that draw, and a series with no samples
+  shares one empty merged row. The merge builds a row per series
+  across the union of every series' timestamps, so carrying hidden
+  series made a solo-paged axis of hundreds of signals cost the square
+  of what it held, not what it drew. A visibility flip that only hides
+  repaints from the window the area already holds; one that shows a
+  signal the window does not hold fetches it, stopped capture or not.
+  Either way it resamples, because normalisation happens there.
 
 What's still rough:
 

@@ -227,7 +227,17 @@ export function mergeSeries(
   }
   const xs = [...xsSet].sort((a, b) => a - b);
   const out: MergedValue[][] = [xs];
+  // Every series with no samples gets the same all-null row: a hidden
+  // series is not fetched, and an axis can hold hundreds of them. Safe
+  // to share because every consumer leaves an empty series' row as it
+  // is — nothing writes a value into it.
+  let emptyRow: MergedValue[] | null = null;
   for (const s of series) {
+    if (s.t.length === 0) {
+      emptyRow ??= new Array<MergedValue>(xs.length).fill(null);
+      out.push(emptyRow);
+      continue;
+    }
     if (s.t.length === 1) {
       out.push(new Array<MergedValue>(xs.length).fill(s.v[0]));
       continue;
