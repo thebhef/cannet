@@ -100,6 +100,7 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Manager};
 
 use crate::app_state::AppState;
+use crate::renderer_watch::RendererPresence;
 use crate::signal_cache::CacheUsage;
 use crate::sys_debug;
 use crate::system_log::{LogLevel, SystemMessage};
@@ -197,7 +198,7 @@ pub fn record_js_heap(bytes: u64) {
 /// zero. A monotonic climb ending in a wrap says nothing about either
 /// side's health; only an age that stays high says that, which is what
 /// [`ui_liveness`] judges.
-fn ui_heartbeat_age_ms() -> Option<u64> {
+pub(crate) fn ui_heartbeat_age_ms() -> Option<u64> {
     match LAST_UI_HEARTBEAT.load(Ordering::Relaxed) {
         0 => None,
         at => Some(unix_ms().saturating_sub(at)),
@@ -557,6 +558,9 @@ struct MemorySample {
     /// with a resolved [`Self::host`] is the shared-browser-process
     /// signature — see [`attribution_fault`].
     webview_procs: usize,
+    /// How many of those are renderers. Zero with a browser still in the
+    /// family is a renderer that died ([`renderer_presence_of`]).
+    webview_renderer_procs: usize,
 }
 
 /// One row of the OS process table, as the attribution walk needs it.
@@ -768,6 +772,28 @@ fn attribution_fault(sample: &MemorySample) -> Option<&'static str> {
     )
 }
 
+/// Whether this app's renderer process is running, read from the process
+/// table. A heartbeat gone quiet cannot tell a dead renderer from a busy
+/// one; this can, wherever the family can be attributed to us.
+pub(crate) fn renderer_presence(sys: &mut System, own_pid: Option<Pid>) -> RendererPresence {
+    renderer_presence_of(&read_memory(sys, own_pid))
+}
+
+/// [`renderer_presence`]'s verdict on one sample. Pure.
+fn renderer_presence_of(sample: &MemorySample) -> RendererPresence {
+    // No WebView process of ours at all is either an unattributable
+    // family (a second cannet owns the browser; macOS) or a dead browser
+    // — neither says anything about a renderer.
+    if !WEBVIEW_IS_OUR_DESCENDANT || sample.host.is_none() || sample.webview_procs == 0 {
+        return RendererPresence::Unknown;
+    }
+    if sample.webview_renderer_procs > 0 {
+        RendererPresence::Running
+    } else {
+        RendererPresence::Gone
+    }
+}
+
 /// Whether this platform's `WebView` runs as our own descendant
 /// (`WebView2` on Windows, `WebKitGTK` on Linux). macOS's `WebKit`
 /// helpers are launchd-owned, so they are not.
@@ -795,6 +821,9 @@ fn family_memory(rows: &[ProcRow], root: u32) -> MemorySample {
             .sum()
     };
     sample.webview_procs = wv().count();
+    sample.webview_renderer_procs = wv()
+        .filter(|r| r.webview == Some(WebviewKind::Renderer))
+        .count();
     sample.webview = Some(wv_sum(None));
     sample.webview_browser = Some(wv_sum(Some(WebviewKind::Browser)));
     sample.webview_renderer = Some(wv_sum(Some(WebviewKind::Renderer)));
@@ -982,6 +1011,7 @@ mod tests {
             sys_avail: Some(1_073_741_824),
             sys_total: Some(34_359_738_368),
             webview_procs: 4,
+            webview_renderer_procs: 1,
         };
         assert_eq!(
             format_health_message(
@@ -1253,6 +1283,46 @@ mod tests {
         assert_eq!(m.webview_other, mb(50));
         assert_eq!(m.webview_procs, 4);
         assert_eq!(attribution_fault(&m), None);
+    }
+
+    #[test]
+    fn a_family_with_its_renderer_reads_running() {
+        assert_eq!(
+            renderer_presence_of(&family_memory(&healthy_table(), 100)),
+            RendererPresence::Running
+        );
+    }
+
+    // macOS's `WebKit` helpers are never our descendants, so the family
+    // can say nothing about a renderer there.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_browser_with_no_renderer_reads_gone() {
+        // The 11-17 signature: the browser (and its GPU process) still
+        // up, the renderer killed out of memory.
+        let rows: Vec<ProcRow> = healthy_table()
+            .into_iter()
+            .filter(|r| r.webview != Some(WebviewKind::Renderer))
+            .collect();
+        let m = family_memory(&rows, 100);
+        assert_eq!(m.webview_renderer_procs, 0);
+        assert_eq!(renderer_presence_of(&m), RendererPresence::Gone);
+    }
+
+    #[test]
+    fn a_family_that_cannot_be_attributed_reads_unknown() {
+        // No WebView process is ours at all (a second cannet owns the
+        // browser, or the browser itself died): no basis for a verdict.
+        let rows = vec![row(100, Some(4), 1_000, 200, None)];
+        assert_eq!(
+            renderer_presence_of(&family_memory(&rows, 100)),
+            RendererPresence::Unknown
+        );
+        // An unresolved host likewise.
+        assert_eq!(
+            renderer_presence_of(&MemorySample::default()),
+            RendererPresence::Unknown
+        );
     }
 
     // macOS's `WebKit` helpers are launchd-owned, so a family with none
