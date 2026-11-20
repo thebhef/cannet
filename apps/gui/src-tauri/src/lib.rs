@@ -41,6 +41,7 @@ mod app_state;
 pub mod bus_error_episodes;
 mod bus_health;
 mod capture;
+mod capture_databases;
 mod clock_status;
 mod closing;
 mod command_surface;

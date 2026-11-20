@@ -49,10 +49,12 @@ attachments. Import parses them into the loaded set under
   group for every channel could only say "every channel". A capture's
   own databases are carried through a save from the bytes they arrived
   with.
-- **Restore brings them back.** A session restored from an MF4 that was
-  opened with no project, or a temporary one, restores the capture's
-  databases and their bus assignments. An MF4 with databases reads as a
-  project: its channels are buses, its attachments the DBC list.
+- **Restore brings them back.** A capture restored from its scratch
+  restores the databases it arrived with and their bus assignments —
+  they are written beside the capture, stamped with its identity, and
+  reinstalled before its signal caches are judged. An MF4 with
+  databases reads as a project: its channels are buses, its attachments
+  the DBC list.
 
 ### Open with the owner
 
@@ -72,7 +74,7 @@ attachments. Import parses them into the loaded set under
 3. **Frontend.** The dialog's database rows; the project panel lists
    capture databases as assignable and unsaved; Reload DBCs and project
    save leave them alone.
-4. **Restore.** A capture-only session restores its databases and
+4. **Restore.** A restored capture brings back its databases and their
    assignments.
 
 ## Out of scope
@@ -92,8 +94,8 @@ attachments. Import parses them into the loaded set under
   and keeps a capture's own databases.
 - A project saved after an MF4 import names no capture database.
 - Reload DBCs keeps a capture database loaded and assigned.
-- A capture-only session restores with its databases assigned as they
-  were.
+- A capture restored from its scratch comes back with its databases
+  assigned as they were.
 - README § MDF import and export, `docs/CONTEXT.md` and the MDF crate's
   rustdoc say what the code does.
 
@@ -116,3 +118,9 @@ attachments. Import parses them into the loaded set under
 - 2026-11-20 — the project panel lists a capture's databases, marked,
   assignable and removable; a saved project and Reload DBCs leave them
   out. The panel's label for a database on no bus says so.
+- 2026-11-20 — restore: the capture's scratch keeps its databases and
+  their buses, and restoring the capture reinstalls them. Every piece
+  is covered by tests; the paths end to end — import to decoded trace,
+  relaunch to restored assignment — are not exercised in the app, and
+  wait on the owner. A capture is only ever restored for an open
+  project file, so a session with none restores nothing, as before.

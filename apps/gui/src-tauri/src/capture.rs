@@ -2503,6 +2503,10 @@ pub(crate) async fn import_mdf(
                         );
                     }
                 }
+                // The capture now has its identity, so the databases it
+                // brought can be kept with it: a relaunch that restores
+                // this capture restores them too.
+                crate::capture_databases::persist(&state);
                 // The file's events, applied after the pass — same point
                 // in the flow as `open_log`'s BLF markers, and after the
                 // capture identity that wipes the session store. Their
@@ -3225,6 +3229,24 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
     crate::sampling::off_async_workers(move || restore_scratch_capture_blocking(&app)).await
 }
 
+/// Bring back the databases the restored capture arrived with, and the
+/// buses they were assigned to — a project file holds neither
+/// ([`crate::capture_databases`]).
+fn restore_capture_databases(app: &AppHandle, state: &AppState) {
+    let databases = crate::capture_databases::restore(state);
+    if databases.is_empty() {
+        return;
+    }
+    sys_info!(
+        app,
+        "project",
+        "restored {n} database(s) the capture carries: {names}",
+        n = databases.len(),
+        names = databases.join(", "),
+    );
+    crate::dbc_commands::announce_dbc_change(app, "*");
+}
+
 fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
     let state: State<'_, AppState> = app.state();
     if let Some(live) = live_store_answer(&state) {
@@ -3263,6 +3285,8 @@ fn restore_scratch_capture_blocking(app: &AppHandle) -> RestoredCapture {
     };
     reporter.end_phase();
     let (count, first_index_usize, first_index_ts_ns) = state.trace_store.len_and_low_water();
+    // Before the pyramids below, which are judged against the loaded set.
+    restore_capture_databases(app, &state);
     // Adopt the signal pyramids the prior session persisted, if they
     // provably describe this capture decoded against this DBC set (ADR
     // 0047). This is where a relaunch stops re-paying a full rebuild: the
