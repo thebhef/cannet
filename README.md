@@ -1838,7 +1838,7 @@ writes, so the panel teaches the file.
   color-map rule) are stored with the project and render exactly as
   chosen under any theme; only the colors the app derives follow the
   theme. **Clear project colors** in the command palette discards the
-  picked bus and signal colors so they fall back to the current
+  picked bus, signal and plot-series colors so they fall back to the current
   theme's defaults — it asks first, and it leaves color-map rules
   alone.
 - **Autosave on exit.** **General → Autosave on exit**, off by default.

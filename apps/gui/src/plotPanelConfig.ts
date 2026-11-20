@@ -417,6 +417,32 @@ export function areasFromParams(raw: unknown): PlotAreaConfig[] {
   return [newPlotArea()];
 }
 
+/** A plot's stored `areas` with every series' `colorPick` removed — the
+ * "clear project colors" half that lives in plot config, so each series
+ * resolves its color live again (ADR 0026). Works on the raw stored
+ * value and touches nothing else, so a field this module doesn't parse
+ * survives. Returns `raw` itself when no series carries a pick. */
+export function areasWithoutColorPicks(raw: unknown): unknown {
+  if (!Array.isArray(raw)) return raw;
+  let changed = false;
+  const out = raw.map((a: unknown) => {
+    if (typeof a !== "object" || a === null) return a;
+    const signals = (a as { signals?: unknown }).signals;
+    if (!Array.isArray(signals)) return a;
+    if (!signals.some((s) => typeof s === "object" && s !== null && "colorPick" in s)) return a;
+    changed = true;
+    return {
+      ...a,
+      signals: signals.map((s: unknown) => {
+        if (typeof s !== "object" || s === null || !("colorPick" in s)) return s;
+        const { colorPick: _dropped, ...rest } = s as Record<string, unknown>;
+        return rest;
+      }),
+    };
+  });
+  return changed ? out : raw;
+}
+
 /** Mime type a plot-area drag carries, holding the dragged area's id.
  * Distinct from the signal drag's `SIGNAL_DND_MIME` (`dragSignals.ts`)
  * so an area drag and a signal drag can share the same drop surface —
