@@ -1387,7 +1387,9 @@ struct Labelling {
 /// exponents (a newton-metre is an energy and a torque), so the
 /// composition resolves to the first of them and the user may name any
 /// other (owner ruling). `kinds` is that class in composition order,
-/// with what the series is currently read in at its head.
+/// with what the series is currently read in at its head — and empty
+/// for a function that reads no operand (`HLine`), where a unit is a name
+/// for a bare number and there is nothing to convert within.
 fn labelling(
     definition: &MathDefinition,
     derived: Option<&crate::units::Composed>,
@@ -1424,6 +1426,11 @@ fn labelling(
         } else {
             kinds.insert(0, kind);
         }
+    }
+    // A function that reads no operand has nothing to convert: a unit on
+    // it names a bare number, so nothing locks and every unit is offered.
+    if definition.function.arity() == Arity::None {
+        kinds.clear();
     }
     Labelling {
         target,
@@ -2355,6 +2362,18 @@ mod tests {
         // Nothing placed is nothing to lock to.
         let model = resolve(&sum, &[entry("PackVolts", "")]);
         assert!(model.get("m1").expect("m1").kinds.is_empty());
+
+        // An HLine reads no operand, so a unit on it is a name for a
+        // bare number, never a conversion: nothing locks, whether it
+        // still reads `scalar` or already carries a name.
+        let mut hline = def("m1", MathFunction::HLine { value: 25.0 }, picks(&[]));
+        let model = resolve(std::slice::from_ref(&hline), &[]);
+        assert_eq!(model.get("m1").expect("m1").kinds, vec![]);
+        hline.unit = Some(UnitTarget::Typed(UnitId::base("degree-celsius")));
+        let model = resolve(&[hline], &[]);
+        let r = model.get("m1").expect("m1");
+        assert_eq!(r.unit, "°C");
+        assert_eq!(r.kinds, vec![]);
     }
 
     /// An override the composition does not place still has to be

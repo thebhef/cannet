@@ -2760,6 +2760,8 @@ Where several dimensions share the composition's exponents the picker
 offers them all, under their own headings, the one the composition
 resolved to first: a product of a newton and a metre opens on **energy**
 with **torque** beneath it, because only you know which was meant.
+An `HLine` reads no operand, so there is nothing to convert: its picker
+is unlocked and offers every unit, and the one picked names the value.
 Picking the derived unit again clears the override;
 there is no reset button because there is nothing else it would do, and
 where the operands compose nothing to pick — a set whose members are of
