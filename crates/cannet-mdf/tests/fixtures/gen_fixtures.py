@@ -1,8 +1,9 @@
 """Synthetic MF4 fixture generator for the cannet MDF 4.x reader.
 
 Emits a fixture matrix (sorted/unsorted x finalized/unfinalized x classic/FD x
-DT/DZ, plus the two non-logger content shapes the reader must classify) and an
-``expected/`` directory of JSON ground-truth files.
+DT/DZ, plus the two non-logger content shapes the reader must classify, plus
+two multi-bus captures that carry the databases they were recorded against)
+and an ``expected/`` directory of JSON ground-truth files.
 
 The committed ``.mf4`` files and their ``expected/*.json`` are what the Rust
 suite reads, so the default ``cargo test`` needs no Python and no asammdf.
@@ -26,6 +27,7 @@ All content is invented; nothing is derived from any real capture.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import shutil
 import struct
@@ -680,6 +682,157 @@ def gen_signal_only():
 # --------------------------------------------------------------------------
 # verification
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# multi-bus captures carrying their databases
+# --------------------------------------------------------------------------
+DBC_MIME = "application/vnd.vector.dbc"
+
+
+def dbc_text(message_id: int, message: str, signal: str, layout: str, node: str) -> bytes:
+    """A one-message, one-signal database."""
+    return (
+        'VERSION ""\n\nNS_ :\n\nBS_:\n\n'
+        f"BU_: {node}\n\n"
+        f"BO_ {message_id} {message}: 8 {node}\n"
+        f" SG_ {signal} : {layout} Vector__XXX\n"
+    ).encode()
+
+
+POWERTRAIN_DBC = dbc_text(421, "EngineData", "EngineSpeed", '0|16@1+ (0.25,0) [0|16383.75] "rpm"', "ECU")
+BODY_DBC = dbc_text(688, "DoorStatus", "DoorOpen", '0|1@1+ (1,0) [0|1] ""', "BCM")
+SPARE_DBC = dbc_text(1024, "Unused", "Nothing", '0|8@1+ (1,0) [0|255] ""', "NONE")
+
+
+def message_frames(bus: int, can_id: int, raws, width: int, base_ns: int, step_ns: int):
+    """One message's frames on `bus`: `raws[i]` little-endian in the first
+    `width` bytes of an 8-byte payload."""
+    return [
+        {
+            "t_ns": base_ns + i * step_ns,
+            "bus_channel": bus,
+            "id": can_id,
+            "ide": 0,
+            "dlc": 8,
+            "data_length": 8,
+            "data": int(raw).to_bytes(width, "little") + bytes(8 - width),
+            "dir": 0,
+            "edl": 0,
+            "brs": 0,
+            "esi": 0,
+        }
+        for i, raw in enumerate(raws)
+    ]
+
+
+def linked(frames, database, name):
+    """The frames' `CAN_DataFrame` signal, linking `database` through
+    `cn_at_reference` — what python-can's MF4 writer does with the
+    database it is given, and what asammdf decodes a frame group by."""
+    signal = bus_signal(frames)
+    if database is not None:
+        signal.attachment = (database, name, hashlib.md5(database).digest())
+    return signal
+
+
+def attachment_json(name, data, bus_channels, mime):
+    return {
+        # 0-based, as the reader numbers a frame's channel.
+        "bus_channels": bus_channels,
+        "data_hex": data.hex(),
+        "embedded": True,
+        "file_name": name,
+        "mime_type": mime,
+    }
+
+
+def attachment_mimes(path: Path) -> dict[str, str]:
+    """What asammdf stamped on each attachment, by file name."""
+    m = MDF(path, process_bus_logging=False)
+    try:
+        return {str(a.file_name): str(a.mime) for a in m.attachments}
+    finally:
+        m.close()
+
+
+def gen_multibus_databases():
+    """Three buses, a `CAN_DataFrame` group each, and three databases:
+    one linked from bus 1's group, one from bus 2's, one from nowhere.
+    Bus 3 carries bus 1's message id, with nothing to decode it."""
+    name = "multibus_databases"
+    step = 3_000_000
+    engine = message_frames(1, 0x1A5, [3200, 3600, 4000, 4400, 4800, 5200], 2, 0, step)
+    doors = message_frames(2, 0x2B0, [0, 1, 1, 0, 1, 0], 1, 1_000_000, step)
+    other = message_frames(3, 0x1A5, [100, 200, 300, 400, 500, 600], 2, 2_000_000, step)
+    m = new_mdf()
+    m.append([linked(engine, POWERTRAIN_DBC, "powertrain.dbc")], acq_name="CAN")
+    m.append([linked(doors, BODY_DBC, "body.dbc")], acq_name="CAN")
+    m.append([linked(other, None, "")], acq_name="CAN")
+    m.attach(SPARE_DBC, file_name="spare.dbc", mime=DBC_MIME, embedded=True)
+    path = OUT / f"{name}.mf4"
+    m.save(path, overwrite=True)
+    m.close()
+    mimes = attachment_mimes(path)
+    doc = base_doc(name, sorted_=True, finalized=True, data_block="DT")
+    doc["groups"] = [
+        bus_group_json(0, "CAN_DataFrame", engine, 8, False),
+        bus_group_json(1, "CAN_DataFrame", doors, 8, False),
+        bus_group_json(2, "CAN_DataFrame", other, 8, False),
+    ]
+    doc["attachments"] = [
+        attachment_json("powertrain.dbc", POWERTRAIN_DBC, [0], mimes["powertrain.dbc"]),
+        attachment_json("body.dbc", BODY_DBC, [1], mimes["body.dbc"]),
+        attachment_json("spare.dbc", SPARE_DBC, [], mimes["spare.dbc"]),
+    ]
+    write_expected(name, doc)
+
+
+def gen_shared_group_database():
+    """Two buses in **one** `CAN_DataFrame` group that links one database
+    — the shape a single python-can writer leaves. The link names the
+    group, so the database is for both buses."""
+    name = "shared_group_database"
+    step = 2_000_000
+    frames = sorted(
+        message_frames(1, 0x1A5, [3200, 3600, 4000, 4400], 2, 0, step)
+        + message_frames(2, 0x1A5, [800, 900, 1000, 1100], 2, 1_000_000, step),
+        key=lambda f: f["t_ns"],
+    )
+    m = new_mdf()
+    m.append([linked(frames, POWERTRAIN_DBC, "powertrain.dbc")], acq_name="CAN")
+    path = OUT / f"{name}.mf4"
+    m.save(path, overwrite=True)
+    m.close()
+    mimes = attachment_mimes(path)
+    doc = base_doc(name, sorted_=True, finalized=True, data_block="DT")
+    doc["groups"] = [bus_group_json(0, "CAN_DataFrame", frames, 8, False)]
+    doc["attachments"] = [
+        attachment_json("powertrain.dbc", POWERTRAIN_DBC, [0, 1], mimes["powertrain.dbc"]),
+    ]
+    write_expected(name, doc)
+
+
+def verify_attachments(m: MDF, doc, problems):
+    """The attachments, and which frame groups link each."""
+    want = doc.get("attachments", [])
+    if len(m.attachments) != len(want):
+        problems.append(f"{len(m.attachments)} attachment(s), expected {len(want)}")
+        return
+    linked_from: dict[int, set[int]] = {}
+    for gi, grp in enumerate(m.groups):
+        for ch in grp.channels:
+            if ch.name != "CAN_DataFrame" or ch.attachment is None:
+                continue
+            buses = {int(b) - 1 for b in m.get("CAN_DataFrame.BusChannel", group=gi).samples}
+            linked_from.setdefault(ch.attachment, set()).update(buses)
+    for i, w in enumerate(want):
+        data, _path, _md5 = m.extract_attachment(i)
+        if data.hex() != w["data_hex"]:
+            problems.append(f"attachment {i} bytes differ")
+        got = sorted(linked_from.get(i, set()))
+        if got != w["bus_channels"]:
+            problems.append(f"attachment {i} linked from {got}, expected {w['bus_channels']}")
+
+
 def verify(name):
     path = OUT / f"{name}.mf4"
     doc = json.loads((EXPECTED / f"{name}.json").read_text())
@@ -691,6 +844,7 @@ def verify(name):
         problems.append(f"id_unfin_flags {unfin:#x} != {doc['id_unfin_flags']:#x}")
 
     m = MDF(path)
+    verify_attachments(m, doc, problems)
     if m.header.abs_time != doc["hd_start_time_ns"]:
         problems.append(f"abs_time {m.header.abs_time} != {doc['hd_start_time_ns']}")
     for g in doc["groups"]:
@@ -830,6 +984,8 @@ def main():
     gen_error_remote()
     gen_dbc_decoded()
     gen_signal_only()
+    gen_multibus_databases()
+    gen_shared_group_database()
     shutil.rmtree(TMP, ignore_errors=True)
 
     names = [
@@ -842,6 +998,8 @@ def main():
         "sorted_finalized_errorremote",
         "sorted_finalized_dbcdecoded",
         "signal_only",
+        "multibus_databases",
+        "shared_group_database",
     ]
     failed = 0
     for n in names:

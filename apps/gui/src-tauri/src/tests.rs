@@ -4107,6 +4107,106 @@ fn mdf_import_lands_frames_with_absolute_timestamps_and_mapped_buses() {
     );
 }
 
+/// The MF4 import path for a capture's databases, end to end on a file
+/// an outside tool wrote: the census names each database's bus channels,
+/// the dialog's assignment follows the channel → bus mapping, the import
+/// installs them — and each bus's frames then decode with the database
+/// linked to **that** bus, and with no other.
+///
+/// `multibus_databases.mf4` (asammdf) holds three buses: `powertrain.dbc`
+/// linked from bus 1's frames, `body.dbc` from bus 2's, `spare.dbc` from
+/// nowhere, and bus 3 carrying bus 1's message id with nothing linked.
+#[test]
+fn an_mf4_s_linked_databases_decode_each_bus_s_own_frames() {
+    use cannet_core::CanFrameSource as _;
+    use cannet_mdf::MdfCanFrameSource;
+    // (bus, id, the first signal's name and value).
+    type Decoded = (String, u32, Option<(String, f64)>);
+
+    let path = mdf_fixture_path("multibus_databases");
+    let capture_path = path.to_str().unwrap();
+    let scan = cannet_mdf::scan_mdf(&path).unwrap();
+    let listed = capture::embedded_databases(&scan.attachments);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|d| (d.file_name.as_str(), d.bus_channels.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("powertrain.dbc", vec![0]),
+            ("body.dbc", vec![1]),
+            ("spare.dbc", vec![]),
+        ]
+    );
+
+    // What the dialog arrives at untouched: each database on the buses
+    // its named channels are mapped to.
+    let channel_to_bus: Vec<(u8, String)> = vec![
+        (0, "powertrain".into()),
+        (1, "body".into()),
+        (2, "aux".into()),
+    ];
+    let assignments: Vec<capture::DatabaseBusAssignment> = listed
+        .iter()
+        .map(|d| capture::DatabaseBusAssignment {
+            file_name: d.file_name.clone(),
+            buses: d
+                .bus_channels
+                .iter()
+                .filter_map(|c| route_channel(*c, &channel_to_bus))
+                .collect(),
+        })
+        .collect();
+
+    let state = test_state();
+    let mut source = MdfCanFrameSource::open(&path).unwrap();
+    let loaded = capture::install_embedded_databases(
+        &state,
+        capture_path,
+        &source.attachments().unwrap(),
+        Some(&assignments),
+    );
+    assert!(
+        loaded.iter().all(|d| d.error.is_none()),
+        "every database parses"
+    );
+
+    // Each frame, decoded as the trace would decode it.
+    let dbs = state.databases();
+    let model = plain_model(&dbs);
+    let mut decoded: Vec<Decoded> = Vec::new();
+    while let Some(frame) = source.next_frame().unwrap() {
+        let mut raw = trace_store::RawTraceFrame::from(frame);
+        raw.bus_id = route_channel(raw.channel, &channel_to_bus);
+        let value =
+            decode_against(&model, &raw).map(|m| (m.signals[0].name.clone(), m.signals[0].value));
+        decoded.push((raw.bus_id.clone().unwrap(), raw.id, value));
+    }
+    assert_eq!(decoded.len(), 18);
+    // The first frame of each bus, in time order.
+    assert_eq!(
+        decoded[..3],
+        [
+            (
+                "powertrain".to_string(),
+                0x1A5,
+                Some(("EngineSpeed".to_string(), 800.0))
+            ),
+            (
+                "body".to_string(),
+                0x2B0,
+                Some(("DoorOpen".to_string(), 0.0))
+            ),
+            // The same id as the powertrain bus's, on a bus no database
+            // is for: a link is per bus, so this decodes with nothing.
+            ("aux".to_string(), 0x1A5, None),
+        ]
+    );
+    for (bus, _, value) in &decoded {
+        assert_eq!(value.is_some(), bus != "aux", "{bus}");
+    }
+}
+
 /// The import time range (ADR 0046) applies to MDF exactly the way it
 /// applies to BLF: `import_mdf` wraps the source in
 /// `cannet_core::WindowedSource` ahead of `run_pump`, so a frame

@@ -4084,6 +4084,13 @@ It rewrites every fixture and expectation, then re-reads each result
 through asammdf and checks it against the JSON it just wrote; a
 non-zero exit means the corpus does not match its own ground truth.
 
+Two of the fixtures are multi-bus captures that carry the databases
+they were recorded against, linked the way python-can and asammdf link
+them: `multibus_databases.mf4` (three buses, a frame group each, a
+database linked from two of them and one linked from nowhere) and
+`shared_group_database.mf4` (two buses in one frame group that links
+one database). The host's import tests read the same files.
+
 ### Validating an MDF export against asammdf
 
 The MDF **writer** is proved against `cannet-mdf`'s own reader by the
