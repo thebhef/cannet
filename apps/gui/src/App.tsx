@@ -2472,6 +2472,14 @@ export function App() {
             pyramids_rebuilding?: boolean;
           }>("restore_scratch_capture");
           if (restored.count <= 0) return;
+          // A capture restores with the databases it arrived with, and
+          // the buses they were assigned to; list them with the
+          // project's, which this open has already loaded.
+          const loaded = await invoke<DbcInfo[] | null>("list_dbcs");
+          if (loaded && restoreRunRef.current === restoreRun) {
+            setDbcPaths(loaded.map((d) => d.dbc_path));
+            noteCaptureDbcs(loaded);
+          }
           setRebuildingCaches(restored.pyramids_rebuilding === true);
           invalidateCache();
           setCount(restored.count);

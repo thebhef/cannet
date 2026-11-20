@@ -244,6 +244,20 @@ plot, signal grid), never as trace rows.
 _Avoid_: "message-independent signal" outside file-format contexts —
 in the model the term is file-backed.
 
+**Capture database**:
+A database a capture file carries — an MF4's embedded DBC attachment —
+loaded by importing it. It is listed, assigned to buses and decodes
+frames like any loaded database, but it is the **session's**, not the
+project's: it is loaded under an identity (`<capture>#<attachment
+name>`) rather than a path, no saved project names it, nothing reloads
+it from disk, and it is kept with the capture — written back out on a
+save, and restored with the capture it arrived with. A capture says
+which bus channels a database is for by its frame group's
+`CAN_DataFrame` channel linking the attachment, the convention
+python-can writes and asammdf reads.
+_Avoid_: "embedded DBC" for the loaded thing — that is the attachment
+in the file.
+
 **Math signal**:
 A signal **computed** host-side from other signals by a user-authored
 definition — a sum, a difference, an exponential filter, a statistic

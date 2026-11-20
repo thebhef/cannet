@@ -742,7 +742,7 @@ fn frame_with_data(id: u32) -> RawTraceFrame {
 
 /// A minimal one-message DBC: arbitration id `id`, message name
 /// `name`, one 8-bit signal `sig` at byte 0.
-fn tiny_dbc(id: u32, name: &str, sig: &str) -> String {
+pub(crate) fn tiny_dbc(id: u32, name: &str, sig: &str) -> String {
     format!(
         "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
          BO_ {id} {name}: 8 ECU\n SG_ {sig} : 0|8@1+ (1,0) [0|0] \"\" ECU\n"

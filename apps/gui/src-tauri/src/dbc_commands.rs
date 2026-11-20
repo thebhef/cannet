@@ -322,6 +322,9 @@ pub(crate) fn set_dbc_buses(
     buses: Vec<String>,
 ) -> Vec<DbcInfo> {
     let stopped = set_dbc_buses_inner(state.inner(), &path, buses);
+    // A capture database's assignment lives with the capture, not in a
+    // project file.
+    persist_if_capture_database(state.inner(), &path);
     // One line, however many stopped — then tell the open transmit
     // views, whose Run control is the state that just moved. RBS rows
     // stopped in the same call; the announcement below is what then
@@ -332,12 +335,32 @@ pub(crate) fn set_dbc_buses(
     dbc_list(state.inner())
 }
 
+/// Whether the database loaded under `path` is one a capture carries.
+fn is_capture_database(state: &AppState, path: &str) -> bool {
+    state
+        .databases()
+        .iter()
+        .any(|d| d.path == path && d.embedded.is_some())
+}
+
+/// Rewrite what the capture's scratch holds of its databases, if `path`
+/// is one of them ([`crate::capture_databases`]).
+fn persist_if_capture_database(state: &AppState, path: &str) {
+    if is_capture_database(state, path) {
+        crate::capture_databases::persist(state);
+    }
+}
+
 /// Remove the loaded DBC with this path (no-op if it isn't loaded).
 /// Returns the remaining loaded list.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
+    let was_capture_database = is_capture_database(state.inner(), &path);
     if let Some(stopped) = remove_dbc_inner(state.inner(), &path) {
+        if was_capture_database {
+            crate::capture_databases::persist(state.inner());
+        }
         sys_info!(&app, "dbc", "removed DBC {path}");
         report_periodics_stopped(&app, state.inner(), &path, &stopped);
         if let Some(w) = state.dbc_watcher().as_mut() {

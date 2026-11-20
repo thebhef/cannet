@@ -3033,7 +3033,9 @@ panel's DBC list shows it by the attachment's name, marked *from the
 capture*, with the same per-bus checkboxes and remove button as any
 other database — but a saved project does not name it, *Reload all from
 disk* leaves it as it is, and changing its buses does not mark the
-project as changed.
+project as changed. It is kept with the capture instead: when a
+relaunch restores that capture, its databases come back with it,
+assigned to the buses they were on.
 
 A database decodes only the buses it is assigned to, so the import
 dialog assigns them: under the channel rows, a **Databases in this
