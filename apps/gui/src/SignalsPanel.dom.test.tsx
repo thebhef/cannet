@@ -163,6 +163,7 @@ const projectCtx: ProjectContextValue = {
   dirty: false,
   dbcPaths: [],
   dbcBuses: {},
+  captureDbcs: new Set<string>(),
   buses: [{ id: "p", name: "Powertrain" }],
   interfaceBindings: [],
   connectedAddresses: [],

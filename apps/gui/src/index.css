@@ -2643,6 +2643,13 @@ ul.status-bar-menu .status-chip {
   flex-wrap: wrap;
 }
 
+/* A database the imported capture carries, not the project. */
+.project-dbc-source {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
 .project-dbc-scoping {
   flex: 1 0 100%;
   display: flex;

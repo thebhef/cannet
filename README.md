@@ -3028,8 +3028,12 @@ through. Nothing is extracted: the definitions are usable where they
 lie ([ADR 0010](docs/adr/0010-no-sidecar-files.md)). Each is loaded
 under `<capture>#<attachment name>`, which is deliberately not a path —
 nothing reloads it from disk, re-importing the same capture replaces it
-in place, and it is a session load rather than a project file, so it is
-not added to the project's DBC list.
+in place. It is the session's rather than the project's: the project
+panel's DBC list shows it by the attachment's name, marked *from the
+capture*, with the same per-bus checkboxes and remove button as any
+other database — but a saved project does not name it, *Reload all from
+disk* leaves it as it is, and changing its buses does not mark the
+project as changed.
 
 A database decodes only the buses it is assigned to, so the import
 dialog assigns them: under the channel rows, a **Databases in this

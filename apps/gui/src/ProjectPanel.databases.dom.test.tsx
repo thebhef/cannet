@@ -28,14 +28,22 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { hydrateSettings } from "./hostSettings";
 
-function renderPanel(opts: { dbcPaths?: readonly string[] } = {}) {
+function renderPanel(
+  opts: {
+    dbcPaths?: readonly string[];
+    dbcBuses?: Record<string, string[]>;
+    captureDbcs?: readonly string[];
+    buses?: { id: string; name: string }[];
+  } = {},
+) {
   const onAddDbc = vi.fn();
   const ctx = {
     projectPath: "C:/proj/bench.cannet_prj",
     dirty: false,
     dbcPaths: opts.dbcPaths ?? [],
-    dbcBuses: {},
-    buses: [],
+    dbcBuses: opts.dbcBuses ?? {},
+    captureDbcs: new Set(opts.captureDbcs ?? []),
+    buses: opts.buses ?? [],
     interfaceBindings: [],
     connectedAddresses: [],
     remoteConnected: false,
@@ -104,5 +112,34 @@ describe("the project panel's databases section", () => {
     const { onAddDbc } = renderPanel({ dbcPaths: ["C:/dbc/pack.dbc"] });
     fireEvent.click(screen.getByRole("button", { name: "Add…" }));
     expect(onAddDbc).toHaveBeenCalledTimes(1);
+  });
+
+  it("says a database on no bus is on no bus", () => {
+    // Assignment governs decode: a database assigned to nothing decodes
+    // nothing, so the row must not read as though it decoded everything.
+    renderPanel({
+      dbcPaths: ["C:/dbc/pack.dbc", "C:/dbc/body.dbc"],
+      dbcBuses: { "C:/dbc/body.dbc": ["p"] },
+      buses: [{ id: "p", name: "Powertrain" }],
+    });
+    const rows = document.querySelectorAll(".project-dbc");
+    expect(rows[0].querySelector(".project-dbc-scoping-label")).toHaveTextContent("no bus:");
+    expect(rows[1].querySelector(".project-dbc-scoping-label")).toHaveTextContent("buses:");
+    expect(screen.queryByText(/all buses/)).toBeNull();
+  });
+
+  it("lists a capture's database by its own name, marked as the capture's", () => {
+    const capture = "C:\captures\run.mf4#body.dbc";
+    renderPanel({
+      dbcPaths: ["C:/dbc/pack.dbc", capture],
+      captureDbcs: [capture],
+      buses: [{ id: "p", name: "Powertrain" }],
+    });
+    const rows = document.querySelectorAll(".project-dbc");
+    expect(rows[0].querySelector(".project-dbc-source")).toBeNull();
+    expect(rows[1].querySelector(".project-dbc-name")).toHaveTextContent(/^body\.dbc$/);
+    expect(rows[1].querySelector(".project-dbc-source")).toHaveTextContent("from the capture");
+    // Assignable like any other.
+    expect(rows[1].querySelector('input[type="checkbox"]')).not.toBeNull();
   });
 });

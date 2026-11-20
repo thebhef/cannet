@@ -11,7 +11,8 @@ import type { Bus, InterfaceBinding, LocalVirtualBusDef } from "./types";
  * A project owns a list of logical {@link Bus}es and a list
  * of {@link InterfaceBinding}s mapping `(server, interface)` pairs to
  * buses. DBCs gain per-bus scoping (`dbcBuses[path]` is the bus ids a
- * DBC decodes for; empty = "all buses"). Server addresses live on
+ * DBC decodes for; empty = assigned to no bus, which decodes nothing).
+ * Server addresses live on
  * bindings; Connect iterates the unique servers in
  * {@link interfaceBindings} and opens one session per server, surfacing
  * per-server status via {@link connectedAddresses}.
@@ -26,10 +27,14 @@ export interface ProjectContextValue {
   dirty: boolean;
   /// Paths of the loaded DBCs, in priority order (first match wins).
   dbcPaths: string[];
-  /// Per-DBC bus scoping. `dbcBuses[path]` is the bus ids
-  /// that DBC decodes for; an empty list / missing entry is "all
-  /// buses".
+  /// Per-DBC bus assignment. `dbcBuses[path]` is the bus ids that DBC
+  /// decodes for; an empty list / missing entry is a database assigned
+  /// to no bus, which decodes nothing.
   dbcBuses: Record<string, string[]>;
+  /// The loaded DBCs a capture carries rather than the project
+  /// (`captureDatabases.ts`): listed and assigned like the rest, never
+  /// saved with the project.
+  captureDbcs: ReadonlySet<string>;
   /// Logical buses the project owns.
   buses: Bus[];
   /// Interface → bus bindings.
