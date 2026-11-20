@@ -200,6 +200,11 @@ pub struct DbcInfo {
     /// database assigned to nothing, which decodes nothing.
     #[serde(default)]
     pub buses: Vec<String>,
+    /// Whether a capture carries this database, rather than a file on
+    /// disk: `dbc_path` is then an identity, not a path. Such a database
+    /// belongs to the session and is no part of a saved project.
+    #[serde(default)]
+    pub embedded: bool,
 }
 
 /// One duplicate-id collision the Database panel warns about: two

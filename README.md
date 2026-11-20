@@ -3142,7 +3142,8 @@ written.
 | notes / event markers | `GLOBAL_MARKER` / `EVENT_COMMENT` | `##EV` blocks |
 | an event's id, kind, tag, and subjects | `cannet-event/1` text block | `cannet-event/1` text block |
 | file-backed signals | **dropped** | signal channel groups |
-| the project's DBCs | no | embedded `##AT` attachments |
+| the loaded DBCs | no | embedded `##AT` attachments |
+| which bus each DBC is assigned to | no | the bus's frame group links the attachment |
 
 Saving a capture that holds file-backed signals as BLF drops them: BLF
 carries frames and has nowhere to put a signal series. The save still
@@ -3151,7 +3152,15 @@ MDF is the full-fidelity save — import → save → re-import gives back the
 same frames (payloads, DLC, FD flags, remote and error frames), the same
 absolute nanosecond timestamps, the same buses, the same markers and the
 same signal series, and the DBCs the capture was decoded against ride
-inside the file ([ADR 0010](docs/adr/0010-no-sidecar-files.md)). What it
+inside the file ([ADR 0010](docs/adr/0010-no-sidecar-files.md)) —
+including any the capture itself arrived with. Data frames are written
+one channel group per bus, and each bus's group links the DBCs assigned
+to that bus, which is how python-can writes the association and how
+asammdf reads it: asammdf decodes each bus with its own databases, and
+a re-import here opens with the same assignment. A DBC assigned to a
+bus that has no data frame in the capture has no group to be linked
+from, so that one assignment is not carried. Frames on different buses
+that share a timestamp read back in bus order. What it
 deliberately does *not* write is DBC-decoded signals as channels: the
 frames plus the attached DBC already say all of that, and writing both
 would double-count every signal on re-import.

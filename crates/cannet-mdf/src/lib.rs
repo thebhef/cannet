@@ -80,7 +80,7 @@ pub use attachments::{AttachmentCensus, MdfAttachment};
 pub use events::{MdfEvent, MdfEventRange};
 pub use scan::{scan_mdf, scan_mdf_cancellable, MdfScan, ScanOutcome, ScanProgress};
 pub use signals::{FileSignal, SignalChannelGroup, SignalGroupCensus};
-pub use write::{MdfCaptureLayout, MdfCaptureWriter, MdfWriteError, MdfWritten};
+pub use write::{MdfCaptureLayout, MdfCaptureWriter, MdfWriteError, MdfWritten, FRAGMENT_BYTES};
 
 use std::path::Path;
 
