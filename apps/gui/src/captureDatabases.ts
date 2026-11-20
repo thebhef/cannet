@@ -15,6 +15,12 @@ export function captureDatabaseName(identity: string): string {
   return identity.slice(identity.lastIndexOf("#") + 1);
 }
 
+/// The capture a database came from: the part of its identity before
+/// the attachment's name.
+export function captureOf(identity: string): string {
+  return identity.slice(0, Math.max(identity.lastIndexOf("#"), 0));
+}
+
 /// The databases a project file names: the loaded ones that are the
 /// project's own, each with the buses it is assigned to.
 export function projectDbcRefs(

@@ -2633,6 +2633,16 @@ fn adopt_embedded_databases(
     // capture's databases in place, and afterwards there is no way left
     // to ask what the content they replace was driving.
     let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state.inner());
+    // The databases of the capture this one replaces leave with it.
+    let dropped = drop_other_capture_databases(state.inner(), mdf_path, &attachments);
+    for (identity, stopped) in &dropped {
+        sys_info!(
+            app,
+            "mdf-import",
+            "dropped database {identity}: the capture it came with is being replaced",
+        );
+        crate::dbc_commands::report_periodics_stopped(app, state.inner(), identity, stopped);
+    }
     let loaded = install_embedded_databases(state.inner(), mdf_path, &attachments, assignments);
     for db in &loaded {
         crate::dbc_commands::report_periodics_stopped(
@@ -2666,12 +2676,46 @@ fn adopt_embedded_databases(
             );
         }
     }
-    if loaded.iter().any(|d| d.error.is_none()) {
+    if !dropped.is_empty() || loaded.iter().any(|d| d.error.is_none()) {
         // The same announcement every other DBC-set change makes
         // (ADR 0053 §2) — the loaded set just changed, and a capture's
         // embedded databases are no different to the consumers.
         crate::dbc_commands::announce_dbc_change(app, mdf_path);
     }
+}
+
+/// Unload every capture database that is not one `capture_path` is about
+/// to load — the databases of whichever capture this import replaces,
+/// and any this capture carried last time and no longer does.
+///
+/// A capture's databases belong to it: they decode its frames and are no
+/// part of the project, so once the capture is gone they are definitions
+/// for traffic the session no longer holds, left assigned to its buses.
+/// The project's own databases are untouched. Returns each identity
+/// dropped with the periodics its removal stopped.
+pub(crate) fn drop_other_capture_databases(
+    state: &AppState,
+    capture_path: &str,
+    attachments: &[cannet_mdf::MdfAttachment],
+) -> Vec<(String, Vec<String>)> {
+    let arriving: Vec<String> = attachments
+        .iter()
+        .filter(|a| is_embedded_dbc(!a.data.is_empty(), &a.mime_type, &a.file_name))
+        .map(|a| format!("{capture_path}#{}", a.file_name))
+        .collect();
+    let leaving: Vec<String> = state
+        .databases()
+        .iter()
+        .filter(|d| d.embedded.is_some() && !arriving.contains(&d.path))
+        .map(|d| d.path.clone())
+        .collect();
+    leaving
+        .into_iter()
+        .filter_map(|identity| {
+            let stopped = crate::dbc_commands::remove_dbc_inner(state, &identity)?;
+            Some((identity, stopped))
+        })
+        .collect()
 }
 
 /// What one embedded database did on its way into the loaded set.

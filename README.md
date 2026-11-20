@@ -3036,6 +3036,10 @@ disk* leaves it as it is, and changing its buses does not mark the
 project as changed. It is kept with the capture instead: when a
 relaunch restores that capture, its databases come back with it,
 assigned to the buses they were on.
+The Database view names it the same way, marked *from <capture
+file>*. And because it belongs to its capture, importing another MF4
+unloads it — along with anything the previous capture brought that the
+new one does not — while the project's own databases stay as they are.
 
 A database decodes only the buses it is assigned to, so the import
 dialog assigns them: under the channel rows, a **Databases in this

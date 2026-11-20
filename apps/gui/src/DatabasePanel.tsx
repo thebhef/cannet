@@ -1,3 +1,4 @@
+import { captureDatabaseName, captureOf } from "./captureDatabases";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "./ipc";
@@ -511,6 +512,9 @@ interface RenderRow {
     | {
         tag: "dbc";
         path: string;
+        /// The capture file this database came in with, or `null` for
+        /// one of the project's own (`captureDatabases.ts`).
+        capture: string | null;
         /// Why this row decodes nothing, or `null` under a real bus
         /// group (its position there already says what it's assigned
         /// to). Set only under the `(Unassigned)` / `(All DBCs)`
@@ -721,6 +725,7 @@ function buildRows(
   ancestorsOfMatches: ReadonlySet<string>,
   filterActive: boolean,
   collisions: readonly DbcCollisionRecord[],
+  captureDbcs: ReadonlySet<string>,
 ): RenderRow[] {
   const out: RenderRow[] = [];
   for (const g of groups) {
@@ -760,6 +765,7 @@ function buildRows(
         kind: {
           tag: "dbc",
           path: dbc.dbcPath,
+          capture: captureDbcs.has(dbc.dbcPath) ? captureOf(dbc.dbcPath) : null,
           note,
           collision: formatCollisionNote(lostHere),
         },
@@ -1334,7 +1340,7 @@ function gridviewRowsOf(rows: readonly RenderRow[]): GridviewRowModel[] {
 export function DatabasePanel(props: IDockviewPanelProps) {
   const { api } = props;
   const params = props.params as PanelParams | undefined;
-  const { dbcPaths, dbcBuses, buses } = useProjectContext();
+  const { dbcPaths, dbcBuses, captureDbcs, buses } = useProjectContext();
 
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     expandedFromParams(params?.expanded),
@@ -1566,6 +1572,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
         filter.ancestorsOfMatches,
         filter.active,
         collisions,
+        captureDbcs,
       ),
     [
       busGroups,
@@ -1576,6 +1583,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       filter.ancestorsOfMatches,
       filter.active,
       collisions,
+      captureDbcs,
     ],
   );
 
@@ -2364,8 +2372,16 @@ function DbcRowContent({
     return (
       <>
         <span className="dbc-row-label" title={kind.path}>
-          {basename(kind.path)}
+          {kind.capture === null ? basename(kind.path) : captureDatabaseName(kind.path)}
         </span>
+        {kind.capture !== null && (
+          <span
+            className="dbc-row-meta dbc-row-capture"
+            title={`carried by ${kind.capture} — loaded with the capture, not part of the project`}
+          >
+            from {basename(kind.capture)}
+          </span>
+        )}
         {kind.note && (
           <span className="dbc-row-meta dbc-row-scope">{kind.note}</span>
         )}
