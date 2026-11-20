@@ -373,7 +373,7 @@ fn slot(rank: usize, k: usize) -> f64 {
 }
 
 /// Report a decimated serve's points at **shared** times: each point at
-/// its rank's fixed position in its `grid` column ([`slot`]), so series
+/// its rank's fixed position in its `grid` column (`slot`), so series
 /// served over one window share columns instead of each bringing its own
 /// timestamps. Values do not move and no point leaves its column, so the
 /// envelope, its extremes and the line through them are the ones
