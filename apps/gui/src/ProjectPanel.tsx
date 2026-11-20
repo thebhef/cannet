@@ -1,3 +1,4 @@
+import { captureDatabaseName } from "./captureDatabases";
 import {
   useCallback,
   useEffect,
@@ -579,20 +580,30 @@ export function ProjectPanel(props: IDockviewPanelProps) {
         {p.dbcPaths.length === 0 && <div className="project-empty">No DBCs loaded.</div>}
         {p.dbcPaths.map((path) => {
           const scoped = p.dbcBuses[path] ?? [];
+          const fromCapture = p.captureDbcs.has(path);
+          const name = fromCapture ? captureDatabaseName(path) : basename(path);
           return (
             <div className="project-dbc" key={path}>
               <span className="project-dbc-name" title={path}>
-                {basename(path)}
+                {name}
               </span>
+              {fromCapture && (
+                <span
+                  className="project-dbc-source"
+                  title="carried by the imported capture — assigned here like any database, but not saved with the project"
+                >
+                  from the capture
+                </span>
+              )}
               <TwoStageRemoveButton
-                label={`remove ${basename(path)}`}
-                title={`Remove ${basename(path)} (not undoable)`}
+                label={`remove ${name}`}
+                title={`Remove ${name} (not undoable)`}
                 onRemove={() => p.onRemoveDbc(path)}
               />
               {p.buses.length > 0 && (
                 <div className="project-dbc-scoping">
                   <span className="project-dbc-scoping-label">
-                    {scoped.length === 0 ? "all buses" : "scoped:"}
+                    {scoped.length === 0 ? "no bus:" : "buses:"}
                   </span>
                   {p.buses.map((bus) => {
                     const on = scoped.includes(bus.id);

@@ -113,3 +113,6 @@ attachments. Import parses them into the loaded set under
   each group's databases; Save Capture to MDF writes the assignment and
   carries a capture's own databases. The asammdf oracle reads the new
   layout and decodes each bus with the database linked to it.
+- 2026-11-20 — the project panel lists a capture's databases, marked,
+  assignable and removable; a saved project and Reload DBCs leave them
+  out. The panel's label for a database on no bus says so.

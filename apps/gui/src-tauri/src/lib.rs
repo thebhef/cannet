@@ -190,8 +190,8 @@ use clock_status::spawn_clock_status_emitter;
 use dbc_commands::decode_against;
 use dbc_commands::{
     add_dbc, clear_dbcs, decode_frame, describe_message, encode_frame, list_dbc_collisions,
-    list_dbc_content, list_file_backed_content, list_signals, list_value_tables, remove_dbc,
-    set_dbc_buses,
+    list_dbc_content, list_dbcs, list_file_backed_content, list_signals, list_value_tables,
+    remove_dbc, set_dbc_buses,
 };
 #[cfg(test)]
 use dbc_commands::{
@@ -755,6 +755,7 @@ pub fn run() -> ! {
             cancel_import,
             add_dbc,
             remove_dbc,
+            list_dbcs,
             clear_dbcs,
             set_dbc_buses,
             fetch_trace_range,

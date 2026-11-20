@@ -263,6 +263,9 @@ export interface DbcInfo {
   /// Logical bus ids this DBC is assigned to. Empty / absent = assigned
   /// to nothing, which decodes nothing.
   buses?: string[];
+  /// Whether a capture carries this database rather than a file on disk
+  /// — `dbc_path` is then an identity, not a path (`captureDatabases.ts`).
+  embedded?: boolean;
 }
 
 /// One duplicate-id collision the Database panel warns about: two
@@ -469,8 +472,8 @@ export function resolveServer(
   return server === LOCAL_SERVER ? sidecarAddress : server;
 }
 
-/// A loaded DBC reference + its bus scoping. An empty `buses` is the
-/// "all buses" default.
+/// A loaded DBC reference + its bus assignment. An empty `buses` is a
+/// database assigned to no bus, which decodes nothing.
 export interface DbcRef {
   path: string;
   buses: string[];

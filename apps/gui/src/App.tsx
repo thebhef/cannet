@@ -135,6 +135,7 @@ import {
 } from "./hostState";
 import { recordBlfChannelMap, savedBlfChannelMap } from "./blfChannelMap";
 import type { ClosingProgress, SystemMessage } from "./types";
+import { projectDbcRefs } from "./captureDatabases";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
@@ -502,6 +503,31 @@ export function App() {
   // Mirrors the host's `LoadedDbc.buses`; the project file carries the
   // canonical `dbcs: DbcRef[]` shape.
   const [dbcBuses, setDbcBuses] = useState<Record<string, string[]>>({});
+  // The loaded DBCs a capture carries, by what the host says of each
+  // (`DbcInfo.embedded`). They are in `dbcPaths` and `dbcBuses` like any
+  // other, so the panel lists and assigns them; this is what keeps them
+  // out of the saved project and away from a reload from disk.
+  const [captureDbcs, setCaptureDbcs] = useState<ReadonlySet<string>>(() => new Set());
+  const captureDbcsRef = useRef(captureDbcs);
+  captureDbcsRef.current = captureDbcs;
+  /// Take the host's word for which loaded DBCs are a capture's own, and
+  /// for what each of those is assigned to — nothing in the project file
+  /// holds a capture database's assignment, so the host's is the only
+  /// copy. Called with every list the host hands back.
+  const noteCaptureDbcs = useCallback((list: readonly DbcInfo[]) => {
+    const own = list.filter((d) => d.embedded);
+    setCaptureDbcs((prev) =>
+      prev.size === own.length && own.every((d) => prev.has(d.dbc_path))
+        ? prev
+        : new Set(own.map((d) => d.dbc_path)),
+    );
+    if (own.length > 0) {
+      setDbcBuses((prev) => ({
+        ...prev,
+        ...Object.fromEntries(own.map((d) => [d.dbc_path, d.buses ?? []])),
+      }));
+    }
+  }, []);
   // Logical buses + interface bindings. Project-owned state.
   const [buses, setBuses] = useState<Bus[]>([]);
   const [interfaceBindings, setInterfaceBindings] = useState<InterfaceBinding[]>([]);
@@ -1796,6 +1822,13 @@ export function App() {
             buses,
           })),
         });
+        // The import loaded the databases the capture carries, assigned
+        // as the dialog said; list them with the project's.
+        const loaded = await invoke<DbcInfo[] | null>("list_dbcs");
+        if (loaded) {
+          setDbcPaths(loaded.map((d) => d.dbc_path));
+          noteCaptureDbcs(loaded);
+        }
         rememberRecentCapture(mdfPath);
       } catch (err) {
         setState({ kind: "error", message: String(err) });
@@ -1820,7 +1853,9 @@ export function App() {
     const errors: string[] = [];
     for (const path of paths) {
       try {
-        list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+        const infos = await invoke<DbcInfo[]>("add_dbc", { path });
+        noteCaptureDbcs(infos);
+        list = infos.map((d) => d.dbc_path);
       } catch (err) {
         errors.push(`${path}: ${String(err)}`);
       }
@@ -1836,12 +1871,14 @@ export function App() {
       void invoke<DbcInfo[]>("remove_dbc", { path })
         .then((list) => {
           setDbcPaths(list.map((d) => d.dbc_path));
-          setDirty(true);
+          noteCaptureDbcs(list);
+          // A capture's database was never part of the project.
+          if (!captureDbcsRef.current.has(path)) setDirty(true);
           invalidateCache();
         })
         .catch((err) => setState({ kind: "error", message: String(err) }));
     },
-    [invalidateCache],
+    [invalidateCache, noteCaptureDbcs],
   );
 
   // Replace the loaded-DBC set with exactly `paths` (clear, then re-add
@@ -1864,11 +1901,15 @@ export function App() {
         } catch {
           /* unreachable in practice; the next add_dbc would surface real trouble */
         }
+        // The clear unloaded any capture database with the rest.
+        noteCaptureDbcs([]);
         let list: string[] = [];
         const errors: string[] = [];
         for (const path of paths) {
           try {
-            list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+            const infos = await invoke<DbcInfo[]>("add_dbc", { path });
+            noteCaptureDbcs(infos);
+            list = infos.map((d) => d.dbc_path);
             const buses = scoping[path];
             if (buses && buses.length > 0) {
               await invoke<DbcInfo[]>("set_dbc_buses", { path, buses });
@@ -2207,10 +2248,8 @@ export function App() {
   /// `buses`, `interface_bindings`, and `dbcs` (per-DBC bus scoping).
   const gatherProject = useCallback(
     (): Project => {
-      const dbcs: DbcRef[] = dbcPaths.map((path) => ({
-        path,
-        buses: dbcBuses[path] ?? [],
-      }));
+      // The project's own databases; a capture's are the session's.
+      const dbcs: DbcRef[] = projectDbcRefs(dbcPaths, dbcBuses, captureDbcs);
       return {
         schema_version: PROJECT_SCHEMA_VERSION,
         // Full-screen (`grid.maximizedNode`) is transient view state —
@@ -2230,7 +2269,16 @@ export function App() {
         signal_colors: signalColors,
       };
     },
-    [projectElements, dbcPaths, dbcBuses, buses, interfaceBindings, localVirtualBuses, signalColors],
+    [
+      projectElements,
+      dbcPaths,
+      dbcBuses,
+      captureDbcs,
+      buses,
+      interfaceBindings,
+      localVirtualBuses,
+      signalColors,
+    ],
   );
   gatherProjectRef.current = gatherProject;
   // Push the working project whenever what Save would write may have
@@ -2478,6 +2526,7 @@ export function App() {
       }
       setDbcPaths(status.dbcs.map((d) => d.dbc_path));
       setDbcBuses(Object.fromEntries(status.dbcs.map((d) => [d.dbc_path, d.buses ?? []])));
+      noteCaptureDbcs(status.dbcs);
       setProjectPath(status.path);
       setRemoteSessions(remoteSessionsOf(status));
       setBusConfigInFlight(busConfigOf(status));
@@ -3113,7 +3162,9 @@ export function App() {
   }, []);
 
   // Re-read every loaded DBC from disk (a file that's gone or no longer
-  // parses drops out, with an error). No-op when none are loaded.
+  // parses drops out, with an error). No-op when none are loaded. A
+  // capture's database is not on disk — its identity is no path — so it
+  // is left exactly as it is.
   //
   // Each path goes through `add_dbc`, which swaps it in place and so
   // keeps its bus assignment and priority position — deliberately *not*
@@ -3121,16 +3172,19 @@ export function App() {
   // look to the host like a first load and hide that it is reloading
   // definitions something may be transmitting from (ADR 0053 §1).
   const handleReloadDbc = useCallback(async () => {
-    if (dbcPaths.length === 0) return;
+    const onDisk = dbcPaths.filter((path) => !captureDbcs.has(path));
+    if (onDisk.length === 0) return;
     // One set change spread over a call per database, as `loadDbcSet`
     // does it: a single re-anchor at the end rather than one per call.
     const release = suppressDbcChanges();
     try {
       let list: string[] = [...dbcPaths];
       const errors: string[] = [];
-      for (const path of dbcPaths) {
+      for (const path of onDisk) {
         try {
-          list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+          const infos = await invoke<DbcInfo[]>("add_dbc", { path });
+          noteCaptureDbcs(infos);
+          list = infos.map((d) => d.dbc_path);
         } catch (err) {
           errors.push(`${path}: ${String(err)}`);
           try {
@@ -3146,13 +3200,14 @@ export function App() {
     } finally {
       release();
     }
-  }, [dbcPaths, invalidateCache]);
+  }, [dbcPaths, captureDbcs, invalidateCache, noteCaptureDbcs]);
 
   // Update a single DBC's bus scoping and push it to the host.
   const handleSetDbcBuses = useCallback(
     (path: string, scopedBuses: string[]) => {
       setDbcBuses((prev) => ({ ...prev, [path]: scopedBuses }));
-      setDirty(true);
+      // A capture database's assignment is no part of the project file.
+      if (!captureDbcsRef.current.has(path)) setDirty(true);
       invalidateCache(); // decoded view changes
       void invoke<DbcInfo[]>("set_dbc_buses", { path, buses: scopedBuses }).catch((err) =>
         setState({ kind: "error", message: String(err) }),
@@ -4103,6 +4158,7 @@ export function App() {
       dirty,
       dbcPaths,
       dbcBuses,
+      captureDbcs,
       buses,
       interfaceBindings,
       connectedAddresses,
@@ -4137,6 +4193,7 @@ export function App() {
       dirty,
       dbcPaths,
       dbcBuses,
+      captureDbcs,
       buses,
       interfaceBindings,
       connectedAddresses,

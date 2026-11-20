@@ -55,6 +55,7 @@ function baseProjectCtx(over: Partial<ProjectContextValue> = {}): ProjectContext
     dirty: false,
     dbcPaths: [],
     dbcBuses: {},
+    captureDbcs: new Set<string>(),
     buses: [],
     interfaceBindings: [],
     connectedAddresses: [],

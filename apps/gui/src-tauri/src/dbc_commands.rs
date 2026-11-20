@@ -118,6 +118,15 @@ pub(crate) fn install_dbc(
     })
 }
 
+/// The loaded DBCs, in priority order. Most changes to the set hand the
+/// list back themselves; this is for the one that does not — a capture
+/// import, which loads the databases the capture carries.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn list_dbcs(state: State<'_, AppState>) -> Vec<DbcInfo> {
+    dbc_list(state.inner())
+}
+
 /// Load a DBC file and add it to the set (or, if a DBC with the same
 /// path is already loaded, reload it in place — same effect as a
 /// "reload from disk"). Returns the full loaded list on success; on a

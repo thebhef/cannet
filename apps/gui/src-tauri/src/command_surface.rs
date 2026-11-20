@@ -66,6 +66,7 @@ const SYNCHRONOUS_COMMANDS: &[&str] = &[
     "get_setting_descriptors",
     "list_dbc_collisions",
     "list_dbc_content",
+    "list_dbcs",
     "list_file_backed_content",
     "list_math_signals",
     "list_signals",

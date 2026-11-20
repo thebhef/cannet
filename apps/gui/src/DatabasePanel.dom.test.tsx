@@ -184,6 +184,7 @@ const projectCtx: ProjectContextValue = {
   dirty: false,
   dbcPaths: ["/tmp/powertrain.dbc"],
   dbcBuses: {},
+  captureDbcs: new Set<string>(),
   buses: [] as Bus[],
   interfaceBindings: [] as InterfaceBinding[],
   connectedAddresses: [],
@@ -711,6 +712,7 @@ describe("DatabasePanel", () => {
       buses,
       // No scoping → unassigned, appears once under `(Unassigned)`.
       dbcBuses: {},
+      captureDbcs: new Set<string>(),
     };
     const api = fakePanelApi();
     const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
@@ -839,6 +841,7 @@ describe("DatabasePanel", () => {
       // powertrain.dbc is unassigned here — it decodes nothing, so it
       // must NOT appear under either real bus group.
       dbcBuses: {},
+      captureDbcs: new Set<string>(),
     };
     const api = fakePanelApi();
     const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
