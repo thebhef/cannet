@@ -100,3 +100,9 @@ attachments. Import parses them into the loaded set under
   attachment links and the census reports each attachment's bus
   channels. Checked against an asammdf-written capture and a copy of it
   whose frame channel links its databases; asammdf opens the copy.
+- 2026-11-20 — the import assigns: the scan lists the capture's
+  databases with their channels, the channel-mapping dialog has its
+  *Databases* section, and `import_mdf` assigns each database to the
+  buses chosen. Still to do: the project panel listing (and with it the
+  leak into a saved project and Reload DBCs), a capture's own databases
+  surviving a re-export, and restore.

@@ -152,6 +152,7 @@ import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
 import { ClosingOverlay } from "./ClosingOverlay";
 import {
   BlfChannelMapModal,
+  type DatabaseBuses,
   type ImportContents,
   type ImportRange,
 } from "./BlfChannelMapModal";
@@ -1747,7 +1748,12 @@ export function App() {
   // is keyed by path + channel count alone, so it needs no MDF-specific
   // counterpart and is reused as is.
   const handleMdfMapConfirm = useCallback(
-    async (choices: Record<number, string>, range: ImportRange, contents: ImportContents) => {
+    async (
+      choices: Record<number, string>,
+      range: ImportRange,
+      contents: ImportContents,
+      databaseBuses: DatabaseBuses,
+    ) => {
       if (!pendingMdf) return;
       const { mdfPath, scan } = pendingMdf;
       setPendingMdf(null);
@@ -1783,6 +1789,12 @@ export function App() {
           importMessages: contents.messages,
           // See `handleBlfMapConfirm`: the census's own count.
           totalFrames: scan.frame_count,
+          // Which buses each of the capture's databases decodes — the
+          // host assigns exactly these, and nothing it is not told.
+          databaseBuses: Object.entries(databaseBuses).map(([fileName, buses]) => ({
+            fileName,
+            buses,
+          })),
         });
         rememberRecentCapture(mdfPath);
       } catch (err) {
@@ -4483,6 +4495,7 @@ export function App() {
           format="MDF"
           decodedMessageGroups={pendingMdf.scan.decoded_message_groups}
           signalCount={pendingMdf.scan.signal_count}
+          databases={pendingMdf.scan.databases}
         />
       )}
       {pendingExport && (

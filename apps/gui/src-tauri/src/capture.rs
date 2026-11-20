@@ -2314,6 +2314,10 @@ pub(crate) fn census_blf(
 /// off there are no frames to anchor the session — the signal content
 /// supplies the origin instead (see [`signal_origin_ns`]).
 ///
+/// The databases the capture carries are loaded either way, and
+/// `database_buses` — the dialog's answer — is what assigns each to the
+/// buses it decodes ([`install_embedded_databases`]).
+///
 /// `async` for the same reason as `open_log`: opening and finalizing an
 /// unsorted MDF parses the whole block graph, and that must not hold up
 /// the Tauri main thread.
@@ -2334,6 +2338,7 @@ pub(crate) async fn import_mdf(
     #[allow(non_snake_case)] import_signals: Option<bool>,
     #[allow(non_snake_case)] import_messages: Option<bool>,
     #[allow(non_snake_case)] total_frames: Option<u64>,
+    #[allow(non_snake_case)] database_buses: Option<Vec<DatabaseBusAssignment>>,
 ) -> Result<ImportMdfResult, String> {
     // Absent flags mean "everything the file has" — the shape the
     // command had before the contents became selectable.
@@ -2357,7 +2362,7 @@ pub(crate) async fn import_mdf(
         unfinalized = source.is_unfinalized(),
     );
 
-    adopt_embedded_databases(&app, &mdf_path, &source);
+    adopt_embedded_databases(&app, &mdf_path, &source, database_buses.as_deref());
 
     let result = ImportMdfResult {
         mdf_path: mdf_path.clone(),
@@ -2577,7 +2582,12 @@ fn notes_from_events(app: &AppHandle, source: &MdfCanFrameSource) -> Vec<Note> {
 /// Called before the frames flow: the embedded definitions are what
 /// decodes them, and they are usable without being written anywhere
 /// (ADR 0010).
-fn adopt_embedded_databases(app: &AppHandle, mdf_path: &str, source: &MdfCanFrameSource) {
+fn adopt_embedded_databases(
+    app: &AppHandle,
+    mdf_path: &str,
+    source: &MdfCanFrameSource,
+    assignments: Option<&[DatabaseBusAssignment]>,
+) {
     let attachments = match source.attachments() {
         Ok(a) => a,
         Err(e) => {
@@ -2591,8 +2601,14 @@ fn adopt_embedded_databases(app: &AppHandle, mdf_path: &str, source: &MdfCanFram
     // capture's databases in place, and afterwards there is no way left
     // to ask what the content they replace was driving.
     let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state.inner());
-    let loaded = install_embedded_databases(state.inner(), mdf_path, &attachments);
+    let loaded = install_embedded_databases(state.inner(), mdf_path, &attachments, assignments);
     for db in &loaded {
+        crate::dbc_commands::report_periodics_stopped(
+            app,
+            state.inner(),
+            &db.identity,
+            &db.stopped,
+        );
         if db.reloaded {
             crate::dbc_commands::report_reload_stops(
                 app,
@@ -2641,6 +2657,18 @@ pub(crate) struct EmbeddedDbc {
     /// Whether this replaced a database already loaded under the same
     /// identity — a re-import of the same capture is a reload in place.
     pub reloaded: bool,
+    /// Periodics its bus assignment stopped
+    /// ([`crate::dbc_commands::set_dbc_buses_inner`]).
+    pub stopped: Vec<String>,
+}
+
+/// Which buses one of a capture's databases is assigned to — the import
+/// dialog's answer for it, by the attachment's file name.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseBusAssignment {
+    pub file_name: String,
+    pub buses: Vec<String>,
 }
 
 /// Whether an `##AT` attachment is a database this project can read: the
@@ -2648,10 +2676,13 @@ pub(crate) struct EmbeddedDbc {
 /// name. An external attachment carries no bytes (it names a file on
 /// disk instead), and chasing that reference would be the sidecar
 /// [ADR 0010](../../../docs/adr/0010-no-sidecar-files.md) rules out.
-fn is_embedded_dbc(attachment: &cannet_mdf::MdfAttachment) -> bool {
-    !attachment.data.is_empty()
-        && (attachment.mime_type.eq_ignore_ascii_case(DBC_MIME_TYPE)
-            || std::path::Path::new(&attachment.file_name)
+///
+/// Takes the attachment's parts, so the census — which has no bytes —
+/// and the import ask the same question.
+fn is_embedded_dbc(has_bytes: bool, mime_type: &str, file_name: &str) -> bool {
+    has_bytes
+        && (mime_type.eq_ignore_ascii_case(DBC_MIME_TYPE)
+            || std::path::Path::new(file_name)
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("dbc")))
 }
@@ -2665,31 +2696,53 @@ fn is_embedded_dbc(attachment: &cannet_mdf::MdfAttachment) -> bool {
 /// The identity is `<capture>#<attachment name>`, which is deliberately
 /// not a path: nothing reloads it from disk, and re-importing the same
 /// capture replaces it in place rather than stacking a second copy.
+///
+/// `assignments` is the import dialog's bus assignment: each database is
+/// assigned to exactly the buses named for it, and to none if it is not
+/// named. `None` assigns nothing and changes no assignment — a freshly
+/// loaded database is then assigned to nothing, like any other.
 pub(crate) fn install_embedded_databases(
     state: &AppState,
     capture_path: &str,
     attachments: &[cannet_mdf::MdfAttachment],
+    assignments: Option<&[DatabaseBusAssignment]>,
 ) -> Vec<EmbeddedDbc> {
     attachments
         .iter()
-        .filter(|a| is_embedded_dbc(a))
+        .filter(|a| is_embedded_dbc(!a.data.is_empty(), &a.mime_type, &a.file_name))
         .map(|a| {
             let identity = format!("{capture_path}#{}", a.file_name);
             let text = String::from_utf8_lossy(&a.data);
             match crate::dbc_commands::install_dbc(state, &identity, &text) {
-                Ok(installed) => EmbeddedDbc {
-                    identity,
-                    message_count: installed.message_count,
-                    warnings: installed.warnings,
-                    error: None,
-                    reloaded: installed.reloaded,
-                },
+                Ok(installed) => {
+                    // The assignment is the import's to make: what the
+                    // dialog chose, and nothing for a database it did
+                    // not list. Unassigned-by-`None` leaves a re-import's
+                    // existing assignment where it is.
+                    let stopped = assignments.map_or_else(Vec::new, |all| {
+                        let buses = all
+                            .iter()
+                            .find(|d| d.file_name == a.file_name)
+                            .map(|d| d.buses.clone())
+                            .unwrap_or_default();
+                        crate::dbc_commands::set_dbc_buses_inner(state, &identity, buses)
+                    });
+                    EmbeddedDbc {
+                        identity,
+                        message_count: installed.message_count,
+                        warnings: installed.warnings,
+                        error: None,
+                        reloaded: installed.reloaded,
+                        stopped,
+                    }
+                }
                 Err(message) => EmbeddedDbc {
                     identity,
                     message_count: 0,
                     warnings: Vec::new(),
                     error: Some(message),
                     reloaded: false,
+                    stopped: Vec::new(),
                 },
             }
         })
@@ -2814,6 +2867,36 @@ pub struct MdfScanResult {
     /// The per-message DBC-decoded subset of them. See
     /// [`DecodedMessageGroupInfo`].
     pub decoded_message_groups: Vec<DecodedMessageGroupInfo>,
+    /// The databases the capture carries, for the dialog to assign to
+    /// buses. See [`EmbeddedDatabaseInfo`].
+    pub databases: Vec<EmbeddedDatabaseInfo>,
+}
+
+/// One database a capture carries as an embedded attachment, as the
+/// import dialog lists it. `bus_channels` are the channels the capture
+/// names for it ([`cannet_mdf::AttachmentCensus::bus_channels`]),
+/// numbered as [`MdfScanResult::channels`] are — where the dialog starts
+/// its assignment from. Empty when the capture names none.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EmbeddedDatabaseInfo {
+    pub file_name: String,
+    pub bus_channels: Vec<u8>,
+}
+
+/// The attachments of a census that [`import_mdf`] will load as
+/// databases — the same test [`install_embedded_databases`] applies to
+/// the attachments themselves.
+pub(crate) fn embedded_databases(
+    attachments: &[cannet_mdf::AttachmentCensus],
+) -> Vec<EmbeddedDatabaseInfo> {
+    attachments
+        .iter()
+        .filter(|a| is_embedded_dbc(a.embedded, &a.mime_type, &a.file_name))
+        .map(|a| EmbeddedDatabaseInfo {
+            file_name: a.file_name.clone(),
+            bus_channels: a.bus_channels.clone(),
+        })
+        .collect()
 }
 
 /// Pre-scan an MDF file and return its distinct `BusChannel` census,
@@ -2894,6 +2977,7 @@ pub(crate) async fn scan_mdf_channels(
             signal_group_count: scan.signal_groups.len(),
             signal_count: scan.signal_groups.iter().map(|g| g.signal_count).sum(),
             decoded_message_groups: scan.decoded_message_groups.iter().map(Into::into).collect(),
+            databases: embedded_databases(&scan.attachments),
         }))
     })
     .await

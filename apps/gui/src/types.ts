@@ -243,6 +243,18 @@ export interface MdfScanResult extends BlfScanResult {
   signal_count: number;
   /// The per-message decoded subset of them.
   decoded_message_groups: DecodedMessageGroup[];
+  /// The databases the capture carries, for the dialog to assign.
+  databases: EmbeddedDatabase[];
+}
+
+/// One database an MDF file carries as an embedded attachment (mirrors
+/// `capture.rs::EmbeddedDatabaseInfo`). `bus_channels` are the channels
+/// the capture names for it — those of the frame groups whose
+/// `CAN_DataFrame` channel links the attachment — numbered as the scan's
+/// `channels` are, and empty when the capture links it from nowhere.
+export interface EmbeddedDatabase {
+  file_name: string;
+  bus_channels: number[];
 }
 
 export interface DbcInfo {

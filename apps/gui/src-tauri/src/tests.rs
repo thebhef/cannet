@@ -4303,6 +4303,7 @@ fn an_embedded_database_loads_from_the_capture_without_touching_the_disk() {
         &state,
         r"C:\captures\run.mf4",
         &[dbc, other, external],
+        None,
     );
     assert_eq!(loaded.len(), 1, "one database, and only the database");
     assert_eq!(loaded[0].message_count, 1);
@@ -4320,6 +4321,98 @@ fn an_embedded_database_loads_from_the_capture_without_touching_the_disk() {
     );
 }
 
+/// **The import dialog assigns a capture's databases.** A database
+/// decodes only the buses it is assigned to, so one that arrives
+/// assigned to nothing decodes nothing; the dialog's answer is what puts
+/// it on a bus. It is the whole answer: a database it names gets exactly
+/// those buses, and one it leaves out gets none — including on a
+/// re-import, where the earlier assignment is replaced, not added to.
+#[test]
+fn an_import_assigns_the_capture_s_databases_to_the_buses_the_dialog_chose() {
+    let state = test_state();
+    let attachment = |name: &str| cannet_mdf::MdfAttachment {
+        file_name: name.into(),
+        mime_type: "application/vnd.vector.dbc".into(),
+        data: tiny_dbc(0x1a5, "EngineData", "EngineSpeed").into_bytes(),
+    };
+    let attachments = [attachment("powertrain.dbc"), attachment("body.dbc")];
+    let assign = |file: &str, buses: &[&str]| capture::DatabaseBusAssignment {
+        file_name: file.into(),
+        buses: buses.iter().map(ToString::to_string).collect(),
+    };
+    let buses_of = |state: &AppState, name: &str| -> Vec<String> {
+        state
+            .databases()
+            .iter()
+            .find(|d| d.path == format!("run.mf4#{name}"))
+            .expect("loaded")
+            .buses
+            .clone()
+    };
+
+    capture::install_embedded_databases(
+        &state,
+        "run.mf4",
+        &attachments,
+        Some(&[assign("powertrain.dbc", &["p", "c"])]),
+    );
+    assert_eq!(buses_of(&state, "powertrain.dbc"), vec!["p", "c"]);
+    assert!(buses_of(&state, "body.dbc").is_empty());
+
+    // The same capture again, assigned differently.
+    capture::install_embedded_databases(
+        &state,
+        "run.mf4",
+        &attachments,
+        Some(&[assign("body.dbc", &["c"])]),
+    );
+    assert!(buses_of(&state, "powertrain.dbc").is_empty());
+    assert_eq!(buses_of(&state, "body.dbc"), vec!["c"]);
+
+    // No answer at all changes nothing.
+    capture::install_embedded_databases(&state, "run.mf4", &attachments, None);
+    assert_eq!(buses_of(&state, "body.dbc"), vec!["c"]);
+}
+
+/// The dialog lists exactly the attachments the import will load as
+/// databases, each with the channels the capture names for it.
+#[test]
+fn the_scan_lists_the_databases_the_import_will_load() {
+    let census =
+        |name: &str, mime: &str, embedded: bool, channels: &[u8]| cannet_mdf::AttachmentCensus {
+            file_name: name.into(),
+            mime_type: mime.into(),
+            embedded,
+            bus_channels: channels.to_vec(),
+        };
+    let listed = capture::embedded_databases(&[
+        census(
+            "powertrain.dbc",
+            "application/vnd.vector.dbc",
+            true,
+            &[0, 2],
+        ),
+        // Named a database by its extension alone.
+        census("body.DBC", "application/octet-stream", true, &[]),
+        census("dashboard.png", "image/png", true, &[0]),
+        // External: it names a file, and carries nothing to load.
+        census("elsewhere.dbc", "application/vnd.vector.dbc", false, &[1]),
+    ]);
+    assert_eq!(
+        listed,
+        vec![
+            capture::EmbeddedDatabaseInfo {
+                file_name: "powertrain.dbc".into(),
+                bus_channels: vec![0, 2],
+            },
+            capture::EmbeddedDatabaseInfo {
+                file_name: "body.DBC".into(),
+                bus_channels: Vec::new(),
+            },
+        ]
+    );
+}
+
 /// Re-importing the same capture replaces the database it carries rather
 /// than stacking a second copy of it — the same reload-in-place rule
 /// `add_dbc` applies to a path it already holds.
@@ -4331,8 +4424,8 @@ fn re_importing_a_capture_replaces_its_embedded_database() {
         mime_type: "application/vnd.vector.dbc".into(),
         data: tiny_dbc(0x1a5, "EngineData", sig).into_bytes(),
     };
-    capture::install_embedded_databases(&state, "run.mf4", &[attachment("EngineSpeed")]);
-    capture::install_embedded_databases(&state, "run.mf4", &[attachment("EngineTorque")]);
+    capture::install_embedded_databases(&state, "run.mf4", &[attachment("EngineSpeed")], None);
+    capture::install_embedded_databases(&state, "run.mf4", &[attachment("EngineTorque")], None);
     let list = state.databases();
     assert_eq!(list.len(), 1);
     assert_eq!(
@@ -4354,6 +4447,7 @@ fn an_unparseable_embedded_database_is_reported_and_left_out() {
             mime_type: "application/vnd.vector.dbc".into(),
             data: b"this is not a DBC".to_vec(),
         }],
+        None,
     );
     assert_eq!(loaded.len(), 1);
     assert!(loaded[0].error.is_some());
