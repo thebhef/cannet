@@ -724,6 +724,7 @@ fn decode_against_carries_the_transmitter() {
         path: "t.dbc".into(),
         db: Arc::new(db),
         buses: vec![TEST_BUS.to_string()],
+        embedded: None,
     }];
     let decoded = decode_against(&plain_model(&dbs), &frame_with_data(0x100)).unwrap();
     assert_eq!(decoded.transmitter.as_deref(), Some("ECU"));
@@ -900,6 +901,7 @@ pub(crate) fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
         path: path.into(),
         db: Arc::new(Database::parse(dbc_text).expect("test DBC parses")),
         buses: Vec::new(),
+        embedded: None,
     }
 }
 
@@ -921,6 +923,7 @@ pub(crate) fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> Loade
         path: path.into(),
         db: Arc::new(Database::parse(dbc_text).expect("test DBC parses")),
         buses: buses.iter().map(|s| (*s).into()).collect(),
+        embedded: None,
     }
 }
 
@@ -5352,6 +5355,9 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
         .lock()
         .unwrap()
         .push(loaded(dbc_path.to_str().unwrap(), MUX_SNAPSHOT_DBC));
+    // Assigned to the second bus only — and to one the export's bus list
+    // does not hold, which has no channel to be named by.
+    state.databases.lock().unwrap()[0].buses = vec!["chassis".to_string(), "gone".to_string()];
 
     // Two buses, both addressing modes, and every payload kind.
     let ts = 1_700_000_000_000_000_000u64;
@@ -5501,6 +5507,65 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
     assert_eq!(attachments.len(), 1);
     assert_eq!(attachments[0].file_name, "modes.dbc");
     assert_eq!(attachments[0].data, MUX_SNAPSHOT_DBC.as_bytes());
+    // …linked from the frames of the bus it is assigned to, so an import
+    // can offer the same assignment back.
+    let scan = cannet_mdf::scan_mdf(&dest).unwrap();
+    assert_eq!(scan.attachments[0].bus_channels, vec![1]);
+}
+
+/// A capture's own databases are not files on disk, so a save cannot
+/// read them back from one: they go out from the bytes they arrived
+/// with, still saying which bus they are for.
+#[test]
+fn an_mdf_save_carries_on_the_databases_the_capture_arrived_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("resaved.mf4");
+    let state = file_backed_state();
+    state.databases.lock().unwrap().clear();
+    // Bytes no UTF-8 round trip would give back.
+    let mut bytes = tiny_dbc(0x1a5, "EngineData", "EngineSpeed").into_bytes();
+    bytes.extend_from_slice(b"\nCM_ \"caf\xe9\";\n");
+    capture::install_embedded_databases(
+        &state,
+        r"C:\captures\run.mf4",
+        &[cannet_mdf::MdfAttachment {
+            file_name: "powertrain.dbc".into(),
+            mime_type: "application/vnd.vector.dbc".into(),
+            data: bytes.clone(),
+        }],
+        Some(&[capture::DatabaseBusAssignment {
+            file_name: "powertrain.dbc".into(),
+            buses: vec!["powertrain".into()],
+        }]),
+    );
+    state.trace_store.append(trace_store::RawTraceFrame {
+        timestamp_ns: 1_700_000_000_000_000_000,
+        channel: 0,
+        id: 0x1a5,
+        extended: false,
+        direction: Direction::Rx,
+        payload: CanFramePayload::Classic(vec![0; 8]),
+        bus_id: Some("powertrain".into()),
+    });
+
+    capture::write_mdf_capture(
+        dest.to_str().unwrap(),
+        &state,
+        &[],
+        &["chassis".to_string(), "powertrain".to_string()],
+        &mut capture::ExportRun::inert(),
+    )
+    .unwrap()
+    .written()
+    .expect("an uncancelled export writes a capture");
+
+    let source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
+    let attachments = source.attachments().unwrap();
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].file_name, "powertrain.dbc");
+    assert_eq!(attachments[0].data, bytes);
+    let scan = cannet_mdf::scan_mdf(&dest).unwrap();
+    assert_eq!(scan.attachments[0].bus_channels, vec![1]);
 }
 
 /// **MDF carries math signals; BLF carries none.**
@@ -9287,6 +9352,7 @@ fn a_math_pattern_matches_the_canonical_path_with_the_projects_bus_name() {
         path: "d.dbc".into(),
         db,
         buses: vec!["b0".into()],
+        embedded: None,
     }];
     state
         .math
@@ -9311,6 +9377,7 @@ fn a_math_pattern_matches_the_canonical_path_with_the_projects_bus_name() {
             path: l.path.clone(),
             db: l.db.clone(),
             buses: l.buses.clone(),
+            embedded: l.embedded.clone(),
         })
         .collect();
     assert!(
@@ -9348,6 +9415,7 @@ fn a_name_anchored_math_pattern_matches_before_any_math_command() {
         path: "d.dbc".into(),
         db,
         buses: vec!["b0".into()],
+        embedded: None,
     }];
     // Retargeted from the hline helper rather than spelled out, so this
     // test does not have to track every field of a definition.
@@ -9373,6 +9441,7 @@ fn a_name_anchored_math_pattern_matches_before_any_math_command() {
             path: l.path.clone(),
             db: l.db.clone(),
             buses: l.buses.clone(),
+            embedded: l.embedded.clone(),
         })
         .collect();
     let resolved = state.math_model(&dbcs);

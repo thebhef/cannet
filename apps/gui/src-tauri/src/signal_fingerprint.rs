@@ -1532,6 +1532,7 @@ mod tests {
             path: path.to_string_lossy().into_owned(),
             db: Arc::new(parse(&text)),
             buses: fp_bus(),
+            embedded: None,
         }];
         let before_signal = dbc_encoding(
             &plain(vec![scope(

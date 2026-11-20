@@ -26,6 +26,10 @@ use serde_json::json;
 /// Sub-millisecond wall clock, so a rounded origin would show.
 const START_NS: u64 = 1_709_294_400_123_456_789;
 
+/// The bus channels the attached database is for, 0-based: the second of
+/// the capture's buses and not the first, so the file has to say which.
+const ATTACHMENT_CHANNELS: &[u8] = &[1];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out: PathBuf = std::env::args_os()
         .nth(1)
@@ -58,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for event in &events {
         writer.add_event(event.clone());
     }
-    writer.add_attachment(attachment.clone());
+    writer.add_attachment(attachment.clone(), ATTACHMENT_CHANNELS);
     let written = writer.finish()?;
 
     let expectations = json!({
@@ -95,6 +99,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "file_name": attachment.file_name,
             "mime_type": attachment.mime_type,
             "data_hex": hex(&attachment.data),
+            // As `BusChannel` numbers, which is what an outside reader sees.
+            "bus_channels": ATTACHMENT_CHANNELS.iter().map(|c| u16::from(*c) + 1).collect::<Vec<_>>(),
         },
         "written": {
             "frame_count": written.frame_count,

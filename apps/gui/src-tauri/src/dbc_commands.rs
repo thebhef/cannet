@@ -36,6 +36,7 @@ pub(crate) fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
             dbc_path: d.path.clone(),
             message_count: d.db.message_count(),
             buses: d.buses.clone(),
+            embedded: d.embedded.is_some(),
         })
         .collect()
 }
@@ -104,6 +105,7 @@ pub(crate) fn install_dbc(
             path: path.to_owned(),
             db,
             buses: Vec::new(),
+            embedded: None,
         });
         false
     };

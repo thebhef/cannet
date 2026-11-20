@@ -59,6 +59,17 @@ pub(crate) struct LoadedDbc {
     /// The bus ids this database is assigned to; empty = assigned to
     /// nothing, so it decodes nothing.
     pub(crate) buses: Vec<String>,
+    /// Set for a database a capture carries rather than a file on disk:
+    /// `path` is then an identity, and this is where its bytes are.
+    pub(crate) embedded: Option<EmbeddedDbcSource>,
+}
+
+/// Where a capture-carried database came from: the attachment's own name
+/// and bytes, kept so a save of the capture can carry it on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EmbeddedDbcSource {
+    pub(crate) file_name: String,
+    pub(crate) data: Arc<[u8]>,
 }
 
 /// Process-wide state shared between commands and pump threads.

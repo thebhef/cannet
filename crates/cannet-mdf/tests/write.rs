@@ -495,7 +495,7 @@ fn an_embedded_attachment_comes_back_byte_for_byte() {
         .append_frame(&classic(START_NS, 0, 0x100, false, &[1]))
         .expect("frame appends");
     for attachment in &attachments {
-        writer.add_attachment(attachment.clone());
+        writer.add_attachment(attachment.clone(), &[]);
     }
     let outcome = writer.finish().expect("writer finishes");
     assert_eq!(outcome.attachment_count, 2);

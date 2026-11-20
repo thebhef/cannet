@@ -43,6 +43,12 @@ attachments. Import parses them into the loaded set under
   on the buses its named channels are mapped to, follows the channel
   rows until the user changes it, and is inert while *CAN messages* is
   unticked.
+- **Save Capture to MDF says it too.** Data frames are written one
+  `CAN_DataFrame` group per bus channel, and each group links the
+  databases assigned to its bus — a link names a whole group, so one
+  group for every channel could only say "every channel". A capture's
+  own databases are carried through a save from the bytes they arrived
+  with.
 - **Restore brings them back.** A session restored from an MF4 that was
   opened with no project, or a temporary one, restores the capture's
   databases and their bus assignments. An MF4 with databases reads as a
@@ -53,10 +59,6 @@ attachments. Import parses them into the loaded set under
 - The dialog's starting assignment for a database the file names no
   channel for. Assumed until ruled: the one mapped bus when the file has
   a single channel, unassigned otherwise.
-- Whether Save Capture to MDF should say which bus each database is
-  assigned to. The convention can only say it per frame group, and the
-  writer puts every channel's frames in one group, so saying it means
-  writing one `CAN_DataFrame` group per bus channel.
 
 ## Phases
 
@@ -86,7 +88,8 @@ attachments. Import parses them into the loaded set under
   dialog with that database assigned to the buses its channels map to;
   importing decodes the frames with it.
 - An MF4 that links nothing imports with whatever the dialog assigned.
-- Save Capture to MDF then re-import keeps a capture's own databases.
+- Save Capture to MDF then re-import opens with the same assignment,
+  and keeps a capture's own databases.
 - A project saved after an MF4 import names no capture database.
 - Reload DBCs keeps a capture database loaded and assigned.
 - A capture-only session restores with its databases assigned as they
@@ -106,3 +109,7 @@ attachments. Import parses them into the loaded set under
   buses chosen. Still to do: the project panel listing (and with it the
   leak into a saved project and Reload DBCs), a capture's own databases
   surviving a re-export, and restore.
+- 2026-11-20 — the writer groups data frames by bus channel and links
+  each group's databases; Save Capture to MDF writes the assignment and
+  carries a capture's own databases. The asammdf oracle reads the new
+  layout and decodes each bus with the database linked to it.

@@ -1797,7 +1797,8 @@ fn mdf_contents_in_range(state: &AppState, notes: &[Note], run: &ExportRun) -> M
 /// Everything the model holds that the format can carry goes in, and all
 /// of it inside the one file (ADR 0010): frames as bus-logging channel
 /// groups, file-backed signals as signal channel groups, notes as `##EV`
-/// blocks, and the project's DBCs as embedded `##AT` attachments. What
+/// blocks, and the loaded DBCs as embedded `##AT` attachments, each
+/// linked from the frame groups of the buses it is assigned to. What
 /// deliberately does *not* go in is DBC-decoded signals — the frames plus
 /// the attached DBC already say everything they would.
 ///
@@ -1818,7 +1819,7 @@ pub(crate) fn write_mdf_capture(
 ) -> Result<ExportOutcome, String> {
     let (signals, math, notes) = mdf_contents_in_range(state, notes, run);
     let events = events_from_notes(&notes);
-    let attachments = dbc_attachments(state);
+    let attachments = dbc_attachments(state, buses);
 
     // Pass one: the capture's origin and its widest payload. The origin
     // is the earliest of everything on the timeline, not just the frames
@@ -1906,8 +1907,8 @@ pub(crate) fn write_mdf_capture(
     for event in events {
         writer.add_event(event);
     }
-    for attachment in attachments {
-        writer.add_attachment(attachment);
+    for (attachment, channels) in attachments {
+        writer.add_attachment(attachment, &channels);
     }
 
     let outcome = writer
@@ -2047,22 +2048,49 @@ pub(crate) const EVENT_COLOR_PROPERTY: &str = "cannet.color";
 pub(crate) const EVENT_DESCRIPTION_PROPERTY: &str = "cannet.description";
 pub(crate) const EVENT_TAG_PROPERTY: &str = "cannet.tag";
 
-/// The project's loaded DBCs as embedded attachments, read back off disk
-/// at save time. A DBC that has since moved or been deleted is skipped
-/// rather than failing the save — the capture is the thing being written.
-fn dbc_attachments(state: &AppState) -> Vec<cannet_mdf::MdfAttachment> {
+/// The loaded DBCs as embedded attachments, each with the bus channels
+/// it is for.
+///
+/// A project's DBC is read back off disk at save time; one that has
+/// since moved or been deleted is skipped rather than failing the save —
+/// the capture is the thing being written. A database the capture itself
+/// carried goes back out from the bytes it arrived with.
+///
+/// The channels are the positions, in `buses`, of the buses the database
+/// is assigned to — the same re-channelling the frames get, so an import
+/// of the file can offer the assignment back. A bus the list does not
+/// hold has no channel and is left out.
+fn dbc_attachments(
+    state: &AppState,
+    buses: &[String],
+) -> Vec<(cannet_mdf::MdfAttachment, Vec<u8>)> {
     state
         .databases()
         .iter()
         .filter_map(|db| {
-            let data = std::fs::read(&db.path).ok()?;
-            Some(cannet_mdf::MdfAttachment {
-                file_name: std::path::Path::new(&db.path)
-                    .file_name()
-                    .map_or_else(|| db.path.clone(), |n| n.to_string_lossy().into_owned()),
-                mime_type: DBC_MIME_TYPE.to_owned(),
-                data,
-            })
+            let (file_name, data) = match &db.embedded {
+                Some(source) => (source.file_name.clone(), source.data.to_vec()),
+                None => (
+                    std::path::Path::new(&db.path)
+                        .file_name()
+                        .map_or_else(|| db.path.clone(), |n| n.to_string_lossy().into_owned()),
+                    std::fs::read(&db.path).ok()?,
+                ),
+            };
+            let channels = buses
+                .iter()
+                .enumerate()
+                .filter(|(_, bus)| db.buses.contains(bus))
+                .filter_map(|(channel, _)| u8::try_from(channel).ok())
+                .collect();
+            Some((
+                cannet_mdf::MdfAttachment {
+                    file_name,
+                    mime_type: DBC_MIME_TYPE.to_owned(),
+                    data,
+                },
+                channels,
+            ))
         })
         .collect()
 }
@@ -2715,6 +2743,15 @@ pub(crate) fn install_embedded_databases(
             let text = String::from_utf8_lossy(&a.data);
             match crate::dbc_commands::install_dbc(state, &identity, &text) {
                 Ok(installed) => {
+                    // Its bytes stay with it: the identity is no path to
+                    // read them back from, and a save of this capture
+                    // carries its databases on.
+                    if let Some(slot) = state.databases().iter_mut().find(|d| d.path == identity) {
+                        slot.embedded = Some(crate::app_state::EmbeddedDbcSource {
+                            file_name: a.file_name.clone(),
+                            data: a.data.clone().into(),
+                        });
+                    }
                     // The assignment is the import's to make: what the
                     // dialog chose, and nothing for a database it did
                     // not list. Unassigned-by-`None` leaves a re-import's

@@ -4,7 +4,9 @@ Opens a file written by ``cargo run -p cannet-mdf --example export_sample``
 with Python asammdf — the ecosystem's reference implementation — and checks
 that an outside reader sees exactly the capture that went in: the
 bus-logging map, every frame field for field, the message-independent
-signal groups, the timeline events, and the embedded attachment.
+signal groups, the timeline events, and the embedded attachment — with
+the frame groups that link it, which is how asammdf itself learns which
+database decodes which frames.
 
 This is a **dev/CI-time oracle, never a runtime dependency**. The default
 ``cargo test`` suite proves the writer against this crate's own reader and
@@ -65,15 +67,38 @@ def abs_ns(start_ns: int, seconds: float) -> int:
     return start_ns + math.floor(float(seconds) * 1e9 + 0.5)
 
 
-def group_indices(mdf: MDF) -> dict[str, int]:
-    """Channel-group index of each bus-logging structure, by structure name."""
-    out = {}
+def group_indices(mdf: MDF) -> dict[str, list[int]]:
+    """Channel-group indices of each bus-logging structure, by structure name.
+
+    Data frames are written one group per bus channel, so a structure
+    may have several.
+    """
+    out: dict[str, list[int]] = {}
     for i, grp in enumerate(mdf.groups):
         names = [c.name for c in grp.channels]
         for structure in STRUCTURES:
             if structure in names:
-                out[structure] = i
+                out.setdefault(structure, []).append(i)
     return out
+
+
+def decoded_from(grp) -> int | None:
+    """The bus channel asammdf decoded this group from, or ``None``.
+
+    asammdf decodes a frame group with the database its ``CAN_DataFrame``
+    channel links and adds the result as groups of its own, named
+    ``from CAN<n> message ID=…``. They are not in the file.
+    """
+    name = grp.channel_group.acq_name or ""
+    if not name.startswith("from CAN"):
+        return None
+    return int(name.split()[1][len("CAN") :])
+
+
+def frame_order(frame) -> tuple[int, int]:
+    """The order frames read back in: by time, then by bus channel —
+    one group per channel, merged."""
+    return (frame["t_abs_ns"], frame["bus_channel"])
 
 
 def check_frames(mdf: MDF, expected, start_ns: int, problems: list[str]) -> None:
@@ -86,46 +111,68 @@ def check_frames(mdf: MDF, expected, start_ns: int, problems: list[str]) -> None
         want[frame["structure"]].append(frame)
 
     for structure, frames in want.items():
-        gi = groups.get(structure)
-        if gi is None:
+        indices = groups.get(structure)
+        if indices is None:
             continue
-        cycles = mdf.groups[gi].channel_group.cycles_nr
+        cycles = sum(mdf.groups[gi].channel_group.cycles_nr for gi in indices)
         if cycles != len(frames):
             problems.append(f"{structure}: {cycles} cycles, expected {len(frames)}")
             continue
         if not frames:
             continue
-        columns = {
-            member: mdf.get(f"{structure}.{member}", group=gi).samples
-            for member in MEMBERS
-        }
-        payload = mdf.get(f"{structure}.DataBytes", group=gi).samples
-        times = mdf.get(f"{structure}.ID", group=gi).timestamps
-        for i, frame in enumerate(frames):
+        # Every group's rows, as the same dict shape the expectations use.
+        rows = []
+        for gi in indices:
+            if mdf.groups[gi].channel_group.cycles_nr == 0:
+                continue
+            columns = {
+                member: mdf.get(f"{structure}.{member}", group=gi).samples
+                for member in MEMBERS
+            }
+            payload = mdf.get(f"{structure}.DataBytes", group=gi).samples
+            times = mdf.get(f"{structure}.ID", group=gi).timestamps
+            channels = {int(c) for c in columns["BusChannel"]}
+            if structure == "CAN_DataFrame" and len(channels) != 1:
+                problems.append(
+                    f"{structure} g{gi} holds bus channels {sorted(channels)}, expected one"
+                )
+            for i in range(len(times)):
+                row = {
+                    key: int(columns[member][i])
+                    for member, key in MEMBERS.items()
+                    if key is not None
+                }
+                row["payload"] = bytes(payload[i])
+                row["t_abs_ns"] = abs_ns(start_ns, times[i])
+                rows.append(row)
+        rows.sort(key=frame_order)
+        for i, (row, frame) in enumerate(zip(rows, sorted(frames, key=frame_order))):
             for member, key in MEMBERS.items():
                 if key is None:
                     continue
-                got = int(columns[member][i])
-                if got != frame[key]:
+                if row[key] != frame[key]:
                     problems.append(
-                        f"{structure}[{i}] {member} {got} != {frame[key]}"
+                        f"{structure}[{i}] {member} {row[key]} != {frame[key]}"
                     )
-            got_hex = bytes(payload[i][: frame["data_length"]]).hex()
+            got_hex = row["payload"][: frame["data_length"]].hex()
             if got_hex != frame["data_hex"]:
                 problems.append(
                     f"{structure}[{i}] DataBytes {got_hex} != {frame['data_hex']}"
                 )
-            got_ns = abs_ns(start_ns, times[i])
-            if got_ns != frame["t_abs_ns"]:
+            if row["t_abs_ns"] != frame["t_abs_ns"]:
                 problems.append(
-                    f"{structure}[{i}] t {got_ns} != {frame['t_abs_ns']}"
+                    f"{structure}[{i}] t {row['t_abs_ns']} != {frame['t_abs_ns']}"
                 )
 
 
 def check_signals(mdf: MDF, expected, start_ns: int, problems: list[str]) -> None:
     # Signal groups are the ones with no bus-logging structure in them.
-    bus = set(group_indices(mdf).values())
-    plain = [i for i in range(len(mdf.groups)) if i not in bus]
+    bus = {gi for indices in group_indices(mdf).values() for gi in indices}
+    plain = [
+        i
+        for i in range(len(mdf.groups))
+        if i not in bus and decoded_from(mdf.groups[i]) is None
+    ]
     if len(plain) != len(expected):
         problems.append(f"{len(plain)} signal group(s), expected {len(expected)}")
         return
@@ -230,6 +277,30 @@ def check_attachment(mdf: MDF, want, problems: list[str]) -> None:
     data, _path, _md5 = mdf.extract_attachment(0)
     if data.hex() != want["data_hex"]:
         problems.append("attachment bytes differ from what was embedded")
+    # Which frame groups link it: asammdf decodes a group's frames with
+    # the database its `CAN_DataFrame` channel references.
+    linked = set()
+    for gi in group_indices(mdf).get("CAN_DataFrame", []):
+        grp = mdf.groups[gi]
+        channel = next(c for c in grp.channels if c.name == "CAN_DataFrame")
+        if channel.attachment is None or grp.channel_group.cycles_nr == 0:
+            continue
+        if channel.attachment != 0:
+            problems.append(f"g{gi} links attachment {channel.attachment}, expected 0")
+        linked |= {int(c) for c in mdf.get("CAN_DataFrame.BusChannel", group=gi).samples}
+    if sorted(linked) != want["bus_channels"]:
+        problems.append(
+            f"attachment linked from bus channels {sorted(linked)}, "
+            f"expected {want['bus_channels']}"
+        )
+    # And the consequence: asammdf decodes those buses' frames with it,
+    # and no other bus's.
+    decoded = {decoded_from(grp) for grp in mdf.groups} - {None}
+    if sorted(decoded) != want["bus_channels"]:
+        problems.append(
+            f"asammdf decoded bus channels {sorted(decoded)} with the attachment, "
+            f"expected {want['bus_channels']}"
+        )
 
 
 def main() -> int:

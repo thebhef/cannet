@@ -8,15 +8,23 @@
 //!
 //! | Channel group | Holds |
 //! | --- | --- |
-//! | `CAN_DataFrame` | every classic and FD data frame, `BusChannel` carrying the bus |
+//! | `CAN_DataFrame`, one per bus channel | that channel's classic and FD data frames |
 //! | `CAN_ErrorFrame` | error frames |
 //! | `CAN_RemoteFrame` | remote frames |
 //! | one per signal | a directly recorded series, verbatim |
 //!
-//! The three bus groups are always written, empty or not, as real logger
-//! files do — a capture with no error frames still says so in the shape of
-//! the file, and a capture with no frames at all is still recognisably a
-//! logger file rather than a signal file.
+//! **Data frames are grouped by bus channel**, each group named `CAN<n>`
+//! after its `BusChannel`. That is what lets a capture say which database
+//! decodes which bus the way python-can writes it and asammdf reads it: a
+//! group's `CAN_DataFrame` channel links the attachments that are for its
+//! channel ([`MdfCaptureWriter::add_attachment`]), and a link names a
+//! whole group. Every record still carries its `BusChannel`.
+//!
+//! The bus groups are always written, empty or not, as real logger files
+//! do — a capture with no error frames still says so in the shape of the
+//! file, and a capture with no frames at all still has one empty
+//! `CAN_DataFrame` group, so it is recognisably a logger file rather than
+//! a signal file.
 //!
 //! Each bus group is a **structure channel**: one `##CN` spanning the
 //! frame, its `cn_composition` reaching a chain of one `##CN` per member
@@ -44,12 +52,15 @@
 //!
 //! ## Memory
 //!
-//! Data-frame records stream to the file as they are appended; nothing
-//! about a frame is retained after [`MdfCaptureWriter::append_frame`]
-//! returns. Error and remote records, signals, events and attachments
-//! buffer until [`MdfCaptureWriter::finish`], because they are small next
-//! to the frame stream and their blocks land after it.
+//! Data-frame records are held per bus channel and written out a
+//! fragment at a time — a `##DT` block of about [`FRAGMENT_BYTES`] —
+//! so what is retained is bounded by the number of channels, not the
+//! length of the capture. A channel that fills more than one fragment
+//! lists them in a `##DL`. Error and remote records, signals, events and
+//! attachments buffer until [`MdfCaptureWriter::finish`], because they
+//! are small next to the frame stream and their blocks land after it.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -57,8 +68,9 @@ use std::path::Path;
 use cannet_core::{CanFrame, CanFramePayload, Direction};
 use mdf4_rs::blocks::{
     AttachmentBlock, BlockHeader, ChannelBlock, ChannelGroupBlock, ConversionBlock, ConversionType,
-    DataGroupBlock, DataType, EventBlock, EventCause, EventRangeType, EventSyncType, EventType,
-    FileHistoryBlock, HeaderBlock, IdentificationBlock, MetadataBlock, SourceBlock, TextBlock,
+    DataGroupBlock, DataListBlock, DataType, EventBlock, EventCause, EventRangeType, EventSyncType,
+    EventType, FileHistoryBlock, HeaderBlock, IdentificationBlock, MetadataBlock, SourceBlock,
+    TextBlock,
 };
 
 use crate::attachments::MdfAttachment;
@@ -75,9 +87,19 @@ const CG_FLAGS_PLAIN_BUS_EVENT: u16 = 0x2 | 0x4;
 /// `hd_time_flags` bit 1 — the timezone / DST offsets are valid.
 const HD_TIME_OFFSETS_VALID: u8 = 0x2;
 
-/// Where the ID and HD blocks end, and so where the data-frame `##DT`
-/// begins. Both are fixed-size and written before any record.
-const DATA_BLOCK_ADDR: u64 = 64 + 104;
+/// Where the ID and HD blocks end, and so where the first data-frame
+/// fragment begins. Both are fixed-size and written before any record.
+const FIRST_FRAGMENT_ADDR: u64 = 64 + 104;
+/// About how many record bytes one data-frame `##DT` fragment holds — the
+/// most a bus channel keeps in memory before it is written out. A
+/// fragment is a whole number of records, so the exact size is the
+/// largest multiple of the record size that fits.
+pub const FRAGMENT_BYTES: usize = 1 << 20;
+/// Byte offset, in a serialized `##CN` block, of the end of its eight
+/// fixed links — where any attachment links go.
+const CN_FIXED_LINKS_END: usize = 24 + 8 * 8;
+/// Byte offset of `cn_attachment_count` in a serialized eight-link `##CN`.
+const CN_ATTACHMENT_COUNT_OFFSET: usize = 110;
 /// Bytes of common header on every `##XX` block.
 const BLOCK_HEADER_LEN: u64 = 24;
 
@@ -225,15 +247,28 @@ pub struct MdfCaptureWriter {
     /// `Option` so `finish` can take ownership, and so `Drop` can tell a
     /// finished writer from an abandoned one.
     out: Option<BufWriter<File>>,
+    /// Where the next byte written to `out` lands.
+    position: u64,
     start_time_ns: u64,
     payload_bytes: usize,
-    /// Records written into the streamed data-frame `##DT` so far.
-    data_records: u64,
+    /// The data frames of each bus channel seen so far.
+    data: BTreeMap<u8, BusStream>,
     error_records: Vec<u8>,
     remote_records: Vec<u8>,
     signals: Vec<PendingSignal>,
     events: Vec<MdfEvent>,
-    attachments: Vec<MdfAttachment>,
+    /// Each attachment with the bus channels it is for.
+    attachments: Vec<(MdfAttachment, Vec<u8>)>,
+}
+
+/// One bus channel's data frames: the fragments already in the file, and
+/// the records waiting to fill the next one.
+#[derive(Default)]
+struct BusStream {
+    /// Addresses of the `##DT` fragments written so far, in order.
+    fragments: Vec<u64>,
+    pending: Vec<u8>,
+    records: u64,
 }
 
 impl MdfCaptureWriter {
@@ -248,16 +283,15 @@ impl MdfCaptureWriter {
         // in `finish`, once the blocks they point at have addresses.
         out.write_all(&identification().to_bytes()?)?;
         out.write_all(&HeaderBlock::default().to_bytes()?)?;
-        // The data-frame `##DT` header, its length patched in `finish`.
-        out.write_all(&block_header("##DT", BLOCK_HEADER_LEN))?;
 
         Ok(Self {
             out: Some(out),
+            position: FIRST_FRAGMENT_ADDR,
             start_time_ns: layout.start_time_ns,
             payload_bytes: layout
                 .max_payload_len
                 .clamp(cannet_core::CLASSIC_DATA_MAX, cannet_core::FD_DATA_MAX),
-            data_records: 0,
+            data: BTreeMap::new(),
             error_records: Vec::new(),
             remote_records: Vec::new(),
             signals: Vec::new(),
@@ -267,15 +301,24 @@ impl MdfCaptureWriter {
     }
 
     /// Append one frame. Frames are written in call order within their
-    /// structure group, so a caller that appends chronologically gets a
-    /// chronological file.
+    /// group, so a caller that appends chronologically gets a
+    /// chronological file. Data frames of different bus channels land in
+    /// different groups, so two that share a timestamp read back in
+    /// channel order, whatever order they were appended in.
     pub fn append_frame(&mut self, frame: &CanFrame) -> Result<(), MdfWriteError> {
         let record = self.encode(frame)?;
         match frame.payload {
             CanFramePayload::Classic(_) | CanFramePayload::Fd { .. } => {
-                let out = self.out.as_mut().ok_or_else(finished)?;
-                out.write_all(&record)?;
-                self.data_records += 1;
+                if self.out.is_none() {
+                    return Err(finished());
+                }
+                let fragment_bytes = self.fragment_bytes();
+                let stream = self.data.entry(frame.channel).or_default();
+                stream.pending.extend_from_slice(&record);
+                stream.records += 1;
+                if stream.pending.len() >= fragment_bytes {
+                    self.flush_fragment(frame.channel)?;
+                }
             }
             CanFramePayload::Error => self.error_records.extend_from_slice(&record),
             CanFramePayload::Remote { .. } => self.remote_records.extend_from_slice(&record),
@@ -300,29 +343,69 @@ impl MdfCaptureWriter {
     }
 
     /// Add a file to embed as an `##AT` attachment.
-    pub fn add_attachment(&mut self, attachment: MdfAttachment) {
-        self.attachments.push(attachment);
+    ///
+    /// `bus_channels` are the bus channels it is for — a database's are
+    /// the channels whose frames it decodes. The `CAN_DataFrame` channel
+    /// of each of those channels' groups links it (`cn_at_reference`),
+    /// which is how a reader learns the association. A channel with no
+    /// data frame in the capture has no group, so nothing can say an
+    /// attachment is for it; pass an empty slice for a file that is for
+    /// no channel in particular.
+    pub fn add_attachment(&mut self, attachment: MdfAttachment, bus_channels: &[u8]) {
+        self.attachments.push((attachment, bus_channels.to_vec()));
+    }
+
+    /// Record bytes one data-frame fragment holds: the largest whole
+    /// number of records within [`FRAGMENT_BYTES`], and at least one.
+    fn fragment_bytes(&self) -> usize {
+        let record = self.record_size() as usize;
+        (FRAGMENT_BYTES / record).max(1) * record
+    }
+
+    /// Write `channel`'s pending records out as one `##DT` fragment.
+    fn flush_fragment(&mut self, channel: u8) -> Result<(), MdfWriteError> {
+        let Some(stream) = self.data.get_mut(&channel) else {
+            return Ok(());
+        };
+        if stream.pending.is_empty() {
+            return Ok(());
+        }
+        let out = self.out.as_mut().ok_or_else(finished)?;
+        // Blocks start 8-byte aligned; a fragment need not end there.
+        let pad = usize::try_from((8 - self.position % 8) % 8).unwrap_or_default();
+        out.write_all(&[0u8; 8][..pad])?;
+        self.position += pad as u64;
+        stream.fragments.push(self.position);
+        let length = BLOCK_HEADER_LEN + stream.pending.len() as u64;
+        out.write_all(&block_header("##DT", length))?;
+        out.write_all(&stream.pending)?;
+        self.position += length;
+        stream.pending.clear();
+        Ok(())
     }
 
     /// Write everything that is not a data-frame record and patch the
     /// links and lengths that were placeholders, in place.
     pub fn finish(mut self) -> Result<MdfWritten, MdfWriteError> {
-        let mut out = self.out.take().ok_or_else(finished)?;
+        if self.out.is_none() {
+            return Err(finished());
+        }
         let record_size = self.record_size();
-        let data_length = BLOCK_HEADER_LEN + self.data_records * u64::from(record_size);
+        let channels: Vec<u8> = self.data.keys().copied().collect();
+        for channel in channels {
+            self.flush_fragment(channel)?;
+        }
+        let mut out = self.out.take().ok_or_else(finished)?;
 
-        // Blocks start 8-byte aligned; a record stream need not end there.
-        let pad =
-            usize::try_from((8 - ((DATA_BLOCK_ADDR + data_length) % 8)) % 8).unwrap_or_default();
+        // Blocks start 8-byte aligned; the last fragment need not end there.
+        let pad = usize::try_from((8 - self.position % 8) % 8).unwrap_or_default();
         out.write_all(&[0u8; 8][..pad])?;
-        let trailer_base = DATA_BLOCK_ADDR + data_length + pad as u64;
+        let trailer_base = self.position + pad as u64;
 
         let (trailer, header) = self.build_trailer(trailer_base)?;
         out.write_all(&trailer.buf)?;
 
-        // The two placeholders written before any record existed.
-        out.seek(SeekFrom::Start(DATA_BLOCK_ADDR + 8))?;
-        out.write_all(&data_length.to_le_bytes())?;
+        // The header block was a placeholder until its links had targets.
         out.seek(SeekFrom::Start(64))?;
         out.write_all(&header.to_bytes()?)?;
 
@@ -334,7 +417,7 @@ impl MdfCaptureWriter {
         drop(file);
 
         Ok(MdfWritten {
-            frame_count: self.data_records
+            frame_count: self.data.values().map(|s| s.records).sum::<u64>()
                 + count_records(&self.error_records, record_size)
                 + count_records(&self.remote_records, record_size),
             event_count: self.events.len() as u64,
@@ -399,25 +482,54 @@ impl MdfCaptureWriter {
         let mut t = Trailer::new(base);
         let record_size = self.record_size();
 
+        // Attachments first: a frame group links the ones that are for
+        // its channel, so their addresses have to exist by then.
+        let (first_attachment, attachment_addrs) = self.write_attachments(&mut t)?;
+
         // Group order decides the group index a re-import sees, and it is
-        // the order the reader's own merge breaks timestamp ties by.
+        // the order the reader's own merge breaks timestamp ties by: data
+        // frames in bus-channel order, then error frames, then remote.
+        let mut groups = Vec::new();
+        for (channel, stream) in &self.data {
+            let data_addr = t.fragments(&stream.fragments, self.fragment_bytes() as u64)?;
+            let linked: Vec<u64> = self
+                .attachments
+                .iter()
+                .zip(&attachment_addrs)
+                .filter(|((_, channels), _)| channels.contains(channel))
+                .map(|(_, addr)| *addr)
+                .collect();
+            let name = format!("CAN{}", u16::from(*channel) + 1);
+            groups.push(self.bus_group(
+                &mut t,
+                "CAN_DataFrame",
+                &name,
+                data_addr,
+                stream.records,
+                &linked,
+            )?);
+        }
+        if self.data.is_empty() {
+            groups.push(self.bus_group(&mut t, "CAN_DataFrame", "CAN", 0, 0, &[])?);
+        }
         let error_dt = t.data_block(&self.error_records);
         let remote_dt = t.data_block(&self.remote_records);
-        let mut groups = vec![
-            self.bus_group(&mut t, "CAN_DataFrame", DATA_BLOCK_ADDR, self.data_records)?,
-            self.bus_group(
-                &mut t,
-                "CAN_ErrorFrame",
-                error_dt,
-                count_records(&self.error_records, record_size),
-            )?,
-            self.bus_group(
-                &mut t,
-                "CAN_RemoteFrame",
-                remote_dt,
-                count_records(&self.remote_records, record_size),
-            )?,
-        ];
+        groups.push(self.bus_group(
+            &mut t,
+            "CAN_ErrorFrame",
+            "CAN",
+            error_dt,
+            count_records(&self.error_records, record_size),
+            &[],
+        )?);
+        groups.push(self.bus_group(
+            &mut t,
+            "CAN_RemoteFrame",
+            "CAN",
+            remote_dt,
+            count_records(&self.remote_records, record_size),
+            &[],
+        )?);
         for pending in &self.signals {
             groups.push(self.signal_group(&mut t, pending)?);
         }
@@ -437,7 +549,6 @@ impl MdfCaptureWriter {
         }
 
         let first_event = self.write_events(&mut t)?;
-        let first_attachment = self.write_attachments(&mut t)?;
         let fh_comment = t.md(FH_COMMENT);
         let fh = FileHistoryBlock {
             comment_addr: fh_comment,
@@ -459,13 +570,19 @@ impl MdfCaptureWriter {
     }
 
     /// One bus-logging channel group: the master, the frame structure, and
-    /// the structure's members. Returns `(cg_addr, dt_addr)`.
+    /// the structure's members. Returns `(cg_addr, data_addr)`.
+    ///
+    /// `source` names the group and its bus source — `CAN<n>` for one bus
+    /// channel's data frames. `attachments` are the `##AT` blocks the
+    /// structure channel links: the databases that decode this group.
     fn bus_group(
         &self,
         t: &mut Trailer,
         structure: &str,
+        source: &str,
         dt_addr: u64,
         cycles: u64,
+        attachments: &[u64],
     ) -> Result<(u64, u64), MdfWriteError> {
         let payload_bits = 8 * u32::try_from(self.payload_bytes).unwrap_or(u32::MAX);
         let members: [(&str, u32, u32, DataType); 10] = [
@@ -518,11 +635,14 @@ impl MdfCaptureWriter {
                 8 * (PAYLOAD_OFFSET - BUS_CHANNEL_OFFSET) + payload_bits,
             )
         };
-        let structure_addr = t.put(&structure_cn.to_bytes()?);
+        let structure_addr = t.put(&with_attachment_links(
+            structure_cn.to_bytes()?,
+            attachments,
+        ));
         let first_ch = t.master_channel(structure_addr)?;
 
-        let source = t.can_bus_source()?;
-        let acq_name = t.tx("CAN");
+        let acq_name = t.tx(source);
+        let source = t.can_bus_source(source)?;
         let cg = ChannelGroupBlock {
             first_ch_addr: first_ch,
             acq_name_addr: acq_name,
@@ -641,10 +761,12 @@ impl MdfCaptureWriter {
         Ok(first)
     }
 
-    /// The `##AT` chain, back to front. Returns the first block's address.
-    fn write_attachments(&self, t: &mut Trailer) -> Result<u64, MdfWriteError> {
+    /// The `##AT` chain, back to front. Returns the first block's address,
+    /// and every block's address in the order the attachments were added.
+    fn write_attachments(&self, t: &mut Trailer) -> Result<(u64, Vec<u64>), MdfWriteError> {
         let mut first = 0u64;
-        for attachment in self.attachments.iter().rev() {
+        let mut addrs = vec![0u64; self.attachments.len()];
+        for (i, (attachment, _)) in self.attachments.iter().enumerate().rev() {
             let filename_addr = t.tx(&attachment.file_name);
             let mimetype_addr = t.tx(&attachment.mime_type);
             let at = AttachmentBlock {
@@ -654,9 +776,36 @@ impl MdfCaptureWriter {
                 ..AttachmentBlock::embedded(&attachment.data)
             };
             first = t.put(&at.to_bytes()?);
+            addrs[i] = first;
         }
-        Ok(first)
+        Ok((first, addrs))
     }
+}
+
+/// A serialized eight-link `##CN` block with `attachments` added as its
+/// `cn_at_reference` links.
+///
+/// The links go between the fixed links and the fixed fields, so the
+/// fields move down by eight bytes a link; the header's length and link
+/// count and `cn_attachment_count` say so. `mdf4-rs` serializes the
+/// eight-link block only, which is why this is done to its bytes.
+fn with_attachment_links(mut block: Vec<u8>, attachments: &[u64]) -> Vec<u8> {
+    if attachments.is_empty() {
+        return block;
+    }
+    let count = u16::try_from(attachments.len()).unwrap_or(u16::MAX);
+    block[CN_ATTACHMENT_COUNT_OFFSET..CN_ATTACHMENT_COUNT_OFFSET + 2]
+        .copy_from_slice(&count.to_le_bytes());
+    let links: Vec<u8> = attachments
+        .iter()
+        .take(usize::from(count))
+        .flat_map(|addr| addr.to_le_bytes())
+        .collect();
+    block.splice(CN_FIXED_LINKS_END..CN_FIXED_LINKS_END, links);
+    let length = block.len() as u64;
+    block[8..16].copy_from_slice(&length.to_le_bytes());
+    block[16..24].copy_from_slice(&(8 + u64::from(count)).to_le_bytes());
+    block
 }
 
 impl Drop for MdfCaptureWriter {
@@ -721,6 +870,21 @@ impl Trailer {
         self.put(&bytes)
     }
 
+    /// What a data group links for a stream written as `fragments`: the
+    /// one `##DT` itself, a `##DL` listing several, or `0` for none.
+    /// Every fragment but the last holds `fragment_bytes` of records,
+    /// which is what lets the list say so once instead of per block.
+    fn fragments(&mut self, fragments: &[u64], fragment_bytes: u64) -> Result<u64, MdfWriteError> {
+        Ok(match fragments {
+            [] => 0,
+            [only] => *only,
+            several => {
+                let list = DataListBlock::new_equal_length(several.to_vec(), fragment_bytes);
+                self.put(&list.to_bytes()?)
+            }
+        })
+    }
+
     /// A `##DT` block holding `records`, or `0` for an empty group — an
     /// empty data group links to nothing rather than to a header-only
     /// block.
@@ -778,9 +942,9 @@ impl Trailer {
         Ok(self.put(&cc.to_bytes()?))
     }
 
-    fn can_bus_source(&mut self) -> Result<u64, MdfWriteError> {
-        let name_addr = self.tx("CAN");
-        let path_addr = self.tx("CAN");
+    fn can_bus_source(&mut self, name: &str) -> Result<u64, MdfWriteError> {
+        let name_addr = self.tx(name);
+        let path_addr = self.tx(name);
         let si = SourceBlock {
             name_addr,
             path_addr,
