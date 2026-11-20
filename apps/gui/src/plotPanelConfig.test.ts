@@ -9,6 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 const {
   areasFromParams,
+  areasWithoutColorPicks,
   cursorModeFromRaw,
   fmtCount,
   fmtFreq,
@@ -395,3 +396,24 @@ describe("sortAreaSignals", () => {
 // Type-only guard: SignalRef stays structurally usable here.
 const _typed: SignalRef = { ...core };
 void _typed;
+
+describe("areasWithoutColorPicks", () => {
+  it("drops every series' pick in every area and keeps the rest", () => {
+    const raw = [
+      { id: "a1", future: 1, signals: [{ signalName: "A", colorPick: "#111111", hidden: true }] },
+      { id: "a2", signals: [{ signalName: "B" }, { signalName: "C", colorPick: "#222222" }] },
+    ];
+    expect(areasWithoutColorPicks(raw)).toEqual([
+      { id: "a1", future: 1, signals: [{ signalName: "A", hidden: true }] },
+      { id: "a2", signals: [{ signalName: "B" }, { signalName: "C" }] },
+    ]);
+    // The stored value itself is not mutated.
+    expect(raw[0].signals[0].colorPick).toBe("#111111");
+  });
+
+  it("returns the same value when nothing carries a pick", () => {
+    const raw = [{ id: "a1", signals: [{ signalName: "A" }] }];
+    expect(areasWithoutColorPicks(raw)).toBe(raw);
+    expect(areasWithoutColorPicks(undefined)).toBeUndefined();
+  });
+});

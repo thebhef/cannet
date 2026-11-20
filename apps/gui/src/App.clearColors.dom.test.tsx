@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 //
 // "Clear project colors" (palette command, behind a confirm dialog).
-// Its scope is the whole point of the test: it discards the two
-// *cosmetic identity* populations — each bus's `color` field and the
-// project's `signal_colors` overrides — and leaves color-map rules
-// alone, because a rule says what a value *means* and is authored data.
+// Its scope is the whole point of the test: it discards every
+// *cosmetic identity* pick — each bus's `color` field, the project's
+// `signal_colors` overrides, and each plot series' `colorPick` — and
+// leaves color-map rules alone, because a rule says what a value *means* and is authored data.
 // Drives the REAL App: open a project through the mocked host, run the
 // command through the real palette chord, then save and inspect the
 // project handed back.
@@ -16,7 +16,7 @@ import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react
 type Handler = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Handler[]>();
 
-/// A project with both color populations filled in, plus a color-map
+/// A project with every color population filled in, plus a color-map
 /// element whose rules must survive.
 const OPEN_PROJECT = {
   schema_version: 7,
@@ -34,6 +34,47 @@ const OPEN_PROJECT = {
         { min: 1, max: 1, color: "#aa0000" },
         { min: 2, max: 2, color: "#00bb00" },
       ],
+    },
+    {
+      // A plot whose series carry the only color a plot stores: the
+      // user's pick. Both areas hold one, so the clear has to reach
+      // every area, not just the first.
+      kind: "plot",
+      id: "plot1",
+      sources: ["*"],
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [
+              {
+                busId: "b1",
+                messageId: 256,
+                extended: false,
+                signalName: "EngineSpeed",
+                messageName: "Engine",
+                unit: "rpm",
+                colorPick: "#123456",
+                hidden: true,
+              },
+            ],
+          },
+          {
+            id: "a2",
+            signals: [
+              {
+                busId: "b2",
+                messageId: 256,
+                extended: false,
+                signalName: "EngineTemp",
+                messageName: "Engine",
+                unit: "degC",
+                colorPick: "#654321",
+              },
+            ],
+          },
+        ],
+      },
     },
   ],
   buses: [
@@ -213,6 +254,14 @@ function colormapRules(project: Project): ColorRule[] {
   return el.rules;
 }
 
+/// The stored series of the fixture's plot, every area flattened.
+function plotSeries(project: Project): Record<string, unknown>[] {
+  const el = (project.elements as ProjectElement[]).find((e) => e.kind === "plot");
+  if (el == null || el.kind !== "plot") throw new Error("the plot element is gone");
+  const areas = (el.config?.areas ?? []) as { signals: Record<string, unknown>[] }[];
+  return areas.flatMap((a) => a.signals);
+}
+
 function busColors(project: Project): (string | null | undefined)[] {
   return (project.buses as Bus[]).map((b) => b.color);
 }
@@ -231,12 +280,13 @@ afterEach(() => {
 });
 
 describe("project.clearColors", () => {
-  it("clears both stored color populations and spares the color maps", async () => {
+  it("clears every stored color pick and spares the color maps", async () => {
     await mountAndOpen();
     // The project arrived with colors on it.
     const opened = await saveAndReadProject();
     expect(busColors(opened)).toEqual(["#111111", "#222222", undefined]);
     expect(Object.keys(opened.signal_colors ?? {})).toHaveLength(2);
+    expect(plotSeries(opened).map((s) => s.colorPick)).toEqual(["#123456", "#654321"]);
 
     await runClearColorsCommand();
     await act(async () => {
@@ -250,6 +300,13 @@ describe("project.clearColors", () => {
     expect(busColors(cleared)).toEqual([undefined, undefined, undefined]);
     expect(cleared.buses.every((b) => !("color" in b))).toBe(true);
     expect(cleared.signal_colors).toEqual({});
+    // A plot series' pick goes too — the key itself, so the series
+    // resolves its color live again — while the rest of the series
+    // (here, its hidden flag) stays as the user left it.
+    const series = plotSeries(cleared);
+    expect(series).toHaveLength(2);
+    expect(series.every((s) => !("colorPick" in s))).toBe(true);
+    expect(series[0].hidden).toBe(true);
     // Authored data, untouched.
     expect(colormapRules(cleared)).toEqual([
       { min: 1, max: 1, color: "#aa0000" },
@@ -268,6 +325,7 @@ describe("project.clearColors", () => {
     const after = await saveAndReadProject();
     expect(busColors(after)).toEqual(["#111111", "#222222", undefined]);
     expect(after.signal_colors).toEqual(OPEN_PROJECT.signal_colors);
+    expect(plotSeries(after).map((s) => s.colorPick)).toEqual(["#123456", "#654321"]);
   }, 30_000);
 
   it("escapes out of the confirmation without clearing", async () => {

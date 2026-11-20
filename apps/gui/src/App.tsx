@@ -148,6 +148,7 @@ import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { ServerTrustDialogs } from "./ServerTrustDialog";
 import { raiseServerTrust } from "./serverTrust";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
+import { areasWithoutColorPicks } from "./plotPanelConfig";
 import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
 import { ClosingOverlay } from "./ClosingOverlay";
@@ -3320,11 +3321,13 @@ export function App() {
   /// discards deliberate choices with no partial undo, so it asks first.
   const [confirmingClearColors, setConfirmingClearColors] = useState(false);
 
-  /// Drop every color the user picked: each bus's `color` field and the
-  /// whole `signal_colors` map, so both populations fall back to the
-  /// active theme's wheels. Color-map rules are deliberately untouched —
-  /// a rule says what a *value* means, which is authored data rather
-  /// than cosmetic identity.
+  /// Drop every color the user picked: each bus's `color` field, the
+  /// whole `signal_colors` map, and every plot series' `colorPick`, so
+  /// all of them fall back to the active theme's wheels. A plot's picks
+  /// are rewritten on its element as an external write, so an open plot
+  /// panel rehydrates and recolors. Color-map rules are deliberately
+  /// untouched — a rule says what a *value* means, which is authored
+  /// data rather than cosmetic identity.
   const handleClearProjectColors = useCallback(() => {
     setBuses((prev) =>
       prev.map((b) => {
@@ -3334,8 +3337,15 @@ export function App() {
       }),
     );
     setSignalColors({});
+    for (const { element } of registryRef.current) {
+      if (element.kind !== "plot" || element.config == null) continue;
+      const areas = areasWithoutColorPicks(element.config.areas);
+      if (areas !== element.config.areas) {
+        updateElement(element.id, { config: { ...element.config, areas } });
+      }
+    }
     setDirty(true);
-  }, []);
+  }, [updateElement]);
 
   /// Set (or clear, with `null`) one signal's project-level color
   /// override — a model edit, so it marks the project dirty.
