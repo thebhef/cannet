@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { advanceLiveEdge, liveEdgeAt, type LiveEdge, followXWindow } from "./followWindow";
+import { advanceLiveEdge, liveEdgeAt, type LiveEdge, followXWindow, wheelZoomX } from "./followWindow";
 
 const DEFAULT = 10;
 
@@ -310,5 +310,28 @@ describe("followXWindow", () => {
       expect(followXWindow(true, false, 30, 130, 579, DEFAULT, 30, true)).toBeNull();
       expect(followXWindow(true, false, null, null, 579, DEFAULT, 30, true)).toEqual({ min: 30, max: 579 });
     });
+  });
+});
+
+describe("wheelZoomX", () => {
+  const WIN = { min: 0, max: 100 };
+
+  it("zooming out on the t=0 half while following pivots on the right edge, so the follow slide has nothing to snap", () => {
+    // Pivoting on the cursor would push the right edge past the live
+    // edge, and the next follow resample would slide it back.
+    expect(wheelZoomX(WIN, 25, 2, true, false)).toEqual({ min: -100, max: 100, keepFollow: true });
+  });
+
+  it("zooming out on the leading half pivots on the cursor and stops following", () => {
+    expect(wheelZoomX(WIN, 75, 2, true, true)).toEqual({ min: -75, max: 125, keepFollow: false });
+  });
+
+  it("zooming in pivots on the cursor and keeps following, on either half", () => {
+    expect(wheelZoomX(WIN, 25, 0.5, true, false)).toEqual({ min: 12.5, max: 62.5, keepFollow: true });
+    expect(wheelZoomX(WIN, 75, 0.5, true, true)).toEqual({ min: 37.5, max: 87.5, keepFollow: true });
+  });
+
+  it("without follow-live, zooming out on the t=0 half pivots on the cursor", () => {
+    expect(wheelZoomX(WIN, 25, 2, false, false)).toEqual({ min: -25, max: 175, keepFollow: true });
   });
 });
