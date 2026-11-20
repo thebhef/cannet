@@ -561,6 +561,36 @@ export function App() {
   // `handleDockReady` and so can't close over the state.
   const projectPathRef = useRef<string | null>(null);
   projectPathRef.current = projectPath;
+  // `saveProjectTo`, for the import handlers declared ahead of it.
+  const saveProjectToRef = useRef<((path: string, promote?: boolean) => Promise<boolean>) | null>(
+    null,
+  );
+  /// Give the session a project file before a capture is imported into
+  /// it, if it has none of the user's own: a **temporary project**, in a
+  /// project directory in cannet's cache space, named after the capture.
+  ///
+  /// Everything a relaunch brings back — the buses, the virtual buses,
+  /// the capture, the databases it carries — comes back by reopening a
+  /// project file, so a capture imported into a project that was never
+  /// saved would otherwise be gone at the next launch. A project the
+  /// user saved is left alone: the capture lands in it. A temporary one
+  /// counts as never saved, so each capture gets its own.
+  ///
+  /// It is the ordinary Save As, to a path the host chose: the session
+  /// moves into the new directory, and the import that follows lands in
+  /// its cache. A failure is reported and the import goes on without it.
+  const ensureProjectForCapture = useCallback(async (capturePath: string) => {
+    const open = projectPathRef.current;
+    try {
+      if (open !== null && !(await invoke<boolean>("is_temporary_project", { path: open }))) {
+        return;
+      }
+      const path = await invoke<string>("temporary_project_path", { capturePath });
+      await saveProjectToRef.current?.(path, true);
+    } catch (err) {
+      console.error("could not create a temporary project for the capture", err);
+    }
+  }, []);
   // True when the project has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
   // Path of a project file the host says changed on disk while applying
@@ -1713,6 +1743,9 @@ export function App() {
       if (!pendingBlf) return;
       const { blfPath, scan } = pendingBlf;
       setPendingBlf(null);
+      // Before anything project-scoped is written: the mapping below
+      // belongs to the project the capture lands in.
+      await ensureProjectForCapture(blfPath);
       // Remember the accepted mapping (exact path + channel-count
       // fallback) so the next open of this BLF — or a same-shaped one —
       // pre-fills the dialog with it.
@@ -1784,6 +1817,8 @@ export function App() {
       if (!pendingMdf) return;
       const { mdfPath, scan } = pendingMdf;
       setPendingMdf(null);
+      // See `handleBlfMapConfirm`.
+      await ensureProjectForCapture(mdfPath);
       persistBlfChannelMaps(recordBlfChannelMap(hostState().blf_channel_maps, mdfPath, choices));
       if (
         !(await resetSession({
@@ -2729,6 +2764,8 @@ export function App() {
     [clearProjectDiskNotice, gatherProject, rememberProject, rehydrateProjectState],
   );
 
+  saveProjectToRef.current = saveProjectTo;
+
   const handleSaveProjectAs = useCallback(async (): Promise<boolean> => {
     const path = await save({
       filters: [{ name: "cannet project", extensions: ["cannet_prj"] }],
@@ -3136,6 +3173,20 @@ export function App() {
         }
         if (!dirtyRef.current && !rbsDirty) {
           handOff(); // nothing unsaved — close
+          return;
+        }
+
+        // A temporary project is cannet's own file in cannet's own
+        // space: it is saved without asking, because it exists so that
+        // nothing is lost and there is no decision in it for the user.
+        // Keeping it — Save As — is the choice that is theirs.
+        const open = projectPathRef.current;
+        if (
+          open !== null &&
+          (await invoke<boolean>("is_temporary_project", { path: open }).catch(() => false)) &&
+          (await handleSaveAllRef.current())
+        ) {
+          handOff();
           return;
         }
 

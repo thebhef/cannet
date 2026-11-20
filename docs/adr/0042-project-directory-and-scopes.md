@@ -56,6 +56,15 @@ directory **in its own cache space**. That path is not a special mode:
 it is an ordinary project directory that happens to be auto-located, so
 there is no anonymous or no-project code path.
 
+A capture imported into a project that was never saved gets such a
+directory of its own, keyed by the capture's path, **with a project
+file in it** — a *temporary project*. Everything a launch restores is
+restored by reopening a project file, so a session that holds a capture
+has to have one; a directory with no document in it would bring nothing
+back. The directory holds a `.cannet_prj` beside a `.cannet/` like any
+project directory, and stays auto-located: where it is was cannet's
+choice, whatever is in it.
+
 ### 2. cannet never creates `.cannet/` as a side effect
 
 It writes one only where the user explicitly pointed it: its own cache

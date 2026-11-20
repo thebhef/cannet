@@ -43,9 +43,11 @@ attachments. Import parses them into the loaded set under
   on the buses its named channels are mapped to, follows the channel
   rows until the user changes it, and is inert while *CAN messages* is
   unticked.
-- **They leave with their capture.** Importing another MF4 unloads the
-  databases the last one brought; the project's own are untouched. The
-  Database view marks each with the capture file it came from.
+- **An import adds to them.** Importing another MF4 keeps the databases
+  an earlier capture brought, so an MF4 can be how a set of databases
+  arrives; a capture replaces only what it carries its own copy of, by
+  the attachment's name. The project's own are untouched. The Database
+  view marks each with the capture file it came from.
 - **Save Capture to MDF says it too.** Data frames are written one
   `CAN_DataFrame` group per bus channel, and each group links the
   databases assigned to its bus — a link names a whole group, so one

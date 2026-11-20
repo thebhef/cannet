@@ -1847,7 +1847,22 @@ writes, so the panel teaches the file.
   beside, or reached via **Save project as…**). A project cannet
   auto-located, or one never saved at all, still prompts either way:
   nothing here mints a project file for you. Project-overridable, like
-  the cache size cap.
+  the cache size cap. A **temporary project** (below) is the exception
+  in the other direction: it is saved on close without asking, whatever
+  this is set to.
+- **Temporary projects.** Importing a capture into a project you have
+  never saved gives the session a project file of its own first: a
+  temporary project, named after the capture, in a project directory in
+  cannet's cache space. It is an ordinary project — the next launch
+  reopens it and brings back its buses, its virtual buses, the capture
+  and the databases the capture carried — that you have not chosen a
+  place for yet. **Save project as…** moves it wherever you like; until
+  then it is saved for you when the app closes. Importing the same
+  capture again returns to the same temporary project, and importing a
+  different one starts another. A project you saved yourself is never
+  swapped for one: the capture lands in it. Temporary projects are
+  listed with the rest under the project caches, where they are
+  cleared or deleted.
 - **Finding one.** Type in the search box. It matches a setting's name,
   its `settings.json` key, its help text, and its tags, so you can find
   a setting you can describe but can't name — searching *what it does*
@@ -3037,9 +3052,12 @@ project as changed. It is kept with the capture instead: when a
 relaunch restores that capture, its databases come back with it,
 assigned to the buses they were on.
 The Database view names it the same way, marked *from <capture
-file>*. And because it belongs to its capture, importing another MF4
-unloads it — along with anything the previous capture brought that the
-new one does not — while the project's own databases stay as they are.
+file>*. Importing another MF4 **adds** to these: the databases an
+earlier capture brought stay loaded and assigned, so an MF4 can be how
+a set of databases arrives, and the captures you import after it decode
+with that set. A capture replaces only what it carries its own copy of,
+matched by the attachment's name. The project's own databases stay as
+they are either way.
 
 A database decodes only the buses it is assigned to, so the import
 dialog assigns them: under the channel rows, a **Databases in this

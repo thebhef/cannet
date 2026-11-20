@@ -35,6 +35,7 @@
 const SYNCHRONOUS_COMMANDS: &[&str] = &[
     // Snapshots of state the host already holds in memory.
     "active_project_is_auto_located",
+    "is_temporary_project",
     "addresses_needing_trust",
     "app_version",
     "capture_extent",

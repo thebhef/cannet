@@ -183,7 +183,10 @@ pub fn resolve(project_file: Option<&Path>, cache_root: &Path) -> ProjectDir {
         .filter(|dir| is_project_directory(dir))
         .map(Path::to_path_buf);
     match named {
-        Some(dir) => prepare(dir, cache_root, false),
+        Some(dir) => {
+            let auto_located = is_in_cache_space(&dir, cache_root);
+            prepare(dir, cache_root, auto_located)
+        }
         None => prepare(
             cache_root
                 .join(AUTO_PROJECTS_SUBDIR)
@@ -202,8 +205,79 @@ pub fn resolve(project_file: Option<&Path>, cache_root: &Path) -> ProjectDir {
 /// legitimate here precisely because the user named the destination in a
 /// save dialog: an explicit act, not a consequence of opening something.
 /// Everywhere else, [`resolve`] auto-locates rather than creating one.
+///
+/// A destination inside cannet's own cache space is still auto-located:
+/// that is where a temporary project lives ([`temporary_project_file`]),
+/// and the user named no directory by having one.
 pub fn create_at(root: &Path, cache_root: &Path) -> ProjectDir {
-    prepare(root.to_path_buf(), cache_root, false)
+    prepare(
+        root.to_path_buf(),
+        cache_root,
+        is_in_cache_space(root, cache_root),
+    )
+}
+
+/// Whether `path` is inside the part of cannet's cache space where it
+/// auto-locates project directories — so a directory there is cannet's
+/// choice of location, not the user's, whatever it holds.
+pub fn is_in_cache_space(path: &Path, cache_root: &Path) -> bool {
+    path.starts_with(cache_root.join(AUTO_PROJECTS_SUBDIR))
+}
+
+/// Where the **temporary project** for a capture file lives: a project
+/// file of the capture's name, in a project directory of its own in
+/// cannet's cache space.
+///
+/// A capture imported into a project that was never saved gets one, so
+/// that the session it starts is a project like any other — reopened at
+/// the next launch, with its capture, its buses and its virtual buses
+/// (ADR 0042 §1: there is no no-project code path). Keyed by the
+/// capture's path, so importing the same file again returns to the same
+/// directory rather than leaving another behind.
+pub fn temporary_project_file(capture: &Path, cache_root: &Path) -> PathBuf {
+    let name = capture
+        .file_stem()
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| "capture".into(), |s| s.to_string_lossy().into_owned());
+    cache_root
+        .join(AUTO_PROJECTS_SUBDIR)
+        .join(path_key(capture))
+        .join(format!("{name}.cannet_prj"))
+}
+
+/// The path of the temporary project for `capture_path`, with its
+/// directory made ready to save into ([`temporary_project_file`]).
+///
+/// `async` + [`off_async_workers`](crate::sampling::off_async_workers):
+/// it creates a directory (ADR 0048).
+#[tauri::command]
+pub async fn temporary_project_path(
+    app: tauri::AppHandle,
+    capture_path: String,
+) -> Result<String, String> {
+    crate::sampling::off_async_workers(move || {
+        let cache_root = app.state::<ActiveProjectDir>().cache_root().to_path_buf();
+        let file = temporary_project_file(Path::new(&capture_path), &cache_root);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        }
+        Ok(file.to_string_lossy().into_owned())
+    })
+    .await
+}
+
+/// Whether the project file at `path` is a temporary project — one that
+/// lives in cannet's cache space rather than anywhere the user chose.
+/// Such a project has never been saved by the user, however real its
+/// file is.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn is_temporary_project(app: tauri::AppHandle, path: String) -> bool {
+    is_in_cache_space(
+        Path::new(&path),
+        app.state::<ActiveProjectDir>().cache_root(),
+    )
 }
 
 /// Assemble the [`ProjectDir`] for `root` and create whatever is missing.
@@ -440,6 +514,43 @@ mod tests {
     fn user_made_project_dir(root: &Path) {
         std::fs::create_dir_all(root.join(WORKSPACE_DIR)).unwrap();
         std::fs::write(root.join("p.cannet_prj"), "{}").unwrap();
+    }
+
+    /// A temporary project is a real project file in a real project
+    /// directory — but in cannet's own cache space, so the directory is
+    /// auto-located, on the save that creates it and on every reopen.
+    #[test]
+    fn a_temporary_project_s_directory_is_auto_located() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache-root");
+        let capture = tmp.path().join("logs").join("run 3.mf4");
+
+        let file = temporary_project_file(&capture, &cache_root);
+        assert_eq!(file.file_name().unwrap(), "run 3.cannet_prj");
+        assert!(is_in_cache_space(&file, &cache_root));
+        // The same capture, the same project; another capture, another.
+        assert_eq!(file, temporary_project_file(&capture, &cache_root));
+        assert_ne!(
+            file.parent(),
+            temporary_project_file(&tmp.path().join("other.mf4"), &cache_root).parent()
+        );
+
+        // Saved into, as Save As does it.
+        let root = file.parent().unwrap();
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(&file, "{}").unwrap();
+        let created = create_at(root, &cache_root);
+        assert!(created.is_auto_located());
+        assert!(is_project_directory(root));
+
+        // Reopened: the same directory, the same cache, still auto-located.
+        let reopened = resolve(Some(&file), &cache_root);
+        assert_eq!(reopened, created);
+        assert!(reopened.is_auto_located());
+
+        // A directory the user chose is theirs, as before.
+        let theirs = tmp.path().join("theirs");
+        assert!(!create_at(&theirs, &cache_root).is_auto_located());
     }
 
     #[test]

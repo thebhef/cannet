@@ -244,6 +244,18 @@ plot, signal grid), never as trace rows.
 _Avoid_: "message-independent signal" outside file-format contexts —
 in the model the term is file-backed.
 
+**Temporary project**:
+A project file cannet made rather than the user: importing a capture
+into a project that was never saved creates one, named after the
+capture, in a project directory in cannet's cache space. It is an
+ordinary project in every respect but where it lives — it has an
+identity, the next launch reopens it, and its capture, buses and
+virtual buses come back — and it counts as **never saved**: closing
+saves it without asking, a further import gets a temporary project of
+its own, and Save As is how the user keeps it.
+_Avoid_: "unsaved project" for one of these — an unsaved project has no
+file at all.
+
 **Capture database**:
 A database a capture file carries — an MF4's embedded DBC attachment —
 loaded by importing it. It is listed, assigned to buses and decodes
@@ -251,7 +263,9 @@ frames like any loaded database, but it is the **session's**, not the
 project's: it is loaded under an identity (`<capture>#<attachment
 name>`) rather than a path, no saved project names it, nothing reloads
 it from disk, and it is kept with the capture — written back out on a
-save, and restored with the capture it arrived with. A capture says
+save, and restored with the capture it arrived with. Importing another
+capture leaves it loaded, unless that capture carries a database of the
+same name, which replaces it. A capture says
 which bus channels a database is for by its frame group's
 `CAN_DataFrame` channel linking the attachment, the convention
 python-can writes and asammdf reads.
