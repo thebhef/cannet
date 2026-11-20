@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Combobox } from "./Combobox";
 import { DisclosureToggle } from "./DisclosureToggle";
-import type { BlfScanResult, Bus, DecodedMessageGroup } from "./types";
+import type { BlfScanResult, Bus, DecodedMessageGroup, EmbeddedDatabase } from "./types";
 import { formatCalendarTime, formatElapsed } from "./format";
 import { useSetting } from "./hostSettings";
 import { useGridview } from "./useGridview";
@@ -35,6 +35,11 @@ export interface ImportContents {
   messages: boolean;
 }
 
+/// Which buses each of the capture's databases is assigned to, by the
+/// database's file name. Every database the dialog listed has an entry;
+/// an empty list assigns it to nothing.
+export type DatabaseBuses = Record<string, string[]>;
+
 /// Elapsed seconds from `originNs`, for the markers list and the range
 /// inputs — both read relative to the capture's first frame.
 function elapsedSeconds(timestampNs: number, originNs: number): number {
@@ -54,7 +59,7 @@ function elapsedSeconds(timestampNs: number, originNs: number): number {
 /// consumes. `scan`'s shape and the mapping/persistence logic are
 /// identical for both formats (`BlfScanResult` and `MdfScanResult`
 /// share the same channel-census fields); `format`,
-/// `decodedMessageGroups` and `signalCount` are the only
+/// `decodedMessageGroups`, `signalCount` and `databases` are the only
 /// MDF-specific additions, each optional so the BLF path is unaffected.
 export function BlfChannelMapModal(props: {
   blfPath: string;
@@ -65,6 +70,7 @@ export function BlfChannelMapModal(props: {
     choices: Record<number, ChannelChoice>,
     range: ImportRange,
     contents: ImportContents,
+    databaseBuses: DatabaseBuses,
   ) => void;
   onCancel: () => void;
   /// Display label only — everything else about the flow is
@@ -80,6 +86,11 @@ export function BlfChannelMapModal(props: {
   /// import says what it is bringing in beyond the frames, and it is
   /// what makes the "Signals" content available.
   signalCount?: number;
+  /// MDF only: the databases the capture carries. Each gets a row that
+  /// assigns it to buses — a database decodes only the buses it is
+  /// assigned to, and nothing assigns one that the dialog did not.
+  /// Omitted/empty renders nothing.
+  databases?: readonly EmbeddedDatabase[];
 }) {
   const {
     blfPath,
@@ -91,6 +102,7 @@ export function BlfChannelMapModal(props: {
     format = "BLF",
     decodedMessageGroups,
     signalCount,
+    databases = [],
   } = props;
   const { channels, markers } = scan;
   const datePattern = useSetting("date_time_pattern");
@@ -127,6 +139,34 @@ export function BlfChannelMapModal(props: {
   // inert while the frames are not being imported.
   const mappingActive = contents.messages;
   const nothingSelected = !contents.signals && !contents.messages;
+
+  // --- the capture's databases (MDF only) ---
+  // A database starts on the buses its named channels are mapped to and
+  // goes on following the channel rows until the user assigns it
+  // themselves; from then on it is theirs. A database the capture names
+  // no channel for has one possible answer when the capture has one
+  // channel, and none otherwise.
+  const [assigned, setAssigned] = useState<DatabaseBuses>({});
+  const inBusOrder = (ids: ReadonlySet<string>) =>
+    buses.filter((b) => ids.has(b.id)).map((b) => b.id);
+  const startingBuses = (db: EmbeddedDatabase): string[] => {
+    const named =
+      db.bus_channels.length > 0 ? db.bus_channels : channels.length === 1 ? channels : [];
+    return inBusOrder(new Set(named.map((ch) => choices[ch] ?? "")));
+  };
+  const busesOf = (db: EmbeddedDatabase): string[] =>
+    assigned[db.file_name] ?? startingBuses(db);
+  const toggleDatabaseBus = (db: EmbeddedDatabase, busId: string) => {
+    const next = new Set(busesOf(db));
+    if (!next.delete(busId)) next.add(busId);
+    setAssigned((prev) => ({ ...prev, [db.file_name]: inBusOrder(next) }));
+  };
+  // The assignment decides what decodes the frames, so with no frames
+  // coming in there is nothing for it to decide.
+  const databaseBuses = (): DatabaseBuses =>
+    Object.fromEntries(
+      databases.map((db) => [db.file_name, mappingActive ? busesOf(db) : []]),
+    );
 
   const hasSpan = scan.first_timestamp_ns != null && scan.last_timestamp_ns != null;
   const originNs = scan.first_timestamp_ns ?? scan.start_unix_nanos;
@@ -323,6 +363,35 @@ export function BlfChannelMapModal(props: {
             </div>
           ))}
         </div>
+        {databases.length > 0 && (
+          <div className="blf-map-databases" role="group" aria-label="Databases in this capture">
+            <p className="blf-map-meta">
+              Databases in this capture — each decodes the buses it is assigned to:
+            </p>
+            {databases.map((db) => {
+              const on = busesOf(db);
+              return (
+                <div className="blf-map-row" key={db.file_name}>
+                  <span className="blf-map-database" title={db.file_name}>
+                    {db.file_name}
+                  </span>
+                  {buses.map((bus) => (
+                    <label key={bus.id} className="blf-map-database-bus">
+                      <input
+                        type="checkbox"
+                        aria-label={`${db.file_name} on ${bus.name}`}
+                        checked={on.includes(bus.id)}
+                        disabled={!mappingActive}
+                        onChange={() => toggleDatabaseBus(db, bus.id)}
+                      />
+                      {bus.name}
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
         {hasSpan && (
           <div className="blf-map-range">
             <label className="blf-map-range-field">
@@ -422,7 +491,7 @@ export function BlfChannelMapModal(props: {
           <button
             type="button"
             ref={confirmRef}
-            onClick={() => onConfirm(choices, range, contents)}
+            onClick={() => onConfirm(choices, range, contents, databaseBuses())}
             disabled={nothingSelected}
           >
             Open

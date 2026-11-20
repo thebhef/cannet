@@ -254,7 +254,12 @@ pub(crate) fn remove_dbc_inner(state: &AppState, path: &str) -> Option<Vec<Strin
 /// Every reason lands here — the user's own Stop excepted, which is
 /// nobody else's business — so unassign, remove, a database taking a
 /// message over, and a reload cannot drift apart.
-fn report_periodics_stopped(app: &AppHandle, state: &AppState, path: &str, stopped: &[String]) {
+pub(crate) fn report_periodics_stopped(
+    app: &AppHandle,
+    state: &AppState,
+    path: &str,
+    stopped: &[String],
+) {
     if stopped.is_empty() {
         return;
     }

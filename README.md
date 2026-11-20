@@ -3031,6 +3031,18 @@ nothing reloads it from disk, re-importing the same capture replaces it
 in place, and it is a session load rather than a project file, so it is
 not added to the project's DBC list.
 
+A database decodes only the buses it is assigned to, so the import
+dialog assigns them: under the channel rows, a **Databases in this
+capture** section lists each one with a checkbox per project bus. A
+capture can say which channels a database is for — its `CAN_DataFrame`
+channel links the attachment, the way python-can writes it and asammdf
+reads it — and a row starts on the buses those channels are mapped to.
+A database the capture links from nowhere starts on the one mapped bus
+when the capture has a single channel, and unassigned otherwise. A row
+follows the channel rows until you tick or untick it yourself, and the
+section is inert while *CAN messages* is unticked, there being no
+frames to decode.
+
 A coded channel — a DBC enumeration, the shape most state signals in a
 decoded group take — stores its value-to-text table as the channel's
 own conversion. The **code** is what lands in the series, since that is

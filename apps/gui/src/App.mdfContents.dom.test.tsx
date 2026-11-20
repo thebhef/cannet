@@ -248,4 +248,32 @@ describe("MDF import contents", () => {
     expect(importArgs().importMessages).toBe(false);
     expect(importArgs().channelBusMapping).toEqual([]);
   }, 30_000);
+
+  it("hands the dialog's database assignments to the import", async () => {
+    mdfScan = {
+      ...MIXED_SCAN,
+      databases: [
+        { file_name: "body.dbc", bus_channels: [0] },
+        { file_name: "spare.dbc", bus_channels: [] },
+      ],
+    };
+    await openTheDialog();
+    await act(async () => {
+      fireEvent.click(checkbox(/^CAN messages/));
+    });
+    await act(async () => {
+      fireEvent.click(findButton("Open"));
+    });
+    await waitFor(() => importArgs());
+    // This project has no bus for the capture's channel to map to, so
+    // there is none for a database to be assigned to either; what is
+    // pinned here is that every listed database reaches the host, in the
+    // shape `import_mdf` reads. Which buses the dialog arrives at is
+    // `BlfChannelMapModal.dom.test.tsx`'s.
+    expect(importArgs().channelBusMapping).toEqual([]);
+    expect(importArgs().databaseBuses).toEqual([
+      { fileName: "body.dbc", buses: [] },
+      { fileName: "spare.dbc", buses: [] },
+    ]);
+  }, 30_000);
 });

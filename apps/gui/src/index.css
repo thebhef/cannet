@@ -1915,6 +1915,34 @@ ul.status-bar-menu .status-chip {
   color: var(--text-secondary);
 }
 
+/* The capture's databases: a row each, its name where a channel row has
+   its number and a bus checkbox per project bus. */
+.blf-map-databases {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.8rem;
+}
+
+.blf-map-databases .blf-map-row {
+  flex-wrap: wrap;
+}
+
+.blf-map-database-bus {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text-primary);
+}
+
+.blf-map-database {
+  flex: 0 0 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
 .blf-map-meta {
   color: var(--text-muted);
   font-size: 0.8rem;

@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
 import { formatCalendarTime } from "./format";
 import { hydrateSettings, updateSettings } from "./hostSettings";
-import type { BlfScanResult, Bus } from "./types";
+import type { BlfScanResult, Bus, EmbeddedDatabase } from "./types";
 import type { Note } from "./notes";
 
 afterEach(async () => {
@@ -380,10 +380,12 @@ describe("BlfChannelMapModal", () => {
     expect(messages.checked).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(onConfirm).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-      signals: true,
-      messages: false,
-    });
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { signals: true, messages: false },
+      {},
+    );
   });
 
   it("defaults CAN messages on when the file carries no signal content", () => {
@@ -459,10 +461,12 @@ describe("BlfChannelMapModal", () => {
     expect(screen.queryByLabelText(/^CAN messages/)).not.toBeInTheDocument();
     expect((screen.getByLabelText("channel 0 bus") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(onConfirm).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-      signals: false,
-      messages: true,
-    });
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { signals: false, messages: true },
+      {},
+    );
   });
 
   // The dialog appears seconds after the click that caused it (the
@@ -526,6 +530,106 @@ describe("BlfChannelMapModal", () => {
       fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
       expect(dialog.contains(document.activeElement)).toBe(true);
       expect(document.activeElement).toBe(open);
+    });
+  });
+
+  // An MF4 can carry the databases it was recorded against. The dialog
+  // assigns each to buses, starting from the channels the capture names
+  // for it (its frame channel's attachment link) mapped through the
+  // channel rows above.
+  describe("the capture's databases", () => {
+    const db = (file_name: string, bus_channels: number[] = []): EmbeddedDatabase => ({
+      file_name,
+      bus_channels,
+    });
+    const box = (file: string, bus: string) =>
+      screen.getByLabelText(`${file} on ${bus}`) as HTMLInputElement;
+    const renderMdf = (
+      databases: EmbeddedDatabase[] | undefined,
+      extra: { channels?: number[]; signalCount?: number; onConfirm?: () => void } = {},
+    ) =>
+      render(
+        <BlfChannelMapModal
+          blfPath="/tmp/cap.mf4"
+          scan={scanFixture({ channels: extra.channels ?? [0, 1] })}
+          buses={buses}
+          onConfirm={extra.onConfirm ?? noop}
+          onCancel={noop}
+          format="MDF"
+          signalCount={extra.signalCount ?? 0}
+          databases={databases}
+        />,
+      );
+
+    it("shows no section when the capture carries none", () => {
+      renderMdf([]);
+      expect(screen.queryByRole("group", { name: "Databases in this capture" })).toBeNull();
+    });
+
+    it("starts a database on the buses its named channels are mapped to", () => {
+      renderMdf([db("body.dbc", [1])]);
+      expect(screen.getByRole("group", { name: "Databases in this capture" })).toBeVisible();
+      expect(box("body.dbc", "Chassis").checked).toBe(true);
+      expect(box("body.dbc", "Powertrain").checked).toBe(false);
+    });
+
+    it("leaves a database the capture names no channel for unassigned", () => {
+      renderMdf([db("body.dbc")]);
+      expect(box("body.dbc", "Chassis").checked).toBe(false);
+      expect(box("body.dbc", "Powertrain").checked).toBe(false);
+    });
+
+    it("starts an unnamed database on the one bus of a one-channel capture", () => {
+      // One channel leaves one possible answer.
+      renderMdf([db("body.dbc")], { channels: [0] });
+      expect(box("body.dbc", "Powertrain").checked).toBe(true);
+      expect(box("body.dbc", "Chassis").checked).toBe(false);
+    });
+
+    it("follows the channel rows until the user assigns it", () => {
+      renderMdf([db("body.dbc", [0]), db("engine.dbc", [0])]);
+      expect(box("body.dbc", "Powertrain").checked).toBe(true);
+
+      // The user's own assignment…
+      fireEvent.click(box("engine.dbc", "Chassis"));
+      expect(box("engine.dbc", "Chassis").checked).toBe(true);
+      expect(box("engine.dbc", "Powertrain").checked).toBe(true);
+
+      // …stays where they put it when channel 0 moves to the other bus;
+      // the untouched database follows the channel.
+      fireEvent.click(screen.getByLabelText("channel 0 bus"));
+      fireEvent.click(screen.getByRole("option", { name: "Chassis" }));
+      expect(box("body.dbc", "Chassis").checked).toBe(true);
+      expect(box("body.dbc", "Powertrain").checked).toBe(false);
+      expect(box("engine.dbc", "Powertrain").checked).toBe(true);
+    });
+
+    it("hands the assignments to the import", () => {
+      const onConfirm = vi.fn();
+      renderMdf([db("body.dbc", [1]), db("spare.dbc")], { onConfirm });
+      fireEvent.click(box("body.dbc", "Powertrain"));
+      fireEvent.click(screen.getByRole("button", { name: "Open" }));
+      expect(onConfirm).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        // In the project's bus order, whatever order they were ticked.
+        { "body.dbc": ["p", "c"], "spare.dbc": [] },
+      );
+    });
+
+    it("is inert, and assigns nothing, while CAN messages is unticked", () => {
+      const onConfirm = vi.fn();
+      // Signal content makes the frames opt-in, so they start unticked.
+      renderMdf([db("body.dbc", [1])], { signalCount: 3, onConfirm });
+      expect(box("body.dbc", "Chassis").disabled).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Open" }));
+      expect(onConfirm).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        { signals: true, messages: false },
+        { "body.dbc": [] },
+      );
     });
   });
 });
