@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { captureDatabaseName, projectDbcRefs } from "./captureDatabases";
+import { captureDatabaseName, captureOf, projectDbcRefs } from "./captureDatabases";
 
 describe("captureDatabaseName", () => {
   it("is the attachment's own name, after the capture it came from", () => {
@@ -9,6 +9,13 @@ describe("captureDatabaseName", () => {
 
   it("splits at the last separator, since a capture's path may hold one", () => {
     expect(captureDatabaseName("/logs/run #3.mf4#body.dbc")).toBe("body.dbc");
+  });
+});
+
+describe("captureOf", () => {
+  it("is the capture's path, before the attachment's name", () => {
+    expect(captureOf("C:\\captures\\run.mf4#powertrain.dbc")).toBe("C:\\captures\\run.mf4");
+    expect(captureOf("/logs/run #3.mf4#body.dbc")).toBe("/logs/run #3.mf4");
   });
 });
 

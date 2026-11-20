@@ -314,6 +314,36 @@ describe("DatabasePanel", () => {
     await waitFor(() => expect(screen.getByText("powertrain.dbc")).toBeInTheDocument());
   });
 
+  it("names a capture's database by its own name, and says where it came from", async () => {
+    // A database an MF4 carries is loaded under `<capture>#<name>`, which
+    // is no path: the row reads as the attachment, marked with its file.
+    const identity = "/captures/run.mf4#powertrain.dbc";
+    const ctx: ProjectContextValue = {
+      ...projectCtx,
+      dbcPaths: [identity],
+      captureDbcs: new Set([identity]),
+    };
+    const core = await import("@tauri-apps/api/core");
+    (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_dbc_content") return [{ ...DBC_CONTENT[0], dbcPath: identity }];
+      if (cmd === "list_file_backed_content") return [];
+      if (cmd === "list_dbc_collisions") return [];
+      return undefined;
+    });
+    const api = fakePanelApi();
+    const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
+    render(
+      <ProjectContext.Provider value={ctx}>
+        <ElementRegistryContext.Provider value={emptyRegistry}>
+          <DatabasePanel {...props} />
+        </ElementRegistryContext.Provider>
+      </ProjectContext.Provider>,
+    );
+    const label = await waitFor(() => screen.getByText("powertrain.dbc"));
+    const row = label.closest(".dbc-row") as HTMLElement;
+    expect(row.querySelector(".dbc-row-capture")).toHaveTextContent("from run.mf4");
+  });
+
   it("auto-expands each DBC root on first load so messages are visible", async () => {
     renderPanel();
     await waitFor(() => expect(screen.getByText("EngineData")).toBeInTheDocument());

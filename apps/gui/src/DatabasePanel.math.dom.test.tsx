@@ -209,6 +209,7 @@ const projectCtx = {
   dirty: false,
   dbcPaths: ["/tmp/bms.dbc"],
   dbcBuses: { "/tmp/bms.dbc": ["bus-a"] },
+  captureDbcs: new Set<string>(),
   buses: [{ id: "bus-a", name: "CAN1" }] as Bus[],
   interfaceBindings: [],
   connectedAddresses: [],

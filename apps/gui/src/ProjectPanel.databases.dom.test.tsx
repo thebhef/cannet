@@ -129,7 +129,7 @@ describe("the project panel's databases section", () => {
   });
 
   it("lists a capture's database by its own name, marked as the capture's", () => {
-    const capture = "C:\captures\run.mf4#body.dbc";
+    const capture = "/captures/run.mf4#body.dbc";
     renderPanel({
       dbcPaths: ["C:/dbc/pack.dbc", capture],
       captureDbcs: [capture],

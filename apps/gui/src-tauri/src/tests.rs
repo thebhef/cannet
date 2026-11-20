@@ -4377,6 +4377,53 @@ fn an_import_assigns_the_capture_s_databases_to_the_buses_the_dialog_chose() {
     assert_eq!(buses_of(&state, "body.dbc"), vec!["c"]);
 }
 
+/// **A capture's databases leave with it.** Importing another capture
+/// unloads the ones the last brought — they decode traffic the session
+/// no longer holds — and leaves the project's own alone. Importing the
+/// same capture again keeps what it still carries.
+#[test]
+fn importing_another_capture_drops_the_last_one_s_databases() {
+    let state = test_state();
+    state
+        .databases()
+        .push(loaded("C:/dbc/project.dbc", &tiny_dbc(0x10, "M", "S")));
+    let attachment = |name: &str| cannet_mdf::MdfAttachment {
+        file_name: name.into(),
+        mime_type: "application/vnd.vector.dbc".into(),
+        data: tiny_dbc(0x1a5, "EngineData", "EngineSpeed").into_bytes(),
+    };
+    let paths = |state: &AppState| -> Vec<String> {
+        state.databases().iter().map(|d| d.path.clone()).collect()
+    };
+    let first = [attachment("powertrain.dbc"), attachment("body.dbc")];
+    capture::install_embedded_databases(&state, "first.mf4", &first, None);
+
+    // The same capture again, now carrying one database fewer.
+    let dropped = capture::drop_other_capture_databases(&state, "first.mf4", &first[..1]);
+    assert_eq!(
+        dropped.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(),
+        vec!["first.mf4#body.dbc"]
+    );
+    assert_eq!(
+        paths(&state),
+        vec!["C:/dbc/project.dbc", "first.mf4#powertrain.dbc"]
+    );
+
+    // Another capture: the first one's are gone, whether or not the new
+    // one carries a database of the same name.
+    let second = [attachment("powertrain.dbc")];
+    capture::drop_other_capture_databases(&state, "second.mf4", &second);
+    capture::install_embedded_databases(&state, "second.mf4", &second, None);
+    assert_eq!(
+        paths(&state),
+        vec!["C:/dbc/project.dbc", "second.mf4#powertrain.dbc"]
+    );
+
+    // A capture with no databases still takes the last one's away.
+    capture::drop_other_capture_databases(&state, "third.mf4", &[]);
+    assert_eq!(paths(&state), vec!["C:/dbc/project.dbc"]);
+}
+
 /// The dialog lists exactly the attachments the import will load as
 /// databases, each with the channels the capture names for it.
 #[test]
