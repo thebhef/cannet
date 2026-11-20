@@ -76,7 +76,7 @@ mod scan;
 mod signals;
 mod write;
 
-pub use attachments::MdfAttachment;
+pub use attachments::{AttachmentCensus, MdfAttachment};
 pub use events::{MdfEvent, MdfEventRange};
 pub use scan::{scan_mdf, scan_mdf_cancellable, MdfScan, ScanOutcome, ScanProgress};
 pub use signals::{FileSignal, SignalChannelGroup, SignalGroupCensus};
@@ -202,6 +202,8 @@ impl MdfCanFrameSource {
 
     /// The files embedded in this capture as `##AT` attachments — the
     /// databases it was recorded against, when its writer put them there.
+    /// Which bus channels each is for is [`scan_mdf`]'s to say
+    /// ([`AttachmentCensus`]): it is a fact about the capture's frames.
     ///
     /// # Errors
     ///

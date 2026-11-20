@@ -49,6 +49,10 @@ pub(crate) struct Channel {
     pub(crate) block: ChannelBlock,
     pub(crate) name: String,
     pub(crate) unit: Option<String>,
+    /// `cn_at_reference` — the `##AT` blocks this channel links, by
+    /// address. On a bus-logging frame channel these are the databases
+    /// the recording tool says decode it.
+    pub(crate) attachment_addrs: Vec<u64>,
     /// Sub-channels reached through `cn_composition`. In a bus-logging
     /// group these are the `CAN_DataFrame.ID` / `.DLC` / `.DataBytes`
     /// fields, which **overlay** the parent's byte range rather than
@@ -503,7 +507,7 @@ fn read_channel_chain(bytes: &[u8], first: u64) -> Result<Vec<Channel>, MdfSourc
             )));
         }
         seen.push(addr);
-        let mut block = ChannelBlock::from_bytes(slice_at(bytes, addr)?)?;
+        let (mut block, attachment_addrs) = read_channel_block(bytes, addr)?;
         block.resolve_name(bytes)?;
         block.resolve_conversion(bytes)?;
         let next = block.next_ch_addr;
@@ -520,11 +524,61 @@ fn read_channel_chain(bytes: &[u8], first: u64) -> Result<Vec<Channel>, MdfSourc
             name: block.name.clone().unwrap_or_default(),
             unit: read_text(bytes, block.unit_addr)?,
             block,
+            attachment_addrs,
             components,
         });
         addr = next;
     }
     Ok(out)
+}
+
+/// Links every `##CN` block has, ahead of any variable ones.
+const CN_FIXED_LINKS: usize = 8;
+/// Bytes of a `##CN` block's fixed fields, which follow its link list.
+const CN_FIELD_BYTES: usize = 72;
+
+/// One `##CN` block and the attachments it links.
+///
+/// A channel's link list is variable: after the eight every channel has
+/// come `cn_attachment_count` attachment links (and, on some channels,
+/// default-value links after those), and the fixed fields sit **after**
+/// the whole list. `mdf4-rs` reads those fields at the offsets an
+/// eight-link block puts them, so a block with more is handed over with
+/// its extra links lifted out — otherwise every field of a channel that
+/// names a database would be read eight bytes early per link.
+fn read_channel_block(bytes: &[u8], addr: u64) -> Result<(ChannelBlock, Vec<u64>), MdfSourceError> {
+    let start = usize_addr(addr)?;
+    let header = BlockHeader::from_bytes(bounded(bytes, start, 24)?)?;
+    let links = usize::try_from(header.link_count).unwrap_or(usize::MAX);
+    if header.id != "##CN" || links <= CN_FIXED_LINKS {
+        return Ok((
+            ChannelBlock::from_bytes(slice_at(bytes, addr)?)?,
+            Vec::new(),
+        ));
+    }
+    let extra_bytes = (links - CN_FIXED_LINKS).checked_mul(8).ok_or_else(|| {
+        MdfSourceError::Malformed(format!("channel at {addr:#x} claims {links} links"))
+    })?;
+    let fixed_end = 24 + 8 * CN_FIXED_LINKS;
+    let extra_links = bounded(bytes, start + fixed_end, extra_bytes)?;
+    let fields = bounded(bytes, start + fixed_end + extra_bytes, CN_FIELD_BYTES)?;
+
+    let mut plain = bounded(bytes, start, fixed_end)?.to_vec();
+    plain.extend_from_slice(fields);
+    let length = plain.len() as u64;
+    plain[8..16].copy_from_slice(&length.to_le_bytes());
+    plain[16..24].copy_from_slice(&(CN_FIXED_LINKS as u64).to_le_bytes());
+    let block = ChannelBlock::from_bytes(&plain)?;
+
+    // The attachment links lead the variable part; anything after them
+    // is not an attachment.
+    let attachment_addrs = extra_links
+        .chunks_exact(8)
+        .take(usize::from(block.attachment_count))
+        .map(|raw| u64::from_le_bytes(raw.try_into().expect("8 bytes")))
+        .filter(|a| *a != 0)
+        .collect();
+    Ok((block, attachment_addrs))
 }
 
 fn is_block(bytes: &[u8], addr: u64, id: [u8; 4]) -> bool {

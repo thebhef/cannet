@@ -54,32 +54,26 @@ started.
     harness gap, the rebuild-chip rough edges, the unattributed
     launch-hang lead, frameless-import time ranges, and the
     untrusted-row token editor. Opened by owner ruling 2026-08-16.
-7. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
-    — an imported MDF's embedded DBC decodes for the session but
-    survives no reopen; make it durable (extraction or a durable
-    project reference), then revisit name-matching file-backed
-    signals on top. **Needs grilling before implementation.** Opened by
-    owner ruling 2026-08-16.
-8. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+7. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
     — crash on exit (wry/WebKit layer-tree teardown race) and missing
     Spotlight bundle metadata. Independently-shippable macOS fixes.
-9. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
+8. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
     — the two data-named cuts from the 2026-08-08 ingest profiling: the
     disk-spill segment write (43 % of the release per-frame budget)
     and `bus_id: Option<String>` interning (~15 %). Opened by owner
     ruling 2026-08-09.
-10. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
+9. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
     — the health sampler's process-family metrics move to the web
     engine's own bookkeeping (WebView2 `GetProcessInfos`) as the
     de-jure source; per-platform matrix (the macOS ppid walk silently
     excludes WKWebView's launchd-parented helpers), the
     `unsafe`/`webview2-com` adoption rulings, costs re-measured.
     Opened by owner ruling 2026-08-15.
-11. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
+10. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
     — shape 3 of Task 72 phase 3's attributed enum-lag fix (owner
     ruling 2026-08-15): decode cursors advance independently of view
     fetches, serves read what the cursors reached. Amends ADR 0049.
-12. [Task 133 — Misc Fixes](0133-misc-fixes.md)
+11. [Task 133 — Misc Fixes](0133-misc-fixes.md)
     — the collection point for small owner-reported fixes that belong
     to no open task; currently: hex displays preserve leading zeros.
     Opened by owner instruction 2026-09-03.

@@ -17,13 +17,15 @@
 //! channel counts come off the block graph, so the scan says how much
 //! signal content a file holds without materialising a single series.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::bus::{self, BusGroup};
 use crate::file::Mdf4File;
-use crate::{collect_decoded, DecodedMessageGroup, MdfSourceError, SignalGroupCensus};
+use crate::{
+    collect_decoded, AttachmentCensus, DecodedMessageGroup, MdfSourceError, SignalGroupCensus,
+};
 
 /// What one walk of an MF4 file found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +57,9 @@ pub struct MdfScan {
     /// The file's timeline markers — its `##EV` blocks, in link order,
     /// with absolute timestamps.
     pub events: Vec<crate::MdfEvent>,
+    /// The file's `##AT` attachments, in link order, each with the bus
+    /// channels the capture names for it ([`AttachmentCensus`]).
+    pub attachments: Vec<AttachmentCensus>,
 }
 
 /// How far a census walk has got, reported at each checkpoint.
@@ -176,8 +181,14 @@ pub fn scan_mdf_cancellable<P: AsRef<Path>>(
     let mut frame_count = 0u64;
     let mut first_timestamp_ns: Option<u64> = None;
     let mut last_timestamp_ns: Option<u64> = None;
+    // Attachment address → the channels of every frame group whose frame
+    // channel links it.
+    let mut referenced: BTreeMap<u64, BTreeSet<u8>> = BTreeMap::new();
     for index in bus_groups {
         let group = BusGroup::resolve(index, &file.groups[index])?;
+        let linked: &[u64] = bus::frame_structure(&file.groups[index])
+            .map_or(&[], |(channel, _)| channel.attachment_addrs.as_slice());
+        let mut group_channels: BTreeSet<u8> = BTreeSet::new();
         let mut cursor = Mdf4File::cursor(index);
         while let Some(record) = file.next_record(&mut cursor) {
             until_checkpoint -= 1;
@@ -192,12 +203,22 @@ pub fn scan_mdf_cancellable<P: AsRef<Path>>(
                 });
             }
             frame_count += 1;
-            channels.insert(group.channel_of(&file, record)?);
+            let channel = group.channel_of(&file, record)?;
+            channels.insert(channel);
+            if !linked.is_empty() {
+                group_channels.insert(channel);
+            }
             let at = group.timestamp_ns(&file, record)?;
             first_timestamp_ns = Some(first_timestamp_ns.map_or(at, |f: u64| f.min(at)));
             last_timestamp_ns = Some(last_timestamp_ns.map_or(at, |l: u64| l.max(at)));
         }
         walked_before += file.group_data_bytes(index);
+        for addr in linked {
+            referenced
+                .entry(*addr)
+                .or_default()
+                .extend(group_channels.iter().copied());
+        }
     }
     // The walk is over, so every record byte it was going to cross has
     // been crossed: say so, rather than leaving the last report a
@@ -219,5 +240,26 @@ pub fn scan_mdf_cancellable<P: AsRef<Path>>(
         signal_groups,
         decoded_message_groups,
         events: crate::events::read_events(&file)?,
+        attachments: attachment_census(&file, &referenced)?,
     }))
+}
+
+/// Each attachment with the bus channels the capture names for it: the
+/// channels of the frame groups that link it.
+fn attachment_census(
+    file: &Mdf4File,
+    referenced: &BTreeMap<u64, BTreeSet<u8>>,
+) -> Result<Vec<AttachmentCensus>, MdfSourceError> {
+    Ok(crate::attachments::attachment_entries(file)?
+        .into_iter()
+        .map(|entry| AttachmentCensus {
+            bus_channels: referenced
+                .get(&entry.addr)
+                .map(|channels| channels.iter().copied().collect())
+                .unwrap_or_default(),
+            file_name: entry.file_name,
+            mime_type: entry.mime_type,
+            embedded: entry.embedded,
+        })
+        .collect())
 }
