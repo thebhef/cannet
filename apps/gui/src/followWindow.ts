@@ -214,3 +214,36 @@ export function followXWindow(
   if (xMax == null) return { min: windowStartT, max: ext };
   return null;
 }
+
+/// The x-window after one plain-wheel zoom step of factor `f` (`> 1`
+/// zooms out) with the cursor at `xc`, plus whether the gesture leaves
+/// follow-live on. Pure so the zoom/follow interplay is unit-testable.
+///
+/// Only one gesture means "stop following": zooming *out* over the
+/// leading half (`onLeadingHalf`). That widens the window around a point
+/// near the live edge, which is how you pull older data into view.
+/// Everything else is a scale change, and [`followXWindow`] keeps the new
+/// width while continuing to track.
+///
+/// Zooming out over the t=0 half while following pivots on the window's
+/// right edge rather than the cursor. A cursor pivot pushes the right
+/// edge past the live edge; the next follow resample then slides it back,
+/// so the series shrink away from the leading edge and snap back to it.
+/// Pivoting on the right edge lands where the follow slide would.
+export function wheelZoomX(
+  xs: { min: number; max: number },
+  xc: number,
+  f: number,
+  followLive: boolean,
+  onLeadingHalf: boolean,
+): { min: number; max: number; keepFollow: boolean } {
+  const zoomingOut = f > 1;
+  if (zoomingOut && followLive && !onLeadingHalf) {
+    return { min: xs.max - (xs.max - xs.min) * f, max: xs.max, keepFollow: true };
+  }
+  return {
+    min: xc - (xc - xs.min) * f,
+    max: xc + (xs.max - xc) * f,
+    keepFollow: !(zoomingOut && onLeadingHalf),
+  };
+}

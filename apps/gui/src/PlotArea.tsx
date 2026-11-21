@@ -91,6 +91,7 @@ import {
   type ShowPointsMode,
 } from "./plotPoints";
 import { nextResampleDelayMs } from "./plotPacing";
+import { wheelZoomX } from "./followWindow";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { ColorChip } from "./ColorChip";
 import { Icon } from "./Icon";
@@ -4247,21 +4248,20 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 } else {
                   // plain wheel → zoom x around the cursor (synced).
                   const px = e.clientX - rect.left;
+                  // `wheelZoomX` owns which point the zoom pivots on and
+                  // whether the gesture stops following.
                   const xc = u.posToVal(px, "x");
-                  const min = xc - (xc - xs.min) * f;
-                  const max = xc + (xs.max - xc) * f;
-                  withSuppressed(() => u.setScale("x", { min, max }));
-                  // Only one gesture means "stop following": zooming
-                  // *out* over the leading half. That widens the window
-                  // around a point near the live edge, which is how you
-                  // pull older data into view — everything else (zooming
-                  // in anywhere, or any zoom over the t=0 half) is a
-                  // scale change, and `followXWindow` keeps the new
-                  // width while continuing to track.
-                  const zoomingOut = f > 1;
                   const onLeadingHalf = px >= rect.width / 2;
+                  const { min, max, keepFollow } = wheelZoomX(
+                    { min: xs.min, max: xs.max },
+                    xc,
+                    f,
+                    liveRef.current.followLive,
+                    onLeadingHalf,
+                  );
+                  withSuppressed(() => u.setScale("x", { min, max }));
                   diagCount("userx.wheel.zoom"); // DIAG
-                  liveRef.current.onUserXChange(min, max, areaId, !(zoomingOut && onLeadingHalf));
+                  liveRef.current.onUserXChange(min, max, areaId, keepFollow);
                 }
               },
               { passive: false },
