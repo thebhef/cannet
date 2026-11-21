@@ -32,7 +32,7 @@ To groom. Candidate shape:
   package name `cannet.v1` (`crates/cannet-wire/proto/cannet.proto`)
   is baked into gRPC method paths but never read as a version. The
   mDNS TXT `ver=` key carries the *build* string (vergen `git
-  describe`), is displayed in the Servers panel and the CLI, never
+  describe`), is displayed in the Servers section and the CLI, never
   compared, and is absent for hand-added or `--no-mdns` servers.
   gRPC metadata carries only `authorization`.
 - **Mismatch today**: an unknown RPC → `UNIMPLEMENTED`; the GUI's
@@ -93,12 +93,12 @@ owner reversal:
   every method path it calls; a server answers an unserved package
   with `UNIMPLEMENTED`. Bridges, being clients, need nothing more.
 - **A mismatch is terminal.** `connect_flow` gains an outcome that
-  does not retry; the Servers panel row and the python `Refused`
+  does not retry; the Servers section row and the python `Refused`
   message both read "serves cannet.v2; this client speaks cannet.v1".
   An `UNIMPLEMENTED` on any RPC is classified the same way instead of
   falling into `Outcome::Retry`.
 - **mDNS gains `proto=`** (comma-separated packages served) so the
-  Servers panel can grey out an incompatible server before
+  Servers section can grey out an incompatible server before
   connecting; `ver=` stays the build string. Advisory only: absent
   for hand-added and `--no-mdns` servers, so `ServerInfo` is the
   gate.
@@ -137,7 +137,7 @@ One phase, one agent, in stack order:
    package, the Rust server and the local sidecar answering it, the
    mDNS `proto=` key, the Rust client calling it first with an
    incompatible-server error, the GUI turning that and any
-   `UNIMPLEMENTED` into a terminal outcome with the Servers panel
+   `UNIMPLEMENTED` into a terminal outcome with the Servers section
    wording and `proto=` grey-out, the ADR, and CI: a `buf breaking`
    job against the last release tag and a check that the committed
    python gencode matches `cannet.proto`. The sidecar's stubs
@@ -163,7 +163,7 @@ One phase, one agent, in stack order:
   <pkgs>; this client speaks cannet.v1", and the GUI no longer
   retries an `UNIMPLEMENTED`; tested with a fake server that serves
   only `cannet.v2`.
-- The Servers panel greys out a row whose `proto=` excludes
+- The Servers section greys out a row whose `proto=` excludes
   `cannet.v1` before any connect; `cannet-client list` shows the
   protocol column.
 - CI fails on a non-additive change inside `cannet.v1` (`buf
@@ -242,7 +242,7 @@ One phase, one agent, in stack order:
   `crates/cannet-server/tests/auth.rs`; two in `server_info.rs`; four in
   `discovery.rs`; two in `connect_flow.rs`; four in `server_browse.rs`;
   three in `tests/test_server_info.py`; six across `serverList.test.ts`
-  and `ServersPanel.dom.test.tsx`.
+  and `ServersSection.dom.test.tsx`.
 
   Two things worth knowing for the next phase:
 
@@ -306,3 +306,32 @@ One phase, one agent, in stack order:
   beside `check_protocol` — and gated by it, since it dials a server
   too), and `rename-local-sidecar` (the two new sidecar files following
   the package rename).
+
+- 2026-10-07 — **The `grpcio-tools>=1.80,<1.81` pin is rejected by the
+  owner** (hit on a fresh clone): `uv lock --check` fails in
+  `clients/cannet-python-client` — its lock still records the wire
+  package's pre-pin specifier — and the three packages lock three grpcio
+  versions and two protobuf majors against 1.80-era gencode. Ruling: move
+  versions forward, consistently. Fix ordered onto the stack (queue § 2):
+  regenerate with current tools, floors to match, one lock state across
+  the packages, CI checks lock currency per package.
+
+- 2026-10-07 — **Fixed, branch `fix-python-toolchain`.** The upper pin
+  on `grpcio-tools` is gone; `libs/cannet-python-wire`,
+  `servers/cannet-local-sidecar` and `clients/cannet-python-client` all
+  re-locked to grpcio 1.84.0 / protobuf 7.36.2 / grpcio-tools 1.84.0
+  (wire's dev extra only), checked against the CPython 3.14 all three
+  `.python-version` files pin. `scripts/regen_proto.sh` re-ran against
+  the upgraded `grpcio-tools`; the regenerated `_pb2.py` /
+  `_pb2_grpc.py` version checks (`ValidateProtobufRuntimeVersion(7, 35,
+  1, ...)`, `GRPC_GENERATED_VERSION = '1.84.0'`) are what set the
+  wire's and the sidecar's new `grpcio>=1.84.0` / `protobuf>=7.35.1`
+  floors — read off the stubs, not asserted. `uv lock --check` passes
+  in all three packages; a `uv lock --check` step was added to each of
+  the three Python CI jobs, before `uv sync --frozen`, so a lock that
+  falls out of sync with its `pyproject.toml` fails there instead of
+  opaquely inside the sync. `python-can` did not move (4.6.1 in all
+  three locks, before and after) — the re-lock never touched it.
+  `plans/technology-inventory.md`'s `grpcio-tools` entry records the
+  rejection and the new rule. Landed together with the ruff 0.16
+  uplift (0136's 2026-10-07 post-completion note).

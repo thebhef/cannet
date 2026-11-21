@@ -1103,3 +1103,69 @@ Harness note: the first attempt on this build timed out at
 (`ui_last_ms` 336, one health tick in 17 s) and the second connected
 but captured 0 frames because `--rbs-run-on-start` was omitted; the
 third, with the flag, is the reading above.
+
+- 2026-10-07 — **Owner rulings (queue § 1).** Enum tiles under the line
+  and its markers: accepted ("this seems like it's working fine"). A lane
+  under `Points: auto` losing its marker exemption: accepted, on the
+  confirmation asked for — yes, an enum lane is now governed by the same
+  merged-density rule and minimum-sample-count floor as any numeric
+  series on a shared axis (phase 2 status log). A wide `ΔH` chip clipped
+  at the gutter: accepted. The ~1.5-column held-code loss: **not
+  accepted — fix before shipping.** "It's ok to lose codes that are
+  extremely narrow, but if there was a transition there we should make
+  sure it shows up when zoomed way out; wouldn't want the enum to show
+  that it stayed the same value the whole time, but I don't expect 1 px
+  wide transient values to be legible either." → queue § 2. Three items
+  deleted, one moved.
+
+### 2026-10-19 — post-acceptance fix: enum transitions at every zoom (queue § 2)
+
+Branch `fix-enum-transitions-zoomed-out` off `fix-ruff-default-rules`,
+`2aef8efc` (the agent's `299caf8c` plus its perf report).
+
+**Observation.** Held run of code 3 in a 100 Hz 0..=5 cycle (30 130
+samples), real `SignalCache`: largest run lost 1.49 col at 2248 pts
+(level-1 read), ≥2.20 col at 280 pts (level-3 read).
+
+**Hypotheses, tested by variant.** (1) Index-bucket decimation buries a
+held run that arrives as one point mid-bucket on an unevenly spaced
+level. (2) A coarse level's gaps exceed a column beside bursts, so a run
+holds no slice point at all.
+
+| variant | lost @2248 | lost @280 | control serve @2248 | read @2248 / @280 |
+|---|---|---|---|---|
+| A today (index first/last/min/max) | 1.49 | 2.20 | 5651 | 7536 / 492 |
+| B time columns | 0.74 | 2.20 | 5987 | 7536 / 492 |
+| C B + refine gaps > 1 col | 0.74 | 0.98 | 5987 | 7536 / 1896 |
+| D 4× finer level, index | 0.82 | 2.20 | 7892 | 30130 / 1896 |
+| E/F 4× finer + columns (+refine) | 0.89 | 0.98 | 8234 | 30130 / 1896 |
+
+Change marks (60 random seeds, holds ≤3 col + sub-column blips): every
+variant, today included, keeps a served change within ±1 column of every
+raw change. Exactly-own-column misses: A 742/79 819, C 501, E/F 0. A
+per-point transition count in the fold was not built: it cannot place a
+change more precisely than its bucket and does nothing for the held code.
+
+**Conclusion.** Both hypotheses confirmed (B fixes level 1, only C/E/F
+fix level 3). Took C: time-column `decimate_min_max` +
+`SignalCache::refine_gaps`; fold unchanged. After: 0.74 / 0.98 col lost;
+serve 5986 (+6 %) at 2248; read unchanged at level 1, 492 → 1896 at
+level 3. Guarantee: a run held ≥1 served column keeps its code at every
+alignment and depth. A narrower run keeps a value change in its column
+or the adjacent one, not strictly its own column (F is the alternative
+at +46 % serve / 4× read). Frontend: sub-pixel served runs draw a
+1-CSS-px accent tick on lanes and ribbon. ADR 0026 amended.
+
+Tests: `a_held_code_one_served_column_wide_survives_the_serve_at_every_alignment`
+(red before, two depths), `every_raw_change_shows_as_a_served_change_within_a_column`
+(green before; pins it), sampler `a_run_covering_a_column_edge_survives_at_every_alignment`
++ `columns_are_of_time_so_a_sparse_held_point_survives`, frontend "a run
+narrower than a device pixel" ×4 (red before). Stale `2·max_points+2`
+assertion in `zoom_in_reads_a_finer_level_than_fit_data` → `4·max_points`.
+Lanes: cannet-gui 1455 tests, clippy, fmt, 3935 frontend tests, build;
+Python skipped (untouched). Deviation: the agent ran `pnpm tauri build
+--no-bundle` for the perf binary (no bundle produced).
+
+Perf: ev-zonal 60 s scrub, release, rx/tx 1620.7/1620.9 f/s, 174 ids;
+check passed 31/31; lag_ms_max 9.4, jsheap 101.3, renderer 340.3, tree
+780.2 MB. Report `2026-10-19-299caf8c-enum-transitions-run1.json`.
