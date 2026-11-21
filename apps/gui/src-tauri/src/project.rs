@@ -585,6 +585,12 @@ fn save_project_inner(
             // The file now holds the working project; the disk watch's
             // record (written above) is where its path lives.
             state.working_project.saved();
+            // …and it is the open project from here on, whether it was
+            // opened from this file or has only now been given one: a
+            // capture started after a first save is stamped with this
+            // identity, which is what a later launch restores it by
+            // (ADR 0002 DS-7).
+            *state.active_project_id() = Some(project.project_id);
             crate::sys_info!(app, "project", "saved project to {path}");
             Ok(project.project_id.to_string())
         }
@@ -672,6 +678,11 @@ fn save_project_as_blocking(
             "saved {path}, but the session did not move: {e}"
         );
     }
+    // A capture taken before the project had a file belongs to no
+    // project, and so would never be restored. It is this project's now.
+    state
+        .trace_store
+        .claim_scratch_for(*state.active_project_id());
     Ok(id)
 }
 

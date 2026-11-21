@@ -2633,13 +2633,14 @@ fn adopt_embedded_databases(
     // capture's databases in place, and afterwards there is no way left
     // to ask what the content they replace was driving.
     let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state.inner());
-    // The databases of the capture this one replaces leave with it.
-    let dropped = drop_other_capture_databases(state.inner(), mdf_path, &attachments);
+    // An earlier capture's databases stay, unless this one brings its own
+    // of the same name.
+    let dropped = drop_replaced_capture_databases(state.inner(), mdf_path, &attachments);
     for (identity, stopped) in &dropped {
         sys_info!(
             app,
             "mdf-import",
-            "dropped database {identity}: the capture it came with is being replaced",
+            "dropped database {identity}: this capture carries its own of that name",
         );
         crate::dbc_commands::report_periodics_stopped(app, state.inner(), identity, stopped);
     }
@@ -2684,29 +2685,37 @@ fn adopt_embedded_databases(
     }
 }
 
-/// Unload every capture database that is not one `capture_path` is about
-/// to load — the databases of whichever capture this import replaces,
-/// and any this capture carried last time and no longer does.
+/// Unload the capture databases an import of `capture_path` supersedes:
+/// one an **earlier** capture brought under a name this capture carries
+/// too, and one this capture carried last time and no longer does.
 ///
-/// A capture's databases belong to it: they decode its frames and are no
-/// part of the project, so once the capture is gone they are definitions
-/// for traffic the session no longer holds, left assigned to its buses.
-/// The project's own databases are untouched. Returns each identity
-/// dropped with the periodics its removal stopped.
-pub(crate) fn drop_other_capture_databases(
+/// Every other capture database stays loaded and assigned as it is. An
+/// import adds to the session's databases — so an MF4 can be the way a
+/// set of them arrives, and the captures imported after it decode with
+/// that set — and replaces only what it brings a newer copy of, matched
+/// by the attachment's name. The project's own databases are untouched.
+/// Returns each identity dropped with the periodics its removal stopped.
+pub(crate) fn drop_replaced_capture_databases(
     state: &AppState,
     capture_path: &str,
     attachments: &[cannet_mdf::MdfAttachment],
 ) -> Vec<(String, Vec<String>)> {
-    let arriving: Vec<String> = attachments
+    let arriving: Vec<&str> = attachments
         .iter()
         .filter(|a| is_embedded_dbc(!a.data.is_empty(), &a.mime_type, &a.file_name))
-        .map(|a| format!("{capture_path}#{}", a.file_name))
+        .map(|a| a.file_name.as_str())
         .collect();
+    let own_prefix = format!("{capture_path}#");
     let leaving: Vec<String> = state
         .databases()
         .iter()
-        .filter(|d| d.embedded.is_some() && !arriving.contains(&d.path))
+        .filter(|d| {
+            d.embedded.as_ref().is_some_and(|source| {
+                // This capture's own are replaced in place by the install
+                // that follows, so only the ones it dropped leave here.
+                arriving.contains(&source.file_name.as_str()) != d.path.starts_with(&own_prefix)
+            })
+        })
         .map(|d| d.path.clone())
         .collect();
     leaving

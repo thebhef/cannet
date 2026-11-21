@@ -780,6 +780,8 @@ pub fn run() -> ! {
             project::save_project,
             project::save_project_as,
             project_dir::active_project_is_auto_located,
+            project_dir::is_temporary_project,
+            project_dir::temporary_project_path,
             project_registry::list_project_caches,
             project_registry::clear_project_cache,
             project_registry::delete_project_cache,

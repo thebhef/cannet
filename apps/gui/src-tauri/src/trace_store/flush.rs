@@ -457,6 +457,30 @@ impl TraceStore {
         }
     }
 
+    /// Give the capture in the scratch to `project_id` if it belongs to no
+    /// project yet — the capture of a session whose project has only now
+    /// been saved. A scratch that already has an owner keeps it, and its
+    /// capture identity; an empty one is left for the next capture to
+    /// stamp ([`Self::write_scratch_identity`]).
+    pub fn claim_scratch_for(&self, project_id: Option<Uuid>) {
+        let Some(project_id) = project_id else {
+            return;
+        };
+        if self.len() == 0 {
+            return;
+        }
+        let owned = {
+            let inner = self.lock_inner();
+            let Some(dir) = inner.scratch_dir.clone() else {
+                return;
+            };
+            read_json::<ScratchIdentity>(&dir.join(IDENTITY_FILE)).is_some()
+        };
+        if !owned {
+            self.write_scratch_identity(Some(project_id));
+        }
+    }
+
     /// Identity of the capture currently in the scratch, or `None` for the
     /// in-RAM double, a scratch with no capture, or one written before
     /// captures were identified. See `ScratchIdentity::capture_id`.

@@ -4477,12 +4477,13 @@ fn an_import_assigns_the_capture_s_databases_to_the_buses_the_dialog_chose() {
     assert_eq!(buses_of(&state, "body.dbc"), vec!["c"]);
 }
 
-/// **A capture's databases leave with it.** Importing another capture
-/// unloads the ones the last brought — they decode traffic the session
-/// no longer holds — and leaves the project's own alone. Importing the
-/// same capture again keeps what it still carries.
+/// **An import adds to the session's capture databases.** The ones an
+/// earlier capture brought stay loaded — an MF4 can be how a set of
+/// databases arrives, for the captures imported after it — and a capture
+/// replaces only what it carries its own copy of, by name. The project's
+/// own databases are never touched.
 #[test]
-fn importing_another_capture_drops_the_last_one_s_databases() {
+fn importing_another_capture_keeps_the_last_one_s_databases_it_does_not_replace() {
     let state = test_state();
     state
         .databases()
@@ -4498,30 +4499,40 @@ fn importing_another_capture_drops_the_last_one_s_databases() {
     let first = [attachment("powertrain.dbc"), attachment("body.dbc")];
     capture::install_embedded_databases(&state, "first.mf4", &first, None);
 
-    // The same capture again, now carrying one database fewer.
-    let dropped = capture::drop_other_capture_databases(&state, "first.mf4", &first[..1]);
+    // Another capture carrying a database of the same name: its copy
+    // replaces the first one's, and the first one's other stays.
+    let second = [attachment("powertrain.dbc")];
+    let dropped = capture::drop_replaced_capture_databases(&state, "second.mf4", &second);
     assert_eq!(
         dropped.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(),
-        vec!["first.mf4#body.dbc"]
+        vec!["first.mf4#powertrain.dbc"]
     );
-    assert_eq!(
-        paths(&state),
-        vec!["C:/dbc/project.dbc", "first.mf4#powertrain.dbc"]
-    );
-
-    // Another capture: the first one's are gone, whether or not the new
-    // one carries a database of the same name.
-    let second = [attachment("powertrain.dbc")];
-    capture::drop_other_capture_databases(&state, "second.mf4", &second);
     capture::install_embedded_databases(&state, "second.mf4", &second, None);
     assert_eq!(
         paths(&state),
-        vec!["C:/dbc/project.dbc", "second.mf4#powertrain.dbc"]
+        vec![
+            "C:/dbc/project.dbc",
+            "first.mf4#body.dbc",
+            "second.mf4#powertrain.dbc",
+        ]
     );
 
-    // A capture with no databases still takes the last one's away.
-    capture::drop_other_capture_databases(&state, "third.mf4", &[]);
-    assert_eq!(paths(&state), vec!["C:/dbc/project.dbc"]);
+    // A capture with no databases takes nothing away: the ones already
+    // here are what decode it.
+    assert!(capture::drop_replaced_capture_databases(&state, "third.mf4", &[]).is_empty());
+    assert_eq!(paths(&state).len(), 3);
+
+    // The same capture again, no longer carrying what it once did: that
+    // one goes, since nothing it came from holds it any more.
+    let dropped = capture::drop_replaced_capture_databases(&state, "second.mf4", &[]);
+    assert_eq!(
+        dropped.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(),
+        vec!["second.mf4#powertrain.dbc"]
+    );
+    assert_eq!(
+        paths(&state),
+        vec!["C:/dbc/project.dbc", "first.mf4#body.dbc"]
+    );
 }
 
 /// The dialog lists exactly the attachments the import will load as

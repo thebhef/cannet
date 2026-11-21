@@ -70,6 +70,12 @@ vi.mock("@tauri-apps/api/core", () => ({
         return mdfScan;
       case "import_mdf":
         return { mdf_path: "/logs/capture.mf4" };
+      case "temporary_project_path":
+        return "/cache/projects/abc/capture.cannet_prj";
+      case "is_temporary_project":
+        return String(args?.path).startsWith("/cache/projects/");
+      case "save_project_as":
+        return "00000000-0000-4000-8000-000000000000";
       case "fetch_filtered_trace":
       case "fetch_by_id_page":
         return { count: 0, start: 0, rows: [] };
@@ -247,6 +253,25 @@ describe("MDF import contents", () => {
     expect(importArgs().importSignals).toBe(true);
     expect(importArgs().importMessages).toBe(false);
     expect(importArgs().channelBusMapping).toEqual([]);
+  }, 30_000);
+
+  it("gives a never-saved project a temporary project file before it imports", async () => {
+    // Nothing a relaunch restores comes back without a project file to
+    // reopen, so the capture must not land in a project that has none.
+    await openTheDialog();
+    await act(async () => {
+      fireEvent.click(findButton("Open"));
+    });
+    await waitFor(() => importArgs());
+    const order = calls.map((c) => c.cmd);
+    const created = order.indexOf("temporary_project_path");
+    const saved = order.indexOf("save_project_as");
+    expect(created).toBeGreaterThan(-1);
+    expect(calls[created].args).toEqual({ capturePath: expect.stringMatching(/capture\.mf4$/) });
+    expect(calls[saved].args.path).toBe("/cache/projects/abc/capture.cannet_prj");
+    // Created, then saved into, then imported into.
+    expect(created).toBeLessThan(saved);
+    expect(saved).toBeLessThan(order.indexOf("import_mdf"));
   }, 30_000);
 
   it("hands the dialog's database assignments to the import", async () => {
